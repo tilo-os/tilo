@@ -31,11 +31,13 @@ struct LargeDirectoryProvider {
 impl LargeDirectoryProvider {
     fn new(records: usize) -> Self {
         let catalog = crate::search::SearchCatalog::new("Large directory");
-        for index in 0..records {
-            let resource = format!("test.item:{index}");
-            let address = tilo_actions::ActionAddress::new(resource.clone(), "open");
-            catalog
-                .upsert(
+        // One bulk snapshot, as a provider rebuilding its whole corpus
+        // publishes it; later `upsert`s keep their incremental semantics.
+        catalog
+            .replace_all((0..records).map(|index| {
+                let resource = format!("test.item:{index}");
+                let address = tilo_actions::ActionAddress::new(resource.clone(), "open");
+                (
                     resource,
                     format!("record {index} needle-{index}"),
                     crate::search::SearchResult::for_action(
@@ -44,8 +46,8 @@ impl LargeDirectoryProvider {
                         address,
                     ),
                 )
-                .expect("canonical synthetic directory row");
-        }
+            }))
+            .expect("canonical synthetic directory rows");
         Self {
             catalog,
             calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
@@ -541,77 +543,116 @@ fn activate_bound_button(app: &mut App) {
 }
 
 #[test]
-fn lazy_resource_fallback_invokes_after_retained_cache_snapshot() {
-    let resource = lazy_resource("test.lazy");
-    let mut app = lazy_app(resource);
-    let address = tilo_actions::ActionAddress::new("test.lazy", "bump");
-    let snapshot = app.collect_resources();
-    assert!(
-        tilo_actions::door::resolve(&snapshot, &address).is_none(),
-        "the retained snapshot must omit the lazy action"
-    );
-    assert!(
-        app.actions.resource_cache.borrow().is_some(),
-        "the snapshot is retained before fallback"
-    );
+fn lazy_resources_populate_the_tree_with_stable_identity_and_permissions() {
+    // Case `lazy_resource_fallback_invokes_after_retained_cache_snapshot`.
+    {
+        let resource = lazy_resource("test.lazy");
+        let mut app = lazy_app(resource);
+        let address = tilo_actions::ActionAddress::new("test.lazy", "bump");
+        let snapshot = app.collect_resources();
+        assert!(
+            tilo_actions::door::resolve(&snapshot, &address).is_none(),
+            "the retained snapshot must omit the lazy action"
+        );
+        assert!(
+            app.actions.resource_cache.borrow().is_some(),
+            "the snapshot is retained before fallback"
+        );
 
-    let actor = app.collaboration.local_author.0.clone();
-    let result = app.invoke_resource_action(ResourceInvocation::new(&address, &actor));
+        let actor = app.collaboration.local_author.0.clone();
+        let result = app.invoke_resource_action(ResourceInvocation::new(&address, &actor));
 
-    assert!(
-        result.is_ok(),
-        "the lazy resource should resolve: {result:?}"
-    );
-    assert_eq!(counter(&app), 1);
-}
+        assert!(
+            result.is_ok(),
+            "the lazy resource should resolve: {result:?}"
+        );
+        assert_eq!(counter(&app), 1);
+    }
 
-#[test]
-fn lazy_resource_fallback_respects_local_permissions() {
-    let mut app = lazy_app(lazy_resource("test.lazy"));
-    app.set_permission_ctx(PermissionContext::from_capabilities(
-        collab_types::caps::Actor::person(None, "restricted"),
-        Vec::new(),
-    ));
+    // Case `lazy_resource_fallback_respects_local_permissions`.
+    {
+        let mut app = lazy_app(lazy_resource("test.lazy"));
+        app.set_permission_ctx(PermissionContext::from_capabilities(
+            collab_types::caps::Actor::person(None, "restricted"),
+            Vec::new(),
+        ));
 
-    let address = tilo_actions::ActionAddress::new("test.lazy", "bump");
-    let actor = app.collaboration.local_author.0.clone();
-    let denied = app.invoke_resource_action(ResourceInvocation::new(&address, &actor));
-    assert!(matches!(denied, Err(tilo_actions::DoorError::Unknown(_))));
-    assert_eq!(counter(&app), 0, "the denied fallback must not run");
+        let address = tilo_actions::ActionAddress::new("test.lazy", "bump");
+        let actor = app.collaboration.local_author.0.clone();
+        let denied = app.invoke_resource_action(ResourceInvocation::new(&address, &actor));
+        assert!(matches!(denied, Err(tilo_actions::DoorError::Unknown(_))));
+        assert_eq!(counter(&app), 0, "the denied fallback must not run");
 
-    app.set_permission_ctx(PermissionContext::permissive());
-    let allowed = app.invoke_resource_action(ResourceInvocation::new(&address, &actor));
-    assert!(
-        allowed.is_ok(),
-        "restoring write permission should admit it"
-    );
-    assert_eq!(counter(&app), 1);
-}
+        app.set_permission_ctx(PermissionContext::permissive());
+        let allowed = app.invoke_resource_action(ResourceInvocation::new(&address, &actor));
+        assert!(
+            allowed.is_ok(),
+            "restoring write permission should admit it"
+        );
+        assert_eq!(counter(&app), 1);
+    }
 
-#[test]
-fn recursive_lazy_resource_remains_discoverable_and_invocable() {
-    let child = lazy_resource("test.lazy.child");
-    let tree = Resource::new("test.lazy.parent", "test.lazy.parent", "Parent").with_child(child);
-    let mut app = lazy_app(tree);
-    let resolved = crate::widget::resolve_widget_resource(
-        app.root_widget.as_ref(),
-        &app.state.doc,
-        "test.lazy.child",
-    )
-    .expect("the recursive lazy child is discoverable");
-    assert_eq!(
-        find_action_resource(&[resolved], "test.lazy.child").map(|resource| resource.id.as_str()),
-        Some("test.lazy.child")
-    );
+    // Case `recursive_lazy_resource_remains_discoverable_and_invocable`.
+    {
+        let child = lazy_resource("test.lazy.child");
+        let tree =
+            Resource::new("test.lazy.parent", "test.lazy.parent", "Parent").with_child(child);
+        let mut app = lazy_app(tree);
+        let resolved = crate::widget::resolve_widget_resource(
+            app.root_widget.as_ref(),
+            &app.state.doc,
+            "test.lazy.child",
+        )
+        .expect("the recursive lazy child is discoverable");
+        assert_eq!(
+            find_action_resource(&[resolved], "test.lazy.child")
+                .map(|resource| resource.id.as_str()),
+            Some("test.lazy.child")
+        );
 
-    let address = tilo_actions::ActionAddress::new("test.lazy.child", "bump");
-    let actor = app.collaboration.local_author.0.clone();
-    let result = app.invoke_resource_action(ResourceInvocation::new(&address, &actor));
-    assert!(
-        result.is_ok(),
-        "the recursive lazy action should resolve: {result:?}"
-    );
-    assert_eq!(counter(&app), 1);
+        let address = tilo_actions::ActionAddress::new("test.lazy.child", "bump");
+        let actor = app.collaboration.local_author.0.clone();
+        let result = app.invoke_resource_action(ResourceInvocation::new(&address, &actor));
+        assert!(
+            result.is_ok(),
+            "the recursive lazy action should resolve: {result:?}"
+        );
+        assert_eq!(counter(&app), 1);
+    }
+
+    // Case `refresh_populates_the_tree_from_app_resources`.
+    {
+        let mut app = app();
+        app.refresh_semantic_tree();
+        let tree = app.semantic_tree();
+        let node = tree
+            .node(&SemanticId("r:test.counter".into()))
+            .expect("the app's open resource is a semantic node");
+        assert_eq!(node.name.as_deref(), Some("Counter"));
+        assert!(
+            node.action("bump").is_some(),
+            "the resource's action is an affordance"
+        );
+        assert!(node.action("set-label").is_some());
+        // The root owns it (resources hang off the window root).
+        let root = tree.node(tree.root()).unwrap();
+        assert!(root.children.contains(&SemanticId("r:test.counter".into())));
+    }
+
+    // Case `identity_is_stable_across_refreshes`.
+    {
+        let mut app = app();
+        app.refresh_semantic_tree();
+        let ids_before: Vec<SemanticId> =
+            app.semantic_tree().iter().map(|n| n.id.clone()).collect();
+        let delta = app.refresh_semantic_tree();
+        assert!(
+            delta.is_empty(),
+            "a stable frame yields no delta, got {delta:?}"
+        );
+        let ids_after: Vec<SemanticId> = app.semantic_tree().iter().map(|n| n.id.clone()).collect();
+        assert_eq!(ids_before, ids_after, "node identity survives a refresh");
+    }
 }
 
 fn capture_interactions(
@@ -725,607 +766,628 @@ fn a_press_on_a_disabled_control_publishes_its_refusal() {
 }
 
 #[test]
-fn action_bound_control_uses_fresh_door_and_records_history() {
-    let mut app = app();
-    activate_bound_button(&mut app);
-    assert_eq!(counter(&app), 0, "control only queued an intent");
-    assert_eq!(app.dispatch_control_invocations(), 1);
-    assert_eq!(counter(&app), 1);
-    assert!(app.state.peek_last_undo().is_some());
-    assert_eq!(
-        app.control_action_coverage()[0].status,
-        ControlBindingStatus::Resolved
-    );
-}
-
-#[test]
-fn a11y_activation_drains_an_action_bound_control_before_returning() {
-    let mut app = app();
-    let button = app.focusable_order[0];
-    // Retained widget ids have the same stable AccessKit mapping used by
-    // the native provider. This exercises the public AT-SPI action path,
-    // rather than manually draining the widget's queued intent.
-    let accesskit_button = app.accessibility_node_id(button).expect("exported");
-
-    assert_eq!(
-        app.dispatch_a11y_action(accesskit_button, &crate::a11y::Action::Activate),
-        None
-    );
-    assert_eq!(
-        counter(&app),
-        1,
-        "AT-SPI activation must apply the bound action before success is returned"
-    );
-    assert!(app.state.peek_last_undo().is_some());
-}
-
-#[test]
-fn directed_task_context_survives_into_action_history() {
-    let mut app = app();
-    let resources = app.collect_resources();
-    assert!(!resources.is_empty(), "test action surface was rejected");
-    let ambient = tilo_actions::ActionContext::default()
-        .with_app("org.tilo.Agent", "Agent")
-        .with_purpose("Make the opening concrete")
-        .with_group("task:opening", "Rewrite the opening", "task");
-
-    let address = tilo_actions::ActionAddress::new("test.counter", "bump");
-    let request = ResourceInvocation::new(&address, "agent:Scribe")
-        .confirmed(true)
-        .broker_admitted(true)
-        .invocation(Some(tilo_actions::InvocationId::new()))
-        .ambient_context(Some(&ambient));
-    let result = app.invoke_resource_action(request);
-
-    assert!(result.is_ok(), "the directed action failed: {result:?}");
-    assert_eq!(counter(&app), 1, "the directed action was applied");
-    let changes = app.state.doc.get_changes(&[]);
-    let committed = changes.last().expect("the directed action committed");
-    assert_eq!(committed.actor_id().to_bytes(), b"agent:Scribe");
-    let context = committed
-        .message()
-        .and_then(|message| tilo_actions::ActionContext::from_change_message(message))
-        .expect("the action commit retained semantic provenance");
-    assert_eq!(context.action_label, "Bump");
-    assert_eq!(
-        context
-            .resource
-            .as_ref()
-            .map(|resource| resource.id.as_str()),
-        Some("test.counter"),
-        "the concrete addressed resource stays authoritative"
-    );
-    assert_eq!(context.purpose, ambient.purpose);
-    assert_eq!(context.group, ambient.group);
-    assert_eq!(context.app, ambient.app);
-    assert_eq!(
-        app.state
-            .peek_last_undo()
-            .and_then(|entry| entry.author.as_ref()),
-        Some(&crate::permissions::UserId("agent:Scribe".into())),
-        "undo attribution and durable history use the same actor"
-    );
-}
-
-#[test]
-fn broker_invocation_republishes_a_document_dependent_action_surface() {
-    let mut app = App::new_with_controlled_inputs(
-        State::new(),
-        Box::new(CounterCard::with_post_bump_reset()),
-    );
-    app.action_registry_mut()
-        .register::<CounterAction>(COUNTER_TYPE);
-    app.init_layout();
-    assert!(
-        tilo_actions::door::survey(&app.collect_resources())
-            .iter()
-            .all(|descriptor| descriptor.address.action != "reset"),
-        "reset is unavailable before the counter changes"
-    );
-    let publication_attempts = app.actions.action_surface_publication_attempts;
-
-    app.apply_collab_event_for_test(CollabEvent::Invocation {
-        id: 42,
-        resource: "test.counter".into(),
-        action: "bump".into(),
-        argument: None,
-        actor: "agent:Scribe".into(),
-        context: None,
-    });
-
-    assert_eq!(counter(&app), 1, "the directed document action ran");
-    assert!(
-        tilo_actions::door::survey(&app.collect_resources())
-            .iter()
-            .any(|descriptor| descriptor.address.action == "reset"),
-        "the post-mutation surface exposes the newly valid reset action"
-    );
-    assert_eq!(
-        app.actions.action_surface_publication_attempts,
-        publication_attempts.saturating_add(1),
-        "the broker event batch republishes without waiting for native window input"
-    );
-}
-
-#[test]
-fn accepted_broker_invocation_republishes_when_its_terminal_update_arrives() {
-    let mut app = App::new_with_controlled_inputs(
-        State::new(),
-        Box::new(CounterCard::with_async_post_bump_reset()),
-    );
-    app.action_registry_mut()
-        .register::<CounterAction>(COUNTER_TYPE);
-    app.init_layout();
-
-    let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(43));
-    app.apply_collab_event_for_test(CollabEvent::Invocation {
-        id: 43,
-        resource: "test.counter".into(),
-        action: "async-bump".into(),
-        argument: None,
-        actor: "agent:Scribe".into(),
-        context: None,
-    });
-    assert_eq!(counter(&app), 0, "admission alone does not mutate");
-    assert_eq!(
-        app.actions
-            .directed_invocations
-            .get(&invocation)
-            .map(|pending| pending.wire_id),
-        Some(43),
-        "Accepted remains pending until the widget reports a terminal update"
-    );
-
-    app.refresh_focus_order();
-    assert_eq!(counter(&app), 1, "the later model pass applied the job");
-    assert!(
-        tilo_actions::door::survey(&app.collect_resources())
-            .iter()
-            .any(|descriptor| descriptor.address.action == "reset"),
-        "the terminal document now exposes reset"
-    );
-    let publication_attempts = app.actions.action_surface_publication_attempts;
-
-    assert!(
-        app.poll_directed_invocations(),
-        "the terminal update arrived"
-    );
-    assert!(app.actions.directed_invocations.is_empty());
-    assert_eq!(
-        app.actions.action_surface_publication_attempts,
-        publication_attempts.saturating_add(1),
-        "terminal lifecycle polling republishes without native input"
-    );
-}
-
-#[test]
-fn undecodable_document_action_preserves_pending_edit() {
-    let resource = Resource::new("test.invalid", "test.invalid", "Invalid action").with_action(
-        ActionSpec::immediate(
-            "decode",
-            "Decode",
-            "test.unregistered",
-            &CounterAction::Bump,
-        )
-        .unwrap(),
-    );
-    let mut app = lazy_app(resource);
-    let before = app.state.doc.get_heads();
-    app.state.doc.put(ROOT, "draft", "unfinished").unwrap();
-    let pending = app.state.doc.pending_ops();
-    let address = tilo_actions::ActionAddress::new("test.invalid", "decode");
-    let actor = app.collaboration.local_author.0.clone();
-    let result = app.invoke_resource_action(ResourceInvocation::new(&address, &actor));
-    assert!(
-        matches!(result, Err(tilo_actions::DoorError::UnregisteredType(ref id))
-            if id == "test.unregistered"),
-        "unexpected result: {result:?}"
-    );
-    assert_eq!(app.state.doc.pending_ops(), pending);
-    assert_eq!(app.state.doc.base_heads(), before);
-    assert!(app.state.peek_last_undo().is_none());
-}
-
-#[test]
-fn refused_and_routed_actions_preserve_pending_edit() {
-    let mut app = app();
-    let before = app.state.doc.get_heads();
-    app.state.doc.put(ROOT, "draft", "unfinished").unwrap();
-    let pending = app.state.doc.pending_ops();
-    for (action, actor) in [
-        ("host-bump", app.collaboration.local_author.0.clone()),
-        ("inspect", "agent:Scribe".to_string()),
-        ("missing", app.collaboration.local_author.0.clone()),
-    ] {
-        let address = tilo_actions::ActionAddress::new("test.counter", action);
-        let result = app.invoke_resource_action(ResourceInvocation::new(&address, &actor));
-        assert!(result.is_err(), "unadmitted action must fail: {action}");
-        assert_eq!(app.state.doc.pending_ops(), pending, "{action}");
-        assert_eq!(app.state.doc.base_heads(), before, "{action}");
-        assert!(app.state.peek_last_undo().is_none());
+fn action_bound_controls_use_the_fresh_door_and_never_auto_confirm() {
+    // Case `action_bound_control_uses_fresh_door_and_records_history`.
+    {
+        let mut app = app();
+        activate_bound_button(&mut app);
+        assert_eq!(counter(&app), 0, "control only queued an intent");
+        assert_eq!(app.dispatch_control_invocations(), 1);
+        assert_eq!(counter(&app), 1);
+        assert!(app.state.peek_last_undo().is_some());
+        assert_eq!(
+            app.control_action_coverage()[0].status,
+            ControlBindingStatus::Resolved
+        );
     }
-    app.state.doc.put(ROOT, "draft", "finished").unwrap();
-    let context =
-        tilo_actions::ActionContext::for_resource("Finish draft", "test.draft", "note", "Draft");
-    assert!(app.state.commit_action_authored_with_context(
-        None,
-        None,
-        Some(app.collaboration.local_author.clone()),
-        Some(context),
-    ));
-    let changes = app.state.doc.get_changes(&before);
-    assert_eq!(changes.len(), 1, "refusal must not split the pending edit");
-    let context = changes[0]
-        .message()
-        .and_then(|message| tilo_actions::ActionContext::from_change_message(message))
-        .unwrap();
-    assert_eq!(context.action_label, "Finish draft");
-}
 
-#[test]
-fn host_required_document_action_runs_only_after_broker_admission() {
-    let mut app = app();
-    let address = tilo_actions::ActionAddress::new("test.counter", "host-bump");
+    // Case `a11y_activation_drains_an_action_bound_control_before_returning`.
+    {
+        let mut app = app();
+        let button = app.focusable_order[0];
+        // Retained widget ids have the same stable AccessKit mapping used by
+        // the native provider. This exercises the public AT-SPI action path,
+        // rather than manually draining the widget's queued intent.
+        let accesskit_button = app.accessibility_node_id(button).expect("exported");
 
-    let actor = app.collaboration.local_author.0.clone();
-    let local = app.invoke_resource_action(ResourceInvocation::new(&address, &actor));
-    assert!(local.is_err(), "an unbrokered client must fail closed");
-    assert_eq!(counter(&app), 0);
+        assert_eq!(
+            app.dispatch_a11y_action(accesskit_button, &crate::a11y::Action::Activate),
+            None
+        );
+        assert_eq!(
+            counter(&app),
+            1,
+            "AT-SPI activation must apply the bound action before success is returned"
+        );
+        assert!(app.state.peek_last_undo().is_some());
+    }
 
-    let request = ResourceInvocation::new(&address, "agent:Scribe")
-        .confirmed(true)
-        .broker_admitted(true)
-        .invocation(Some(tilo_actions::InvocationId::new()));
-    let admitted = app.invoke_resource_action(request);
-    assert!(admitted.is_ok(), "the authoritative broker admitted it");
-    assert_eq!(counter(&app), 1);
-    assert_eq!(
-        app.state
-            .peek_last_undo()
-            .and_then(|entry| entry.author.as_ref()),
-        Some(&crate::permissions::UserId("agent:Scribe".into()))
-    );
-}
+    // Case `permission_revocation_and_restore_refresh_bound_control_presentation`.
+    {
+        let mut app = app();
+        let node = app.focusable_order[0];
+        let pointer = app.layout.node_map[&node];
+        assert!(unsafe { (*pointer).is_enabled() });
 
-#[test]
-fn directed_view_action_cannot_steal_the_local_view() {
-    let mut app = app();
-    let invocation = tilo_actions::InvocationId::new();
-    let error = app
-        .invoke_resource_action(
-            ResourceInvocation::new(
-                &tilo_actions::ActionAddress::new("test.counter", "inspect"),
-                "agent:Scribe",
+        app.set_permission_ctx(PermissionContext::from_capabilities(
+            collab_types::caps::Actor::person(None, "restricted"),
+            Vec::new(),
+        ));
+        assert!(!unsafe { (*pointer).is_enabled() });
+        assert!(!unsafe {
+            (*pointer).perform_action(
+                &crate::a11y::Action::Activate,
+                &mut app.state.doc,
+                &app.state.root,
             )
+        });
+
+        app.set_permission_ctx(PermissionContext::permissive());
+        assert!(unsafe { (*pointer).is_enabled() });
+    }
+
+    // Case `action_bound_control_never_auto_confirms_destructive_action`.
+    {
+        let mut app = App::new_with_controlled_inputs(
+            State::new(),
+            Box::new(CounterCard::with_destructive(true)),
+        );
+        app.action_registry_mut()
+            .register::<CounterAction>(COUNTER_TYPE);
+        app.init_layout();
+        activate_bound_button(&mut app);
+        assert_eq!(app.dispatch_control_invocations(), 1);
+        assert_eq!(counter(&app), 0);
+        assert!(app.state.peek_last_undo().is_none());
+        assert!(app.action_palette().is_some(), "confirmation UI is open");
+    }
+
+    // Case `action_bound_background_control_remains_pending_until_terminal_update`.
+    {
+        let resource =
+            crate::widget::resource_actions::resource("test.job", "Job", "run", "Run", true);
+        let binding = tilo_actions::ActionBinding::unit_for(&resource, "run").unwrap();
+        let button = Button::new("run", "Run", None).on_action(binding);
+        let root = crate::widget::resource_actions::background(Box::new(button), resource, |_| {
+            let (sender, receiver) = std::sync::mpsc::channel();
+            sender
+                .send(Ok(tilo_actions::ActionOutput::default()))
+                .unwrap();
+            Ok(receiver)
+        });
+        let mut app = App::new_with_controlled_inputs(State::new(), root);
+        app.init_layout();
+        activate_bound_button(&mut app);
+        assert_eq!(app.dispatch_control_invocations(), 1);
+        assert_eq!(
+            app.actions.local_invocations.len(),
+            1,
+            "Accepted is not success"
+        );
+        assert!(app.poll_directed_invocations());
+        assert!(
+            app.actions.local_invocations.is_empty(),
+            "terminal result closes the tracked local job"
+        );
+    }
+
+    // Case `confirmed_control_preserves_captured_arguments_through_palette_dispatch`.
+    {
+        let (mut probe, observed) = crate::widget::control_result_probe::Probe::new(false);
+        probe.confirmation = true;
+        probe.typed_text = true;
+        observed.enqueue_text("run", "captured before confirmation");
+        let mut host = App::new_with_controlled_inputs(State::new(), Box::new(probe));
+
+        assert_eq!(host.dispatch_control_invocations(), 1);
+        assert!(
+            host.action_palette()
+                .is_some_and(crate::action_palette::ActionPalette::in_argument_mode),
+            "captured arguments enter confirmation directly"
+        );
+        assert!(observed.payloads.borrow().is_empty());
+
+        host.actions
+            .action_palette
+            .as_mut()
+            .expect("confirmation palette is open")
+            .set_query("CONFIRM");
+        assert!(host.action_palette_handle_key(&action_palette_tests::synth_enter()));
+        assert_eq!(
+            observed.payloads.borrow().as_slice(),
+            ["captured before confirmation"],
+            "confirmation dispatches the original intent arguments"
+        );
+    }
+}
+
+#[test]
+fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
+    // Case `directed_task_context_survives_into_action_history`.
+    {
+        let mut app = app();
+        let resources = app.collect_resources();
+        assert!(!resources.is_empty(), "test action surface was rejected");
+        let ambient = tilo_actions::ActionContext::default()
+            .with_app("org.tilo.Agent", "Agent")
+            .with_purpose("Make the opening concrete")
+            .with_group("task:opening", "Rewrite the opening", "task");
+
+        let address = tilo_actions::ActionAddress::new("test.counter", "bump");
+        let request = ResourceInvocation::new(&address, "agent:Scribe")
             .confirmed(true)
             .broker_admitted(true)
-            .invocation(Some(invocation)),
-        )
-        .expect_err("a remote presentation action must be refused");
+            .invocation(Some(tilo_actions::InvocationId::new()))
+            .ambient_context(Some(&ambient));
+        let result = app.invoke_resource_action(request);
 
-    assert_eq!(counter(&app), 0, "the private view action never ran");
-    assert!(
-        matches!(
-            error,
-            tilo_actions::DoorError::Unavailable { ref code, .. } if code == "private_view"
-        ),
-        "unexpected refusal: {error:?}"
-    );
-}
+        assert!(result.is_ok(), "the directed action failed: {result:?}");
+        assert_eq!(counter(&app), 1, "the directed action was applied");
+        let changes = app.state.doc.get_changes(&[]);
+        let committed = changes.last().expect("the directed action committed");
+        assert_eq!(committed.actor_id().to_bytes(), b"agent:Scribe");
+        let context = committed
+            .message()
+            .and_then(|message| tilo_actions::ActionContext::from_change_message(message))
+            .expect("the action commit retained semantic provenance");
+        assert_eq!(context.action_label, "Bump");
+        assert_eq!(
+            context
+                .resource
+                .as_ref()
+                .map(|resource| resource.id.as_str()),
+            Some("test.counter"),
+            "the concrete addressed resource stays authoritative"
+        );
+        assert_eq!(context.purpose, ambient.purpose);
+        assert_eq!(context.group, ambient.group);
+        assert_eq!(context.app, ambient.app);
+        assert_eq!(
+            app.state
+                .peek_last_undo()
+                .and_then(|entry| entry.author.as_ref()),
+            Some(&crate::permissions::UserId("agent:Scribe".into())),
+            "undo attribution and durable history use the same actor"
+        );
+    }
 
-#[test]
-fn directed_local_device_effect_cannot_run_for_a_remote_writer() {
-    let action = ActionSpec::operation(
-        "copy-private-folder",
-        "Copy private folder",
-        OperationKind::Effect,
-        COUNTER_TYPE,
-        &CounterAction::Bump,
-    )
-    .unwrap()
-    .with_contract(tilo_actions::ActionContract {
-        tags: vec!["tilo.local-device-only".into()],
-        ..tilo_actions::ActionContract::default()
-    });
-    let mut app = lazy_app(
-        Resource::new(
-            "test.private-folder",
-            "test.private-folder",
-            "Private folder",
-        )
-        .with_action(action),
-    );
-    let address = tilo_actions::ActionAddress::new("test.private-folder", "copy-private-folder");
-    let remote = app.invoke_resource_action(
-        ResourceInvocation::new(&address, "agent:Scribe")
+    // Case `broker_invocation_republishes_a_document_dependent_action_surface`.
+    {
+        let mut app = App::new_with_controlled_inputs(
+            State::new(),
+            Box::new(CounterCard::with_post_bump_reset()),
+        );
+        app.action_registry_mut()
+            .register::<CounterAction>(COUNTER_TYPE);
+        app.init_layout();
+        assert!(
+            tilo_actions::door::survey(&app.collect_resources())
+                .iter()
+                .all(|descriptor| descriptor.address.action != "reset"),
+            "reset is unavailable before the counter changes"
+        );
+        let publication_attempts = app.actions.action_surface_publication_attempts;
+
+        app.apply_collab_event_for_test(CollabEvent::Invocation {
+            id: 42,
+            resource: "test.counter".into(),
+            action: "bump".into(),
+            argument: None,
+            actor: "agent:Scribe".into(),
+            context: None,
+        });
+
+        assert_eq!(counter(&app), 1, "the directed document action ran");
+        assert!(
+            tilo_actions::door::survey(&app.collect_resources())
+                .iter()
+                .any(|descriptor| descriptor.address.action == "reset"),
+            "the post-mutation surface exposes the newly valid reset action"
+        );
+        assert_eq!(
+            app.actions.action_surface_publication_attempts,
+            publication_attempts.saturating_add(1),
+            "the broker event batch republishes without waiting for native window input"
+        );
+    }
+
+    // Case `accepted_broker_invocation_republishes_when_its_terminal_update_arrives`.
+    {
+        let mut app = App::new_with_controlled_inputs(
+            State::new(),
+            Box::new(CounterCard::with_async_post_bump_reset()),
+        );
+        app.action_registry_mut()
+            .register::<CounterAction>(COUNTER_TYPE);
+        app.init_layout();
+
+        let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(43));
+        app.apply_collab_event_for_test(CollabEvent::Invocation {
+            id: 43,
+            resource: "test.counter".into(),
+            action: "async-bump".into(),
+            argument: None,
+            actor: "agent:Scribe".into(),
+            context: None,
+        });
+        assert_eq!(counter(&app), 0, "admission alone does not mutate");
+        assert_eq!(
+            app.actions
+                .directed_invocations
+                .get(&invocation)
+                .map(|pending| pending.wire_id),
+            Some(43),
+            "Accepted remains pending until the widget reports a terminal update"
+        );
+
+        app.refresh_focus_order();
+        assert_eq!(counter(&app), 1, "the later model pass applied the job");
+        assert!(
+            tilo_actions::door::survey(&app.collect_resources())
+                .iter()
+                .any(|descriptor| descriptor.address.action == "reset"),
+            "the terminal document now exposes reset"
+        );
+        let publication_attempts = app.actions.action_surface_publication_attempts;
+
+        assert!(
+            app.poll_directed_invocations(),
+            "the terminal update arrived"
+        );
+        assert!(app.actions.directed_invocations.is_empty());
+        assert_eq!(
+            app.actions.action_surface_publication_attempts,
+            publication_attempts.saturating_add(1),
+            "terminal lifecycle polling republishes without native input"
+        );
+    }
+
+    // Case `undecodable_document_action_preserves_pending_edit`.
+    {
+        let resource = Resource::new("test.invalid", "test.invalid", "Invalid action").with_action(
+            ActionSpec::immediate(
+                "decode",
+                "Decode",
+                "test.unregistered",
+                &CounterAction::Bump,
+            )
+            .unwrap(),
+        );
+        let mut app = lazy_app(resource);
+        let before = app.state.doc.get_heads();
+        app.state.doc.put(ROOT, "draft", "unfinished").unwrap();
+        let pending = app.state.doc.pending_ops();
+        let address = tilo_actions::ActionAddress::new("test.invalid", "decode");
+        let actor = app.collaboration.local_author.0.clone();
+        let result = app.invoke_resource_action(ResourceInvocation::new(&address, &actor));
+        assert!(
+            matches!(result, Err(tilo_actions::DoorError::UnregisteredType(ref id))
+        if id == "test.unregistered"),
+            "unexpected result: {result:?}"
+        );
+        assert_eq!(app.state.doc.pending_ops(), pending);
+        assert_eq!(app.state.doc.base_heads(), before);
+        assert!(app.state.peek_last_undo().is_none());
+    }
+
+    // Case `refused_and_routed_actions_preserve_pending_edit`.
+    {
+        let mut app = app();
+        let before = app.state.doc.get_heads();
+        app.state.doc.put(ROOT, "draft", "unfinished").unwrap();
+        let pending = app.state.doc.pending_ops();
+        for (action, actor) in [
+            ("host-bump", app.collaboration.local_author.0.clone()),
+            ("inspect", "agent:Scribe".to_string()),
+            ("missing", app.collaboration.local_author.0.clone()),
+        ] {
+            let address = tilo_actions::ActionAddress::new("test.counter", action);
+            let result = app.invoke_resource_action(ResourceInvocation::new(&address, &actor));
+            assert!(result.is_err(), "unadmitted action must fail: {action}");
+            assert_eq!(app.state.doc.pending_ops(), pending, "{action}");
+            assert_eq!(app.state.doc.base_heads(), before, "{action}");
+            assert!(app.state.peek_last_undo().is_none());
+        }
+        app.state.doc.put(ROOT, "draft", "finished").unwrap();
+        let context = tilo_actions::ActionContext::for_resource(
+            "Finish draft",
+            "test.draft",
+            "note",
+            "Draft",
+        );
+        assert!(app.state.commit_action_authored_with_context(
+            None,
+            None,
+            Some(app.collaboration.local_author.clone()),
+            Some(context),
+        ));
+        let changes = app.state.doc.get_changes(&before);
+        assert_eq!(changes.len(), 1, "refusal must not split the pending edit");
+        let context = changes[0]
+            .message()
+            .and_then(|message| tilo_actions::ActionContext::from_change_message(message))
+            .unwrap();
+        assert_eq!(context.action_label, "Finish draft");
+    }
+
+    // Case `host_required_document_action_runs_only_after_broker_admission`.
+    {
+        let mut app = app();
+        let address = tilo_actions::ActionAddress::new("test.counter", "host-bump");
+
+        let actor = app.collaboration.local_author.0.clone();
+        let local = app.invoke_resource_action(ResourceInvocation::new(&address, &actor));
+        assert!(local.is_err(), "an unbrokered client must fail closed");
+        assert_eq!(counter(&app), 0);
+
+        let request = ResourceInvocation::new(&address, "agent:Scribe")
+            .confirmed(true)
             .broker_admitted(true)
-            .invocation(Some(tilo_actions::InvocationId::new())),
-    );
-    assert!(matches!(
-        remote,
-        Err(tilo_actions::DoorError::Unavailable { ref code, .. }) if code == "local_device_only"
-    ));
+            .invocation(Some(tilo_actions::InvocationId::new()));
+        let admitted = app.invoke_resource_action(request);
+        assert!(admitted.is_ok(), "the authoritative broker admitted it");
+        assert_eq!(counter(&app), 1);
+        assert_eq!(
+            app.state
+                .peek_last_undo()
+                .and_then(|entry| entry.author.as_ref()),
+            Some(&crate::permissions::UserId("agent:Scribe".into()))
+        );
+    }
 
-    let actor = app.collaboration.local_author.0.clone();
-    assert!(
-        app.invoke_resource_action(
-            ResourceInvocation::new(&address, &actor)
+    // Case `directed_view_action_cannot_steal_the_local_view`.
+    {
+        let mut app = app();
+        let invocation = tilo_actions::InvocationId::new();
+        let error = app
+            .invoke_resource_action(
+                ResourceInvocation::new(
+                    &tilo_actions::ActionAddress::new("test.counter", "inspect"),
+                    "agent:Scribe",
+                )
+                .confirmed(true)
+                .broker_admitted(true)
+                .invocation(Some(invocation)),
+            )
+            .expect_err("a remote presentation action must be refused");
+
+        assert_eq!(counter(&app), 0, "the private view action never ran");
+        assert!(
+            matches!(
+                error,
+                tilo_actions::DoorError::Unavailable { ref code, .. } if code == "private_view"
+            ),
+            "unexpected refusal: {error:?}"
+        );
+    }
+
+    // Case `directed_local_device_effect_cannot_run_for_a_remote_writer`.
+    {
+        let action = ActionSpec::operation(
+            "copy-private-folder",
+            "Copy private folder",
+            OperationKind::Effect,
+            COUNTER_TYPE,
+            &CounterAction::Bump,
+        )
+        .unwrap()
+        .with_contract(tilo_actions::ActionContract {
+            tags: vec!["tilo.local-device-only".into()],
+            ..tilo_actions::ActionContract::default()
+        });
+        let mut app = lazy_app(
+            Resource::new(
+                "test.private-folder",
+                "test.private-folder",
+                "Private folder",
+            )
+            .with_action(action),
+        );
+        let address =
+            tilo_actions::ActionAddress::new("test.private-folder", "copy-private-folder");
+        let remote = app.invoke_resource_action(
+            ResourceInvocation::new(&address, "agent:Scribe")
                 .broker_admitted(true)
                 .invocation(Some(tilo_actions::InvocationId::new())),
-        )
-        .is_ok()
-    );
-}
-
-#[test]
-fn local_control_result_does_not_broadcast_into_component_siblings() {
-    use crate::application_test_support::ProbeHost;
-    use crate::widget::{Column, TileHost};
-    for closed in [false, true] {
-        let owner = ProbeHost::new();
-        let (component, sibling_seen) =
-            crate::widget::control_result_probe::component(&owner, 11, false);
-        let (legacy, legacy_seen) = crate::widget::control_result_probe::Probe::new(false);
-        let root = Column::new()
-            .push(Box::new(legacy))
-            .push(Box::new(TileHost::from_component(component)));
-        let mut host = App::new_with_controlled_inputs(State::new(), Box::new(root));
-        if closed {
-            host.close_components();
-        }
-        legacy_seen.enqueue("missing");
-        host.dispatch_control_invocations();
-        assert_eq!(legacy_seen.results.borrow().len(), 1);
-        assert!(
-            sibling_seen.results.borrow().is_empty(),
-            "legacy feedback must not enter bound sibling"
         );
-        assert_eq!(sibling_seen.calls.get(), 0);
+        assert!(matches!(
+            remote,
+            Err(tilo_actions::DoorError::Unavailable { ref code, .. }) if code == "local_device_only"
+        ));
+
+        let actor = app.collaboration.local_author.0.clone();
+        assert!(
+            app.invoke_resource_action(
+                ResourceInvocation::new(&address, &actor)
+                    .broker_admitted(true)
+                    .invocation(Some(tilo_actions::InvocationId::new())),
+            )
+            .is_ok()
+        );
     }
 }
 
 #[test]
-fn bound_local_control_result_targets_only_the_emitting_instance() {
-    use crate::application_test_support::ProbeHost;
-    use crate::widget::{Column, TileHost};
-    let owner = ProbeHost::new();
-    let (first, first_seen) = crate::widget::control_result_probe::component(&owner, 11, false);
-    let (second, second_seen) = crate::widget::control_result_probe::component(&owner, 12, false);
-    let root = Column::new()
-        .push(Box::new(TileHost::from_component(first)))
-        .push(Box::new(TileHost::from_component(second)));
-    let mut host = App::new_with_controlled_inputs(State::new(), Box::new(root));
-    first_seen.enqueue("run");
-    host.dispatch_control_invocations();
-    assert_eq!(first_seen.results.borrow().len(), 1);
-    assert!(second_seen.results.borrow().is_empty());
-    assert_eq!(first_seen.calls.get(), 1);
-    assert_eq!(second_seen.calls.get(), 0);
-}
+fn local_control_results_stay_local_and_report_refusal_or_success() {
+    // Case `local_control_result_does_not_broadcast_into_component_siblings`.
+    {
+        use crate::application_test_support::ProbeHost;
+        use crate::widget::{Column, TileHost};
+        for closed in [false, true] {
+            let owner = ProbeHost::new();
+            let (component, sibling_seen) =
+                crate::widget::control_result_probe::component(&owner, 11, false);
+            let (legacy, legacy_seen) = crate::widget::control_result_probe::Probe::new(false);
+            let root = Column::new()
+                .push(Box::new(legacy))
+                .push(Box::new(TileHost::from_component(component)));
+            let mut host = App::new_with_controlled_inputs(State::new(), Box::new(root));
+            if closed {
+                host.close_components();
+            }
+            legacy_seen.enqueue("missing");
+            host.dispatch_control_invocations();
+            assert_eq!(legacy_seen.results.borrow().len(), 1);
+            assert!(
+                sibling_seen.results.borrow().is_empty(),
+                "legacy feedback must not enter bound sibling"
+            );
+            assert_eq!(sibling_seen.calls.get(), 0);
+        }
+    }
 
-#[test]
-fn bound_local_control_result_reports_permission_refusal_and_success() {
-    use crate::application_test_support::{ProbeHost, runner_inputs};
-    for accepted in [false, true] {
+    // Case `bound_local_control_result_targets_only_the_emitting_instance`.
+    {
+        use crate::application_test_support::ProbeHost;
+        use crate::widget::{Column, TileHost};
         let owner = ProbeHost::new();
-        let (component, observed) =
-            crate::widget::control_result_probe::component(&owner, 11, accepted);
-        let binding = component.callback_binding();
-        let mut host = App::from_component(component, runner_inputs()).unwrap();
-        observed.enqueue("run");
+        let (first, first_seen) = crate::widget::control_result_probe::component(&owner, 11, false);
+        let (second, second_seen) =
+            crate::widget::control_result_probe::component(&owner, 12, false);
+        let root = Column::new()
+            .push(Box::new(TileHost::from_component(first)))
+            .push(Box::new(TileHost::from_component(second)));
+        let mut host = App::new_with_controlled_inputs(State::new(), Box::new(root));
+        first_seen.enqueue("run");
         host.dispatch_control_invocations();
-        assert_eq!(observed.calls.get(), 1);
-        let expected = if accepted {
-            crate::widget::ResourceOperationStart::Accepted
-        } else {
-            crate::widget::ResourceOperationStart::Completed(tilo_actions::ActionOutput::default())
-        };
-        assert_eq!(*observed.results.borrow(), vec![Ok(expected)]);
-        observed.enqueue("run");
-        *binding.permissions.borrow_mut() = PermissionContext::from_capabilities(
-            collab_types::caps::Actor::person(Some(collab_types::role::Role::Viewer), "reader"),
-            Vec::new(),
-        );
-        let before = owner
-            .records
-            .read(&binding.checkout.id, automerge::AutoCommit::base_heads)
-            .unwrap();
-        host.dispatch_control_invocations();
-        assert_eq!(observed.calls.get(), 1, "revoked permission blocks handler");
-        assert_eq!(
-            owner
+        assert_eq!(first_seen.results.borrow().len(), 1);
+        assert!(second_seen.results.borrow().is_empty());
+        assert_eq!(first_seen.calls.get(), 1);
+        assert_eq!(second_seen.calls.get(), 0);
+    }
+
+    // Case `bound_local_control_result_reports_permission_refusal_and_success`.
+    {
+        use crate::application_test_support::{ProbeHost, runner_inputs};
+        for accepted in [false, true] {
+            let owner = ProbeHost::new();
+            let (component, observed) =
+                crate::widget::control_result_probe::component(&owner, 11, accepted);
+            let binding = component.callback_binding();
+            let mut host = App::from_component(component, runner_inputs()).unwrap();
+            observed.enqueue("run");
+            host.dispatch_control_invocations();
+            assert_eq!(observed.calls.get(), 1);
+            let expected = if accepted {
+                crate::widget::ResourceOperationStart::Accepted
+            } else {
+                crate::widget::ResourceOperationStart::Completed(
+                    tilo_actions::ActionOutput::default(),
+                )
+            };
+            assert_eq!(*observed.results.borrow(), vec![Ok(expected)]);
+            observed.enqueue("run");
+            *binding.permissions.borrow_mut() = PermissionContext::from_capabilities(
+                collab_types::caps::Actor::person(Some(collab_types::role::Role::Viewer), "reader"),
+                Vec::new(),
+            );
+            let before = owner
                 .records
                 .read(&binding.checkout.id, automerge::AutoCommit::base_heads)
-                .unwrap(),
-            before
-        );
-        assert_eq!(observed.results.borrow().len(), 2);
-        assert!(matches!(observed.results.borrow().last(), Some(Err(_))));
+                .unwrap();
+            host.dispatch_control_invocations();
+            assert_eq!(observed.calls.get(), 1, "revoked permission blocks handler");
+            assert_eq!(
+                owner
+                    .records
+                    .read(&binding.checkout.id, automerge::AutoCommit::base_heads)
+                    .unwrap(),
+                before
+            );
+            assert_eq!(observed.results.borrow().len(), 2);
+            assert!(matches!(observed.results.borrow().last(), Some(Err(_))));
+        }
     }
-}
 
-#[test]
-fn local_control_result_keeps_confirmation_as_refusal() {
-    let (mut probe, observed) = crate::widget::control_result_probe::Probe::new(false);
-    probe.confirmation = true;
-    let mut host = App::new_with_controlled_inputs(State::new(), Box::new(probe));
-    observed.enqueue("run");
-    host.dispatch_control_invocations();
-    assert_eq!(observed.calls.get(), 0);
-    assert_eq!(
-        *observed.results.borrow(),
-        vec![Err(tilo_actions::DoorError::ConfirmationRequired)]
-    );
-    assert!(host.action_palette().is_some());
-}
-
-#[test]
-fn confirmed_control_preserves_captured_arguments_through_palette_dispatch() {
-    let (mut probe, observed) = crate::widget::control_result_probe::Probe::new(false);
-    probe.confirmation = true;
-    probe.typed_text = true;
-    observed.enqueue_text("run", "captured before confirmation");
-    let mut host = App::new_with_controlled_inputs(State::new(), Box::new(probe));
-
-    assert_eq!(host.dispatch_control_invocations(), 1);
-    assert!(
-        host.action_palette()
-            .is_some_and(crate::action_palette::ActionPalette::in_argument_mode),
-        "captured arguments enter confirmation directly"
-    );
-    assert!(observed.payloads.borrow().is_empty());
-
-    host.actions
-        .action_palette
-        .as_mut()
-        .expect("confirmation palette is open")
-        .set_query("CONFIRM");
-    assert!(host.action_palette_handle_key(&action_palette_tests::synth_enter()));
-    assert_eq!(
-        observed.payloads.borrow().as_slice(),
-        ["captured before confirmation"],
-        "confirmation dispatches the original intent arguments"
-    );
-}
-
-#[test]
-fn local_control_result_reports_completed_and_accepted() {
-    use crate::widget::control_result_probe::Probe;
-    for accepted in [false, true] {
-        let (probe, observed) = Probe::new(accepted);
+    // Case `local_control_result_keeps_confirmation_as_refusal`.
+    {
+        let (mut probe, observed) = crate::widget::control_result_probe::Probe::new(false);
+        probe.confirmation = true;
         let mut host = App::new_with_controlled_inputs(State::new(), Box::new(probe));
         observed.enqueue("run");
         host.dispatch_control_invocations();
+        assert_eq!(observed.calls.get(), 0);
         assert_eq!(
-            observed.calls.get(),
-            1,
-            "accepted={accepted}; feedback={:?}",
-            observed.results.borrow()
+            *observed.results.borrow(),
+            vec![Err(tilo_actions::DoorError::ConfirmationRequired)]
         );
-        let expected = if accepted {
-            crate::widget::ResourceOperationStart::Accepted
-        } else {
-            crate::widget::ResourceOperationStart::Completed(tilo_actions::ActionOutput::default())
-        };
-        assert_eq!(*observed.results.borrow(), vec![Ok(expected)]);
-        observed.enqueue("missing");
+        assert!(host.action_palette().is_some());
+    }
+
+    // Case `local_control_result_reports_completed_and_accepted`.
+    {
+        use crate::widget::control_result_probe::Probe;
+        for accepted in [false, true] {
+            let (probe, observed) = Probe::new(accepted);
+            let mut host = App::new_with_controlled_inputs(State::new(), Box::new(probe));
+            observed.enqueue("run");
+            host.dispatch_control_invocations();
+            assert_eq!(
+                observed.calls.get(),
+                1,
+                "accepted={accepted}; feedback={:?}",
+                observed.results.borrow()
+            );
+            let expected = if accepted {
+                crate::widget::ResourceOperationStart::Accepted
+            } else {
+                crate::widget::ResourceOperationStart::Completed(
+                    tilo_actions::ActionOutput::default(),
+                )
+            };
+            assert_eq!(*observed.results.borrow(), vec![Ok(expected)]);
+            observed.enqueue("missing");
+            host.dispatch_control_invocations();
+            assert_eq!(observed.calls.get(), 1);
+            assert!(matches!(
+                observed.results.borrow().last(),
+                Some(Err(tilo_actions::DoorError::Unknown(_)))
+            ));
+        }
+    }
+
+    // Case `local_control_result_reports_fresh_permission_refusal_without_mutation`.
+    {
+        use crate::widget::control_result_probe::Probe;
+        let (probe, observed) = Probe::new(false);
+        let mut host = App::new_with_controlled_inputs(State::new(), Box::new(probe));
+        observed.enqueue("run");
+        let readonly = PermissionContext::from_capabilities(
+            collab_types::caps::Actor::person(Some(collab_types::role::Role::Viewer), "reader"),
+            Vec::new(),
+        );
+        host.set_permission_ctx(readonly);
+        let before = host.state.doc.base_heads();
         host.dispatch_control_invocations();
-        assert_eq!(observed.calls.get(), 1);
+        assert_eq!(observed.calls.get(), 0, "permission checked before handler");
+        assert_eq!(host.state.doc.base_heads(), before);
+        assert_eq!(
+            automerge::transaction::Transactable::pending_ops(&host.state.doc),
+            0
+        );
         assert!(matches!(
-            observed.results.borrow().last(),
-            Some(Err(tilo_actions::DoorError::Unknown(_)))
+            observed.results.borrow().as_slice(),
+            [Err(tilo_actions::DoorError::Unknown(_))]
         ));
+        assert!(observed.pending.borrow().is_empty());
+    }
+
+    // Case `local_effect_completion_does_not_mutate_the_app_document`.
+    {
+        let mut app = app();
+        let before = app.state.doc.get_heads();
+        let address = tilo_actions::ActionAddress::new("test.counter", "ping");
+        let actor = app.collaboration.local_author.0.clone();
+        let result = app.invoke_resource_action(ResourceInvocation::new(&address, &actor));
+        assert!(matches!(
+            result,
+            Ok(crate::widget::ResourceOperationStart::Completed(_))
+        ));
+        assert_eq!(app.state.doc.get_heads(), before);
+        assert!(app.state.peek_last_undo().is_none());
     }
 }
 
-#[test]
-fn local_control_result_reports_fresh_permission_refusal_without_mutation() {
-    use crate::widget::control_result_probe::Probe;
-    let (probe, observed) = Probe::new(false);
-    let mut host = App::new_with_controlled_inputs(State::new(), Box::new(probe));
-    observed.enqueue("run");
-    let readonly = PermissionContext::from_capabilities(
-        collab_types::caps::Actor::person(Some(collab_types::role::Role::Viewer), "reader"),
-        Vec::new(),
-    );
-    host.set_permission_ctx(readonly);
-    let before = host.state.doc.base_heads();
-    host.dispatch_control_invocations();
-    assert_eq!(observed.calls.get(), 0, "permission checked before handler");
-    assert_eq!(host.state.doc.base_heads(), before);
-    assert_eq!(
-        automerge::transaction::Transactable::pending_ops(&host.state.doc),
-        0
-    );
-    assert!(matches!(
-        observed.results.borrow().as_slice(),
-        [Err(tilo_actions::DoorError::Unknown(_))]
-    ));
-    assert!(observed.pending.borrow().is_empty());
-}
-
-#[test]
-fn local_effect_completion_does_not_mutate_the_app_document() {
-    let mut app = app();
-    let before = app.state.doc.get_heads();
-    let address = tilo_actions::ActionAddress::new("test.counter", "ping");
-    let actor = app.collaboration.local_author.0.clone();
-    let result = app.invoke_resource_action(ResourceInvocation::new(&address, &actor));
-    assert!(matches!(
-        result,
-        Ok(crate::widget::ResourceOperationStart::Completed(_))
-    ));
-    assert_eq!(app.state.doc.get_heads(), before);
-    assert!(app.state.peek_last_undo().is_none());
-}
-
-#[test]
-fn permission_revocation_and_restore_refresh_bound_control_presentation() {
-    let mut app = app();
-    let node = app.focusable_order[0];
-    let pointer = app.layout.node_map[&node];
-    assert!(unsafe { (*pointer).is_enabled() });
-
-    app.set_permission_ctx(PermissionContext::from_capabilities(
-        collab_types::caps::Actor::person(None, "restricted"),
-        Vec::new(),
-    ));
-    assert!(!unsafe { (*pointer).is_enabled() });
-    assert!(!unsafe {
-        (*pointer).perform_action(
-            &crate::a11y::Action::Activate,
-            &mut app.state.doc,
-            &app.state.root,
-        )
-    });
-
-    app.set_permission_ctx(PermissionContext::permissive());
-    assert!(unsafe { (*pointer).is_enabled() });
-}
-
-#[test]
-fn action_bound_control_never_auto_confirms_destructive_action() {
-    let mut app = App::new_with_controlled_inputs(
-        State::new(),
-        Box::new(CounterCard::with_destructive(true)),
-    );
-    app.action_registry_mut()
-        .register::<CounterAction>(COUNTER_TYPE);
-    app.init_layout();
-    activate_bound_button(&mut app);
-    assert_eq!(app.dispatch_control_invocations(), 1);
-    assert_eq!(counter(&app), 0);
-    assert!(app.state.peek_last_undo().is_none());
-    assert!(app.action_palette().is_some(), "confirmation UI is open");
-}
-
-#[test]
-fn action_bound_background_control_remains_pending_until_terminal_update() {
-    let resource = crate::widget::resource_actions::resource("test.job", "Job", "run", "Run", true);
-    let binding = tilo_actions::ActionBinding::unit_for(&resource, "run").unwrap();
-    let button = Button::new("run", "Run", None).on_action(binding);
-    let root = crate::widget::resource_actions::background(Box::new(button), resource, |_| {
-        let (sender, receiver) = std::sync::mpsc::channel();
-        sender
-            .send(Ok(tilo_actions::ActionOutput::default()))
-            .unwrap();
-        Ok(receiver)
-    });
-    let mut app = App::new_with_controlled_inputs(State::new(), root);
-    app.init_layout();
-    activate_bound_button(&mut app);
-    assert_eq!(app.dispatch_control_invocations(), 1);
-    assert_eq!(
-        app.actions.local_invocations.len(),
-        1,
-        "Accepted is not success"
-    );
-    assert!(app.poll_directed_invocations());
-    assert!(
-        app.actions.local_invocations.is_empty(),
-        "terminal result closes the tracked local job"
-    );
-}
 fn label(app: &App) -> String {
     match app.state.doc.get(&ROOT, "label") {
         Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
@@ -1337,378 +1399,351 @@ fn label(app: &App) -> String {
 }
 
 #[test]
-fn refresh_populates_the_tree_from_app_resources() {
-    let mut app = app();
-    app.refresh_semantic_tree();
-    let tree = app.semantic_tree();
-    let node = tree
-        .node(&SemanticId("r:test.counter".into()))
-        .expect("the app's open resource is a semantic node");
-    assert_eq!(node.name.as_deref(), Some("Counter"));
-    assert!(
-        node.action("bump").is_some(),
-        "the resource's action is an affordance"
-    );
-    assert!(node.action("set-label").is_some());
-    // The root owns it (resources hang off the window root).
-    let root = tree.node(tree.root()).unwrap();
-    assert!(root.children.contains(&SemanticId("r:test.counter".into())));
-}
+fn semantic_invocation_matches_the_affordance_dispatch() {
+    // Case `semantic_action_carries_the_same_encoded_action_the_affordance_dispatches`.
+    {
+        let mut app = app();
+        app.refresh_semantic_tree();
+        let bump = app
+            .semantic_tree()
+            .action(&SemanticId("r:test.counter".into()), "bump")
+            .expect("bump affordance");
 
-#[test]
-fn identity_is_stable_across_refreshes() {
-    let mut app = app();
-    app.refresh_semantic_tree();
-    let ids_before: Vec<SemanticId> = app.semantic_tree().iter().map(|n| n.id.clone()).collect();
-    let delta = app.refresh_semantic_tree();
-    assert!(
-        delta.is_empty(),
-        "a stable frame yields no delta, got {delta:?}"
-    );
-    let ids_after: Vec<SemanticId> = app.semantic_tree().iter().map(|n| n.id.clone()).collect();
-    assert_eq!(ids_before, ids_after, "node identity survives a refresh");
-}
+        let mut host = crate::action_host::ActionHost::new();
+        let mut host_doc = automerge::AutoCommit::new();
+        host.dispatch(&mut host_doc, COUNTER_TYPE, &CounterAction::Bump);
+        let from_affordance = host
+            .last_dispatched()
+            .expect("the affordance dispatched")
+            .clone();
 
-#[test]
-fn semantic_action_carries_the_same_encoded_action_the_affordance_dispatches() {
-    let mut app = app();
-    app.refresh_semantic_tree();
-    let bump = app
-        .semantic_tree()
-        .action(&SemanticId("r:test.counter".into()), "bump")
-        .expect("bump affordance");
+        match &bump.kind {
+            SemanticActionKind::App(enc) => assert_eq!(
+                enc, &from_affordance,
+                "the a11y node exposes the same EncodedAction the on-screen control dispatches"
+            ),
+            other => panic!("expected an app action, got {other:?}"),
+        }
+    }
 
-    let mut host = crate::action_host::ActionHost::new();
-    let mut host_doc = automerge::AutoCommit::new();
-    host.dispatch(&mut host_doc, COUNTER_TYPE, &CounterAction::Bump);
-    let from_affordance = host
-        .last_dispatched()
-        .expect("the affordance dispatched")
-        .clone();
+    // Case `invoking_an_immediate_action_dispatches_it_through_the_action_model`.
+    {
+        let mut app = app();
+        app.refresh_semantic_tree();
+        let id = SemanticId("r:test.counter".into());
+        assert_eq!(counter(&app), 0);
 
-    match &bump.kind {
-        SemanticActionKind::App(enc) => assert_eq!(
-            enc, &from_affordance,
-            "the a11y node exposes the same EncodedAction the on-screen control dispatches"
-        ),
-        other => panic!("expected an app action, got {other:?}"),
+        assert!(app.invoke_semantic_action(&id, "bump", None).unwrap());
+        assert_eq!(
+            counter(&app),
+            1,
+            "the invoked action mutated the shared doc"
+        );
+        assert!(app.invoke_semantic_action(&id, "bump", None).unwrap());
+        assert_eq!(counter(&app), 2);
+
+        // An unknown action name is a graceful no-op.
+        assert!(!app.invoke_semantic_action(&id, "nope", None).unwrap());
+        assert_eq!(counter(&app), 2);
+    }
+
+    // Case `invoking_a_prompted_action_uses_the_supplied_argument`.
+    {
+        let mut app = app();
+        app.refresh_semantic_tree();
+        let id = SemanticId("r:test.counter".into());
+        assert!(
+            app.invoke_semantic_action(&id, "set-label", Some("hello"))
+                .unwrap()
+        );
+        assert_eq!(
+            label(&app),
+            "hello",
+            "the prompted argument reached the built action"
+        );
+    }
+
+    // Case `invoke_matches_a_direct_affordance_dispatch_byte_for_byte`.
+    {
+        let mut app = app();
+        app.refresh_semantic_tree();
+        app.invoke_semantic_action(&SemanticId("r:test.counter".into()), "bump", None)
+            .unwrap();
+
+        let mut host = crate::action_host::ActionHost::new();
+        let mut host_doc = automerge::AutoCommit::new();
+        host.dispatch(&mut host_doc, COUNTER_TYPE, &CounterAction::Bump);
+
+        let via_a11y = counter(&app);
+        let via_affordance = match host_doc.get(&ROOT, "n") {
+            Ok(Some((v, _))) => v.as_i64().unwrap_or(0),
+            _ => 0,
+        };
+        assert_eq!(
+            via_a11y, via_affordance,
+            "both paths produce the same result"
+        );
     }
 }
 
 #[test]
-fn invoking_an_immediate_action_dispatches_it_through_the_action_model() {
-    let mut app = app();
-    app.refresh_semantic_tree();
-    let id = SemanticId("r:test.counter".into());
-    assert_eq!(counter(&app), 0);
+fn retained_and_virtual_trees_dispatch_through_semantic_routes() {
+    // Case `virtual_tree_rows_dispatch_through_platform_and_semantic_routes`.
+    {
+        let root = crate::widget::TreeNode::branch(
+            1,
+            "Root",
+            (),
+            vec![crate::widget::TreeNode::leaf(2, "Child", ())],
+        );
+        let mut app = App::new(
+            State::new(),
+            Box::new(
+                crate::widget::TreeView::new(root)
+                    .with_id("items-tree")
+                    .with_expanded([1]),
+            ),
+        );
+        app.init_layout();
 
-    assert!(app.invoke_semantic_action(&id, "bump", None).unwrap());
-    assert_eq!(
-        counter(&app),
-        1,
-        "the invoked action mutated the shared doc"
-    );
-    assert!(app.invoke_semantic_action(&id, "bump", None).unwrap());
-    assert_eq!(counter(&app), 2);
+        app.refresh_semantic_tree();
+        let child = app
+            .semantic_tree()
+            .iter()
+            .find(|node| {
+                node.role == crate::a11y::Role::TreeItem && node.name.as_deref() == Some("Child")
+            })
+            .map(|node| node.id.clone())
+            .expect("semantic child row");
+        assert!(
+            app.invoke_semantic_action(&child, "activate", None)
+                .expect("semantic row activation")
+        );
+        app.refresh_semantic_tree();
+        assert!(
+            app.semantic_tree()
+                .node(&child)
+                .is_some_and(|node| node.state.selected)
+        );
 
-    // An unknown action name is a graceful no-op.
-    assert!(!app.invoke_semantic_action(&id, "nope", None).unwrap());
-    assert_eq!(counter(&app), 2);
-}
+        let update = app.build_a11y_tree_update(1.0);
+        assert_eq!(
+            update
+                .nodes
+                .iter()
+                .filter(|(_, node)| node.role() == accesskit::Role::TreeItem)
+                .count(),
+            2
+        );
+        let root_row = update
+            .nodes
+            .iter()
+            .find(|(_, node)| node.role() == accesskit::Role::TreeItem)
+            .map(|(id, node)| {
+                assert!(node.supports_action(accesskit::Action::Collapse));
+                *id
+            })
+            .expect("virtual root row");
+        let route = crate::accesskit_bridge::resolve_node_id(
+            app.root_widget.as_ref(),
+            &app.layout.node_map,
+            root_row,
+        )
+        .expect("root row route");
+        assert!(matches!(
+            route,
+            crate::accesskit_bridge::A11yTarget::Synthetic {
+                semantic_target: Some(ref target),
+                ..
+            } if target == "node:1"
+        ));
+        assert_eq!(
+            app.dispatch_a11y_action(root_row, &crate::a11y::Action::Collapse),
+            None
+        );
+        app.refresh_semantic_tree();
+        let root_semantics = app
+            .semantic_tree()
+            .iter()
+            .find(|node| {
+                node.role == crate::a11y::Role::TreeItem && node.name.as_deref() == Some("Root")
+            })
+            .expect("root semantics after collapse");
+        assert_eq!(root_semantics.state.expanded, Some(false));
 
-#[test]
-fn invoking_a_prompted_action_uses_the_supplied_argument() {
-    let mut app = app();
-    app.refresh_semantic_tree();
-    let id = SemanticId("r:test.counter".into());
-    assert!(
-        app.invoke_semantic_action(&id, "set-label", Some("hello"))
-            .unwrap()
-    );
-    assert_eq!(
-        label(&app),
-        "hello",
-        "the prompted argument reached the built action"
-    );
-}
-
-#[test]
-fn invoke_matches_a_direct_affordance_dispatch_byte_for_byte() {
-    let mut app = app();
-    app.refresh_semantic_tree();
-    app.invoke_semantic_action(&SemanticId("r:test.counter".into()), "bump", None)
-        .unwrap();
-
-    let mut host = crate::action_host::ActionHost::new();
-    let mut host_doc = automerge::AutoCommit::new();
-    host.dispatch(&mut host_doc, COUNTER_TYPE, &CounterAction::Bump);
-
-    let via_a11y = counter(&app);
-    let via_affordance = match host_doc.get(&ROOT, "n") {
-        Ok(Some((v, _))) => v.as_i64().unwrap_or(0),
-        _ => 0,
-    };
-    assert_eq!(
-        via_a11y, via_affordance,
-        "both paths produce the same result"
-    );
-}
-
-#[test]
-fn virtual_tree_rows_dispatch_through_platform_and_semantic_routes() {
-    let root = crate::widget::TreeNode::branch(
-        1,
-        "Root",
-        (),
-        vec![crate::widget::TreeNode::leaf(2, "Child", ())],
-    );
-    let mut app = App::new(
-        State::new(),
-        Box::new(
-            crate::widget::TreeView::new(root)
-                .with_id("items-tree")
-                .with_expanded([1]),
-        ),
-    );
-    app.init_layout();
-
-    app.refresh_semantic_tree();
-    let child = app
-        .semantic_tree()
-        .iter()
-        .find(|node| {
-            node.role == crate::a11y::Role::TreeItem && node.name.as_deref() == Some("Child")
-        })
-        .map(|node| node.id.clone())
-        .expect("semantic child row");
-    assert!(
-        app.invoke_semantic_action(&child, "activate", None)
-            .expect("semantic row activation")
-    );
-    app.refresh_semantic_tree();
-    assert!(
-        app.semantic_tree()
-            .node(&child)
-            .is_some_and(|node| node.state.selected)
-    );
-
-    let update = app.build_a11y_tree_update(1.0);
-    assert_eq!(
-        update
+        let collapsed = app.build_a11y_tree_update(1.0);
+        let rows = collapsed
             .nodes
             .iter()
             .filter(|(_, node)| node.role() == accesskit::Role::TreeItem)
-            .count(),
-        2
-    );
-    let root_row = update
-        .nodes
-        .iter()
-        .find(|(_, node)| node.role() == accesskit::Role::TreeItem)
-        .map(|(id, node)| {
-            assert!(node.supports_action(accesskit::Action::Collapse));
-            *id
-        })
-        .expect("virtual root row");
-    let route = crate::accesskit_bridge::resolve_node_id(
-        app.root_widget.as_ref(),
-        &app.layout.node_map,
-        root_row,
-    )
-    .expect("root row route");
-    assert!(matches!(
-        route,
-        crate::accesskit_bridge::A11yTarget::Synthetic {
-            semantic_target: Some(ref target),
-            ..
-        } if target == "node:1"
-    ));
-    assert_eq!(
-        app.dispatch_a11y_action(root_row, &crate::a11y::Action::Collapse),
-        None
-    );
-    app.refresh_semantic_tree();
-    let root_semantics = app
-        .semantic_tree()
-        .iter()
-        .find(|node| {
-            node.role == crate::a11y::Role::TreeItem && node.name.as_deref() == Some("Root")
-        })
-        .expect("root semantics after collapse");
-    assert_eq!(root_semantics.state.expanded, Some(false));
+            .collect::<Vec<_>>();
+        assert_eq!(rows.len(), 1, "collapsing removes the child row");
+        assert!(rows[0].1.supports_action(accesskit::Action::Expand));
+    }
 
-    let collapsed = app.build_a11y_tree_update(1.0);
-    let rows = collapsed
-        .nodes
-        .iter()
-        .filter(|(_, node)| node.role() == accesskit::Role::TreeItem)
-        .collect::<Vec<_>>();
-    assert_eq!(rows.len(), 1, "collapsing removes the child row");
-    assert!(rows[0].1.supports_action(accesskit::Action::Expand));
-}
-
-#[test]
-fn nav_shell_accessible_autocomplete_edits_and_selects_through_host_dispatch() {
-    let search = crate::widget::Autocomplete::new()
-        .with_id("city-search")
-        .with_placeholder("Search city")
-        .with_suggester(|query| {
-            if query == "Ber" {
-                vec![crate::widget::Suggestion::new("Berlin")]
-            } else {
-                Vec::new()
-            }
-        });
-    let nav =
-        crate::widget::NavShell::new(Box::new(search), Box::new(crate::widget::Column::new()));
-    let mut app = App::new(State::new(), Box::new(nav));
-    app.init_layout();
-    let update = app.build_a11y_tree_update(1.0);
-    let field = update
-        .nodes
-        .iter()
-        .find(|(_, node)| node.label() == Some("Search city"))
-        .unwrap()
-        .0;
-    app.dispatch_a11y_action(field, &crate::a11y::Action::SetValue("Ber".into()));
-    let update = app.build_a11y_tree_update(1.0);
-    let result = update
-        .nodes
-        .iter()
-        .find(|(_, node)| node.label() == Some("Berlin"))
-        .expect("native edit must publish a result")
-        .0;
-    app.dispatch_a11y_action(result, &crate::a11y::Action::Activate);
-    let update = app.build_a11y_tree_update(1.0);
-    let field = &update
-        .nodes
-        .iter()
-        .find(|(_, node)| node.label() == Some("Search city"))
-        .unwrap()
-        .1;
-    assert_eq!(field.value(), Some("Berlin"));
-    assert!(
-        !update
+    // Case `nav_shell_accessible_autocomplete_edits_and_selects_through_host_dispatch`.
+    {
+        let search = crate::widget::Autocomplete::new()
+            .with_id("city-search")
+            .with_placeholder("Search city")
+            .with_suggester(|query| {
+                if query == "Ber" {
+                    vec![crate::widget::Suggestion::new("Berlin")]
+                } else {
+                    Vec::new()
+                }
+            });
+        let nav =
+            crate::widget::NavShell::new(Box::new(search), Box::new(crate::widget::Column::new()));
+        let mut app = App::new(State::new(), Box::new(nav));
+        app.init_layout();
+        let update = app.build_a11y_tree_update(1.0);
+        let field = update
             .nodes
             .iter()
-            .any(|(_, node)| node.label() == Some("Berlin"))
-    );
-}
-
-#[test]
-fn retained_tree_delegate_is_nested_once_and_keeps_its_own_action() {
-    let presses = std::rc::Rc::new(std::cell::Cell::new(0_usize));
-    let captured = std::rc::Rc::clone(&presses);
-    let root = crate::widget::TreeNode::leaf(7, "Item", ());
-    let tree = crate::widget::TreeView::new(root).with_row_delegate(move |_, id, _| {
-        let button_id = format!("action-{id}");
-        let captured = std::rc::Rc::clone(&captured);
-        Box::new(
-            crate::widget::Button::new(&button_id, "Action", None).on_click(move || {
-                captured.set(captured.get().saturating_add(1));
-            }),
-        )
-    });
-    let mut app = App::new(State::new(), Box::new(tree));
-    app.init_layout();
-
-    let update = app.build_a11y_tree_update(1.0);
-    let buttons = update
-        .nodes
-        .iter()
-        .filter(|(_, node)| node.role() == accesskit::Role::Button)
-        .collect::<Vec<_>>();
-    assert_eq!(buttons.len(), 1, "delegate is not announced twice");
-    let button_id = buttons[0].0;
-    let row = update
-        .nodes
-        .iter()
-        .find(|(_, node)| node.role() == accesskit::Role::TreeItem)
-        .map(|(_, node)| node)
-        .expect("tree item");
-    assert_eq!(row.children(), &[button_id]);
-    assert!(
-        row.bounds().is_some(),
-        "platform row keeps viewport geometry"
-    );
-    assert_eq!(
-        app.dispatch_a11y_action(button_id, &crate::a11y::Action::Activate),
-        None
-    );
-    assert_eq!(presses.get(), 1);
-
-    app.refresh_semantic_tree();
-    let semantic_buttons = app
-        .semantic_tree()
-        .iter()
-        .filter(|node| node.role == crate::a11y::Role::Button)
-        .collect::<Vec<_>>();
-    assert_eq!(semantic_buttons.len(), 1);
-    let semantic_row = app
-        .semantic_tree()
-        .iter()
-        .find(|node| node.role == crate::a11y::Role::TreeItem)
-        .expect("semantic tree item");
-    assert!(semantic_row.children.contains(&semantic_buttons[0].id));
-    assert!(
-        semantic_row.bounds.is_some(),
-        "inspection row keeps viewport geometry"
-    );
-    assert!(
-        !semantic_row.state.selected,
-        "button activation does not select row"
-    );
-}
-
-#[test]
-fn synthetic_drawn_control_dispatches_through_retained_semantic_tree() {
-    let changed = std::rc::Rc::new(std::cell::Cell::new(usize::MAX));
-    let captured = std::rc::Rc::clone(&changed);
-    let group = crate::widget::ToggleGroup::new(
-        vec![
-            crate::widget::toggle_group::Segment::new("Light"),
-            crate::widget::toggle_group::Segment::new("Dark"),
-        ],
-        0,
-    )
-    .on_change(move |index| captured.set(index));
-    let mut app = App::new(State::new(), Box::new(group));
-    app.init_layout();
-    app.refresh_semantic_tree();
-    let dark = app
-        .semantic_tree()
-        .find_by_name("Dark")
-        .map(|node| node.id.clone())
-        .expect("synthetic Dark segment");
-
-    assert!(
-        app.invoke_semantic_action(&dark, "activate", None)
-            .expect("semantic dispatch")
-    );
-    assert_eq!(changed.get(), 1);
-}
-
-#[test]
-fn effectful_control_is_not_exported_without_a_domain_contract() {
-    let presses = std::rc::Rc::new(std::cell::Cell::new(0_usize));
-    let captured = std::rc::Rc::clone(&presses);
-    let button = Button::new("drive-me", "Drive me", None).on_click(move || {
-        captured.set(captured.get().saturating_add(1));
-    });
-    let mut app = App::new(State::new(), Box::new(button));
-    app.init_layout();
-
-    let resource = app
-        .collect_resources()
-        .into_iter()
-        .find(|resource| resource.kind == "tilo.ui.control" && resource.label == "Drive me");
-    assert!(resource.is_none_or(|resource| {
-        resource
-            .actions
+            .find(|(_, node)| node.label() == Some("Search city"))
+            .unwrap()
+            .0;
+        app.dispatch_a11y_action(field, &crate::a11y::Action::SetValue("Ber".into()));
+        let update = app.build_a11y_tree_update(1.0);
+        let result = update
+            .nodes
             .iter()
-            .all(|action| action.id != "activate")
-    }));
-    assert_eq!(presses.get(), 0);
+            .find(|(_, node)| node.label() == Some("Berlin"))
+            .expect("native edit must publish a result")
+            .0;
+        app.dispatch_a11y_action(result, &crate::a11y::Action::Activate);
+        let update = app.build_a11y_tree_update(1.0);
+        let field = &update
+            .nodes
+            .iter()
+            .find(|(_, node)| node.label() == Some("Search city"))
+            .unwrap()
+            .1;
+        assert_eq!(field.value(), Some("Berlin"));
+        assert!(
+            !update
+                .nodes
+                .iter()
+                .any(|(_, node)| node.label() == Some("Berlin"))
+        );
+    }
+
+    // Case `retained_tree_delegate_is_nested_once_and_keeps_its_own_action`.
+    {
+        let presses = std::rc::Rc::new(std::cell::Cell::new(0_usize));
+        let captured = std::rc::Rc::clone(&presses);
+        let root = crate::widget::TreeNode::leaf(7, "Item", ());
+        let tree = crate::widget::TreeView::new(root).with_row_delegate(move |_, id, _| {
+            let button_id = format!("action-{id}");
+            let captured = std::rc::Rc::clone(&captured);
+            Box::new(
+                crate::widget::Button::new(&button_id, "Action", None).on_click(move || {
+                    captured.set(captured.get().saturating_add(1));
+                }),
+            )
+        });
+        let mut app = App::new(State::new(), Box::new(tree));
+        app.init_layout();
+
+        let update = app.build_a11y_tree_update(1.0);
+        let buttons = update
+            .nodes
+            .iter()
+            .filter(|(_, node)| node.role() == accesskit::Role::Button)
+            .collect::<Vec<_>>();
+        assert_eq!(buttons.len(), 1, "delegate is not announced twice");
+        let button_id = buttons[0].0;
+        let row = update
+            .nodes
+            .iter()
+            .find(|(_, node)| node.role() == accesskit::Role::TreeItem)
+            .map(|(_, node)| node)
+            .expect("tree item");
+        assert_eq!(row.children(), &[button_id]);
+        assert!(
+            row.bounds().is_some(),
+            "platform row keeps viewport geometry"
+        );
+        assert_eq!(
+            app.dispatch_a11y_action(button_id, &crate::a11y::Action::Activate),
+            None
+        );
+        assert_eq!(presses.get(), 1);
+
+        app.refresh_semantic_tree();
+        let semantic_buttons = app
+            .semantic_tree()
+            .iter()
+            .filter(|node| node.role == crate::a11y::Role::Button)
+            .collect::<Vec<_>>();
+        assert_eq!(semantic_buttons.len(), 1);
+        let semantic_row = app
+            .semantic_tree()
+            .iter()
+            .find(|node| node.role == crate::a11y::Role::TreeItem)
+            .expect("semantic tree item");
+        assert!(semantic_row.children.contains(&semantic_buttons[0].id));
+        assert!(
+            semantic_row.bounds.is_some(),
+            "inspection row keeps viewport geometry"
+        );
+        assert!(
+            !semantic_row.state.selected,
+            "button activation does not select row"
+        );
+    }
+
+    // Case `synthetic_drawn_control_dispatches_through_retained_semantic_tree`.
+    {
+        let changed = std::rc::Rc::new(std::cell::Cell::new(usize::MAX));
+        let captured = std::rc::Rc::clone(&changed);
+        let group = crate::widget::ToggleGroup::new(
+            vec![
+                crate::widget::toggle_group::Segment::new("Light"),
+                crate::widget::toggle_group::Segment::new("Dark"),
+            ],
+            0,
+        )
+        .on_change(move |index| captured.set(index));
+        let mut app = App::new(State::new(), Box::new(group));
+        app.init_layout();
+        app.refresh_semantic_tree();
+        let dark = app
+            .semantic_tree()
+            .find_by_name("Dark")
+            .map(|node| node.id.clone())
+            .expect("synthetic Dark segment");
+
+        assert!(
+            app.invoke_semantic_action(&dark, "activate", None)
+                .expect("semantic dispatch")
+        );
+        assert_eq!(changed.get(), 1);
+    }
+
+    // Case `effectful_control_is_not_exported_without_a_domain_contract`.
+    {
+        let presses = std::rc::Rc::new(std::cell::Cell::new(0_usize));
+        let captured = std::rc::Rc::clone(&presses);
+        let button = Button::new("drive-me", "Drive me", None).on_click(move || {
+            captured.set(captured.get().saturating_add(1));
+        });
+        let mut app = App::new(State::new(), Box::new(button));
+        app.init_layout();
+
+        let resource = app
+            .collect_resources()
+            .into_iter()
+            .find(|resource| resource.kind == "tilo.ui.control" && resource.label == "Drive me");
+        assert!(resource.is_none_or(|resource| {
+            resource
+                .actions
+                .iter()
+                .all(|action| action.id != "activate")
+        }));
+        assert_eq!(presses.get(), 0);
+    }
 }
 
 include!("action_directory_snapshot_tests.rs");
@@ -1734,91 +1769,94 @@ fn directory_query(
 }
 
 #[test]
-fn directory_pages_parent_actions_and_refuses_stale_resolution() {
-    let mut app = app();
-    let root = app.action_directory_page(directory_query("", "", 8, 8_192, 8));
-    assert_eq!(root.rows.len(), 1);
-    assert_eq!(root.rows[0].resource, "test.counter");
-    assert!(root.rows[0].action.is_none());
-    assert!(root.rows[0].has_children);
+fn action_directory_pages_caps_and_cursors_fail_closed() {
+    // Case `directory_pages_parent_actions_and_refuses_stale_resolution`.
+    {
+        let mut app = app();
+        let root = app.action_directory_page(directory_query("", "", 8, 8_192, 8));
+        assert_eq!(root.rows.len(), 1);
+        assert_eq!(root.rows[0].resource, "test.counter");
+        assert!(root.rows[0].action.is_none());
+        assert!(root.rows[0].has_children);
 
-    let actions =
-        app.action_directory_page(directory_query(root.revision, "test.counter", 8, 8_192, 8));
-    assert!(actions.rows.len() >= 5, "parent exposes its action rows");
-    assert!(actions.rows.iter().all(|row| row.action.is_some()));
-    assert!(matches!(
-        app.resolve_action_directory("stale", "test.counter", "inspect"),
-        runtime_collab::ActionDirectoryResolution::StaleRevision
-    ));
-}
+        let actions =
+            app.action_directory_page(directory_query(root.revision, "test.counter", 8, 8_192, 8));
+        assert!(actions.rows.len() >= 5, "parent exposes its action rows");
+        assert!(actions.rows.iter().all(|row| row.action.is_some()));
+        assert!(matches!(
+            app.resolve_action_directory("stale", "test.counter", "inspect"),
+            runtime_collab::ActionDirectoryResolution::StaleRevision
+        ));
+    }
 
-#[test]
-fn broker_request_ids_use_the_final_value_then_fail_closed() {
-    let mut app = app();
-    app.actions.next_broker_request_id = Some(u64::MAX);
-    assert_eq!(app.take_broker_request_id().unwrap(), u64::MAX);
-    assert!(matches!(
-        app.take_broker_request_id(),
-        Err(tilo_actions::DoorError::Unavailable { code, .. })
-            if code == "broker_request_identity_exhausted"
-    ));
-}
+    // Case `broker_request_ids_use_the_final_value_then_fail_closed`.
+    {
+        let mut app = app();
+        app.actions.next_broker_request_id = Some(u64::MAX);
+        assert_eq!(app.take_broker_request_id().unwrap(), u64::MAX);
+        assert!(matches!(
+            app.take_broker_request_id(),
+            Err(tilo_actions::DoorError::Unavailable { code, .. })
+                if code == "broker_request_identity_exhausted"
+        ));
+    }
 
-#[test]
-fn action_directory_cursor_keys_do_not_reuse_a_process_counter() {
-    let mut app = app();
-    let first = app.action_directory_cursor_key();
-    let second = app.action_directory_cursor_key();
-    assert_ne!(first, second);
-    assert!(first.starts_with("tilo-dir-"));
-    assert!(second.starts_with("tilo-dir-"));
-}
+    // Case `action_directory_cursor_keys_do_not_reuse_a_process_counter`.
+    {
+        let mut app = app();
+        let first = app.action_directory_cursor_key();
+        let second = app.action_directory_cursor_key();
+        assert_ne!(first, second);
+        assert!(first.starts_with("tilo-dir-"));
+        assert!(second.starts_with("tilo-dir-"));
+    }
 
-#[test]
-fn directory_hard_caps_never_materialize_an_oversized_row() {
-    let mut app = app();
-    let page = app.action_directory_page(directory_query("", "", 1, 1, 1));
-    assert!(
-        page.rows.is_empty(),
-        "one byte cannot contain a resource row"
-    );
-    assert!(page.budget_exhausted);
-    assert!(!page.exhausted);
-}
+    // Case `directory_hard_caps_never_materialize_an_oversized_row`.
+    {
+        let mut app = app();
+        let page = app.action_directory_page(directory_query("", "", 1, 1, 1));
+        assert!(
+            page.rows.is_empty(),
+            "one byte cannot contain a resource row"
+        );
+        assert!(page.budget_exhausted);
+        assert!(!page.exhausted);
+    }
 
-#[test]
-fn directory_pages_the_129th_widget_root_without_hiding_it() {
-    let mut app = App::new(
-        State::new(),
-        Box::new(CounterCard::with_directory_roots(
-            ACTION_DIRECTORY_MAX_RESULTS + 1,
-        )),
-    );
-    app.action_registry_mut()
-        .register::<CounterAction>(COUNTER_TYPE);
-    let first = app.action_directory_page(directory_query(
-        "",
-        "",
-        u32::try_from(ACTION_DIRECTORY_MAX_RESULTS).unwrap_or(u32::MAX),
-        64 * 1024,
-        u32::try_from(ACTION_DIRECTORY_MAX_WORK).unwrap_or(u32::MAX),
-    ));
-    assert_eq!(first.rows.len(), ACTION_DIRECTORY_MAX_RESULTS);
-    assert!(!first.exhausted);
-    let tail = app.action_directory_page(runtime_collab::ActionDirectoryQuery {
-        peer_id: 1,
-        revision: first.revision.clone(),
-        cursor: first.next_cursor,
-        needle: String::new(),
-        parent_resource: String::new(),
-        max_results: 8,
-        max_bytes: 8_192,
-        max_work: 32,
-        max_depth: 8,
-    });
-    assert_eq!(tail.rows.len(), 1);
-    assert_eq!(tail.rows[0].resource, "test.counter:128");
-    assert!(tail.exhausted);
+    // Case `directory_pages_the_129th_widget_root_without_hiding_it`.
+    {
+        let mut app = App::new(
+            State::new(),
+            Box::new(CounterCard::with_directory_roots(
+                ACTION_DIRECTORY_MAX_RESULTS + 1,
+            )),
+        );
+        app.action_registry_mut()
+            .register::<CounterAction>(COUNTER_TYPE);
+        let first = app.action_directory_page(directory_query(
+            "",
+            "",
+            u32::try_from(ACTION_DIRECTORY_MAX_RESULTS).unwrap_or(u32::MAX),
+            64 * 1024,
+            u32::try_from(ACTION_DIRECTORY_MAX_WORK).unwrap_or(u32::MAX),
+        ));
+        assert_eq!(first.rows.len(), ACTION_DIRECTORY_MAX_RESULTS);
+        assert!(!first.exhausted);
+        let tail = app.action_directory_page(runtime_collab::ActionDirectoryQuery {
+            peer_id: 1,
+            revision: first.revision.clone(),
+            cursor: first.next_cursor,
+            needle: String::new(),
+            parent_resource: String::new(),
+            max_results: 8,
+            max_bytes: 8_192,
+            max_work: 32,
+            max_depth: 8,
+        });
+        assert_eq!(tail.rows.len(), 1);
+        assert_eq!(tail.rows[0].resource, "test.counter:128");
+        assert!(tail.exhausted);
+    }
 }
 
 #[test]
@@ -1826,6 +1864,7 @@ fn directory_finds_a_100k_tail_without_scanning_the_corpus() {
     let provider = LargeDirectoryProvider::new(100_000);
     let calls = std::sync::Arc::clone(&provider.calls);
     let largest_budget = std::sync::Arc::clone(&provider.largest_budget);
+    let corpus = provider.catalog.clone();
     let mut app = App::new(
         State::new(),
         Box::new(CounterCard::with_directory_provider(provider)),
@@ -1857,6 +1896,11 @@ fn directory_finds_a_100k_tail_without_scanning_the_corpus() {
         largest_budget.load(std::sync::atomic::Ordering::Relaxed) <= 8,
         "the adapter passed the caller's bounded work budget to the retained index"
     );
+    // Freeing a 100k-row index costs seconds in a debug build and proves
+    // nothing here: the app lets go of its handle, and the last one is
+    // released off the test thread.
+    drop(app);
+    std::thread::spawn(move || drop(corpus));
 }
 
 #[test]

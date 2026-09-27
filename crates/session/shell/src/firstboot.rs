@@ -297,6 +297,11 @@ fn host_pointer_updates(
             "tap-and-drag",
         );
         insert_bool(
+            "tap_drag_lock",
+            "org.gnome.desktop.peripherals.touchpad",
+            "tap-and-drag-lock",
+        );
+        insert_bool(
             "disable_while_typing",
             "org.gnome.desktop.peripherals.touchpad",
             "disable-while-typing",
@@ -968,217 +973,248 @@ mod tests {
     use super::*;
 
     #[test]
-    fn host_pointer_speed_maps_libinput_range_to_tilo_range() {
-        assert_eq!(host_pointer_speed(-1.0), 0.0);
-        assert_eq!(host_pointer_speed(0.0), 0.5);
-        assert_eq!(host_pointer_speed(1.0), 1.0);
-        assert_eq!(host_pointer_speed(4.0), 1.0);
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
+    )]
+    fn host_pointer_settings_import_once_without_overwriting_tilo_choices() {
+        // Phase `host_pointer_speed_maps_libinput_range_to_tilo_range`.
+        {
+            assert_eq!(host_pointer_speed(-1.0), 0.0);
+            assert_eq!(host_pointer_speed(0.0), 0.5);
+            assert_eq!(host_pointer_speed(1.0), 1.0);
+            assert_eq!(host_pointer_speed(4.0), 1.0);
+        }
+        // Phase `host_input_migration_splits_legacy_scroll_and_is_idempotent`.
+        {
+            let legacy =
+                serde_json::Map::from_iter([("natural_scroll".into(), serde_json::json!(true))]);
+            let updates =
+                host_input_migration_updates(&legacy, |schema, key| match (schema, key) {
+                    ("org.gnome.desktop.peripherals.touchpad", "natural-scroll") => {
+                        Some("true".into())
+                    }
+                    ("org.gnome.desktop.peripherals.mouse", "natural-scroll") => {
+                        Some("false".into())
+                    }
+                    _ => None,
+                });
+            assert_eq!(
+                updates.get("touchpad_natural_scroll"),
+                Some(&serde_json::json!(true))
+            );
+            assert_eq!(
+                updates.get("mouse_natural_scroll"),
+                Some(&serde_json::json!(false))
+            );
+            assert_eq!(
+                updates.get(HOST_INPUT_MIGRATION_VERSION_KEY),
+                Some(&serde_json::json!(HOST_INPUT_MIGRATION_VERSION))
+            );
 
-    #[test]
-    fn host_input_migration_splits_legacy_scroll_and_is_idempotent() {
-        let legacy =
-            serde_json::Map::from_iter([("natural_scroll".into(), serde_json::json!(true))]);
-        let updates = host_input_migration_updates(&legacy, |schema, key| match (schema, key) {
-            ("org.gnome.desktop.peripherals.touchpad", "natural-scroll") => Some("true".into()),
-            ("org.gnome.desktop.peripherals.mouse", "natural-scroll") => Some("false".into()),
-            _ => None,
-        });
-        assert_eq!(
-            updates.get("touchpad_natural_scroll"),
-            Some(&serde_json::json!(true))
-        );
-        assert_eq!(
-            updates.get("mouse_natural_scroll"),
-            Some(&serde_json::json!(false))
-        );
-        assert_eq!(
-            updates.get(HOST_INPUT_MIGRATION_VERSION_KEY),
-            Some(&serde_json::json!(HOST_INPUT_MIGRATION_VERSION))
-        );
-
-        let mut migrated = legacy;
-        migrated.extend(updates);
-        assert!(
-            host_input_migration_updates(&migrated, |_, _| panic!("must not read twice"))
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn host_pointer_import_keeps_device_classes_independent() {
-        let existing = serde_json::Map::new();
-        let updates = host_pointer_updates(&existing, &mut |schema, key| match (schema, key) {
-            ("org.gnome.desktop.peripherals.touchpad", "natural-scroll") => Some("true".into()),
-            ("org.gnome.desktop.peripherals.mouse", "natural-scroll") => Some("false".into()),
-            ("org.gnome.desktop.peripherals.touchpad", "speed") => Some("0.4".into()),
-            ("org.gnome.desktop.peripherals.mouse", "speed") => Some("-0.6".into()),
-            _ => None,
-        });
-        assert_eq!(
-            updates.get("touchpad_natural_scroll"),
-            Some(&serde_json::json!(true))
-        );
-        assert_eq!(
-            updates.get("mouse_natural_scroll"),
-            Some(&serde_json::json!(false))
-        );
-        assert_eq!(
-            updates.get("touchpad_pointer_speed"),
-            Some(&serde_json::json!(0.7))
-        );
-        assert_eq!(
-            updates.get("mouse_pointer_speed"),
-            Some(&serde_json::json!(0.2))
-        );
-    }
-
-    #[test]
-    fn host_keyboard_import_is_complete_and_never_overwrites_tilo_choices() {
-        let empty = serde_json::Map::new();
-        let imported = host_keyboard_updates(&empty, &mut |_, key| match key {
-            "sources" => Some("[('xkb', 'de+nodeadkeys'), ('xkb', 'us')]".into()),
-            "xkb-options" => Some("['compose:rwin']".into()),
-            _ => None,
-        });
-        assert_eq!(
-            imported.get("keyboard_layout"),
-            Some(&serde_json::json!("de:nodeadkeys"))
-        );
-        assert_eq!(
-            imported.get("keyboard_layouts"),
-            Some(&serde_json::json!(["de:nodeadkeys", "us"]))
-        );
-        assert_eq!(
-            imported.get("compose_key"),
-            Some(&serde_json::json!("rwin"))
-        );
-
-        let existing = serde_json::Map::from_iter([
-            ("keyboard_layout".into(), serde_json::json!("us")),
-            ("compose_key".into(), serde_json::json!("caps")),
-        ]);
-        assert!(
-            host_keyboard_updates(&existing, &mut |_, _| Some("[('xkb', 'de')]".into())).is_empty(),
-            "an existing Tilo keyboard selection must win as one coherent preference"
-        );
-    }
-
-    #[test]
-    fn version_three_repairs_only_the_stale_version_two_us_default() {
-        let stale = serde_json::Map::from_iter([
-            ("keyboard_layout".into(), serde_json::json!("us")),
-            ("keyboard_layouts".into(), serde_json::json!(["us"])),
-            (
-                HOST_INPUT_MIGRATION_VERSION_KEY.into(),
-                serde_json::json!(2),
-            ),
-        ]);
-        let repaired = host_input_migration_updates(&stale, |schema, key| {
-            (schema == "org.gnome.desktop.input-sources" && key == "sources")
-                .then(|| "[('xkb', 'de+nodeadkeys')]".into())
-        });
-        assert_eq!(
-            repaired.get("keyboard_layout"),
-            Some(&serde_json::json!("de:nodeadkeys"))
-        );
-        assert_eq!(
-            repaired.get("keyboard_layouts"),
-            Some(&serde_json::json!(["de:nodeadkeys"]))
-        );
-        assert_eq!(
-            repaired.get(HOST_INPUT_MIGRATION_VERSION_KEY),
-            Some(&serde_json::json!(3))
-        );
-
-        let explicit = serde_json::Map::from_iter([
-            ("keyboard_layout".into(), serde_json::json!("us")),
-            (
-                "keyboard_layouts".into(),
-                serde_json::json!(["us", "de:nodeadkeys"]),
-            ),
-            (
-                HOST_INPUT_MIGRATION_VERSION_KEY.into(),
-                serde_json::json!(2),
-            ),
-        ]);
-        let preserved = host_input_migration_updates(&explicit, |schema, key| {
-            (schema == "org.gnome.desktop.input-sources" && key == "sources")
-                .then(|| "[('xkb', 'de+nodeadkeys')]".into())
-        });
-        assert!(!preserved.contains_key("keyboard_layout"));
-        assert!(!preserved.contains_key("keyboard_layouts"));
-    }
-
-    #[test]
-    fn host_input_migration_preserves_explicit_per_device_tilo_choices() {
-        let existing = serde_json::Map::from_iter([
-            ("touchpad_natural_scroll".into(), serde_json::json!(false)),
-            ("mouse_natural_scroll".into(), serde_json::json!(true)),
-            ("touchpad_pointer_speed".into(), serde_json::json!(0.8)),
-        ]);
-        let updates = host_input_migration_updates(&existing, |_, key| match key {
-            "natural-scroll" => Some("true".into()),
-            "speed" => Some("-0.5".into()),
-            _ => None,
-        });
-        assert!(!updates.contains_key("touchpad_natural_scroll"));
-        assert!(!updates.contains_key("mouse_natural_scroll"));
-        assert!(!updates.contains_key("touchpad_pointer_speed"));
-        assert_eq!(
-            updates.get("mouse_pointer_speed"),
-            Some(&serde_json::json!(0.25))
-        );
-    }
-
-    #[test]
-    fn host_repeat_import_preserves_exact_values_and_disabled_state() {
-        let enabled = host_input_migration_updates(&serde_json::Map::new(), |schema, key| {
-            match (schema, key) {
-                ("org.gnome.desktop.peripherals.keyboard", "repeat") => Some("true".into()),
-                ("org.gnome.desktop.peripherals.keyboard", "delay") => Some("300".into()),
-                ("org.gnome.desktop.peripherals.keyboard", "repeat-interval") => Some("25".into()),
+            let mut migrated = legacy;
+            migrated.extend(updates);
+            assert!(
+                host_input_migration_updates(&migrated, |_, _| panic!("must not read twice"))
+                    .is_empty()
+            );
+        }
+        // Phase `host_pointer_import_keeps_device_classes_independent`.
+        {
+            let existing = serde_json::Map::new();
+            let updates = host_pointer_updates(&existing, &mut |schema, key| match (schema, key) {
+                ("org.gnome.desktop.peripherals.touchpad", "natural-scroll") => Some("true".into()),
+                ("org.gnome.desktop.peripherals.mouse", "natural-scroll") => Some("false".into()),
+                ("org.gnome.desktop.peripherals.touchpad", "speed") => Some("0.4".into()),
+                ("org.gnome.desktop.peripherals.mouse", "speed") => Some("-0.6".into()),
                 _ => None,
-            }
-        });
-        assert_eq!(
-            enabled.get("key_repeat_delay_ms"),
-            Some(&serde_json::json!(300))
-        );
-        assert_eq!(
-            enabled.get("key_repeat_rate_hz"),
-            Some(&serde_json::json!(40))
-        );
+            });
+            assert_eq!(
+                updates.get("touchpad_natural_scroll"),
+                Some(&serde_json::json!(true))
+            );
+            assert_eq!(
+                updates.get("mouse_natural_scroll"),
+                Some(&serde_json::json!(false))
+            );
+            assert_eq!(
+                updates.get("touchpad_pointer_speed"),
+                Some(&serde_json::json!(0.7))
+            );
+            assert_eq!(
+                updates.get("mouse_pointer_speed"),
+                Some(&serde_json::json!(0.2))
+            );
+        }
+        // Phase `host_input_migration_preserves_explicit_per_device_tilo_choices`.
+        {
+            let existing = serde_json::Map::from_iter([
+                ("touchpad_natural_scroll".into(), serde_json::json!(false)),
+                ("mouse_natural_scroll".into(), serde_json::json!(true)),
+                ("touchpad_pointer_speed".into(), serde_json::json!(0.8)),
+            ]);
+            let updates = host_input_migration_updates(&existing, |_, key| match key {
+                "natural-scroll" => Some("true".into()),
+                "speed" => Some("-0.5".into()),
+                _ => None,
+            });
+            assert!(!updates.contains_key("touchpad_natural_scroll"));
+            assert!(!updates.contains_key("mouse_natural_scroll"));
+            assert!(!updates.contains_key("touchpad_pointer_speed"));
+            assert_eq!(
+                updates.get("mouse_pointer_speed"),
+                Some(&serde_json::json!(0.25))
+            );
+        }
+        // Phase `version_three_repairs_only_the_stale_version_two_us_default`.
+        {
+            let stale = serde_json::Map::from_iter([
+                ("keyboard_layout".into(), serde_json::json!("us")),
+                ("keyboard_layouts".into(), serde_json::json!(["us"])),
+                (
+                    HOST_INPUT_MIGRATION_VERSION_KEY.into(),
+                    serde_json::json!(2),
+                ),
+            ]);
+            let repaired = host_input_migration_updates(&stale, |schema, key| {
+                (schema == "org.gnome.desktop.input-sources" && key == "sources")
+                    .then(|| "[('xkb', 'de+nodeadkeys')]".into())
+            });
+            assert_eq!(
+                repaired.get("keyboard_layout"),
+                Some(&serde_json::json!("de:nodeadkeys"))
+            );
+            assert_eq!(
+                repaired.get("keyboard_layouts"),
+                Some(&serde_json::json!(["de:nodeadkeys"]))
+            );
+            assert_eq!(
+                repaired.get(HOST_INPUT_MIGRATION_VERSION_KEY),
+                Some(&serde_json::json!(3))
+            );
 
-        let disabled = host_input_migration_updates(&serde_json::Map::new(), |schema, key| {
-            (schema == "org.gnome.desktop.peripherals.keyboard" && key == "repeat")
-                .then(|| "false".into())
-        });
-        assert_eq!(
-            disabled.get("key_repeat_rate_hz"),
-            Some(&serde_json::json!(0))
-        );
+            let explicit = serde_json::Map::from_iter([
+                ("keyboard_layout".into(), serde_json::json!("us")),
+                (
+                    "keyboard_layouts".into(),
+                    serde_json::json!(["us", "de:nodeadkeys"]),
+                ),
+                (
+                    HOST_INPUT_MIGRATION_VERSION_KEY.into(),
+                    serde_json::json!(2),
+                ),
+            ]);
+            let preserved = host_input_migration_updates(&explicit, |schema, key| {
+                (schema == "org.gnome.desktop.input-sources" && key == "sources")
+                    .then(|| "[('xkb', 'de+nodeadkeys')]".into())
+            });
+            assert!(!preserved.contains_key("keyboard_layout"));
+            assert!(!preserved.contains_key("keyboard_layouts"));
+        }
     }
 
     #[test]
-    fn unavailable_host_settings_are_retried_instead_of_marked_complete() {
-        let existing = serde_json::Map::new();
-        let unavailable = host_input_migration_updates(&existing, |_, _| None);
-        assert!(unavailable.is_empty());
+    fn host_keyboard_settings_import_completely_and_retry_when_unavailable() {
+        // Phase `host_keyboard_import_is_complete_and_never_overwrites_tilo_choices`.
+        {
+            let empty = serde_json::Map::new();
+            let imported = host_keyboard_updates(&empty, &mut |_, key| match key {
+                "sources" => Some("[('xkb', 'de+nodeadkeys'), ('xkb', 'us')]".into()),
+                "xkb-options" => Some("['compose:rwin']".into()),
+                _ => None,
+            });
+            assert_eq!(
+                imported.get("keyboard_layout"),
+                Some(&serde_json::json!("de:nodeadkeys"))
+            );
+            assert_eq!(
+                imported.get("keyboard_layouts"),
+                Some(&serde_json::json!(["de:nodeadkeys", "us"]))
+            );
+            assert_eq!(
+                imported.get("compose_key"),
+                Some(&serde_json::json!("rwin"))
+            );
 
-        let retried = host_input_migration_updates(&existing, |schema, key| {
-            (schema == "org.gnome.desktop.input-sources" && key == "sources")
-                .then(|| "[('xkb', 'de+nodeadkeys')]".into())
-        });
-        assert_eq!(
-            retried.get("keyboard_layout"),
-            Some(&serde_json::json!("de:nodeadkeys"))
-        );
-        assert_eq!(
-            retried.get(HOST_INPUT_MIGRATION_VERSION_KEY),
-            Some(&serde_json::json!(HOST_INPUT_MIGRATION_VERSION))
-        );
+            let existing = serde_json::Map::from_iter([
+                ("keyboard_layout".into(), serde_json::json!("us")),
+                ("compose_key".into(), serde_json::json!("caps")),
+            ]);
+            assert!(
+                host_keyboard_updates(&existing, &mut |_, _| Some("[('xkb', 'de')]".into()))
+                    .is_empty(),
+                "an existing Tilo keyboard selection must win as one coherent preference"
+            );
+        }
+        // Phase `host_repeat_import_preserves_exact_values_and_disabled_state`.
+        {
+            let enabled =
+                host_input_migration_updates(&serde_json::Map::new(), |schema, key| {
+                    match (schema, key) {
+                        ("org.gnome.desktop.peripherals.keyboard", "repeat") => Some("true".into()),
+                        ("org.gnome.desktop.peripherals.keyboard", "delay") => Some("300".into()),
+                        ("org.gnome.desktop.peripherals.keyboard", "repeat-interval") => {
+                            Some("25".into())
+                        }
+                        _ => None,
+                    }
+                });
+            assert_eq!(
+                enabled.get("key_repeat_delay_ms"),
+                Some(&serde_json::json!(300))
+            );
+            assert_eq!(
+                enabled.get("key_repeat_rate_hz"),
+                Some(&serde_json::json!(40))
+            );
+
+            let disabled = host_input_migration_updates(&serde_json::Map::new(), |schema, key| {
+                (schema == "org.gnome.desktop.peripherals.keyboard" && key == "repeat")
+                    .then(|| "false".into())
+            });
+            assert_eq!(
+                disabled.get("key_repeat_rate_hz"),
+                Some(&serde_json::json!(0))
+            );
+        }
+        // Phase `unavailable_host_settings_are_retried_instead_of_marked_complete`.
+        {
+            let existing = serde_json::Map::new();
+            let unavailable = host_input_migration_updates(&existing, |_, _| None);
+            assert!(unavailable.is_empty());
+
+            let retried = host_input_migration_updates(&existing, |schema, key| {
+                (schema == "org.gnome.desktop.input-sources" && key == "sources")
+                    .then(|| "[('xkb', 'de+nodeadkeys')]".into())
+            });
+            assert_eq!(
+                retried.get("keyboard_layout"),
+                Some(&serde_json::json!("de:nodeadkeys"))
+            );
+            assert_eq!(
+                retried.get(HOST_INPUT_MIGRATION_VERSION_KEY),
+                Some(&serde_json::json!(HOST_INPUT_MIGRATION_VERSION))
+            );
+        }
+        // Phase `gnome_xkb_sources_keep_order_and_variants`.
+        {
+            assert_eq!(
+                parse_gnome_xkb_sources(
+                    "[('xkb', 'de+nodeadkeys'), ('ibus', 'typing-booster'), ('xkb', 'us')]"
+                ),
+                ["de:nodeadkeys", "us"]
+            );
+        }
+        // Phase `gnome_compose_option_maps_to_the_shared_settings_schema`.
+        {
+            assert_eq!(
+                parse_gnome_compose_key("['grp:alt_shift_toggle', 'compose:rwin']").as_deref(),
+                Some("rwin")
+            );
+            assert_eq!(parse_gnome_compose_key("@as []"), None);
+        }
     }
+
     use std::sync::{Arc, Barrier};
 
     /// Minimal tempdir helper (avoids pulling `tempfile` as a dev-dep — the only test in `quick-shell` that needs one).
@@ -1205,163 +1241,169 @@ mod tests {
     }
 
     #[test]
-    fn run_with_xdg_creates_tilo_desktop_dir() {
-        let tmp = TmpDir::new("xdg");
-        run_with_env(Some(tmp.path().as_os_str()), None).expect("firstboot succeeds");
-        let expected = tmp.path().join("tilo-desktop");
-        assert!(
-            expected.exists() && expected.is_dir(),
-            "expected {expected:?} to be created"
-        );
-    }
-
-    #[test]
-    fn run_with_home_falls_back_to_dot_config() {
-        let tmp = TmpDir::new("home");
-        run_with_env(None, Some(tmp.path().as_os_str())).expect("firstboot succeeds via HOME");
-        let expected = tmp.path().join(".config").join("tilo-desktop");
-        assert!(
-            expected.exists() && expected.is_dir(),
-            "expected {expected:?} to be created"
-        );
-    }
-
-    #[test]
-    fn run_is_idempotent_on_existing_dir() {
-        let tmp = TmpDir::new("idempotent");
-        run_with_env(Some(tmp.path().as_os_str()), None).expect("first run ok");
-        run_with_env(Some(tmp.path().as_os_str()), None).expect("second run ok");
-        let expected = tmp.path().join("tilo-desktop");
-        assert!(expected.exists());
-    }
-
-    #[test]
-    fn run_without_env_is_a_noop_not_an_error() {
-        // Systemd `Type=oneshot` units fail the whole transaction if ExecStart
-        // returns non-zero — first-boot must never break boot over missing env-vars in the unit context.
-        run_with_env(None, None).expect("no-env case is a no-op, not an error");
-    }
-
-    #[test]
-    fn gnome_xkb_sources_keep_order_and_variants() {
-        assert_eq!(
-            parse_gnome_xkb_sources(
-                "[('xkb', 'de+nodeadkeys'), ('ibus', 'typing-booster'), ('xkb', 'us')]"
-            ),
-            ["de:nodeadkeys", "us"]
-        );
-    }
-
-    #[test]
-    fn gnome_compose_option_maps_to_the_shared_settings_schema() {
-        assert_eq!(
-            parse_gnome_compose_key("['grp:alt_shift_toggle', 'compose:rwin']").as_deref(),
-            Some("rwin")
-        );
-        assert_eq!(parse_gnome_compose_key("@as []"), None);
-    }
-
-    #[test]
-    fn run_does_not_provision_identity_when_missing() {
-        let tmp = TmpDir::new("no-mint-identity");
-        run_with_env(Some(tmp.path().as_os_str()), None).expect("firstboot ok");
-        let identity_file = tmp
-            .path()
-            .join("tilo")
-            .join("identity")
-            .join(PRIMARY_IDENTITY_FILE);
-        assert!(
-            !identity_file.exists(),
-            "firstboot must leave personal identity creation to the OOBE"
-        );
-    }
-
-    #[test]
-    fn run_does_not_touch_an_existing_identity() {
-        let tmp = TmpDir::new("existing-identity");
-        let dir = tmp.path().join("tilo").join("identity");
-        std::fs::create_dir_all(&dir).unwrap();
-        let identity_file = dir.join(PRIMARY_IDENTITY_FILE);
-        std::fs::write(&identity_file, b"MARKER: hands off").unwrap();
-        run_with_env(Some(tmp.path().as_os_str()), None).expect("firstboot ok");
-        assert_eq!(std::fs::read(identity_file).unwrap(), b"MARKER: hands off");
+    fn firstboot_run_creates_the_desktop_dir_and_never_provisions_identity() {
+        // Phase `run_with_xdg_creates_tilo_desktop_dir`.
+        {
+            let tmp = TmpDir::new("xdg");
+            run_with_env(Some(tmp.path().as_os_str()), None).expect("firstboot succeeds");
+            let expected = tmp.path().join("tilo-desktop");
+            assert!(
+                expected.exists() && expected.is_dir(),
+                "expected {expected:?} to be created"
+            );
+        }
+        // Phase `run_with_home_falls_back_to_dot_config`.
+        {
+            let tmp = TmpDir::new("home");
+            run_with_env(None, Some(tmp.path().as_os_str())).expect("firstboot succeeds via HOME");
+            let expected = tmp.path().join(".config").join("tilo-desktop");
+            assert!(
+                expected.exists() && expected.is_dir(),
+                "expected {expected:?} to be created"
+            );
+        }
+        // Phase `run_is_idempotent_on_existing_dir`.
+        {
+            let tmp = TmpDir::new("idempotent");
+            run_with_env(Some(tmp.path().as_os_str()), None).expect("first run ok");
+            run_with_env(Some(tmp.path().as_os_str()), None).expect("second run ok");
+            let expected = tmp.path().join("tilo-desktop");
+            assert!(expected.exists());
+        }
+        // Phase `run_without_env_is_a_noop_not_an_error`.
+        {
+            // Systemd `Type=oneshot` units fail the whole transaction if ExecStart
+            // returns non-zero — first-boot must never break boot over missing env-vars in the unit context.
+            run_with_env(None, None).expect("no-env case is a no-op, not an error");
+        }
+        // Phase `run_does_not_provision_identity_when_missing`.
+        {
+            let tmp = TmpDir::new("no-mint-identity");
+            run_with_env(Some(tmp.path().as_os_str()), None).expect("firstboot ok");
+            let identity_file = tmp
+                .path()
+                .join("tilo")
+                .join("identity")
+                .join(PRIMARY_IDENTITY_FILE);
+            assert!(
+                !identity_file.exists(),
+                "firstboot must leave personal identity creation to the OOBE"
+            );
+        }
+        // Phase `run_does_not_touch_an_existing_identity`.
+        {
+            let tmp = TmpDir::new("existing-identity");
+            let dir = tmp.path().join("tilo").join("identity");
+            std::fs::create_dir_all(&dir).unwrap();
+            let identity_file = dir.join(PRIMARY_IDENTITY_FILE);
+            std::fs::write(&identity_file, b"MARKER: hands off").unwrap();
+            run_with_env(Some(tmp.path().as_os_str()), None).expect("firstboot ok");
+            assert_eq!(std::fs::read(identity_file).unwrap(), b"MARKER: hands off");
+        }
     }
 
     #[cfg(unix)]
     #[test]
-    fn identity_directory_preflight_refuses_a_symlink() {
-        use std::os::unix::fs::symlink;
+    fn identity_files_are_private_and_refuse_symlinks() {
+        // Phase `identity_directory_preflight_refuses_a_symlink`.
+        {
+            use std::os::unix::fs::symlink;
 
-        let tmp = TmpDir::new("identity-dir-symlink");
-        let target = tmp.path().join("target");
-        fs::create_dir(&target).unwrap();
-        let linked = tmp.path().join("linked");
-        symlink(&target, &linked).unwrap();
-        assert!(prepare_identity_directory(&linked).is_err());
-    }
-
-    #[test]
-    fn ensure_primary_identity_reports_existing_vs_created() {
-        let tmp = TmpDir::new("outcome");
-        let dir = tmp.path().join("tilo").join("identity");
-        // Fresh run creates.
-        match ensure_primary_identity(&dir).expect("provision ok") {
-            ProvisionOutcome::Created { pubkey_hex } => {
-                assert_eq!(pubkey_hex.len(), 64, "hex of 32 bytes is 64 chars");
-            }
-            other @ ProvisionOutcome::Existing => {
-                panic!("expected Created on empty dir, got {other:?}")
-            }
+            let tmp = TmpDir::new("identity-dir-symlink");
+            let target = tmp.path().join("target");
+            fs::create_dir(&target).unwrap();
+            let linked = tmp.path().join("linked");
+            symlink(&target, &linked).unwrap();
+            assert!(prepare_identity_directory(&linked).is_err());
         }
-        let identity = runtime_identity::load_from_path(dir.join(PRIMARY_IDENTITY_FILE))
-            .expect("load created identity");
-        assert_eq!(
-            identity.display_name(),
-            "",
-            "native Tilo must not infer personal identity from its Unix implementation account"
-        );
-        // Second run leaves it alone.
-        assert_eq!(
-            ensure_primary_identity(&dir).expect("provision ok (2nd)"),
-            ProvisionOutcome::Existing
-        );
+        // Phase `collaboration_verifier_rejects_a_permissive_primary_secret`.
+        {
+            let tmp = TmpDir::new("collaboration-identity-permissions");
+            let personal = tmp.path().join("config/tilo/identity");
+            let paths = IdentityPaths::under(tmp.path().join("system"));
+            ensure_collaboration_identity(&personal, &paths).unwrap();
+
+            let primary = personal.join(PRIMARY_IDENTITY_FILE);
+            std::fs::set_permissions(&primary, std::fs::Permissions::from_mode(0o640)).unwrap();
+            let error = verify_collaboration_identity(&personal, &paths, u64::MAX)
+                .expect_err("a group-readable personal seed must fail closed");
+            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        }
+        // Phase `ensure_primary_identity_writes_a_private_file`.
+        {
+            let tmp = TmpDir::new("mode");
+            let identity_dir = tmp.path().join("tilo").join("identity");
+            ensure_primary_identity(&identity_dir).expect("provision identity");
+            let identity_file = identity_dir.join(PRIMARY_IDENTITY_FILE);
+            let meta = std::fs::metadata(&identity_file).unwrap();
+            let mode = meta.permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "primary.json must be 0600, got {mode:o}");
+        }
     }
 
     #[test]
-    fn legacy_linux_host_associates_a_fresh_identity_with_the_unix_account() {
-        let tmp = TmpDir::new("legacy-host-account");
-        let personal = tmp.path().join("config/tilo/identity");
-        let paths = IdentityPaths::under(tmp.path().join("system"));
+    fn primary_identity_is_created_once_and_legacy_hosts_are_associated_not_relabelled() {
+        // Phase `ensure_primary_identity_reports_existing_vs_created`.
+        {
+            let tmp = TmpDir::new("outcome");
+            let dir = tmp.path().join("tilo").join("identity");
+            // Fresh run creates.
+            match ensure_primary_identity(&dir).expect("provision ok") {
+                ProvisionOutcome::Created { pubkey_hex } => {
+                    assert_eq!(pubkey_hex.len(), 64, "hex of 32 bytes is 64 chars");
+                }
+                other @ ProvisionOutcome::Existing => {
+                    panic!("expected Created on empty dir, got {other:?}")
+                }
+            }
+            let identity = runtime_identity::load_from_path(dir.join(PRIMARY_IDENTITY_FILE))
+                .expect("load created identity");
+            assert_eq!(
+                identity.display_name(),
+                "",
+                "native Tilo must not infer personal identity from its Unix implementation account"
+            );
+            // Second run leaves it alone.
+            assert_eq!(
+                ensure_primary_identity(&dir).expect("provision ok (2nd)"),
+                ProvisionOutcome::Existing
+            );
+        }
+        // Phase `legacy_linux_host_associates_a_fresh_identity_with_the_unix_account`.
+        {
+            let tmp = TmpDir::new("legacy-host-account");
+            let personal = tmp.path().join("config/tilo/identity");
+            let paths = IdentityPaths::under(tmp.path().join("system"));
 
-        assert!(matches!(
-            ensure_collaboration_identity_for_legacy_linux_host(&personal, &paths)
-                .expect("provision host identity"),
-            ProvisionOutcome::Created { .. }
-        ));
-        let identity = runtime_identity::load_from_path(personal.join(PRIMARY_IDENTITY_FILE))
-            .expect("load host identity");
-        assert_eq!(identity.display_name(), login_account_display_name());
-    }
+            assert!(matches!(
+                ensure_collaboration_identity_for_legacy_linux_host(&personal, &paths)
+                    .expect("provision host identity"),
+                ProvisionOutcome::Created { .. }
+            ));
+            let identity = runtime_identity::load_from_path(personal.join(PRIMARY_IDENTITY_FILE))
+                .expect("load host identity");
+            assert_eq!(identity.display_name(), login_account_display_name());
+        }
+        // Phase `legacy_linux_host_does_not_relabel_or_migrate_an_existing_identity`.
+        {
+            let tmp = TmpDir::new("legacy-host-existing");
+            let personal = tmp.path().join("config/tilo/identity");
+            let paths = IdentityPaths::under(tmp.path().join("system"));
+            ensure_primary_identity(&personal).expect("seed existing identity");
+            let record_path = personal.join(PRIMARY_IDENTITY_FILE);
+            let before = std::fs::read(&record_path).expect("read identity before host setup");
 
-    #[test]
-    fn legacy_linux_host_does_not_relabel_or_migrate_an_existing_identity() {
-        let tmp = TmpDir::new("legacy-host-existing");
-        let personal = tmp.path().join("config/tilo/identity");
-        let paths = IdentityPaths::under(tmp.path().join("system"));
-        ensure_primary_identity(&personal).expect("seed existing identity");
-        let record_path = personal.join(PRIMARY_IDENTITY_FILE);
-        let before = std::fs::read(&record_path).expect("read identity before host setup");
-
-        assert_eq!(
-            ensure_collaboration_identity_for_legacy_linux_host(&personal, &paths)
-                .expect("associate existing host identity"),
-            ProvisionOutcome::Existing
-        );
-        assert_eq!(
-            std::fs::read(record_path).expect("read identity after host setup"),
-            before,
-            "the legacy-host compatibility path must use an existing identity as-is"
-        );
+            assert_eq!(
+                ensure_collaboration_identity_for_legacy_linux_host(&personal, &paths)
+                    .expect("associate existing host identity"),
+                ProvisionOutcome::Existing
+            );
+            assert_eq!(
+                std::fs::read(record_path).expect("read identity after host setup"),
+                before,
+                "the legacy-host compatibility path must use an existing identity as-is"
+            );
+        }
     }
 
     #[cfg(target_os = "linux")]
@@ -1407,256 +1449,238 @@ mod tests {
     }
 
     #[test]
-    fn collaboration_setup_creates_one_verified_identity_chain() {
-        let tmp = TmpDir::new("collaboration-identity");
-        let personal = tmp.path().join("config/tilo/identity");
-        let paths = IdentityPaths::under(tmp.path().join("system"));
+    fn collaboration_setup_builds_and_verifies_one_identity_chain() {
+        // Phase `collaboration_setup_creates_one_verified_identity_chain`.
+        {
+            let tmp = TmpDir::new("collaboration-identity");
+            let personal = tmp.path().join("config/tilo/identity");
+            let paths = IdentityPaths::under(tmp.path().join("system"));
 
-        assert!(matches!(
-            ensure_collaboration_identity(&personal, &paths).expect("provision identity"),
-            ProvisionOutcome::Created { .. }
-        ));
-        let signer = runtime_identity::load_from_path(personal.join(PRIMARY_IDENTITY_FILE))
-            .expect("load protected identity");
-        let device = persist::read_device_key(&paths.device_privkey).unwrap();
-        let cert = persist::read_device_cert(&paths.device_cert).unwrap();
+            assert!(matches!(
+                ensure_collaboration_identity(&personal, &paths).expect("provision identity"),
+                ProvisionOutcome::Created { .. }
+            ));
+            let signer = runtime_identity::load_from_path(personal.join(PRIMARY_IDENTITY_FILE))
+                .expect("load protected identity");
+            let device = persist::read_device_key(&paths.device_privkey).unwrap();
+            let cert = persist::read_device_cert(&paths.device_cert).unwrap();
 
-        assert!(
-            !paths.user_privkey.exists(),
-            "new installs must not duplicate the user-root private key"
-        );
-        assert_eq!(cert.user_public_key, signer.group_public_key());
-        assert_eq!(cert.device_public_key, device.verifying_key().to_bytes());
-        tilo_user_identity::verify_device_cert(&cert).unwrap();
-        assert_eq!(
-            ensure_collaboration_identity(&personal, &paths).unwrap(),
-            ProvisionOutcome::Existing
-        );
-        let before = [
-            std::fs::read(personal.join(PRIMARY_IDENTITY_FILE)).unwrap(),
-            std::fs::read(&paths.user_pubkey).unwrap(),
-            std::fs::read(&paths.device_privkey).unwrap(),
-            std::fs::read(&paths.device_cert).unwrap(),
-        ];
-        verify_collaboration_identity(&personal, &paths, cert.issued_at_ns)
-            .expect("complete chain verifies without mutation");
-        let after = [
-            std::fs::read(personal.join(PRIMARY_IDENTITY_FILE)).unwrap(),
-            std::fs::read(&paths.user_pubkey).unwrap(),
-            std::fs::read(&paths.device_privkey).unwrap(),
-            std::fs::read(&paths.device_cert).unwrap(),
-        ];
-        assert_eq!(before, after, "login verification must be read-only");
-    }
+            assert!(
+                !paths.user_privkey.exists(),
+                "new installs must not duplicate the user-root private key"
+            );
+            assert_eq!(cert.user_public_key, signer.group_public_key());
+            assert_eq!(cert.device_public_key, device.verifying_key().to_bytes());
+            tilo_user_identity::verify_device_cert(&cert).unwrap();
+            assert_eq!(
+                ensure_collaboration_identity(&personal, &paths).unwrap(),
+                ProvisionOutcome::Existing
+            );
+            let before = [
+                std::fs::read(personal.join(PRIMARY_IDENTITY_FILE)).unwrap(),
+                std::fs::read(&paths.user_pubkey).unwrap(),
+                std::fs::read(&paths.device_privkey).unwrap(),
+                std::fs::read(&paths.device_cert).unwrap(),
+            ];
+            verify_collaboration_identity(&personal, &paths, cert.issued_at_ns)
+                .expect("complete chain verifies without mutation");
+            let after = [
+                std::fs::read(personal.join(PRIMARY_IDENTITY_FILE)).unwrap(),
+                std::fs::read(&paths.user_pubkey).unwrap(),
+                std::fs::read(&paths.device_privkey).unwrap(),
+                std::fs::read(&paths.device_cert).unwrap(),
+            ];
+            assert_eq!(before, after, "login verification must be read-only");
+        }
+        // Phase `collaboration_verifier_rejects_a_mismatched_personal_root`.
+        {
+            let tmp = TmpDir::new("collaboration-identity-mismatch");
+            let personal = tmp.path().join("config/tilo/identity");
+            let other_personal = tmp.path().join("other/tilo/identity");
+            let paths = IdentityPaths::under(tmp.path().join("system"));
+            ensure_collaboration_identity(&personal, &paths).unwrap();
+            ensure_primary_identity(&other_personal).unwrap();
+            std::fs::copy(
+                other_personal.join(PRIMARY_IDENTITY_FILE),
+                personal.join(PRIMARY_IDENTITY_FILE),
+            )
+            .unwrap();
 
-    #[test]
-    fn collaboration_verifier_rejects_a_mismatched_personal_root() {
-        let tmp = TmpDir::new("collaboration-identity-mismatch");
-        let personal = tmp.path().join("config/tilo/identity");
-        let other_personal = tmp.path().join("other/tilo/identity");
-        let paths = IdentityPaths::under(tmp.path().join("system"));
-        ensure_collaboration_identity(&personal, &paths).unwrap();
-        ensure_primary_identity(&other_personal).unwrap();
-        std::fs::copy(
-            other_personal.join(PRIMARY_IDENTITY_FILE),
-            personal.join(PRIMARY_IDENTITY_FILE),
-        )
-        .unwrap();
+            let error = verify_collaboration_identity(&personal, &paths, u64::MAX)
+                .expect_err("a different personal root must not pass login");
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        }
+        // Phase `collaboration_setup_repairs_the_active_import_without_minting_primary`.
+        {
+            let tmp = TmpDir::new("active-import");
+            let personal = tmp.path().join("config/tilo/identity");
+            let paths = IdentityPaths::under(tmp.path().join("system"));
+            ensure_primary_identity(&personal).expect("seed exported identity");
+            let imported = personal.join("identity-imported.json");
+            std::fs::rename(personal.join(PRIMARY_IDENTITY_FILE), &imported)
+                .expect("give imported identity its managed name");
+            runtime_identity::set_active_identity(&personal, "identity-imported")
+                .expect("select imported identity");
 
-        let error = verify_collaboration_identity(&personal, &paths, u64::MAX)
-            .expect_err("a different personal root must not pass login");
-        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn collaboration_verifier_rejects_a_permissive_primary_secret() {
-        let tmp = TmpDir::new("collaboration-identity-permissions");
-        let personal = tmp.path().join("config/tilo/identity");
-        let paths = IdentityPaths::under(tmp.path().join("system"));
-        ensure_collaboration_identity(&personal, &paths).unwrap();
-
-        let primary = personal.join(PRIMARY_IDENTITY_FILE);
-        std::fs::set_permissions(&primary, std::fs::Permissions::from_mode(0o640)).unwrap();
-        let error = verify_collaboration_identity(&personal, &paths, u64::MAX)
-            .expect_err("a group-readable personal seed must fail closed");
-        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
-    }
-
-    #[test]
-    fn collaboration_setup_repairs_the_active_import_without_minting_primary() {
-        let tmp = TmpDir::new("active-import");
-        let personal = tmp.path().join("config/tilo/identity");
-        let paths = IdentityPaths::under(tmp.path().join("system"));
-        ensure_primary_identity(&personal).expect("seed exported identity");
-        let imported = personal.join("identity-imported.json");
-        std::fs::rename(personal.join(PRIMARY_IDENTITY_FILE), &imported)
-            .expect("give imported identity its managed name");
-        runtime_identity::set_active_identity(&personal, "identity-imported")
-            .expect("select imported identity");
-
-        assert_eq!(
-            ensure_collaboration_identity(&personal, &paths).expect("repair imported chain"),
-            ProvisionOutcome::Existing
-        );
-        assert!(imported.exists());
-        assert!(
-            !personal.join(PRIMARY_IDENTITY_FILE).exists(),
-            "repair must not mint a second personal identity"
-        );
-        let signer = runtime_identity::load_from_path(imported).expect("load imported identity");
-        let cert =
-            persist::read_device_cert(&paths.device_cert_for_user(&signer.group_public_key()))
-                .expect("identity-specific certificate");
-        tilo_user_identity::verify_device_cert(&cert).expect("valid imported chain");
-    }
-
-    #[test]
-    fn multiple_os_users_share_one_device_without_replacing_its_owner() {
-        let tmp = TmpDir::new("multi-user-device");
-        let paths = IdentityPaths::under(tmp.path().join("system"));
-        let alice = tmp.path().join("alice/tilo/identity");
-        let bob = tmp.path().join("bob/tilo/identity");
-        ensure_collaboration_identity(&alice, &paths).expect("alice provisions owner");
-        let owner = persist::read_public_key(&paths.user_pubkey).expect("owner key");
-
-        ensure_collaboration_identity(&bob, &paths).expect("bob joins shared device");
-        assert_eq!(
-            persist::read_public_key(&paths.user_pubkey).expect("owner remains"),
-            owner
-        );
-        let bob_record = IdentityRecord::from_json_bytes(
-            &std::fs::read(bob.join(PRIMARY_IDENTITY_FILE)).expect("bob record"),
-        )
-        .expect("bob identity");
-        let bob_key = bob_record.threshold_identity.group_public_key;
-        assert_ne!(bob_key, owner);
-        let bob_cert = persist::read_device_cert(&paths.device_cert_for_user(&bob_key))
-            .expect("bob device cert");
-        tilo_user_identity::verify_device_cert(&bob_cert).expect("valid bob chain");
-        assert_eq!(bob_cert.user_public_key, bob_key);
-        assert_eq!(
-            bob_cert.device_public_key,
-            persist::read_device_key(&paths.device_privkey)
-                .expect("device key")
-                .verifying_key()
-                .to_bytes()
-        );
-    }
-
-    #[test]
-    fn simultaneous_user_provisioning_builds_one_consistent_device_chain() {
-        let tmp = TmpDir::new("simultaneous-user-provisioning");
-        let paths = IdentityPaths::under(tmp.path().join("system"));
-        let alice = tmp.path().join("alice/tilo/identity");
-        let bob = tmp.path().join("bob/tilo/identity");
-        ensure_primary_identity(&alice).expect("seed alice identity");
-        ensure_primary_identity(&bob).expect("seed bob identity");
-
-        let start = Arc::new(Barrier::new(3));
-        let alice_start = Arc::clone(&start);
-        let alice_paths = paths.clone();
-        let alice_dir = alice.clone();
-        let alice_thread = std::thread::spawn(move || {
-            alice_start.wait();
-            ensure_collaboration_identity(&alice_dir, &alice_paths)
-        });
-        let bob_start = Arc::clone(&start);
-        let bob_paths = paths.clone();
-        let bob_dir = bob.clone();
-        let bob_thread = std::thread::spawn(move || {
-            bob_start.wait();
-            ensure_collaboration_identity(&bob_dir, &bob_paths)
-        });
-        start.wait();
-        alice_thread
-            .join()
-            .expect("alice provisioning thread")
-            .expect("alice provisioning");
-        bob_thread
-            .join()
-            .expect("bob provisioning thread")
-            .expect("bob provisioning");
-
-        let device = persist::read_device_key(&paths.device_privkey)
-            .expect("one complete shared device key")
-            .verifying_key()
-            .to_bytes();
-        let owner = persist::read_public_key(&paths.user_pubkey).expect("elected owner");
-        let legacy = persist::read_device_cert(&paths.device_cert).expect("legacy owner cert");
-        assert_eq!(legacy.user_public_key, owner);
-        assert_eq!(legacy.device_public_key, device);
-        tilo_user_identity::verify_device_cert(&legacy).expect("valid legacy certificate");
-
-        for identity_dir in [&alice, &bob] {
-            let signer = runtime_identity::load_from_path(identity_dir.join(PRIMARY_IDENTITY_FILE))
-                .expect("load user identity");
+            assert_eq!(
+                ensure_collaboration_identity(&personal, &paths).expect("repair imported chain"),
+                ProvisionOutcome::Existing
+            );
+            assert!(imported.exists());
+            assert!(
+                !personal.join(PRIMARY_IDENTITY_FILE).exists(),
+                "repair must not mint a second personal identity"
+            );
+            let signer =
+                runtime_identity::load_from_path(imported).expect("load imported identity");
             let cert =
                 persist::read_device_cert(&paths.device_cert_for_user(&signer.group_public_key()))
                     .expect("identity-specific certificate");
-            assert_eq!(cert.device_public_key, device);
-            tilo_user_identity::verify_device_cert(&cert)
-                .expect("identity-specific chain remains valid");
+            tilo_user_identity::verify_device_cert(&cert).expect("valid imported chain");
         }
     }
 
     #[test]
-    fn simultaneous_owner_claims_elect_one_valid_winner_without_clobbering() {
-        let tmp = TmpDir::new("simultaneous-owner-election");
-        let path = tmp.path().join("system/user-identity/pubkey.bin");
-        std::fs::create_dir_all(path.parent().expect("claim parent")).expect("claim parent");
+    #[allow(
+        clippy::too_many_lines,
+        reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
+    )]
+    fn concurrent_and_multi_user_provisioning_keeps_one_device_owner() {
+        // Phase `multiple_os_users_share_one_device_without_replacing_its_owner`.
+        {
+            let tmp = TmpDir::new("multi-user-device");
+            let paths = IdentityPaths::under(tmp.path().join("system"));
+            let alice = tmp.path().join("alice/tilo/identity");
+            let bob = tmp.path().join("bob/tilo/identity");
+            ensure_collaboration_identity(&alice, &paths).expect("alice provisions owner");
+            let owner = persist::read_public_key(&paths.user_pubkey).expect("owner key");
 
-        // Distinct roots model two OS users completing their first identity
-        // ceremony at once.  Start both claim attempts together, rather than
-        // relying on an incidental scheduler race.
-        let alice = [0xA1; 32];
-        let bob = [0xB2; 32];
-        let start = Arc::new(Barrier::new(3));
-        let alice_start = Arc::clone(&start);
-        let alice_path = path.clone();
-        let alice_thread = std::thread::spawn(move || {
-            alice_start.wait();
-            (alice, claim_device_owner(&alice_path, &alice))
-        });
-        let bob_start = Arc::clone(&start);
-        let bob_path = path.clone();
-        let bob_thread = std::thread::spawn(move || {
-            bob_start.wait();
-            (bob, claim_device_owner(&bob_path, &bob))
-        });
-        start.wait();
+            ensure_collaboration_identity(&bob, &paths).expect("bob joins shared device");
+            assert_eq!(
+                persist::read_public_key(&paths.user_pubkey).expect("owner remains"),
+                owner
+            );
+            let bob_record = IdentityRecord::from_json_bytes(
+                &std::fs::read(bob.join(PRIMARY_IDENTITY_FILE)).expect("bob record"),
+            )
+            .expect("bob identity");
+            let bob_key = bob_record.threshold_identity.group_public_key;
+            assert_ne!(bob_key, owner);
+            let bob_cert = persist::read_device_cert(&paths.device_cert_for_user(&bob_key))
+                .expect("bob device cert");
+            tilo_user_identity::verify_device_cert(&bob_cert).expect("valid bob chain");
+            assert_eq!(bob_cert.user_public_key, bob_key);
+            assert_eq!(
+                bob_cert.device_public_key,
+                persist::read_device_key(&paths.device_privkey)
+                    .expect("device key")
+                    .verifying_key()
+                    .to_bytes()
+            );
+        }
+        // Phase `simultaneous_user_provisioning_builds_one_consistent_device_chain`.
+        {
+            let tmp = TmpDir::new("simultaneous-user-provisioning");
+            let paths = IdentityPaths::under(tmp.path().join("system"));
+            let alice = tmp.path().join("alice/tilo/identity");
+            let bob = tmp.path().join("bob/tilo/identity");
+            ensure_primary_identity(&alice).expect("seed alice identity");
+            ensure_primary_identity(&bob).expect("seed bob identity");
 
-        let (alice_key, alice_claim) = alice_thread.join().expect("alice claim thread");
-        let (bob_key, bob_claim) = bob_thread.join().expect("bob claim thread");
-        let alice_claim = alice_claim.expect("alice claim result");
-        let bob_claim = bob_claim.expect("bob claim result");
-        assert_ne!(
-            alice_claim, bob_claim,
-            "exactly one distinct root owns the device"
-        );
+            let start = Arc::new(Barrier::new(3));
+            let alice_start = Arc::clone(&start);
+            let alice_paths = paths.clone();
+            let alice_dir = alice.clone();
+            let alice_thread = std::thread::spawn(move || {
+                alice_start.wait();
+                ensure_collaboration_identity(&alice_dir, &alice_paths)
+            });
+            let bob_start = Arc::clone(&start);
+            let bob_paths = paths.clone();
+            let bob_dir = bob.clone();
+            let bob_thread = std::thread::spawn(move || {
+                bob_start.wait();
+                ensure_collaboration_identity(&bob_dir, &bob_paths)
+            });
+            start.wait();
+            alice_thread
+                .join()
+                .expect("alice provisioning thread")
+                .expect("alice provisioning");
+            bob_thread
+                .join()
+                .expect("bob provisioning thread")
+                .expect("bob provisioning");
 
-        let winner = persist::read_public_key(&path).expect("valid owner key");
-        let claimed_winner = if alice_claim { alice_key } else { bob_key };
-        assert_eq!(
-            winner, claimed_winner,
-            "the elected owner was never overwritten"
-        );
-        assert_eq!(
-            std::fs::read(&path).expect("owner key bytes").len(),
-            32,
-            "concurrent readers can only observe a complete winner file"
-        );
-    }
+            let device = persist::read_device_key(&paths.device_privkey)
+                .expect("one complete shared device key")
+                .verifying_key()
+                .to_bytes();
+            let owner = persist::read_public_key(&paths.user_pubkey).expect("elected owner");
+            let legacy = persist::read_device_cert(&paths.device_cert).expect("legacy owner cert");
+            assert_eq!(legacy.user_public_key, owner);
+            assert_eq!(legacy.device_public_key, device);
+            tilo_user_identity::verify_device_cert(&legacy).expect("valid legacy certificate");
 
-    #[cfg(unix)]
-    #[test]
-    fn ensure_primary_identity_writes_a_private_file() {
-        let tmp = TmpDir::new("mode");
-        let identity_dir = tmp.path().join("tilo").join("identity");
-        ensure_primary_identity(&identity_dir).expect("provision identity");
-        let identity_file = identity_dir.join(PRIMARY_IDENTITY_FILE);
-        let meta = std::fs::metadata(&identity_file).unwrap();
-        let mode = meta.permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600, "primary.json must be 0600, got {mode:o}");
+            for identity_dir in [&alice, &bob] {
+                let signer =
+                    runtime_identity::load_from_path(identity_dir.join(PRIMARY_IDENTITY_FILE))
+                        .expect("load user identity");
+                let cert = persist::read_device_cert(
+                    &paths.device_cert_for_user(&signer.group_public_key()),
+                )
+                .expect("identity-specific certificate");
+                assert_eq!(cert.device_public_key, device);
+                tilo_user_identity::verify_device_cert(&cert)
+                    .expect("identity-specific chain remains valid");
+            }
+        }
+        // Phase `simultaneous_owner_claims_elect_one_valid_winner_without_clobbering`.
+        {
+            let tmp = TmpDir::new("simultaneous-owner-election");
+            let path = tmp.path().join("system/user-identity/pubkey.bin");
+            std::fs::create_dir_all(path.parent().expect("claim parent")).expect("claim parent");
+
+            // Distinct roots model two OS users completing their first identity
+            // ceremony at once.  Start both claim attempts together, rather than
+            // relying on an incidental scheduler race.
+            let alice = [0xA1; 32];
+            let bob = [0xB2; 32];
+            let start = Arc::new(Barrier::new(3));
+            let alice_start = Arc::clone(&start);
+            let alice_path = path.clone();
+            let alice_thread = std::thread::spawn(move || {
+                alice_start.wait();
+                (alice, claim_device_owner(&alice_path, &alice))
+            });
+            let bob_start = Arc::clone(&start);
+            let bob_path = path.clone();
+            let bob_thread = std::thread::spawn(move || {
+                bob_start.wait();
+                (bob, claim_device_owner(&bob_path, &bob))
+            });
+            start.wait();
+
+            let (alice_key, alice_claim) = alice_thread.join().expect("alice claim thread");
+            let (bob_key, bob_claim) = bob_thread.join().expect("bob claim thread");
+            let alice_claim = alice_claim.expect("alice claim result");
+            let bob_claim = bob_claim.expect("bob claim result");
+            assert_ne!(
+                alice_claim, bob_claim,
+                "exactly one distinct root owns the device"
+            );
+
+            let winner = persist::read_public_key(&path).expect("valid owner key");
+            let claimed_winner = if alice_claim { alice_key } else { bob_key };
+            assert_eq!(
+                winner, claimed_winner,
+                "the elected owner was never overwritten"
+            );
+            assert_eq!(
+                std::fs::read(&path).expect("owner key bytes").len(),
+                32,
+                "concurrent readers can only observe a complete winner file"
+            );
+        }
     }
 }

@@ -25,6 +25,7 @@ tilo-reference = { path = "../reference", optional = true }
 tilo-actions = { path = "../actions", optional = true }
 serde.workspace = true
 thiserror.workspace = true
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 serde_json.workspace = true

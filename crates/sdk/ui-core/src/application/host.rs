@@ -584,66 +584,117 @@ mod native_process_tests {
     }
 
     #[test]
-    fn standalone_native_host_has_durable_device_and_app_unique_view_identity() {
-        let temp = tempfile::tempdir().unwrap();
-        let author = UserId("person-a".into());
-        let first = NativeProcessHost::open_with(
-            &definition("so.tilo.one"),
-            environment(temp.path()),
-            author.clone(),
-        )
-        .unwrap();
-        let device = first.host.device_id.clone();
-        assert!(!first.workspace_scoped());
-        assert_eq!(first.host.views.workspace_id(), PERSONAL_WORKSPACE);
-        assert_eq!(
-            first.host.permissions.borrow().role(),
-            Some(crate::permissions::Role::Owner)
-        );
-        assert_eq!(first.host.permissions.borrow().user(), &author);
-        drop(first);
+    fn native_host_identity_authority_and_inputs_are_explicit() {
+        // Case `standalone_native_host_has_durable_device_and_app_unique_view_identity`.
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let author = UserId("person-a".into());
+            let first = NativeProcessHost::open_with(
+                &definition("so.tilo.one"),
+                environment(temp.path()),
+                author.clone(),
+            )
+            .unwrap();
+            let device = first.host.device_id.clone();
+            assert!(!first.workspace_scoped());
+            assert_eq!(first.host.views.workspace_id(), PERSONAL_WORKSPACE);
+            assert_eq!(
+                first.host.permissions.borrow().role(),
+                Some(crate::permissions::Role::Owner)
+            );
+            assert_eq!(first.host.permissions.borrow().user(), &author);
+            drop(first);
 
-        let reopened = NativeProcessHost::open_with(
-            &definition("so.tilo.one"),
-            environment(temp.path()),
-            author.clone(),
-        )
-        .unwrap();
-        let other = NativeProcessHost::open_with(
-            &definition("so.tilo.two"),
-            environment(temp.path()),
-            author,
-        )
-        .unwrap();
-        assert_eq!(reopened.host.device_id, device);
-        assert_eq!(other.host.device_id, device);
-        assert_eq!(reopened.instance_id(), stable_instance_id("so.tilo.one"));
-        assert_ne!(reopened.instance_id(), other.instance_id());
-    }
+            let reopened = NativeProcessHost::open_with(
+                &definition("so.tilo.one"),
+                environment(temp.path()),
+                author.clone(),
+            )
+            .unwrap();
+            let other = NativeProcessHost::open_with(
+                &definition("so.tilo.two"),
+                environment(temp.path()),
+                author,
+            )
+            .unwrap();
+            assert_eq!(reopened.host.device_id, device);
+            assert_eq!(other.host.device_id, device);
+            assert_eq!(reopened.instance_id(), stable_instance_id("so.tilo.one"));
+            assert_ne!(reopened.instance_id(), other.instance_id());
+        }
 
-    #[test]
-    fn workspace_participation_is_host_authority_and_missing_policy_is_viewer() {
-        let temp = tempfile::tempdir().unwrap();
-        let room = "3f2b1c00-0000-4000-8000-000000000001";
-        let make = |participation: Option<&str>| NativeProcessEnvironment {
-            workspace_id: Some(room.into()),
-            participation: participation.map(str::to_owned),
-            continuity_instance: Some("42".into()),
-            xdg_data_home: Some(temp.path().to_owned()),
-            ..NativeProcessEnvironment::default()
-        };
-        for (mode, role) in [
-            (Some("read-only"), crate::permissions::Role::Viewer),
-            (Some("author"), crate::permissions::Role::Editor),
-            (None, crate::permissions::Role::Viewer),
-        ] {
-            let resolved = make(mode)
-                .resolve("so.tilo.notes", &UserId("person-a".into()))
-                .unwrap();
-            assert!(resolved.workspace_scoped);
-            assert_eq!(resolved.workspace_id, room);
-            assert_eq!(resolved.instance_id, 42);
-            assert_eq!(resolved.permissions.role(), Some(role));
+        // Case `workspace_participation_is_host_authority_and_missing_policy_is_viewer`.
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let room = "3f2b1c00-0000-4000-8000-000000000001";
+            let make = |participation: Option<&str>| NativeProcessEnvironment {
+                workspace_id: Some(room.into()),
+                participation: participation.map(str::to_owned),
+                continuity_instance: Some("42".into()),
+                xdg_data_home: Some(temp.path().to_owned()),
+                ..NativeProcessEnvironment::default()
+            };
+            for (mode, role) in [
+                (Some("read-only"), crate::permissions::Role::Viewer),
+                (Some("author"), crate::permissions::Role::Editor),
+                (None, crate::permissions::Role::Viewer),
+            ] {
+                let resolved = make(mode)
+                    .resolve("so.tilo.notes", &UserId("person-a".into()))
+                    .unwrap();
+                assert!(resolved.workspace_scoped);
+                assert_eq!(resolved.workspace_id, room);
+                assert_eq!(resolved.instance_id, 42);
+                assert_eq!(resolved.permissions.role(), Some(role));
+            }
+        }
+
+        // Case `malformed_native_host_inputs_are_refused_without_fallback_storage`.
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let author = UserId("person-a".into());
+            let mut mismatched = environment(temp.path());
+            mismatched.package_id = Some("so.tilo.other".into());
+            assert!(matches!(
+                mismatched.resolve("so.tilo.notes", &author),
+                Err(LaunchError::BindingMismatch)
+            ));
+            let relative = NativeProcessEnvironment {
+                xdg_data_home: Some(PathBuf::from("relative")),
+                ..NativeProcessEnvironment::default()
+            };
+            assert!(relative.resolve("so.tilo.notes", &author).is_err());
+            assert!(
+                NativeProcessEnvironment::default()
+                    .resolve("so.tilo.notes", &author)
+                    .is_err()
+            );
+            for invalid in [
+                NativeProcessEnvironment {
+                    workspace_id: Some("not-a-room".into()),
+                    ..environment(temp.path())
+                },
+                NativeProcessEnvironment {
+                    participation: Some("owner".into()),
+                    ..environment(temp.path())
+                },
+                NativeProcessEnvironment {
+                    continuity_instance: Some("window".into()),
+                    ..environment(temp.path())
+                },
+            ] {
+                assert!(invalid.resolve("so.tilo.notes", &author).is_err());
+            }
+            std::fs::write(temp.path().join(DEVICE_ID_FILE), b"damaged\n").unwrap();
+            assert!(
+                environment(temp.path())
+                    .resolve("so.tilo.notes", &author)
+                    .is_err()
+            );
+            assert_eq!(
+                std::fs::read(temp.path().join(DEVICE_ID_FILE)).unwrap(),
+                b"damaged\n"
+            );
         }
     }
 
@@ -754,53 +805,5 @@ mod native_process_tests {
             }
         }
         out
-    }
-
-    #[test]
-    fn malformed_native_host_inputs_are_refused_without_fallback_storage() {
-        let temp = tempfile::tempdir().unwrap();
-        let author = UserId("person-a".into());
-        let mut mismatched = environment(temp.path());
-        mismatched.package_id = Some("so.tilo.other".into());
-        assert!(matches!(
-            mismatched.resolve("so.tilo.notes", &author),
-            Err(LaunchError::BindingMismatch)
-        ));
-        let relative = NativeProcessEnvironment {
-            xdg_data_home: Some(PathBuf::from("relative")),
-            ..NativeProcessEnvironment::default()
-        };
-        assert!(relative.resolve("so.tilo.notes", &author).is_err());
-        assert!(
-            NativeProcessEnvironment::default()
-                .resolve("so.tilo.notes", &author)
-                .is_err()
-        );
-        for invalid in [
-            NativeProcessEnvironment {
-                workspace_id: Some("not-a-room".into()),
-                ..environment(temp.path())
-            },
-            NativeProcessEnvironment {
-                participation: Some("owner".into()),
-                ..environment(temp.path())
-            },
-            NativeProcessEnvironment {
-                continuity_instance: Some("window".into()),
-                ..environment(temp.path())
-            },
-        ] {
-            assert!(invalid.resolve("so.tilo.notes", &author).is_err());
-        }
-        std::fs::write(temp.path().join(DEVICE_ID_FILE), b"damaged\n").unwrap();
-        assert!(
-            environment(temp.path())
-                .resolve("so.tilo.notes", &author)
-                .is_err()
-        );
-        assert_eq!(
-            std::fs::read(temp.path().join(DEVICE_ID_FILE)).unwrap(),
-            b"damaged\n"
-        );
     }
 }

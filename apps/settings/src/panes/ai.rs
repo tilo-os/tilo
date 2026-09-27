@@ -2180,59 +2180,68 @@ mod tests {
         nodes.into_iter().filter_map(|node| node.name).collect()
     }
 
+    /// The hub shows providers, tasks, agents, presets and this device; a card waiting for a restart
+    /// says so instead of offering the CPU; and an unavailable manager never fabricates a release.
     #[test]
-    fn the_hub_shows_providers_tasks_agents_presets_and_this_device() {
-        let names = names(demo_state(false));
-        for expected in [
-            "Balanced",
-            "Feedback review",
-            "Work Azure",
-            "Qwen3 4B",
-            "Claude · Agent planning",
-        ] {
+    fn the_hub_shows_what_is_there_and_never_fabricates_a_release() {
+        // Case `the_hub_shows_providers_tasks_agents_presets_and_this_device`.
+        {
+            let names = names(demo_state(false));
+            for expected in [
+                "Balanced",
+                "Feedback review",
+                "Work Azure",
+                "Qwen3 4B",
+                "Claude · Agent planning",
+            ] {
+                assert!(
+                    names.iter().any(|name| name.contains(expected)),
+                    "{expected} missing from {names:?}"
+                );
+            }
+        }
+
+        // Case `a_card_waiting_for_a_restart_says_so_instead_of_offering_the_cpu`.
+        {
+            let names = names(demo_state(true));
             assert!(
-                names.iter().any(|name| name.contains(expected)),
-                "{expected} missing from {names:?}"
+                names
+                    .iter()
+                    .any(|name| name.contains("Restart to finish setting up")),
+                "{names:?}"
             );
+        }
+
+        // Case `an_unavailable_manager_never_fabricates_a_release`.
+        {
+            let mut state = demo_state(false);
+            state.snapshot = Err("model service is unavailable".into());
+            let names = names(state);
+            assert!(names.iter().all(|name| !name.contains("Download SmolVLM2")));
         }
     }
 
+    /// Download terms name size, license and speed, and progress is bounded and machine readable.
     #[test]
-    fn a_card_waiting_for_a_restart_says_so_instead_of_offering_the_cpu() {
-        let names = names(demo_state(true));
-        assert!(
-            names
-                .iter()
-                .any(|name| name.contains("Restart to finish setting up")),
-            "{names:?}"
-        );
-    }
+    fn downloads_state_their_terms_and_report_bounded_progress() {
+        // Case `download_terms_name_size_license_and_speed`.
+        {
+            let state = demo_state(false);
+            let snapshot = state.snapshot.as_ref().unwrap();
+            let terms = download_terms(&snapshot.available[0]);
+            assert!(terms.contains("Apache-2.0"), "{terms}");
+            assert!(terms.contains("1.0"), "{terms}");
+        }
 
-    #[test]
-    fn an_unavailable_manager_never_fabricates_a_release() {
-        let mut state = demo_state(false);
-        state.snapshot = Err("model service is unavailable".into());
-        let names = names(state);
-        assert!(names.iter().all(|name| !name.contains("Download SmolVLM2")));
-    }
-
-    #[test]
-    fn download_terms_name_size_license_and_speed() {
-        let state = demo_state(false);
-        let snapshot = state.snapshot.as_ref().unwrap();
-        let terms = download_terms(&snapshot.available[0]);
-        assert!(terms.contains("Apache-2.0"), "{terms}");
-        assert!(terms.contains("1.0"), "{terms}");
-    }
-
-    #[test]
-    fn progress_is_bounded_and_machine_readable() {
-        let phase = LocalModelPhase::Downloading {
-            downloaded_bytes: 3,
-            total_bytes: 4,
-        };
-        assert_eq!(phase_progress(&phase), Some(0.75));
-        let presentation = phase_presentation(&phase);
-        assert!(presentation.is_valid());
+        // Case `progress_is_bounded_and_machine_readable`.
+        {
+            let phase = LocalModelPhase::Downloading {
+                downloaded_bytes: 3,
+                total_bytes: 4,
+            };
+            assert_eq!(phase_progress(&phase), Some(0.75));
+            let presentation = phase_presentation(&phase);
+            assert!(presentation.is_valid());
+        }
     }
 }

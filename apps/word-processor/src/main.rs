@@ -114,6 +114,29 @@ fn named_actor(prefix: &str) -> Option<String> {
 }
 
 fn main() {
+    // The live editor runs on the app framework: the document is a hosted
+    // record with history, per-author undo and permissions. Opening a file
+    // by path and the scenario captures (which stage view state directly on
+    // a standalone editor) keep the standalone path.
+    let mut args = std::env::args().skip(1);
+    let mut standalone = false;
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            // The framework's own option and its value.
+            "--data-dir" => {
+                args.next();
+            }
+            "--shots" | "--responsive-matrix" | "--native-audit" | "--headless" => {
+                standalone = true;
+            }
+            file if !file.starts_with('-') => standalone = true,
+            _ => {}
+        }
+    }
+    if !standalone {
+        ui::framework::run::<word_processor::framework::WordProcessorApp>();
+        return;
+    }
     ui::launch::run_or_exit(
         &LaunchSpec::new_with_args("so.tilo.word-processor", live_root)
             .max_positionals(1)
@@ -433,7 +456,7 @@ fn seed_revisions(state: &mut State, wp: &mut WordProcessorWidget) -> Result<(),
     for i in 0..5 {
         wp.model_mut()
             .insert_str(&mut state.doc, " Margins improved slightly.");
-        qdoc::history::commit_stamped_at(&mut state.doc, base + i * 30);
+        ui::tilo_resource::history::commit_stamped_at(&mut state.doc, base + i * 30);
     }
 
     // Session two, an hour later, by a collaborator.
@@ -454,7 +477,7 @@ fn seed_revisions(state: &mut State, wp: &mut WordProcessorWidget) -> Result<(),
             ids: &mut ids,
         };
         dm.splice_text(&last.id, at, 0, " Costs fell by four percent.");
-        let hash = qdoc::history::commit_stamped_at(&mut peer, base + 3600 + i * 30);
+        let hash = ui::tilo_resource::history::commit_stamped_at(&mut peer, base + 3600 + i * 30);
         if i == 0 {
             peer_first = hash;
         }
@@ -465,7 +488,7 @@ fn seed_revisions(state: &mut State, wp: &mut WordProcessorWidget) -> Result<(),
         let start = ui::history_source::entry_id_from_hash(&first.to_string());
         let end = ui::history_source::entry_id_from_hash(&last.to_string());
         ui::history_groups::name_range(&mut peer, &start, Some(&end), "Costs section");
-        qdoc::history::commit_stamped_at(&mut peer, base + 3600 + 150);
+        ui::tilo_resource::history::commit_stamped_at(&mut peer, base + 3600 + 150);
     }
     state.doc.merge_incoming(&mut peer)?;
 
@@ -475,7 +498,8 @@ fn seed_revisions(state: &mut State, wp: &mut WordProcessorWidget) -> Result<(),
     for i in 0..6 {
         wp.model_mut()
             .insert_str(&mut state.doc, " Headcount is unchanged.");
-        let hash = qdoc::history::commit_stamped_at(&mut state.doc, base + 4 * 3600 + i * 25);
+        let hash =
+            ui::tilo_resource::history::commit_stamped_at(&mut state.doc, base + 4 * 3600 + i * 25);
         if i == 0 {
             session_three_start = hash;
         }
@@ -486,7 +510,7 @@ fn seed_revisions(state: &mut State, wp: &mut WordProcessorWidget) -> Result<(),
         let start = ui::history_source::entry_id_from_hash(&first.to_string());
         let end = ui::history_source::entry_id_from_hash(&last.to_string());
         ui::history_groups::name_range(&mut state.doc, &start, Some(&end), "Headcount pass");
-        qdoc::history::commit_stamped_at(&mut state.doc, now - 120);
+        ui::tilo_resource::history::commit_stamped_at(&mut state.doc, now - 120);
     }
 
     wp.toggle_history(&mut state.doc);
@@ -591,26 +615,30 @@ fn render_shot(
 mod actor_tests {
     use super::distinct_actor;
 
-    /// Two ids minted inside one process must differ, even though anything
-    /// derived from the process alone (a pid, which is 2 in every sandbox here)
-    /// produces the same string twice — which is exactly what made Automerge
-    /// refuse a second replica's frames as duplicate sequence numbers.
+    /// Two replicas in one process do not share an actor, and the actor still names the application.
     #[test]
-    fn two_replicas_in_one_process_do_not_share_an_actor() {
-        let a = automerge::AutoCommit::new();
-        let b = automerge::AutoCommit::new();
-        assert_ne!(
-            distinct_actor("wp", a.get_actor()),
-            distinct_actor("wp", b.get_actor()),
-            "two replicas were given the same actor id, which is the failure \
-             that silently drops one of them's changes",
-        );
-    }
+    fn each_replica_gets_its_own_actor_that_names_the_application() {
+        // Phase: two_replicas_in_one_process_do_not_share_an_actor.
+        // Two ids minted inside one process must differ, even though anything
+        // derived from the process alone (a pid, which is 2 in every sandbox here)
+        // produces the same string twice — which is exactly what made Automerge
+        // refuse a second replica's frames as duplicate sequence numbers.
+        {
+            let a = automerge::AutoCommit::new();
+            let b = automerge::AutoCommit::new();
+            assert_ne!(
+                distinct_actor("wp", a.get_actor()),
+                distinct_actor("wp", b.get_actor()),
+                "two replicas were given the same actor id, which is the failure \
+                 that silently drops one of them's changes",
+            );
+        }
 
-    /// And it still says what it is, so a history can be read.
-    #[test]
-    fn the_actor_still_names_the_application() {
-        let doc = automerge::AutoCommit::new();
-        assert!(distinct_actor("wp", doc.get_actor()).starts_with("wp-"));
+        // Phase: the_actor_still_names_the_application.
+        // And it still says what it is, so a history can be read.
+        {
+            let doc = automerge::AutoCommit::new();
+            assert!(distinct_actor("wp", doc.get_actor()).starts_with("wp-"));
+        }
     }
 }

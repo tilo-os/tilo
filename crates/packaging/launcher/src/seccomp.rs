@@ -179,27 +179,95 @@ mod tests {
         }
     }
 
-    /// A package cannot lift write-xor-execute off itself by saying so: a
-    /// `.tapp` carries its own manifest, so naming `tilo-jit` is the applicant
-    /// filling in their own permit.
     #[test]
-    fn a_package_the_image_does_not_entitle_gets_the_strict_profile() {
-        let _policy = JitPolicy::listing("so.tilo.browser\n");
+    fn seccomp_profile_needs_both_request_and_entitlement() {
+        // Phase `a_package_the_image_does_not_entitle_gets_the_strict_profile`.
+        // A package cannot lift write-xor-execute off itself by saying so: a
+        // `.tapp` carries its own manifest, so naming `tilo-jit` is the applicant
+        // filling in their own permit.
+        {
+            let _policy = JitPolicy::listing("so.tilo.browser\n");
 
-        let decision = resolve_profile("tilo-jit", "com.example.evil");
+            let decision = resolve_profile("tilo-jit", "com.example.evil");
 
-        assert_eq!(
-            decision.applied,
-            SeccompProfile::TiloDefault,
-            "a manifest asking for tilo-jit without entitlement must be confined \
-             by the strict profile"
-        );
-        assert!(
-            decision.refused,
-            "the launcher has to be able to say a request was refused, or the \
-             log cannot tell a typo from an app trying to weaken itself"
-        );
-        assert_eq!(decision.requested, "tilo-jit");
+            assert_eq!(
+                decision.applied,
+                SeccompProfile::TiloDefault,
+                "a manifest asking for tilo-jit without entitlement must be confined \
+                 by the strict profile"
+            );
+            assert!(
+                decision.refused,
+                "the launcher has to be able to say a request was refused, or the \
+                 log cannot tell a typo from an app trying to weaken itself"
+            );
+            assert_eq!(decision.requested, "tilo-jit");
+        }
+        // Phase `the_package_the_image_entitles_still_gets_what_it_asked_for`.
+        // Entitlement is a gate, not a ban: a rule that broke the browser's
+        // JavaScript tier would take it off the system rather than harden it.
+        {
+            let _policy = JitPolicy::listing("so.tilo.browser\n");
+
+            let decision = resolve_profile("tilo-jit", "so.tilo.browser");
+
+            assert_eq!(decision.applied, SeccompProfile::TiloJit);
+            assert!(!decision.refused);
+        }
+        // Phase `entitlement_without_a_request_changes_nothing`.
+        // The list is a ceiling, not a setting: both sides have to agree.
+        {
+            let _policy = JitPolicy::listing("so.tilo.browser\n");
+
+            let decision = resolve_profile("tilo-default", "so.tilo.browser");
+
+            assert_eq!(
+                decision.applied,
+                SeccompProfile::TiloDefault,
+                "being on the list must not weaken a package that did not ask"
+            );
+            assert!(!decision.refused);
+        }
+        // Phase `a_misspelt_profile_resolves_strict_for_everyone`.
+        // An entitled package must not reach a weaker profile by misspelling one.
+        {
+            let _policy = JitPolicy::listing("so.tilo.browser\n");
+
+            for id in ["so.tilo.browser", "com.example.evil"] {
+                for name in ["tilo-jitt", "TILO-JIT", "", "anything"] {
+                    let decision = resolve_profile(name, id);
+                    assert_eq!(
+                        decision.applied,
+                        SeccompProfile::TiloDefault,
+                        "{id} asking for {name:?} must not reach a weaker profile"
+                    );
+                    assert!(
+                        !decision.refused,
+                        "{name:?} is an unrecognised name, not a refused \
+                         entitlement; the two read differently in the log"
+                    );
+                }
+            }
+        }
+        // Phase `the_manifest_accessor_consults_the_entitlement_policy`.
+        // `Sandbox::seccomp_profile` must not be a way around [`resolve_profile`].
+        {
+            let _policy = JitPolicy::listing("so.tilo.browser\n");
+            let sandbox = crate::manifest::Sandbox {
+                seccomp: "tilo-jit".to_string(),
+                ..crate::manifest::Sandbox::default()
+            };
+
+            assert_eq!(
+                sandbox.seccomp_profile("com.example.evil"),
+                SeccompProfile::TiloDefault,
+                "the manifest accessor must not hand out what the image refused"
+            );
+            assert_eq!(
+                sandbox.seccomp_profile("so.tilo.browser"),
+                SeccompProfile::TiloJit
+            );
+        }
     }
 
     /// The refusal reaches the kernel, not just the enum: a test comparing
@@ -224,128 +292,60 @@ mod tests {
         );
     }
 
-    /// Entitlement is a gate, not a ban: a rule that broke the browser's
-    /// JavaScript tier would take it off the system rather than harden it.
     #[test]
-    fn the_package_the_image_entitles_still_gets_what_it_asked_for() {
-        let _policy = JitPolicy::listing("so.tilo.browser\n");
+    fn seccomp_entitlement_policy_file_replaces_the_builtin_list() {
+        // Phase `a_policy_file_replaces_the_builtin_list`.
+        // A present file replaces the fallback rather than adding to it.
+        {
+            let _policy = JitPolicy::listing("# nobody\n");
 
-        let decision = resolve_profile("tilo-jit", "so.tilo.browser");
-
-        assert_eq!(decision.applied, SeccompProfile::TiloJit);
-        assert!(!decision.refused);
-    }
-
-    /// The list is a ceiling, not a setting: both sides have to agree.
-    #[test]
-    fn entitlement_without_a_request_changes_nothing() {
-        let _policy = JitPolicy::listing("so.tilo.browser\n");
-
-        let decision = resolve_profile("tilo-default", "so.tilo.browser");
-
-        assert_eq!(
-            decision.applied,
-            SeccompProfile::TiloDefault,
-            "being on the list must not weaken a package that did not ask"
-        );
-        assert!(!decision.refused);
-    }
-
-    /// An entitled package must not reach a weaker profile by misspelling one.
-    #[test]
-    fn a_misspelt_profile_resolves_strict_for_everyone() {
-        let _policy = JitPolicy::listing("so.tilo.browser\n");
-
-        for id in ["so.tilo.browser", "com.example.evil"] {
-            for name in ["tilo-jitt", "TILO-JIT", "", "anything"] {
-                let decision = resolve_profile(name, id);
-                assert_eq!(
-                    decision.applied,
-                    SeccompProfile::TiloDefault,
-                    "{id} asking for {name:?} must not reach a weaker profile"
-                );
-                assert!(
-                    !decision.refused,
-                    "{name:?} is an unrecognised name, not a refused \
-                     entitlement; the two read differently in the log"
-                );
-            }
-        }
-    }
-
-    /// A present file replaces the fallback rather than adding to it.
-    #[test]
-    fn a_policy_file_replaces_the_builtin_list() {
-        let _policy = JitPolicy::listing("# nobody\n");
-
-        assert_eq!(
-            resolve_profile("tilo-jit", "so.tilo.browser").applied,
-            SeccompProfile::TiloDefault,
-            "the image's own file decides; the fallback must not add to it"
-        );
-    }
-
-    /// A missing file must degrade to "the browser renders pages" rather than
-    /// to "nothing may generate code".
-    #[test]
-    fn with_no_policy_file_the_builtin_entitlement_still_applies() {
-        let _policy = JitPolicy::missing();
-
-        assert_eq!(
-            resolve_profile("tilo-jit", "so.tilo.browser").applied,
-            SeccompProfile::TiloJit,
-            "fallback list lost the browser"
-        );
-        assert_eq!(
-            resolve_profile("tilo-jit", "com.example.evil").applied,
-            SeccompProfile::TiloDefault,
-            "the fallback must entitle the browser and nobody else"
-        );
-    }
-
-    /// `Sandbox::seccomp_profile` must not be a way around [`resolve_profile`].
-    #[test]
-    fn the_manifest_accessor_consults_the_entitlement_policy() {
-        let _policy = JitPolicy::listing("so.tilo.browser\n");
-        let sandbox = crate::manifest::Sandbox {
-            seccomp: "tilo-jit".to_string(),
-            ..crate::manifest::Sandbox::default()
-        };
-
-        assert_eq!(
-            sandbox.seccomp_profile("com.example.evil"),
-            SeccompProfile::TiloDefault,
-            "the manifest accessor must not hand out what the image refused"
-        );
-        assert_eq!(
-            sandbox.seccomp_profile("so.tilo.browser"),
-            SeccompProfile::TiloJit
-        );
-    }
-
-    /// Two lists that can disagree is a machine whose confinement depends
-    /// on whether a file was copied — a browser that behaves differently
-    /// on one image than another.
-    #[test]
-    fn the_shipped_policy_file_and_the_builtin_list_agree() {
-        let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../os/usr/lib/tilo/jit-entitled.conf");
-        let shipped = std::fs::read_to_string(&repo).unwrap_or_else(|e| {
-            panic!(
-                "the image's entitlement list must be in the tree at {}: {e}",
-                repo.display()
-            )
-        });
-        for id in BUILTIN_JIT_ENTITLED {
-            assert!(
-                crate::hardening::policy_matches(&shipped, id),
-                "{id} is in the compiled-in fallback but not in the file the \
-                 image ships"
+            assert_eq!(
+                resolve_profile("tilo-jit", "so.tilo.browser").applied,
+                SeccompProfile::TiloDefault,
+                "the image's own file decides; the fallback must not add to it"
             );
         }
-        assert!(
-            !crate::hardening::policy_matches(&shipped, "com.example.evil"),
-            "the shipped list must not entitle an arbitrary package"
-        );
+        // Phase `with_no_policy_file_the_builtin_entitlement_still_applies`.
+        // A missing file must degrade to "the browser renders pages" rather than
+        // to "nothing may generate code".
+        {
+            let _policy = JitPolicy::missing();
+
+            assert_eq!(
+                resolve_profile("tilo-jit", "so.tilo.browser").applied,
+                SeccompProfile::TiloJit,
+                "fallback list lost the browser"
+            );
+            assert_eq!(
+                resolve_profile("tilo-jit", "com.example.evil").applied,
+                SeccompProfile::TiloDefault,
+                "the fallback must entitle the browser and nobody else"
+            );
+        }
+        // Phase `the_shipped_policy_file_and_the_builtin_list_agree`.
+        // Two lists that can disagree is a machine whose confinement depends
+        // on whether a file was copied — a browser that behaves differently
+        // on one image than another.
+        {
+            let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../os/usr/lib/tilo/jit-entitled.conf");
+            let shipped = std::fs::read_to_string(&repo).unwrap_or_else(|e| {
+                panic!(
+                    "the image's entitlement list must be in the tree at {}: {e}",
+                    repo.display()
+                )
+            });
+            for id in BUILTIN_JIT_ENTITLED {
+                assert!(
+                    crate::hardening::policy_matches(&shipped, id),
+                    "{id} is in the compiled-in fallback but not in the file the \
+                     image ships"
+                );
+            }
+            assert!(
+                !crate::hardening::policy_matches(&shipped, "com.example.evil"),
+                "the shipped list must not entitle an arbitrary package"
+            );
+        }
     }
 }

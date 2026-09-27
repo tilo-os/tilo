@@ -1295,7 +1295,16 @@ mod tests {
         path: String,
     }
 
+    /// A non-document operation needs no fake action implementation, an operation builder cannot
+    /// switch its declared protocol type, and presentation is bounded before publication.
+    /// Runs each phase below in order; every phase builds its own fixture.
     #[test]
+    fn resource_operations_keep_their_declared_shape_and_bounds() {
+        non_document_operation_needs_no_fake_action_implementation();
+        operation_builder_cannot_switch_its_declared_protocol_type();
+        resource_presentation_is_bounded_before_publication();
+    }
+
     fn non_document_operation_needs_no_fake_action_implementation() {
         let spec = ActionSpec::operation(
             "open",
@@ -1311,7 +1320,18 @@ mod tests {
         assert!(spec.params().is_empty());
     }
 
+    /// Explicit view builders validate open and mount bindings, implicit or unsafe bindings are
+    /// rejected, a typed view binds the schema it advertises, and a binding looks up the real spec and
+    /// validates static arguments.
+    /// Runs each phase below in order; every phase builds its own fixture.
     #[test]
+    fn resource_views_bind_exactly_the_schema_they_advertise() {
+        explicit_resource_view_builders_validate_open_and_mount_bindings();
+        resource_view_validation_rejects_implicit_or_unsafe_bindings();
+        typed_view_binds_the_same_schema_it_advertises();
+        binding_looks_up_real_spec_and_validates_static_arguments();
+    }
+
     fn explicit_resource_view_builders_validate_open_and_mount_bindings() {
         let open = ActionSpec::typed_operation(
             "open",
@@ -1341,7 +1361,6 @@ mod tests {
         assert_eq!(resource.views, vec![view]);
     }
 
-    #[test]
     fn resource_view_validation_rejects_implicit_or_unsafe_bindings() {
         let effect = ActionSpec::typed_operation(
             "open",
@@ -1368,7 +1387,6 @@ mod tests {
         assert!(errors.contains("must name an optional text parameter"));
     }
 
-    #[test]
     fn typed_view_binds_the_same_schema_it_advertises() {
         let spec = ActionSpec::typed_operation(
             "zoom",
@@ -1402,7 +1420,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn operation_builder_cannot_switch_its_declared_protocol_type() {
         let spec = ActionSpec::typed_operation(
             "run",
@@ -1419,7 +1436,6 @@ mod tests {
         assert_eq!(encoded.type_id, INVALID_ARGUMENTS_TYPE);
     }
 
-    #[test]
     fn binding_looks_up_real_spec_and_validates_static_arguments() {
         let resource =
             Resource::new("view:1", "view", "View").with_action(ActionSpec::typed_operation(
@@ -1449,7 +1465,6 @@ mod tests {
         assert!(ActionBinding::unit_for(&resource, "missing").is_err());
     }
 
-    #[test]
     fn resource_presentation_is_bounded_before_publication() {
         let valid = ResourcePresentation {
             detail: Some("19 °C".into()),

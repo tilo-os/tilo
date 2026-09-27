@@ -38,6 +38,11 @@ sha2.workspace = true
 # Token exchange and refresh; only consumers that sign in link an HTTP client.
 tilo-net = { path = "../tilo-net", optional = true, features = ["blocking"] }
 reqwest = { workspace = true, optional = true, features = ["blocking", "form"] }
+# The storage daemon reads short-lived credentials through the cloud source
+# interface; the credential helper runs as a bounded child process.
+cloud-source = { path = "../cloud-source" }
+bounded-command = { path = "../../../crates/system/bounded-command" }
+workspace-hack = { version = "0.1" }
 
 [features]
 http = ["dep:tilo-net", "dep:reqwest"]
@@ -46,7 +51,6 @@ http = ["dep:tilo-net", "dep:reqwest"]
 # Tests stage and inspect key files through the vault's own private-file
 # checks, and edit Windows ACLs through a bounded `icacls` call.
 private-fs = { path = "../private-fs" }
-bounded-command = { path = "../../../crates/system/bounded-command" }
 hex.workspace = true
 
 [lints]

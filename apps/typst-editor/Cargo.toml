@@ -38,6 +38,7 @@ typst-layout = "0.15"
 typst-assets = { version = "0.15", features = ["fonts"] }
 tiny-skia = "0.12"
 comemo = "0.5"
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }

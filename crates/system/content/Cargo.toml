@@ -22,6 +22,7 @@ thiserror.workspace = true
 tracing.workspace = true
 xdg-paths = { path = "../xdg-paths", optional = true }
 runtime-fs = { path = "../../runtime/runtime-fs", optional = true }
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tempfile.workspace = true

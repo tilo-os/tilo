@@ -2114,86 +2114,89 @@ mod tests {
     }
 
     #[test]
-    fn the_paint_probe_reports_an_untouched_scene_as_empty() {
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let scene = Scene::new();
-        let _ = (&theme, &mut tr);
-        assert!(
-            scene.encoding().path_data.is_empty(),
-            "an untouched scene must read as nothing painted, or the \
+    fn opening_card_holds_the_place_only_for_a_worthwhile_wait() {
+        // Case `the_paint_probe_reports_an_untouched_scene_as_empty`.
+        {
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            let scene = Scene::new();
+            let _ = (&theme, &mut tr);
+            assert!(
+                scene.encoding().path_data.is_empty(),
+                "an untouched scene must read as nothing painted, or the \
              held-back case passes for free",
-        );
-    }
+            );
+        }
 
-    #[test]
-    fn a_group_paints_nothing_while_the_wait_is_still_too_short_to_be_one() {
-        let mut g = group_opening("Files", false, false);
-        assert!(
-            !painted_anything(&mut g),
-            "a window frame went up for an app that has not drawn and has \
+        // Case `a_group_paints_nothing_while_the_wait_is_still_too_short_to_be_one`.
+        {
+            let mut g = group_opening("Files", false, false);
+            assert!(
+                !painted_anything(&mut g),
+                "a window frame went up for an app that has not drawn and has \
              not been waiting long enough to say so — which is a card \
              flashing on and off in front of an app that opened fast",
-        );
-    }
+            );
+        }
 
-    #[test]
-    fn a_group_holds_the_window_place_once_the_wait_is_worth_naming() {
-        let mut g = group_opening("Files", false, true);
-        assert!(
-            Widget::opening(&g),
-            "the group must report that it is holding a place",
-        );
-        assert!(
-            painted_anything(&mut g),
-            "the desktop stayed empty for an app the person asked for and \
+        // Case `a_group_holds_the_window_place_once_the_wait_is_worth_naming`.
+        {
+            let mut g = group_opening("Files", false, true);
+            assert!(
+                Widget::opening(&g),
+                "the group must report that it is holding a place",
+            );
+            assert!(
+                painted_anything(&mut g),
+                "the desktop stayed empty for an app the person asked for and \
              is still waiting on — the whole defect this exists to fix",
-        );
-    }
+            );
+        }
 
-    /// A card reading `so.tilo.file-explorer` is the failure this guards:
-    /// the person asked for Files, and a package id is not an answer.
-    #[test]
-    fn the_card_takes_the_apps_name_from_its_tab() {
-        let mut g = group_opening("Files", false, true);
-        let _ = painted_anything(&mut g);
-        let (_, host) = g.hosts.first().expect("the group has its one tab");
-        assert_eq!(
-            host.opening_name_for_test(),
-            "Files",
-            "the card must say what the tab says; anything else is two \
+        // Case `the_card_takes_the_apps_name_from_its_tab`.
+        // A card reading `so.tilo.file-explorer` is the failure this guards:
+        // the person asked for Files, and a package id is not an answer.
+        {
+            let mut g = group_opening("Files", false, true);
+            let _ = painted_anything(&mut g);
+            let (_, host) = g.hosts.first().expect("the group has its one tab");
+            assert_eq!(
+                host.opening_name_for_test(),
+                "Files",
+                "the card must say what the tab says; anything else is two \
              names for one window",
-        );
-    }
+            );
+        }
 
-    #[test]
-    fn a_group_with_a_live_window_is_never_holding_a_place() {
-        let tabs: Vec<(TabDescriptor, TileContent)> = vec![
-            (
-                TabDescriptor::new(1, "Files"),
-                TileContent::App(Box::new(Starting {
-                    presented: true,
-                    opening: false,
-                })),
-            ),
-            (
-                TabDescriptor::new(2, "Notes"),
-                TileContent::App(Box::new(Starting {
-                    presented: false,
-                    opening: true,
-                })),
-            ),
-        ];
-        let g = WindowGroup::new(10, tabs, 1, WindowWidth::Normal);
-        assert!(
-            Widget::presented(&g),
-            "one of its tabs is a window on screen"
-        );
-        assert!(
-            !Widget::opening(&g),
-            "a group holding a window the person is using must never be \
+        // Case `a_group_with_a_live_window_is_never_holding_a_place`.
+        {
+            let tabs: Vec<(TabDescriptor, TileContent)> = vec![
+                (
+                    TabDescriptor::new(1, "Files"),
+                    TileContent::App(Box::new(Starting {
+                        presented: true,
+                        opening: false,
+                    })),
+                ),
+                (
+                    TabDescriptor::new(2, "Notes"),
+                    TileContent::App(Box::new(Starting {
+                        presented: false,
+                        opening: true,
+                    })),
+                ),
+            ];
+            let g = WindowGroup::new(10, tabs, 1, WindowWidth::Normal);
+            assert!(
+                Widget::presented(&g),
+                "one of its tabs is a window on screen"
+            );
+            assert!(
+                !Widget::opening(&g),
+                "a group holding a window the person is using must never be \
              replaced by a card about the tab beside it",
-        );
+            );
+        }
     }
 
     /// Mirrors `ForeignSurfaceWidget`: being *asked* `presented()` is what
@@ -2313,58 +2316,61 @@ mod tests {
     }
 
     #[test]
-    fn every_tab_in_a_group_is_asked_whether_its_window_has_drawn() {
-        let (g, latched, asked) = group_of_two(true, true);
+    fn opening_card_retires_when_any_tab_window_has_drawn() {
+        // Case `every_tab_in_a_group_is_asked_whether_its_window_has_drawn`.
+        {
+            let (g, latched, asked) = group_of_two(true, true);
 
-        assert!(Widget::presented(&g), "both of its tabs have drawn");
-        assert!(
-            asked.get() > 0,
-            "the second tab was never asked whether its window had drawn, so \
+            assert!(Widget::presented(&g), "both of its tabs have drawn");
+            assert!(
+                asked.get() > 0,
+                "the second tab was never asked whether its window had drawn, so \
              nothing recorded that it had",
-        );
-        assert!(
-            latched.get(),
-            "a window that has drawn must end up marked as having drawn",
-        );
-        assert!(
-            !Widget::opening(&g),
-            "and must not still be holding its own place",
-        );
-    }
+            );
+            assert!(
+                latched.get(),
+                "a window that has drawn must end up marked as having drawn",
+            );
+            assert!(
+                !Widget::opening(&g),
+                "and must not still be holding its own place",
+            );
+        }
 
-    #[test]
-    fn a_drawn_window_behind_another_tab_retires_its_opening_card() {
-        let (g, _latched, _asked) = group_of_two(true, true);
-        let _ = Widget::presented(&g);
-        let host = g
-            .hosts
-            .iter()
-            .find(|(id, _)| *id == 2)
-            .map(|(_, h)| h)
-            .expect("the group holds the tab it was built with");
-        assert!(
-            !Widget::opening(host),
-            "the card holding this window's place must be gone: the window is \
+        // Case `a_drawn_window_behind_another_tab_retires_its_opening_card`.
+        {
+            let (g, _latched, _asked) = group_of_two(true, true);
+            let _ = Widget::presented(&g);
+            let host = g
+                .hosts
+                .iter()
+                .find(|(id, _)| *id == 2)
+                .map(|(_, h)| h)
+                .expect("the group holds the tab it was built with");
+            assert!(
+                !Widget::opening(host),
+                "the card holding this window's place must be gone: the window is \
              drawn, populated, and the one on screen",
-        );
-    }
+            );
+        }
 
-    #[test]
-    fn a_window_that_has_not_drawn_still_holds_its_place() {
-        let (g, latched, _asked) = group_of_two(true, false);
-        let _ = Widget::presented(&g);
-        assert!(
-            !latched.get(),
-            "asking is not answering — a window that has not drawn must not be \
+        // Case `a_window_that_has_not_drawn_still_holds_its_place`.
+        {
+            let (g, latched, _asked) = group_of_two(true, false);
+            let _ = Widget::presented(&g);
+            assert!(
+                !latched.get(),
+                "asking is not answering — a window that has not drawn must not be \
              recorded as having drawn",
-        );
-        let host = g
-            .hosts
-            .iter()
-            .find(|(id, _)| *id == 2)
-            .map(|(_, h)| h)
-            .expect("the group holds the tab it was built with");
-        assert!(Widget::opening(host), "its place is still being held");
+            );
+            let host = g
+                .hosts
+                .iter()
+                .find(|(id, _)| *id == 2)
+                .map(|(_, h)| h)
+                .expect("the group holds the tab it was built with");
+            assert!(Widget::opening(host), "its place is still being held");
+        }
     }
 
     // Common `handle_event` shape shared by every dispatch in the
@@ -2488,301 +2494,411 @@ mod tests {
     }
 
     #[test]
-    fn maximize_click_on_tab_pill_toggles_window_group_maximized() {
-        let (mut g, taffy, group_node, mut state, root_id, mut focus_target, moved, press) =
-            open_maximize_chip();
+    fn maximize_toggles_rebuild_layout_and_drain_once() {
+        // Case `maximize_click_on_tab_pill_toggles_window_group_maximized`.
+        {
+            let (mut g, taffy, group_node, mut state, root_id, mut focus_target, moved, press) =
+                open_maximize_chip();
 
-        // Seed last_cursor on the icon — the bar's press arm uses the
-        // cached cursor for its fresh hit-test.
-        dispatch(
-            &mut g,
-            &moved,
-            &mut state,
-            &root_id,
-            &mut focus_target,
-            group_node,
-            &taffy,
-        );
-        let handled = dispatch(
-            &mut g,
-            &press,
-            &mut state,
-            &root_id,
-            &mut focus_target,
-            group_node,
-            &taffy,
-        );
+            // Seed last_cursor on the icon — the bar's press arm uses the
+            // cached cursor for its fresh hit-test.
+            dispatch(
+                &mut g,
+                &moved,
+                &mut state,
+                &root_id,
+                &mut focus_target,
+                group_node,
+                &taffy,
+            );
+            let handled = dispatch(
+                &mut g,
+                &press,
+                &mut state,
+                &root_id,
+                &mut focus_target,
+                group_node,
+                &taffy,
+            );
 
-        assert!(handled, "press on the maximize icon must be claimed");
-        assert!(
-            g.maximized,
-            "maximize click on a tab pill must drive WindowGroup::maximized true",
-        );
+            assert!(handled, "press on the maximize icon must be claimed");
+            assert!(
+                g.maximized,
+                "maximize click on a tab pill must drive WindowGroup::maximized true",
+            );
 
-        dispatch(
-            &mut g,
-            &moved,
-            &mut state,
-            &root_id,
-            &mut focus_target,
-            group_node,
-            &taffy,
-        );
-        dispatch(
-            &mut g,
-            &press,
-            &mut state,
-            &root_id,
-            &mut focus_target,
-            group_node,
-            &taffy,
-        );
-        assert!(
-            !g.maximized,
-            "second maximize click must restore (toggle off)",
-        );
-    }
+            dispatch(
+                &mut g,
+                &moved,
+                &mut state,
+                &root_id,
+                &mut focus_target,
+                group_node,
+                &taffy,
+            );
+            dispatch(
+                &mut g,
+                &press,
+                &mut state,
+                &root_id,
+                &mut focus_target,
+                group_node,
+                &taffy,
+            );
+            assert!(
+                !g.maximized,
+                "second maximize click must restore (toggle off)",
+            );
+        }
 
-    #[test]
-    fn maximize_toggle_marks_structure_dirty_for_layout_rebuild() {
-        use taffy::prelude::TaffyMaxContent;
+        // Case `maximize_toggle_marks_structure_dirty_for_layout_rebuild`.
+        {
+            use taffy::prelude::TaffyMaxContent;
 
-        let mut g = make_group();
-        assert!(!g.take_structure_dirty(), "fresh group is not dirty");
+            let mut g = make_group();
+            assert!(!g.take_structure_dirty(), "fresh group is not dirty");
 
-        // Simulate the bar publishing a maximize request, same path the
-        // per-tab click hits.
-        g.bar.pending_max = Some(1);
-        let mut handled = false;
-        let mut focus_target = None;
-        let mut state = automerge::AutoCommit::new();
-        let root_id = automerge::ROOT;
-        let mut taffy = TaffyTree::<()>::new();
-        let mut node_map: std::collections::HashMap<NodeId, *mut dyn Widget> =
-            std::collections::HashMap::new();
-        let group_node = g.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
-        let root = taffy.parent_node(Style::default(), &[group_node]);
-        taffy
-            .compute_layout(root, taffy::Size::MAX_CONTENT)
-            .unwrap();
-        let moved = WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: winit::dpi::PhysicalPosition::new(9000.0, 9000.0),
-        };
-        g.handle_event(
-            &moved,
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut state,
-            &root_id,
-            &mut handled,
-            &mut focus_target,
-            group_node,
-            &taffy,
-        );
-
-        assert!(g.maximized, "maximize drain must flip the flag");
-        assert!(
-            g.take_structure_dirty(),
-            "maximize toggle must report structure dirty so App re-runs build_layout",
-        );
-        // Drained — second poll within the same frame is clean.
-        assert!(!g.take_structure_dirty(), "structure_dirty drains on poll");
-    }
-
-    #[test]
-    fn active_tab_switch_marks_structure_dirty_for_layout_rebuild() {
-        use std::collections::HashMap;
-        use taffy::Style;
-        use taffy::prelude::TaffyMaxContent;
-
-        let mut g = make_group();
-        assert!(!g.take_structure_dirty(), "fresh group is not dirty");
-
-        // Real build so `built_active` is stamped for the active tab.
-        let theme = Theme::dark();
-        let mut taffy = TaffyTree::<()>::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let group_node = g.build_layout(&mut taffy, &theme, &mut node_map);
-        let root = taffy.parent_node(Style::default(), &[group_node]);
-        taffy
-            .compute_layout(root, taffy::Size::MAX_CONTENT)
-            .unwrap();
-        g.apply_layout(&taffy, group_node, Point::ZERO);
-        assert!(
-            !g.take_structure_dirty(),
-            "a built group with no tab switch stays clean",
-        );
-
-        // Same as the wheel-cycle / click path: mutates `active_id` only.
-        assert!(g.cycle_active_tab(1), "cycle must change the active tab");
-        assert!(
-            g.take_structure_dirty(),
-            "active-tab switch must report structure dirty so the new tile gets a node",
-        );
-
-        // Once the host rebuilds for the new active tab, it drains clean.
-        let mut taffy2 = TaffyTree::<()>::new();
-        let mut node_map2: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let _ = g.build_layout(&mut taffy2, &theme, &mut node_map2);
-        assert!(
-            !g.take_structure_dirty(),
-            "structure_dirty drains once the host rebuilds for the new active tab",
-        );
-    }
-
-    #[test]
-    fn take_pending_maximize_change_drains_on_tab_bar_toggle() {
-        use std::collections::HashMap;
-        use taffy::Style;
-        use taffy::prelude::TaffyMaxContent;
-
-        let mut g = make_group();
-        assert_eq!(
-            g.take_pending_maximize_change(),
-            None,
-            "no pending change before any click",
-        );
-
-        // Prime `pending_max` and run a no-op cursor-move through
-        // `handle_event` to drive the drain block.
-        g.bar.pending_max = Some(1);
-        let mut taffy = TaffyTree::<()>::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let group_node = g.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
-        let root = taffy.parent_node(Style::default(), &[group_node]);
-        taffy
-            .compute_layout(root, taffy::Size::MAX_CONTENT)
-            .unwrap();
-        let moved = WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: winit::dpi::PhysicalPosition::new(9000.0, 9000.0),
-        };
-        let mut state = automerge::AutoCommit::new();
-        let root_id = automerge::ROOT;
-        let mut handled = false;
-        let mut focus_target = None;
-        g.handle_event(
-            &moved,
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut state,
-            &root_id,
-            &mut handled,
-            &mut focus_target,
-            group_node,
-            &taffy,
-        );
-
-        assert!(g.maximized, "drain must flip maximized true");
-        assert_eq!(
-            g.take_pending_maximize_change(),
-            Some(true),
-            "first poll after the click reports the new value",
-        );
-        assert_eq!(
-            g.take_pending_maximize_change(),
-            None,
-            "take-pattern: drained on first poll, second poll is None",
-        );
-
-        // A second toggle reports the flipped value — the take-pattern
-        // is one-shot but re-armable, so the shell sees every flip.
-        g.bar.pending_max = Some(1);
-        let mut handled = false;
-        g.handle_event(
-            &moved,
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut state,
-            &root_id,
-            &mut handled,
-            &mut focus_target,
-            group_node,
-            &taffy,
-        );
-        assert!(!g.maximized, "second drain must flip back to false");
-        assert_eq!(
-            g.take_pending_maximize_change(),
-            Some(false),
-            "the second click reports the new (false) value once",
-        );
-    }
-
-    #[test]
-    fn resize_drag_changes_laid_out_width() {
-        use std::collections::HashMap;
-        use taffy::Style;
-        use taffy::prelude::TaffyMaxContent;
-
-        // Helper: (re)build the taffy tree from the group's current state and
-        // run a full layout pass, returning the group's laid-out width.
-        fn layout_width(g: &mut WindowGroup, theme: &Theme) -> f64 {
+            // Simulate the bar publishing a maximize request, same path the
+            // per-tab click hits.
+            g.bar.pending_max = Some(1);
+            let mut handled = false;
+            let mut focus_target = None;
+            let mut state = automerge::AutoCommit::new();
+            let root_id = automerge::ROOT;
             let mut taffy = TaffyTree::<()>::new();
-            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-            let node = g.build_layout(&mut taffy, theme, &mut node_map);
-            let root = taffy.parent_node(Style::default(), &[node]);
+            let mut node_map: std::collections::HashMap<NodeId, *mut dyn Widget> =
+                std::collections::HashMap::new();
+            let group_node = g.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
+            let root = taffy.parent_node(Style::default(), &[group_node]);
             taffy
                 .compute_layout(root, taffy::Size::MAX_CONTENT)
                 .unwrap();
-            g.apply_layout(&taffy, node, Point::ZERO);
-            g.get_rect().width()
+            let moved = WindowEvent::CursorMoved {
+                device_id: unsafe { std::mem::zeroed() },
+                position: winit::dpi::PhysicalPosition::new(9000.0, 9000.0),
+            };
+            g.handle_event(
+                &moved,
+                1.0,
+                &winit::event::Modifiers::default(),
+                &mut state,
+                &root_id,
+                &mut handled,
+                &mut focus_target,
+                group_node,
+                &taffy,
+            );
+
+            assert!(g.maximized, "maximize drain must flip the flag");
+            assert!(
+                g.take_structure_dirty(),
+                "maximize toggle must report structure dirty so App re-runs build_layout",
+            );
+            // Drained — second poll within the same frame is clean.
+            assert!(!g.take_structure_dirty(), "structure_dirty drains on poll");
         }
 
-        let theme = Theme::dark();
-        let mut g = make_group();
+        // Case `active_tab_switch_marks_structure_dirty_for_layout_rebuild`.
+        {
+            use std::collections::HashMap;
+            use taffy::Style;
+            use taffy::prelude::TaffyMaxContent;
 
-        // 1200 px strip: tiers land on whole hundreds (Narrow 400 /
-        // Normal 800 / Wide 1200).
-        g.set_strip_usable_px(1200.0);
-        let _ = g.take_structure_dirty();
+            let mut g = make_group();
+            assert!(!g.take_structure_dirty(), "fresh group is not dirty");
 
-        let before = layout_width(&mut g, &theme);
-        assert_eq!(
-            before, 800.0,
-            "make_group() starts at WindowWidth::Normal — two thirds of a \
-             1200 px strip",
-        );
+            // Real build so `built_active` is stamped for the active tab.
+            let theme = Theme::dark();
+            let mut taffy = TaffyTree::<()>::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let group_node = g.build_layout(&mut taffy, &theme, &mut node_map);
+            let root = taffy.parent_node(Style::default(), &[group_node]);
+            taffy
+                .compute_layout(root, taffy::Size::MAX_CONTENT)
+                .unwrap();
+            g.apply_layout(&taffy, group_node, Point::ZERO);
+            assert!(
+                !g.take_structure_dirty(),
+                "a built group with no tab switch stays clean",
+            );
 
-        // Drag the right-edge handle +200 px.
-        g.begin_resize(800.0);
-        g.update_resize(1000.0);
-        assert_eq!(
-            g.resolved_width_px(),
-            1000.0,
-            "drag updates the width field",
-        );
-        assert_eq!(
-            g.width(),
-            WindowWidth::Fraction(833),
-            "the drag is stored as the fraction it landed on (1000/1200), \
-             not as a pixel count",
-        );
+            // Same as the wheel-cycle / click path: mutates `active_id` only.
+            assert!(g.cycle_active_tab(1), "cycle must change the active tab");
+            assert!(
+                g.take_structure_dirty(),
+                "active-tab switch must report structure dirty so the new tile gets a node",
+            );
 
-        assert!(
-            g.take_structure_dirty(),
-            "a width change must report structure-dirty so the taffy node's \
-             baked length is rebuilt",
-        );
+            // Once the host rebuilds for the new active tab, it drains clean.
+            let mut taffy2 = TaffyTree::<()>::new();
+            let mut node_map2: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let _ = g.build_layout(&mut taffy2, &theme, &mut node_map2);
+            assert!(
+                !g.take_structure_dirty(),
+                "structure_dirty drains once the host rebuilds for the new active tab",
+            );
+        }
 
-        let after = layout_width(&mut g, &theme);
-        assert_eq!(
-            after, 1000.0,
-            "after the rebuild the group must actually be laid out 200 px wider",
-        );
+        // Case `take_pending_maximize_change_drains_on_tab_bar_toggle`.
+        {
+            use std::collections::HashMap;
+            use taffy::Style;
+            use taffy::prelude::TaffyMaxContent;
+
+            let mut g = make_group();
+            assert_eq!(
+                g.take_pending_maximize_change(),
+                None,
+                "no pending change before any click",
+            );
+
+            // Prime `pending_max` and run a no-op cursor-move through
+            // `handle_event` to drive the drain block.
+            g.bar.pending_max = Some(1);
+            let mut taffy = TaffyTree::<()>::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let group_node = g.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
+            let root = taffy.parent_node(Style::default(), &[group_node]);
+            taffy
+                .compute_layout(root, taffy::Size::MAX_CONTENT)
+                .unwrap();
+            let moved = WindowEvent::CursorMoved {
+                device_id: unsafe { std::mem::zeroed() },
+                position: winit::dpi::PhysicalPosition::new(9000.0, 9000.0),
+            };
+            let mut state = automerge::AutoCommit::new();
+            let root_id = automerge::ROOT;
+            let mut handled = false;
+            let mut focus_target = None;
+            g.handle_event(
+                &moved,
+                1.0,
+                &winit::event::Modifiers::default(),
+                &mut state,
+                &root_id,
+                &mut handled,
+                &mut focus_target,
+                group_node,
+                &taffy,
+            );
+
+            assert!(g.maximized, "drain must flip maximized true");
+            assert_eq!(
+                g.take_pending_maximize_change(),
+                Some(true),
+                "first poll after the click reports the new value",
+            );
+            assert_eq!(
+                g.take_pending_maximize_change(),
+                None,
+                "take-pattern: drained on first poll, second poll is None",
+            );
+
+            // A second toggle reports the flipped value — the take-pattern
+            // is one-shot but re-armable, so the shell sees every flip.
+            g.bar.pending_max = Some(1);
+            let mut handled = false;
+            g.handle_event(
+                &moved,
+                1.0,
+                &winit::event::Modifiers::default(),
+                &mut state,
+                &root_id,
+                &mut handled,
+                &mut focus_target,
+                group_node,
+                &taffy,
+            );
+            assert!(!g.maximized, "second drain must flip back to false");
+            assert_eq!(
+                g.take_pending_maximize_change(),
+                Some(false),
+                "the second click reports the new (false) value once",
+            );
+        }
+
+        // Case `maximized_group_gives_all_its_height_to_the_app`.
+        {
+            use std::collections::HashMap;
+            use taffy::Style;
+            use taffy::prelude::TaffyMaxContent;
+
+            // Lay a group out and report (group_height, tile_height).
+            fn measure(g: &mut WindowGroup, theme: &Theme) -> (f64, f64) {
+                let mut taffy = TaffyTree::<()>::new();
+                let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+                let node = g.build_layout(&mut taffy, theme, &mut node_map);
+                let root = taffy.parent_node(
+                    Style {
+                        size: Size {
+                            width: Dimension::length(1600.0),
+                            height: Dimension::length(900.0),
+                        },
+                        ..Default::default()
+                    },
+                    &[node],
+                );
+                taffy
+                    .compute_layout(root, taffy::Size::MAX_CONTENT)
+                    .unwrap();
+                g.apply_layout(&taffy, node, Point::ZERO);
+                let tile = taffy.children(node).unwrap()[1];
+                let tile_h = f64::from(taffy.layout(tile).copied().unwrap_or_default().size.height);
+                (g.get_rect().height(), tile_h)
+            }
+
+            let theme = Theme::dark();
+            let mut g = make_group();
+            let (group_h, tile_h) = measure(&mut g, &theme);
+            assert!(
+                tile_h < group_h,
+                "while tiled, the tab strip takes height off the app: \
+             group={group_h} tile={tile_h}",
+            );
+
+            g.maximized = true;
+            let (group_h, tile_h) = measure(&mut g, &theme);
+            assert_eq!(
+                tile_h, group_h,
+                "maximized: the app must get the group's full height (no reserved \
+             tab-strip band)",
+            );
+        }
+
+        // Case `maximized_restore_rebuilds_the_tiled_layout`.
+        {
+            use std::collections::HashMap;
+            use taffy::Style;
+            use taffy::prelude::TaffyMaxContent;
+            use winit::event::{ElementState, MouseButton};
+
+            let mut g = make_group();
+            let mut taffy = TaffyTree::<()>::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let group_node = g.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
+            let root = taffy.parent_node(Style::default(), &[group_node]);
+            taffy
+                .compute_layout(root, taffy::Size::MAX_CONTENT)
+                .unwrap();
+            g.apply_layout(&taffy, group_node, Point::ZERO);
+            assert!(!g.take_structure_dirty());
+
+            g.maximized = true;
+            g.restore_rect = Rect::new(0.0, 0.0, 80.0, 40.0);
+            g.last_cursor = Point::new(20.0, 20.0);
+            let press = WindowEvent::MouseInput {
+                device_id: unsafe { std::mem::zeroed() },
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            };
+            let mut handled = false;
+            let mut focus_target = None;
+            let mut state = automerge::AutoCommit::new();
+            g.handle_event(
+                &press,
+                1.0,
+                &winit::event::Modifiers::default(),
+                &mut state,
+                &automerge::ROOT,
+                &mut handled,
+                &mut focus_target,
+                group_node,
+                &taffy,
+            );
+
+            assert!(handled);
+            assert!(!g.maximized);
+            assert_eq!(g.take_pending_maximize_change(), Some(false));
+            assert!(
+                g.take_structure_dirty(),
+                "restore must invalidate the cached maximized geometry",
+            );
+        }
     }
 
     #[test]
-    fn maximized_group_gives_all_its_height_to_the_app() {
-        use std::collections::HashMap;
-        use taffy::Style;
-        use taffy::prelude::TaffyMaxContent;
+    fn resize_gesture_anchors_on_press_changes_width_and_drains_once() {
+        // Case `resize_drag_changes_laid_out_width`.
+        {
+            use std::collections::HashMap;
+            use taffy::Style;
+            use taffy::prelude::TaffyMaxContent;
 
-        // Lay a group out and report (group_height, tile_height).
-        fn measure(g: &mut WindowGroup, theme: &Theme) -> (f64, f64) {
+            // Helper: (re)build the taffy tree from the group's current state and
+            // run a full layout pass, returning the group's laid-out width.
+            fn layout_width(g: &mut WindowGroup, theme: &Theme) -> f64 {
+                let mut taffy = TaffyTree::<()>::new();
+                let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+                let node = g.build_layout(&mut taffy, theme, &mut node_map);
+                let root = taffy.parent_node(Style::default(), &[node]);
+                taffy
+                    .compute_layout(root, taffy::Size::MAX_CONTENT)
+                    .unwrap();
+                g.apply_layout(&taffy, node, Point::ZERO);
+                g.get_rect().width()
+            }
+
+            let theme = Theme::dark();
+            let mut g = make_group();
+
+            // 1200 px strip: tiers land on whole hundreds (Narrow 400 /
+            // Normal 800 / Wide 1200).
+            g.set_strip_usable_px(1200.0);
+            let _ = g.take_structure_dirty();
+
+            let before = layout_width(&mut g, &theme);
+            assert_eq!(
+                before, 800.0,
+                "make_group() starts at WindowWidth::Normal — two thirds of a \
+             1200 px strip",
+            );
+
+            // Drag the right-edge handle +200 px.
+            g.begin_resize(800.0);
+            g.update_resize(1000.0);
+            assert_eq!(
+                g.resolved_width_px(),
+                1000.0,
+                "drag updates the width field",
+            );
+            assert_eq!(
+                g.width(),
+                WindowWidth::Fraction(833),
+                "the drag is stored as the fraction it landed on (1000/1200), \
+             not as a pixel count",
+            );
+
+            assert!(
+                g.take_structure_dirty(),
+                "a width change must report structure-dirty so the taffy node's \
+             baked length is rebuilt",
+            );
+
+            let after = layout_width(&mut g, &theme);
+            assert_eq!(
+                after, 1000.0,
+                "after the rebuild the group must actually be laid out 200 px wider",
+            );
+        }
+
+        // Case `resize_grab_anchors_on_press_position_not_group_edge`.
+        // Drives the real event path (`CursorMoved` → `Pressed` → `CursorMoved`)
+        // since calling `begin_resize` directly would hide the bug, which is
+        // in its caller.
+        {
+            use std::collections::HashMap;
+            use taffy::Style;
+            use taffy::prelude::TaffyMaxContent;
+            use winit::event::{ElementState, MouseButton};
+
+            let theme = Theme::dark();
+            let mut g = make_group();
             let mut taffy = TaffyTree::<()>::new();
             let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-            let node = g.build_layout(&mut taffy, theme, &mut node_map);
+            let node = g.build_layout(&mut taffy, &theme, &mut node_map);
+            // Definite-size root: `percent(1.0)` height resolves to 0 against
+            // an indefinite parent, which would leave the resize handle's
+            // rect empty and unhittable.
             let root = taffy.parent_node(
                 Style {
                     size: Size {
@@ -2797,310 +2913,480 @@ mod tests {
                 .compute_layout(root, taffy::Size::MAX_CONTENT)
                 .unwrap();
             g.apply_layout(&taffy, node, Point::ZERO);
-            let tile = taffy.children(node).unwrap()[1];
-            let tile_h = f64::from(taffy.layout(tile).copied().unwrap_or_default().size.height);
-            (g.get_rect().height(), tile_h)
+
+            let rect = g.get_rect();
+            assert!(
+                rect.height() > 0.0,
+                "group must have a real height to hit-test"
+            );
+            let right_edge = rect.x1;
+            let press_y = rect.center().y;
+            let start_w = g.resolved_width_px();
+            // Press 3 px inside the handle zone (still a valid grab) rather than
+            // exactly on the edge.
+            let press_x = right_edge - 3.0;
+
+            let mut state = automerge::AutoCommit::new();
+            let root_id = automerge::ROOT;
+            let mods = winit::event::Modifiers::default();
+            let mut focus = None;
+
+            let mut dispatch = |g: &mut WindowGroup, ev: &WindowEvent, taffy: &TaffyTree<()>| {
+                let mut handled = false;
+                g.handle_event(
+                    ev,
+                    1.0,
+                    &mods,
+                    &mut state,
+                    &root_id,
+                    &mut handled,
+                    &mut focus,
+                    node,
+                    taffy,
+                );
+            };
+
+            let move_to = |x: f64| WindowEvent::CursorMoved {
+                device_id: unsafe { std::mem::zeroed() },
+                position: winit::dpi::PhysicalPosition::new(x, press_y),
+            };
+            let press = WindowEvent::MouseInput {
+                device_id: unsafe { std::mem::zeroed() },
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            };
+
+            dispatch(&mut g, &move_to(press_x), &taffy);
+            dispatch(&mut g, &press, &taffy);
+            // Drag exactly +100 px from the press position.
+            dispatch(&mut g, &move_to(press_x + 100.0), &taffy);
+
+            assert_eq!(
+                g.resolved_width_px(),
+                start_w + 100.0,
+                "a 100 px drag from the press point must widen the group by exactly \
+             100 px (no jump from anchoring on the group edge)",
+            );
         }
 
-        let theme = Theme::dark();
-        let mut g = make_group();
-        let (group_h, tile_h) = measure(&mut g, &theme);
-        assert!(
-            tile_h < group_h,
-            "while tiled, the tab strip takes height off the app: \
-             group={group_h} tile={tile_h}",
-        );
+        // Case `cursor_shape_is_ew_resize_over_right_edge_band`.
+        {
+            use std::collections::HashMap;
+            use taffy::Style;
+            use taffy::prelude::TaffyMaxContent;
 
-        g.maximized = true;
-        let (group_h, tile_h) = measure(&mut g, &theme);
-        assert_eq!(
-            tile_h, group_h,
-            "maximized: the app must get the group's full height (no reserved \
-             tab-strip band)",
-        );
-    }
-
-    #[test]
-    fn take_pending_tab_reorder_drains_after_a_reorder() {
-        use std::collections::HashMap;
-        use taffy::Style;
-        use taffy::prelude::TaffyMaxContent;
-
-        let theme = Theme::dark();
-        let mut g = make_group();
-        assert_eq!(
-            g.take_pending_tab_reorder(),
-            None,
-            "nothing pending initially"
-        );
-
-        let mut taffy = TaffyTree::<()>::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let node = g.build_layout(&mut taffy, &theme, &mut node_map);
-        let root = taffy.parent_node(Style::default(), &[node]);
-        taffy
-            .compute_layout(root, taffy::Size::MAX_CONTENT)
-            .unwrap();
-
-        // Publish a reorder the same way the bar does on a drag release, then
-        // pump the group's drain block via a harmless event.
-        g.bar_mut_for_tests().pending_reorder = Some((0, 1));
-        let mut handled = false;
-        let mut focus = None;
-        let mut state = automerge::AutoCommit::new();
-        let root_id = automerge::ROOT;
-        let moved = WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: winit::dpi::PhysicalPosition::new(9000.0, 9000.0),
-        };
-        g.handle_event(
-            &moved,
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut state,
-            &root_id,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
-        );
-
-        assert_eq!(
-            g.take_pending_tab_reorder(),
-            Some((0, 1)),
-            "a harvested reorder publishes (from, to) for the shell exactly once",
-        );
-        assert_eq!(
-            g.take_pending_tab_reorder(),
-            None,
-            "take-pattern: drained on the first poll",
-        );
-    }
-
-    /// Drives the real event path (`CursorMoved` → `Pressed` → `CursorMoved`)
-    /// since calling `begin_resize` directly would hide the bug, which is
-    /// in its caller.
-    #[test]
-    fn resize_grab_anchors_on_press_position_not_group_edge() {
-        use std::collections::HashMap;
-        use taffy::Style;
-        use taffy::prelude::TaffyMaxContent;
-        use winit::event::{ElementState, MouseButton};
-
-        let theme = Theme::dark();
-        let mut g = make_group();
-        let mut taffy = TaffyTree::<()>::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let node = g.build_layout(&mut taffy, &theme, &mut node_map);
-        // Definite-size root: `percent(1.0)` height resolves to 0 against
-        // an indefinite parent, which would leave the resize handle's
-        // rect empty and unhittable.
-        let root = taffy.parent_node(
-            Style {
-                size: Size {
-                    width: Dimension::length(1600.0),
-                    height: Dimension::length(900.0),
+            let theme = Theme::dark();
+            let mut g = make_group();
+            let mut taffy = TaffyTree::<()>::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let node = g.build_layout(&mut taffy, &theme, &mut node_map);
+            let root = taffy.parent_node(
+                Style {
+                    size: Size {
+                        width: Dimension::length(1600.0),
+                        height: Dimension::length(900.0),
+                    },
+                    ..Default::default()
                 },
-                ..Default::default()
-            },
-            &[node],
-        );
-        taffy
-            .compute_layout(root, taffy::Size::MAX_CONTENT)
-            .unwrap();
-        g.apply_layout(&taffy, node, Point::ZERO);
+                &[node],
+            );
+            taffy
+                .compute_layout(root, taffy::Size::MAX_CONTENT)
+                .unwrap();
+            g.apply_layout(&taffy, node, Point::ZERO);
 
-        let rect = g.get_rect();
-        assert!(
-            rect.height() > 0.0,
-            "group must have a real height to hit-test"
-        );
-        let right_edge = rect.x1;
-        let press_y = rect.center().y;
-        let start_w = g.resolved_width_px();
-        // Press 3 px inside the handle zone (still a valid grab) rather than
-        // exactly on the edge.
-        let press_x = right_edge - 3.0;
+            let rect = g.get_rect();
+            assert!(
+                rect.height() > 0.0,
+                "group must have a real height to hit-test"
+            );
+            let cy = rect.center().y;
 
-        let mut state = automerge::AutoCommit::new();
-        let root_id = automerge::ROOT;
-        let mods = winit::event::Modifiers::default();
-        let mut focus = None;
+            // 3 px inside the right edge → inside the RESIZE_HANDLE_PX band.
+            assert_eq!(
+                Widget::cursor_shape(&g, Point::new(rect.x1 - 3.0, cy)),
+                Some(winit::window::CursorIcon::EwResize),
+                "pointer in the right-edge resize band requests an east-west resize cursor",
+            );
+            // Well inside the group, away from the edge → no cursor claim.
+            assert_eq!(
+                Widget::cursor_shape(&g, Point::new(rect.center().x, cy)),
+                None,
+                "pointer over the group body (not the edge band) defers",
+            );
 
-        let mut dispatch = |g: &mut WindowGroup, ev: &WindowEvent, taffy: &TaffyTree<()>| {
+            // In-flight resize drag holds the cursor even off the band —
+            // pointer capture keeps the gesture alive.
+            g.begin_resize(px_f32(rect.x1));
+            assert_eq!(
+                Widget::cursor_shape(&g, Point::new(rect.center().x, cy)),
+                Some(winit::window::CursorIcon::EwResize),
+                "an in-flight resize drag holds the east-west cursor across the group",
+            );
+        }
+
+        // Case `take_pending_width_change_drains_after_resize_gesture`.
+        {
+            let mut g = make_group();
+            // 1200 px strip: `Normal` (two thirds) resolves to 800.
+            g.set_strip_usable_px(1200.0);
+            assert_eq!(g.resolved_width_px(), 800.0);
+            assert_eq!(
+                g.take_pending_width_change(),
+                None,
+                "no pending width change before any drag",
+            );
+
+            // Press at the right edge (pointer x = 800 = current right edge).
+            g.begin_resize(800.0);
+            // Drag +200 px — inside the strip's bounds, so the new width is 1000.
+            g.update_resize(1000.0);
+            assert_eq!(
+                g.resolved_width_px(),
+                1000.0,
+                "drag updates width in-memory"
+            );
+            // Mid-drag must not publish a pending change — only end_resize does,
+            // so the shell harvests once per gesture, not once per pixel.
+            assert_eq!(
+                g.take_pending_width_change(),
+                None,
+                "mid-drag must not publish a pending change",
+            );
+
+            g.end_resize();
+            assert_eq!(
+                g.take_pending_width_change(),
+                Some(833),
+                "first poll after release reports the new width as a fraction of \
+             the strip (1000/1200), so persisting it is display-independent",
+            );
+            assert_eq!(
+                g.take_pending_width_change(),
+                None,
+                "take-pattern: drained on first poll, second poll is None",
+            );
+
+            // Clamping: a drag past the strip's right edge pins at the full
+            // usable width, not at some fixed pixel ceiling.
+            g.begin_resize(1000.0);
+            g.update_resize(50_000.0);
+            assert_eq!(
+                g.resolved_width_px(),
+                max_group_px(1200.0),
+                "drag past the strip's edge clamps to the strip's usable width",
+            );
+            g.end_resize();
+            assert_eq!(g.take_pending_width_change(), Some(WIDTH_MAX_PERMILLE));
+
+            // Clamping the other way: the floor is a fraction of the strip too,
+            // backstopped by the absolute minimum.
+            g.begin_resize(0.0);
+            g.update_resize(-50_000.0);
+            assert_eq!(
+                g.resolved_width_px(),
+                min_group_px(1200.0),
+                "drag past the strip's minimum clamps to the lower bound",
+            );
+
+            // Same stored width, wider display: the *fraction* persists, so a
+            // wider strip gets the same share, not the same pixel count.
+            let mut wide = make_group();
+            wide.set_strip_usable_px(3840.0);
+            assert_eq!(
+                wide.width(),
+                g_normal_width(),
+                "fixture precondition: both groups start on the same tier",
+            );
+            assert_eq!(
+                wide.resolved_width_px(),
+                2561.0,
+                "667/1000 of a 3840 px strip — the same share the 1200 px strip \
+             gave at 800 px, to the 1 px that per-mille quantisation costs \
+             at this size",
+            );
+        }
+    }
+
+    #[test]
+    fn tab_bar_requests_reorder_search_and_pin_keep_hosts_aligned() {
+        // Case `take_pending_tab_reorder_drains_after_a_reorder`.
+        {
+            use std::collections::HashMap;
+            use taffy::Style;
+            use taffy::prelude::TaffyMaxContent;
+
+            let theme = Theme::dark();
+            let mut g = make_group();
+            assert_eq!(
+                g.take_pending_tab_reorder(),
+                None,
+                "nothing pending initially"
+            );
+
+            let mut taffy = TaffyTree::<()>::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let node = g.build_layout(&mut taffy, &theme, &mut node_map);
+            let root = taffy.parent_node(Style::default(), &[node]);
+            taffy
+                .compute_layout(root, taffy::Size::MAX_CONTENT)
+                .unwrap();
+
+            // Publish a reorder the same way the bar does on a drag release, then
+            // pump the group's drain block via a harmless event.
+            g.bar_mut_for_tests().pending_reorder = Some((0, 1));
             let mut handled = false;
+            let mut focus = None;
+            let mut state = automerge::AutoCommit::new();
+            let root_id = automerge::ROOT;
+            let moved = WindowEvent::CursorMoved {
+                device_id: unsafe { std::mem::zeroed() },
+                position: winit::dpi::PhysicalPosition::new(9000.0, 9000.0),
+            };
             g.handle_event(
-                ev,
+                &moved,
                 1.0,
-                &mods,
+                &winit::event::Modifiers::default(),
                 &mut state,
                 &root_id,
                 &mut handled,
                 &mut focus,
                 node,
-                taffy,
+                &taffy,
             );
-        };
 
-        let move_to = |x: f64| WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: winit::dpi::PhysicalPosition::new(x, press_y),
-        };
-        let press = WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        };
+            assert_eq!(
+                g.take_pending_tab_reorder(),
+                Some((0, 1)),
+                "a harvested reorder publishes (from, to) for the shell exactly once",
+            );
+            assert_eq!(
+                g.take_pending_tab_reorder(),
+                None,
+                "take-pattern: drained on the first poll",
+            );
+        }
 
-        dispatch(&mut g, &move_to(press_x), &taffy);
-        dispatch(&mut g, &press, &taffy);
-        // Drag exactly +100 px from the press position.
-        dispatch(&mut g, &move_to(press_x + 100.0), &taffy);
+        // Case `reorder_keeps_hosts_and_bar_tabs_aligned`.
+        // Parallel-vec invariant: drift between `bar.tabs()` and `hosts`
+        // would render tab pill `i`'s content from a different host.
+        {
+            use crate::widget::{AppKind, TabDescriptor, TileContent};
+            use std::collections::HashMap;
+            use taffy::Style;
+            use taffy::prelude::TaffyMaxContent;
 
-        assert_eq!(
-            g.resolved_width_px(),
-            start_w + 100.0,
-            "a 100 px drag from the press point must widen the group by exactly \
-             100 px (no jump from anchoring on the group edge)",
-        );
-    }
+            // Helper: build a fresh 4-tab WindowGroup so we have enough
+            // pills to exercise non-trivial permutations.
+            fn make_group_4() -> WindowGroup {
+                let tabs: Vec<(TabDescriptor, TileContent)> = (1..=4u64)
+                    .map(|i| {
+                        (
+                            TabDescriptor::new(i, format!("T{i}")),
+                            TileContent::Stub {
+                                kind: AppKind::Settings,
+                                label: format!("s{i}"),
+                            },
+                        )
+                    })
+                    .collect();
+                WindowGroup::new(10, tabs, 1, WindowWidth::Normal)
+            }
 
-    #[test]
-    fn cursor_shape_is_ew_resize_over_right_edge_band() {
-        use std::collections::HashMap;
-        use taffy::Style;
-        use taffy::prelude::TaffyMaxContent;
+            // (from, to) cases:
+            //  - forward small step (0 → 2)
+            //  - backward step (3 → 1)
+            //  - adjacent swap (1 → 2)
+            //  - no-op (2 → 2)
+            //  - extreme (0 → 3)
+            let cases: &[(usize, usize)] = &[(0, 2), (3, 1), (1, 2), (2, 2), (0, 3)];
 
-        let theme = Theme::dark();
-        let mut g = make_group();
-        let mut taffy = TaffyTree::<()>::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let node = g.build_layout(&mut taffy, &theme, &mut node_map);
-        let root = taffy.parent_node(
-            Style {
-                size: Size {
-                    width: Dimension::length(1600.0),
-                    height: Dimension::length(900.0),
-                },
-                ..Default::default()
-            },
-            &[node],
-        );
-        taffy
-            .compute_layout(root, taffy::Size::MAX_CONTENT)
-            .unwrap();
-        g.apply_layout(&taffy, node, Point::ZERO);
+            for &(from, to) in cases {
+                let mut g = make_group_4();
 
-        let rect = g.get_rect();
-        assert!(
-            rect.height() > 0.0,
-            "group must have a real height to hit-test"
-        );
-        let cy = rect.center().y;
+                // `handle_event` walks the cached taffy children, so a real
+                // layout pass is needed before the drain block runs.
+                let theme = Theme::dark();
+                let mut taffy = TaffyTree::<()>::new();
+                let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+                let group_node = g.build_layout(&mut taffy, &theme, &mut node_map);
+                let root = taffy.parent_node(Style::default(), &[group_node]);
+                taffy
+                    .compute_layout(root, taffy::Size::MAX_CONTENT)
+                    .unwrap();
+                g.apply_layout(&taffy, group_node, Point::ZERO);
 
-        // 3 px inside the right edge → inside the RESIZE_HANDLE_PX band.
-        assert_eq!(
-            Widget::cursor_shape(&g, Point::new(rect.x1 - 3.0, cy)),
-            Some(winit::window::CursorIcon::EwResize),
-            "pointer in the right-edge resize band requests an east-west resize cursor",
-        );
-        // Well inside the group, away from the edge → no cursor claim.
-        assert_eq!(
-            Widget::cursor_shape(&g, Point::new(rect.center().x, cy)),
-            None,
-            "pointer over the group body (not the edge band) defers",
-        );
+                for (i, t) in g.bar.tabs().iter().enumerate() {
+                    assert_eq!(
+                        t.id, g.hosts[i].0,
+                        "precondition: tab[{i}] id must equal hosts[{i}].0",
+                    );
+                }
 
-        // In-flight resize drag holds the cursor even off the band —
-        // pointer capture keeps the gesture alive.
-        g.begin_resize(px_f32(rect.x1));
-        assert_eq!(
-            Widget::cursor_shape(&g, Point::new(rect.center().x, cy)),
-            Some(winit::window::CursorIcon::EwResize),
-            "an in-flight resize drag holds the east-west cursor across the group",
-        );
-    }
+                // Same as `TabBar::handle_event` on a drag release.
+                g.bar.pending_reorder = Some((from, to));
 
-    #[test]
-    fn take_pending_width_change_drains_after_resize_gesture() {
-        let mut g = make_group();
-        // 1200 px strip: `Normal` (two thirds) resolves to 800.
-        g.set_strip_usable_px(1200.0);
-        assert_eq!(g.resolved_width_px(), 800.0);
-        assert_eq!(
-            g.take_pending_width_change(),
-            None,
-            "no pending width change before any drag",
-        );
+                // Drive the WindowGroup drain block via a no-op cursor move.
+                let moved = WindowEvent::CursorMoved {
+                    device_id: unsafe { std::mem::zeroed() },
+                    position: winit::dpi::PhysicalPosition::new(9000.0, 9000.0),
+                };
+                let mut state = automerge::AutoCommit::new();
+                let root_id = automerge::ROOT;
+                let mut handled = false;
+                let mut focus_target = None;
+                g.handle_event(
+                    &moved,
+                    1.0,
+                    &winit::event::Modifiers::default(),
+                    &mut state,
+                    &root_id,
+                    &mut handled,
+                    &mut focus_target,
+                    group_node,
+                    &taffy,
+                );
 
-        // Press at the right edge (pointer x = 800 = current right edge).
-        g.begin_resize(800.0);
-        // Drag +200 px — inside the strip's bounds, so the new width is 1000.
-        g.update_resize(1000.0);
-        assert_eq!(
-            g.resolved_width_px(),
-            1000.0,
-            "drag updates width in-memory"
-        );
-        // Mid-drag must not publish a pending change — only end_resize does,
-        // so the shell harvests once per gesture, not once per pixel.
-        assert_eq!(
-            g.take_pending_width_change(),
-            None,
-            "mid-drag must not publish a pending change",
-        );
+                assert_eq!(
+                    g.bar.tabs().len(),
+                    g.hosts.len(),
+                    "case ({from}, {to}): bar.tabs().len() must equal hosts.len() after reorder",
+                );
+                for (i, t) in g.bar.tabs().iter().enumerate() {
+                    assert_eq!(
+                        t.id, g.hosts[i].0,
+                        "case ({from}, {to}): bar.tabs()[{i}].id must equal hosts[{i}].0 after reorder",
+                    );
+                }
+            }
+        }
 
-        g.end_resize();
-        assert_eq!(
-            g.take_pending_width_change(),
-            Some(833),
-            "first poll after release reports the new width as a fraction of \
-             the strip (1000/1200), so persisting it is display-independent",
-        );
-        assert_eq!(
-            g.take_pending_width_change(),
-            None,
-            "take-pattern: drained on first poll, second poll is None",
-        );
+        // Case `search_active_toggles_when_bar_publishes_pending_search`.
+        {
+            // Click-to-toggle: seeding `pending_search` and re-draining flips
+            // the flag; doing it again flips it back.
+            let mut g = make_group();
+            assert!(!g.search_active, "fresh group must not be searching");
+            g.bar.pending_search = Some(1);
+            if let Some(_id) = g.bar.take_search() {
+                g.search_active = !g.search_active;
+            }
+            assert!(g.search_active, "drain should flip search_active on");
+            g.bar.pending_search = Some(1);
+            if let Some(_id) = g.bar.take_search() {
+                g.search_active = !g.search_active;
+            }
+            assert!(
+                !g.search_active,
+                "second drain should flip search_active off"
+            );
+        }
 
-        // Clamping: a drag past the strip's right edge pins at the full
-        // usable width, not at some fixed pixel ceiling.
-        g.begin_resize(1000.0);
-        g.update_resize(50_000.0);
-        assert_eq!(
-            g.resolved_width_px(),
-            max_group_px(1200.0),
-            "drag past the strip's edge clamps to the strip's usable width",
-        );
-        g.end_resize();
-        assert_eq!(g.take_pending_width_change(), Some(WIDTH_MAX_PERMILLE));
+        // Case `ctrl_shift_p_toggles_pin_on_active_tab`.
+        {
+            use crate::theme::Theme;
+            use std::collections::HashMap;
+            use taffy::Style;
+            use taffy::prelude::TaffyMaxContent;
+            use winit::event::{KeyEvent, Modifiers};
+            use winit::keyboard::{Key, KeyLocation, ModifiersState, PhysicalKey, SmolStr};
 
-        // Clamping the other way: the floor is a fraction of the strip too,
-        // backstopped by the absolute minimum.
-        g.begin_resize(0.0);
-        g.update_resize(-50_000.0);
-        assert_eq!(
-            g.resolved_width_px(),
-            min_group_px(1200.0),
-            "drag past the strip's minimum clamps to the lower bound",
-        );
+            // winit 0.30 keeps `KeyEventExtra` `pub(crate)`, so a `KeyEvent`
+            // can't be built through a struct literal — zero-init instead.
+            fn key_press(logical_key: Key) -> WindowEvent {
+                let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+                ev.logical_key = logical_key;
+                ev.physical_key =
+                    PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+                ev.location = KeyLocation::Standard;
+                ev.state = ElementState::Pressed;
+                ev.repeat = false;
+                ev.text = None;
+                WindowEvent::KeyboardInput {
+                    device_id: unsafe { std::mem::zeroed() },
+                    event: ev,
+                    is_synthetic: false,
+                }
+            }
 
-        // Same stored width, wider display: the *fraction* persists, so a
-        // wider strip gets the same share, not the same pixel count.
-        let mut wide = make_group();
-        wide.set_strip_usable_px(3840.0);
-        assert_eq!(
-            wide.width(),
-            g_normal_width(),
-            "fixture precondition: both groups start on the same tier",
-        );
-        assert_eq!(
-            wide.resolved_width_px(),
-            2561.0,
-            "667/1000 of a 3840 px strip — the same share the 1200 px strip \
-             gave at 800 px, to the 1 px that per-mille quantisation costs \
-             at this size",
-        );
+            let mut g = make_group();
+            let active = g.bar.active_id();
+            assert!(
+                !g.bar.is_pinned(active),
+                "fresh group: active tab is unpinned"
+            );
+
+            let mods = Modifiers::from(ModifiersState::CONTROL | ModifiersState::SHIFT);
+            let event = key_press(Key::Character(SmolStr::new_inline("p")));
+
+            let theme = Theme::dark();
+            let mut taffy = TaffyTree::<()>::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let group_node = g.build_layout(&mut taffy, &theme, &mut node_map);
+            let root = taffy.parent_node(Style::default(), &[group_node]);
+            taffy
+                .compute_layout(root, taffy::Size::MAX_CONTENT)
+                .unwrap();
+            g.apply_layout(&taffy, group_node, Point::ZERO);
+
+            let mut state = automerge::AutoCommit::new();
+            let root_id = automerge::ROOT;
+            let mut handled = false;
+            let mut focus_target = None;
+            g.handle_event(
+                &event,
+                1.0,
+                &mods,
+                &mut state,
+                &root_id,
+                &mut handled,
+                &mut focus_target,
+                group_node,
+                &taffy,
+            );
+            assert!(handled, "Ctrl+Shift+P press must be claimed");
+            assert!(
+                g.bar.is_pinned(active),
+                "first Ctrl+Shift+P must pin the active tab",
+            );
+
+            // Second press toggles back off.
+            let mut handled = false;
+            g.handle_event(
+                &event,
+                1.0,
+                &mods,
+                &mut state,
+                &root_id,
+                &mut handled,
+                &mut focus_target,
+                group_node,
+                &taffy,
+            );
+            assert!(handled, "second Ctrl+Shift+P press is also claimed");
+            assert!(
+                !g.bar.is_pinned(active),
+                "second Ctrl+Shift+P must unpin the active tab",
+            );
+
+            let plain_mods = Modifiers::default();
+            let mut handled = false;
+            g.handle_event(
+                &event,
+                1.0,
+                &plain_mods,
+                &mut state,
+                &root_id,
+                &mut handled,
+                &mut focus_target,
+                group_node,
+                &taffy,
+            );
+            assert!(
+                !g.bar.is_pinned(active),
+                "plain `P` (no Ctrl+Shift) must not toggle pin state",
+            );
+        }
     }
 
     /// The tier `make_group()` seeds. Named so the cross-display assertion
@@ -3110,617 +3396,715 @@ mod tests {
     }
 
     #[test]
-    fn search_active_toggles_when_bar_publishes_pending_search() {
-        // Click-to-toggle: seeding `pending_search` and re-draining flips
-        // the flag; doing it again flips it back.
-        let mut g = make_group();
-        assert!(!g.search_active, "fresh group must not be searching");
-        g.bar.pending_search = Some(1);
-        if let Some(_id) = g.bar.take_search() {
-            g.search_active = !g.search_active;
+    fn spawn_animation_eases_within_its_band_and_respects_reduced_motion() {
+        // Case `start_spawn_animation_records_timestamp_and_pumps_frames`.
+        {
+            let mut g = make_group();
+            assert!(g.spawned_at.is_none(), "fresh group has no spawn timestamp");
+            g.start_spawn_animation();
+            assert!(
+                g.spawned_at.is_some(),
+                "start_spawn_animation records the start"
+            );
+            assert!(
+                g.needs_animation_frame(),
+                "in-flight spawn fade must pump the run loop",
+            );
         }
-        assert!(g.search_active, "drain should flip search_active on");
-        g.bar.pending_search = Some(1);
-        if let Some(_id) = g.bar.take_search() {
-            g.search_active = !g.search_active;
+
+        // Case `reduced_motion_spawn_snaps_without_pumping_frames`.
+        {
+            let mut g = make_group();
+            g.reduce_motion = true;
+            g.start_spawn_animation();
+
+            assert_eq!(
+                g.fade_transform_params(),
+                (1.0, 0.0, 0.0, 1.0),
+                "reduced motion must paint a newly opened group at its settled transform",
+            );
+            assert!(
+                !g.needs_animation_frame(),
+                "the settled spawn must not keep a software-rendered compositor awake",
+            );
         }
-        assert!(
-            !g.search_active,
-            "second drain should flip search_active off"
-        );
+
+        // Case `spawn_fade_window_clears_after_duration`.
+        {
+            let mut g = make_group();
+            g.spawned_at = Some(instant_ago_ms(SPAWN_ANIM_MS.saturating_add(16)));
+            assert!(
+                !g.needs_animation_frame(),
+                "after the spawn window elapses, the fade no longer demands frames",
+            );
+        }
+
+        // Case `spawn_animation_advances_eased_progress_over_time`.
+        {
+            let mut g = make_group();
+            // No spawn in flight — accessor pins to 1.0.
+            assert_eq!(
+                g.spawn_anim_t(),
+                1.0,
+                "idle group reports finished progress"
+            );
+
+            // First frame: elapsed ~0, so eased progress is near zero.
+            g.start_spawn_animation();
+            let t_start = g.spawn_anim_t();
+            assert!(
+                t_start < 0.05,
+                "first-frame spawn progress must be near zero, got {t_start}",
+            );
+
+            // Roughly midway: cubic-out at raw=0.5 yields 1 - 0.5^3 = 0.875,
+            // so we expect well past 0.5. Backdate the timestamp instead of
+            // sleeping so the test doesn't waste real time.
+            g.spawned_at = Some(instant_ago_ms(SPAWN_ANIM_MS / 2));
+            let t_mid = g.spawn_anim_t();
+            assert!(
+                t_mid > 0.5 && t_mid < 1.0,
+                "mid-spawn progress must be past half but not yet complete, got {t_mid}",
+            );
+
+            // Past the duration: pins to 1.0.
+            g.spawned_at = Some(instant_ago_ms(SPAWN_ANIM_MS.saturating_add(16)));
+            assert_eq!(
+                g.spawn_anim_t(),
+                1.0,
+                "after the spawn window elapses, progress pins to 1.0",
+            );
+        }
+
+        // Case `spawn_animation_duration_in_visible_band`.
+        // Locked to a 350-450ms band so a future pass can't silently shorten
+        // it back to an imperceptible tuning.
+        {
+            assert!(
+                (350..=450).contains(&SPAWN_ANIM_MS),
+                "spawn duration must stay in the 350-450 ms readability band, got {SPAWN_ANIM_MS}",
+            );
+        }
+
+        // Case `insert_detached_tab_plays_tile_spawn_animation`.
+        {
+            let mut group = WindowGroup::new(0, vec![], 0, WindowWidth::Normal);
+            let host = TileHost::new(TileContent::Stub {
+                kind: AppKind::Settings,
+                label: "stub".to_string(),
+            });
+            let desc = TabDescriptor::new(42, "new");
+            group.insert_detached_tab(0, desc, host);
+            let inserted = group
+                .hosts
+                .iter()
+                .find(|(i, _)| *i == 42)
+                .expect("inserted host present");
+            assert!(
+                inserted.1.spawn_in_flight(),
+                "inserting a detached tab must fire the tile-level spawn fade",
+            );
+        }
     }
 
     #[test]
-    fn start_spawn_animation_records_timestamp_and_pumps_frames() {
-        let mut g = make_group();
-        assert!(g.spawned_at.is_none(), "fresh group has no spawn timestamp");
-        g.start_spawn_animation();
-        assert!(
-            g.spawned_at.is_some(),
-            "start_spawn_animation records the start"
-        );
-        assert!(
-            g.needs_animation_frame(),
-            "in-flight spawn fade must pump the run loop",
-        );
+    fn maximized_chrome_shows_near_the_top_with_tokenised_chips() {
+        // Case `window_group_close_glyph_is_lucide_x`.
+        {
+            assert_eq!(WindowGroup::close_glyph_icon_for_tests(), icons::Icon::X,);
+        }
+
+        // Case `window_group_restore_pill_uses_minimize2`.
+        {
+            assert_eq!(
+                WindowGroup::restore_glyph_icon_for_tests(),
+                icons::Icon::Minimize2,
+            );
+        }
+
+        // Case `maximized_close_chip_uses_danger_token_on_hover`.
+        // Concept parity: `hover:bg-red-500/80` — `semantic.danger` at 80 %
+        // alpha — sampled from the **production paint path** on both presets.
+        // At rest the × chip is the quiet chip face (`chip_colors`: the raised
+        // surface under a rest edge that registers against it), not a literal
+        // white tint; on hover it turns to the danger token and the × glyph
+        // stays legible on that face, where the old opaque white only happened
+        // to on the dark preset's red.
+        {
+            use crate::a11y::{contrast_ratio, relative_luminance};
+            const EDGE_MIN: f64 = 0.008;
+            let (w, h) = (620u32, 200u32);
+            for theme in [Theme::dark(), Theme::light()] {
+                let theme = theme.with_reduce_motion(true);
+                let mut g = make_group();
+                g.maximized = true;
+                // The chrome paints while the cursor is in the top band.
+                g.last_cursor = Point::new(600.0, 10.0);
+
+                g.set_close_hover_for_tests(false);
+                let idle = production_frame(&mut g, &theme, w, h);
+                if let Some(png) = ux1x_out(&theme, "window_group_close_chip_idle.png") {
+                    write_png(&idle, w, h, &png);
+                }
+                let chip = g.close_rect;
+                assert!(
+                    chip.width() > 0.0
+                        && chip.x0 >= 0.0
+                        && chip.y0 >= 0.0
+                        && chip.x1 <= f64::from(w)
+                        && chip.y1 <= f64::from(h),
+                    "{}: the maximized × chip was laid out on the canvas: {chip:?} in {:?}",
+                    theme.name,
+                    g.rect
+                );
+                // Interior, on the chip's centre column just under its top edge —
+                // inside the capsule and above the × glyph's box.
+                let (cx, top) = (chip.center().x, chip.y0);
+                let face = pixel(&idle, w, cx, top + 3.0);
+                let (quiet_fill, quiet_edge) = crate::surface::chip_colors(&theme, false);
+                assert!(
+                    contrast_ratio(face, quiet_fill) < 1.02,
+                    "{}: idle × chip {chip:?} (group {:?}) paints the quiet chip face {quiet_fill:?}, got {face:?}",
+                    theme.name,
+                    g.rect
+                );
+                assert!(
+                    quiet_edge.is_some(),
+                    "{}: the quiet chip declares a rest edge",
+                    theme.name
+                );
+                let edge = pixel(&idle, w, cx, top);
+                let moved = (relative_luminance(edge) - relative_luminance(face)).abs();
+                assert!(
+                    moved >= EDGE_MIN,
+                    "{}: the × chip's rest edge {edge:?} moved only {moved:.4} against its face {face:?}",
+                    theme.name
+                );
+
+                g.set_close_hover_for_tests(true);
+                let hover = production_frame(&mut g, &theme, w, h);
+                if let Some(png) = ux1x_out(&theme, "window_group_close_chip_hover.png") {
+                    write_png(&hover, w, h, &png);
+                }
+                let hot = pixel(&hover, w, cx, top + 3.0);
+                let danger = theme.tokens.colors.semantic.danger;
+                assert!(
+                    contrast_ratio(hot, face) >= 1.5,
+                    "{}: hover must visibly recolour the × chip ({face:?} -> {hot:?})",
+                    theme.name
+                );
+                // The face is the danger token at 80 % over the card: red-led on
+                // every preset, and nearer the token than the rest face was.
+                assert!(
+                    hot.r() > hot.g() && hot.r() > hot.b(),
+                    "{}: hovered × chip {hot:?} is not the danger red",
+                    theme.name
+                );
+                assert!(
+                    contrast_ratio(hot, danger) < contrast_ratio(face, danger),
+                    "{}: hovered × chip {hot:?} did not move toward danger {danger:?}",
+                    theme.name
+                );
+                // The × glyph stays readable on the hot face: the darkest or
+                // lightest pixel in the glyph's central 5×5 block clears the
+                // non-text minimum against the face beside it.
+                let c = chip.center();
+                let mut best = 1.0_f64;
+                for dy in -2..=2 {
+                    for dx in -2..=2 {
+                        let px = pixel(&hover, w, c.x + f64::from(dx), c.y + f64::from(dy));
+                        best = best.max(contrast_ratio(px, hot));
+                    }
+                }
+                assert!(
+                    best >= crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
+                    "{}: the × glyph reads {best:.2}:1 on the hovered face {hot:?}",
+                    theme.name
+                );
+            }
+        }
+
+        // Case `maximized_chrome_visible_when_cursor_y_le_80`.
+        {
+            let mut g = make_group();
+            g.maximized = true;
+            assert!(g.should_show_maximized_chrome(Some(40.0)));
+            assert!(g.should_show_maximized_chrome(Some(80.0)));
+            assert!(!g.should_show_maximized_chrome(Some(81.0)));
+            assert!(!g.should_show_maximized_chrome(Some(120.0)));
+            assert!(!g.should_show_maximized_chrome(Some(400.0)));
+            // No cursor observed yet is treated as "below the band".
+            assert!(!g.should_show_maximized_chrome(None));
+        }
+
+        // Case `maximized_chrome_always_hidden_when_not_maximized`.
+        {
+            let g = make_group();
+            assert!(!g.maximized, "fresh group is not maximized");
+            assert!(!g.should_show_maximized_chrome(Some(20.0)));
+            assert!(!g.should_show_maximized_chrome(Some(80.0)));
+            assert!(!g.should_show_maximized_chrome(None));
+        }
+
+        // Case `maximized_chrome_chips_share_one_row_and_a_token_gap`.
+        // The floating `[Restore][×]` row: both chips one row tall, the close
+        // chip square, the pair one `spacing.s1` apart, and the row inset from
+        // the card by the same `TAB_PILL_INSET_Y` the tab pills keep.
+        {
+            let mut g = make_group();
+            g.maximized = true;
+            g.rect = Rect::new(0.0, 0.0, 1200.0, 700.0);
+            g.last_cursor = Point::new(600.0, 10.0);
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            let mut scene = Scene::new();
+            g.draw_maximized_chrome(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+
+            let inset = crate::widget::tabs::TAB_PILL_INSET_Y;
+            assert_eq!(g.close_rect.height(), MAXIMIZED_CHIP_H);
+            assert_eq!(g.restore_rect.height(), MAXIMIZED_CHIP_H);
+            assert_eq!(
+                g.close_rect.width(),
+                g.close_rect.height(),
+                "the × chip is square"
+            );
+            assert_eq!(g.close_rect.y0, g.rect.y0 + inset);
+            assert_eq!(g.restore_rect.y0, g.close_rect.y0, "one row");
+            assert!((g.rect.x1 - g.close_rect.x1 - inset).abs() < 1e-9);
+            assert!(
+                (g.close_rect.x0 - g.restore_rect.x1 - f64::from(theme.tokens.spacing.s1)).abs()
+                    < 1e-9,
+                "restore and close sit one s1 apart"
+            );
+            assert_eq!(g.restore_rect.width(), MAXIMIZED_RESTORE_CHIP_W);
+        }
     }
 
     #[test]
-    fn reduced_motion_spawn_snaps_without_pumping_frames() {
-        let mut g = make_group();
-        g.reduce_motion = true;
-        g.start_spawn_animation();
+    fn closing_tab_hosts_fade_out_and_the_last_one_closes_the_group() {
+        // Case `detach_tab_clears_closing_state_for_moved_tab`.
+        // Its id sits in `closing_hosts` — a stale entry whose timer never
+        // expires once the host is moved — so `needs_animation_frame` would
+        // otherwise keep pumping redraws for a host that's gone.
+        {
+            let mut g = make_group();
+            // Seed `closing_hosts` directly with tab id 1 to simulate the
+            // leak: still present in `bar.tabs` and `hosts`, but the
+            // side-table erroneously carries a fade timestamp.
+            g.closing_hosts.insert(1, crate::time::now());
+            assert!(
+                g.closing_hosts.contains_key(&1),
+                "precondition: closing_hosts carries the moved tab id",
+            );
 
-        assert_eq!(
-            g.fade_transform_params(),
-            (1.0, 0.0, 0.0, 1.0),
-            "reduced motion must paint a newly opened group at its settled transform",
-        );
-        assert!(
-            !g.needs_animation_frame(),
-            "the settled spawn must not keep a software-rendered compositor awake",
-        );
-    }
+            let detached = g.detach_tab(1);
+            assert!(detached.is_some(), "detach_tab returns the moved tab");
 
-    #[test]
-    fn spawn_fade_window_clears_after_duration() {
-        let mut g = make_group();
-        g.spawned_at = Some(instant_ago_ms(SPAWN_ANIM_MS.saturating_add(16)));
-        assert!(
-            !g.needs_animation_frame(),
-            "after the spawn window elapses, the fade no longer demands frames",
-        );
-    }
-
-    #[test]
-    fn spawn_animation_advances_eased_progress_over_time() {
-        let mut g = make_group();
-        // No spawn in flight — accessor pins to 1.0.
-        assert_eq!(
-            g.spawn_anim_t(),
-            1.0,
-            "idle group reports finished progress"
-        );
-
-        // First frame: elapsed ~0, so eased progress is near zero.
-        g.start_spawn_animation();
-        let t_start = g.spawn_anim_t();
-        assert!(
-            t_start < 0.05,
-            "first-frame spawn progress must be near zero, got {t_start}",
-        );
-
-        // Roughly midway: cubic-out at raw=0.5 yields 1 - 0.5^3 = 0.875,
-        // so we expect well past 0.5. Backdate the timestamp instead of
-        // sleeping so the test doesn't waste real time.
-        g.spawned_at = Some(instant_ago_ms(SPAWN_ANIM_MS / 2));
-        let t_mid = g.spawn_anim_t();
-        assert!(
-            t_mid > 0.5 && t_mid < 1.0,
-            "mid-spawn progress must be past half but not yet complete, got {t_mid}",
-        );
-
-        // Past the duration: pins to 1.0.
-        g.spawned_at = Some(instant_ago_ms(SPAWN_ANIM_MS.saturating_add(16)));
-        assert_eq!(
-            g.spawn_anim_t(),
-            1.0,
-            "after the spawn window elapses, progress pins to 1.0",
-        );
-    }
-
-    /// Locked to a 350-450ms band so a future pass can't silently shorten
-    /// it back to an imperceptible tuning.
-    #[test]
-    fn spawn_animation_duration_in_visible_band() {
-        assert!(
-            (350..=450).contains(&SPAWN_ANIM_MS),
-            "spawn duration must stay in the 350-450 ms readability band, got {SPAWN_ANIM_MS}",
-        );
-    }
-
-    #[test]
-    fn window_group_close_glyph_is_lucide_x() {
-        assert_eq!(WindowGroup::close_glyph_icon_for_tests(), icons::Icon::X,);
-    }
-
-    #[test]
-    fn window_group_restore_pill_uses_minimize2() {
-        assert_eq!(
-            WindowGroup::restore_glyph_icon_for_tests(),
-            icons::Icon::Minimize2,
-        );
-    }
-
-    #[test]
-    fn insert_detached_tab_plays_tile_spawn_animation() {
-        let mut group = WindowGroup::new(0, vec![], 0, WindowWidth::Normal);
-        let host = TileHost::new(TileContent::Stub {
-            kind: AppKind::Settings,
-            label: "stub".to_string(),
-        });
-        let desc = TabDescriptor::new(42, "new");
-        group.insert_detached_tab(0, desc, host);
-        let inserted = group
-            .hosts
-            .iter()
-            .find(|(i, _)| *i == 42)
-            .expect("inserted host present");
-        assert!(
-            inserted.1.spawn_in_flight(),
-            "inserting a detached tab must fire the tile-level spawn fade",
-        );
-    }
-
-    /// Its id sits in `closing_hosts` — a stale entry whose timer never
-    /// expires once the host is moved — so `needs_animation_frame` would
-    /// otherwise keep pumping redraws for a host that's gone.
-    #[test]
-    fn detach_tab_clears_closing_state_for_moved_tab() {
-        let mut g = make_group();
-        // Seed `closing_hosts` directly with tab id 1 to simulate the
-        // leak: still present in `bar.tabs` and `hosts`, but the
-        // side-table erroneously carries a fade timestamp.
-        g.closing_hosts.insert(1, crate::time::now());
-        assert!(
-            g.closing_hosts.contains_key(&1),
-            "precondition: closing_hosts carries the moved tab id",
-        );
-
-        let detached = g.detach_tab(1);
-        assert!(detached.is_some(), "detach_tab returns the moved tab");
-
-        assert!(
-            !g.closing_hosts.contains_key(&1),
-            "detach_tab must clear closing_hosts for the moved tab so \
+            assert!(
+                !g.closing_hosts.contains_key(&1),
+                "detach_tab must clear closing_hosts for the moved tab so \
              needs_animation_frame stops pumping for a host that's gone",
-        );
-        assert!(
-            !g.bar.closing_tab_ids().contains(&1),
-            "detach_tab must call bar.finalize_close so any pill-side \
+            );
+            assert!(
+                !g.bar.closing_tab_ids().contains(&1),
+                "detach_tab must call bar.finalize_close so any pill-side \
              fade state for the moved id is also dropped",
-        );
+            );
+        }
+
+        // Case `closing_host_stays_until_fade_complete`.
+        {
+            use crate::theme::Theme;
+            use std::collections::HashMap;
+            use taffy::Style;
+            use taffy::prelude::TaffyMaxContent;
+
+            let mut g = make_group();
+            // Layout pass so the bar has authoritative pill/close rects —
+            // `start_closing` snapshots those into `closing_tabs`.
+            let theme = Theme::dark();
+            let mut taffy = TaffyTree::<()>::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let group_node = g.build_layout(&mut taffy, &theme, &mut node_map);
+            let root = taffy.parent_node(Style::default(), &[group_node]);
+            taffy
+                .compute_layout(root, taffy::Size::MAX_CONTENT)
+                .unwrap();
+            g.apply_layout(&taffy, group_node, Point::ZERO);
+
+            // Latch via the bar API directly rather than simulating a full
+            // press/click sequence.
+            g.bar_mut().start_closing(2);
+
+            // CursorMoved off-rect so no hover handlers fire and the event
+            // reaches the close-drain block at the bottom of `handle_event`.
+            let mut handled = false;
+            let mut focus_target = None;
+            let mut state = automerge::AutoCommit::new();
+            let root_id = automerge::ROOT;
+            let moved = WindowEvent::CursorMoved {
+                device_id: unsafe { std::mem::zeroed() },
+                position: winit::dpi::PhysicalPosition::new(1000.0, 1000.0),
+            };
+            g.handle_event(
+                &moved,
+                1.0,
+                &winit::event::Modifiers::default(),
+                &mut state,
+                &root_id,
+                &mut handled,
+                &mut focus_target,
+                group_node,
+                &taffy,
+            );
+
+            assert!(
+                g.has_closing_host(2),
+                "drain must latch the host-level close fade",
+            );
+            assert!(
+                g.needs_animation_frame(),
+                "in-flight close fade must pump redraws",
+            );
+            assert!(g.has_host(2), "host stays in `hosts` for the fade duration");
+            let host_count_during = g.host_count();
+
+            g.force_expire_closing(2);
+            let moved2 = WindowEvent::CursorMoved {
+                device_id: unsafe { std::mem::zeroed() },
+                position: winit::dpi::PhysicalPosition::new(1000.0, 1000.0),
+            };
+            let mut handled2 = false;
+            g.handle_event(
+                &moved2,
+                1.0,
+                &winit::event::Modifiers::default(),
+                &mut state,
+                &root_id,
+                &mut handled2,
+                &mut focus_target,
+                group_node,
+                &taffy,
+            );
+            assert!(
+                !g.has_host(2),
+                "sweep drops the host after the fade expires",
+            );
+            assert_eq!(
+                g.host_count(),
+                host_count_during - 1,
+                "exactly one host removed",
+            );
+            assert!(
+                !g.has_closing_host(2),
+                "sweep clears the closing_hosts entry",
+            );
+        }
+
+        // Case `closing_last_tab_kicks_off_group_close`.
+        // `GroupRow` relies on `is_closing()` → `close_complete()` to
+        // sequence the prune, so if `closing_at` never flips the group
+        // stays around as an empty shell forever.
+        {
+            use crate::theme::Theme;
+            use std::collections::HashMap;
+            use taffy::Style;
+            use taffy::prelude::TaffyMaxContent;
+
+            // Single-tab group so "close this tab" truly empties the group.
+            let tabs: Vec<(TabDescriptor, TileContent)> = vec![(
+                TabDescriptor::new(1, "solo"),
+                TileContent::Stub {
+                    kind: AppKind::Settings,
+                    label: "a".into(),
+                },
+            )];
+            let mut g = WindowGroup::new(10, tabs, 1, WindowWidth::Normal);
+
+            // Full layout pass so the bar has authoritative pill rects.
+            let theme = Theme::dark();
+            let mut taffy = TaffyTree::<()>::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let group_node = g.build_layout(&mut taffy, &theme, &mut node_map);
+            let root = taffy.parent_node(Style::default(), &[group_node]);
+            taffy
+                .compute_layout(root, taffy::Size::MAX_CONTENT)
+                .unwrap();
+            g.apply_layout(&taffy, group_node, Point::ZERO);
+
+            // Simulates pressing the pill's × on the sole tab.
+            g.bar_mut().start_closing(1);
+
+            // First handle_event drains `pending_close` into `closing_hosts`;
+            // the group is NOT yet closing while a host close is in flight.
+            let mut handled = false;
+            let mut focus_target = None;
+            let mut state = automerge::AutoCommit::new();
+            let root_id = automerge::ROOT;
+            let moved = WindowEvent::CursorMoved {
+                device_id: unsafe { std::mem::zeroed() },
+                position: winit::dpi::PhysicalPosition::new(1000.0, 1000.0),
+            };
+            g.handle_event(
+                &moved,
+                1.0,
+                &winit::event::Modifiers::default(),
+                &mut state,
+                &root_id,
+                &mut handled,
+                &mut focus_target,
+                group_node,
+                &taffy,
+            );
+            assert!(
+                g.has_closing_host(1),
+                "precondition: host-level close latched",
+            );
+            assert!(
+                !g.is_closing(),
+                "group close must NOT fire while a host-level close is still in flight",
+            );
+
+            // Expire the host-level close; the next handle_event sweeps it
+            // away, discovers the group is empty, and latches the group close.
+            g.force_expire_closing(1);
+            let moved2 = WindowEvent::CursorMoved {
+                device_id: unsafe { std::mem::zeroed() },
+                position: winit::dpi::PhysicalPosition::new(1000.0, 1000.0),
+            };
+            let mut handled2 = false;
+            g.handle_event(
+                &moved2,
+                1.0,
+                &winit::event::Modifiers::default(),
+                &mut state,
+                &root_id,
+                &mut handled2,
+                &mut focus_target,
+                group_node,
+                &taffy,
+            );
+            assert!(
+                g.is_closing(),
+                "after the sole tab's fade sweeps out, the group must latch its own close fade",
+            );
+        }
     }
 
     #[test]
-    fn closing_host_stays_until_fade_complete() {
-        use crate::theme::Theme;
-        use std::collections::HashMap;
-        use taffy::Style;
-        use taffy::prelude::TaffyMaxContent;
+    fn group_close_fade_paints_pumps_frames_and_completes() {
+        // Case `group_close_complete_true_after_fade_duration`.
+        {
+            let mut g = make_group();
+            g.set_closing_at_for_tests(instant_ago_ms(GROUP_CLOSE_FADE_MS.saturating_add(20)));
+            assert!(
+                g.close_complete(),
+                "close_complete must flip true after the fade window elapses",
+            );
+            g.set_closing_at_for_tests(crate::time::now());
+            assert!(
+                !g.close_complete(),
+                "a just-latched close must not report complete",
+            );
+        }
 
-        let mut g = make_group();
-        // Layout pass so the bar has authoritative pill/close rects —
-        // `start_closing` snapshots those into `closing_tabs`.
-        let theme = Theme::dark();
-        let mut taffy = TaffyTree::<()>::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let group_node = g.build_layout(&mut taffy, &theme, &mut node_map);
-        let root = taffy.parent_node(Style::default(), &[group_node]);
-        taffy
-            .compute_layout(root, taffy::Size::MAX_CONTENT)
-            .unwrap();
-        g.apply_layout(&taffy, group_node, Point::ZERO);
+        // Case `group_still_paints_during_close_fade`.
+        // Guards against a panic or a collapsed rect mid-fade.
+        {
+            use crate::theme::Theme;
+            use std::collections::HashMap;
+            use taffy::Style;
+            use taffy::prelude::TaffyMaxContent;
 
-        // Latch via the bar API directly rather than simulating a full
-        // press/click sequence.
-        g.bar_mut().start_closing(2);
+            let mut g = make_group();
+            let theme = Theme::dark();
+            let mut taffy = TaffyTree::<()>::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let group_node = g.build_layout(&mut taffy, &theme, &mut node_map);
+            let root = taffy.parent_node(Style::default(), &[group_node]);
+            taffy
+                .compute_layout(root, taffy::Size::MAX_CONTENT)
+                .unwrap();
+            g.apply_layout(&taffy, group_node, Point::ZERO);
+            let pre_rect = g.get_rect();
 
-        // CursorMoved off-rect so no hover handlers fire and the event
-        // reaches the close-drain block at the bottom of `handle_event`.
-        let mut handled = false;
-        let mut focus_target = None;
-        let mut state = automerge::AutoCommit::new();
-        let root_id = automerge::ROOT;
-        let moved = WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: winit::dpi::PhysicalPosition::new(1000.0, 1000.0),
-        };
-        g.handle_event(
-            &moved,
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut state,
-            &root_id,
-            &mut handled,
-            &mut focus_target,
-            group_node,
-            &taffy,
-        );
+            g.start_closing();
 
-        assert!(
-            g.has_closing_host(2),
-            "drain must latch the host-level close fade",
-        );
-        assert!(
-            g.needs_animation_frame(),
-            "in-flight close fade must pump redraws",
-        );
-        assert!(g.has_host(2), "host stays in `hosts` for the fade duration");
-        let host_count_during = g.host_count();
+            // The fade scales about the centre via an Affine; the logical
+            // `self.rect` used for hit-tests stays put so drop-targets and
+            // focus bookkeeping don't shift under the user mid-animation.
+            let mut scene = Scene::new();
+            let presence = PresenceCtx::default();
+            let mut tr = TextRenderer::new();
+            g.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
 
-        g.force_expire_closing(2);
-        let moved2 = WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: winit::dpi::PhysicalPosition::new(1000.0, 1000.0),
-        };
-        let mut handled2 = false;
-        g.handle_event(
-            &moved2,
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut state,
-            &root_id,
-            &mut handled2,
-            &mut focus_target,
-            group_node,
-            &taffy,
-        );
-        assert!(
-            !g.has_host(2),
-            "sweep drops the host after the fade expires",
-        );
-        assert_eq!(
-            g.host_count(),
-            host_count_during - 1,
-            "exactly one host removed",
-        );
-        assert!(
-            !g.has_closing_host(2),
-            "sweep clears the closing_hosts entry",
-        );
-    }
+            assert_eq!(
+                g.get_rect(),
+                pre_rect,
+                "close fade paints over the existing rect; hit-tests must stay stable",
+            );
+            assert!(
+                g.is_closing(),
+                "close flag stays latched through the draw pass",
+            );
+        }
 
-    /// `GroupRow` relies on `is_closing()` → `close_complete()` to
-    /// sequence the prune, so if `closing_at` never flips the group
-    /// stays around as an empty shell forever.
-    #[test]
-    fn closing_last_tab_kicks_off_group_close() {
-        use crate::theme::Theme;
-        use std::collections::HashMap;
-        use taffy::Style;
-        use taffy::prelude::TaffyMaxContent;
+        // Case `group_needs_animation_frame_while_closing`.
+        {
+            let mut g = make_group();
+            assert!(
+                !g.needs_animation_frame(),
+                "precondition: idle group is quiet"
+            );
+            g.start_closing();
+            assert!(
+                g.needs_animation_frame(),
+                "group-level close fade must pump frames until close_complete",
+            );
+            g.set_closing_at_for_tests(instant_ago_ms(GROUP_CLOSE_FADE_MS.saturating_add(20)));
+            assert!(
+                !g.needs_animation_frame(),
+                "after the fade window elapses, frames are no longer required",
+            );
+        }
 
-        // Single-tab group so "close this tab" truly empties the group.
-        let tabs: Vec<(TabDescriptor, TileContent)> = vec![(
-            TabDescriptor::new(1, "solo"),
-            TileContent::Stub {
-                kind: AppKind::Settings,
-                label: "a".into(),
-            },
-        )];
-        let mut g = WindowGroup::new(10, tabs, 1, WindowWidth::Normal);
+        // Case `window_group_needs_animation_frame_during_close`.
+        {
+            let mut g = make_group();
+            assert!(
+                !g.needs_animation_frame(),
+                "precondition: idle group doesn't demand frames",
+            );
+            // Seed `closing_hosts` directly to simulate what `handle_event`
+            // does after draining a `pending_close`, bypassing the full event
+            // drive.
+            g.closing_hosts.insert(1, crate::time::now());
+            assert!(
+                g.needs_animation_frame(),
+                "a fresh closing host must pump the run loop",
+            );
+            g.closing_hosts
+                .insert(1, instant_ago_ms(GROUP_CLOSE_FADE_MS.saturating_add(20)));
+            assert!(
+                !g.needs_animation_frame(),
+                "after the fade window elapses the group goes idle again",
+            );
+        }
 
-        // Full layout pass so the bar has authoritative pill rects.
-        let theme = Theme::dark();
-        let mut taffy = TaffyTree::<()>::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let group_node = g.build_layout(&mut taffy, &theme, &mut node_map);
-        let root = taffy.parent_node(Style::default(), &[group_node]);
-        taffy
-            .compute_layout(root, taffy::Size::MAX_CONTENT)
-            .unwrap();
-        g.apply_layout(&taffy, group_node, Point::ZERO);
+        // Case `maximized_close_uses_deferred_flow`.
+        {
+            use crate::theme::Theme;
+            use std::collections::HashMap;
+            use taffy::Style;
+            use taffy::prelude::TaffyMaxContent;
+            use winit::event::{ElementState, MouseButton};
 
-        // Simulates pressing the pill's × on the sole tab.
-        g.bar_mut().start_closing(1);
+            // Single-tab group so the sweep has a clear "last tab just
+            // left" trigger for the group-level close fade.
+            let tabs: Vec<(TabDescriptor, TileContent)> = vec![(
+                TabDescriptor::new(1, "solo"),
+                TileContent::Stub {
+                    kind: AppKind::Settings,
+                    label: "a".into(),
+                },
+            )];
+            let mut g = WindowGroup::new(10, tabs, 1, WindowWidth::Normal);
 
-        // First handle_event drains `pending_close` into `closing_hosts`;
-        // the group is NOT yet closing while a host close is in flight.
-        let mut handled = false;
-        let mut focus_target = None;
-        let mut state = automerge::AutoCommit::new();
-        let root_id = automerge::ROOT;
-        let moved = WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: winit::dpi::PhysicalPosition::new(1000.0, 1000.0),
-        };
-        g.handle_event(
-            &moved,
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut state,
-            &root_id,
-            &mut handled,
-            &mut focus_target,
-            group_node,
-            &taffy,
-        );
-        assert!(
-            g.has_closing_host(1),
-            "precondition: host-level close latched",
-        );
-        assert!(
-            !g.is_closing(),
-            "group close must NOT fire while a host-level close is still in flight",
-        );
+            let theme = Theme::dark();
+            let mut taffy = TaffyTree::<()>::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let group_node = g.build_layout(&mut taffy, &theme, &mut node_map);
+            let root = taffy.parent_node(Style::default(), &[group_node]);
+            taffy
+                .compute_layout(root, taffy::Size::MAX_CONTENT)
+                .unwrap();
+            g.apply_layout(&taffy, group_node, Point::ZERO);
 
-        // Expire the host-level close; the next handle_event sweeps it
-        // away, discovers the group is empty, and latches the group close.
-        g.force_expire_closing(1);
-        let moved2 = WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: winit::dpi::PhysicalPosition::new(1000.0, 1000.0),
-        };
-        let mut handled2 = false;
-        g.handle_event(
-            &moved2,
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut state,
-            &root_id,
-            &mut handled2,
-            &mut focus_target,
-            group_node,
-            &taffy,
-        );
-        assert!(
-            g.is_closing(),
-            "after the sole tab's fade sweeps out, the group must latch its own close fade",
-        );
-    }
+            // `close_rect` normally gets populated in `draw` while maximized;
+            // tests don't paint so we seed it directly.
+            g.maximized = true;
+            g.close_rect = Rect::new(0.0, 0.0, 20.0, 20.0);
+            g.last_cursor = Point::new(5.0, 5.0);
 
-    #[test]
-    fn group_close_complete_true_after_fade_duration() {
-        let mut g = make_group();
-        g.set_closing_at_for_tests(instant_ago_ms(GROUP_CLOSE_FADE_MS.saturating_add(20)));
-        assert!(
-            g.close_complete(),
-            "close_complete must flip true after the fade window elapses",
-        );
-        g.set_closing_at_for_tests(crate::time::now());
-        assert!(
-            !g.close_complete(),
-            "a just-latched close must not report complete",
-        );
-    }
+            let press = WindowEvent::MouseInput {
+                device_id: unsafe { std::mem::zeroed() },
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            };
 
-    /// Guards against a panic or a collapsed rect mid-fade.
-    #[test]
-    fn group_still_paints_during_close_fade() {
-        use crate::theme::Theme;
-        use std::collections::HashMap;
-        use taffy::Style;
-        use taffy::prelude::TaffyMaxContent;
+            let mut handled = false;
+            let mut focus_target = None;
+            let mut state = automerge::AutoCommit::new();
+            let root_id = automerge::ROOT;
+            g.handle_event(
+                &press,
+                1.0,
+                &winit::event::Modifiers::default(),
+                &mut state,
+                &root_id,
+                &mut handled,
+                &mut focus_target,
+                group_node,
+                &taffy,
+            );
 
-        let mut g = make_group();
-        let theme = Theme::dark();
-        let mut taffy = TaffyTree::<()>::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let group_node = g.build_layout(&mut taffy, &theme, &mut node_map);
-        let root = taffy.parent_node(Style::default(), &[group_node]);
-        taffy
-            .compute_layout(root, taffy::Size::MAX_CONTENT)
-            .unwrap();
-        g.apply_layout(&taffy, group_node, Point::ZERO);
-        let pre_rect = g.get_rect();
+            assert!(handled, "press must be consumed by the close arm");
+            assert!(!g.maximized, "maximize must drop immediately");
+            assert!(
+                g.take_structure_dirty(),
+                "leaving maximize must rebuild the cached tiled layout",
+            );
+            assert!(
+                g.has_host(1),
+                "host stays in `hosts` for the fade duration — no synchronous removal",
+            );
+            assert!(
+                g.bar.closing_tab_ids().contains(&1),
+                "bar.start_closing must have latched the tab pill fade",
+            );
+            assert!(
+                g.has_closing_host(1),
+                "closing_hosts must carry the active id so the host fade runs",
+            );
+            assert_eq!(
+                g.take_pending_close_commits(),
+                vec![1],
+                "the maximized close must also reach the shell's durable lifecycle path",
+            );
+            assert!(
+                !g.is_closing(),
+                "group close must NOT fire while a host-level close is still in flight",
+            );
 
-        g.start_closing();
+            g.force_expire_closing(1);
+            let moved = WindowEvent::CursorMoved {
+                device_id: unsafe { std::mem::zeroed() },
+                position: winit::dpi::PhysicalPosition::new(9000.0, 9000.0),
+            };
+            let mut handled2 = false;
+            g.handle_event(
+                &moved,
+                1.0,
+                &winit::event::Modifiers::default(),
+                &mut state,
+                &root_id,
+                &mut handled2,
+                &mut focus_target,
+                group_node,
+                &taffy,
+            );
 
-        // The fade scales about the centre via an Affine; the logical
-        // `self.rect` used for hit-tests stays put so drop-targets and
-        // focus bookkeeping don't shift under the user mid-animation.
-        let mut scene = Scene::new();
-        let presence = PresenceCtx::default();
-        let mut tr = TextRenderer::new();
-        g.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-
-        assert_eq!(
-            g.get_rect(),
-            pre_rect,
-            "close fade paints over the existing rect; hit-tests must stay stable",
-        );
-        assert!(
-            g.is_closing(),
-            "close flag stays latched through the draw pass",
-        );
-    }
-
-    #[test]
-    fn group_needs_animation_frame_while_closing() {
-        let mut g = make_group();
-        assert!(
-            !g.needs_animation_frame(),
-            "precondition: idle group is quiet"
-        );
-        g.start_closing();
-        assert!(
-            g.needs_animation_frame(),
-            "group-level close fade must pump frames until close_complete",
-        );
-        g.set_closing_at_for_tests(instant_ago_ms(GROUP_CLOSE_FADE_MS.saturating_add(20)));
-        assert!(
-            !g.needs_animation_frame(),
-            "after the fade window elapses, frames are no longer required",
-        );
-    }
-
-    #[test]
-    fn maximized_close_uses_deferred_flow() {
-        use crate::theme::Theme;
-        use std::collections::HashMap;
-        use taffy::Style;
-        use taffy::prelude::TaffyMaxContent;
-        use winit::event::{ElementState, MouseButton};
-
-        // Single-tab group so the sweep has a clear "last tab just
-        // left" trigger for the group-level close fade.
-        let tabs: Vec<(TabDescriptor, TileContent)> = vec![(
-            TabDescriptor::new(1, "solo"),
-            TileContent::Stub {
-                kind: AppKind::Settings,
-                label: "a".into(),
-            },
-        )];
-        let mut g = WindowGroup::new(10, tabs, 1, WindowWidth::Normal);
-
-        let theme = Theme::dark();
-        let mut taffy = TaffyTree::<()>::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let group_node = g.build_layout(&mut taffy, &theme, &mut node_map);
-        let root = taffy.parent_node(Style::default(), &[group_node]);
-        taffy
-            .compute_layout(root, taffy::Size::MAX_CONTENT)
-            .unwrap();
-        g.apply_layout(&taffy, group_node, Point::ZERO);
-
-        // `close_rect` normally gets populated in `draw` while maximized;
-        // tests don't paint so we seed it directly.
-        g.maximized = true;
-        g.close_rect = Rect::new(0.0, 0.0, 20.0, 20.0);
-        g.last_cursor = Point::new(5.0, 5.0);
-
-        let press = WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        };
-
-        let mut handled = false;
-        let mut focus_target = None;
-        let mut state = automerge::AutoCommit::new();
-        let root_id = automerge::ROOT;
-        g.handle_event(
-            &press,
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut state,
-            &root_id,
-            &mut handled,
-            &mut focus_target,
-            group_node,
-            &taffy,
-        );
-
-        assert!(handled, "press must be consumed by the close arm");
-        assert!(!g.maximized, "maximize must drop immediately");
-        assert!(
-            g.take_structure_dirty(),
-            "leaving maximize must rebuild the cached tiled layout",
-        );
-        assert!(
-            g.has_host(1),
-            "host stays in `hosts` for the fade duration — no synchronous removal",
-        );
-        assert!(
-            g.bar.closing_tab_ids().contains(&1),
-            "bar.start_closing must have latched the tab pill fade",
-        );
-        assert!(
-            g.has_closing_host(1),
-            "closing_hosts must carry the active id so the host fade runs",
-        );
-        assert_eq!(
-            g.take_pending_close_commits(),
-            vec![1],
-            "the maximized close must also reach the shell's durable lifecycle path",
-        );
-        assert!(
-            !g.is_closing(),
-            "group close must NOT fire while a host-level close is still in flight",
-        );
-
-        g.force_expire_closing(1);
-        let moved = WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: winit::dpi::PhysicalPosition::new(9000.0, 9000.0),
-        };
-        let mut handled2 = false;
-        g.handle_event(
-            &moved,
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut state,
-            &root_id,
-            &mut handled2,
-            &mut focus_target,
-            group_node,
-            &taffy,
-        );
-
-        assert!(!g.has_host(1), "sweep drops the host once the fade expires");
-        assert!(
-            !g.bar.closing_tab_ids().contains(&1),
-            "bar.finalize_close clears the closing pill entry",
-        );
-        assert!(g.bar.tabs().is_empty(), "bar has no live tabs left");
-        assert!(
-            g.is_closing(),
-            "group-level close fade must latch once the last host has swept out",
-        );
-    }
-
-    #[test]
-    fn maximized_restore_rebuilds_the_tiled_layout() {
-        use std::collections::HashMap;
-        use taffy::Style;
-        use taffy::prelude::TaffyMaxContent;
-        use winit::event::{ElementState, MouseButton};
-
-        let mut g = make_group();
-        let mut taffy = TaffyTree::<()>::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let group_node = g.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
-        let root = taffy.parent_node(Style::default(), &[group_node]);
-        taffy
-            .compute_layout(root, taffy::Size::MAX_CONTENT)
-            .unwrap();
-        g.apply_layout(&taffy, group_node, Point::ZERO);
-        assert!(!g.take_structure_dirty());
-
-        g.maximized = true;
-        g.restore_rect = Rect::new(0.0, 0.0, 80.0, 40.0);
-        g.last_cursor = Point::new(20.0, 20.0);
-        let press = WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        };
-        let mut handled = false;
-        let mut focus_target = None;
-        let mut state = automerge::AutoCommit::new();
-        g.handle_event(
-            &press,
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut state,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus_target,
-            group_node,
-            &taffy,
-        );
-
-        assert!(handled);
-        assert!(!g.maximized);
-        assert_eq!(g.take_pending_maximize_change(), Some(false));
-        assert!(
-            g.take_structure_dirty(),
-            "restore must invalidate the cached maximized geometry",
-        );
-    }
-
-    #[test]
-    fn window_group_needs_animation_frame_during_close() {
-        let mut g = make_group();
-        assert!(
-            !g.needs_animation_frame(),
-            "precondition: idle group doesn't demand frames",
-        );
-        // Seed `closing_hosts` directly to simulate what `handle_event`
-        // does after draining a `pending_close`, bypassing the full event
-        // drive.
-        g.closing_hosts.insert(1, crate::time::now());
-        assert!(
-            g.needs_animation_frame(),
-            "a fresh closing host must pump the run loop",
-        );
-        g.closing_hosts
-            .insert(1, instant_ago_ms(GROUP_CLOSE_FADE_MS.saturating_add(20)));
-        assert!(
-            !g.needs_animation_frame(),
-            "after the fade window elapses the group goes idle again",
-        );
+            assert!(!g.has_host(1), "sweep drops the host once the fade expires");
+            assert!(
+                !g.bar.closing_tab_ids().contains(&1),
+                "bar.finalize_close clears the closing pill entry",
+            );
+            assert!(g.bar.tabs().is_empty(), "bar has no live tabs left");
+            assert!(
+                g.is_closing(),
+                "group-level close fade must latch once the last host has swept out",
+            );
+        }
     }
 
     /// Lays `g` out at `w`×`h`, draws it through the production
@@ -3802,361 +4186,5 @@ mod tests {
             y.floor() as u32,
         );
         vello::peniko::Color::from_rgb8(r, g, b)
-    }
-
-    /// Concept parity: `hover:bg-red-500/80` — `semantic.danger` at 80 %
-    /// alpha — sampled from the **production paint path** on both presets.
-    /// At rest the × chip is the quiet chip face (`chip_colors`: the raised
-    /// surface under a rest edge that registers against it), not a literal
-    /// white tint; on hover it turns to the danger token and the × glyph
-    /// stays legible on that face, where the old opaque white only happened
-    /// to on the dark preset's red.
-    #[test]
-    fn maximized_close_chip_uses_danger_token_on_hover() {
-        use crate::a11y::{contrast_ratio, relative_luminance};
-        const EDGE_MIN: f64 = 0.008;
-        let (w, h) = (620u32, 200u32);
-        for theme in [Theme::dark(), Theme::light()] {
-            let theme = theme.with_reduce_motion(true);
-            let mut g = make_group();
-            g.maximized = true;
-            // The chrome paints while the cursor is in the top band.
-            g.last_cursor = Point::new(600.0, 10.0);
-
-            g.set_close_hover_for_tests(false);
-            let idle = production_frame(&mut g, &theme, w, h);
-            if let Some(png) = ux1x_out(&theme, "window_group_close_chip_idle.png") {
-                write_png(&idle, w, h, &png);
-            }
-            let chip = g.close_rect;
-            assert!(
-                chip.width() > 0.0
-                    && chip.x0 >= 0.0
-                    && chip.y0 >= 0.0
-                    && chip.x1 <= f64::from(w)
-                    && chip.y1 <= f64::from(h),
-                "{}: the maximized × chip was laid out on the canvas: {chip:?} in {:?}",
-                theme.name,
-                g.rect
-            );
-            // Interior, on the chip's centre column just under its top edge —
-            // inside the capsule and above the × glyph's box.
-            let (cx, top) = (chip.center().x, chip.y0);
-            let face = pixel(&idle, w, cx, top + 3.0);
-            let (quiet_fill, quiet_edge) = crate::surface::chip_colors(&theme, false);
-            assert!(
-                contrast_ratio(face, quiet_fill) < 1.02,
-                "{}: idle × chip {chip:?} (group {:?}) paints the quiet chip face {quiet_fill:?}, got {face:?}",
-                theme.name,
-                g.rect
-            );
-            assert!(
-                quiet_edge.is_some(),
-                "{}: the quiet chip declares a rest edge",
-                theme.name
-            );
-            let edge = pixel(&idle, w, cx, top);
-            let moved = (relative_luminance(edge) - relative_luminance(face)).abs();
-            assert!(
-                moved >= EDGE_MIN,
-                "{}: the × chip's rest edge {edge:?} moved only {moved:.4} against its face {face:?}",
-                theme.name
-            );
-
-            g.set_close_hover_for_tests(true);
-            let hover = production_frame(&mut g, &theme, w, h);
-            if let Some(png) = ux1x_out(&theme, "window_group_close_chip_hover.png") {
-                write_png(&hover, w, h, &png);
-            }
-            let hot = pixel(&hover, w, cx, top + 3.0);
-            let danger = theme.tokens.colors.semantic.danger;
-            assert!(
-                contrast_ratio(hot, face) >= 1.5,
-                "{}: hover must visibly recolour the × chip ({face:?} -> {hot:?})",
-                theme.name
-            );
-            // The face is the danger token at 80 % over the card: red-led on
-            // every preset, and nearer the token than the rest face was.
-            assert!(
-                hot.r() > hot.g() && hot.r() > hot.b(),
-                "{}: hovered × chip {hot:?} is not the danger red",
-                theme.name
-            );
-            assert!(
-                contrast_ratio(hot, danger) < contrast_ratio(face, danger),
-                "{}: hovered × chip {hot:?} did not move toward danger {danger:?}",
-                theme.name
-            );
-            // The × glyph stays readable on the hot face: the darkest or
-            // lightest pixel in the glyph's central 5×5 block clears the
-            // non-text minimum against the face beside it.
-            let c = chip.center();
-            let mut best = 1.0_f64;
-            for dy in -2..=2 {
-                for dx in -2..=2 {
-                    let px = pixel(&hover, w, c.x + f64::from(dx), c.y + f64::from(dy));
-                    best = best.max(contrast_ratio(px, hot));
-                }
-            }
-            assert!(
-                best >= crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
-                "{}: the × glyph reads {best:.2}:1 on the hovered face {hot:?}",
-                theme.name
-            );
-        }
-    }
-
-    #[test]
-    fn maximized_chrome_visible_when_cursor_y_le_80() {
-        let mut g = make_group();
-        g.maximized = true;
-        assert!(g.should_show_maximized_chrome(Some(40.0)));
-        assert!(g.should_show_maximized_chrome(Some(80.0)));
-        assert!(!g.should_show_maximized_chrome(Some(81.0)));
-        assert!(!g.should_show_maximized_chrome(Some(120.0)));
-        assert!(!g.should_show_maximized_chrome(Some(400.0)));
-        // No cursor observed yet is treated as "below the band".
-        assert!(!g.should_show_maximized_chrome(None));
-    }
-
-    #[test]
-    fn maximized_chrome_always_hidden_when_not_maximized() {
-        let g = make_group();
-        assert!(!g.maximized, "fresh group is not maximized");
-        assert!(!g.should_show_maximized_chrome(Some(20.0)));
-        assert!(!g.should_show_maximized_chrome(Some(80.0)));
-        assert!(!g.should_show_maximized_chrome(None));
-    }
-
-    /// The floating `[Restore][×]` row: both chips one row tall, the close
-    /// chip square, the pair one `spacing.s1` apart, and the row inset from
-    /// the card by the same `TAB_PILL_INSET_Y` the tab pills keep.
-    #[test]
-    fn maximized_chrome_chips_share_one_row_and_a_token_gap() {
-        let mut g = make_group();
-        g.maximized = true;
-        g.rect = Rect::new(0.0, 0.0, 1200.0, 700.0);
-        g.last_cursor = Point::new(600.0, 10.0);
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let mut scene = Scene::new();
-        g.draw_maximized_chrome(&mut scene, Affine::IDENTITY, &mut tr, &theme);
-
-        let inset = crate::widget::tabs::TAB_PILL_INSET_Y;
-        assert_eq!(g.close_rect.height(), MAXIMIZED_CHIP_H);
-        assert_eq!(g.restore_rect.height(), MAXIMIZED_CHIP_H);
-        assert_eq!(
-            g.close_rect.width(),
-            g.close_rect.height(),
-            "the × chip is square"
-        );
-        assert_eq!(g.close_rect.y0, g.rect.y0 + inset);
-        assert_eq!(g.restore_rect.y0, g.close_rect.y0, "one row");
-        assert!((g.rect.x1 - g.close_rect.x1 - inset).abs() < 1e-9);
-        assert!(
-            (g.close_rect.x0 - g.restore_rect.x1 - f64::from(theme.tokens.spacing.s1)).abs() < 1e-9,
-            "restore and close sit one s1 apart"
-        );
-        assert_eq!(g.restore_rect.width(), MAXIMIZED_RESTORE_CHIP_W);
-    }
-
-    /// Parallel-vec invariant: drift between `bar.tabs()` and `hosts`
-    /// would render tab pill `i`'s content from a different host.
-    #[test]
-    fn reorder_keeps_hosts_and_bar_tabs_aligned() {
-        use crate::widget::{AppKind, TabDescriptor, TileContent};
-        use std::collections::HashMap;
-        use taffy::Style;
-        use taffy::prelude::TaffyMaxContent;
-
-        // Helper: build a fresh 4-tab WindowGroup so we have enough
-        // pills to exercise non-trivial permutations.
-        fn make_group_4() -> WindowGroup {
-            let tabs: Vec<(TabDescriptor, TileContent)> = (1..=4u64)
-                .map(|i| {
-                    (
-                        TabDescriptor::new(i, format!("T{i}")),
-                        TileContent::Stub {
-                            kind: AppKind::Settings,
-                            label: format!("s{i}"),
-                        },
-                    )
-                })
-                .collect();
-            WindowGroup::new(10, tabs, 1, WindowWidth::Normal)
-        }
-
-        // (from, to) cases:
-        //  - forward small step (0 → 2)
-        //  - backward step (3 → 1)
-        //  - adjacent swap (1 → 2)
-        //  - no-op (2 → 2)
-        //  - extreme (0 → 3)
-        let cases: &[(usize, usize)] = &[(0, 2), (3, 1), (1, 2), (2, 2), (0, 3)];
-
-        for &(from, to) in cases {
-            let mut g = make_group_4();
-
-            // `handle_event` walks the cached taffy children, so a real
-            // layout pass is needed before the drain block runs.
-            let theme = Theme::dark();
-            let mut taffy = TaffyTree::<()>::new();
-            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-            let group_node = g.build_layout(&mut taffy, &theme, &mut node_map);
-            let root = taffy.parent_node(Style::default(), &[group_node]);
-            taffy
-                .compute_layout(root, taffy::Size::MAX_CONTENT)
-                .unwrap();
-            g.apply_layout(&taffy, group_node, Point::ZERO);
-
-            for (i, t) in g.bar.tabs().iter().enumerate() {
-                assert_eq!(
-                    t.id, g.hosts[i].0,
-                    "precondition: tab[{i}] id must equal hosts[{i}].0",
-                );
-            }
-
-            // Same as `TabBar::handle_event` on a drag release.
-            g.bar.pending_reorder = Some((from, to));
-
-            // Drive the WindowGroup drain block via a no-op cursor move.
-            let moved = WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
-                position: winit::dpi::PhysicalPosition::new(9000.0, 9000.0),
-            };
-            let mut state = automerge::AutoCommit::new();
-            let root_id = automerge::ROOT;
-            let mut handled = false;
-            let mut focus_target = None;
-            g.handle_event(
-                &moved,
-                1.0,
-                &winit::event::Modifiers::default(),
-                &mut state,
-                &root_id,
-                &mut handled,
-                &mut focus_target,
-                group_node,
-                &taffy,
-            );
-
-            assert_eq!(
-                g.bar.tabs().len(),
-                g.hosts.len(),
-                "case ({from}, {to}): bar.tabs().len() must equal hosts.len() after reorder",
-            );
-            for (i, t) in g.bar.tabs().iter().enumerate() {
-                assert_eq!(
-                    t.id, g.hosts[i].0,
-                    "case ({from}, {to}): bar.tabs()[{i}].id must equal hosts[{i}].0 after reorder",
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn ctrl_shift_p_toggles_pin_on_active_tab() {
-        use crate::theme::Theme;
-        use std::collections::HashMap;
-        use taffy::Style;
-        use taffy::prelude::TaffyMaxContent;
-        use winit::event::{KeyEvent, Modifiers};
-        use winit::keyboard::{Key, KeyLocation, ModifiersState, PhysicalKey, SmolStr};
-
-        // winit 0.30 keeps `KeyEventExtra` `pub(crate)`, so a `KeyEvent`
-        // can't be built through a struct literal — zero-init instead.
-        fn key_press(logical_key: Key) -> WindowEvent {
-            let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-            ev.logical_key = logical_key;
-            ev.physical_key =
-                PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-            ev.location = KeyLocation::Standard;
-            ev.state = ElementState::Pressed;
-            ev.repeat = false;
-            ev.text = None;
-            WindowEvent::KeyboardInput {
-                device_id: unsafe { std::mem::zeroed() },
-                event: ev,
-                is_synthetic: false,
-            }
-        }
-
-        let mut g = make_group();
-        let active = g.bar.active_id();
-        assert!(
-            !g.bar.is_pinned(active),
-            "fresh group: active tab is unpinned"
-        );
-
-        let mods = Modifiers::from(ModifiersState::CONTROL | ModifiersState::SHIFT);
-        let event = key_press(Key::Character(SmolStr::new_inline("p")));
-
-        let theme = Theme::dark();
-        let mut taffy = TaffyTree::<()>::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let group_node = g.build_layout(&mut taffy, &theme, &mut node_map);
-        let root = taffy.parent_node(Style::default(), &[group_node]);
-        taffy
-            .compute_layout(root, taffy::Size::MAX_CONTENT)
-            .unwrap();
-        g.apply_layout(&taffy, group_node, Point::ZERO);
-
-        let mut state = automerge::AutoCommit::new();
-        let root_id = automerge::ROOT;
-        let mut handled = false;
-        let mut focus_target = None;
-        g.handle_event(
-            &event,
-            1.0,
-            &mods,
-            &mut state,
-            &root_id,
-            &mut handled,
-            &mut focus_target,
-            group_node,
-            &taffy,
-        );
-        assert!(handled, "Ctrl+Shift+P press must be claimed");
-        assert!(
-            g.bar.is_pinned(active),
-            "first Ctrl+Shift+P must pin the active tab",
-        );
-
-        // Second press toggles back off.
-        let mut handled = false;
-        g.handle_event(
-            &event,
-            1.0,
-            &mods,
-            &mut state,
-            &root_id,
-            &mut handled,
-            &mut focus_target,
-            group_node,
-            &taffy,
-        );
-        assert!(handled, "second Ctrl+Shift+P press is also claimed");
-        assert!(
-            !g.bar.is_pinned(active),
-            "second Ctrl+Shift+P must unpin the active tab",
-        );
-
-        let plain_mods = Modifiers::default();
-        let mut handled = false;
-        g.handle_event(
-            &event,
-            1.0,
-            &plain_mods,
-            &mut state,
-            &root_id,
-            &mut handled,
-            &mut focus_target,
-            group_node,
-            &taffy,
-        );
-        assert!(
-            !g.bar.is_pinned(active),
-            "plain `P` (no Ctrl+Shift) must not toggle pin state",
-        );
     }
 }

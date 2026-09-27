@@ -1,18 +1,31 @@
 //! Settings' Fluent catalogue.
 //!
 //! User-facing strings resolve by key through the toolkit's [`mod@ui::i18n`]
-//! manager. The catalogue is embedded with `include_str!`, so a `--shots`
-//! render, a unit test and a live session resolve the same copy. Panes move
-//! onto it as they are rewritten.
+//! manager. The catalogues are embedded with `include_str!`, so a `--shots`
+//! render, a unit test and a live session resolve the same copy. The locale
+//! follows the usual POSIX variables and falls back per message to `en-US`.
 
 use ui::i18n::{ArgValue, EmbeddedCatalog};
 
+const SOURCE_FTL: &str = include_str!("../locales/en-US.ftl");
+const DE_FTL: &str = include_str!("../locales/de-DE.ftl");
+
 /// Loaded per thread on first use; a host's manager is joined, never replaced.
-static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new(
-    "en-US",
-    &[("en-US", include_str!("../locales/en-US.ftl"))],
-    "display-arrangement-title",
-);
+static CATALOG: EmbeddedCatalog = catalog();
+
+const fn catalog() -> EmbeddedCatalog {
+    let catalog = EmbeddedCatalog::new(
+        "en-US",
+        &[("en-US", SOURCE_FTL), ("de-DE", DE_FTL)],
+        "display-arrangement-title",
+    )
+    .with_system_locale();
+    // Unit tests assert source copy; keep them independent of the locale of
+    // whichever machine runs them.
+    #[cfg(test)]
+    let catalog = catalog.with_pinned_locale("en-US");
+    catalog
+}
 
 /// Resolve a Settings string key.
 pub fn t(key: &str) -> String {
@@ -33,31 +46,42 @@ pub fn arg(value: impl Into<String>) -> ArgValue {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
+
+    /// `key -> pattern` for every message in a catalogue.
+    fn messages(source: &str) -> BTreeMap<&str, &str> {
+        source
+            .lines()
+            .filter(|line| !line.starts_with('#') && !line.starts_with(' '))
+            .filter_map(|line| line.split_once(" = "))
+            .map(|(key, pattern)| (key.trim(), pattern))
+            .collect()
+    }
+
+    fn variables(pattern: &str) -> Vec<&str> {
+        let mut vars: Vec<&str> = pattern
+            .split("{ $")
+            .skip(1)
+            .filter_map(|rest| rest.split_once(' ').map(|(name, _)| name))
+            .collect();
+        vars.sort_unstable();
+        vars
+    }
 
     #[test]
     fn every_catalogue_entry_resolves_to_a_real_string() {
-        let catalogue = include_str!("../locales/en-US.ftl");
-        let mut keys = Vec::new();
-        for line in catalogue.lines() {
-            if let Some((key, _)) = line.split_once(" = ")
-                && !key.starts_with('#')
-                && !key.starts_with(' ')
-                && !key.is_empty()
-            {
-                keys.push(key.trim().to_string());
-            }
-        }
-        assert!(keys.len() > 50, "catalogue parsed {} keys", keys.len());
-        for key in keys {
-            let value = t(&key);
-            assert_ne!(value, key, "{key} has no catalogue entry");
+        let keys = messages(SOURCE_FTL);
+        assert!(!keys.is_empty());
+        for key in keys.keys() {
+            let value = t(key);
+            assert_ne!(value, *key, "{key} has no entry in the catalogue");
             assert!(!value.trim().is_empty(), "{key} resolves to nothing");
         }
         // Every key the AI pane names in code resolves too.
         for source in [
             include_str!("panes/ai.rs"),
             include_str!("ai_settings.rs"),
-            include_str!("actions.rs"),
+            include_str!("actions/mod.rs"),
             include_str!("../../../crates/agent/provider-config/src/tasks.rs"),
             include_str!("../../../crates/agent/provider-config/src/assign.rs"),
             include_str!("../../../crates/agent/provider-config/src/options.rs"),
@@ -71,11 +95,30 @@ mod tests {
                     && !fragment.ends_with('-')
                 {
                     assert!(
-                        catalogue.contains(&format!("\n{fragment} =")),
+                        SOURCE_FTL.contains(&format!("\n{fragment} =")),
                         "{fragment} is used but not in the catalogue"
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    fn the_german_catalogue_matches_the_source_key_for_key() {
+        let source = messages(SOURCE_FTL);
+        let german = messages(DE_FTL);
+        assert_eq!(
+            source.keys().collect::<Vec<_>>(),
+            german.keys().collect::<Vec<_>>(),
+            "de-DE must translate exactly the en-US keys"
+        );
+        for (key, pattern) in &source {
+            assert_eq!(
+                variables(pattern),
+                variables(german[key]),
+                "placeholders changed in the German {key}"
+            );
+            assert!(!german[key].trim().is_empty(), "{key} is empty in de-DE");
         }
     }
 }

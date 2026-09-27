@@ -1,4 +1,5 @@
 [package]
+autotests = false
 name = "code-editor"
 version = "0.1.0"
 edition = "2024"
@@ -47,6 +48,7 @@ url.workspace = true
 uuid.workspace = true
 hex.workspace = true
 sha2.workspace = true
+workspace-hack = { version = "0.1" }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
@@ -54,6 +56,10 @@ libc.workspace = true
 [dev-dependencies]
 tempfile.workspace = true
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
 
 [lints]
 workspace = true

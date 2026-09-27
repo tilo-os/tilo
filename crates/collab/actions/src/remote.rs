@@ -1223,7 +1223,16 @@ mod tests {
         ]
     }
 
+    /// Every message round-trips through a frame, frames from another version are refused not
+    /// misread, and the wire names versions and messages explicitly.
+    /// Runs each phase below in order; every phase builds its own fixture.
     #[test]
+    fn the_remote_wire_is_versioned_and_explicit() {
+        every_message_round_trips_through_a_frame();
+        frames_from_another_version_are_refused_not_misread();
+        the_wire_names_versions_and_messages_explicitly();
+    }
+
     fn every_message_round_trips_through_a_frame() {
         let invocation = InvocationId(uuid::Uuid::from_u128(7));
         let messages = request_messages(invocation)
@@ -1234,7 +1243,6 @@ mod tests {
         }
     }
 
-    #[test]
     fn frames_from_another_version_are_refused_not_misread() {
         let mut frame = serde_json::to_value(RemoteActionFrame::new(
             RemoteActionMessage::CatalogueRequest {
@@ -1263,7 +1271,6 @@ mod tests {
         ));
     }
 
-    #[test]
     fn the_wire_names_versions_and_messages_explicitly() {
         let bytes = RemoteActionFrame::new(RemoteActionMessage::Cancel {
             invocation: InvocationId(uuid::Uuid::nil()),
@@ -1276,7 +1283,19 @@ mod tests {
         );
     }
 
+    /// A retried invocation reports the original and runs once; ids cannot be reused or borrowed;
+    /// refusals are not remembered; the ledger forgets the oldest past capacity; a reservation holds
+    /// the id until the start completes.
+    /// Runs each phase below in order; every phase builds its own fixture.
     #[test]
+    fn remote_invocations_run_at_most_once_per_owned_id() {
+        a_retried_invocation_reports_the_original_and_runs_once();
+        an_invocation_id_cannot_be_reused_or_borrowed();
+        a_refused_invocation_is_not_remembered();
+        the_ledger_forgets_oldest_invocations_past_capacity();
+        a_reservation_holds_the_id_until_the_start_completes();
+    }
+
     fn a_retried_invocation_reports_the_original_and_runs_once() {
         let host = CountingHost::new();
         let id = InvocationId::new();
@@ -1292,7 +1311,6 @@ mod tests {
         assert_eq!(host.runs.get(), 1, "a retry after completion reports it");
     }
 
-    #[test]
     fn an_invocation_id_cannot_be_reused_or_borrowed() {
         let host = CountingHost::new();
         let id = InvocationId::new();
@@ -1317,7 +1335,6 @@ mod tests {
         assert_eq!(host.runs.get(), 1);
     }
 
-    #[test]
     fn a_refused_invocation_is_not_remembered() {
         let mut ledger = InvocationLedger::<u32>::default();
         let request = archive(InvocationId::new());
@@ -1329,7 +1346,6 @@ mod tests {
         assert_eq!((*handle, admission), (5, Admission::Started));
     }
 
-    #[test]
     fn the_ledger_forgets_oldest_invocations_past_capacity() {
         let mut ledger = InvocationLedger::<u32>::with_capacity(2);
         let requests: Vec<_> = (0..3).map(|_| archive(InvocationId::new())).collect();
@@ -1340,7 +1356,18 @@ mod tests {
         assert_eq!(ledger.get(&alice(), &requests[2].invocation), Some(&2));
     }
 
+    /// Serve answers requests and ignores responses, typed arguments use the local invocation slot,
+    /// a remote device is the person its root names, and a refusal answers every request and nothing
+    /// else.
+    /// Runs each phase below in order; every phase builds its own fixture.
     #[test]
+    fn serving_answers_each_request_as_the_person_the_device_belongs_to() {
+        serve_answers_requests_and_ignores_responses();
+        typed_arguments_use_the_local_invocation_slot();
+        a_remote_device_is_the_person_its_root_names();
+        a_refusal_answers_every_request_and_nothing_else();
+    }
+
     fn serve_answers_requests_and_ignores_responses() {
         let host = CountingHost::new();
         let id = InvocationId::new();
@@ -1397,7 +1424,6 @@ mod tests {
         assert!(serve(&host, &alice(), RemoteActionMessage::Receipt(receipt)).is_none());
     }
 
-    #[test]
     fn typed_arguments_use_the_local_invocation_slot() {
         let mut object = serde_json::Map::new();
         object.insert("n".into(), serde_json::json!(2));
@@ -1412,7 +1438,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn a_remote_device_is_the_person_its_root_names() {
         let caller = Caller::authenticated([0xAB; 32], [1; 32]);
         assert_eq!(
@@ -1427,7 +1452,6 @@ mod tests {
         assert_eq!(agent.device_public_key(), None);
     }
 
-    #[test]
     fn a_refusal_answers_every_request_and_nothing_else() {
         let error = ActionHostError::Unavailable {
             reason: "down".into(),
@@ -1468,7 +1492,6 @@ mod tests {
         RemoteActionMessage::Invoke(archive(id))
     }
 
-    #[test]
     fn a_reservation_holds_the_id_until_the_start_completes() {
         let mut ledger = InvocationLedger::<u32>::default();
         let request = archive(InvocationId::new());

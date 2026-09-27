@@ -1481,59 +1481,219 @@ mod tests {
     }
 
     #[test]
-    fn wrapper_and_first_field_have_distinct_nodes_and_child_keeps_focus() {
-        let mut wrapper = AliasWrapper {
-            child: TestWidget::new(Some(AccessNode::new(Role::Button))),
-        };
-        assert_eq!(
-            std::ptr::from_ref(&wrapper).cast::<()>(),
-            std::ptr::from_ref(&wrapper.child).cast::<()>()
-        );
-        let (mut tree, mut nodes, child) = lay_out(&mut wrapper);
-        let update = build_tree_update(&wrapper, &nodes, Some(child), 1.0);
-        let ids: std::collections::HashSet<_> = update.nodes.iter().map(|(id, _)| *id).collect();
-        assert_eq!(
-            ids.len(),
-            update.nodes.len(),
-            "every semantic node has a distinct id"
-        );
-        assert_eq!(update.focus, widget_ak_id(&wrapper, &nodes, child).unwrap());
-        assert_eq!(
-            update.nodes.len(),
-            3,
-            "window, wrapper and child all remain accessible"
-        );
-        for (id, node) in &update.nodes {
-            assert!(
-                !node.children().contains(id),
-                "node cannot be its own child"
-            );
-        }
-        // If both concrete widgets register their own layout nodes, neither
-        // registration may overwrite the other in the reverse lookup.
-        let parent = tree.new_leaf(taffy::Style::default()).unwrap();
-        nodes.insert(parent, std::ptr::from_mut::<dyn Widget>(&mut wrapper));
-        for focused in [parent, child] {
-            let update = build_tree_update(&wrapper, &nodes, Some(focused), 1.0);
+    fn node_ids_stay_distinct_and_stable_across_tree_changes() {
+        // Case `wrapper_and_first_field_have_distinct_nodes_and_child_keeps_focus`.
+        {
+            let mut wrapper = AliasWrapper {
+                child: TestWidget::new(Some(AccessNode::new(Role::Button))),
+            };
             assert_eq!(
-                update.focus,
-                widget_ak_id(&wrapper, &nodes, focused).unwrap()
+                std::ptr::from_ref(&wrapper).cast::<()>(),
+                std::ptr::from_ref(&wrapper.child).cast::<()>()
             );
-            assert!(
-                update
-                    .nodes
-                    .iter()
-                    .any(|(id, _)| *id == widget_ak_id(&wrapper, &nodes, parent).unwrap())
-            );
-            assert!(
-                update
-                    .nodes
-                    .iter()
-                    .any(|(id, _)| *id == widget_ak_id(&wrapper, &nodes, child).unwrap())
-            );
+            let (mut tree, mut nodes, child) = lay_out(&mut wrapper);
+            let update = build_tree_update(&wrapper, &nodes, Some(child), 1.0);
             let ids: std::collections::HashSet<_> =
                 update.nodes.iter().map(|(id, _)| *id).collect();
-            assert_eq!(ids.len(), update.nodes.len());
+            assert_eq!(
+                ids.len(),
+                update.nodes.len(),
+                "every semantic node has a distinct id"
+            );
+            assert_eq!(update.focus, widget_ak_id(&wrapper, &nodes, child).unwrap());
+            assert_eq!(
+                update.nodes.len(),
+                3,
+                "window, wrapper and child all remain accessible"
+            );
+            for (id, node) in &update.nodes {
+                assert!(
+                    !node.children().contains(id),
+                    "node cannot be its own child"
+                );
+            }
+            // If both concrete widgets register their own layout nodes, neither
+            // registration may overwrite the other in the reverse lookup.
+            let parent = tree.new_leaf(taffy::Style::default()).unwrap();
+            nodes.insert(parent, std::ptr::from_mut::<dyn Widget>(&mut wrapper));
+            for focused in [parent, child] {
+                let update = build_tree_update(&wrapper, &nodes, Some(focused), 1.0);
+                assert_eq!(
+                    update.focus,
+                    widget_ak_id(&wrapper, &nodes, focused).unwrap()
+                );
+                assert!(
+                    update
+                        .nodes
+                        .iter()
+                        .any(|(id, _)| *id == widget_ak_id(&wrapper, &nodes, parent).unwrap())
+                );
+                assert!(
+                    update
+                        .nodes
+                        .iter()
+                        .any(|(id, _)| *id == widget_ak_id(&wrapper, &nodes, child).unwrap())
+                );
+                let ids: std::collections::HashSet<_> =
+                    update.nodes.iter().map(|(id, _)| *id).collect();
+                assert_eq!(ids.len(), update.nodes.len());
+            }
+        }
+
+        // Case `a_child_at_its_parents_address_keeps_its_own_node_id`:
+        // The reverse node map must tell a container apart from the child it
+        // starts with: keyed by data pointer alone, the two collided and the
+        // child was exported under its parent's taffy id, so an activation
+        // aimed at the child's own id found no node.
+        {
+            let mut root = FirstFieldHost {
+                child: TestWidget::new(Some(AccessNode::new(Role::Button).with_name("Bump")))
+                    .with_rect(0.0, 0.0, 40.0, 20.0),
+                pad: 0,
+            };
+            let (_taffy, node_map, root_node) = lay_out(&mut root);
+            assert!(
+                std::ptr::eq(
+                    std::ptr::from_ref::<dyn Widget>(&root).cast::<()>(),
+                    std::ptr::from_ref::<dyn Widget>(&root.child).cast::<()>()
+                ),
+                "the fixture must reproduce the shared address"
+            );
+            let child_node = *node_map
+                .keys()
+                .find(|node| **node != root_node)
+                .expect("the child has its own taffy node");
+            let child_id = widget_ak_id(&root, &node_map, child_node).expect("child exported");
+            let root_id = widget_ak_id(&root, &node_map, root_node).expect("root exported");
+            assert_ne!(child_id, root_id);
+
+            let update = build_tree_update(&root, &node_map, None, 1.0);
+            let role_of = |wanted: AkNodeId| {
+                update
+                    .nodes
+                    .iter()
+                    .find(|(id, _)| *id == wanted)
+                    .map(|(_, node)| node.role())
+            };
+            assert_eq!(
+                role_of(child_id),
+                Some(AkRole::Button),
+                "child exported under its own id"
+            );
+            assert_eq!(
+                role_of(root_id),
+                Some(AkRole::GenericContainer),
+                "parent exported under its own id"
+            );
+            assert!(
+                matches!(
+                    resolve_node_id(&root, &node_map, child_id),
+                    Some(A11yTarget::Widget(node)) if node == child_node
+                ),
+                "the child's id resolves back to the child's taffy node"
+            );
+        }
+
+        // Case `a_synthetic_nodes_id_survives_changes_elsewhere_in_the_tree`.
+        {
+            // Two independent widgets with synthetic contents. Adding a clip to the
+            // FIRST must not renumber the second's rows: an AT holding a reference
+            // to "Beta / two" would otherwise silently start pointing elsewhere.
+            let mut first = Box::new(TestWidget::new(Some(canvas(vec![clip("a", false)]))));
+            let first_ptr: *mut TestWidget = &raw mut *first;
+            let second = Box::new(TestWidget::new(Some(
+                AccessNode::new(Role::Table)
+                    .with_name("Beta")
+                    .with_children(vec![
+                        AccessNode::new(Role::Row).with_name("one"),
+                        AccessNode::new(Role::Row).with_name("two"),
+                    ]),
+            )));
+            let mut root = TestWidget::new(None).with_child(first).with_child(second);
+            let (_taffy, node_map, _n) = lay_out(&mut root);
+
+            let before = build_tree_update(&root, &node_map, None, 1.0);
+            let two_before = label_id(&before, "two");
+
+            // Grow the first widget's synthetic list. Same widgets, same layout,
+            // same taffy ids — only an unrelated neighbour's content changed.
+            unsafe {
+                (*first_ptr).access = Some(canvas(vec![
+                    clip("a", false),
+                    clip("b", false),
+                    clip("c", false),
+                ]));
+            }
+            let after = build_tree_update(&root, &node_map, None, 1.0);
+
+            assert_eq!(
+                label_id(&after, "two"),
+                two_before,
+                "a synthetic id must not depend on how many synthetic nodes precede it in the tree"
+            );
+            assert_ne!(
+                label_id(&after, "one"),
+                two_before,
+                "sibling ids must still be distinct"
+            );
+        }
+
+        // Case `an_explicitly_keyed_node_keeps_its_id_when_it_moves`.
+        {
+            // Ordinal keying is right for a table row ("row 3" is the identity the
+            // user means), but wrong for a clip that can be dragged along a track.
+            // An explicit key pins the id to the element instead of the slot.
+            let keyed = |name: &str| {
+                AccessNode::new(Role::ListItem)
+                    .with_name(name)
+                    .with_hashed_key(name)
+            };
+            let mut root = TestWidget::new(Some(canvas(vec![keyed("intro"), keyed("outro")])));
+            let (_taffy, node_map, _n) = lay_out(&mut root);
+
+            let before = build_tree_update(&root, &node_map, None, 1.0);
+            let outro_before = label_id(&before, "outro");
+
+            // Drag "outro" to the front — same elements, new order.
+            root.access = Some(canvas(vec![keyed("outro"), keyed("intro")]));
+            let after = build_tree_update(&root, &node_map, None, 1.0);
+
+            assert_eq!(
+                label_id(&after, "outro"),
+                outro_before,
+                "an explicitly keyed node keeps its id across a reorder"
+            );
+            assert_ne!(
+                label_id(&after, "intro"),
+                outro_before,
+                "and does not inherit its new neighbour's id"
+            );
+        }
+
+        // Case `synthetic_ids_never_collide_with_widget_ids`.
+        {
+            let mut root = TestWidget::new(Some(canvas(vec![clip("a", false), clip("b", false)])));
+            let (_taffy, node_map, _n) = lay_out(&mut root);
+            let update = build_tree_update(&root, &node_map, None, 1.0);
+
+            // The id spaces partition cleanly: the root and every widget node sit
+            // below the marker bit, every synthetic node above it.
+            assert!(!is_synthetic_id(ROOT_ID));
+            for (id, node) in &update.nodes {
+                let synthetic = node.role() == AkRole::ListItem;
+                assert_eq!(
+                    is_synthetic_id(*id),
+                    synthetic,
+                    "id {id:?} ({:?}) is in the wrong id space",
+                    node.role()
+                );
+            }
+            // And no id is emitted twice.
+            let mut ids: Vec<u64> = update.nodes.iter().map(|(id, _)| id.0).collect();
+            ids.sort_unstable();
+            let count = ids.len();
+            ids.dedup();
+            assert_eq!(count, ids.len(), "duplicate node id in the tree update");
         }
     }
 
@@ -1720,473 +1880,635 @@ mod tests {
         }
     }
 
-    /// The reverse node map must tell a container apart from the child it
-    /// starts with: keyed by data pointer alone, the two collided and the
-    /// child was exported under its parent's taffy id, so an activation
-    /// aimed at the child's own id found no node.
     #[test]
-    fn a_child_at_its_parents_address_keeps_its_own_node_id() {
-        let mut root = FirstFieldHost {
-            child: TestWidget::new(Some(AccessNode::new(Role::Button).with_name("Bump")))
-                .with_rect(0.0, 0.0, 40.0, 20.0),
-            pad: 0,
-        };
-        let (_taffy, node_map, root_node) = lay_out(&mut root);
-        assert!(
-            std::ptr::eq(
-                std::ptr::from_ref::<dyn Widget>(&root).cast::<()>(),
-                std::ptr::from_ref::<dyn Widget>(&root.child).cast::<()>()
-            ),
-            "the fixture must reproduce the shared address"
-        );
-        let child_node = *node_map
-            .keys()
-            .find(|node| **node != root_node)
-            .expect("the child has its own taffy node");
-        let child_id = widget_ak_id(&root, &node_map, child_node).expect("child exported");
-        let root_id = widget_ak_id(&root, &node_map, root_node).expect("root exported");
-        assert_ne!(child_id, root_id);
+    fn roles_states_bounds_and_labels_map_to_accesskit() {
+        // Case `maps_every_role_to_a_concrete_accesskit_role`.
+        {
+            // A non-exhaustive smoke set covering the interesting many-to-one maps.
+            let cases = [
+                (Role::Window, AkRole::Window),
+                (Role::Dialog, AkRole::Dialog),
+                (Role::TabBar, AkRole::TabList),
+                (Role::ToggleButton, AkRole::Button),
+                (Role::Checkbox, AkRole::CheckBox),
+                (Role::Switch, AkRole::Switch),
+                (Role::Spinner, AkRole::ProgressIndicator),
+                (Role::ProgressBar, AkRole::ProgressIndicator),
+                (Role::StaticText, AkRole::Label),
+                (Role::Heading { level: 2 }, AkRole::Heading),
+                (Role::MultilineTextInput, AkRole::MultilineTextInput),
+                (Role::Terminal, AkRole::Terminal),
+                (Role::Generic, AkRole::GenericContainer),
+            ];
+            for (ours, theirs) in cases {
+                assert_eq!(map_role(ours), theirs, "role {ours:?} mapped wrong");
+            }
+        }
 
-        let update = build_tree_update(&root, &node_map, None, 1.0);
-        let role_of = |wanted: AkNodeId| {
-            update
+        // Case `state_flags_map_to_accesskit`.
+        {
+            let checkbox = TestWidget::new(Some(
+                AccessNode::new(Role::Checkbox).with_state(
+                    AccessState::new()
+                        .focusable(true)
+                        .checked(true)
+                        .disabled(true),
+                ),
+            ));
+            let mut root = TestWidget::new(None).with_child(Box::new(checkbox));
+            let (_taffy, node_map, _root_node) = lay_out(&mut root);
+            let update = build_tree_update(&root, &node_map, None, 1.0);
+            let (_, node) = update
                 .nodes
                 .iter()
-                .find(|(id, _)| *id == wanted)
-                .map(|(_, node)| node.role())
-        };
-        assert_eq!(
-            role_of(child_id),
-            Some(AkRole::Button),
-            "child exported under its own id"
-        );
-        assert_eq!(
-            role_of(root_id),
-            Some(AkRole::GenericContainer),
-            "parent exported under its own id"
-        );
-        assert!(
-            matches!(
-                resolve_node_id(&root, &node_map, child_id),
-                Some(A11yTarget::Widget(node)) if node == child_node
-            ),
-            "the child's id resolves back to the child's taffy node"
-        );
-    }
+                .find(|(_, n)| n.role() == AkRole::CheckBox)
+                .unwrap();
+            assert_eq!(node.toggled(), Some(Toggled::True));
+            assert!(node.is_disabled());
+            // Disabled → no Focus/Click actions added.
+            assert!(!node.supports_action(AkAction::Focus));
+            assert!(!node.supports_action(AkAction::Click));
+        }
 
-    #[test]
-    fn maps_every_role_to_a_concrete_accesskit_role() {
-        // A non-exhaustive smoke set covering the interesting many-to-one maps.
-        let cases = [
-            (Role::Window, AkRole::Window),
-            (Role::Dialog, AkRole::Dialog),
-            (Role::TabBar, AkRole::TabList),
-            (Role::ToggleButton, AkRole::Button),
-            (Role::Checkbox, AkRole::CheckBox),
-            (Role::Switch, AkRole::Switch),
-            (Role::Spinner, AkRole::ProgressIndicator),
-            (Role::ProgressBar, AkRole::ProgressIndicator),
-            (Role::StaticText, AkRole::Label),
-            (Role::Heading { level: 2 }, AkRole::Heading),
-            (Role::MultilineTextInput, AkRole::MultilineTextInput),
-            (Role::Terminal, AkRole::Terminal),
-            (Role::Generic, AkRole::GenericContainer),
-        ];
-        for (ours, theirs) in cases {
-            assert_eq!(map_role(ours), theirs, "role {ours:?} mapped wrong");
+        // Case `heading_level_is_set`.
+        {
+            let h = TestWidget::new(Some(
+                AccessNode::new(Role::Heading { level: 3 }).with_name("Section"),
+            ));
+            let mut root = TestWidget::new(None).with_child(Box::new(h));
+            let (_taffy, node_map, _root_node) = lay_out(&mut root);
+            let update = build_tree_update(&root, &node_map, None, 1.0);
+            let (_, node) = update
+                .nodes
+                .iter()
+                .find(|(_, n)| n.role() == AkRole::Heading)
+                .unwrap();
+            assert_eq!(node.level(), Some(3));
+        }
+
+        // Case `bounds_carry_through_with_scale`.
+        {
+            let btn = TestWidget::new(Some(AccessNode::new(Role::Button).with_name("B")))
+                .with_rect(10.0, 20.0, 110.0, 60.0);
+            let mut root = TestWidget::new(None).with_child(Box::new(btn));
+            let (_taffy, node_map, _root_node) = lay_out(&mut root);
+
+            // Logical (scale 1.0).
+            let update = build_tree_update(&root, &node_map, None, 1.0);
+            let (_, button) = update
+                .nodes
+                .iter()
+                .find(|(_, n)| n.role() == AkRole::Button)
+                .unwrap();
+            let b = button.bounds().expect("button has bounds");
+            assert_eq!((b.x0, b.y0, b.x1, b.y1), (10.0, 20.0, 110.0, 60.0));
+
+            // Physical (scale 2.0).
+            let update2 = build_tree_update(&root, &node_map, None, 2.0);
+            let (_, button2) = update2
+                .nodes
+                .iter()
+                .find(|(_, n)| n.role() == AkRole::Button)
+                .unwrap();
+            let b2 = button2.bounds().expect("button has bounds");
+            assert_eq!((b2.x0, b2.y0, b2.x1, b2.y1), (20.0, 40.0, 220.0, 120.0));
+        }
+
+        // Case `static_labels_export_the_value_read_by_native_accessibility`.
+        {
+            for role in [Role::Label, Role::StaticText] {
+                let text = "SQLite · Grün 🌍 · 1 rows";
+                let mut root = TestWidget::new(Some(AccessNode::new(role).with_name(text)));
+                let (_taffy, node_map, _) = lay_out(&mut root);
+                let update = build_tree_update(&root, &node_map, None, 1.0);
+                let (_, label) = update
+                    .nodes
+                    .iter()
+                    .find(|(_, node)| node.role() == AkRole::Label)
+                    .unwrap();
+                assert_eq!(
+                    label.value(),
+                    Some(text),
+                    "AccessKit native label names come from their value"
+                );
+            }
+        }
+
+        // Case `every_update_includes_the_window_root_and_a_tree`.
+        {
+            let mut root = TestWidget::new(None);
+            let (_taffy, node_map, _root_node) = lay_out(&mut root);
+            let update = build_tree_update(&root, &node_map, None, 1.0);
+            assert!(update.tree.is_some());
+            assert_eq!(update.tree.as_ref().unwrap().root, ROOT_ID);
+            assert!(update.nodes.iter().any(|(id, _)| *id == ROOT_ID));
         }
     }
 
     #[test]
-    fn action_round_trips_through_accesskit() {
-        for a in [
-            Action::Activate,
-            Action::Focus,
-            Action::Increment,
-            Action::Decrement,
-            Action::Expand,
-            Action::Collapse,
-            Action::ScrollIntoView,
-            Action::ShowContextMenu,
-        ] {
-            let ak = map_action(&a);
-            let back = accesskit_action_to_ours(ak, None).unwrap();
-            assert_eq!(back, a, "action {a:?} did not round-trip");
+    fn supported_actions_are_advertised_and_round_trip() {
+        // Case `action_round_trips_through_accesskit`.
+        {
+            for a in [
+                Action::Activate,
+                Action::Focus,
+                Action::Increment,
+                Action::Decrement,
+                Action::Expand,
+                Action::Collapse,
+                Action::ScrollIntoView,
+                Action::ShowContextMenu,
+            ] {
+                let ak = map_action(&a);
+                let back = accesskit_action_to_ours(ak, None).unwrap();
+                assert_eq!(back, a, "action {a:?} did not round-trip");
+            }
+
+            // SetValue carries its payload through ActionData::Value.
+            let set = Action::SetValue("hello".into());
+            let ak = map_action(&set);
+            assert_eq!(ak, AkAction::SetValue);
+            let data = accesskit::ActionData::Value("hello".into());
+            assert_eq!(
+                accesskit_action_to_ours(ak, Some(&data)),
+                Some(Action::SetValue("hello".into()))
+            );
+
+            // ToggleCheck maps to Click (no dedicated AccessKit verb).
+            assert_eq!(map_action(&Action::ToggleCheck), AkAction::Click);
         }
 
-        // SetValue carries its payload through ActionData::Value.
-        let set = Action::SetValue("hello".into());
-        let ak = map_action(&set);
-        assert_eq!(ak, AkAction::SetValue);
-        let data = accesskit::ActionData::Value("hello".into());
-        assert_eq!(
-            accesskit_action_to_ours(ak, Some(&data)),
-            Some(Action::SetValue("hello".into()))
-        );
+        // Case `enabled_focusable_widget_supports_focus_and_click`.
+        {
+            let btn = TestWidget::new(Some(
+                AccessNode::new(Role::Button)
+                    .with_name("Go")
+                    .with_state(AccessState::new().focusable(true)),
+            ));
+            let mut root = TestWidget::new(None).with_child(Box::new(btn));
+            let (_taffy, node_map, _root_node) = lay_out(&mut root);
+            let update = build_tree_update(&root, &node_map, None, 1.0);
+            let (_, node) = update
+                .nodes
+                .iter()
+                .find(|(_, n)| n.role() == AkRole::Button)
+                .unwrap();
+            assert!(node.supports_action(AkAction::Focus));
+            assert!(node.supports_action(AkAction::Click));
+        }
 
-        // ToggleCheck maps to Click (no dedicated AccessKit verb).
-        assert_eq!(map_action(&Action::ToggleCheck), AkAction::Click);
+        // Case `context_menu_is_advertised_only_when_declared`.
+        {
+            let row = TestWidget::new(Some(
+                AccessNode::new(Role::ListItem)
+                    .with_name("Ada Lovelace")
+                    .with_state(AccessState::new().focusable(true).context_menu(true)),
+            ));
+            let mut root = TestWidget::new(None).with_child(Box::new(row));
+            let (_taffy, node_map, _root_node) = lay_out(&mut root);
+            let update = build_tree_update(&root, &node_map, None, 1.0);
+            let (_, node) = update
+                .nodes
+                .iter()
+                .find(|(_, n)| n.role() == AkRole::ListItem)
+                .expect("list item reaches AccessKit");
+            assert!(node.supports_action(AkAction::ShowContextMenu));
+        }
+
+        // Case `slider_supports_increment_decrement`.
+        {
+            let slider = TestWidget::new(Some(
+                AccessNode::new(Role::Slider)
+                    .with_value("50%")
+                    .with_state(AccessState::new().focusable(true)),
+            ));
+            let mut root = TestWidget::new(None).with_child(Box::new(slider));
+            let (_taffy, node_map, _root_node) = lay_out(&mut root);
+            let update = build_tree_update(&root, &node_map, None, 1.0);
+            let (_, node) = update
+                .nodes
+                .iter()
+                .find(|(_, n)| n.role() == AkRole::Slider)
+                .unwrap();
+            assert!(node.supports_action(AkAction::Increment));
+            assert!(node.supports_action(AkAction::Decrement));
+            assert_eq!(node.value(), Some("50%"));
+        }
+
+        // Case `live_resources_are_accessible_through_the_same_action_addresses`.
+        {
+            let immediate = tilo_actions::ActionSpec::operation(
+                "refresh",
+                "Refresh",
+                tilo_actions::OperationKind::Effect,
+                "test.refresh",
+                &serde_json::json!({}),
+            )
+            .unwrap();
+            let prompted = tilo_actions::ActionSpec::prompted_operation(
+                "find",
+                "Find",
+                "Text to find",
+                "query",
+                tilo_actions::OperationKind::View,
+                "test.find",
+                |value| tilo_actions::EncodedAction::encode_operation("test.find", &value).unwrap(),
+            );
+            let resources =
+                [
+                    tilo_actions::Resource::new("document:1", "test.document", "Document")
+                        .with_action(immediate)
+                        .with_action(prompted),
+                ];
+            let mut root = TestWidget::new(None);
+            let (_taffy, node_map, _root_node) = lay_out(&mut root);
+            let update = build_tree_update_with_resources(&root, &node_map, None, 1.0, &resources);
+
+            let resource_id = resource_node_id("document:1");
+            let refresh_id = resource_action_node_id("document:1", "refresh");
+            let find_id = resource_action_node_id("document:1", "find");
+            let root_node = update.nodes.iter().find(|(id, _)| *id == ROOT_ID).unwrap();
+            assert!(root_node.1.children().contains(&resource_id));
+            let resource = update
+                .nodes
+                .iter()
+                .find(|(id, _)| *id == resource_id)
+                .unwrap();
+            assert_eq!(resource.1.role(), AkRole::Group);
+            assert_eq!(resource.1.children(), &[refresh_id, find_id]);
+            let refresh = update
+                .nodes
+                .iter()
+                .find(|(id, _)| *id == refresh_id)
+                .unwrap();
+            let find = update.nodes.iter().find(|(id, _)| *id == find_id).unwrap();
+            assert!(refresh.1.supports_action(AkAction::Click));
+            assert!(!refresh.1.supports_action(AkAction::SetValue));
+            assert!(find.1.supports_action(AkAction::SetValue));
+            assert!(!find.1.supports_action(AkAction::Click));
+            assert_eq!(
+                resource_action_node_id("document:1", "refresh"),
+                refresh_id,
+                "action identity must remain stable between frames"
+            );
+        }
     }
 
     #[test]
-    fn presentational_containers_collapse_and_reparent() {
-        // root(None) -> [ group(Some Group) -> [ btn(Some Button) ], None-wrapper -> [ text(Some StaticText) ] ]
-        let btn = TestWidget::new(Some(AccessNode::new(Role::Button).with_name("Go")));
-        let group = TestWidget::new(Some(AccessNode::new(Role::Group).with_name("Form")))
-            .with_child(Box::new(btn));
-        let text = TestWidget::new(Some(AccessNode::new(Role::StaticText).with_name("Hi")));
-        let wrapper = TestWidget::new(None).with_child(Box::new(text)); // presentational
-        let mut root = TestWidget::new(None) // presentational root
-            .with_child(Box::new(group))
-            .with_child(Box::new(wrapper));
+    fn tree_shape_collapses_presentational_nodes_and_carries_synthetic_and_live_regions() {
+        // Case `presentational_containers_collapse_and_reparent`.
+        {
+            // root(None) -> [ group(Some Group) -> [ btn(Some Button) ], None-wrapper -> [ text(Some StaticText) ] ]
+            let btn = TestWidget::new(Some(AccessNode::new(Role::Button).with_name("Go")));
+            let group = TestWidget::new(Some(AccessNode::new(Role::Group).with_name("Form")))
+                .with_child(Box::new(btn));
+            let text = TestWidget::new(Some(AccessNode::new(Role::StaticText).with_name("Hi")));
+            let wrapper = TestWidget::new(None).with_child(Box::new(text)); // presentational
+            let mut root = TestWidget::new(None) // presentational root
+                .with_child(Box::new(group))
+                .with_child(Box::new(wrapper));
 
-        let (_taffy, node_map, _root_node) = lay_out(&mut root);
-        let update = build_tree_update(&root, &node_map, None, 1.0);
+            let (_taffy, node_map, _root_node) = lay_out(&mut root);
+            let update = build_tree_update(&root, &node_map, None, 1.0);
 
-        // Roles present: Window (root), Group, Button, Label (StaticText).
-        let roles: Vec<AkRole> = update.nodes.iter().map(|(_, n)| n.role()).collect();
-        assert!(roles.contains(&AkRole::Window));
-        assert!(roles.contains(&AkRole::Group));
-        assert!(roles.contains(&AkRole::Button));
-        assert!(roles.contains(&AkRole::Label));
-        // No GenericContainer — both presentational widgets collapsed out.
-        assert!(
-            !roles.contains(&AkRole::GenericContainer),
-            "presentational widgets must not emit a node"
-        );
+            // Roles present: Window (root), Group, Button, Label (StaticText).
+            let roles: Vec<AkRole> = update.nodes.iter().map(|(_, n)| n.role()).collect();
+            assert!(roles.contains(&AkRole::Window));
+            assert!(roles.contains(&AkRole::Group));
+            assert!(roles.contains(&AkRole::Button));
+            assert!(roles.contains(&AkRole::Label));
+            // No GenericContainer — both presentational widgets collapsed out.
+            assert!(
+                !roles.contains(&AkRole::GenericContainer),
+                "presentational widgets must not emit a node"
+            );
 
-        // The window root owns BOTH the Group and the reparented Label.
-        let (_, window) = update.nodes.iter().find(|(id, _)| *id == ROOT_ID).unwrap();
-        assert_eq!(
-            window.children().len(),
-            2,
-            "window should own Group + reparented Label"
-        );
+            // The window root owns BOTH the Group and the reparented Label.
+            let (_, window) = update.nodes.iter().find(|(id, _)| *id == ROOT_ID).unwrap();
+            assert_eq!(
+                window.children().len(),
+                2,
+                "window should own Group + reparented Label"
+            );
 
-        // The Button hangs off the Group, not the window.
-        let group_id = window
-            .children()
-            .iter()
-            .copied()
-            .find(|cid| {
+            // The Button hangs off the Group, not the window.
+            let group_id = window
+                .children()
+                .iter()
+                .copied()
+                .find(|cid| {
+                    update
+                        .nodes
+                        .iter()
+                        .any(|(id, n)| id == cid && n.role() == AkRole::Group)
+                })
+                .expect("group child of window");
+            let (_, group_node) = update.nodes.iter().find(|(id, _)| *id == group_id).unwrap();
+            assert_eq!(group_node.children().len(), 1, "group owns the button");
+        }
+
+        // Case `synthetic_children_flow_into_the_tree_with_position_and_labels`.
+        {
+            // Models a DataTable: each row carries its position and two named cells.
+            let row = |pos: usize, size: usize| {
+                AccessNode::new(Role::Row)
+                    .with_position(pos, size)
+                    .with_children(vec![
+                        AccessNode::new(Role::Cell)
+                            .with_name("Name")
+                            .with_position(1, 2),
+                        AccessNode::new(Role::Cell)
+                            .with_name("Age")
+                            .with_position(2, 2),
+                    ])
+            };
+            let table_access = AccessNode::new(Role::Table)
+                .with_name("People")
+                .with_children(vec![row(1, 2), row(2, 2)]);
+            let mut root = TestWidget::new(Some(table_access));
+
+            let (_taffy, node_map, _root_node) = lay_out(&mut root);
+            let update = build_tree_update(&root, &node_map, None, 1.0);
+
+            // The table node owns two synthetic rows.
+            let (_, table) = update
+                .nodes
+                .iter()
+                .find(|(_, n)| n.role() == AkRole::Table)
+                .expect("table node present");
+            assert_eq!(table.children().len(), 2, "table owns two synthetic rows");
+
+            // Rows carry their 1-based position and own two header-named cells.
+            let row_nodes: Vec<_> = update
+                .nodes
+                .iter()
+                .filter(|(_, n)| n.role() == AkRole::Row)
+                .collect();
+            assert_eq!(row_nodes.len(), 2, "two row nodes reached the tree");
+            for (_, r) in &row_nodes {
+                assert_eq!(r.size_of_set(), Some(2), "row knows the table has 2 rows");
+                assert!(
+                    r.position_in_set().is_some(),
+                    "row carries its 1-based position"
+                );
+                assert_eq!(r.children().len(), 2, "each row owns two cells");
+            }
+
+            // Cells are named by their column header.
+            let cell_labels: Vec<Option<&str>> = update
+                .nodes
+                .iter()
+                .filter(|(_, n)| n.role() == AkRole::Cell)
+                .map(|(_, n)| n.label())
+                .collect();
+            assert!(
+                cell_labels.contains(&Some("Name")),
+                "a cell is named for the Name column"
+            );
+            assert!(
+                cell_labels.contains(&Some("Age")),
+                "a cell is named for the Age column"
+            );
+            assert_eq!(cell_labels.len(), 4, "two cells per row across two rows");
+        }
+
+        // Case `live_regions_reach_accesskit_with_priority_and_atomic_updates`.
+        {
+            let polite = TestWidget::new(Some(
+                AccessNode::new(Role::StaticText)
+                    .with_name("Saved")
+                    .with_live(crate::a11y::Politeness::Polite),
+            ));
+            let assertive = TestWidget::new(Some(
+                AccessNode::new(Role::StaticText)
+                    .with_name("Connection lost")
+                    .with_live(crate::a11y::Politeness::Assertive),
+            ));
+            let mut root = TestWidget::new(None)
+                .with_child(Box::new(polite))
+                .with_child(Box::new(assertive));
+            let (_taffy, node_map, _root_node) = lay_out(&mut root);
+            let update = build_tree_update(&root, &node_map, None, 1.0);
+
+            let node_named = |name: &str| {
                 update
                     .nodes
                     .iter()
-                    .any(|(id, n)| id == cid && n.role() == AkRole::Group)
-            })
-            .expect("group child of window");
-        let (_, group_node) = update.nodes.iter().find(|(id, _)| *id == group_id).unwrap();
-        assert_eq!(group_node.children().len(), 1, "group owns the button");
+                    .find(|(_, node)| node.label() == Some(name))
+                    .map(|(_, node)| node)
+                    .expect("live region is exported")
+            };
+            let polite = node_named("Saved");
+            assert_eq!(polite.live(), Some(AkLive::Polite));
+            assert!(polite.is_live_atomic());
+            let assertive = node_named("Connection lost");
+            assert_eq!(assertive.live(), Some(AkLive::Assertive));
+            assert!(assertive.is_live_atomic());
+        }
     }
 
     #[test]
-    fn synthetic_children_flow_into_the_tree_with_position_and_labels() {
-        // Models a DataTable: each row carries its position and two named cells.
-        let row = |pos: usize, size: usize| {
-            AccessNode::new(Role::Row)
-                .with_position(pos, size)
-                .with_children(vec![
-                    AccessNode::new(Role::Cell)
-                        .with_name("Name")
-                        .with_position(1, 2),
-                    AccessNode::new(Role::Cell)
-                        .with_name("Age")
-                        .with_position(2, 2),
-                ])
-        };
-        let table_access = AccessNode::new(Role::Table)
-            .with_name("People")
-            .with_children(vec![row(1, 2), row(2, 2)]);
-        let mut root = TestWidget::new(Some(table_access));
+    fn focus_targets_the_focused_widget_or_falls_back_to_root() {
+        // Case `focus_targets_the_focused_widget`.
+        {
+            let btn = TestWidget::new(Some(
+                AccessNode::new(Role::Button)
+                    .with_name("Save")
+                    .with_state(AccessState::new().focusable(true).focused(true)),
+            ));
+            let mut root = TestWidget::new(None).with_child(Box::new(btn));
 
-        let (_taffy, node_map, _root_node) = lay_out(&mut root);
-        let update = build_tree_update(&root, &node_map, None, 1.0);
+            let (_taffy, node_map, _root_node) = lay_out(&mut root);
+            let focused_taffy = node_map
+                .iter()
+                .find(|(_, ptr)| {
+                    let w = unsafe { &***ptr };
+                    w.accessibility().is_some_and(|n| n.role == Role::Button)
+                })
+                .map(|(&id, _)| id);
+            assert!(focused_taffy.is_some());
 
-        // The table node owns two synthetic rows.
-        let (_, table) = update
-            .nodes
-            .iter()
-            .find(|(_, n)| n.role() == AkRole::Table)
-            .expect("table node present");
-        assert_eq!(table.children().len(), 2, "table owns two synthetic rows");
-
-        // Rows carry their 1-based position and own two header-named cells.
-        let row_nodes: Vec<_> = update
-            .nodes
-            .iter()
-            .filter(|(_, n)| n.role() == AkRole::Row)
-            .collect();
-        assert_eq!(row_nodes.len(), 2, "two row nodes reached the tree");
-        for (_, r) in &row_nodes {
-            assert_eq!(r.size_of_set(), Some(2), "row knows the table has 2 rows");
-            assert!(
-                r.position_in_set().is_some(),
-                "row carries its 1-based position"
+            let update = build_tree_update(&root, &node_map, focused_taffy, 1.0);
+            assert_ne!(
+                update.focus, ROOT_ID,
+                "focus should be the button, not root"
             );
-            assert_eq!(r.children().len(), 2, "each row owns two cells");
+            assert!(
+                update
+                    .nodes
+                    .iter()
+                    .any(|(id, n)| *id == update.focus && n.role() == AkRole::Button),
+                "focus must point at the Button node"
+            );
         }
 
-        // Cells are named by their column header.
-        let cell_labels: Vec<Option<&str>> = update
-            .nodes
-            .iter()
-            .filter(|(_, n)| n.role() == AkRole::Cell)
-            .map(|(_, n)| n.label())
-            .collect();
-        assert!(
-            cell_labels.contains(&Some("Name")),
-            "a cell is named for the Name column"
-        );
-        assert!(
-            cell_labels.contains(&Some("Age")),
-            "a cell is named for the Age column"
-        );
-        assert_eq!(cell_labels.len(), 4, "two cells per row across two rows");
+        // Case `focus_falls_back_to_root_when_nothing_focused`.
+        {
+            let mut root = TestWidget::new(Some(AccessNode::new(Role::Document)));
+            let (_taffy, node_map, _root_node) = lay_out(&mut root);
+            let update = build_tree_update(&root, &node_map, None, 1.0);
+            assert_eq!(update.focus, ROOT_ID);
+        }
+
+        // Case `focus_falls_back_to_root_when_focused_id_is_stale`.
+        {
+            // A stale taffy id (left over from before a relayout) must not be
+            // forwarded — AccessKit panics the AT if `focus` isn't emitted.
+            let btn = TestWidget::new(Some(
+                AccessNode::new(Role::Button)
+                    .with_name("Save")
+                    .with_state(AccessState::new().focusable(true)),
+            ));
+            let mut root = TestWidget::new(None).with_child(Box::new(btn));
+            let (_taffy, node_map, _root_node) = lay_out(&mut root);
+            let stale = taffy::NodeId::from(u64::MAX - 7);
+            let update = build_tree_update(&root, &node_map, Some(stale), 1.0);
+            assert_eq!(update.focus, ROOT_ID);
+            // The focus is always a node that exists in the update.
+            assert!(update.nodes.iter().any(|(id, _)| *id == update.focus));
+        }
+
+        // Case `focus_falls_back_to_root_when_the_focused_widget_collapsed_out`.
+        {
+            // The other half of the emitted-node rule the active-descendant
+            // preference is layered on: a live taffy id whose widget is
+            // presentational emits no node at all, so forwarding it would name a
+            // node absent from this update — which panics the consuming AT.
+            let inner = TestWidget::new(None).with_child(Box::new(TestWidget::new(Some(
+                AccessNode::new(Role::Button).with_name("Go"),
+            ))));
+            let mut root = TestWidget::new(None).with_child(Box::new(inner));
+            let (_taffy, node_map, _n) = lay_out(&mut root);
+
+            // The presentational wrapper: in the node_map, but never exported.
+            let collapsed = node_map
+                .iter()
+                .find(|(_, ptr)| unsafe { &***ptr }.accessibility().is_none())
+                .map(|(&id, _)| id)
+                .expect("a presentational widget was laid out");
+
+            let update = build_tree_update(&root, &node_map, Some(collapsed), 1.0);
+            assert_eq!(update.focus, ROOT_ID);
+            assert!(update.nodes.iter().any(|(id, _)| *id == update.focus));
+        }
     }
 
     #[test]
-    fn focus_targets_the_focused_widget() {
-        let btn = TestWidget::new(Some(
-            AccessNode::new(Role::Button)
-                .with_name("Save")
-                .with_state(AccessState::new().focusable(true).focused(true)),
-        ));
-        let mut root = TestWidget::new(None).with_child(Box::new(btn));
-
-        let (_taffy, node_map, _root_node) = lay_out(&mut root);
-        let focused_taffy = node_map
-            .iter()
-            .find(|(_, ptr)| {
-                let w = unsafe { &***ptr };
-                w.accessibility().is_some_and(|n| n.role == Role::Button)
-            })
-            .map(|(&id, _)| id);
-        assert!(focused_taffy.is_some());
-
-        let update = build_tree_update(&root, &node_map, focused_taffy, 1.0);
-        assert_ne!(
-            update.focus, ROOT_ID,
-            "focus should be the button, not root"
-        );
-        assert!(
-            update
+    fn text_values_expose_editable_runs_but_never_secret_content() {
+        // Case `terminal_is_selectable_but_not_an_editable_text_value`.
+        {
+            let terminal = TestWidget::new(Some(
+                AccessNode::new(Role::Terminal)
+                    .with_name("Terminal")
+                    .with_value("$ cargo test")
+                    .with_state(AccessState::new().focusable(true).read_only(true)),
+            ));
+            let mut root = TestWidget::new(None).with_child(Box::new(terminal));
+            let (_taffy, node_map, _root_node) = lay_out(&mut root);
+            let update = build_tree_update(&root, &node_map, None, 1.0);
+            let (_, node) = update
                 .nodes
                 .iter()
-                .any(|(id, n)| *id == update.focus && n.role() == AkRole::Button),
-            "focus must point at the Button node"
-        );
-    }
+                .find(|(_, node)| node.role() == AkRole::Terminal)
+                .expect("terminal reaches AccessKit with its native role");
+            assert!(node.is_read_only());
+            assert!(node.supports_action(AkAction::Focus));
+            assert!(node.supports_action(AkAction::SetTextSelection));
+            assert!(!node.supports_action(AkAction::SetValue));
+            assert_eq!(node.value(), Some("$ cargo test"));
+        }
 
-    #[test]
-    fn focus_falls_back_to_root_when_nothing_focused() {
-        let mut root = TestWidget::new(Some(AccessNode::new(Role::Document)));
-        let (_taffy, node_map, _root_node) = lay_out(&mut root);
-        let update = build_tree_update(&root, &node_map, None, 1.0);
-        assert_eq!(update.focus, ROOT_ID);
-    }
-
-    #[test]
-    fn focus_falls_back_to_root_when_focused_id_is_stale() {
-        // A stale taffy id (left over from before a relayout) must not be
-        // forwarded — AccessKit panics the AT if `focus` isn't emitted.
-        let btn = TestWidget::new(Some(
-            AccessNode::new(Role::Button)
-                .with_name("Save")
-                .with_state(AccessState::new().focusable(true)),
-        ));
-        let mut root = TestWidget::new(None).with_child(Box::new(btn));
-        let (_taffy, node_map, _root_node) = lay_out(&mut root);
-        let stale = taffy::NodeId::from(u64::MAX - 7);
-        let update = build_tree_update(&root, &node_map, Some(stale), 1.0);
-        assert_eq!(update.focus, ROOT_ID);
-        // The focus is always a node that exists in the update.
-        assert!(update.nodes.iter().any(|(id, _)| *id == update.focus));
-    }
-
-    #[test]
-    fn bounds_carry_through_with_scale() {
-        let btn = TestWidget::new(Some(AccessNode::new(Role::Button).with_name("B")))
-            .with_rect(10.0, 20.0, 110.0, 60.0);
-        let mut root = TestWidget::new(None).with_child(Box::new(btn));
-        let (_taffy, node_map, _root_node) = lay_out(&mut root);
-
-        // Logical (scale 1.0).
-        let update = build_tree_update(&root, &node_map, None, 1.0);
-        let (_, button) = update
-            .nodes
-            .iter()
-            .find(|(_, n)| n.role() == AkRole::Button)
-            .unwrap();
-        let b = button.bounds().expect("button has bounds");
-        assert_eq!((b.x0, b.y0, b.x1, b.y1), (10.0, 20.0, 110.0, 60.0));
-
-        // Physical (scale 2.0).
-        let update2 = build_tree_update(&root, &node_map, None, 2.0);
-        let (_, button2) = update2
-            .nodes
-            .iter()
-            .find(|(_, n)| n.role() == AkRole::Button)
-            .unwrap();
-        let b2 = button2.bounds().expect("button has bounds");
-        assert_eq!((b2.x0, b2.y0, b2.x1, b2.y1), (20.0, 40.0, 220.0, 120.0));
-    }
-
-    #[test]
-    fn state_flags_map_to_accesskit() {
-        let checkbox = TestWidget::new(Some(
-            AccessNode::new(Role::Checkbox).with_state(
-                AccessState::new()
-                    .focusable(true)
-                    .checked(true)
-                    .disabled(true),
-            ),
-        ));
-        let mut root = TestWidget::new(None).with_child(Box::new(checkbox));
-        let (_taffy, node_map, _root_node) = lay_out(&mut root);
-        let update = build_tree_update(&root, &node_map, None, 1.0);
-        let (_, node) = update
-            .nodes
-            .iter()
-            .find(|(_, n)| n.role() == AkRole::CheckBox)
-            .unwrap();
-        assert_eq!(node.toggled(), Some(Toggled::True));
-        assert!(node.is_disabled());
-        // Disabled → no Focus/Click actions added.
-        assert!(!node.supports_action(AkAction::Focus));
-        assert!(!node.supports_action(AkAction::Click));
-    }
-
-    #[test]
-    fn enabled_focusable_widget_supports_focus_and_click() {
-        let btn = TestWidget::new(Some(
-            AccessNode::new(Role::Button)
-                .with_name("Go")
-                .with_state(AccessState::new().focusable(true)),
-        ));
-        let mut root = TestWidget::new(None).with_child(Box::new(btn));
-        let (_taffy, node_map, _root_node) = lay_out(&mut root);
-        let update = build_tree_update(&root, &node_map, None, 1.0);
-        let (_, node) = update
-            .nodes
-            .iter()
-            .find(|(_, n)| n.role() == AkRole::Button)
-            .unwrap();
-        assert!(node.supports_action(AkAction::Focus));
-        assert!(node.supports_action(AkAction::Click));
-    }
-
-    #[test]
-    fn context_menu_is_advertised_only_when_declared() {
-        let row = TestWidget::new(Some(
-            AccessNode::new(Role::ListItem)
-                .with_name("Ada Lovelace")
-                .with_state(AccessState::new().focusable(true).context_menu(true)),
-        ));
-        let mut root = TestWidget::new(None).with_child(Box::new(row));
-        let (_taffy, node_map, _root_node) = lay_out(&mut root);
-        let update = build_tree_update(&root, &node_map, None, 1.0);
-        let (_, node) = update
-            .nodes
-            .iter()
-            .find(|(_, n)| n.role() == AkRole::ListItem)
-            .expect("list item reaches AccessKit");
-        assert!(node.supports_action(AkAction::ShowContextMenu));
-    }
-
-    #[test]
-    fn terminal_is_selectable_but_not_an_editable_text_value() {
-        let terminal = TestWidget::new(Some(
-            AccessNode::new(Role::Terminal)
-                .with_name("Terminal")
-                .with_value("$ cargo test")
-                .with_state(AccessState::new().focusable(true).read_only(true)),
-        ));
-        let mut root = TestWidget::new(None).with_child(Box::new(terminal));
-        let (_taffy, node_map, _root_node) = lay_out(&mut root);
-        let update = build_tree_update(&root, &node_map, None, 1.0);
-        let (_, node) = update
-            .nodes
-            .iter()
-            .find(|(_, node)| node.role() == AkRole::Terminal)
-            .expect("terminal reaches AccessKit with its native role");
-        assert!(node.is_read_only());
-        assert!(node.supports_action(AkAction::Focus));
-        assert!(node.supports_action(AkAction::SetTextSelection));
-        assert!(!node.supports_action(AkAction::SetValue));
-        assert_eq!(node.value(), Some("$ cargo test"));
-    }
-
-    #[test]
-    fn slider_supports_increment_decrement() {
-        let slider = TestWidget::new(Some(
-            AccessNode::new(Role::Slider)
-                .with_value("50%")
-                .with_state(AccessState::new().focusable(true)),
-        ));
-        let mut root = TestWidget::new(None).with_child(Box::new(slider));
-        let (_taffy, node_map, _root_node) = lay_out(&mut root);
-        let update = build_tree_update(&root, &node_map, None, 1.0);
-        let (_, node) = update
-            .nodes
-            .iter()
-            .find(|(_, n)| n.role() == AkRole::Slider)
-            .unwrap();
-        assert!(node.supports_action(AkAction::Increment));
-        assert!(node.supports_action(AkAction::Decrement));
-        assert_eq!(node.value(), Some("50%"));
-    }
-
-    #[test]
-    fn secret_value_is_never_exposed() {
-        let pw = TestWidget::new(Some(
-            AccessNode::new(Role::TextInput)
-                .with_name("Protected input")
-                .with_value("hunter2")
-                .with_sensitivity(crate::a11y::Sensitivity::Secret),
-        ));
-        let mut root = TestWidget::new(None).with_child(Box::new(pw));
-        let (_taffy, node_map, _root_node) = lay_out(&mut root);
-        let update = build_tree_update(&root, &node_map, None, 1.0);
-        let (_, node) = update
-            .nodes
-            .iter()
-            .find(|(_, n)| n.label() == Some("Protected input"))
-            .unwrap();
-        assert_eq!(node.role(), AkRole::PasswordInput);
-        assert_eq!(node.value(), None, "secret value must not leak to the AT");
-    }
-
-    #[test]
-    fn secret_label_content_is_never_exposed_but_personal_stays_local() {
-        let code = TestWidget::new(Some(
-            AccessNode::new(Role::Label)
-                .with_name("493 201")
-                .with_sensitivity(crate::a11y::Sensitivity::Secret),
-        ));
-        let contact = TestWidget::new(Some(
-            AccessNode::new(Role::Label)
-                .with_name("Ada Lovelace")
-                .with_sensitivity(crate::a11y::Sensitivity::Personal),
-        ));
-        let mut root = TestWidget::new(None)
-            .with_child(Box::new(code))
-            .with_child(Box::new(contact));
-        let (_taffy, node_map, _root_node) = lay_out(&mut root);
-        let update = build_tree_update(&root, &node_map, None, 1.0);
-        assert!(
-            update
+        // Case `secret_value_is_never_exposed`.
+        {
+            let pw = TestWidget::new(Some(
+                AccessNode::new(Role::TextInput)
+                    .with_name("Protected input")
+                    .with_value("hunter2")
+                    .with_sensitivity(crate::a11y::Sensitivity::Secret),
+            ));
+            let mut root = TestWidget::new(None).with_child(Box::new(pw));
+            let (_taffy, node_map, _root_node) = lay_out(&mut root);
+            let update = build_tree_update(&root, &node_map, None, 1.0);
+            let (_, node) = update
                 .nodes
                 .iter()
-                .all(|(_, n)| n.label() != Some("493 201") && n.value() != Some("493 201")),
-            "a secret label's content must not reach the AT"
-        );
-        assert!(
-            update
+                .find(|(_, n)| n.label() == Some("Protected input"))
+                .unwrap();
+            assert_eq!(node.role(), AkRole::PasswordInput);
+            assert_eq!(node.value(), None, "secret value must not leak to the AT");
+        }
+
+        // Case `secret_label_content_is_never_exposed_but_personal_stays_local`.
+        {
+            let code = TestWidget::new(Some(
+                AccessNode::new(Role::Label)
+                    .with_name("493 201")
+                    .with_sensitivity(crate::a11y::Sensitivity::Secret),
+            ));
+            let contact = TestWidget::new(Some(
+                AccessNode::new(Role::Label)
+                    .with_name("Ada Lovelace")
+                    .with_sensitivity(crate::a11y::Sensitivity::Personal),
+            ));
+            let mut root = TestWidget::new(None)
+                .with_child(Box::new(code))
+                .with_child(Box::new(contact));
+            let (_taffy, node_map, _root_node) = lay_out(&mut root);
+            let update = build_tree_update(&root, &node_map, None, 1.0);
+            assert!(
+                update
+                    .nodes
+                    .iter()
+                    .all(|(_, n)| n.label() != Some("493 201") && n.value() != Some("493 201")),
+                "a secret label's content must not reach the AT"
+            );
+            assert!(
+                update
+                    .nodes
+                    .iter()
+                    .any(|(_, n)| n.label() == Some("Ada Lovelace")),
+                "personal content is readable by this session's own screen reader"
+            );
+        }
+
+        // Case `editable_text_exposes_grapheme_run_and_directional_selection`.
+        {
+            let family = "👩‍👩‍👧‍👦";
+            let value = format!("a{family}b");
+            let field = TestWidget::new(Some(
+                AccessNode::new(Role::TextInput)
+                    .with_value(value.clone())
+                    .with_text_selection(1 + family.len(), 1)
+                    .with_state(AccessState::new().focusable(true).focused(true)),
+            ));
+            let mut root = TestWidget::new(None).with_child(Box::new(field));
+            let (_taffy, node_map, _root_node) = lay_out(&mut root);
+            let update = build_tree_update(&root, &node_map, None, 1.0);
+            let (field_id, field_node) = update
                 .nodes
                 .iter()
-                .any(|(_, n)| n.label() == Some("Ada Lovelace")),
-            "personal content is readable by this session's own screen reader"
-        );
+                .find(|(_, node)| node.role() == AkRole::TextInput)
+                .unwrap();
+            let (run_id, run) = update
+                .nodes
+                .iter()
+                .find(|(_, node)| node.role() == AkRole::TextRun)
+                .unwrap();
+
+            assert_eq!(run.value(), Some(value.as_str()));
+            assert_eq!(
+                run.character_lengths(),
+                [1, u8::try_from(family.len()).unwrap_or(u8::MAX), 1].as_slice(),
+                "AccessKit characters match the editor's extended graphemes"
+            );
+            assert_eq!(field_node.children(), &[*run_id]);
+            let selection = field_node.text_selection().unwrap();
+            assert_eq!(selection.anchor.node, *run_id);
+            assert_eq!(selection.anchor.character_index, 2);
+            assert_eq!(selection.focus.node, *run_id);
+            assert_eq!(selection.focus.character_index, 1);
+            assert_ne!(*field_id, *run_id);
+        }
     }
 
     #[cfg(windows)]
@@ -2217,182 +2539,6 @@ mod tests {
             assert!(password.supports_action(AkAction::SetValue));
             assert!(password.children().is_empty());
         }
-    }
-
-    #[test]
-    fn static_labels_export_the_value_read_by_native_accessibility() {
-        for role in [Role::Label, Role::StaticText] {
-            let text = "SQLite · Grün 🌍 · 1 rows";
-            let mut root = TestWidget::new(Some(AccessNode::new(role).with_name(text)));
-            let (_taffy, node_map, _) = lay_out(&mut root);
-            let update = build_tree_update(&root, &node_map, None, 1.0);
-            let (_, label) = update
-                .nodes
-                .iter()
-                .find(|(_, node)| node.role() == AkRole::Label)
-                .unwrap();
-            assert_eq!(
-                label.value(),
-                Some(text),
-                "AccessKit native label names come from their value"
-            );
-        }
-    }
-
-    #[test]
-    fn live_regions_reach_accesskit_with_priority_and_atomic_updates() {
-        let polite = TestWidget::new(Some(
-            AccessNode::new(Role::StaticText)
-                .with_name("Saved")
-                .with_live(crate::a11y::Politeness::Polite),
-        ));
-        let assertive = TestWidget::new(Some(
-            AccessNode::new(Role::StaticText)
-                .with_name("Connection lost")
-                .with_live(crate::a11y::Politeness::Assertive),
-        ));
-        let mut root = TestWidget::new(None)
-            .with_child(Box::new(polite))
-            .with_child(Box::new(assertive));
-        let (_taffy, node_map, _root_node) = lay_out(&mut root);
-        let update = build_tree_update(&root, &node_map, None, 1.0);
-
-        let node_named = |name: &str| {
-            update
-                .nodes
-                .iter()
-                .find(|(_, node)| node.label() == Some(name))
-                .map(|(_, node)| node)
-                .expect("live region is exported")
-        };
-        let polite = node_named("Saved");
-        assert_eq!(polite.live(), Some(AkLive::Polite));
-        assert!(polite.is_live_atomic());
-        let assertive = node_named("Connection lost");
-        assert_eq!(assertive.live(), Some(AkLive::Assertive));
-        assert!(assertive.is_live_atomic());
-    }
-
-    #[test]
-    fn editable_text_exposes_grapheme_run_and_directional_selection() {
-        let family = "👩‍👩‍👧‍👦";
-        let value = format!("a{family}b");
-        let field = TestWidget::new(Some(
-            AccessNode::new(Role::TextInput)
-                .with_value(value.clone())
-                .with_text_selection(1 + family.len(), 1)
-                .with_state(AccessState::new().focusable(true).focused(true)),
-        ));
-        let mut root = TestWidget::new(None).with_child(Box::new(field));
-        let (_taffy, node_map, _root_node) = lay_out(&mut root);
-        let update = build_tree_update(&root, &node_map, None, 1.0);
-        let (field_id, field_node) = update
-            .nodes
-            .iter()
-            .find(|(_, node)| node.role() == AkRole::TextInput)
-            .unwrap();
-        let (run_id, run) = update
-            .nodes
-            .iter()
-            .find(|(_, node)| node.role() == AkRole::TextRun)
-            .unwrap();
-
-        assert_eq!(run.value(), Some(value.as_str()));
-        assert_eq!(
-            run.character_lengths(),
-            [1, u8::try_from(family.len()).unwrap_or(u8::MAX), 1].as_slice(),
-            "AccessKit characters match the editor's extended graphemes"
-        );
-        assert_eq!(field_node.children(), &[*run_id]);
-        let selection = field_node.text_selection().unwrap();
-        assert_eq!(selection.anchor.node, *run_id);
-        assert_eq!(selection.anchor.character_index, 2);
-        assert_eq!(selection.focus.node, *run_id);
-        assert_eq!(selection.focus.character_index, 1);
-        assert_ne!(*field_id, *run_id);
-    }
-
-    #[test]
-    fn heading_level_is_set() {
-        let h = TestWidget::new(Some(
-            AccessNode::new(Role::Heading { level: 3 }).with_name("Section"),
-        ));
-        let mut root = TestWidget::new(None).with_child(Box::new(h));
-        let (_taffy, node_map, _root_node) = lay_out(&mut root);
-        let update = build_tree_update(&root, &node_map, None, 1.0);
-        let (_, node) = update
-            .nodes
-            .iter()
-            .find(|(_, n)| n.role() == AkRole::Heading)
-            .unwrap();
-        assert_eq!(node.level(), Some(3));
-    }
-
-    #[test]
-    fn every_update_includes_the_window_root_and_a_tree() {
-        let mut root = TestWidget::new(None);
-        let (_taffy, node_map, _root_node) = lay_out(&mut root);
-        let update = build_tree_update(&root, &node_map, None, 1.0);
-        assert!(update.tree.is_some());
-        assert_eq!(update.tree.as_ref().unwrap().root, ROOT_ID);
-        assert!(update.nodes.iter().any(|(id, _)| *id == ROOT_ID));
-    }
-
-    #[test]
-    fn live_resources_are_accessible_through_the_same_action_addresses() {
-        let immediate = tilo_actions::ActionSpec::operation(
-            "refresh",
-            "Refresh",
-            tilo_actions::OperationKind::Effect,
-            "test.refresh",
-            &serde_json::json!({}),
-        )
-        .unwrap();
-        let prompted = tilo_actions::ActionSpec::prompted_operation(
-            "find",
-            "Find",
-            "Text to find",
-            "query",
-            tilo_actions::OperationKind::View,
-            "test.find",
-            |value| tilo_actions::EncodedAction::encode_operation("test.find", &value).unwrap(),
-        );
-        let resources = [
-            tilo_actions::Resource::new("document:1", "test.document", "Document")
-                .with_action(immediate)
-                .with_action(prompted),
-        ];
-        let mut root = TestWidget::new(None);
-        let (_taffy, node_map, _root_node) = lay_out(&mut root);
-        let update = build_tree_update_with_resources(&root, &node_map, None, 1.0, &resources);
-
-        let resource_id = resource_node_id("document:1");
-        let refresh_id = resource_action_node_id("document:1", "refresh");
-        let find_id = resource_action_node_id("document:1", "find");
-        let root_node = update.nodes.iter().find(|(id, _)| *id == ROOT_ID).unwrap();
-        assert!(root_node.1.children().contains(&resource_id));
-        let resource = update
-            .nodes
-            .iter()
-            .find(|(id, _)| *id == resource_id)
-            .unwrap();
-        assert_eq!(resource.1.role(), AkRole::Group);
-        assert_eq!(resource.1.children(), &[refresh_id, find_id]);
-        let refresh = update
-            .nodes
-            .iter()
-            .find(|(id, _)| *id == refresh_id)
-            .unwrap();
-        let find = update.nodes.iter().find(|(id, _)| *id == find_id).unwrap();
-        assert!(refresh.1.supports_action(AkAction::Click));
-        assert!(!refresh.1.supports_action(AkAction::SetValue));
-        assert!(find.1.supports_action(AkAction::SetValue));
-        assert!(!find.1.supports_action(AkAction::Click));
-        assert_eq!(
-            resource_action_node_id("document:1", "refresh"),
-            refresh_id,
-            "action identity must remain stable between frames"
-        );
     }
 
     // ---- Synthetic nodes: focus, stable ids, action routing --------------
@@ -2440,402 +2586,282 @@ mod tests {
     }
 
     #[test]
-    fn focus_lands_on_the_marked_synthetic_node_not_its_owning_widget() {
-        // A canvas widget holds keyboard focus and nominates its second clip as
-        // the active descendant. The reader must land on THAT clip — a canvas
-        // whose focus can only ever be the whole canvas is precisely why a
-        // screen-reader user cannot navigate one.
-        let mut root = TestWidget::new(Some(canvas(vec![
-            clip("Intro", false),
-            clip("Interview", true),
-            clip("Outro", false),
-        ])));
-        let (_taffy, node_map, _n) = lay_out(&mut root);
-        let canvas_taffy = taffy_id_of(&node_map, Role::Canvas);
+    fn focus_and_active_descendant_follow_the_marked_synthetic_node() {
+        // Case `focus_lands_on_the_marked_synthetic_node_not_its_owning_widget`.
+        {
+            // A canvas widget holds keyboard focus and nominates its second clip as
+            // the active descendant. The reader must land on THAT clip — a canvas
+            // whose focus can only ever be the whole canvas is precisely why a
+            // screen-reader user cannot navigate one.
+            let mut root = TestWidget::new(Some(canvas(vec![
+                clip("Intro", false),
+                clip("Interview", true),
+                clip("Outro", false),
+            ])));
+            let (_taffy, node_map, _n) = lay_out(&mut root);
+            let canvas_taffy = taffy_id_of(&node_map, Role::Canvas);
 
-        let update = build_tree_update(&root, &node_map, Some(canvas_taffy), 1.0);
+            let update = build_tree_update(&root, &node_map, Some(canvas_taffy), 1.0);
 
-        let canvas_ak = widget_ak_id(&root, &node_map, canvas_taffy).unwrap();
-        assert_ne!(
-            update.focus, canvas_ak,
-            "focus must not fall back to the whole canvas when a descendant is marked"
-        );
-        assert_ne!(update.focus, ROOT_ID);
-        let (_, focused) = update
-            .nodes
-            .iter()
-            .find(|(id, _)| *id == update.focus)
-            .expect("the focused id must name a node in this very update");
-        assert_eq!(
-            focused.label(),
-            Some("Interview"),
-            "focus must be the clip the widget marked, not one of its siblings"
-        );
-        assert!(
-            is_synthetic_id(update.focus),
-            "the focused node is synthetic, so its id must live in the synthetic id space"
-        );
-    }
-
-    #[test]
-    fn an_unfocused_widget_cannot_claim_the_readers_cursor() {
-        // Two widgets; the one WITHOUT keyboard focus marks a descendant
-        // focused. Honouring that would let any offscreen widget yank the reader
-        // away from where the keyboard actually is.
-        let idle = TestWidget::new(Some(canvas(vec![clip("Ghost", true)])));
-        let btn = TestWidget::new(Some(
-            AccessNode::new(Role::Button)
-                .with_name("Save")
-                .with_state(AccessState::new().focusable(true)),
-        ));
-        let mut root = TestWidget::new(None)
-            .with_child(Box::new(idle))
-            .with_child(Box::new(btn));
-        let (_taffy, node_map, _n) = lay_out(&mut root);
-        let button_taffy = taffy_id_of(&node_map, Role::Button);
-
-        let update = build_tree_update(&root, &node_map, Some(button_taffy), 1.0);
-
-        assert_eq!(
-            update.focus,
-            widget_ak_id(&root, &node_map, button_taffy).unwrap(),
-            "focus stays on the widget that holds the keyboard"
-        );
-        let (_, focused) = update
-            .nodes
-            .iter()
-            .find(|(id, _)| *id == update.focus)
-            .unwrap();
-        assert_eq!(focused.label(), Some("Save"));
-    }
-
-    #[test]
-    fn the_first_marked_descendant_in_document_order_wins() {
-        // A widget that marks two nodes focused is buggy, but the reader must
-        // still land somewhere deterministic rather than on whichever node the
-        // walk happened to reach last.
-        let mut root = TestWidget::new(Some(canvas(vec![
-            clip("Intro", false),
-            clip("Interview", true),
-            clip("Outro", true),
-        ])));
-        let (_taffy, node_map, _n) = lay_out(&mut root);
-        let canvas_taffy = taffy_id_of(&node_map, Role::Canvas);
-
-        let update = build_tree_update(&root, &node_map, Some(canvas_taffy), 1.0);
-        let (_, focused) = update
-            .nodes
-            .iter()
-            .find(|(id, _)| *id == update.focus)
-            .expect("the focused id must name a node in this very update");
-        assert_eq!(focused.label(), Some("Interview"));
-    }
-
-    #[test]
-    fn focus_falls_back_to_root_when_the_focused_widget_collapsed_out() {
-        // The other half of the emitted-node rule the active-descendant
-        // preference is layered on: a live taffy id whose widget is
-        // presentational emits no node at all, so forwarding it would name a
-        // node absent from this update — which panics the consuming AT.
-        let inner = TestWidget::new(None).with_child(Box::new(TestWidget::new(Some(
-            AccessNode::new(Role::Button).with_name("Go"),
-        ))));
-        let mut root = TestWidget::new(None).with_child(Box::new(inner));
-        let (_taffy, node_map, _n) = lay_out(&mut root);
-
-        // The presentational wrapper: in the node_map, but never exported.
-        let collapsed = node_map
-            .iter()
-            .find(|(_, ptr)| unsafe { &***ptr }.accessibility().is_none())
-            .map(|(&id, _)| id)
-            .expect("a presentational widget was laid out");
-
-        let update = build_tree_update(&root, &node_map, Some(collapsed), 1.0);
-        assert_eq!(update.focus, ROOT_ID);
-        assert!(update.nodes.iter().any(|(id, _)| *id == update.focus));
-    }
-
-    #[test]
-    fn a_synthetic_nodes_id_survives_changes_elsewhere_in_the_tree() {
-        // Two independent widgets with synthetic contents. Adding a clip to the
-        // FIRST must not renumber the second's rows: an AT holding a reference
-        // to "Beta / two" would otherwise silently start pointing elsewhere.
-        let mut first = Box::new(TestWidget::new(Some(canvas(vec![clip("a", false)]))));
-        let first_ptr: *mut TestWidget = &raw mut *first;
-        let second = Box::new(TestWidget::new(Some(
-            AccessNode::new(Role::Table)
-                .with_name("Beta")
-                .with_children(vec![
-                    AccessNode::new(Role::Row).with_name("one"),
-                    AccessNode::new(Role::Row).with_name("two"),
-                ]),
-        )));
-        let mut root = TestWidget::new(None).with_child(first).with_child(second);
-        let (_taffy, node_map, _n) = lay_out(&mut root);
-
-        let before = build_tree_update(&root, &node_map, None, 1.0);
-        let two_before = label_id(&before, "two");
-
-        // Grow the first widget's synthetic list. Same widgets, same layout,
-        // same taffy ids — only an unrelated neighbour's content changed.
-        unsafe {
-            (*first_ptr).access = Some(canvas(vec![
-                clip("a", false),
-                clip("b", false),
-                clip("c", false),
-            ]));
-        }
-        let after = build_tree_update(&root, &node_map, None, 1.0);
-
-        assert_eq!(
-            label_id(&after, "two"),
-            two_before,
-            "a synthetic id must not depend on how many synthetic nodes precede it in the tree"
-        );
-        assert_ne!(
-            label_id(&after, "one"),
-            two_before,
-            "sibling ids must still be distinct"
-        );
-    }
-
-    #[test]
-    fn an_explicitly_keyed_node_keeps_its_id_when_it_moves() {
-        // Ordinal keying is right for a table row ("row 3" is the identity the
-        // user means), but wrong for a clip that can be dragged along a track.
-        // An explicit key pins the id to the element instead of the slot.
-        let keyed = |name: &str| {
-            AccessNode::new(Role::ListItem)
-                .with_name(name)
-                .with_hashed_key(name)
-        };
-        let mut root = TestWidget::new(Some(canvas(vec![keyed("intro"), keyed("outro")])));
-        let (_taffy, node_map, _n) = lay_out(&mut root);
-
-        let before = build_tree_update(&root, &node_map, None, 1.0);
-        let outro_before = label_id(&before, "outro");
-
-        // Drag "outro" to the front — same elements, new order.
-        root.access = Some(canvas(vec![keyed("outro"), keyed("intro")]));
-        let after = build_tree_update(&root, &node_map, None, 1.0);
-
-        assert_eq!(
-            label_id(&after, "outro"),
-            outro_before,
-            "an explicitly keyed node keeps its id across a reorder"
-        );
-        assert_ne!(
-            label_id(&after, "intro"),
-            outro_before,
-            "and does not inherit its new neighbour's id"
-        );
-    }
-
-    #[test]
-    fn synthetic_ids_never_collide_with_widget_ids() {
-        let mut root = TestWidget::new(Some(canvas(vec![clip("a", false), clip("b", false)])));
-        let (_taffy, node_map, _n) = lay_out(&mut root);
-        let update = build_tree_update(&root, &node_map, None, 1.0);
-
-        // The id spaces partition cleanly: the root and every widget node sit
-        // below the marker bit, every synthetic node above it.
-        assert!(!is_synthetic_id(ROOT_ID));
-        for (id, node) in &update.nodes {
-            let synthetic = node.role() == AkRole::ListItem;
+            let canvas_ak = widget_ak_id(&root, &node_map, canvas_taffy).unwrap();
+            assert_ne!(
+                update.focus, canvas_ak,
+                "focus must not fall back to the whole canvas when a descendant is marked"
+            );
+            assert_ne!(update.focus, ROOT_ID);
+            let (_, focused) = update
+                .nodes
+                .iter()
+                .find(|(id, _)| *id == update.focus)
+                .expect("the focused id must name a node in this very update");
             assert_eq!(
-                is_synthetic_id(*id),
-                synthetic,
-                "id {id:?} ({:?}) is in the wrong id space",
-                node.role()
+                focused.label(),
+                Some("Interview"),
+                "focus must be the clip the widget marked, not one of its siblings"
+            );
+            assert!(
+                is_synthetic_id(update.focus),
+                "the focused node is synthetic, so its id must live in the synthetic id space"
             );
         }
-        // And no id is emitted twice.
-        let mut ids: Vec<u64> = update.nodes.iter().map(|(id, _)| id.0).collect();
-        ids.sort_unstable();
-        let count = ids.len();
-        ids.dedup();
-        assert_eq!(count, ids.len(), "duplicate node id in the tree update");
+
+        // Case `an_unfocused_widget_cannot_claim_the_readers_cursor`.
+        {
+            // Two widgets; the one WITHOUT keyboard focus marks a descendant
+            // focused. Honouring that would let any offscreen widget yank the reader
+            // away from where the keyboard actually is.
+            let idle = TestWidget::new(Some(canvas(vec![clip("Ghost", true)])));
+            let btn = TestWidget::new(Some(
+                AccessNode::new(Role::Button)
+                    .with_name("Save")
+                    .with_state(AccessState::new().focusable(true)),
+            ));
+            let mut root = TestWidget::new(None)
+                .with_child(Box::new(idle))
+                .with_child(Box::new(btn));
+            let (_taffy, node_map, _n) = lay_out(&mut root);
+            let button_taffy = taffy_id_of(&node_map, Role::Button);
+
+            let update = build_tree_update(&root, &node_map, Some(button_taffy), 1.0);
+
+            assert_eq!(
+                update.focus,
+                widget_ak_id(&root, &node_map, button_taffy).unwrap(),
+                "focus stays on the widget that holds the keyboard"
+            );
+            let (_, focused) = update
+                .nodes
+                .iter()
+                .find(|(id, _)| *id == update.focus)
+                .unwrap();
+            assert_eq!(focused.label(), Some("Save"));
+        }
+
+        // Case `the_first_marked_descendant_in_document_order_wins`.
+        {
+            // A widget that marks two nodes focused is buggy, but the reader must
+            // still land somewhere deterministic rather than on whichever node the
+            // walk happened to reach last.
+            let mut root = TestWidget::new(Some(canvas(vec![
+                clip("Intro", false),
+                clip("Interview", true),
+                clip("Outro", true),
+            ])));
+            let (_taffy, node_map, _n) = lay_out(&mut root);
+            let canvas_taffy = taffy_id_of(&node_map, Role::Canvas);
+
+            let update = build_tree_update(&root, &node_map, Some(canvas_taffy), 1.0);
+            let (_, focused) = update
+                .nodes
+                .iter()
+                .find(|(id, _)| *id == update.focus)
+                .expect("the focused id must name a node in this very update");
+            assert_eq!(focused.label(), Some("Interview"));
+        }
+
+        // Case `active_descendant_path_names_the_marked_node_the_same_way_focus_does`.
+        {
+            // The keyboard path and the exported focus must agree on which element
+            // the user is on; if they disagreed, Enter would activate something
+            // other than what the reader just announced.
+            let mut root = TestWidget::new(Some(
+                AccessNode::new(Role::Canvas)
+                    .with_name("Timeline")
+                    .with_state(AccessState::new().focusable(true))
+                    .with_children(vec![
+                        AccessNode::new(Role::Group)
+                            .with_name("Track 1")
+                            .with_children(vec![clip("Intro", false), clip("Interview", true)]),
+                        AccessNode::new(Role::Group).with_name("Track 2"),
+                    ]),
+            ));
+            let access = Widget::accessibility(&root).unwrap();
+
+            // Second clip of the first track: [track 0, clip 1].
+            assert_eq!(active_descendant_path(&access), Some(vec![0, 1]));
+
+            // And it names the very node the exported focus lands on.
+            let (_taffy, node_map, _n) = lay_out(&mut root);
+            let canvas_taffy = taffy_id_of(&node_map, Role::Canvas);
+            let update = build_tree_update(&root, &node_map, Some(canvas_taffy), 1.0);
+            assert_eq!(
+                resolve_node_id(&root, &node_map, update.focus),
+                Some(A11yTarget::Synthetic {
+                    owner: canvas_taffy,
+                    key_path: vec![0, 1],
+                    // No explicit keys in this fixture, so the ordinal path
+                    // coincides with the key path — spelled out rather than
+                    // assumed, because they diverge as soon as one is set.
+                    ordinal_path: vec![0, 1],
+                    semantic_target: None,
+                }),
+                "keyboard target and reader focus must be the same element"
+            );
+        }
+
+        // Case `a_widget_that_marks_nothing_has_no_active_descendant`.
+        {
+            // An ordinary widget must yield an empty target so the keyboard path
+            // keeps addressing the widget itself.
+            let plain = AccessNode::new(Role::Button).with_name("Save");
+            assert_eq!(active_descendant_path(&plain), None);
+
+            let unmarked = canvas(vec![clip("a", false), clip("b", false)]);
+            assert_eq!(active_descendant_path(&unmarked), None);
+        }
     }
 
     #[test]
-    fn resolve_node_id_round_trips_an_emitted_synthetic_id_to_owner_and_key_path() {
-        // The action-routing contract: whatever id the bridge put in the tree,
-        // an incoming ActionRequest carrying it must resolve back to the widget
-        // that owns it plus the path naming the exact element.
-        let mut root = TestWidget::new(Some(
-            AccessNode::new(Role::Table)
-                .with_name("People")
-                .with_children(vec![
-                    AccessNode::new(Role::Row)
-                        .with_name("r0")
-                        .with_children(vec![
-                            AccessNode::new(Role::Cell).with_name("r0c0"),
-                            AccessNode::new(Role::Cell).with_name("r0c1"),
-                        ]),
-                    AccessNode::new(Role::Row)
-                        .with_name("r1")
-                        .with_children(vec![
-                            AccessNode::new(Role::Cell).with_name("r1c0"),
-                            AccessNode::new(Role::Cell).with_name("r1c1"),
-                        ]),
-                ]),
-        ));
-        let (_taffy, node_map, _n) = lay_out(&mut root);
-        let table_taffy = taffy_id_of(&node_map, Role::Table);
-        let update = build_tree_update(&root, &node_map, None, 1.0);
+    fn resolve_node_id_maps_emitted_ids_back_or_reports_them_gone() {
+        // Case `resolve_node_id_round_trips_an_emitted_synthetic_id_to_owner_and_key_path`.
+        {
+            // The action-routing contract: whatever id the bridge put in the tree,
+            // an incoming ActionRequest carrying it must resolve back to the widget
+            // that owns it plus the path naming the exact element.
+            let mut root = TestWidget::new(Some(
+                AccessNode::new(Role::Table)
+                    .with_name("People")
+                    .with_children(vec![
+                        AccessNode::new(Role::Row)
+                            .with_name("r0")
+                            .with_children(vec![
+                                AccessNode::new(Role::Cell).with_name("r0c0"),
+                                AccessNode::new(Role::Cell).with_name("r0c1"),
+                            ]),
+                        AccessNode::new(Role::Row)
+                            .with_name("r1")
+                            .with_children(vec![
+                                AccessNode::new(Role::Cell).with_name("r1c0"),
+                                AccessNode::new(Role::Cell).with_name("r1c1"),
+                            ]),
+                    ]),
+            ));
+            let (_taffy, node_map, _n) = lay_out(&mut root);
+            let table_taffy = taffy_id_of(&node_map, Role::Table);
+            let update = build_tree_update(&root, &node_map, None, 1.0);
 
-        // A row: one path element, its ordinal.
-        assert_eq!(
-            resolve_node_id(&root, &node_map, label_id(&update, "r1")),
-            Some(A11yTarget::Synthetic {
-                owner: table_taffy,
-                key_path: vec![1],
-                // No explicit keys in this fixture, so the ordinal path
-                // coincides with the key path — spelled out rather than
-                // assumed, because they diverge as soon as one is set.
-                ordinal_path: vec![1],
-                semantic_target: None,
-            }),
-        );
-        // A cell: row, then column.
-        assert_eq!(
-            resolve_node_id(&root, &node_map, label_id(&update, "r1c0")),
-            Some(A11yTarget::Synthetic {
-                owner: table_taffy,
-                key_path: vec![1, 0],
-                // No explicit keys in this fixture, so the ordinal path
-                // coincides with the key path — spelled out rather than
-                // assumed, because they diverge as soon as one is set.
-                ordinal_path: vec![1, 0],
-                semantic_target: None,
-            }),
-        );
-        assert_eq!(
-            resolve_node_id(&root, &node_map, label_id(&update, "r0c1")),
-            Some(A11yTarget::Synthetic {
-                owner: table_taffy,
-                key_path: vec![0, 1],
-                // No explicit keys in this fixture, so the ordinal path
-                // coincides with the key path — spelled out rather than
-                // assumed, because they diverge as soon as one is set.
-                ordinal_path: vec![0, 1],
-                semantic_target: None,
-            }),
-        );
-        // The widget itself and the window root still resolve to themselves.
-        assert_eq!(
-            resolve_node_id(&root, &node_map, label_id(&update, "People")),
-            Some(A11yTarget::Widget(table_taffy)),
-        );
-        assert_eq!(
-            resolve_node_id(&root, &node_map, ROOT_ID),
-            Some(A11yTarget::Root),
-        );
-    }
+            // A row: one path element, its ordinal.
+            assert_eq!(
+                resolve_node_id(&root, &node_map, label_id(&update, "r1")),
+                Some(A11yTarget::Synthetic {
+                    owner: table_taffy,
+                    key_path: vec![1],
+                    // No explicit keys in this fixture, so the ordinal path
+                    // coincides with the key path — spelled out rather than
+                    // assumed, because they diverge as soon as one is set.
+                    ordinal_path: vec![1],
+                    semantic_target: None,
+                }),
+            );
+            // A cell: row, then column.
+            assert_eq!(
+                resolve_node_id(&root, &node_map, label_id(&update, "r1c0")),
+                Some(A11yTarget::Synthetic {
+                    owner: table_taffy,
+                    key_path: vec![1, 0],
+                    // No explicit keys in this fixture, so the ordinal path
+                    // coincides with the key path — spelled out rather than
+                    // assumed, because they diverge as soon as one is set.
+                    ordinal_path: vec![1, 0],
+                    semantic_target: None,
+                }),
+            );
+            assert_eq!(
+                resolve_node_id(&root, &node_map, label_id(&update, "r0c1")),
+                Some(A11yTarget::Synthetic {
+                    owner: table_taffy,
+                    key_path: vec![0, 1],
+                    // No explicit keys in this fixture, so the ordinal path
+                    // coincides with the key path — spelled out rather than
+                    // assumed, because they diverge as soon as one is set.
+                    ordinal_path: vec![0, 1],
+                    semantic_target: None,
+                }),
+            );
+            // The widget itself and the window root still resolve to themselves.
+            assert_eq!(
+                resolve_node_id(&root, &node_map, label_id(&update, "People")),
+                Some(A11yTarget::Widget(table_taffy)),
+            );
+            assert_eq!(
+                resolve_node_id(&root, &node_map, ROOT_ID),
+                Some(A11yTarget::Root),
+            );
+        }
 
-    #[test]
-    fn active_descendant_path_names_the_marked_node_the_same_way_focus_does() {
-        // The keyboard path and the exported focus must agree on which element
-        // the user is on; if they disagreed, Enter would activate something
-        // other than what the reader just announced.
-        let mut root = TestWidget::new(Some(
-            AccessNode::new(Role::Canvas)
-                .with_name("Timeline")
-                .with_state(AccessState::new().focusable(true))
-                .with_children(vec![
-                    AccessNode::new(Role::Group)
-                        .with_name("Track 1")
-                        .with_children(vec![clip("Intro", false), clip("Interview", true)]),
-                    AccessNode::new(Role::Group).with_name("Track 2"),
-                ]),
-        ));
-        let access = Widget::accessibility(&root).unwrap();
+        // Case `resolve_node_id_reports_a_stale_reference_as_gone`.
+        {
+            // An AT can hold an id across a structural change. Resolving it to
+            // "whatever now sits there" would operate on the wrong element, so an
+            // unknown id must resolve to nothing at all.
+            let mut root = TestWidget::new(Some(canvas(vec![clip("only", false)])));
+            let (_taffy, node_map, _n) = lay_out(&mut root);
 
-        // Second clip of the first track: [track 0, clip 1].
-        assert_eq!(active_descendant_path(&access), Some(vec![0, 1]));
+            let bogus_synthetic = AkNodeId(0x1234_5678_9abc_def0 | SYNTHETIC_ID_BIT);
+            assert_eq!(resolve_node_id(&root, &node_map, bogus_synthetic), None);
 
-        // And it names the very node the exported focus lands on.
-        let (_taffy, node_map, _n) = lay_out(&mut root);
-        let canvas_taffy = taffy_id_of(&node_map, Role::Canvas);
-        let update = build_tree_update(&root, &node_map, Some(canvas_taffy), 1.0);
-        assert_eq!(
-            resolve_node_id(&root, &node_map, update.focus),
-            Some(A11yTarget::Synthetic {
-                owner: canvas_taffy,
-                key_path: vec![0, 1],
-                // No explicit keys in this fixture, so the ordinal path
-                // coincides with the key path — spelled out rather than
-                // assumed, because they diverge as soon as one is set.
-                ordinal_path: vec![0, 1],
-                semantic_target: None,
-            }),
-            "keyboard target and reader focus must be the same element"
-        );
-    }
+            let bogus_widget = AkNodeId(u64::from(u32::MAX));
+            assert_eq!(resolve_node_id(&root, &node_map, bogus_widget), None);
+        }
 
-    #[test]
-    fn a_widget_that_marks_nothing_has_no_active_descendant() {
-        // An ordinary widget must yield an empty target so the keyboard path
-        // keeps addressing the widget itself.
-        let plain = AccessNode::new(Role::Button).with_name("Save");
-        assert_eq!(active_descendant_path(&plain), None);
+        // Case `resolve_node_id_declines_a_synthetic_node_whose_owner_was_never_laid_out`.
+        {
+            // Without a taffy id there is no handle to dispatch against, so such a
+            // node must report as unaddressable rather than resolve to a wrong owner.
+            let root = TestWidget::new(Some(canvas(vec![clip("orphan", false)])));
+            let empty_map: HashMap<taffy::NodeId, *mut dyn Widget> = HashMap::new();
 
-        let unmarked = canvas(vec![clip("a", false), clip("b", false)]);
-        assert_eq!(active_descendant_path(&unmarked), None);
-    }
+            let update = build_tree_update(&root, &empty_map, None, 1.0);
+            let orphan = label_id(&update, "orphan");
+            assert!(is_synthetic_id(orphan));
+            assert_eq!(resolve_node_id(&root, &empty_map, orphan), None);
+        }
 
-    #[test]
-    fn resolve_node_id_reports_a_stale_reference_as_gone() {
-        // An AT can hold an id across a structural change. Resolving it to
-        // "whatever now sits there" would operate on the wrong element, so an
-        // unknown id must resolve to nothing at all.
-        let mut root = TestWidget::new(Some(canvas(vec![clip("only", false)])));
-        let (_taffy, node_map, _n) = lay_out(&mut root);
+        // Case `a_text_run_resolves_to_the_field_that_owns_it`.
+        {
+            // The run carries the widget's own text, so a verb aimed at it belongs
+            // to the widget — dropping it would make an AT's text actions no-ops.
+            let field = TestWidget::new(Some(
+                AccessNode::new(Role::TextInput)
+                    .with_value("hello")
+                    .with_text_selection(1, 1)
+                    .with_state(AccessState::new().focusable(true)),
+            ));
+            let mut root = TestWidget::new(None).with_child(Box::new(field));
+            let (_taffy, node_map, _n) = lay_out(&mut root);
+            let field_taffy = taffy_id_of(&node_map, Role::TextInput);
+            let update = build_tree_update(&root, &node_map, None, 1.0);
 
-        let bogus_synthetic = AkNodeId(0x1234_5678_9abc_def0 | SYNTHETIC_ID_BIT);
-        assert_eq!(resolve_node_id(&root, &node_map, bogus_synthetic), None);
-
-        let bogus_widget = AkNodeId(u64::from(u32::MAX));
-        assert_eq!(resolve_node_id(&root, &node_map, bogus_widget), None);
-    }
-
-    #[test]
-    fn resolve_node_id_declines_a_synthetic_node_whose_owner_was_never_laid_out() {
-        // Without a taffy id there is no handle to dispatch against, so such a
-        // node must report as unaddressable rather than resolve to a wrong owner.
-        let root = TestWidget::new(Some(canvas(vec![clip("orphan", false)])));
-        let empty_map: HashMap<taffy::NodeId, *mut dyn Widget> = HashMap::new();
-
-        let update = build_tree_update(&root, &empty_map, None, 1.0);
-        let orphan = label_id(&update, "orphan");
-        assert!(is_synthetic_id(orphan));
-        assert_eq!(resolve_node_id(&root, &empty_map, orphan), None);
-    }
-
-    #[test]
-    fn a_text_run_resolves_to_the_field_that_owns_it() {
-        // The run carries the widget's own text, so a verb aimed at it belongs
-        // to the widget — dropping it would make an AT's text actions no-ops.
-        let field = TestWidget::new(Some(
-            AccessNode::new(Role::TextInput)
-                .with_value("hello")
-                .with_text_selection(1, 1)
-                .with_state(AccessState::new().focusable(true)),
-        ));
-        let mut root = TestWidget::new(None).with_child(Box::new(field));
-        let (_taffy, node_map, _n) = lay_out(&mut root);
-        let field_taffy = taffy_id_of(&node_map, Role::TextInput);
-        let update = build_tree_update(&root, &node_map, None, 1.0);
-
-        let (run_id, _) = update
-            .nodes
-            .iter()
-            .find(|(_, n)| n.role() == AkRole::TextRun)
-            .expect("the field exports a text run");
-        assert!(!is_synthetic_id(*run_id));
-        assert_eq!(
-            resolve_node_id(&root, &node_map, *run_id),
-            Some(A11yTarget::Widget(field_taffy)),
-        );
+            let (run_id, _) = update
+                .nodes
+                .iter()
+                .find(|(_, n)| n.role() == AkRole::TextRun)
+                .expect("the field exports a text run");
+            assert!(!is_synthetic_id(*run_id));
+            assert_eq!(
+                resolve_node_id(&root, &node_map, *run_id),
+                Some(A11yTarget::Widget(field_taffy)),
+            );
+        }
     }
 }

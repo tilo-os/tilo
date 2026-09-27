@@ -27,6 +27,7 @@ use ui::accesskit::{
 };
 
 use crate::compositor::lock_auth::UNAVAILABLE_MSG;
+use crate::shell::i18n::{t, t_args};
 use crate::shell::now_playing::PlayerSnapshot;
 use crate::shell::quick_settings::now_playing::{
     Transport, paint_artwork, paint_transport, transport_rects,
@@ -376,6 +377,19 @@ fn primary_output(outputs: &[LockOutput]) -> Option<LockOutput> {
     outputs.first().copied()
 }
 
+/// What the lock screen's clock reads as: the lock state, then the time and
+/// date when they are known.
+fn locked_clock_label(view: &LockView<'_>) -> String {
+    match (view.clock.is_empty(), view.date.is_empty()) {
+        (true, _) => t("lock-screen-locked"),
+        (false, true) => t_args("lock-screen-locked-at", &[("clock", view.clock.into())]),
+        (false, false) => t_args(
+            "lock-screen-locked-at-date",
+            &[("clock", view.clock.into()), ("date", view.date.into())],
+        ),
+    }
+}
+
 /// The locked semantic tree has one password target, matching the primary
 /// output. It never publishes a password or masked value to assistive tech.
 pub fn build_accessibility_tree(
@@ -392,21 +406,17 @@ pub fn build_accessibility_tree(
     let layout = LockLayout::for_output(output, theme);
 
     let mut root = AccessNode::new(AccessRole::Window);
-    root.set_label("Tilo lock screen");
+    root.set_label(t("lock-screen-a11y-name"));
     root.set_bounds(AccessRect::new(0.0, 0.0, width.max(1.0), height.max(1.0)));
 
     let mut clock = AccessNode::new(AccessRole::Label);
-    clock.set_label(match (view.clock.is_empty(), view.date.is_empty()) {
-        (true, _) => "Session locked".to_string(),
-        (false, true) => format!("Session locked, {}", view.clock),
-        (false, false) => format!("Session locked, {}, {}", view.clock, view.date),
-    });
+    clock.set_label(locked_clock_label(view));
     clock.set_bounds(access_rect(layout.clock));
 
     // `PasswordInput` maps to AT-SPI's PasswordText role. That lets Orca and
     // braille clients suppress credential echo while retaining editable text.
     let mut password = AccessNode::new(AccessRole::PasswordInput);
-    password.set_label("Password");
+    password.set_label(t("lock-screen-password"));
     password.set_bounds(access_rect(layout.password));
     password.add_action(AccessAction::Focus);
     if view.verifying {
@@ -421,7 +431,7 @@ pub fn build_accessibility_tree(
     }
 
     let mut help = AccessNode::new(AccessRole::Label);
-    help.set_label("Type your password and press Enter");
+    help.set_label(t("lock-screen-help"));
     help.set_bounds(access_rect(layout.status));
 
     let mut children = vec![LOCK_CLOCK_ID, LOCK_PASSWORD_ID, LOCK_HELP_ID];
@@ -465,9 +475,9 @@ pub fn build_accessibility_tree(
         nodes.push((LOCK_MEDIA_ID, group));
     }
     let status = if view.verifying {
-        Some("Verifying password".to_string())
+        Some(t("lock-screen-verifying-password"))
     } else if let Some(error) = view.error {
-        Some(lock_error_status(error).to_string())
+        Some(lock_error_status(error))
     } else if view.notification_count > 0 {
         Some(count_label(view.notification_count))
     } else {
@@ -492,6 +502,47 @@ pub fn build_accessibility_tree(
             LOCK_PASSWORD_ID
         },
     }
+}
+
+/// The lock screen as the shell narrator reads it: the same labels as the
+/// AT-SPI tree above, with the password field focused and protected (its
+/// length is never spoken) and the status line a live region — assertive
+/// for a failed attempt, polite for verifying and the redacted count.
+pub fn narration_tree(view: &LockView<'_>) -> ui::a11y::AccessNode {
+    use ui::a11y::{AccessNode, AccessState, Politeness, Role, Sensitivity};
+    let clock = match (view.clock.is_empty(), view.date.is_empty()) {
+        (true, _) => "Session locked".to_string(),
+        (false, true) => format!("Session locked, {}", view.clock),
+        (false, false) => format!("Session locked, {}, {}", view.clock, view.date),
+    };
+    let mut status = AccessNode::new(Role::StaticText).with_name("Lock status");
+    if view.verifying {
+        status = status
+            .with_live(Politeness::Polite)
+            .with_value("Verifying password");
+    } else if let Some(error) = view.error {
+        status = status
+            .with_live(Politeness::Assertive)
+            .with_value(lock_error_status(error));
+    } else {
+        status = status.with_live(Politeness::Polite);
+        if view.notification_count > 0 {
+            status = status.with_value(count_label(view.notification_count));
+        }
+    }
+    let mut password_state = AccessState::new().focused(!view.verifying);
+    password_state.disabled = view.verifying;
+    AccessNode::new(Role::Window)
+        .with_name("Tilo lock screen")
+        .with_children(vec![
+            AccessNode::new(Role::StaticText).with_name(clock),
+            AccessNode::new(Role::TextInput)
+                .with_name("Password")
+                .with_description("Type your password and press Enter")
+                .with_state(password_state)
+                .with_sensitivity(Sensitivity::Secret),
+            status,
+        ])
 }
 
 fn access_rect(rect: Rect) -> AccessRect {
@@ -920,7 +971,7 @@ fn draw_secondary_lock_widget(
     draw_centered_text(
         scene,
         text,
-        "Session locked",
+        &t("lock-screen-locked"),
         scaled_text_size(type_scale.lg, layout.scale, theme),
         theme.text_primary,
         Rect::new(
@@ -933,7 +984,7 @@ fn draw_secondary_lock_widget(
     draw_centered_text(
         scene,
         text,
-        "Password prompt is on the primary display",
+        &t("lock-screen-prompt-elsewhere"),
         scaled_text_size(type_scale.sm, layout.scale, theme),
         theme.text_primary,
         Rect::new(
@@ -1120,7 +1171,7 @@ fn draw_password_field(
         draw_centered_text(
             scene,
             text,
-            "Enter password",
+            &t("lock-screen-enter-password"),
             scaled_text_size(ui::tokens::TypeScale::default().base, layout.scale, theme),
             theme.text_dim,
             layout.password,
@@ -1165,7 +1216,7 @@ fn draw_status(
     // the scale and made the row jump as the state changed.
     let type_scale = ui::tokens::TypeScale::default();
     let (value, color) = if view.verifying {
-        ("Verifying…", theme.text_dim)
+        (t("lock-screen-verifying"), theme.text_dim)
     } else if let Some(err) = view.error {
         // Keep the recovery action visible after a failed attempt. This must
         // stay a single line at 1280x800: wrapping a red status below the
@@ -1174,19 +1225,19 @@ fn draw_status(
         draw_centered_text(
             scene,
             text,
-            retry,
+            &retry,
             scaled_text_size(type_scale.sm, layout.scale, theme),
             theme.tokens.colors.semantic.danger,
             layout.status,
         );
         return;
     } else {
-        ("Press Enter to unlock", theme.text_dim)
+        (t("lock-screen-press-enter"), theme.text_dim)
     };
     draw_centered_text(
         scene,
         text,
-        value,
+        &value,
         scaled_text_size(type_scale.sm, layout.scale, theme),
         color,
         layout.status,
@@ -1199,11 +1250,11 @@ fn draw_status(
 /// diagnostic plus a recovery instruction exceeded the fixed status row at
 /// common 1280x800 layouts. Keep the action in the line while preserving the
 /// distinction between a rejected credential and an unavailable verifier.
-fn lock_error_status(error: &str) -> &'static str {
+fn lock_error_status(error: &str) -> String {
     if error == UNAVAILABLE_MSG {
-        "Can't verify · Enter your password to try again"
+        t("lock-screen-cannot-verify")
     } else {
-        "Sign-in failed · Enter your password to try again"
+        t("lock-screen-sign-in-failed")
     }
 }
 
@@ -1237,72 +1288,60 @@ mod tests {
     }
 
     #[test]
-    fn lock_accessibility_tree_has_one_actionable_password_and_hides_its_value() {
-        let v = LockView {
-            password_len: 12,
-            notification_count: 4,
-            ..view()
-        };
-        let update = build_accessibility_tree(&single(1600.0, 900.0), &Theme::dark(), &v);
-        assert_eq!(update.focus, LOCK_PASSWORD_ID);
-        let passwords = update
-            .nodes
-            .iter()
-            .filter(|(_, node)| node.role() == AccessRole::PasswordInput)
-            .collect::<Vec<_>>();
-        assert_eq!(
-            passwords.len(),
-            1,
-            "only the primary lock field is semantic"
-        );
-        let (_, password) = passwords[0];
-        assert_eq!(password.label(), Some("Password"));
-        assert!(password.supports_action(AccessAction::Focus));
-        assert!(password.supports_action(AccessAction::SetValue));
-        assert!(password.supports_action(AccessAction::Click));
-        assert_eq!(password.value(), None, "credential values never enter AT");
-        assert!(
-            update.nodes.iter().all(|(_, node)| {
+    fn lock_accessibility_tree_exposes_one_hidden_password_field() {
+        // Phase `lock_accessibility_tree_has_one_actionable_password_and_hides_its_value`.
+        {
+            let v = LockView {
+                password_len: 12,
+                notification_count: 4,
+                ..view()
+            };
+            let update = build_accessibility_tree(&single(1600.0, 900.0), &Theme::dark(), &v);
+            assert_eq!(update.focus, LOCK_PASSWORD_ID);
+            let passwords = update
+                .nodes
+                .iter()
+                .filter(|(_, node)| node.role() == AccessRole::PasswordInput)
+                .collect::<Vec<_>>();
+            assert_eq!(
+                passwords.len(),
+                1,
+                "only the primary lock field is semantic"
+            );
+            let (_, password) = passwords[0];
+            assert_eq!(password.label(), Some("Password"));
+            assert!(password.supports_action(AccessAction::Focus));
+            assert!(password.supports_action(AccessAction::SetValue));
+            assert!(password.supports_action(AccessAction::Click));
+            assert_eq!(password.value(), None, "credential values never enter AT");
+            assert!(
+                update.nodes.iter().all(|(_, node)| {
+                    node.label()
+                        .is_none_or(|label| !label.contains("••") && !label.contains("********"))
+                }),
+                "the semantic tree must not encode the password or its mask"
+            );
+        }
+        // Phase `verifying_lock_tree_disables_password_mutation_and_announces_state`.
+        {
+            let v = LockView {
+                verifying: true,
+                ..view()
+            };
+            let update = build_accessibility_tree(&single(800.0, 600.0), &Theme::dark(), &v);
+            assert_eq!(update.focus, LOCK_ROOT_ID);
+            let (_, password) = update
+                .nodes
+                .iter()
+                .find(|(id, _)| *id == LOCK_PASSWORD_ID)
+                .expect("password field is present");
+            assert!(!password.supports_action(AccessAction::SetValue));
+            assert!(!password.supports_action(AccessAction::Click));
+            assert!(update.nodes.iter().any(|(_, node)| {
                 node.label()
-                    .is_none_or(|label| !label.contains("••") && !label.contains("********"))
-            }),
-            "the semantic tree must not encode the password or its mask"
-        );
-    }
-
-    #[test]
-    fn verifying_lock_tree_disables_password_mutation_and_announces_state() {
-        let v = LockView {
-            verifying: true,
-            ..view()
-        };
-        let update = build_accessibility_tree(&single(800.0, 600.0), &Theme::dark(), &v);
-        assert_eq!(update.focus, LOCK_ROOT_ID);
-        let (_, password) = update
-            .nodes
-            .iter()
-            .find(|(id, _)| *id == LOCK_PASSWORD_ID)
-            .expect("password field is present");
-        assert!(!password.supports_action(AccessAction::SetValue));
-        assert!(!password.supports_action(AccessAction::Click));
-        assert!(update.nodes.iter().any(|(_, node)| {
-            node.label()
-                .is_some_and(|label| label == "Verifying password")
-        }));
-    }
-
-    /// The lock scene must encode *something* — a blank scene would mean
-    /// the overlay never paints and app content leaks through, defeating
-    /// the lock.
-    #[test]
-    fn lock_scene_is_non_empty() {
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        let scene = draw_lock_scene(&single(1600.0, 900.0), &theme, &mut text, &view());
-        assert!(
-            !scene.encoding().is_empty(),
-            "lock overlay must produce a non-empty scene so it hides app content"
-        );
+                    .is_some_and(|label| label == "Verifying password")
+            }));
+        }
     }
 
     #[test]
@@ -1336,62 +1375,76 @@ mod tests {
         );
     }
 
-    /// Painting at a tiny viewport must not panic (degenerate sizes can
-    /// appear before the first real `OutputResized`).
     #[test]
-    fn lock_scene_handles_tiny_viewport() {
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        let v = LockView {
-            notification_count: 3,
-            ..view()
-        };
-        let _ = draw_lock_scene(&single(1.0, 1.0), &theme, &mut text, &v);
-    }
-
-    /// An empty output list must not panic and produces an empty scene
-    /// (the caller falls back to a default viewport before this is hit).
-    #[test]
-    fn lock_scene_with_no_outputs_is_empty_not_a_panic() {
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        let scene = draw_lock_scene(&[], &theme, &mut text, &view());
-        assert!(scene.encoding().is_empty());
-    }
-
-    /// The password field renders both empty (placeholder) and populated
-    /// (masked dots) without panicking, including a very long password that
-    /// must be capped to the field width.
-    #[test]
-    fn lock_scene_renders_password_field_states() {
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        for len in [0usize, 1, 8, 200] {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn lock_scene_paints_every_state_and_viewport() {
+        // Phase `lock_scene_is_non_empty`.
+        // The lock scene must encode *something* — a blank scene would mean
+        // the overlay never paints and app content leaks through, defeating
+        // the lock.
+        {
+            let theme = Theme::dark();
+            let mut text = TextRenderer::new();
+            let scene = draw_lock_scene(&single(1600.0, 900.0), &theme, &mut text, &view());
+            assert!(
+                !scene.encoding().is_empty(),
+                "lock overlay must produce a non-empty scene so it hides app content"
+            );
+        }
+        // Phase `lock_scene_handles_tiny_viewport`.
+        // Painting at a tiny viewport must not panic (degenerate sizes can
+        // appear before the first real `OutputResized`).
+        {
+            let theme = Theme::dark();
+            let mut text = TextRenderer::new();
             let v = LockView {
-                password_len: len,
+                notification_count: 3,
+                ..view()
+            };
+            let _ = draw_lock_scene(&single(1.0, 1.0), &theme, &mut text, &v);
+        }
+        // Phase `lock_scene_with_no_outputs_is_empty_not_a_panic`.
+        // An empty output list must not panic and produces an empty scene
+        // (the caller falls back to a default viewport before this is hit).
+        {
+            let theme = Theme::dark();
+            let mut text = TextRenderer::new();
+            let scene = draw_lock_scene(&[], &theme, &mut text, &view());
+            assert!(scene.encoding().is_empty());
+        }
+        // Phase `lock_scene_renders_password_field_states`.
+        // The password field renders both empty (placeholder) and populated
+        // (masked dots) without panicking, including a very long password that
+        // must be capped to the field width.
+        {
+            let theme = Theme::dark();
+            let mut text = TextRenderer::new();
+            for len in [0usize, 1, 8, 200] {
+                let v = LockView {
+                    password_len: len,
+                    ..view()
+                };
+                let scene = draw_lock_scene(&single(1600.0, 900.0), &theme, &mut text, &v);
+                assert!(!scene.encoding().is_empty());
+            }
+        }
+        // Phase `lock_scene_renders_error`.
+        // An error string paints (in the danger colour) without panicking.
+        {
+            let theme = Theme::dark();
+            let mut text = TextRenderer::new();
+            let v = LockView {
+                password_len: 0,
+                error: Some("Incorrect username or password"),
                 ..view()
             };
             let scene = draw_lock_scene(&single(1600.0, 900.0), &theme, &mut text, &v);
             assert!(!scene.encoding().is_empty());
         }
-    }
-
-    /// An error string paints (in the danger colour) without panicking.
-    #[test]
-    fn lock_scene_renders_error() {
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        let v = LockView {
-            password_len: 0,
-            error: Some("Incorrect username or password"),
-            ..view()
-        };
-        let scene = draw_lock_scene(&single(1600.0, 900.0), &theme, &mut text, &v);
-        assert!(!scene.encoding().is_empty());
-    }
-
-    #[test]
-    fn lock_error_status_is_concise_and_preserves_retry_guidance() {
+        // Phase `lock_error_status_is_concise_and_preserves_retry_guidance`.
         assert_eq!(
             lock_error_status("Incorrect username or password"),
             "Sign-in failed · Enter your password to try again"
@@ -1400,69 +1453,82 @@ mod tests {
             lock_error_status(UNAVAILABLE_MSG),
             "Can't verify · Enter your password to try again"
         );
-    }
-
-    #[test]
-    fn lock_error_status_stays_on_one_line_at_1280_by_800() {
-        let theme = Theme::dark();
-        let output = LockOutput {
-            origin: (0.0, 0.0),
-            size: (1280.0, 800.0),
-            scale: 1.0,
-        };
-        let layout = LockLayout::for_output(output, &theme);
-        let mut text = TextRenderer::new();
-        for message in [
-            lock_error_status("Incorrect username or password"),
-            lock_error_status(UNAVAILABLE_MSG),
-        ] {
-            let (width, height) =
-                text.measure(message, scaled_text_size(12.0, layout.scale, &theme), None);
-            assert!(
-                f64::from(width) <= layout.status.width(),
-                "{message:?} must not wrap in the lock status row"
-            );
-            assert!(
-                f64::from(height) <= layout.status.height(),
-                "{message:?} must fit the lock status row"
-            );
+        // Phase `lock_error_status_stays_on_one_line_at_1280_by_800`.
+        {
+            let theme = Theme::dark();
+            let output = LockOutput {
+                origin: (0.0, 0.0),
+                size: (1280.0, 800.0),
+                scale: 1.0,
+            };
+            let layout = LockLayout::for_output(output, &theme);
+            let mut text = TextRenderer::new();
+            for message in [
+                lock_error_status("Incorrect username or password"),
+                lock_error_status(UNAVAILABLE_MSG),
+            ] {
+                let (width, height) =
+                    text.measure(&message, scaled_text_size(12.0, layout.scale, &theme), None);
+                assert!(
+                    f64::from(width) <= layout.status.width(),
+                    "{message:?} must not wrap in the lock status row"
+                );
+                assert!(
+                    f64::from(height) <= layout.status.height(),
+                    "{message:?} must fit the lock status row"
+                );
+            }
         }
-    }
-
-    /// The "Verifying…" state paints without panicking.
-    #[test]
-    fn lock_scene_renders_verifying_state() {
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        let v = LockView {
-            verifying: true,
-            ..view()
-        };
-        let scene = draw_lock_scene(&single(1600.0, 900.0), &theme, &mut text, &v);
-        assert!(!scene.encoding().is_empty());
-    }
-
-    /// The count-only summary never renders content; we can't read text
-    /// back out of a Vello scene, so assert the contract at the label
-    /// helper instead.
-    #[test]
-    fn count_label_is_count_only() {
+        // Phase `lock_scene_renders_verifying_state`.
+        // The "Verifying…" state paints without panicking.
+        {
+            let theme = Theme::dark();
+            let mut text = TextRenderer::new();
+            let v = LockView {
+                verifying: true,
+                ..view()
+            };
+            let scene = draw_lock_scene(&single(1600.0, 900.0), &theme, &mut text, &v);
+            assert!(!scene.encoding().is_empty());
+        }
+        // Phase `count_label_is_count_only`.
+        // The count-only summary never renders content; we can't read text
+        // back out of a Vello scene, so assert the contract at the label
+        // helper instead.
         assert_eq!(count_label(0), "");
         assert_eq!(count_label(1), "1 notification");
         assert_eq!(count_label(4), "4 notifications");
-    }
-
-    /// Rendering with a non-zero count still produces a valid scene.
-    #[test]
-    fn lock_scene_with_notifications_paints() {
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        let v = LockView {
-            notification_count: 5,
-            ..view()
-        };
-        let scene = draw_lock_scene(&single(1600.0, 900.0), &theme, &mut text, &v);
-        assert!(!scene.encoding().is_empty());
+        // Phase `lock_scene_with_notifications_paints`.
+        // Rendering with a non-zero count still produces a valid scene.
+        {
+            let theme = Theme::dark();
+            let mut text = TextRenderer::new();
+            let v = LockView {
+                notification_count: 5,
+                ..view()
+            };
+            let scene = draw_lock_scene(&single(1600.0, 900.0), &theme, &mut text, &v);
+            assert!(!scene.encoding().is_empty());
+        }
+        // Phase `lock_animation_schedules_only_visible_motion_and_preserves_pending_deadline`.
+        {
+            use std::time::{Duration, Instant};
+            let last = Instant::now();
+            let theme = Theme::dark();
+            let deadline =
+                animation_deadline(&theme, true, false, last).expect("animated lock deadline");
+            assert!(deadline > last && deadline <= last + Duration::from_millis(50));
+            assert_eq!(
+                animation_deadline(&theme, true, false, last),
+                Some(deadline)
+            );
+            assert!(animation_deadline(&theme, false, false, last).is_none());
+            assert!(animation_deadline(&theme, true, true, last).is_none());
+            assert!(
+                animation_deadline(&theme.with_reduce_motion(true), true, false, last).is_none()
+            );
+            assert!(animation_deadline(&Theme::high_contrast(), true, false, last).is_none());
+        }
     }
 
     /// Review fixtures: the ux-bench cannot lock the session on macOS, so
@@ -1565,98 +1631,281 @@ mod tests {
     }
 
     #[test]
-    fn clock_stays_inside_portrait_output_at_maximum_text_scale() {
-        let mut text = TextRenderer::new();
-        for text_scale in [1.0, 2.0, 3.0, 4.0] {
-            let theme = Theme::dark().with_text_scale(text_scale);
-            let layout = LockLayout::for_output(single(640.0, 960.0)[0], &theme);
-            let size = fitted_clock_size(
-                &mut text,
-                "21:47",
-                scaled_text_size(88.0, layout.scale, &theme),
-                layout.clock,
-            );
-            let (width, height) = text.measure("21:47", size, None);
-            assert!(
-                f64::from(width) <= layout.clock.width(),
-                "clock width at scale {text_scale}"
-            );
-            assert!(
-                f64::from(height) <= layout.clock.height(),
-                "clock height at scale {text_scale}"
-            );
-            assert_inside(layout.clock, layout.output, "portrait clock");
-            assert_inside(layout.password, layout.output, "portrait password");
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "bounded layout widths are screen coordinates passed to the text renderer's f32 API"
+    )]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn lock_layout_reserves_room_for_large_text() {
+        // Phase `clock_stays_inside_portrait_output_at_maximum_text_scale`.
+        {
+            let mut text = TextRenderer::new();
+            for text_scale in [1.0, 2.0, 3.0, 4.0] {
+                let theme = Theme::dark().with_text_scale(text_scale);
+                let layout = LockLayout::for_output(single(640.0, 960.0)[0], &theme);
+                let size = fitted_clock_size(
+                    &mut text,
+                    "21:47",
+                    scaled_text_size(88.0, layout.scale, &theme),
+                    layout.clock,
+                );
+                let (width, height) = text.measure("21:47", size, None);
+                assert!(
+                    f64::from(width) <= layout.clock.width(),
+                    "clock width at scale {text_scale}"
+                );
+                assert!(
+                    f64::from(height) <= layout.clock.height(),
+                    "clock height at scale {text_scale}"
+                );
+                assert_inside(layout.clock, layout.output, "portrait clock");
+                assert_inside(layout.password, layout.output, "portrait password");
+            }
+        }
+        // Phase `accessible_lock_layout_reserves_every_text_row`.
+        {
+            let output = LockOutput {
+                origin: (0.0, 0.0),
+                size: (1280.0, 720.0),
+                scale: 1.0,
+            };
+            let normal = LockLayout::for_output(output, &Theme::dark());
+
+            for theme in [
+                Theme::dark().with_text_scale(1.3),
+                Theme::high_contrast()
+                    .with_ui_scale(1.25)
+                    .with_text_scale(1.3),
+            ] {
+                let layout = LockLayout::for_output(output, &theme);
+                let mut text = TextRenderer::new();
+                for (label, value, size, rect) in [
+                    (
+                        "clock",
+                        "21:47",
+                        if layout.clock.x1 < layout.panel.x0 {
+                            120.0
+                        } else {
+                            88.0
+                        },
+                        layout.clock,
+                    ),
+                    ("date", "Saturday, September 5", 18.0, layout.date),
+                    ("title", "Welcome back", 22.0, layout.title),
+                    ("password", "Enter password", 15.0, layout.password),
+                    (
+                        "status",
+                        "Incorrect username or password",
+                        13.0,
+                        layout.status,
+                    ),
+                    (
+                        "notifications",
+                        "12 notifications",
+                        13.0,
+                        layout.notifications,
+                    ),
+                ] {
+                    let size_px = scaled_text_size(size, layout.scale, &theme);
+                    let (_, measured_height) =
+                        text.measure(value, size_px, Some(rect.width() as f32));
+                    assert!(
+                        f64::from(measured_height) <= rect.height() + 0.5,
+                        "{label} text must fit its own row under {}: measured={measured_height}, row={rect:?}",
+                        theme.name,
+                    );
+                }
+                assert!(layout.clock.y1 <= layout.date.y0);
+                assert!(layout.date.y1 <= layout.panel.y0 || layout.date.x1 < layout.panel.x0);
+                assert!(layout.icon.y1 <= layout.title.y0);
+                assert!(layout.title.y1 <= layout.password.y0);
+                assert!(layout.password.y1 <= layout.status.y0);
+                assert!(layout.status.y1 <= layout.notifications.y0);
+                assert!(
+                    layout.panel.height() > normal.panel.height(),
+                    "large text must receive additional panel space"
+                );
+            }
+        }
+        // Phase `maximum_text_scale_keeps_real_credential_copy_inside_its_rows`.
+        {
+            let title = ui::i18n::I18nManager::lookup_plain("lock-welcome-back");
+            let notifications = count_label(12);
+            for text_scale in [1.5, 2.0, 3.0, 4.0] {
+                let theme = Theme::dark().with_text_scale(text_scale);
+                for size in [
+                    (640.0, 960.0),
+                    (800.0, 600.0),
+                    (1280.0, 720.0),
+                    (1650.0, 900.0),
+                ] {
+                    let layout = LockLayout::for_output(
+                        LockOutput {
+                            origin: (80.0, 32.0),
+                            size,
+                            scale: 1.0,
+                        },
+                        &theme,
+                    );
+                    let mut text = TextRenderer::new();
+                    let failed = lock_error_status("wrong password");
+                    let unavailable = lock_error_status(UNAVAILABLE_MSG);
+                    for (value, base_size, row) in [
+                        (title.as_str(), 22.0, layout.title),
+                        ("Enter password", 15.0, layout.password),
+                        ("Press Enter to unlock", 13.0, layout.status),
+                        ("Verifying…", 14.0, layout.status),
+                        (failed.as_str(), 12.0, layout.status),
+                        (unavailable.as_str(), 12.0, layout.status),
+                        (notifications.as_str(), 13.0, layout.notifications),
+                    ] {
+                        let font_size = scaled_text_size(base_size, layout.scale, &theme);
+                        let (width, _) = text.measure(value, font_size, None);
+                        let (_, height) = text.measure(value, font_size, Some(row.width() as f32));
+                        assert!(
+                            f64::from(width) <= row.width() + 0.5
+                                && f64::from(height) <= row.height() + 0.5,
+                            "credential copy {value:?} must fit at {text_scale}× on {size:?}: measured={width}×{height}, row={row:?}",
+                        );
+                        assert_inside(row, layout.panel, "credential row/panel");
+                        assert_inside(row, layout.output, "credential row/output");
+                    }
+                }
+            }
+        }
+        // Phase `large_type_wide_breakpoint_reserves_room_for_both_columns`.
+        {
+            let theme = Theme::dark().with_text_scale(1.5);
+            for (width, wide) in [(1649.0, false), (1650.0, true)] {
+                let layout = LockLayout::for_output(
+                    LockOutput {
+                        origin: (80.0, 32.0),
+                        size: (width, 900.0),
+                        scale: 1.0,
+                    },
+                    &theme,
+                );
+                assert_eq!(layout.clock.x1 < layout.panel.x0, wide);
+                assert!(layout.date.x1 < layout.panel.x0 || layout.date.y1 <= layout.panel.y0);
+                for rect in [layout.clock, layout.date, layout.panel] {
+                    assert_inside(rect, layout.output, "large type composition/output");
+                }
+            }
         }
     }
 
     #[test]
-    fn lock_animation_schedules_only_visible_motion_and_preserves_pending_deadline() {
-        use std::time::{Duration, Instant};
-        let last = Instant::now();
-        let theme = Theme::dark();
-        let deadline =
-            animation_deadline(&theme, true, false, last).expect("animated lock deadline");
-        assert!(deadline > last && deadline <= last + Duration::from_millis(50));
-        assert_eq!(
-            animation_deadline(&theme, true, false, last),
-            Some(deadline)
-        );
-        assert!(animation_deadline(&theme, false, false, last).is_none());
-        assert!(animation_deadline(&theme, true, true, last).is_none());
-        assert!(animation_deadline(&theme.with_reduce_motion(true), true, false, last).is_none());
-        assert!(animation_deadline(&Theme::high_contrast(), true, false, last).is_none());
-    }
-
-    #[test]
-    fn wide_lock_separates_clock_from_credentials_and_compact_stacks_them() {
-        let theme = Theme::dark();
-        let wide = LockLayout::for_output(single(1600.0, 900.0)[0], &theme);
-        assert!(
-            wide.clock.x1 < wide.panel.x0,
-            "wide outputs reserve a quiet credential column"
-        );
-        assert!(wide.date.x1 < wide.panel.x0);
-        let compact = LockLayout::for_output(single(800.0, 600.0)[0], &theme);
-        assert!(
-            compact.date.y1 < compact.panel.y0,
-            "compact outputs stack without collisions"
-        );
-        assert_inside(compact.panel, compact.output, "compact credentials");
-        let large = LockLayout::for_output(single(1100.0, 700.0)[0], &theme.with_text_scale(2.0));
-        assert!(
-            large.date.y1 < large.panel.y0,
-            "large type uses the full reading width"
-        );
-        assert_inside(large.password, large.panel, "large password");
-    }
-
-    #[test]
-    fn responsive_layout_is_bounded_and_non_overlapping() {
-        let theme = Theme::dark();
-        for output in [
-            LockOutput {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn lock_layout_is_bounded_and_responsive() {
+        // Phase `wide_lock_separates_clock_from_credentials_and_compact_stacks_them`.
+        {
+            let theme = Theme::dark();
+            let wide = LockLayout::for_output(single(1600.0, 900.0)[0], &theme);
+            assert!(
+                wide.clock.x1 < wide.panel.x0,
+                "wide outputs reserve a quiet credential column"
+            );
+            assert!(wide.date.x1 < wide.panel.x0);
+            let compact = LockLayout::for_output(single(800.0, 600.0)[0], &theme);
+            assert!(
+                compact.date.y1 < compact.panel.y0,
+                "compact outputs stack without collisions"
+            );
+            assert_inside(compact.panel, compact.output, "compact credentials");
+            let large =
+                LockLayout::for_output(single(1100.0, 700.0)[0], &theme.with_text_scale(2.0));
+            assert!(
+                large.date.y1 < large.panel.y0,
+                "large type uses the full reading width"
+            );
+            assert_inside(large.password, large.panel, "large password");
+        }
+        // Phase `responsive_layout_is_bounded_and_non_overlapping`.
+        {
+            let theme = Theme::dark();
+            for output in [
+                LockOutput {
+                    origin: (0.0, 0.0),
+                    size: (1600.0, 900.0),
+                    scale: 1.0,
+                },
+                LockOutput {
+                    origin: (0.0, 0.0),
+                    size: (1366.0, 768.0),
+                    scale: 1.25,
+                },
+                LockOutput {
+                    origin: (0.0, 0.0),
+                    size: (1280.0, 720.0),
+                    scale: 1.0,
+                },
+                LockOutput {
+                    origin: (40.0, 30.0),
+                    size: (1280.0, 720.0),
+                    scale: 2.0,
+                },
+            ] {
+                let layout = LockLayout::for_output(output, &theme);
+                for (name, rect) in [
+                    ("clock", layout.clock),
+                    ("date", layout.date),
+                    ("panel", layout.panel),
+                    ("icon", layout.icon),
+                    ("title", layout.title),
+                    ("password", layout.password),
+                    ("status", layout.status),
+                    ("notifications", layout.notifications),
+                ] {
+                    assert_inside(rect, layout.output, name);
+                }
+                assert!(layout.clock.y1 <= layout.date.y0);
+                assert!(layout.date.y1 <= layout.panel.y0 || layout.date.x1 < layout.panel.x0);
+                assert!(layout.icon.y1 <= layout.title.y0);
+                assert!(layout.title.y1 <= layout.password.y0);
+                assert!(layout.password.y1 <= layout.status.y0);
+                assert!(layout.status.y1 <= layout.notifications.y0);
+                assert_inside(layout.icon, layout.panel, "icon/panel");
+                assert_inside(layout.title, layout.panel, "title/panel");
+                assert_inside(layout.password, layout.panel, "password/panel");
+                assert_inside(layout.status, layout.panel, "status/panel");
+                assert_inside(layout.notifications, layout.panel, "notifications/panel");
+            }
+        }
+        // Phase `density_scale_does_not_double_scale_logical_lock_geometry`.
+        {
+            let theme = Theme::dark();
+            let logical = LockOutput {
                 origin: (0.0, 0.0),
                 size: (1600.0, 900.0),
                 scale: 1.0,
-            },
-            LockOutput {
-                origin: (0.0, 0.0),
-                size: (1366.0, 768.0),
-                scale: 1.25,
-            },
-            LockOutput {
-                origin: (0.0, 0.0),
-                size: (1280.0, 720.0),
-                scale: 1.0,
-            },
-            LockOutput {
-                origin: (40.0, 30.0),
-                size: (1280.0, 720.0),
+            };
+            let hidpi = LockOutput {
                 scale: 2.0,
-            },
-        ] {
-            let layout = LockLayout::for_output(output, &theme);
+                ..logical
+            };
+            let normal = LockLayout::for_output(logical, &theme);
+            let high_density = LockLayout::for_output(hidpi, &theme);
+            assert_eq!(
+                normal, high_density,
+                "output scale is presentation density, not UI zoom"
+            );
+        }
+        // Phase `startup_sized_output_keeps_every_lock_rect_contained`.
+        {
+            let layout = LockLayout::for_output(
+                LockOutput {
+                    origin: (0.0, 0.0),
+                    size: (1.0, 1.0),
+                    scale: 1.0,
+                },
+                &Theme::dark(),
+            );
             for (name, rect) in [
                 ("clock", layout.clock),
                 ("date", layout.date),
@@ -1669,301 +1918,108 @@ mod tests {
             ] {
                 assert_inside(rect, layout.output, name);
             }
-            assert!(layout.clock.y1 <= layout.date.y0);
-            assert!(layout.date.y1 <= layout.panel.y0 || layout.date.x1 < layout.panel.x0);
-            assert!(layout.icon.y1 <= layout.title.y0);
-            assert!(layout.title.y1 <= layout.password.y0);
-            assert!(layout.password.y1 <= layout.status.y0);
-            assert!(layout.status.y1 <= layout.notifications.y0);
-            assert_inside(layout.icon, layout.panel, "icon/panel");
-            assert_inside(layout.title, layout.panel, "title/panel");
-            assert_inside(layout.password, layout.panel, "password/panel");
-            assert_inside(layout.status, layout.panel, "status/panel");
-            assert_inside(layout.notifications, layout.panel, "notifications/panel");
-        }
-    }
-
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "the layout width is a bounded screen coordinate passed to the text renderer's f32 API"
-    )]
-    #[test]
-    fn accessible_lock_layout_reserves_every_text_row() {
-        let output = LockOutput {
-            origin: (0.0, 0.0),
-            size: (1280.0, 720.0),
-            scale: 1.0,
-        };
-        let normal = LockLayout::for_output(output, &Theme::dark());
-
-        for theme in [
-            Theme::dark().with_text_scale(1.3),
-            Theme::high_contrast()
-                .with_ui_scale(1.25)
-                .with_text_scale(1.3),
-        ] {
-            let layout = LockLayout::for_output(output, &theme);
-            let mut text = TextRenderer::new();
-            for (label, value, size, rect) in [
-                (
-                    "clock",
-                    "21:47",
-                    if layout.clock.x1 < layout.panel.x0 {
-                        120.0
-                    } else {
-                        88.0
-                    },
-                    layout.clock,
-                ),
-                ("date", "Saturday, September 5", 18.0, layout.date),
-                ("title", "Welcome back", 22.0, layout.title),
-                ("password", "Enter password", 15.0, layout.password),
-                (
-                    "status",
-                    "Incorrect username or password",
-                    13.0,
-                    layout.status,
-                ),
-                (
-                    "notifications",
-                    "12 notifications",
-                    13.0,
-                    layout.notifications,
-                ),
-            ] {
-                let size_px = scaled_text_size(size, layout.scale, &theme);
-                let (_, measured_height) = text.measure(value, size_px, Some(rect.width() as f32));
-                assert!(
-                    f64::from(measured_height) <= rect.height() + 0.5,
-                    "{label} text must fit its own row under {}: measured={measured_height}, row={rect:?}",
-                    theme.name,
-                );
-            }
-            assert!(layout.clock.y1 <= layout.date.y0);
-            assert!(layout.date.y1 <= layout.panel.y0 || layout.date.x1 < layout.panel.x0);
-            assert!(layout.icon.y1 <= layout.title.y0);
-            assert!(layout.title.y1 <= layout.password.y0);
-            assert!(layout.password.y1 <= layout.status.y0);
-            assert!(layout.status.y1 <= layout.notifications.y0);
-            assert!(
-                layout.panel.height() > normal.panel.height(),
-                "large text must receive additional panel space"
-            );
-        }
-    }
-
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "bounded layout widths are passed to the renderer's f32 API"
-    )]
-    #[test]
-    fn maximum_text_scale_keeps_real_credential_copy_inside_its_rows() {
-        let title = ui::i18n::I18nManager::lookup_plain("lock-welcome-back");
-        let notifications = count_label(12);
-        for text_scale in [1.5, 2.0, 3.0, 4.0] {
-            let theme = Theme::dark().with_text_scale(text_scale);
-            for size in [
-                (640.0, 960.0),
-                (800.0, 600.0),
-                (1280.0, 720.0),
-                (1650.0, 900.0),
-            ] {
-                let layout = LockLayout::for_output(
-                    LockOutput {
-                        origin: (80.0, 32.0),
-                        size,
-                        scale: 1.0,
-                    },
-                    &theme,
-                );
-                let mut text = TextRenderer::new();
-                for (value, base_size, row) in [
-                    (title.as_str(), 22.0, layout.title),
-                    ("Enter password", 15.0, layout.password),
-                    ("Press Enter to unlock", 13.0, layout.status),
-                    ("Verifying…", 14.0, layout.status),
-                    (lock_error_status("wrong password"), 12.0, layout.status),
-                    (lock_error_status(UNAVAILABLE_MSG), 12.0, layout.status),
-                    (notifications.as_str(), 13.0, layout.notifications),
-                ] {
-                    let font_size = scaled_text_size(base_size, layout.scale, &theme);
-                    let (width, _) = text.measure(value, font_size, None);
-                    let (_, height) = text.measure(value, font_size, Some(row.width() as f32));
-                    assert!(
-                        f64::from(width) <= row.width() + 0.5
-                            && f64::from(height) <= row.height() + 0.5,
-                        "credential copy {value:?} must fit at {text_scale}× on {size:?}: measured={width}×{height}, row={row:?}",
-                    );
-                    assert_inside(row, layout.panel, "credential row/panel");
-                    assert_inside(row, layout.output, "credential row/output");
-                }
-            }
         }
     }
 
     #[test]
-    fn large_type_wide_breakpoint_reserves_room_for_both_columns() {
-        let theme = Theme::dark().with_text_scale(1.5);
-        for (width, wide) in [(1649.0, false), (1650.0, true)] {
-            let layout = LockLayout::for_output(
+    fn multi_output_lock_has_one_credential_card_and_independent_layouts() {
+        // Phase `asymmetric_outputs_get_independent_bounded_layouts`.
+        {
+            let theme = Theme::dark();
+            for output in [
                 LockOutput {
-                    origin: (80.0, 32.0),
-                    size: (width, 900.0),
+                    origin: (0.0, 0.0),
+                    size: (1366.0, 768.0),
+                    scale: 1.25,
+                },
+                LockOutput {
+                    origin: (1366.0, 48.0),
+                    size: (1280.0, 720.0),
                     scale: 1.0,
                 },
-                &theme,
-            );
-            assert_eq!(layout.clock.x1 < layout.panel.x0, wide);
-            assert!(layout.date.x1 < layout.panel.x0 || layout.date.y1 <= layout.panel.y0);
-            for rect in [layout.clock, layout.date, layout.panel] {
-                assert_inside(rect, layout.output, "large type composition/output");
+            ] {
+                let layout = LockLayout::for_output(output, &theme);
+                assert_inside(layout.panel, layout.output, "panel");
+                assert!(layout.clock.x1 < layout.panel.x0);
+                assert_inside(layout.clock, layout.output, "clock");
+                assert_inside(layout.date, layout.output, "date");
             }
         }
-    }
-
-    #[test]
-    fn density_scale_does_not_double_scale_logical_lock_geometry() {
-        let theme = Theme::dark();
-        let logical = LockOutput {
-            origin: (0.0, 0.0),
-            size: (1600.0, 900.0),
-            scale: 1.0,
-        };
-        let hidpi = LockOutput {
-            scale: 2.0,
-            ..logical
-        };
-        let normal = LockLayout::for_output(logical, &theme);
-        let high_density = LockLayout::for_output(hidpi, &theme);
-        assert_eq!(
-            normal, high_density,
-            "output scale is presentation density, not UI zoom"
-        );
-    }
-
-    #[test]
-    fn startup_sized_output_keeps_every_lock_rect_contained() {
-        let layout = LockLayout::for_output(
-            LockOutput {
+        // Phase `primary_output_is_deterministic_and_falls_back_after_hotplug`.
+        // The primary output is the first backend output. That deterministic
+        // policy is also the hot-unplug fallback: once the primary disappears,
+        // the first remaining display receives the one credential surface.
+        {
+            let primary = LockOutput {
                 origin: (0.0, 0.0),
-                size: (1.0, 1.0),
+                size: (1920.0, 1080.0),
                 scale: 1.0,
-            },
-            &Theme::dark(),
-        );
-        for (name, rect) in [
-            ("clock", layout.clock),
-            ("date", layout.date),
-            ("panel", layout.panel),
-            ("icon", layout.icon),
-            ("title", layout.title),
-            ("password", layout.password),
-            ("status", layout.status),
-            ("notifications", layout.notifications),
-        ] {
-            assert_inside(rect, layout.output, name);
+            };
+            let secondary = LockOutput {
+                origin: (1920.0, 0.0),
+                size: (1280.0, 1024.0),
+                scale: 1.0,
+            };
+            assert_eq!(primary_output(&[primary, secondary]), Some(primary));
+            assert_eq!(primary_output(&[secondary]), Some(secondary));
+            assert_eq!(primary_output(&[]), None);
         }
-    }
+        // Phase `combined_extent_covers_all_outputs`.
+        // The backdrop spans the bounding box of every output, so no gap between
+        // screens can ever show app content.
+        {
+            let outs = [
+                LockOutput {
+                    origin: (0.0, 0.0),
+                    size: (1920.0, 1080.0),
+                    scale: 1.0,
+                },
+                LockOutput {
+                    origin: (1920.0, 0.0),
+                    size: (1280.0, 1024.0),
+                    scale: 1.0,
+                },
+            ];
+            assert_eq!(combined_extent(&outs), (3200.0, 1080.0));
+            assert_eq!(combined_extent(&single(1600.0, 900.0)), (1600.0, 900.0));
+            assert_eq!(combined_extent(&[]), (0.0, 0.0));
+        }
+        // Phase `multi_output_paints_quiet_secondary_without_duplicate_credential_card`.
+        // A secondary output must paint a useful indication, but not a second
+        // full credential card. Its scene therefore adds operations, while fewer
+        // than another primary widget would add.
+        {
+            let theme = Theme::dark();
+            let mut text = TextRenderer::new();
 
-    #[test]
-    fn asymmetric_outputs_get_independent_bounded_layouts() {
-        let theme = Theme::dark();
-        for output in [
-            LockOutput {
-                origin: (0.0, 0.0),
-                size: (1366.0, 768.0),
-                scale: 1.25,
-            },
-            LockOutput {
-                origin: (1366.0, 48.0),
-                size: (1280.0, 720.0),
-                scale: 1.0,
-            },
-        ] {
-            let layout = LockLayout::for_output(output, &theme);
-            assert_inside(layout.panel, layout.output, "panel");
-            assert!(layout.clock.x1 < layout.panel.x0);
-            assert_inside(layout.clock, layout.output, "clock");
-            assert_inside(layout.date, layout.output, "date");
+            let one = draw_lock_scene(&single(1920.0, 1080.0), &theme, &mut text, &view());
+            let two_outs = [
+                LockOutput {
+                    origin: (0.0, 0.0),
+                    size: (1920.0, 1080.0),
+                    scale: 1.0,
+                },
+                LockOutput {
+                    origin: (1920.0, 0.0),
+                    size: (1920.0, 1080.0),
+                    scale: 1.0,
+                },
+            ];
+            let two = draw_lock_scene(&two_outs, &theme, &mut text, &view());
+
+            let one_ops = one.encoding().draw_tags.len();
+            let two_ops = two.encoding().draw_tags.len();
+            assert!(two_ops > one_ops, "secondary output must be visibly locked");
+            // A full primary card has fill/stroke/icon/field/status operations;
+            // the secondary status is intentionally much smaller than that.
+            assert!(
+                two_ops < one_ops * 2,
+                "secondary must not mirror a second full password card: {two_ops} vs {one_ops}"
+            );
         }
     }
 
     // ---- multi-output ---------------------------------------------------
-
-    /// The primary output is the first backend output. That deterministic
-    /// policy is also the hot-unplug fallback: once the primary disappears,
-    /// the first remaining display receives the one credential surface.
-    #[test]
-    fn primary_output_is_deterministic_and_falls_back_after_hotplug() {
-        let primary = LockOutput {
-            origin: (0.0, 0.0),
-            size: (1920.0, 1080.0),
-            scale: 1.0,
-        };
-        let secondary = LockOutput {
-            origin: (1920.0, 0.0),
-            size: (1280.0, 1024.0),
-            scale: 1.0,
-        };
-        assert_eq!(primary_output(&[primary, secondary]), Some(primary));
-        assert_eq!(primary_output(&[secondary]), Some(secondary));
-        assert_eq!(primary_output(&[]), None);
-    }
-
-    /// The backdrop spans the bounding box of every output, so no gap between
-    /// screens can ever show app content.
-    #[test]
-    fn combined_extent_covers_all_outputs() {
-        let outs = [
-            LockOutput {
-                origin: (0.0, 0.0),
-                size: (1920.0, 1080.0),
-                scale: 1.0,
-            },
-            LockOutput {
-                origin: (1920.0, 0.0),
-                size: (1280.0, 1024.0),
-                scale: 1.0,
-            },
-        ];
-        assert_eq!(combined_extent(&outs), (3200.0, 1080.0));
-        assert_eq!(combined_extent(&single(1600.0, 900.0)), (1600.0, 900.0));
-        assert_eq!(combined_extent(&[]), (0.0, 0.0));
-    }
-
-    /// A secondary output must paint a useful indication, but not a second
-    /// full credential card. Its scene therefore adds operations, while fewer
-    /// than another primary widget would add.
-    #[test]
-    fn multi_output_paints_quiet_secondary_without_duplicate_credential_card() {
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-
-        let one = draw_lock_scene(&single(1920.0, 1080.0), &theme, &mut text, &view());
-        let two_outs = [
-            LockOutput {
-                origin: (0.0, 0.0),
-                size: (1920.0, 1080.0),
-                scale: 1.0,
-            },
-            LockOutput {
-                origin: (1920.0, 0.0),
-                size: (1920.0, 1080.0),
-                scale: 1.0,
-            },
-        ];
-        let two = draw_lock_scene(&two_outs, &theme, &mut text, &view());
-
-        let one_ops = one.encoding().draw_tags.len();
-        let two_ops = two.encoding().draw_tags.len();
-        assert!(two_ops > one_ops, "secondary output must be visibly locked");
-        // A full primary card has fill/stroke/icon/field/status operations;
-        // the secondary status is intentionally much smaller than that.
-        assert!(
-            two_ops < one_ops * 2,
-            "secondary must not mirror a second full password card: {two_ops} vs {one_ops}"
-        );
-    }
 
     fn playing() -> PlayerSnapshot {
         crate::shell::now_playing::tests::player(

@@ -5642,361 +5642,577 @@ fn demo_items() -> Vec<SecretItem> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn list_capacity_counts_whole_rows_and_never_goes_negative() {
-        let capacity =
-            |height: f64| PasswordsSurface::list_capacity(Rect::new(0.0, 0.0, 400.0, height));
-        assert_eq!(capacity(0.0), 0);
-        assert_eq!(capacity(168.0), 0);
-        assert_eq!(capacity(168.0 + 75.9), 0);
-        assert_eq!(capacity(168.0 + 76.0), 1);
-        assert_eq!(capacity(168.0 + 3.0 * 76.0 + 10.0), 3);
-        assert_eq!(capacity(f64::MAX), usize::MAX);
-    }
-
-    #[test]
-    fn desktop_columns_are_disjoint_and_inside_viewport() {
-        let content = Rect::new(24.0, 24.0, 1416.0, 876.0);
-        let sidebar = Rect::new(content.x0, content.y0, content.x0 + 190.0, content.y1);
-        let list = Rect::new(
-            sidebar.x1 + 24.0,
-            content.y0 + 4.0,
-            sidebar.x1 + 354.0,
-            content.y1,
-        );
-        let detail = Rect::new(list.x1 + 24.0, content.y0, content.x1, content.y1);
-        assert!(sidebar.x1 < list.x0 && list.x1 < detail.x0);
-        assert!(detail.x1 <= content.x1 && sidebar.y0 >= content.y0 && detail.y1 <= content.y1);
-        assert!(detail.width() >= 480.0);
-    }
-
-    #[test]
-    fn shared_drawer_uses_overlay_on_compact_viewports() {
-        let content = Rect::new(24.0, 24.0, 496.0, 796.0);
-        let mut drawer = SidebarDrawer::new()
-            .docked_width(214.0)
-            .overlay_width(292.0)
-            .breakpoint(960.0);
-        let main = drawer.resolve(content);
-        assert!(drawer.is_overlay());
-        assert!(!drawer.is_open());
-        assert_eq!(main, content);
-        assert_eq!(drawer.scrim_rect(), Rect::ZERO);
-    }
-
-    #[test]
     #[expect(
         clippy::float_cmp,
         reason = "layout offsets are sums of exactly representable constants"
     )]
-    fn large_text_uses_the_compact_single_pane_layout() {
-        let mut app = PasswordsSurface::demo(ShowcaseMode::Vault);
-        let content = Rect::new(24.0, 24.0, 1256.0, 776.0);
-        app.adapt_layout_for_text_scale(&Theme::dark().with_text_scale(2.0));
-        let main = app.resolve_drawer(content);
-
-        assert!(app.compact_for_large_text);
-        assert!(app.drawer.is_overlay());
-        assert_eq!(main, content);
-        assert_eq!(compact_content_rect(app.mode, main).x0, content.x0 + 60.0);
-    }
-
     #[test]
-    fn phone_review_and_editor_keep_full_content_width() {
-        let main = Rect::new(24.0, 24.0, 366.0, 820.0);
-        assert_eq!(compact_content_rect(ShowcaseMode::Health, main), main);
-        assert_eq!(compact_content_rect(ShowcaseMode::Editor, main), main);
-        assert_eq!(
-            compact_content_rect(ShowcaseMode::Vault, main),
-            Rect::new(84.0, 24.0, 366.0, 820.0)
-        );
-    }
-
-    #[test]
-    #[expect(
-        clippy::float_cmp,
-        reason = "scroll offsets are clamped to exactly these values, not computed approximately"
-    )]
-    fn short_phone_sidebar_retains_and_clamps_real_scroll_state() {
-        let mut app = PasswordsSurface::demo(ShowcaseMode::Vault);
-        let content = Rect::new(24.0, 24.0, 366.0, 244.0);
-        app.drawer.resolve(content);
-        app.drawer.open();
-        app.drawer.snap(true);
-        app.drawer.resolve(content);
-
-        assert!(app.scroll_sidebar_by(f64::MAX));
-        let nav = app.sidebar_nav(app.sidebar_viewport());
-        assert!(nav.max_scroll_offset() > 0.0);
-        assert_eq!(app.sidebar_scroll, nav.max_scroll_offset());
-        assert!(
-            !app.scroll_sidebar_by(1.0),
-            "scrolling beyond the end is inert"
-        );
-
-        assert!(app.scroll_sidebar_by(-f64::MAX));
-        assert_eq!(app.sidebar_scroll, 0.0);
-    }
-
-    #[test]
-    #[expect(
-        clippy::float_cmp,
-        reason = "scroll offsets are clamped to exactly these values, not computed approximately"
-    )]
-    fn app_access_is_scrollable_revocable_and_assistive_on_a_phone() {
-        let root = std::env::temp_dir().join(format!(
-            "tilo-passwords-access-ui-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let mut store = accounts::SecretStore::open_in(&root);
-        let mut item = SecretItem::login("Northstar Bank", "ada", "not-rendered");
-        item.add_origin("https://bank.example").unwrap();
-        store.put(&mut item).unwrap();
-        let mut broker = accounts::CredentialBroker::new(store);
-        for index in 0..10 {
-            broker
-                .request(
-                    &accounts::AccessRequest {
-                        app_id: format!("org.example.App{index}"),
-                        item_id: item.id.clone(),
-                        purpose: "Sign in".into(),
-                        origin: Some("https://bank.example".into()),
-                    },
-                    |_, _| accounts::AccessDecision::AllowAlways,
-                )
-                .unwrap();
+    fn vault_layout_fits_desktop_phone_and_large_text_viewports() {
+        eprintln!("phase list_capacity_counts_whole_rows_and_never_goes_negative");
+        {
+            let capacity =
+                |height: f64| PasswordsSurface::list_capacity(Rect::new(0.0, 0.0, 400.0, height));
+            assert_eq!(capacity(0.0), 0);
+            assert_eq!(capacity(168.0), 0);
+            assert_eq!(capacity(168.0 + 75.9), 0);
+            assert_eq!(capacity(168.0 + 76.0), 1);
+            assert_eq!(capacity(168.0 + 3.0 * 76.0 + 10.0), 3);
+            assert_eq!(capacity(f64::MAX), usize::MAX);
         }
-        drop(broker);
 
-        let mut app = PasswordsSurface::demo(ShowcaseMode::AppAccess);
-        app.model = Some(crate::PasswordsModel::open_in(&root));
-        app.refresh();
-        app.rect = Rect::new(0.0, 0.0, 390.0, 640.0);
-        app.drawer.resolve(Rect::new(24.0, 24.0, 366.0, 616.0));
-        let panel = app.current_panel_rect();
-        assert_eq!(app.app_grants.len(), 10);
-        assert!(app.max_app_access_scroll(panel) > 0.0);
-        assert!(app.scroll_app_access_by(panel, f64::MAX));
-        assert_eq!(app.app_access_scroll, app.max_app_access_scroll(panel));
-
-        let json = serde_json::to_string(&Widget::accessibility(&app)).unwrap();
-        assert!(json.contains("Apps with ongoing access"));
-        assert!(json.contains("passwords.app-access.revoke:9"));
-        assert!(!json.contains("not-rendered"));
-
-        let grant = app.app_grants[9].clone();
-        assert!(app.revoke_app_grant_index(9, &grant, panel));
-        assert_eq!(app.app_grants.len(), 9);
-        assert_eq!(crate::PasswordsModel::open_in(&root).app_grants().len(), 9);
-        std::fs::remove_dir_all(root).ok();
-    }
-
-    #[test]
-    fn phone_list_capacity_uses_every_fully_visible_row() {
-        let list = Rect::new(76.0, 24.0, 366.0, 820.0);
-        assert_eq!(PasswordsSurface::list_capacity(list), 8);
-    }
-
-    #[test]
-    fn long_vault_list_scrolls_clamps_and_keeps_keyboard_selection_visible() {
-        let mut app = PasswordsSurface::demo(ShowcaseMode::Vault);
-        let seed = app.items[0].clone();
-        for index in 0..18 {
-            let mut item = seed.clone();
-            item.id = SecretId(format!("overflow-{index}"));
-            item.title = format!("Overflow item {index}");
-            app.items.push(item);
+        eprintln!("phase phone_list_capacity_uses_every_fully_visible_row");
+        {
+            let list = Rect::new(76.0, 24.0, 366.0, 820.0);
+            assert_eq!(PasswordsSurface::list_capacity(list), 8);
         }
-        let list = Rect::new(84.0, 24.0, 366.0, 430.0);
-        assert_eq!(PasswordsSurface::list_capacity(list), 3);
-        assert!(app.scroll_list_to(list, usize::MAX));
-        assert_eq!(app.list_scroll, app.items.len() - 3);
-        assert!(!app.scroll_list_to(list, usize::MAX));
 
-        app.selected = app.items.len() - 1;
-        app.ensure_selected_visible(list);
-        assert_eq!(app.list_scroll, app.items.len() - 3);
-        app.selected = 0;
-        app.ensure_selected_visible(list);
-        assert_eq!(app.list_scroll, 0);
+        eprintln!("phase desktop_columns_are_disjoint_and_inside_viewport");
+        {
+            let content = Rect::new(24.0, 24.0, 1416.0, 876.0);
+            let sidebar = Rect::new(content.x0, content.y0, content.x0 + 190.0, content.y1);
+            let list = Rect::new(
+                sidebar.x1 + 24.0,
+                content.y0 + 4.0,
+                sidebar.x1 + 354.0,
+                content.y1,
+            );
+            let detail = Rect::new(list.x1 + 24.0, content.y0, content.x1, content.y1);
+            assert!(sidebar.x1 < list.x0 && list.x1 < detail.x0);
+            assert!(detail.x1 <= content.x1 && sidebar.y0 >= content.y0 && detail.y1 <= content.y1);
+            assert!(detail.width() >= 480.0);
+        }
 
-        app.select_filter(VaultFilter::Favorites);
-        assert_eq!(
-            app.list_scroll, 0,
-            "changing views starts at the first result"
-        );
+        eprintln!("phase shared_drawer_uses_overlay_on_compact_viewports");
+        {
+            let content = Rect::new(24.0, 24.0, 496.0, 796.0);
+            let mut drawer = SidebarDrawer::new()
+                .docked_width(214.0)
+                .overlay_width(292.0)
+                .breakpoint(960.0);
+            let main = drawer.resolve(content);
+            assert!(drawer.is_overlay());
+            assert!(!drawer.is_open());
+            assert_eq!(main, content);
+            assert_eq!(drawer.scrim_rect(), Rect::ZERO);
+        }
+
+        eprintln!("phase large_text_uses_the_compact_single_pane_layout");
+        {
+            let mut app = PasswordsSurface::demo(ShowcaseMode::Vault);
+            let content = Rect::new(24.0, 24.0, 1256.0, 776.0);
+            app.adapt_layout_for_text_scale(&Theme::dark().with_text_scale(2.0));
+            let main = app.resolve_drawer(content);
+
+            assert!(app.compact_for_large_text);
+            assert!(app.drawer.is_overlay());
+            assert_eq!(main, content);
+            assert_eq!(compact_content_rect(app.mode, main).x0, content.x0 + 60.0);
+        }
+
+        eprintln!("phase phone_review_and_editor_keep_full_content_width");
+        {
+            let main = Rect::new(24.0, 24.0, 366.0, 820.0);
+            assert_eq!(compact_content_rect(ShowcaseMode::Health, main), main);
+            assert_eq!(compact_content_rect(ShowcaseMode::Editor, main), main);
+            assert_eq!(
+                compact_content_rect(ShowcaseMode::Vault, main),
+                Rect::new(84.0, 24.0, 366.0, 820.0)
+            );
+        }
     }
 
-    #[test]
-    fn phone_editor_uses_full_width_and_keeps_controls_disjoint() {
-        let app = PasswordsSurface::demo(ShowcaseMode::Editor);
-        let panel = Rect::new(24.0, 24.0, 366.0, 820.0);
-        let segments = app.kind_segments(panel);
-        assert_eq!(segments.len(), 5);
-        assert!(segments.iter().all(|rect| rect.width() >= 44.0));
-        assert!(
-            segments
-                .iter()
-                .all(|rect| (rect.y0 - segments[0].y0).abs() < f64::EPSILON),
-            "390px-class phones keep secret types on one row"
-        );
-        assert!(segments.windows(2).all(|pair| pair[0].x1 < pair[1].x0));
-
-        let step = PasswordsSurface::editor_field_step(panel);
-        assert!(step >= 64.0, "field labels must clear the previous input");
-        let first_input_bottom = app.editor_fields_top(panel) + 64.0;
-        let next_label_top = app.editor_fields_top(panel) + step;
-        assert!(first_input_bottom <= next_label_top);
-
-        let (delete, cancel, save) = app.editor_footer_rects(panel);
-        let delete = delete.expect("editing exposes delete");
-        assert!(delete.width() >= 44.0 && cancel.width() >= 44.0 && save.width() >= 44.0);
-        assert!(
-            delete.width() <= 96.0,
-            "delete must remain a secondary action"
-        );
-        assert!(delete.x1 < cancel.x0 && cancel.x1 < save.x0);
-    }
-
-    #[test]
-    fn minimum_width_editor_actions_do_not_overlap() {
-        let app = PasswordsSurface::demo(ShowcaseMode::Editor);
-        let panel = Rect::new(24.0, 24.0, 296.0, 736.0);
-        let (delete, cancel, save) = app.editor_footer_rects(panel);
-        let delete = delete.expect("editing exposes delete");
-        assert!(delete.width() >= 44.0 && cancel.width() >= 44.0 && save.width() >= 44.0);
-        assert!(delete.x1 < cancel.x0 && cancel.x1 < save.x0);
-        assert!(delete.x0 >= panel.x0 && save.x1 <= panel.x1);
-    }
-
-    #[test]
     #[expect(
         clippy::float_cmp,
         reason = "scroll offsets are clamped to exactly these values, not computed approximately"
     )]
-    fn short_phone_editor_scrolls_every_field_behind_a_fixed_action_bar() {
-        let mut app = PasswordsSurface::demo(ShowcaseMode::Editor);
-        let panel = Rect::new(24.0, 24.0, 366.0, 496.0);
-        let (_, cancel_before, save_before) = app.editor_footer_rects(panel);
-        let maximum = app.max_editor_scroll(panel);
-        assert!(maximum > 0.0);
+    #[test]
+    fn sidebar_list_and_app_access_scroll_state_clamps_and_follows_selection() {
+        eprintln!("phase short_phone_sidebar_retains_and_clamps_real_scroll_state");
+        {
+            let mut app = PasswordsSurface::demo(ShowcaseMode::Vault);
+            let content = Rect::new(24.0, 24.0, 366.0, 244.0);
+            app.drawer.resolve(content);
+            app.drawer.open();
+            app.drawer.snap(true);
+            app.drawer.resolve(content);
 
-        assert!(app.scroll_editor_by(panel, f64::MAX));
-        assert_eq!(app.editor_scroll, maximum);
-        let (_, cancel_after, save_after) = app.editor_footer_rects(panel);
-        assert_eq!(cancel_before, cancel_after);
-        assert_eq!(save_before, save_after);
-        assert!(app.editor_note_y(panel) < app.editor_body_viewport(panel).y1);
-        assert!(
-            app.editor_custom_fields_y(panel) + 108.0
-                <= app.editor_body_viewport(panel).y1 + f64::EPSILON,
-            "the last custom-field row must scroll fully above the fixed actions"
-        );
+            assert!(app.scroll_sidebar_by(f64::MAX));
+            let nav = app.sidebar_nav(app.sidebar_viewport());
+            assert!(nav.max_scroll_offset() > 0.0);
+            assert_eq!(app.sidebar_scroll, nav.max_scroll_offset());
+            assert!(
+                !app.scroll_sidebar_by(1.0),
+                "scrolling beyond the end is inert"
+            );
 
-        assert!(app.scroll_editor_by(panel, -f64::MAX));
-        assert_eq!(app.editor_scroll, 0.0);
-        assert!(!app.scroll_editor_by(panel, -1.0));
+            assert!(app.scroll_sidebar_by(-f64::MAX));
+            assert_eq!(app.sidebar_scroll, 0.0);
+        }
+
+        eprintln!("phase long_vault_list_scrolls_clamps_and_keeps_keyboard_selection_visible");
+        {
+            let mut app = PasswordsSurface::demo(ShowcaseMode::Vault);
+            let seed = app.items[0].clone();
+            for index in 0..18 {
+                let mut item = seed.clone();
+                item.id = SecretId(format!("overflow-{index}"));
+                item.title = format!("Overflow item {index}");
+                app.items.push(item);
+            }
+            let list = Rect::new(84.0, 24.0, 366.0, 430.0);
+            assert_eq!(PasswordsSurface::list_capacity(list), 3);
+            assert!(app.scroll_list_to(list, usize::MAX));
+            assert_eq!(app.list_scroll, app.items.len() - 3);
+            assert!(!app.scroll_list_to(list, usize::MAX));
+
+            app.selected = app.items.len() - 1;
+            app.ensure_selected_visible(list);
+            assert_eq!(app.list_scroll, app.items.len() - 3);
+            app.selected = 0;
+            app.ensure_selected_visible(list);
+            assert_eq!(app.list_scroll, 0);
+
+            app.select_filter(VaultFilter::Favorites);
+            assert_eq!(
+                app.list_scroll, 0,
+                "changing views starts at the first result"
+            );
+        }
+
+        eprintln!("phase app_access_is_scrollable_revocable_and_assistive_on_a_phone");
+        {
+            let root = std::env::temp_dir().join(format!(
+                "tilo-passwords-access-ui-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            let mut store = accounts::SecretStore::open_in(&root);
+            let mut item = SecretItem::login("Northstar Bank", "ada", "not-rendered");
+            item.add_origin("https://bank.example").unwrap();
+            store.put(&mut item).unwrap();
+            let mut broker = accounts::CredentialBroker::new(store);
+            for index in 0..10 {
+                broker
+                    .request(
+                        &accounts::AccessRequest {
+                            app_id: format!("org.example.App{index}"),
+                            item_id: item.id.clone(),
+                            purpose: "Sign in".into(),
+                            origin: Some("https://bank.example".into()),
+                        },
+                        |_, _| accounts::AccessDecision::AllowAlways,
+                    )
+                    .unwrap();
+            }
+            drop(broker);
+
+            let mut app = PasswordsSurface::demo(ShowcaseMode::AppAccess);
+            app.model = Some(crate::PasswordsModel::open_in(&root));
+            app.refresh();
+            app.rect = Rect::new(0.0, 0.0, 390.0, 640.0);
+            app.drawer.resolve(Rect::new(24.0, 24.0, 366.0, 616.0));
+            let panel = app.current_panel_rect();
+            assert_eq!(app.app_grants.len(), 10);
+            assert!(app.max_app_access_scroll(panel) > 0.0);
+            assert!(app.scroll_app_access_by(panel, f64::MAX));
+            assert_eq!(app.app_access_scroll, app.max_app_access_scroll(panel));
+
+            let json = serde_json::to_string(&Widget::accessibility(&app)).unwrap();
+            assert!(json.contains("Apps with ongoing access"));
+            assert!(json.contains("passwords.app-access.revoke:9"));
+            assert!(!json.contains("not-rendered"));
+
+            let grant = app.app_grants[9].clone();
+            assert!(app.revoke_app_grant_index(9, &grant, panel));
+            assert_eq!(app.app_grants.len(), 9);
+            assert_eq!(crate::PasswordsModel::open_in(&root).app_grants().len(), 9);
+            std::fs::remove_dir_all(root).ok();
+        }
     }
 
-    #[test]
     #[expect(
         clippy::float_cmp,
         reason = "scroll offsets are clamped to exactly these values, not computed approximately"
     )]
-    fn short_editor_focus_scrolls_fields_into_view_and_restores_the_top() {
-        let mut app = PasswordsSurface::demo(ShowcaseMode::Editor);
-        let panel = Rect::new(24.0, 24.0, 366.0, 496.0);
+    #[test]
+    fn editor_controls_stay_disjoint_and_fields_scroll_behind_fixed_actions() {
+        eprintln!("phase phone_editor_uses_full_width_and_keeps_controls_disjoint");
+        {
+            let app = PasswordsSurface::demo(ShowcaseMode::Editor);
+            let panel = Rect::new(24.0, 24.0, 366.0, 820.0);
+            let segments = app.kind_segments(panel);
+            assert_eq!(segments.len(), 5);
+            assert!(segments.iter().all(|rect| rect.width() >= 44.0));
+            assert!(
+                segments
+                    .iter()
+                    .all(|rect| (rect.y0 - segments[0].y0).abs() < f64::EPSILON),
+                "390px-class phones keep secret types on one row"
+            );
+            assert!(segments.windows(2).all(|pair| pair[0].x1 < pair[1].x0));
 
-        app.ensure_editor_field_visible(panel, ActiveField::CustomFields);
-        assert!(app.editor_scroll > 0.0);
-        let custom_bottom = app.editor_custom_fields_y(panel) + 104.0;
-        assert!(custom_bottom <= app.editor_body_viewport(panel).y1 + f64::EPSILON);
+            let step = PasswordsSurface::editor_field_step(panel);
+            assert!(step >= 64.0, "field labels must clear the previous input");
+            let first_input_bottom = app.editor_fields_top(panel) + 64.0;
+            let next_label_top = app.editor_fields_top(panel) + step;
+            assert!(first_input_bottom <= next_label_top);
 
-        app.ensure_editor_field_visible(panel, ActiveField::Name);
-        assert_eq!(app.editor_scroll, 0.0);
-        assert!(app.kind_segments(panel)[0].y0 >= app.editor_body_viewport(panel).y0);
+            let (delete, cancel, save) = app.editor_footer_rects(panel);
+            let delete = delete.expect("editing exposes delete");
+            assert!(delete.width() >= 44.0 && cancel.width() >= 44.0 && save.width() >= 44.0);
+            assert!(
+                delete.width() <= 96.0,
+                "delete must remain a secondary action"
+            );
+            assert!(delete.x1 < cancel.x0 && cancel.x1 < save.x0);
+        }
+
+        eprintln!("phase minimum_width_editor_actions_do_not_overlap");
+        {
+            let app = PasswordsSurface::demo(ShowcaseMode::Editor);
+            let panel = Rect::new(24.0, 24.0, 296.0, 736.0);
+            let (delete, cancel, save) = app.editor_footer_rects(panel);
+            let delete = delete.expect("editing exposes delete");
+            assert!(delete.width() >= 44.0 && cancel.width() >= 44.0 && save.width() >= 44.0);
+            assert!(delete.x1 < cancel.x0 && cancel.x1 < save.x0);
+            assert!(delete.x0 >= panel.x0 && save.x1 <= panel.x1);
+        }
+
+        eprintln!("phase short_phone_editor_scrolls_every_field_behind_a_fixed_action_bar");
+        {
+            let mut app = PasswordsSurface::demo(ShowcaseMode::Editor);
+            let panel = Rect::new(24.0, 24.0, 366.0, 496.0);
+            let (_, cancel_before, save_before) = app.editor_footer_rects(panel);
+            let maximum = app.max_editor_scroll(panel);
+            assert!(maximum > 0.0);
+
+            assert!(app.scroll_editor_by(panel, f64::MAX));
+            assert_eq!(app.editor_scroll, maximum);
+            let (_, cancel_after, save_after) = app.editor_footer_rects(panel);
+            assert_eq!(cancel_before, cancel_after);
+            assert_eq!(save_before, save_after);
+            assert!(app.editor_note_y(panel) < app.editor_body_viewport(panel).y1);
+            assert!(
+                app.editor_custom_fields_y(panel) + 108.0
+                    <= app.editor_body_viewport(panel).y1 + f64::EPSILON,
+                "the last custom-field row must scroll fully above the fixed actions"
+            );
+
+            assert!(app.scroll_editor_by(panel, -f64::MAX));
+            assert_eq!(app.editor_scroll, 0.0);
+            assert!(!app.scroll_editor_by(panel, -1.0));
+        }
+
+        eprintln!("phase short_editor_focus_scrolls_fields_into_view_and_restores_the_top");
+        {
+            let mut app = PasswordsSurface::demo(ShowcaseMode::Editor);
+            let panel = Rect::new(24.0, 24.0, 366.0, 496.0);
+
+            app.ensure_editor_field_visible(panel, ActiveField::CustomFields);
+            assert!(app.editor_scroll > 0.0);
+            let custom_bottom = app.editor_custom_fields_y(panel) + 104.0;
+            assert!(custom_bottom <= app.editor_body_viewport(panel).y1 + f64::EPSILON);
+
+            app.ensure_editor_field_visible(panel, ActiveField::Name);
+            assert_eq!(app.editor_scroll, 0.0);
+            assert!(app.kind_segments(panel)[0].y0 >= app.editor_body_viewport(panel).y0);
+        }
+    }
+
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
+    #[test]
+    fn assistive_and_sidebar_actions_drive_the_real_surface() {
+        eprintln!("phase shared_sidebar_routes_to_real_review_and_back");
+        {
+            let mut app = PasswordsSurface::demo(ShowcaseMode::Vault);
+            let content = Rect::new(24.0, 24.0, 1416.0, 876.0);
+            app.drawer.resolve(content);
+            let side = app.drawer.sidebar_rect();
+            assert!(app.activate_sidebar(Point::new(side.x0 + 20.0, side.y0 + 453.0)));
+            assert_eq!(app.mode, ShowcaseMode::Health);
+            assert!(app.activate_sidebar(Point::new(side.x0 + 20.0, side.y0 + 76.0)));
+            assert_eq!(app.mode, ShowcaseMode::Vault);
+        }
+
+        eprintln!("phase storage_status_is_available_to_assistive_clients");
+        {
+            let mut app = PasswordsSurface::demo(ShowcaseMode::Vault);
+            app.status = "Vault unavailable; recovery required".into();
+            let tree = app.accessibility().unwrap();
+            assert!(
+                tree.children
+                    .iter()
+                    .any(|node| { node.name.as_deref() == Some(app.status.as_str()) })
+            );
+        }
+
+        eprintln!("phase assistive_actions_drive_the_same_editor");
+        {
+            let mut app = PasswordsSurface::demo(ShowcaseMode::Vault);
+            let mut doc = AutoCommit::new();
+            assert!(app.perform_semantic_action(
+                "passwords.add",
+                &ui::a11y::Action::Activate,
+                &mut doc,
+                &automerge::ROOT,
+            ));
+            assert_eq!(app.mode, ShowcaseMode::Editor);
+            assert!(app.perform_semantic_action(
+                "passwords.field.name",
+                &ui::a11y::Action::SetValue("New name".into()),
+                &mut doc,
+                &automerge::ROOT,
+            ));
+            assert_eq!(app.draft_title, "New name");
+
+            for (target, expected) in [
+                ("passwords.kind:api-key", SecretItemKind::ApiKey),
+                ("passwords.kind:note", SecretItemKind::SecureNote),
+                ("passwords.kind:wifi", SecretItemKind::Wifi),
+                ("passwords.kind:other", SecretItemKind::Other),
+                ("passwords.kind:login", SecretItemKind::Login),
+            ] {
+                assert!(app.perform_semantic_action(
+                    target,
+                    &ui::a11y::Action::Activate,
+                    &mut doc,
+                    &automerge::ROOT,
+                ));
+                assert_eq!(app.draft_kind, expected);
+            }
+        }
+
+        eprintln!("phase backup_and_restore_fields_share_protected_semantic_entry");
+        {
+            use ui::a11y::Action;
+            let mut app = PasswordsSurface::demo(ShowcaseMode::Vault);
+            let mut doc = AutoCommit::new();
+            for restoring in [false, true] {
+                app.transfer_dialog = Some(if restoring {
+                    TransferDialog::Restore {
+                        bytes: Zeroizing::new(Vec::new()),
+                    }
+                } else {
+                    TransferDialog::Backup
+                });
+                let tree = app.accessibility().unwrap();
+                let controls = &tree.children[0].children;
+                let password = controls
+                    .iter()
+                    .find(|node| node.name.as_deref() == Some("Backup password"))
+                    .unwrap();
+                assert!(password.sensitivity.is_secret());
+                assert_eq!(password.value, None);
+                assert!(app.perform_semantic_action(
+                    "passwords.backup.password",
+                    &Action::SetValue("Owned fixture password 52!".into()),
+                    &mut doc,
+                    &automerge::ROOT,
+                ));
+                assert_eq!(app.backup_password.value(), "Owned fixture password 52!");
+                if !restoring {
+                    assert!(app.perform_semantic_action(
+                        "passwords.backup.confirmation",
+                        &Action::SetValue("Owned fixture password 52!".into()),
+                        &mut doc,
+                        &automerge::ROOT,
+                    ));
+                    assert!(app.backup_form_error(true).is_none());
+                }
+                let tree = app.accessibility().unwrap();
+                assert!(
+                    tree.children[0]
+                        .children
+                        .iter()
+                        .filter(|node| node.sensitivity.is_secret())
+                        .all(|node| node.value.is_none())
+                );
+            }
+            app.transfer_dialog = None;
+            assert!(!app.perform_semantic_action(
+                "passwords.backup.password",
+                &Action::SetValue("outside dialog".into()),
+                &mut doc,
+                &automerge::ROOT,
+            ));
+        }
     }
 
     #[test]
-    fn shared_sidebar_routes_to_real_review_and_back() {
-        let mut app = PasswordsSurface::demo(ShowcaseMode::Vault);
-        let content = Rect::new(24.0, 24.0, 1416.0, 876.0);
-        app.drawer.resolve(content);
-        let side = app.drawer.sidebar_rect();
-        assert!(app.activate_sidebar(Point::new(side.x0 + 20.0, side.y0 + 453.0)));
-        assert_eq!(app.mode, ShowcaseMode::Health);
-        assert!(app.activate_sidebar(Point::new(side.x0 + 20.0, side.y0 + 76.0)));
-        assert_eq!(app.mode, ShowcaseMode::Vault);
-    }
-
-    #[test]
-    fn demo_inventory_contains_no_renderable_secret() {
-        use std::fmt::Write as _;
-        let items = demo_items();
-        assert!(
-            items.iter().all(
+    fn surface_resources_and_accessibility_never_expose_secret_values() {
+        eprintln!("phase demo_inventory_contains_no_renderable_secret");
+        {
+            use std::fmt::Write as _;
+            let items = demo_items();
+            assert!(items.iter().all(
                 |item| item.password.is_empty() || item.password.starts_with("never-rendered-")
-            )
-        );
-        let visible = items.iter().fold(String::new(), |mut text, item| {
-            write!(text, "{} {} {:?}", item.title, item.username, item.origins).unwrap();
-            text
-        });
-        assert!(!visible.contains("never-rendered"));
-    }
+            ));
+            let visible = items.iter().fold(String::new(), |mut text, item| {
+                write!(text, "{} {} {:?}", item.title, item.username, item.origins).unwrap();
+                text
+            });
+            assert!(!visible.contains("never-rendered"));
+        }
 
-    #[test]
-    fn type_filters_and_favorites_are_real_vault_state() {
-        let root = std::env::temp_dir().join(format!(
-            "tilo-passwords-favorites-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        let mut model = crate::PasswordsModel::open_in(&root);
-        let mut login = SecretItem::login("Account", "ada", "secret-login");
-        model.save_item(&mut login).unwrap();
-        let mut note = SecretItem::login("Codes", "", "secret-note");
-        note.kind = SecretItemKind::SecureNote;
-        model.save_item(&mut note).unwrap();
+        eprintln!("phase accessibility_never_exposes_password_values");
+        {
+            let app = PasswordsSurface::demo(ShowcaseMode::Vault);
+            let json = serde_json::to_string(&Widget::accessibility(&app)).unwrap();
+            assert!(!json.contains("never-rendered"));
+            assert!(json.contains("Reveal for ten seconds"));
+        }
 
-        let mut app = PasswordsSurface::demo(ShowcaseMode::Vault);
-        app.model = Some(model);
-        app.refresh();
-        app.select_filter(VaultFilter::Kind(SecretItemKind::SecureNote));
-        assert_eq!(app.visible_indices().len(), 1);
-        assert_eq!(app.items[app.visible_indices()[0]].title, "Codes");
+        eprintln!("phase cached_surface_and_resources_exclude_notes_and_custom_values");
+        {
+            let root = std::env::temp_dir().join(format!(
+                "tilo-passwords-surface-redaction-{}-{:?}",
+                std::process::id(),
+                std::thread::current().id()
+            ));
+            let mut model = crate::PasswordsModel::open_in(&root);
+            let mut item = SecretItem::login("Private account", "ada", "password-value");
+            item.notes = "note-value".into();
+            item.fields
+                .insert("recovery code".into(), "field-value".into());
+            model.save_item(&mut item).unwrap();
 
-        let login_index = app
-            .items
-            .iter()
-            .position(|item| item.id == login.id)
-            .unwrap();
-        app.toggle_favorite(login_index);
-        app.select_filter(VaultFilter::Favorites);
-        assert_eq!(app.visible_indices(), vec![login_index]);
-        let reopened = crate::PasswordsModel::open_in(&root);
-        assert!(
-            reopened
-                .items()
+            let mut app = PasswordsSurface::demo(ShowcaseMode::Vault);
+            app.model = Some(model);
+            app.refresh();
+            assert!(app.items[0].password.is_empty());
+            assert!(app.items[0].notes.is_empty());
+            assert!(app.items[0].fields.is_empty());
+            let resources = Widget::resources(&app, &AutoCommit::new());
+            let public = resources
                 .iter()
-                .find(|item| item.id == login.id)
-                .unwrap()
-                .tags
-                .contains("favorite")
-        );
-        let _ = std::fs::remove_dir_all(root);
+                .map(|resource| {
+                    let mut description =
+                        format!("{} {} {}", resource.id.0, resource.kind, resource.label);
+                    for action in &resource.actions {
+                        description.push_str(&action.label);
+                        let encoded = action
+                            .build_args(Vec::<(String, ui::tilo_actions::ArgValue)>::new())
+                            .unwrap();
+                        description.push_str(&String::from_utf8_lossy(&encoded.payload));
+                    }
+                    description
+                })
+                .collect::<String>();
+            for secret in [
+                "password-value",
+                "note-value",
+                "field-value",
+                "Private account",
+            ] {
+                assert!(
+                    !public.contains(secret),
+                    "public resource leaked {secret:?}"
+                );
+            }
+            let _ = std::fs::remove_dir_all(root);
+        }
     }
 
     #[test]
-    fn accessibility_never_exposes_password_values() {
-        let app = PasswordsSurface::demo(ShowcaseMode::Vault);
-        let json = serde_json::to_string(&Widget::accessibility(&app)).unwrap();
-        assert!(!json.contains("never-rendered"));
-        assert!(json.contains("Reveal for ten seconds"));
+    fn filters_favorites_and_confirmed_deletes_are_real_vault_state() {
+        eprintln!("phase type_filters_and_favorites_are_real_vault_state");
+        {
+            let root = std::env::temp_dir().join(format!(
+                "tilo-passwords-favorites-{}-{:?}",
+                std::process::id(),
+                std::thread::current().id()
+            ));
+            let mut model = crate::PasswordsModel::open_in(&root);
+            let mut login = SecretItem::login("Account", "ada", "secret-login");
+            model.save_item(&mut login).unwrap();
+            let mut note = SecretItem::login("Codes", "", "secret-note");
+            note.kind = SecretItemKind::SecureNote;
+            model.save_item(&mut note).unwrap();
+
+            let mut app = PasswordsSurface::demo(ShowcaseMode::Vault);
+            app.model = Some(model);
+            app.refresh();
+            app.select_filter(VaultFilter::Kind(SecretItemKind::SecureNote));
+            assert_eq!(app.visible_indices().len(), 1);
+            assert_eq!(app.items[app.visible_indices()[0]].title, "Codes");
+
+            let login_index = app
+                .items
+                .iter()
+                .position(|item| item.id == login.id)
+                .unwrap();
+            app.toggle_favorite(login_index);
+            app.select_filter(VaultFilter::Favorites);
+            assert_eq!(app.visible_indices(), vec![login_index]);
+            let reopened = crate::PasswordsModel::open_in(&root);
+            assert!(
+                reopened
+                    .items()
+                    .iter()
+                    .find(|item| item.id == login.id)
+                    .unwrap()
+                    .tags
+                    .contains("favorite")
+            );
+            let _ = std::fs::remove_dir_all(root);
+        }
+
+        eprintln!("phase every_delete_path_requires_confirmation_before_mutating_the_vault");
+        {
+            let root = std::env::temp_dir().join(format!(
+                "tilo-passwords-delete-confirm-{}-{:?}",
+                std::process::id(),
+                std::thread::current().id()
+            ));
+            let mut model = crate::PasswordsModel::open_in(&root);
+            let mut item = SecretItem::login("Keep me", "ada", "private-value");
+            let id = model.save_item(&mut item).unwrap();
+            let mut app = PasswordsSurface::demo(ShowcaseMode::Vault);
+            app.model = Some(model);
+            app.refresh();
+            app.begin_edit();
+            let mut doc = AutoCommit::new();
+
+            assert!(app.perform_semantic_action(
+                "passwords.delete",
+                &ui::a11y::Action::Activate,
+                &mut doc,
+                &automerge::ROOT,
+            ));
+            assert!(matches!(
+                app.transfer_dialog,
+                Some(TransferDialog::DeleteConfirm { .. })
+            ));
+            assert_eq!(app.model.as_ref().unwrap().items().len(), 1);
+            app.transfer_dialog = None;
+
+            let payload =
+                serde_json::to_vec(&crate::actions::PasswordOperation::RequestDelete { id: id.0 })
+                    .unwrap();
+            assert!(
+                app.invoke_resource_operation(
+                    ui::tilo_actions::OperationKind::Effect,
+                    "tilo.passwords.operation",
+                    &payload,
+                    &doc,
+                    &automerge::ROOT,
+                )
+                .unwrap()
+            );
+            assert_eq!(app.model.as_ref().unwrap().items().len(), 1);
+
+            assert!(app.perform_semantic_action(
+                "passwords.delete.confirm",
+                &ui::a11y::Action::Activate,
+                &mut doc,
+                &automerge::ROOT,
+            ));
+            assert!(app.model.as_ref().unwrap().items().is_empty());
+            let _ = std::fs::remove_dir_all(root);
+        }
     }
 
     // Clipboard transport is injected at the host boundary, scoped to the
@@ -6032,641 +6248,449 @@ mod tests {
         ui::host::enter(&services)
     }
 
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
-    fn failed_copy_reports_error_without_claiming_or_replacing_clipboard_contents() {
-        let _clipboard = clipboard_fixture(false);
-        let root = std::env::temp_dir().join(format!(
-            "tilo-passwords-copy-failure-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        let mut model = crate::PasswordsModel::open_in(&root);
-        let mut item = SecretItem::login("Account", "ada", "private-value");
-        item.add_origin("https://example.invalid").unwrap();
-        model.save_item(&mut item).unwrap();
-        let mut app = PasswordsSurface::demo(ShowcaseMode::Vault);
-        app.model = Some(model);
-        app.refresh();
-        for copy in [
-            PasswordsSurface::copy_selected,
-            PasswordsSurface::copy_identity_selected,
-            PasswordsSurface::copy_origin_selected,
-        ] {
-            copy(&mut app);
-            assert_eq!(
-                app.status,
-                "Could not copy to the system clipboard. Try again."
+    fn reveal_and_copy_are_temporary_and_honest_about_the_clipboard() {
+        eprintln!("phase revealed_value_uses_a_deadline_wakeup_and_locks_on_focus_loss");
+        {
+            let mut app = PasswordsSurface::demo(ShowcaseMode::Vault);
+            app.revealed = Some((
+                SecretId("demo-0".into()),
+                Zeroizing::new("temporary-value".into()),
+                std::time::Instant::now() + std::time::Duration::from_secs(10),
+            ));
+            assert!(Widget::next_wake_deadline(&app).is_some());
+
+            let mut doc = AutoCommit::new();
+            let mut handled = false;
+            let mut focus = None;
+            let mut taffy = TaffyTree::new();
+            let node = taffy.new_leaf(Style::default()).unwrap();
+            app.handle_event(
+                &WindowEvent::Focused(false),
+                1.0,
+                &winit::event::Modifiers::default(),
+                &mut doc,
+                &automerge::ROOT,
+                &mut handled,
+                &mut focus,
+                node,
+                &taffy,
             );
-            assert_eq!(ui::clipboard_paste().as_deref(), Some("existing clipboard"));
             assert!(app.revealed.is_none());
         }
-        std::fs::remove_dir_all(root).unwrap();
-    }
 
-    #[test]
-    fn cached_surface_and_resources_exclude_notes_and_custom_values() {
-        let root = std::env::temp_dir().join(format!(
-            "tilo-passwords-surface-redaction-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        let mut model = crate::PasswordsModel::open_in(&root);
-        let mut item = SecretItem::login("Private account", "ada", "password-value");
-        item.notes = "note-value".into();
-        item.fields
-            .insert("recovery code".into(), "field-value".into());
-        model.save_item(&mut item).unwrap();
-
-        let mut app = PasswordsSurface::demo(ShowcaseMode::Vault);
-        app.model = Some(model);
-        app.refresh();
-        assert!(app.items[0].password.is_empty());
-        assert!(app.items[0].notes.is_empty());
-        assert!(app.items[0].fields.is_empty());
-        let resources = Widget::resources(&app, &AutoCommit::new());
-        let public = resources
-            .iter()
-            .map(|resource| {
-                let mut description =
-                    format!("{} {} {}", resource.id.0, resource.kind, resource.label);
-                for action in &resource.actions {
-                    description.push_str(&action.label);
-                    let encoded = action
-                        .build_args(Vec::<(String, ui::tilo_actions::ArgValue)>::new())
-                        .unwrap();
-                    description.push_str(&String::from_utf8_lossy(&encoded.payload));
-                }
-                description
-            })
-            .collect::<String>();
-        for secret in [
-            "password-value",
-            "note-value",
-            "field-value",
-            "Private account",
-        ] {
-            assert!(
-                !public.contains(secret),
-                "public resource leaked {secret:?}"
-            );
-        }
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn revealed_value_uses_a_deadline_wakeup_and_locks_on_focus_loss() {
-        let mut app = PasswordsSurface::demo(ShowcaseMode::Vault);
-        app.revealed = Some((
-            SecretId("demo-0".into()),
-            Zeroizing::new("temporary-value".into()),
-            std::time::Instant::now() + std::time::Duration::from_secs(10),
-        ));
-        assert!(Widget::next_wake_deadline(&app).is_some());
-
-        let mut doc = AutoCommit::new();
-        let mut handled = false;
-        let mut focus = None;
-        let mut taffy = TaffyTree::new();
-        let node = taffy.new_leaf(Style::default()).unwrap();
-        app.handle_event(
-            &WindowEvent::Focused(false),
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut doc,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
-        );
-        assert!(app.revealed.is_none());
-    }
-
-    #[test]
-    fn polished_surface_saves_searches_and_updates_real_store() {
-        let _clipboard = clipboard_fixture(true);
-        let root = std::env::temp_dir().join(format!(
-            "tilo-passwords-surface-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        let mut app = PasswordsSurface::demo(ShowcaseMode::Vault);
-        app.model = Some(crate::PasswordsModel::open_in(&root));
-        app.items.clear();
-        app.begin_add();
-        app.draft_title = "Example account".into();
-        app.draft_username = "ada@example.com".into();
-        app.draft_origin = "https://example.com, https://login.example.com".into();
-        app.draft_password = Zeroizing::new("correct horse battery staple".into());
-        app.draft_notes = Zeroizing::new("recovery details".into());
-        app.sync_editor_inputs();
-        app.save_draft();
-        assert_eq!(app.mode, ShowcaseMode::Vault);
-        assert!(app.draft_password.is_empty());
-        assert!(app.draft_notes.is_empty());
-        assert!(app.editor_inputs.password.value().is_empty());
-        assert!(app.editor_inputs.notes.value().is_empty());
-        assert_eq!(app.items.len(), 1);
-        assert_eq!(app.items[0].title, "Example account");
-        assert_eq!(app.items[0].origins.len(), 2);
-        assert!(app.items[0].password.is_empty());
-
-        app.query = "missing".into();
-        app.refresh();
-        assert!(app.items.is_empty());
-        app.query = "example".into();
-        app.refresh();
-        assert_eq!(app.items.len(), 1);
-
-        app.begin_edit();
-        assert!(app.draft_origin.contains("https://example.com"));
-        assert!(app.draft_origin.contains("https://login.example.com"));
-        app.draft_title = "Renamed account".into();
-        app.save_draft();
-        assert_eq!(app.items[0].title, "Renamed account");
-        assert_eq!(app.items[0].origins.len(), 2);
-        app.copy_origin_selected();
-        let copied = ui::clipboard_paste().unwrap();
-        assert!(copied.contains("https://example.com"));
-        assert!(copied.contains("https://login.example.com"));
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn cancelling_discards_sensitive_shared_input_buffers() {
-        let mut app = PasswordsSurface::demo(ShowcaseMode::Vault);
-        app.begin_add();
-        app.draft_password = Zeroizing::new("unsaved password".into());
-        app.draft_notes = Zeroizing::new("unsaved private note".into());
-        app.sync_editor_inputs();
-
-        app.cancel_edit();
-
-        assert_eq!(app.mode, ShowcaseMode::Vault);
-        assert!(app.draft_password.is_empty());
-        assert!(app.draft_notes.is_empty());
-        assert!(app.editor_inputs.password.value().is_empty());
-        assert!(app.editor_inputs.notes.value().is_empty());
-    }
-
-    #[test]
-    fn secret_row_has_distinct_copy_and_reveal_targets() {
-        let _clipboard = clipboard_fixture(true);
-        let root = std::env::temp_dir().join(format!(
-            "tilo-passwords-secret-actions-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        let mut model = crate::PasswordsModel::open_in(&root);
-        let mut item = SecretItem::login("Account", "ada", "private-value");
-        model.save_item(&mut item).unwrap();
-        let mut app = PasswordsSurface::demo(ShowcaseMode::Vault);
-        app.model = Some(model);
-        app.refresh();
-
-        app.activate_detail_row_at(1, 880.0, 1_000.0);
-        assert!(app.status.starts_with("Copied password"));
-        assert_eq!(ui::clipboard_paste().as_deref(), Some("private-value"));
-        assert!(
-            app.revealed.is_none(),
-            "copying must not disclose the value"
-        );
-
-        app.activate_detail_row_at(1, 960.0, 1_000.0);
-        assert!(
-            app.revealed.is_some(),
-            "the separate eye target reveals temporarily"
-        );
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn editing_preserves_app_specific_secret_fields() {
-        let root = std::env::temp_dir().join(format!(
-            "tilo-passwords-custom-fields-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        let mut model = crate::PasswordsModel::open_in(&root);
-        let mut item = SecretItem::login("Deployment", "ada", "token");
-        item.kind = SecretItemKind::Other;
-        item.fields.insert("client-id".into(), "app-42".into());
-        item.fields.insert("tenant".into(), "northstar".into());
-        item.tags.extend(["favorite".into(), "work".into()]);
-        let id = model.save_item(&mut item).unwrap();
-
-        let mut app = PasswordsSurface::demo(ShowcaseMode::Vault);
-        app.model = Some(model);
-        app.refresh();
-        app.begin_edit();
-        assert!(app.draft_custom_fields.contains("client-id = app-42"));
-        assert_eq!(app.draft_tags, "work");
-        app.draft_title = "Production deployment".into();
-        app.draft_custom_fields =
-            Zeroizing::new("client-id = app-43\nenvironment = production".into());
-        app.draft_tags = "work, infrastructure".into();
-        app.save_draft();
-
-        let stored = crate::PasswordsModel::open_in(&root)
-            .items()
-            .into_iter()
-            .find(|candidate| candidate.id == id)
-            .unwrap();
-        assert_eq!(
-            stored.fields.get("client-id").map(String::as_str),
-            Some("app-43")
-        );
-        assert_eq!(
-            stored.fields.get("environment").map(String::as_str),
-            Some("production")
-        );
-        assert!(!stored.fields.contains_key("tenant"));
-        assert!(stored.tags.contains("favorite"));
-        assert!(stored.tags.contains("work"));
-        assert!(stored.tags.contains("infrastructure"));
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn custom_field_parser_is_helpful_and_rejects_ambiguous_rows() {
-        assert_eq!(
-            PasswordsSurface::parse_custom_fields("Account = Ada\nRegion: eu-west")
-                .unwrap()
-                .len(),
-            2
-        );
-        assert!(PasswordsSurface::parse_custom_fields("missing separator").is_err());
-        assert!(PasswordsSurface::parse_custom_fields("Token = one\ntoken = two").is_err());
-        assert!(PasswordsSurface::parse_custom_fields("network = reserved").is_err());
-        let escaped = PasswordsSurface::escape_custom_value("first\nsecond\\third");
-        assert_eq!(escaped, "first\\nsecond\\\\third");
-        assert_eq!(
-            PasswordsSurface::unescape_custom_value(&escaped).unwrap(),
-            "first\nsecond\\third"
-        );
-    }
-
-    #[test]
-    fn pending_transfer_keeps_host_polling_and_reveal_has_an_expiry_deadline() {
-        let mut app = PasswordsSurface::demo(ShowcaseMode::Vault);
-        let (tx, rx) = std::sync::mpsc::channel();
-        app.export_portal = Some(rx);
-        let first = app.next_wake_deadline().unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(2));
-        assert_eq!(app.next_wake_deadline(), Some(first));
-        tx.send(ui::portal::PortalOutcome::Cancelled).unwrap();
-        app.sync(&mut AutoCommit::new(), &automerge::ROOT);
-        assert!(app.next_wake_deadline().is_none());
-        let deadline = std::time::Instant::now();
-        app.revealed = Some((
-            SecretId("test".into()),
-            Zeroizing::new("fixture secret".into()),
-            deadline,
-        ));
-        assert_eq!(app.next_wake_deadline(), Some(deadline));
-        app.sync(&mut AutoCommit::new(), &automerge::ROOT);
-        assert!(app.revealed.is_none());
-        assert!(app.next_wake_deadline().is_none());
-    }
-
-    #[test]
-    fn backup_and_restore_fields_share_protected_semantic_entry() {
-        use ui::a11y::Action;
-        let mut app = PasswordsSurface::demo(ShowcaseMode::Vault);
-        let mut doc = AutoCommit::new();
-        for restoring in [false, true] {
-            app.transfer_dialog = Some(if restoring {
-                TransferDialog::Restore {
-                    bytes: Zeroizing::new(Vec::new()),
-                }
-            } else {
-                TransferDialog::Backup
-            });
-            let tree = app.accessibility().unwrap();
-            let controls = &tree.children[0].children;
-            let password = controls
-                .iter()
-                .find(|node| node.name.as_deref() == Some("Backup password"))
-                .unwrap();
-            assert!(password.sensitivity.is_secret());
-            assert_eq!(password.value, None);
-            assert!(app.perform_semantic_action(
-                "passwords.backup.password",
-                &Action::SetValue("Owned fixture password 52!".into()),
-                &mut doc,
-                &automerge::ROOT,
-            ));
-            assert_eq!(app.backup_password.value(), "Owned fixture password 52!");
-            if !restoring {
-                assert!(app.perform_semantic_action(
-                    "passwords.backup.confirmation",
-                    &Action::SetValue("Owned fixture password 52!".into()),
-                    &mut doc,
-                    &automerge::ROOT,
-                ));
-                assert!(app.backup_form_error(true).is_none());
-            }
-            let tree = app.accessibility().unwrap();
-            assert!(
-                tree.children[0]
-                    .children
-                    .iter()
-                    .filter(|node| node.sensitivity.is_secret())
-                    .all(|node| node.value.is_none())
-            );
-        }
-        app.transfer_dialog = None;
-        assert!(!app.perform_semantic_action(
-            "passwords.backup.password",
-            &Action::SetValue("outside dialog".into()),
-            &mut doc,
-            &automerge::ROOT,
-        ));
-    }
-
-    #[test]
-    fn storage_status_is_available_to_assistive_clients() {
-        let mut app = PasswordsSurface::demo(ShowcaseMode::Vault);
-        app.status = "Vault unavailable; recovery required".into();
-        let tree = app.accessibility().unwrap();
-        assert!(
-            tree.children
-                .iter()
-                .any(|node| { node.name.as_deref() == Some(app.status.as_str()) })
-        );
-    }
-
-    #[test]
-    fn assistive_actions_drive_the_same_editor() {
-        let mut app = PasswordsSurface::demo(ShowcaseMode::Vault);
-        let mut doc = AutoCommit::new();
-        assert!(app.perform_semantic_action(
-            "passwords.add",
-            &ui::a11y::Action::Activate,
-            &mut doc,
-            &automerge::ROOT,
-        ));
-        assert_eq!(app.mode, ShowcaseMode::Editor);
-        assert!(app.perform_semantic_action(
-            "passwords.field.name",
-            &ui::a11y::Action::SetValue("New name".into()),
-            &mut doc,
-            &automerge::ROOT,
-        ));
-        assert_eq!(app.draft_title, "New name");
-
-        for (target, expected) in [
-            ("passwords.kind:api-key", SecretItemKind::ApiKey),
-            ("passwords.kind:note", SecretItemKind::SecureNote),
-            ("passwords.kind:wifi", SecretItemKind::Wifi),
-            ("passwords.kind:other", SecretItemKind::Other),
-            ("passwords.kind:login", SecretItemKind::Login),
-        ] {
-            assert!(app.perform_semantic_action(
-                target,
-                &ui::a11y::Action::Activate,
-                &mut doc,
-                &automerge::ROOT,
-            ));
-            assert_eq!(app.draft_kind, expected);
-        }
-    }
-
-    #[test]
-    fn every_delete_path_requires_confirmation_before_mutating_the_vault() {
-        let root = std::env::temp_dir().join(format!(
-            "tilo-passwords-delete-confirm-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        let mut model = crate::PasswordsModel::open_in(&root);
-        let mut item = SecretItem::login("Keep me", "ada", "private-value");
-        let id = model.save_item(&mut item).unwrap();
-        let mut app = PasswordsSurface::demo(ShowcaseMode::Vault);
-        app.model = Some(model);
-        app.refresh();
-        app.begin_edit();
-        let mut doc = AutoCommit::new();
-
-        assert!(app.perform_semantic_action(
-            "passwords.delete",
-            &ui::a11y::Action::Activate,
-            &mut doc,
-            &automerge::ROOT,
-        ));
-        assert!(matches!(
-            app.transfer_dialog,
-            Some(TransferDialog::DeleteConfirm { .. })
-        ));
-        assert_eq!(app.model.as_ref().unwrap().items().len(), 1);
-        app.transfer_dialog = None;
-
-        let payload =
-            serde_json::to_vec(&crate::actions::PasswordOperation::RequestDelete { id: id.0 })
-                .unwrap();
-        assert!(
-            app.invoke_resource_operation(
-                ui::tilo_actions::OperationKind::Effect,
-                "tilo.passwords.operation",
-                &payload,
-                &doc,
-                &automerge::ROOT,
-            )
-            .unwrap()
-        );
-        assert_eq!(app.model.as_ref().unwrap().items().len(), 1);
-
-        assert!(app.perform_semantic_action(
-            "passwords.delete.confirm",
-            &ui::a11y::Action::Activate,
-            &mut doc,
-            &automerge::ROOT,
-        ));
-        assert!(app.model.as_ref().unwrap().items().is_empty());
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn portal_descriptor_import_previews_conflicts_before_writing() {
-        use std::io::Write;
-        let root = std::env::temp_dir().join(format!(
-            "tilo-passwords-import-store-{}",
-            std::process::id()
-        ));
-        let csv_path =
-            std::env::temp_dir().join(format!("tilo-passwords-import-{}.csv", std::process::id()));
-        let mut selected = std::fs::File::create(&csv_path).unwrap();
-        selected
-            .write_all(
-                b"name,url,username,password\nExample,https://example.com,ada,first-secret\n",
-            )
-            .unwrap();
-        drop(selected);
-        let selected = std::fs::File::open(&csv_path).unwrap();
-        let mut app = PasswordsSurface::demo(ShowcaseMode::Vault);
-        app.model = Some(crate::PasswordsModel::open_in(&root));
-        let (services, recorder) = ui::host::HostServices::recording();
-        recorder.respond_to_open_file(ui::portal::OpenFileOutcome::Opened(
-            ui::portal::OpenedFile::new(selected, "passwords.csv"),
-        ));
-        ui::host::scoped(&services, || app.request_import());
-        assert_eq!(recorder.pick_requests()[0].title(), "Import passwords");
-        for _ in 0..100 {
-            app.poll_transfers();
-            if app.transfer_dialog.is_some() {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
-        assert!(
-            matches!(app.transfer_dialog, Some(TransferDialog::ImportPreview { ref rows, conflicts: 0 }) if rows.len() == 1)
-        );
-        app.apply_import();
-        assert_eq!(app.model.as_ref().unwrap().items().len(), 1);
-
-        let selected = std::fs::File::open(&csv_path).unwrap();
-        recorder.respond_to_open_file(ui::portal::OpenFileOutcome::Opened(
-            ui::portal::OpenedFile::new(selected, "passwords.csv"),
-        ));
-        ui::host::scoped(&services, || app.request_import());
-        for _ in 0..100 {
-            app.poll_transfers();
-            if app.transfer_dialog.is_some() {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
-        assert!(matches!(
-            app.transfer_dialog,
-            Some(TransferDialog::ImportPreview { conflicts: 1, .. })
-        ));
-        app.apply_import();
-        assert_eq!(app.model.as_ref().unwrap().items().len(), 1);
-        let _ = std::fs::remove_file(csv_path);
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn plaintext_export_requires_acknowledgement_and_round_trips() {
-        let root = std::env::temp_dir().join(format!(
-            "tilo-passwords-export-store-{}",
-            std::process::id()
-        ));
-        let out =
-            std::env::temp_dir().join(format!("tilo-passwords-export-{}", std::process::id()));
-        let mut app = PasswordsSurface::demo(ShowcaseMode::Vault);
-        app.model = Some(crate::PasswordsModel::open_in(&root));
-        app.model
-            .as_mut()
-            .unwrap()
-            .save_login(
-                "Example",
-                "ada",
-                "export-secret",
-                Some("https://example.com"),
-            )
-            .unwrap();
-        app.request_export_confirmation();
-        app.begin_plaintext_export();
-        assert!(app.export_portal.is_none());
-        if let Some(TransferDialog::ExportPlaintext { acknowledged }) = &mut app.transfer_dialog {
-            *acknowledged = true;
-        }
-        let (services, recorder) = ui::host::HostServices::recording();
-        recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(out.clone()));
-        ui::host::scoped(&services, || app.begin_plaintext_export());
-        assert_eq!(
-            recorder.pick_requests()[0].title(),
-            "Export passwords as CSV"
-        );
-        app.poll_transfers();
-        let written = out.with_extension("csv");
-        let rows =
-            crate::transfer::parse_browser_csv(std::fs::File::open(&written).unwrap()).unwrap();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].password.as_str(), "export-secret");
-        let _ = std::fs::remove_file(written);
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn encrypted_backup_and_restore_flow_preserves_complete_items() {
-        let base = std::env::temp_dir().join(format!(
-            "tilo-passwords-backup-flow-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        let source_root = base.join("source");
-        let restored_root = base.join("restored");
-        let destination = base.join("portable-vault");
-        std::fs::create_dir_all(&base).unwrap();
-        let mut source = crate::PasswordsModel::open_in(&source_root);
-        let mut item = SecretItem::login("Studio", "ada", "private-token");
-        item.fields.insert("workspace".into(), "design".into());
-        item.tags.extend(["work".into(), "favorite".into()]);
-        source.save_item(&mut item).unwrap();
-
-        let mut app = PasswordsSurface::demo(ShowcaseMode::Vault);
-        app.model = Some(source);
-        app.request_backup();
-        app.backup_password.set_text("a memorable backup password");
-        app.backup_confirmation
-            .set_text("a memorable backup password");
-        assert!(app.backup_form_error(true).is_none());
-        let (services, recorder) = ui::host::HostServices::recording();
-        recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(destination.clone()));
-        ui::host::scoped(&services, || app.begin_encrypted_backup());
-        assert_eq!(
-            recorder.pick_requests()[0].title(),
-            "Back up password vault"
-        );
-        app.poll_transfers();
-        let backup_path = destination.with_extension("tilopw");
-        assert!(std::fs::metadata(&backup_path).unwrap().len() > 32);
-        #[cfg(unix)]
+        eprintln!("phase pending_transfer_keeps_host_polling_and_reveal_has_an_expiry_deadline");
         {
-            use std::os::unix::fs::PermissionsExt;
+            let mut app = PasswordsSurface::demo(ShowcaseMode::Vault);
+            let (tx, rx) = std::sync::mpsc::channel();
+            app.export_portal = Some(rx);
+            let first = app.next_wake_deadline().unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            assert_eq!(app.next_wake_deadline(), Some(first));
+            tx.send(ui::portal::PortalOutcome::Cancelled).unwrap();
+            app.sync(&mut AutoCommit::new(), &automerge::ROOT);
+            assert!(app.next_wake_deadline().is_none());
+            let deadline = std::time::Instant::now();
+            app.revealed = Some((
+                SecretId("test".into()),
+                Zeroizing::new("fixture secret".into()),
+                deadline,
+            ));
+            assert_eq!(app.next_wake_deadline(), Some(deadline));
+            app.sync(&mut AutoCommit::new(), &automerge::ROOT);
+            assert!(app.revealed.is_none());
+            assert!(app.next_wake_deadline().is_none());
+        }
+
+        eprintln!("phase secret_row_has_distinct_copy_and_reveal_targets");
+        {
+            let _clipboard = clipboard_fixture(true);
+            let root = std::env::temp_dir().join(format!(
+                "tilo-passwords-secret-actions-{}-{:?}",
+                std::process::id(),
+                std::thread::current().id()
+            ));
+            let mut model = crate::PasswordsModel::open_in(&root);
+            let mut item = SecretItem::login("Account", "ada", "private-value");
+            model.save_item(&mut item).unwrap();
+            let mut app = PasswordsSurface::demo(ShowcaseMode::Vault);
+            app.model = Some(model);
+            app.refresh();
+
+            app.activate_detail_row_at(1, 880.0, 1_000.0);
+            assert!(app.status.starts_with("Copied password"));
+            assert_eq!(ui::clipboard_paste().as_deref(), Some("private-value"));
+            assert!(
+                app.revealed.is_none(),
+                "copying must not disclose the value"
+            );
+
+            app.activate_detail_row_at(1, 960.0, 1_000.0);
+            assert!(
+                app.revealed.is_some(),
+                "the separate eye target reveals temporarily"
+            );
+            let _ = std::fs::remove_dir_all(root);
+        }
+
+        eprintln!(
+            "phase failed_copy_reports_error_without_claiming_or_replacing_clipboard_contents"
+        );
+        {
+            let _clipboard = clipboard_fixture(false);
+            let root = std::env::temp_dir().join(format!(
+                "tilo-passwords-copy-failure-{}-{:?}",
+                std::process::id(),
+                std::thread::current().id()
+            ));
+            let mut model = crate::PasswordsModel::open_in(&root);
+            let mut item = SecretItem::login("Account", "ada", "private-value");
+            item.add_origin("https://example.invalid").unwrap();
+            model.save_item(&mut item).unwrap();
+            let mut app = PasswordsSurface::demo(ShowcaseMode::Vault);
+            app.model = Some(model);
+            app.refresh();
+            for copy in [
+                PasswordsSurface::copy_selected,
+                PasswordsSurface::copy_identity_selected,
+                PasswordsSurface::copy_origin_selected,
+            ] {
+                copy(&mut app);
+                assert_eq!(
+                    app.status,
+                    "Could not copy to the system clipboard. Try again."
+                );
+                assert_eq!(ui::clipboard_paste().as_deref(), Some("existing clipboard"));
+                assert!(app.revealed.is_none());
+            }
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
+    #[test]
+    fn editor_saves_edits_and_discards_drafts_against_the_real_store() {
+        eprintln!("phase polished_surface_saves_searches_and_updates_real_store");
+        {
+            let _clipboard = clipboard_fixture(true);
+            let root = std::env::temp_dir().join(format!(
+                "tilo-passwords-surface-{}-{:?}",
+                std::process::id(),
+                std::thread::current().id()
+            ));
+            let mut app = PasswordsSurface::demo(ShowcaseMode::Vault);
+            app.model = Some(crate::PasswordsModel::open_in(&root));
+            app.items.clear();
+            app.begin_add();
+            app.draft_title = "Example account".into();
+            app.draft_username = "ada@example.com".into();
+            app.draft_origin = "https://example.com, https://login.example.com".into();
+            app.draft_password = Zeroizing::new("correct horse battery staple".into());
+            app.draft_notes = Zeroizing::new("recovery details".into());
+            app.sync_editor_inputs();
+            app.save_draft();
+            assert_eq!(app.mode, ShowcaseMode::Vault);
+            assert!(app.draft_password.is_empty());
+            assert!(app.draft_notes.is_empty());
+            assert!(app.editor_inputs.password.value().is_empty());
+            assert!(app.editor_inputs.notes.value().is_empty());
+            assert_eq!(app.items.len(), 1);
+            assert_eq!(app.items[0].title, "Example account");
+            assert_eq!(app.items[0].origins.len(), 2);
+            assert!(app.items[0].password.is_empty());
+
+            app.query = "missing".into();
+            app.refresh();
+            assert!(app.items.is_empty());
+            app.query = "example".into();
+            app.refresh();
+            assert_eq!(app.items.len(), 1);
+
+            app.begin_edit();
+            assert!(app.draft_origin.contains("https://example.com"));
+            assert!(app.draft_origin.contains("https://login.example.com"));
+            app.draft_title = "Renamed account".into();
+            app.save_draft();
+            assert_eq!(app.items[0].title, "Renamed account");
+            assert_eq!(app.items[0].origins.len(), 2);
+            app.copy_origin_selected();
+            let copied = ui::clipboard_paste().unwrap();
+            assert!(copied.contains("https://example.com"));
+            assert!(copied.contains("https://login.example.com"));
+            let _ = std::fs::remove_dir_all(root);
+        }
+
+        eprintln!("phase cancelling_discards_sensitive_shared_input_buffers");
+        {
+            let mut app = PasswordsSurface::demo(ShowcaseMode::Vault);
+            app.begin_add();
+            app.draft_password = Zeroizing::new("unsaved password".into());
+            app.draft_notes = Zeroizing::new("unsaved private note".into());
+            app.sync_editor_inputs();
+
+            app.cancel_edit();
+
+            assert_eq!(app.mode, ShowcaseMode::Vault);
+            assert!(app.draft_password.is_empty());
+            assert!(app.draft_notes.is_empty());
+            assert!(app.editor_inputs.password.value().is_empty());
+            assert!(app.editor_inputs.notes.value().is_empty());
+        }
+
+        eprintln!("phase editing_preserves_app_specific_secret_fields");
+        {
+            let root = std::env::temp_dir().join(format!(
+                "tilo-passwords-custom-fields-{}-{:?}",
+                std::process::id(),
+                std::thread::current().id()
+            ));
+            let mut model = crate::PasswordsModel::open_in(&root);
+            let mut item = SecretItem::login("Deployment", "ada", "token");
+            item.kind = SecretItemKind::Other;
+            item.fields.insert("client-id".into(), "app-42".into());
+            item.fields.insert("tenant".into(), "northstar".into());
+            item.tags.extend(["favorite".into(), "work".into()]);
+            let id = model.save_item(&mut item).unwrap();
+
+            let mut app = PasswordsSurface::demo(ShowcaseMode::Vault);
+            app.model = Some(model);
+            app.refresh();
+            app.begin_edit();
+            assert!(app.draft_custom_fields.contains("client-id = app-42"));
+            assert_eq!(app.draft_tags, "work");
+            app.draft_title = "Production deployment".into();
+            app.draft_custom_fields =
+                Zeroizing::new("client-id = app-43\nenvironment = production".into());
+            app.draft_tags = "work, infrastructure".into();
+            app.save_draft();
+
+            let stored = crate::PasswordsModel::open_in(&root)
+                .items()
+                .into_iter()
+                .find(|candidate| candidate.id == id)
+                .unwrap();
             assert_eq!(
-                std::fs::metadata(&backup_path)
+                stored.fields.get("client-id").map(String::as_str),
+                Some("app-43")
+            );
+            assert_eq!(
+                stored.fields.get("environment").map(String::as_str),
+                Some("production")
+            );
+            assert!(!stored.fields.contains_key("tenant"));
+            assert!(stored.tags.contains("favorite"));
+            assert!(stored.tags.contains("work"));
+            assert!(stored.tags.contains("infrastructure"));
+            let _ = std::fs::remove_dir_all(root);
+        }
+
+        eprintln!("phase custom_field_parser_is_helpful_and_rejects_ambiguous_rows");
+        {
+            assert_eq!(
+                PasswordsSurface::parse_custom_fields("Account = Ada\nRegion: eu-west")
                     .unwrap()
-                    .permissions()
-                    .mode()
-                    & 0o777,
-                0o600
+                    .len(),
+                2
+            );
+            assert!(PasswordsSurface::parse_custom_fields("missing separator").is_err());
+            assert!(PasswordsSurface::parse_custom_fields("Token = one\ntoken = two").is_err());
+            assert!(PasswordsSurface::parse_custom_fields("network = reserved").is_err());
+            let escaped = PasswordsSurface::escape_custom_value("first\nsecond\\third");
+            assert_eq!(escaped, "first\\nsecond\\\\third");
+            assert_eq!(
+                PasswordsSurface::unescape_custom_value(&escaped).unwrap(),
+                "first\nsecond\\third"
             );
         }
-        assert!(app.backup_password.value().is_empty());
+    }
 
-        let mut restored = PasswordsSurface::demo(ShowcaseMode::Vault);
-        restored.model = Some(crate::PasswordsModel::open_in(&restored_root));
-        recorder.respond_to_open_file(ui::portal::OpenFileOutcome::Opened(
-            ui::portal::OpenedFile::new(
-                std::fs::File::open(&backup_path).unwrap(),
-                "portable-vault.tilopw",
-            ),
-        ));
-        ui::host::scoped(&services, || restored.request_restore());
-        assert_eq!(
-            recorder.pick_requests()[1].title(),
-            "Restore password vault"
-        );
-        restored.poll_transfers();
-        assert!(matches!(
-            restored.transfer_dialog,
-            Some(TransferDialog::Restore { .. })
-        ));
-        restored
-            .backup_password
-            .set_text("a memorable backup password");
-        restored.apply_encrypted_restore();
-        let items = restored.model.as_ref().unwrap().items();
-        assert_eq!(items.len(), 1);
-        assert_eq!(
-            items[0].fields.get("workspace").map(String::as_str),
-            Some("design")
-        );
-        assert!(items[0].tags.contains("favorite"));
-        assert!(restored.backup_password.value().is_empty());
-        let _ = std::fs::remove_dir_all(base);
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
+    #[test]
+    fn import_export_and_backup_flows_round_trip_through_portals() {
+        eprintln!("phase portal_descriptor_import_previews_conflicts_before_writing");
+        {
+            use std::io::Write;
+            let root = std::env::temp_dir().join(format!(
+                "tilo-passwords-import-store-{}",
+                std::process::id()
+            ));
+            let csv_path = std::env::temp_dir()
+                .join(format!("tilo-passwords-import-{}.csv", std::process::id()));
+            let mut selected = std::fs::File::create(&csv_path).unwrap();
+            selected
+                .write_all(
+                    b"name,url,username,password\nExample,https://example.com,ada,first-secret\n",
+                )
+                .unwrap();
+            drop(selected);
+            let selected = std::fs::File::open(&csv_path).unwrap();
+            let mut app = PasswordsSurface::demo(ShowcaseMode::Vault);
+            app.model = Some(crate::PasswordsModel::open_in(&root));
+            let (services, recorder) = ui::host::HostServices::recording();
+            recorder.respond_to_open_file(ui::portal::OpenFileOutcome::Opened(
+                ui::portal::OpenedFile::new(selected, "passwords.csv"),
+            ));
+            ui::host::scoped(&services, || app.request_import());
+            assert_eq!(recorder.pick_requests()[0].title(), "Import passwords");
+            for _ in 0..100 {
+                app.poll_transfers();
+                if app.transfer_dialog.is_some() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            assert!(
+                matches!(app.transfer_dialog, Some(TransferDialog::ImportPreview { ref rows, conflicts: 0 }) if rows.len() == 1)
+            );
+            app.apply_import();
+            assert_eq!(app.model.as_ref().unwrap().items().len(), 1);
+
+            let selected = std::fs::File::open(&csv_path).unwrap();
+            recorder.respond_to_open_file(ui::portal::OpenFileOutcome::Opened(
+                ui::portal::OpenedFile::new(selected, "passwords.csv"),
+            ));
+            ui::host::scoped(&services, || app.request_import());
+            for _ in 0..100 {
+                app.poll_transfers();
+                if app.transfer_dialog.is_some() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            assert!(matches!(
+                app.transfer_dialog,
+                Some(TransferDialog::ImportPreview { conflicts: 1, .. })
+            ));
+            app.apply_import();
+            assert_eq!(app.model.as_ref().unwrap().items().len(), 1);
+            let _ = std::fs::remove_file(csv_path);
+            let _ = std::fs::remove_dir_all(root);
+        }
+
+        eprintln!("phase plaintext_export_requires_acknowledgement_and_round_trips");
+        {
+            let root = std::env::temp_dir().join(format!(
+                "tilo-passwords-export-store-{}",
+                std::process::id()
+            ));
+            let out =
+                std::env::temp_dir().join(format!("tilo-passwords-export-{}", std::process::id()));
+            let mut app = PasswordsSurface::demo(ShowcaseMode::Vault);
+            app.model = Some(crate::PasswordsModel::open_in(&root));
+            app.model
+                .as_mut()
+                .unwrap()
+                .save_login(
+                    "Example",
+                    "ada",
+                    "export-secret",
+                    Some("https://example.com"),
+                )
+                .unwrap();
+            app.request_export_confirmation();
+            app.begin_plaintext_export();
+            assert!(app.export_portal.is_none());
+            if let Some(TransferDialog::ExportPlaintext { acknowledged }) = &mut app.transfer_dialog
+            {
+                *acknowledged = true;
+            }
+            let (services, recorder) = ui::host::HostServices::recording();
+            recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(out.clone()));
+            ui::host::scoped(&services, || app.begin_plaintext_export());
+            assert_eq!(
+                recorder.pick_requests()[0].title(),
+                "Export passwords as CSV"
+            );
+            app.poll_transfers();
+            let written = out.with_extension("csv");
+            let rows =
+                crate::transfer::parse_browser_csv(std::fs::File::open(&written).unwrap()).unwrap();
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].password.as_str(), "export-secret");
+            let _ = std::fs::remove_file(written);
+            let _ = std::fs::remove_dir_all(root);
+        }
+
+        eprintln!("phase encrypted_backup_and_restore_flow_preserves_complete_items");
+        {
+            let base = std::env::temp_dir().join(format!(
+                "tilo-passwords-backup-flow-{}-{:?}",
+                std::process::id(),
+                std::thread::current().id()
+            ));
+            let source_root = base.join("source");
+            let restored_root = base.join("restored");
+            let destination = base.join("portable-vault");
+            std::fs::create_dir_all(&base).unwrap();
+            let mut source = crate::PasswordsModel::open_in(&source_root);
+            let mut item = SecretItem::login("Studio", "ada", "private-token");
+            item.fields.insert("workspace".into(), "design".into());
+            item.tags.extend(["work".into(), "favorite".into()]);
+            source.save_item(&mut item).unwrap();
+
+            let mut app = PasswordsSurface::demo(ShowcaseMode::Vault);
+            app.model = Some(source);
+            app.request_backup();
+            app.backup_password.set_text("a memorable backup password");
+            app.backup_confirmation
+                .set_text("a memorable backup password");
+            assert!(app.backup_form_error(true).is_none());
+            let (services, recorder) = ui::host::HostServices::recording();
+            recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(destination.clone()));
+            ui::host::scoped(&services, || app.begin_encrypted_backup());
+            assert_eq!(
+                recorder.pick_requests()[0].title(),
+                "Back up password vault"
+            );
+            app.poll_transfers();
+            let backup_path = destination.with_extension("tilopw");
+            assert!(std::fs::metadata(&backup_path).unwrap().len() > 32);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                assert_eq!(
+                    std::fs::metadata(&backup_path)
+                        .unwrap()
+                        .permissions()
+                        .mode()
+                        & 0o777,
+                    0o600
+                );
+            }
+            assert!(app.backup_password.value().is_empty());
+
+            let mut restored = PasswordsSurface::demo(ShowcaseMode::Vault);
+            restored.model = Some(crate::PasswordsModel::open_in(&restored_root));
+            recorder.respond_to_open_file(ui::portal::OpenFileOutcome::Opened(
+                ui::portal::OpenedFile::new(
+                    std::fs::File::open(&backup_path).unwrap(),
+                    "portable-vault.tilopw",
+                ),
+            ));
+            ui::host::scoped(&services, || restored.request_restore());
+            assert_eq!(
+                recorder.pick_requests()[1].title(),
+                "Restore password vault"
+            );
+            restored.poll_transfers();
+            assert!(matches!(
+                restored.transfer_dialog,
+                Some(TransferDialog::Restore { .. })
+            ));
+            restored
+                .backup_password
+                .set_text("a memorable backup password");
+            restored.apply_encrypted_restore();
+            let items = restored.model.as_ref().unwrap().items();
+            assert_eq!(items.len(), 1);
+            assert_eq!(
+                items[0].fields.get("workspace").map(String::as_str),
+                Some("design")
+            );
+            assert!(items[0].tags.contains("favorite"));
+            assert!(restored.backup_password.value().is_empty());
+            let _ = std::fs::remove_dir_all(base);
+        }
     }
 }

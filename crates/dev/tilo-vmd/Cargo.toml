@@ -1,4 +1,5 @@
 [package]
+autotests = false
 name = "tilo-vmd"
 version = "0.1.0"
 edition = "2024"
@@ -29,9 +30,14 @@ tar.workspace = true
 thiserror.workspace = true
 tilo-vm-protocol = { path = "../tilo-vm-protocol" }
 uuid.workspace = true
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tempfile.workspace = true
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
 
 [lints]
 workspace = true

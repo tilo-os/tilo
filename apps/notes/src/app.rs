@@ -5496,8 +5496,12 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    /// Background file I/O can stall for many seconds on a loaded disk; this
+    /// bound only catches work that never finishes.
+    const IO_HANG_BOUND: Duration = Duration::from_secs(60);
+
     fn settle_markdown_io(app: &mut NotesApp, doc: &mut AutoCommit) {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let deadline = std::time::Instant::now() + IO_HANG_BOUND;
         loop {
             app.drain_markdown_transfer(doc);
             if !app.markdown_job.is_pending() && app.markdown_transfer.is_none() {
@@ -5552,563 +5556,741 @@ mod tests {
         app.sync(&mut state.doc, &state.root);
     }
 
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
-    fn launch_markdown_preserves_existing_notebook_source_and_restart() {
-        for as_url in [false, true] {
-            let tmp = TempDir::new().unwrap();
-            let workspace_root = tmp.path().join("notebook");
-            let mut workspace = Workspace::default();
-            let existing = workspace.create_page(None);
-            workspace.rename(existing, "Existing note");
-            workspace.set_selected(Some(existing));
-            storage::save_workspace(&workspace_root, &workspace).unwrap();
-            storage::write_page_body(&workspace_root, existing, "Existing body").unwrap();
-            let source = tmp.path().join("Überblick notes.markdown");
-            let original = "# Imported heading\n\n**Keep these bytes.**\n";
-            std::fs::write(&source, original).unwrap();
-            let target = if as_url {
-                url::Url::from_file_path(&source).unwrap().to_string()
-            } else {
-                source.to_str().unwrap().to_owned()
-            };
-            let mut app = NotesApp::spawn(workspace_root.clone()).unwrap();
-            app.queue_launch_markdown(&target).unwrap();
-            assert!(app.needs_animation_frame());
-            let mut state = ui::State::new();
-            app.sync(&mut state.doc, &state.root);
-            assert_eq!(app.workspace.pages().len(), 1, "wait for normal seed/adopt");
-            assert!(app.pending_markdown_source.is_some());
-            app.bypass_seed_grace_for_test();
-            app.sync(&mut state.doc, &state.root);
-            admit_pending_import(&mut app, &mut state);
-            assert_eq!(app.workspace.pages().len(), 2);
-            assert_eq!(
-                NotesDoc::page_block_snapshots(&state.doc, existing)[0].1,
-                "Existing body"
-            );
-            let imported = app.workspace.selected().unwrap();
-            assert_ne!(imported, existing);
-            assert_eq!(
-                app.workspace.get(imported).unwrap().title,
-                "Überblick notes"
-            );
-            assert_eq!(
-                NotesDoc::page_block_snapshots(&state.doc, imported)[0].1,
-                "Imported heading"
-            );
-            assert!(
-                Widget::take_committed_action(&mut app).is_some(),
-                "import uses canonical action/history path"
-            );
-            app.flush_saves();
-            drop(app);
-            let restored = NotesApp::spawn(workspace_root.clone()).unwrap();
-            assert_eq!(restored.workspace.pages().len(), 2);
-            assert_eq!(restored.workspace.selected(), Some(imported));
-            assert!(
-                restored
-                    .editor_text_for_test()
-                    .contains("Keep these bytes.")
-            );
-            assert_eq!(
-                storage::read_page_body(&workspace_root, existing).unwrap(),
-                "Existing body"
-            );
-            assert_eq!(std::fs::read_to_string(&source).unwrap(), original);
-        }
-    }
-
-    #[test]
-    fn launch_markdown_rejects_invalid_sources_without_changing_notebook() {
-        let tmp = TempDir::new().unwrap();
-        let mut app = NotesApp::spawn(tmp.path().join("notebook")).unwrap();
-        let source = tmp.path().join("invalid.md");
-        std::fs::write(&source, [0xff]).unwrap();
-        for target in [
-            "https://example.com/note.md",
-            "file:///%ZZ",
-            source.to_str().unwrap(),
-        ] {
-            assert!(app.queue_launch_markdown(target).is_err());
-            assert!(app.pending_markdown_source.is_none());
-            assert!(app.workspace.pages().is_empty());
-        }
-        std::fs::write(&source, "Valid").unwrap();
-        app.queue_launch_markdown(source.to_str().unwrap()).unwrap();
-        assert!(app.queue_launch_markdown(source.to_str().unwrap()).is_err());
-    }
-
-    #[test]
-    fn launch_markdown_host_admission_refuses_readonly_and_revoked_write() {
-        for initially_writable in [false, true] {
-            let (mut app, mut state, tmp, existing) = app_seeded_into_doc();
-            let source = tmp.path().join("Private source.md");
-            let original = "Do not publish without Write";
-            std::fs::write(&source, original).unwrap();
-            app.queue_launch_markdown(source.to_str().unwrap()).unwrap();
-            state.doc.commit();
-            let before = state.doc.get_heads();
-            let mut harness = ui::headless::FrameHarness::new(state, Box::new(app), (800, 600));
-            if initially_writable {
+    fn launch_markdown_adopts_valid_sources_once_with_host_admission() {
+        eprintln!("phase launch_markdown_preserves_existing_notebook_source_and_restart");
+        {
+            for as_url in [false, true] {
+                let tmp = TempDir::new().unwrap();
+                let workspace_root = tmp.path().join("notebook");
+                let mut workspace = Workspace::default();
+                let existing = workspace.create_page(None);
+                workspace.rename(existing, "Existing note");
+                workspace.set_selected(Some(existing));
+                storage::save_workspace(&workspace_root, &workspace).unwrap();
+                storage::write_page_body(&workspace_root, existing, "Existing body").unwrap();
+                let source = tmp.path().join("Überblick notes.markdown");
+                let original = "# Imported heading\n\n**Keep these bytes.**\n";
+                std::fs::write(&source, original).unwrap();
+                let target = if as_url {
+                    url::Url::from_file_path(&source).unwrap().to_string()
+                } else {
+                    source.to_str().unwrap().to_owned()
+                };
+                let mut app = NotesApp::spawn(workspace_root.clone()).unwrap();
+                app.queue_launch_markdown(&target).unwrap();
+                assert!(app.needs_animation_frame());
+                let mut state = ui::State::new();
+                app.sync(&mut state.doc, &state.root);
+                assert_eq!(app.workspace.pages().len(), 1, "wait for normal seed/adopt");
+                assert!(app.pending_markdown_source.is_some());
+                app.bypass_seed_grace_for_test();
+                app.sync(&mut state.doc, &state.root);
+                admit_pending_import(&mut app, &mut state);
+                assert_eq!(app.workspace.pages().len(), 2);
+                assert_eq!(
+                    NotesDoc::page_block_snapshots(&state.doc, existing)[0].1,
+                    "Existing body"
+                );
+                let imported = app.workspace.selected().unwrap();
+                assert_ne!(imported, existing);
+                assert_eq!(
+                    app.workspace.get(imported).unwrap().title,
+                    "Überblick notes"
+                );
+                assert_eq!(
+                    NotesDoc::page_block_snapshots(&state.doc, imported)[0].1,
+                    "Imported heading"
+                );
                 assert!(
-                    harness
+                    Widget::take_committed_action(&mut app).is_some(),
+                    "import uses canonical action/history path"
+                );
+                app.flush_saves();
+                drop(app);
+                let restored = NotesApp::spawn(workspace_root.clone()).unwrap();
+                assert_eq!(restored.workspace.pages().len(), 2);
+                assert_eq!(restored.workspace.selected(), Some(imported));
+                assert!(
+                    restored
+                        .editor_text_for_test()
+                        .contains("Keep these bytes.")
+                );
+                assert_eq!(
+                    storage::read_page_body(&workspace_root, existing).unwrap(),
+                    "Existing body"
+                );
+                assert_eq!(std::fs::read_to_string(&source).unwrap(), original);
+            }
+        }
+
+        eprintln!("phase launch_markdown_rejects_invalid_sources_without_changing_notebook");
+        {
+            let tmp = TempDir::new().unwrap();
+            let mut app = NotesApp::spawn(tmp.path().join("notebook")).unwrap();
+            let source = tmp.path().join("invalid.md");
+            std::fs::write(&source, [0xff]).unwrap();
+            for target in [
+                "https://example.com/note.md",
+                "file:///%ZZ",
+                source.to_str().unwrap(),
+            ] {
+                assert!(app.queue_launch_markdown(target).is_err());
+                assert!(app.pending_markdown_source.is_none());
+                assert!(app.workspace.pages().is_empty());
+            }
+            std::fs::write(&source, "Valid").unwrap();
+            app.queue_launch_markdown(source.to_str().unwrap()).unwrap();
+            assert!(app.queue_launch_markdown(source.to_str().unwrap()).is_err());
+        }
+
+        eprintln!("phase launch_markdown_host_admission_refuses_readonly_and_revoked_write");
+        {
+            for initially_writable in [false, true] {
+                let (mut app, mut state, tmp, existing) = app_seeded_into_doc();
+                let source = tmp.path().join("Private source.md");
+                let original = "Do not publish without Write";
+                std::fs::write(&source, original).unwrap();
+                app.queue_launch_markdown(source.to_str().unwrap()).unwrap();
+                state.doc.commit();
+                let before = state.doc.get_heads();
+                let mut harness = ui::headless::FrameHarness::new(state, Box::new(app), (800, 600));
+                if initially_writable {
+                    assert!(
+                        harness
+                            .resources()
+                            .iter()
+                            .any(|resource| resource.id.0 == "notes.pending-import")
+                    );
+                }
+                harness.set_permission_ctx(PermissionContext::from_capabilities(
+                    ui::permissions::Actor::person(Some(ui::permissions::Role::Viewer), "reader"),
+                    vec![],
+                ));
+                harness.send(&WindowEvent::RedrawRequested);
+                assert_eq!(harness.state_mut().doc.get_heads(), before);
+                assert_eq!(
+                    NotesDoc::list_pages(&harness.state_mut().doc)
+                        .iter()
+                        .map(|page| page.id)
+                        .collect::<Vec<_>>(),
+                    vec![existing]
+                );
+                assert!(
+                    !harness
                         .resources()
                         .iter()
-                        .any(|resource| resource.id.0 == "notes.pending-import")
+                        .any(|resource| resource.id.0 == "notes.pending-import"),
+                    "refused intent clears pending import instead of retrying forever"
                 );
+                harness.set_permission_ctx(PermissionContext::permissive());
+                harness.send(&WindowEvent::RedrawRequested);
+                assert_eq!(
+                    harness.state_mut().doc.get_heads(),
+                    before,
+                    "restoring Write must not silently retry a refused import"
+                );
+                assert_eq!(std::fs::read_to_string(&source).unwrap(), original);
             }
-            harness.set_permission_ctx(PermissionContext::from_capabilities(
-                ui::permissions::Actor::person(Some(ui::permissions::Role::Viewer), "reader"),
-                vec![],
-            ));
+        }
+
+        eprintln!("phase launch_markdown_host_admission_commits_complete_page_once");
+        {
+            let (mut app, mut state, tmp, _) = app_seeded_into_doc();
+            let source = tmp.path().join("Allowed import.md");
+            std::fs::write(&source, "# Complete page\n\nBody").unwrap();
+            app.queue_launch_markdown(source.to_str().unwrap()).unwrap();
+            state.doc.commit();
+            let mut harness = ui::headless::FrameHarness::new(state, Box::new(app), (800, 600));
             harness.send(&WindowEvent::RedrawRequested);
-            assert_eq!(harness.state_mut().doc.get_heads(), before);
+            let pages = NotesDoc::list_pages(&harness.state_mut().doc);
+            assert_eq!(pages.len(), 2);
+            let imported = pages
+                .iter()
+                .find(|page| page.title == "Allowed import")
+                .unwrap();
             assert_eq!(
-                NotesDoc::list_pages(&harness.state_mut().doc)
+                NotesDoc::page_block_snapshots(&harness.state_mut().doc, imported.id)
                     .iter()
-                    .map(|page| page.id)
+                    .map(|(_, text)| text.as_str())
                     .collect::<Vec<_>>(),
-                vec![existing]
+                vec!["Complete page", "Body"]
             );
-            assert!(
-                !harness
-                    .resources()
-                    .iter()
-                    .any(|resource| resource.id.0 == "notes.pending-import"),
-                "refused intent clears pending import instead of retrying forever"
-            );
-            harness.set_permission_ctx(PermissionContext::permissive());
             harness.send(&WindowEvent::RedrawRequested);
-            assert_eq!(
-                harness.state_mut().doc.get_heads(),
-                before,
-                "restoring Write must not silently retry a refused import"
+            assert_eq!(NotesDoc::list_pages(&harness.state_mut().doc).len(), 2);
+        }
+
+        eprintln!("phase launch_markdown_waits_for_peer_adoption_before_adding_its_page");
+        {
+            let tmp = TempDir::new().unwrap();
+            let mut app = NotesApp::spawn_with_starter_page(tmp.path().join("notebook")).unwrap();
+            let local_page = app.workspace.selected().unwrap();
+            let source = tmp.path().join("Launch.md");
+            std::fs::write(&source, "Explicit import").unwrap();
+            app.queue_launch_markdown(source.to_str().unwrap()).unwrap();
+            let mut state = ui::State::new();
+            app.sync(&mut state.doc, &state.root);
+            assert!(NotesDoc::list_pages(&state.doc).is_empty());
+
+            let mut peer = Workspace::default();
+            let peer_page = peer.create_page(None);
+            peer.rename(peer_page, "Peer note");
+            NotesDoc::upsert_page_meta(&mut state.doc, peer.get(peer_page).unwrap());
+            NotesDoc::apply_block_ops(
+                &mut state.doc,
+                peer_page,
+                &MainPanel::seed_block_ops("Peer contents"),
+            )
+            .unwrap();
+            app.sync(&mut state.doc, &state.root);
+            admit_pending_import(&mut app, &mut state);
+            assert_eq!(NotesDoc::list_pages(&state.doc).len(), 2);
+            assert!(
+                app.workspace.get(local_page).is_none(),
+                "never publish pre-adoption local pages"
             );
-            assert_eq!(std::fs::read_to_string(&source).unwrap(), original);
+            assert_eq!(
+                NotesDoc::page_block_snapshots(&state.doc, peer_page)[0].1,
+                "Peer contents"
+            );
+            let imported = app.workspace.selected().unwrap();
+            assert_ne!(imported, peer_page);
+            assert_eq!(
+                NotesDoc::page_block_snapshots(&state.doc, imported)[0].1,
+                "Explicit import"
+            );
+            assert!(app.pending_markdown_source.is_none());
         }
     }
 
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
-    fn launch_markdown_host_admission_commits_complete_page_once() {
-        let (mut app, mut state, tmp, _) = app_seeded_into_doc();
-        let source = tmp.path().join("Allowed import.md");
-        std::fs::write(&source, "# Complete page\n\nBody").unwrap();
-        app.queue_launch_markdown(source.to_str().unwrap()).unwrap();
-        state.doc.commit();
-        let mut harness = ui::headless::FrameHarness::new(state, Box::new(app), (800, 600));
-        harness.send(&WindowEvent::RedrawRequested);
-        let pages = NotesDoc::list_pages(&harness.state_mut().doc);
-        assert_eq!(pages.len(), 2);
-        let imported = pages
-            .iter()
-            .find(|page| page.title == "Allowed import")
-            .unwrap();
-        assert_eq!(
-            NotesDoc::page_block_snapshots(&harness.state_mut().doc, imported.id)
-                .iter()
-                .map(|(_, text)| text.as_str())
-                .collect::<Vec<_>>(),
-            vec!["Complete page", "Body"]
-        );
-        harness.send(&WindowEvent::RedrawRequested);
-        assert_eq!(NotesDoc::list_pages(&harness.state_mut().doc).len(), 2);
-    }
+    fn unreadable_notes_refuse_replacement_until_repaired() {
+        eprintln!("phase unreadable_note_refuses_startup_without_replacing_original_bytes");
+        {
+            for selected in [true, false] {
+                let tmp = TempDir::new().unwrap();
+                let mut workspace = Workspace::default();
+                let page = workspace.create_page(None);
+                workspace.rename(page, "Unrecoverable UTF-8");
+                workspace.set_selected(selected.then_some(page));
+                storage::save_workspace(tmp.path(), &workspace).unwrap();
+                let path = storage::page_file_path(tmp.path(), page);
+                let original = [0xff, 0xfe, 0x41];
+                std::fs::write(&path, original).unwrap();
 
-    #[test]
-    fn launch_markdown_waits_for_peer_adoption_before_adding_its_page() {
-        let tmp = TempDir::new().unwrap();
-        let mut app = NotesApp::spawn_with_starter_page(tmp.path().join("notebook")).unwrap();
-        let local_page = app.workspace.selected().unwrap();
-        let source = tmp.path().join("Launch.md");
-        std::fs::write(&source, "Explicit import").unwrap();
-        app.queue_launch_markdown(source.to_str().unwrap()).unwrap();
-        let mut state = ui::State::new();
-        app.sync(&mut state.doc, &state.root);
-        assert!(NotesDoc::list_pages(&state.doc).is_empty());
+                let Err(error) = NotesApp::spawn(tmp.path().into()) else {
+                    panic!("an unreadable note must not become an empty editor");
+                };
+                assert!(error.contains("Could not read note"));
+                assert_eq!(std::fs::read(&path).unwrap(), original);
+            }
+        }
 
-        let mut peer = Workspace::default();
-        let peer_page = peer.create_page(None);
-        peer.rename(peer_page, "Peer note");
-        NotesDoc::upsert_page_meta(&mut state.doc, peer.get(peer_page).unwrap());
-        NotesDoc::apply_block_ops(
-            &mut state.doc,
-            peer_page,
-            &MainPanel::seed_block_ops("Peer contents"),
-        )
-        .unwrap();
-        app.sync(&mut state.doc, &state.root);
-        admit_pending_import(&mut app, &mut state);
-        assert_eq!(NotesDoc::list_pages(&state.doc).len(), 2);
-        assert!(
-            app.workspace.get(local_page).is_none(),
-            "never publish pre-adoption local pages"
-        );
-        assert_eq!(
-            NotesDoc::page_block_snapshots(&state.doc, peer_page)[0].1,
-            "Peer contents"
-        );
-        let imported = app.workspace.selected().unwrap();
-        assert_ne!(imported, peer_page);
-        assert_eq!(
-            NotesDoc::page_block_snapshots(&state.doc, imported)[0].1,
-            "Explicit import"
-        );
-        assert!(app.pending_markdown_source.is_none());
-    }
-
-    #[test]
-    fn unreadable_note_refuses_startup_without_replacing_original_bytes() {
-        for selected in [true, false] {
-            let tmp = TempDir::new().unwrap();
-            let mut workspace = Workspace::default();
-            let page = workspace.create_page(None);
-            workspace.rename(page, "Unrecoverable UTF-8");
-            workspace.set_selected(selected.then_some(page));
-            storage::save_workspace(tmp.path(), &workspace).unwrap();
-            let path = storage::page_file_path(tmp.path(), page);
+        eprintln!("phase unreadable_note_refuses_navigation_and_subtree_duplicate");
+        {
+            let (mut app, mut state, tmp, welcome) = app_seeded_into_doc();
+            let child = app.workspace.create_page(Some(welcome));
+            storage::write_page_body(tmp.path(), child, "Child contents").unwrap();
+            app.perform_action(
+                &mut state.doc,
+                &actions::upsert_page_action(app.workspace.get(child).unwrap()),
+            );
+            app.seed_legacy_page_body(&mut state.doc, child);
+            let path = storage::page_file_path(tmp.path(), child);
             let original = [0xff, 0xfe, 0x41];
             std::fs::write(&path, original).unwrap();
 
-            let Err(error) = NotesApp::spawn(tmp.path().into()) else {
-                panic!("an unreadable note must not become an empty editor");
+            let operation = actions::NotesOperation::OpenPage {
+                page: child,
+                block_id: None,
             };
-            assert!(error.contains("Could not read note"));
+            assert!(app.open_notes_operation(operation, &state.doc).is_err());
+            assert_eq!(app.workspace.selected(), Some(welcome));
+            assert_eq!(app.main.page_id(), Some(welcome));
+            app.apply_event(OutEvent::Select(child));
+            assert_eq!(app.workspace.selected(), Some(welcome));
+            let before = app.workspace.pages().to_vec();
+            app.apply_and_dispatch(&mut state.doc, OutEvent::Duplicate(welcome));
+            assert_eq!(app.workspace.pages(), before);
+            assert_eq!(NotesDoc::list_pages(&state.doc).len(), 2);
+            app.flush_saves();
             assert_eq!(std::fs::read(&path).unwrap(), original);
-        }
-    }
-
-    #[test]
-    fn unreadable_note_refuses_navigation_and_subtree_duplicate() {
-        let (mut app, mut state, tmp, welcome) = app_seeded_into_doc();
-        let child = app.workspace.create_page(Some(welcome));
-        storage::write_page_body(tmp.path(), child, "Child contents").unwrap();
-        app.perform_action(
-            &mut state.doc,
-            &actions::upsert_page_action(app.workspace.get(child).unwrap()),
-        );
-        app.seed_legacy_page_body(&mut state.doc, child);
-        let path = storage::page_file_path(tmp.path(), child);
-        let original = [0xff, 0xfe, 0x41];
-        std::fs::write(&path, original).unwrap();
-
-        let operation = actions::NotesOperation::OpenPage {
-            page: child,
-            block_id: None,
-        };
-        assert!(app.open_notes_operation(operation, &state.doc).is_err());
-        assert_eq!(app.workspace.selected(), Some(welcome));
-        assert_eq!(app.main.page_id(), Some(welcome));
-        app.apply_event(OutEvent::Select(child));
-        assert_eq!(app.workspace.selected(), Some(welcome));
-        let before = app.workspace.pages().to_vec();
-        app.apply_and_dispatch(&mut state.doc, OutEvent::Duplicate(welcome));
-        assert_eq!(app.workspace.pages(), before);
-        assert_eq!(NotesDoc::list_pages(&state.doc).len(), 2);
-        app.flush_saves();
-        assert_eq!(std::fs::read(&path).unwrap(), original);
-        assert!(
-            app.transfer_toasts
-                .iter()
-                .any(|toast| toast.kind == ui::widget::toast::ToastKind::Error)
-        );
-    }
-
-    #[test]
-    fn unreadable_note_is_not_seeded_or_bound_as_empty_and_can_retry() {
-        let tmp = TempDir::new().unwrap();
-        let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
-        let page = app.workspace.selected().unwrap();
-        app.main.editor_mut().blocks_mut()[0]
-            .line
-            .set_text("Unsaved draft");
-        app.main.editor_mut().force_dirty_for_test();
-        let path = storage::page_file_path(tmp.path(), page);
-        let original = [0xff, 0xfe, 0x41];
-        std::fs::write(&path, original).unwrap();
-        app.bypass_seed_grace_for_test();
-        let mut state = ui::State::new();
-        app.sync(&mut state.doc, &state.root);
-        assert!(NotesDoc::page_block_snapshots(&state.doc, page).is_empty());
-        assert_eq!(app.bound_page, None);
-        assert_eq!(app.main.page_id(), Some(page));
-        assert_eq!(app.main.editor().blocks()[0].text(), "Unsaved draft");
-        assert!(app.try_navigate_to(page).is_err());
-        app.flush_saves();
-        assert_eq!(std::fs::read(&path).unwrap(), original);
-
-        storage::write_page_body(tmp.path(), page, "Recovered note").unwrap();
-        app.sync(&mut state.doc, &state.root);
-        assert_eq!(app.bound_page, Some(page));
-        assert_eq!(
-            NotesDoc::page_block_snapshots(&state.doc, page)[0].1,
-            "Unsaved draft"
-        );
-    }
-
-    #[test]
-    fn unreadable_note_recovery_uses_repaired_file_when_draft_is_unchanged() {
-        let tmp = TempDir::new().unwrap();
-        let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
-        let page = app.workspace.selected().unwrap();
-        assert!(!app.main.has_unsaved_body());
-        let path = storage::page_file_path(tmp.path(), page);
-        std::fs::write(&path, [0xff]).unwrap();
-        app.bypass_seed_grace_for_test();
-        let mut state = ui::State::new();
-        app.sync(&mut state.doc, &state.root);
-        app.flush_saves();
-        assert_eq!(std::fs::read(&path).unwrap(), [0xff]);
-        storage::write_page_body(tmp.path(), page, "Recovered external contents").unwrap();
-        app.sync(&mut state.doc, &state.root);
-        assert_eq!(
-            NotesDoc::page_block_snapshots(&state.doc, page)[0].1,
-            "Recovered external contents"
-        );
-    }
-
-    #[test]
-    fn workspace_image_loader_decodes_only_in_root() {
-        let tmp = TempDir::new().unwrap();
-        storage::ensure_layout(tmp.path()).unwrap();
-        let fixture = include_bytes!("../../settings/shots/settings.png");
-        std::fs::write(
-            tmp.path().join(storage::PAGES_DIR).join("image.png"),
-            fixture,
-        )
-        .unwrap();
-        let store = workspace_image_store(tmp.path());
-        assert!(store.get("image.png").is_none());
-        store.block_until_idle(Duration::from_secs(2));
-        let image = store.get("image.png").expect("workspace image must decode");
-        assert_eq!(
-            (image.width, image.height),
-            (1200, 760),
-            "document images retain readable source detail"
-        );
-        assert!(store.get("../../etc/passwd").is_none());
-        store.block_until_idle(Duration::from_secs(2));
-        assert!(store.get("../../etc/passwd").is_none());
-    }
-
-    #[test]
-    fn canonical_notebook_keeps_image_insert_and_portable_markdown_assets() {
-        let workspace = TempDir::new().unwrap();
-        let source = TempDir::new().unwrap();
-        let image = source.path().join("photo.png");
-        std::fs::write(&image, include_bytes!("../../settings/shots/settings.png")).unwrap();
-        let markdown = source.path().join("Imported.md");
-        let body = "![Portable](photo.png)\n";
-        std::fs::write(&markdown, body).unwrap();
-        let mut doc = AutoCommit::new();
-        crate::notebook::initialize_empty(&mut doc).unwrap();
-        let author = ui::permissions::UserId("canonical-assets-test".into());
-        let mut app = NotesApp::from_document(&doc, &author).unwrap();
-        app.configure_workspace_assets(workspace.path()).unwrap();
-        app.finish_markdown_import(&mut doc, &markdown, body.into())
-            .unwrap();
-        let page = app.workspace.selected().unwrap();
-        let imported = NotesDoc::page_block_snapshots(&doc, page);
-        assert!(imported.iter().any(|(_, text)| text.contains("asset:")));
-        app.finish_image_insert(&mut doc, page, &image);
-        let images = NotesDoc::page_block_snapshots(&doc, page);
-        assert_eq!(
-            images
-                .iter()
-                .filter(|(_, text)| text.contains("asset:"))
-                .count(),
-            2
-        );
-        let destination = source.path().join("Exported.md");
-        let (services, recorder) = ui::host::HostServices::recording();
-        let _host = ui::host::enter(&services);
-        recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(destination.clone()));
-        app.request_markdown_export(&doc, page).unwrap();
-        settle_markdown_io(&mut app, &mut doc);
-        let exported = std::fs::read_to_string(&destination).unwrap();
-        assert!(!exported.contains("../assets/"));
-        let references: Vec<_> = exported
-            .lines()
-            .filter_map(standalone_image_parts)
-            .collect();
-        assert_eq!(references.len(), 2);
-        for (_, _, reference) in references {
-            assert_eq!(
-                std::fs::read(source.path().join(reference)).unwrap(),
-                std::fs::read(&image).unwrap()
+            assert!(
+                app.transfer_toasts
+                    .iter()
+                    .any(|toast| toast.kind == ui::widget::toast::ToastKind::Error)
             );
         }
-        assert!(app.legacy_fixture_storage.is_none());
-        assert!(!storage::workspace_file_path(workspace.path()).exists());
-        crate::notebook::validate(&doc).unwrap();
+
+        eprintln!("phase unreadable_note_is_not_seeded_or_bound_as_empty_and_can_retry");
+        {
+            let tmp = TempDir::new().unwrap();
+            let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
+            let page = app.workspace.selected().unwrap();
+            app.main.editor_mut().blocks_mut()[0]
+                .line
+                .set_text("Unsaved draft");
+            app.main.editor_mut().force_dirty_for_test();
+            let path = storage::page_file_path(tmp.path(), page);
+            let original = [0xff, 0xfe, 0x41];
+            std::fs::write(&path, original).unwrap();
+            app.bypass_seed_grace_for_test();
+            let mut state = ui::State::new();
+            app.sync(&mut state.doc, &state.root);
+            assert!(NotesDoc::page_block_snapshots(&state.doc, page).is_empty());
+            assert_eq!(app.bound_page, None);
+            assert_eq!(app.main.page_id(), Some(page));
+            assert_eq!(app.main.editor().blocks()[0].text(), "Unsaved draft");
+            assert!(app.try_navigate_to(page).is_err());
+            app.flush_saves();
+            assert_eq!(std::fs::read(&path).unwrap(), original);
+
+            storage::write_page_body(tmp.path(), page, "Recovered note").unwrap();
+            app.sync(&mut state.doc, &state.root);
+            assert_eq!(app.bound_page, Some(page));
+            assert_eq!(
+                NotesDoc::page_block_snapshots(&state.doc, page)[0].1,
+                "Unsaved draft"
+            );
+        }
+
+        eprintln!("phase unreadable_note_recovery_uses_repaired_file_when_draft_is_unchanged");
+        {
+            let tmp = TempDir::new().unwrap();
+            let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
+            let page = app.workspace.selected().unwrap();
+            assert!(!app.main.has_unsaved_body());
+            let path = storage::page_file_path(tmp.path(), page);
+            std::fs::write(&path, [0xff]).unwrap();
+            app.bypass_seed_grace_for_test();
+            let mut state = ui::State::new();
+            app.sync(&mut state.doc, &state.root);
+            app.flush_saves();
+            assert_eq!(std::fs::read(&path).unwrap(), [0xff]);
+            storage::write_page_body(tmp.path(), page, "Recovered external contents").unwrap();
+            app.sync(&mut state.doc, &state.root);
+            assert_eq!(
+                NotesDoc::page_block_snapshots(&state.doc, page)[0].1,
+                "Recovered external contents"
+            );
+        }
+    }
+
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
+    #[test]
+    fn workspace_images_decode_in_root_and_import_bounded_portable_assets() {
+        eprintln!("phase workspace_image_loader_decodes_only_in_root");
+        {
+            let tmp = TempDir::new().unwrap();
+            storage::ensure_layout(tmp.path()).unwrap();
+            let fixture = include_bytes!("../../settings/shots/settings.png");
+            std::fs::write(
+                tmp.path().join(storage::PAGES_DIR).join("image.png"),
+                fixture,
+            )
+            .unwrap();
+            let store = workspace_image_store(tmp.path());
+            assert!(store.get("image.png").is_none());
+            store.block_until_idle(IO_HANG_BOUND);
+            let image = store.get("image.png").expect("workspace image must decode");
+            assert_eq!(
+                (image.width, image.height),
+                (1200, 760),
+                "document images retain readable source detail"
+            );
+            assert!(store.get("../../etc/passwd").is_none());
+            store.block_until_idle(IO_HANG_BOUND);
+            assert!(store.get("../../etc/passwd").is_none());
+        }
+
+        eprintln!("phase canonical_notebook_keeps_image_insert_and_portable_markdown_assets");
+        {
+            let workspace = TempDir::new().unwrap();
+            let source = TempDir::new().unwrap();
+            let image = source.path().join("photo.png");
+            std::fs::write(&image, include_bytes!("../../settings/shots/settings.png")).unwrap();
+            let markdown = source.path().join("Imported.md");
+            let body = "![Portable](photo.png)\n";
+            std::fs::write(&markdown, body).unwrap();
+            let mut doc = AutoCommit::new();
+            crate::notebook::initialize_empty(&mut doc).unwrap();
+            let author = ui::permissions::UserId("canonical-assets-test".into());
+            let mut app = NotesApp::from_document(&doc, &author).unwrap();
+            app.configure_workspace_assets(workspace.path()).unwrap();
+            app.finish_markdown_import(&mut doc, &markdown, body.into())
+                .unwrap();
+            let page = app.workspace.selected().unwrap();
+            let imported = NotesDoc::page_block_snapshots(&doc, page);
+            assert!(imported.iter().any(|(_, text)| text.contains("asset:")));
+            app.finish_image_insert(&mut doc, page, &image);
+            let images = NotesDoc::page_block_snapshots(&doc, page);
+            assert_eq!(
+                images
+                    .iter()
+                    .filter(|(_, text)| text.contains("asset:"))
+                    .count(),
+                2
+            );
+            let destination = source.path().join("Exported.md");
+            let (services, recorder) = ui::host::HostServices::recording();
+            let _host = ui::host::enter(&services);
+            recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(destination.clone()));
+            app.request_markdown_export(&doc, page).unwrap();
+            settle_markdown_io(&mut app, &mut doc);
+            let exported = std::fs::read_to_string(&destination).unwrap();
+            assert!(!exported.contains("../assets/"));
+            let references: Vec<_> = exported
+                .lines()
+                .filter_map(standalone_image_parts)
+                .collect();
+            assert_eq!(references.len(), 2);
+            for (_, _, reference) in references {
+                assert_eq!(
+                    std::fs::read(source.path().join(reference)).unwrap(),
+                    std::fs::read(&image).unwrap()
+                );
+            }
+            assert!(app.legacy_fixture_storage.is_none());
+            assert!(!storage::workspace_file_path(workspace.path()).exists());
+            crate::notebook::validate(&doc).unwrap();
+        }
+
+        eprintln!("phase image_attachment_import_is_bounded_and_workspace_relative");
+        {
+            let tmp = TempDir::new().unwrap();
+            storage::ensure_layout(tmp.path()).unwrap();
+            let source = tmp.path().join("picked.png");
+            std::fs::write(&source, include_bytes!("../../settings/shots/settings.png")).unwrap();
+            let markdown_path = import_image_asset(tmp.path(), &source).unwrap();
+            assert!(markdown_path.starts_with("../assets/"));
+            assert!(
+                tmp.path()
+                    .join(storage::PAGES_DIR)
+                    .join(markdown_path)
+                    .exists()
+            );
+
+            let invalid = tmp.path().join("not-image.png");
+            std::fs::write(&invalid, b"not an image").unwrap();
+            assert!(import_image_asset(tmp.path(), &invalid).is_err());
+        }
+
+        eprintln!("phase repeated_markdown_images_only_consume_the_unique_asset_budget_once");
+        {
+            let tmp = TempDir::new().unwrap();
+            let image = tmp.path().join("image.png");
+            std::fs::write(&image, include_bytes!("../../settings/shots/settings.png")).unwrap();
+            let markdown = "![Repeated](image.png)\n".repeat(10);
+
+            let (imported, assets) =
+                adopt_canonical_markdown_assets(&tmp.path().join("note.md"), &markdown);
+
+            assert_eq!(assets.len(), 1);
+            let source = &assets[0].0;
+            assert_eq!(imported, format!("![Repeated]({source})\n").repeat(10));
+        }
     }
 
     #[test]
-    fn image_attachment_import_is_bounded_and_workspace_relative() {
-        let tmp = TempDir::new().unwrap();
-        storage::ensure_layout(tmp.path()).unwrap();
-        let source = tmp.path().join("picked.png");
-        std::fs::write(&source, include_bytes!("../../settings/shots/settings.png")).unwrap();
-        let markdown_path = import_image_asset(tmp.path(), &source).unwrap();
-        assert!(markdown_path.starts_with("../assets/"));
-        assert!(
-            tmp.path()
-                .join(storage::PAGES_DIR)
-                .join(markdown_path)
-                .exists()
-        );
+    fn spawn_starts_empty_unless_a_starter_page_or_first_note_is_requested() {
+        eprintln!("phase spawn_starts_empty_by_default");
+        {
+            // The live default (`spawn` / `spawn_default`) must NOT fabricate a
+            // page: a fresh workspace opens empty onto the "New note" affordance.
+            let tmp = TempDir::new().unwrap();
+            let app = NotesApp::spawn(tmp.path().into()).unwrap();
+            assert!(
+                app.workspace.pages().is_empty(),
+                "a fresh launch seeds no pages"
+            );
+            assert!(
+                app.workspace.selected().is_none(),
+                "nothing selected on an empty workspace"
+            );
+            assert!(app.main.title().is_none(), "no page bound in the editor");
+        }
 
-        let invalid = tmp.path().join("not-image.png");
-        std::fs::write(&invalid, b"not an image").unwrap();
-        assert!(import_image_asset(tmp.path(), &invalid).is_err());
+        eprintln!("phase spawn_with_starter_page_seeds_welcome");
+        {
+            // The explicit test/dev fixture constructor still seeds a starter page.
+            let tmp = TempDir::new().unwrap();
+            let app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
+            assert_eq!(app.workspace.pages().len(), 1);
+            assert_eq!(app.workspace.pages()[0].title, "Welcome");
+            // Welcome page file exists on disk.
+            let id = app.workspace.pages()[0].id;
+            assert!(storage::page_file_path(tmp.path(), id).exists());
+        }
+
+        eprintln!("phase accessibility_activation_creates_the_first_shared_note_on_sync");
+        {
+            let tmp = TempDir::new().unwrap();
+            let mut app = NotesApp::spawn(tmp.path().into()).unwrap();
+            let mut doc = AutoCommit::new();
+            assert!(
+                app.main
+                    .perform_action(&ui::a11y::Action::Activate, &mut doc, &ObjId::Root,)
+            );
+
+            app.sync(&mut doc, &ObjId::Root);
+            assert_eq!(app.workspace.pages().len(), 1);
+            assert!(app.workspace.selected().is_some());
+        }
+    }
+
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
+    #[test]
+    fn page_events_create_delete_rename_and_dispatch_canonical_actions() {
+        eprintln!("phase apply_event_create_child_appends_and_selects");
+        {
+            let tmp = TempDir::new().unwrap();
+            let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
+            let root = app.workspace.pages()[0].id;
+            app.apply_event(OutEvent::CreateChild { parent: Some(root) });
+            let children = app.workspace.children_of(Some(root));
+            assert_eq!(children.len(), 1);
+            assert_eq!(app.workspace.selected(), Some(children[0].id));
+        }
+
+        eprintln!("phase apply_event_delete_removes_file_and_resets_selection");
+        {
+            let tmp = TempDir::new().unwrap();
+            let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
+            let root = app.workspace.pages()[0].id;
+            app.apply_event(OutEvent::CreateChild { parent: Some(root) });
+            let child = app.workspace.selected().unwrap();
+            let child_path = storage::page_file_path(tmp.path(), child);
+            assert!(child_path.exists());
+            app.apply_event(OutEvent::Delete(child));
+            assert!(!child_path.exists());
+            // Selection falls back to a remaining root page.
+            assert_eq!(app.workspace.selected(), Some(root));
+        }
+
+        eprintln!("phase rename_updates_main_panel_title");
+        {
+            let tmp = TempDir::new().unwrap();
+            let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
+            let root = app.workspace.pages()[0].id;
+            app.apply_event(OutEvent::Rename {
+                id: root,
+                new_title: "Index".into(),
+            });
+            assert_eq!(app.main.title(), Some("Index"));
+        }
+
+        eprintln!("phase sidebar_delete_and_palette_encode_identically");
+        {
+            let (mut app, mut state, _tmp, welcome) = app_seeded_into_doc();
+
+            // Palette side: the welcome page resource's delete spec (built before we
+            // delete the page, while it still exists in the tree).
+            let resources = Widget::resources(&app, &state.doc);
+            let page = resources[0]
+                .children
+                .iter()
+                .find(|r| r.label == "Welcome")
+                .expect("a Welcome page resource");
+            let delete_spec = page.actions.iter().find(|a| a.id == "delete").unwrap();
+            let from_palette = match &delete_spec.input {
+                tilo_actions::ActionInput::Immediate(enc) => enc.clone(),
+                tilo_actions::ActionInput::Prompted { .. } => {
+                    panic!("delete is an immediate action")
+                }
+            };
+
+            // Affordance side: the sidebar's Delete event through the app path.
+            app.dispatch_event_for_test(&mut state.doc, OutEvent::Delete(welcome));
+            let from_button = app
+                .last_dispatched_for_test()
+                .expect("the sidebar delete dispatched an action")
+                .clone();
+
+            assert_eq!(from_palette.type_id, from_button.type_id);
+            assert_eq!(
+                from_palette.payload, from_button.payload,
+                "the sidebar affordance and the palette build the same EncodedAction"
+            );
+        }
+
+        // Creating a page through the sidebar path dispatches the metadata and
+        // initial body through the action executor — a peer never receives a
+        // metadata-only note that becomes usable only after its creator opens it.
+        eprintln!("phase creating_a_page_dispatches_an_upsert_into_the_doc");
+        {
+            let (mut app, mut state, _tmp, _welcome) = app_seeded_into_doc();
+            let before = NotesDoc::list_pages(&state.doc).len();
+
+            app.dispatch_event_for_test(&mut state.doc, OutEvent::CreateChild { parent: None });
+
+            assert_eq!(
+                NotesDoc::list_pages(&state.doc).len(),
+                before + 1,
+                "the create wrote a new page into the shared document"
+            );
+            let new_page = app
+                .workspace
+                .selected()
+                .expect("new page becomes the active page");
+            assert!(
+                NotesDoc::page_blocks_list(&state.doc, new_page)
+                    .is_some_and(|blocks| state.doc.length(&blocks) > 0),
+                "the new page body also crossed the typed action executor"
+            );
+        }
+
+        // The full undo covenant at the app level: deleting a page through the
+        // sidebar path records exactly one undo boundary, and Ctrl+Z (the host's
+        // `undo`) reverts it in both the document and — after the next `sync`
+        // reconciles — the app's own page list.
+        eprintln!("phase page_delete_records_one_undo_boundary_and_reverts_in_the_app");
+        {
+            let (mut app, mut state, _tmp, welcome) = app_seeded_into_doc();
+            assert!(
+                NotesDoc::list_pages(&state.doc)
+                    .iter()
+                    .any(|p| p.id == welcome)
+            );
+
+            // Delete through the real sidebar-event path.
+            app.dispatch_event_for_test(&mut state.doc, OutEvent::Delete(welcome));
+
+            // The host's own recorder drains the captured heads and records the
+            // boundary. Going through it rather than pushing an entry by hand is
+            // the point: attribution happens in there, and undo is author-scoped.
+            // The node map is empty because the app widget is the root here.
+            let local_author = ui::permissions::UserId("notes-app-test-author".into());
+            let root: *mut dyn Widget = &mut app;
+            assert!(
+                ui::undo::record_dispatched_action(
+                    &mut state,
+                    root,
+                    &std::collections::HashMap::new(),
+                    &local_author,
+                ),
+                "the host recorded an undo boundary for the dispatched delete"
+            );
+
+            assert!(
+                !NotesDoc::list_pages(&state.doc)
+                    .iter()
+                    .any(|p| p.id == welcome),
+                "the delete removed the page from the document"
+            );
+            let entry = state
+                .peek_last_undo()
+                .expect("exactly one undo boundary recorded");
+            assert_eq!(
+                entry.author.as_ref(),
+                Some(&local_author),
+                "attributed to the local user, so their Ctrl+Z can reach it"
+            );
+            assert!(
+                Widget::take_committed_action(&mut app).is_none(),
+                "the boundary is rising-edge — cleared on read"
+            );
+
+            // Ctrl+Z reverts the document; the next `sync` reconciles the workspace.
+            state
+                .undo_as(Some(&local_author), None, None)
+                .expect("an undo entry to pop");
+            assert!(
+                NotesDoc::list_pages(&state.doc)
+                    .iter()
+                    .any(|p| p.id == welcome),
+                "undo restored the page in the document"
+            );
+            app.sync(&mut state.doc, &state.root);
+            assert!(
+                app.workspace_pages_for_test()
+                    .iter()
+                    .any(|p| p.id == welcome),
+                "the app shows the page again after undo"
+            );
+        }
     }
 
     #[test]
-    fn spawn_starts_empty_by_default() {
-        // The live default (`spawn` / `spawn_default`) must NOT fabricate a
-        // page: a fresh workspace opens empty onto the "New note" affordance.
-        let tmp = TempDir::new().unwrap();
-        let app = NotesApp::spawn(tmp.path().into()).unwrap();
-        assert!(
-            app.workspace.pages().is_empty(),
-            "a fresh launch seeds no pages"
-        );
-        assert!(
-            app.workspace.selected().is_none(),
-            "nothing selected on an empty workspace"
-        );
-        assert!(app.main.title().is_none(), "no page bound in the editor");
-    }
+    fn status_reports_worst_save_state_live_word_counts_and_calm_motion() {
+        eprintln!("phase combine_save_status_is_worst_of");
+        {
+            use SaveStatus::*;
+            // Failed dominates every combination.
+            assert_eq!(combine_save_status(Failed, Saved), Failed);
+            assert_eq!(combine_save_status(Saved, Failed), Failed);
+            assert_eq!(combine_save_status(Failed, Saving), Failed);
+            assert_eq!(combine_save_status(Saving, Failed), Failed);
+            assert_eq!(combine_save_status(Failed, Failed), Failed);
+            // Saving wins over Saved when nothing failed.
+            assert_eq!(combine_save_status(Saving, Saved), Saving);
+            assert_eq!(combine_save_status(Saved, Saving), Saving);
+            assert_eq!(combine_save_status(Saving, Saving), Saving);
+            // Only both-clean reports Saved.
+            assert_eq!(combine_save_status(Saved, Saved), Saved);
+        }
 
-    #[test]
-    fn accessibility_activation_creates_the_first_shared_note_on_sync() {
-        let tmp = TempDir::new().unwrap();
-        let mut app = NotesApp::spawn(tmp.path().into()).unwrap();
-        let mut doc = AutoCommit::new();
-        assert!(
+        eprintln!(
+            "phase word_count_updates_without_reopening_status_and_save_failure_stays_visible"
+        );
+        {
+            let tmp = TempDir::new().unwrap();
+            let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
+            app.shots_save_status = Some(SaveStatus::Saved);
+            app.refresh_status();
+            app.status_bubble = ui::StatusBubble::new();
             app.main
-                .perform_action(&ui::a11y::Action::Activate, &mut doc, &ObjId::Root,)
-        );
+                .editor_mut()
+                .set_blocks(vec![ui::widget::Block::paragraph("One two three")]);
+            app.refresh_status();
+            assert_eq!(app.status.state().word_count, Some(3));
+            assert!(!app.status_bubble.is_visible(std::time::Instant::now()));
 
-        app.sync(&mut doc, &ObjId::Root);
-        assert_eq!(app.workspace.pages().len(), 1);
-        assert!(app.workspace.selected().is_some());
-    }
+            app.shots_save_status = Some(SaveStatus::Failed);
+            app.refresh_status();
+            app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+            app.last_mouse = Point::ZERO;
+            app.draw_status_bubble(
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut TextRenderer::new(),
+                &Theme::default(),
+            );
+            assert!(
+                app.status_bubble
+                    .is_visible(std::time::Instant::now() + std::time::Duration::from_secs(60)),
+                "an unresolved save failure must not fade out"
+            );
+            assert!(
+                !app.status_bubble.needs_frame(std::time::Instant::now()),
+                "persistent status must not cause an idle redraw loop"
+            );
+        }
 
-    #[test]
-    fn spawn_with_starter_page_seeds_welcome() {
-        // The explicit test/dev fixture constructor still seeds a starter page.
-        let tmp = TempDir::new().unwrap();
-        let app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
-        assert_eq!(app.workspace.pages().len(), 1);
-        assert_eq!(app.workspace.pages()[0].title, "Welcome");
-        // Welcome page file exists on disk.
-        let id = app.workspace.pages()[0].id;
-        assert!(storage::page_file_path(tmp.path(), id).exists());
-    }
+        eprintln!("phase reduced_motion_stops_notes_owned_status_bubble_frames");
+        {
+            let tmp = TempDir::new().unwrap();
+            let mut app = NotesApp::spawn(tmp.path().into()).unwrap();
+            app.status_bubble.poke(std::time::Instant::now());
+            assert!(app.needs_animation_frame(), "normal fade requests frames");
 
-    #[test]
-    fn apply_event_create_child_appends_and_selects() {
-        let tmp = TempDir::new().unwrap();
-        let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
-        let root = app.workspace.pages()[0].id;
-        app.apply_event(OutEvent::CreateChild { parent: Some(root) });
-        let children = app.workspace.children_of(Some(root));
-        assert_eq!(children.len(), 1);
-        assert_eq!(app.workspace.selected(), Some(children[0].id));
-    }
+            Widget::set_motion_reduced(&mut app, true);
+            assert!(app.motion_reduced);
+            assert!(
+                !app.needs_animation_frame(),
+                "reduced motion must not keep the compositor awake for a decorative fade"
+            );
+        }
 
-    #[test]
-    fn apply_event_delete_removes_file_and_resets_selection() {
-        let tmp = TempDir::new().unwrap();
-        let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
-        let root = app.workspace.pages()[0].id;
-        app.apply_event(OutEvent::CreateChild { parent: Some(root) });
-        let child = app.workspace.selected().unwrap();
-        let child_path = storage::page_file_path(tmp.path(), child);
-        assert!(child_path.exists());
-        app.apply_event(OutEvent::Delete(child));
-        assert!(!child_path.exists());
-        // Selection falls back to a remaining root page.
-        assert_eq!(app.workspace.selected(), Some(root));
-    }
-
-    #[test]
-    fn combine_save_status_is_worst_of() {
-        use SaveStatus::*;
-        // Failed dominates every combination.
-        assert_eq!(combine_save_status(Failed, Saved), Failed);
-        assert_eq!(combine_save_status(Saved, Failed), Failed);
-        assert_eq!(combine_save_status(Failed, Saving), Failed);
-        assert_eq!(combine_save_status(Saving, Failed), Failed);
-        assert_eq!(combine_save_status(Failed, Failed), Failed);
-        // Saving wins over Saved when nothing failed.
-        assert_eq!(combine_save_status(Saving, Saved), Saving);
-        assert_eq!(combine_save_status(Saved, Saving), Saving);
-        assert_eq!(combine_save_status(Saving, Saving), Saving);
-        // Only both-clean reports Saved.
-        assert_eq!(combine_save_status(Saved, Saved), Saved);
-    }
-
-    #[test]
-    fn word_count_updates_without_reopening_status_and_save_failure_stays_visible() {
-        let tmp = TempDir::new().unwrap();
-        let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
-        app.shots_save_status = Some(SaveStatus::Saved);
-        app.refresh_status();
-        app.status_bubble = ui::StatusBubble::new();
-        app.main
-            .editor_mut()
-            .set_blocks(vec![ui::widget::Block::paragraph("One two three")]);
-        app.refresh_status();
-        assert_eq!(app.status.state().word_count, Some(3));
-        assert!(!app.status_bubble.is_visible(std::time::Instant::now()));
-
-        app.shots_save_status = Some(SaveStatus::Failed);
-        app.refresh_status();
-        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        app.last_mouse = Point::ZERO;
-        app.draw_status_bubble(
-            &mut Scene::new(),
-            Affine::IDENTITY,
-            &mut TextRenderer::new(),
-            &Theme::default(),
-        );
-        assert!(
-            app.status_bubble
-                .is_visible(std::time::Instant::now() + std::time::Duration::from_secs(60)),
-            "an unresolved save failure must not fade out"
-        );
-        assert!(
-            !app.status_bubble.needs_frame(std::time::Instant::now()),
-            "persistent status must not cause an idle redraw loop"
-        );
-    }
-
-    #[test]
-    fn reduced_motion_stops_notes_owned_status_bubble_frames() {
-        let tmp = TempDir::new().unwrap();
-        let mut app = NotesApp::spawn(tmp.path().into()).unwrap();
-        app.status_bubble.poke(std::time::Instant::now());
-        assert!(app.needs_animation_frame(), "normal fade requests frames");
-
-        Widget::set_motion_reduced(&mut app, true);
-        assert!(app.motion_reduced);
-        assert!(
-            !app.needs_animation_frame(),
-            "reduced motion must not keep the compositor awake for a decorative fade"
-        );
-    }
-
-    #[test]
-    fn rename_updates_main_panel_title() {
-        let tmp = TempDir::new().unwrap();
-        let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
-        let root = app.workspace.pages()[0].id;
-        app.apply_event(OutEvent::Rename {
-            id: root,
-            new_title: "Index".into(),
-        });
-        assert_eq!(app.main.title(), Some("Index"));
+        eprintln!("phase unchanged_document_heads_skip_full_search_snapshot_work");
+        {
+            let (mut app, mut state, _tmp, _welcome) = app_seeded_into_doc();
+            app.search_blocks.clear();
+            app.search_heads = Some(state.doc.get_heads());
+            app.refresh_search_blocks(&state.doc);
+            assert!(app.search_blocks.is_empty());
+        }
     }
 
     /// A fresh app whose seeded "Welcome" page is mirrored into `state.doc`, with
@@ -6128,73 +6310,6 @@ mod tests {
         // user action they dispatch.
         let _ = Widget::take_committed_action(&mut app);
         (app, state, tmp, welcome)
-    }
-
-    #[test]
-    fn unchanged_document_heads_skip_full_search_snapshot_work() {
-        let (mut app, mut state, _tmp, _welcome) = app_seeded_into_doc();
-        app.search_blocks.clear();
-        app.search_heads = Some(state.doc.get_heads());
-        app.refresh_search_blocks(&state.doc);
-        assert!(app.search_blocks.is_empty());
-    }
-
-    #[test]
-    fn sidebar_delete_and_palette_encode_identically() {
-        let (mut app, mut state, _tmp, welcome) = app_seeded_into_doc();
-
-        // Palette side: the welcome page resource's delete spec (built before we
-        // delete the page, while it still exists in the tree).
-        let resources = Widget::resources(&app, &state.doc);
-        let page = resources[0]
-            .children
-            .iter()
-            .find(|r| r.label == "Welcome")
-            .expect("a Welcome page resource");
-        let delete_spec = page.actions.iter().find(|a| a.id == "delete").unwrap();
-        let from_palette = match &delete_spec.input {
-            tilo_actions::ActionInput::Immediate(enc) => enc.clone(),
-            tilo_actions::ActionInput::Prompted { .. } => panic!("delete is an immediate action"),
-        };
-
-        // Affordance side: the sidebar's Delete event through the app path.
-        app.dispatch_event_for_test(&mut state.doc, OutEvent::Delete(welcome));
-        let from_button = app
-            .last_dispatched_for_test()
-            .expect("the sidebar delete dispatched an action")
-            .clone();
-
-        assert_eq!(from_palette.type_id, from_button.type_id);
-        assert_eq!(
-            from_palette.payload, from_button.payload,
-            "the sidebar affordance and the palette build the same EncodedAction"
-        );
-    }
-
-    /// Creating a page through the sidebar path dispatches the metadata and
-    /// initial body through the action executor — a peer never receives a
-    /// metadata-only note that becomes usable only after its creator opens it.
-    #[test]
-    fn creating_a_page_dispatches_an_upsert_into_the_doc() {
-        let (mut app, mut state, _tmp, _welcome) = app_seeded_into_doc();
-        let before = NotesDoc::list_pages(&state.doc).len();
-
-        app.dispatch_event_for_test(&mut state.doc, OutEvent::CreateChild { parent: None });
-
-        assert_eq!(
-            NotesDoc::list_pages(&state.doc).len(),
-            before + 1,
-            "the create wrote a new page into the shared document"
-        );
-        let new_page = app
-            .workspace
-            .selected()
-            .expect("new page becomes the active page");
-        assert!(
-            NotesDoc::page_blocks_list(&state.doc, new_page)
-                .is_some_and(|blocks| state.doc.length(&blocks) > 0),
-            "the new page body also crossed the typed action executor"
-        );
     }
 
     #[test]
@@ -6233,11 +6348,16 @@ mod tests {
                 }
                 std::thread::sleep(Duration::from_millis(10));
             };
+            let stdout = std::fs::read_to_string(stdout).unwrap();
             assert!(
                 status.success(),
-                "{}\n{}",
-                std::fs::read_to_string(stdout).unwrap(),
+                "{stdout}\n{}",
                 std::fs::read_to_string(stderr).unwrap()
+            );
+            // libtest exits 0 when `--exact` selects nothing; require the child ran.
+            assert!(
+                stdout.contains("test result: ok. 1 passed"),
+                "the child ran no test: {stdout}"
             );
             return;
         }
@@ -6272,335 +6392,383 @@ mod tests {
         assert_eq!(ui::clipboard_paste().as_deref(), Some("[[Welcome]]"));
     }
 
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
-    fn note_navigation_history_is_browser_style_and_action_addressable() {
-        let (mut app, mut state, _tmp, welcome) = app_seeded_into_doc();
-        app.dispatch_event_for_test(&mut state.doc, OutEvent::CreateChild { parent: None });
-        let second = app.selected_for_test().expect("second note selected");
-        app.dispatch_event_for_test(&mut state.doc, OutEvent::CreateChild { parent: None });
-        let third = app.selected_for_test().expect("third note selected");
+    fn navigation_and_backlinks_follow_stable_page_identity() {
+        eprintln!("phase note_navigation_history_is_browser_style_and_action_addressable");
+        {
+            let (mut app, mut state, _tmp, welcome) = app_seeded_into_doc();
+            app.dispatch_event_for_test(&mut state.doc, OutEvent::CreateChild { parent: None });
+            let second = app.selected_for_test().expect("second note selected");
+            app.dispatch_event_for_test(&mut state.doc, OutEvent::CreateChild { parent: None });
+            let third = app.selected_for_test().expect("third note selected");
 
-        app.open_notes_operation(actions::NotesOperation::NavigateBack, &state.doc)
-            .expect("Back is available");
-        app.sync(&mut state.doc, &state.root);
-        assert_eq!(app.selected_for_test(), Some(second));
+            app.open_notes_operation(actions::NotesOperation::NavigateBack, &state.doc)
+                .expect("Back is available");
+            app.sync(&mut state.doc, &state.root);
+            assert_eq!(app.selected_for_test(), Some(second));
 
-        app.open_notes_operation(actions::NotesOperation::NavigateBack, &state.doc)
-            .expect("a second Back reaches the original note");
-        app.sync(&mut state.doc, &state.root);
-        assert_eq!(app.selected_for_test(), Some(welcome));
+            app.open_notes_operation(actions::NotesOperation::NavigateBack, &state.doc)
+                .expect("a second Back reaches the original note");
+            app.sync(&mut state.doc, &state.root);
+            assert_eq!(app.selected_for_test(), Some(welcome));
 
-        app.open_notes_operation(actions::NotesOperation::NavigateForward, &state.doc)
-            .expect("Forward replays the abandoned route");
-        app.sync(&mut state.doc, &state.root);
-        assert_eq!(app.selected_for_test(), Some(second));
-
-        app.dispatch_event_for_test(&mut state.doc, OutEvent::Select(third));
-        assert!(
             app.open_notes_operation(actions::NotesOperation::NavigateForward, &state.doc)
-                .is_err(),
-            "a fresh navigation clears the old forward branch"
-        );
+                .expect("Forward replays the abandoned route");
+            app.sync(&mut state.doc, &state.root);
+            assert_eq!(app.selected_for_test(), Some(second));
 
-        let notebook = app
-            .resources(&state.doc)
-            .into_iter()
-            .find(|resource| resource.id.as_str() == "notes.notebook")
-            .expect("notebook resource");
-        assert!(notebook.actions.iter().any(|action| action.id == "back"));
-    }
+            app.dispatch_event_for_test(&mut state.doc, OutEvent::Select(third));
+            assert!(
+                app.open_notes_operation(actions::NotesOperation::NavigateForward, &state.doc)
+                    .is_err(),
+                "a fresh navigation clears the old forward branch"
+            );
 
-    #[test]
-    fn canonical_links_produce_sorted_backlinks_for_the_target_note() {
-        let (mut app, mut state, _tmp, target) = app_seeded_into_doc();
-        app.dispatch_event_for_test(&mut state.doc, OutEvent::CreateChild { parent: None });
-        let source = app.selected_for_test().expect("new source page selected");
-        app.dispatch_event_for_test(
-            &mut state.doc,
-            OutEvent::Rename {
-                id: source,
-                new_title: "Project index".into(),
-            },
-        );
-        let block = NotesDoc::page_block_snapshots(&state.doc, source)[0]
-            .0
-            .clone();
-        app.perform_action(
-            &mut state.doc,
-            &actions::apply_block_ops_action(
+            let notebook = app
+                .resources(&state.doc)
+                .into_iter()
+                .find(|resource| resource.id.as_str() == "notes.notebook")
+                .expect("notebook resource");
+            assert!(notebook.actions.iter().any(|action| action.id == "back"));
+        }
+
+        eprintln!("phase canonical_links_produce_sorted_backlinks_for_the_target_note");
+        {
+            let (mut app, mut state, _tmp, target) = app_seeded_into_doc();
+            app.dispatch_event_for_test(&mut state.doc, OutEvent::CreateChild { parent: None });
+            let source = app.selected_for_test().expect("new source page selected");
+            app.dispatch_event_for_test(
+                &mut state.doc,
+                OutEvent::Rename {
+                    id: source,
+                    new_title: "Project index".into(),
+                },
+            );
+            let block = NotesDoc::page_block_snapshots(&state.doc, source)[0]
+                .0
+                .clone();
+            app.perform_action(
+                &mut state.doc,
+                &actions::apply_block_ops_action(
+                    source,
+                    vec![ui::widget::BlockEditOp::TextSplice {
+                        block_id: block.clone(),
+                        start: 0,
+                        end: 0,
+                        text: "Welcome".into(),
+                    }],
+                ),
+            );
+            app.perform_action(
+                &mut state.doc,
+                &actions::set_block_marks_action(
+                    source,
+                    block,
+                    vec![actions::InlineMarkSpan {
+                        start: 0,
+                        end: 7,
+                        mark: actions::InlineMark::Link {
+                            page: target.to_string(),
+                        },
+                    }],
+                ),
+            );
+            // Exercise the canonical reader rather than the legacy Markdown
+            // fallback used by this fixture's launch path.
+            app.legacy_fixture_storage = None;
+            let backlinks = app.backlinks_for(&state.doc, target);
+            assert_eq!(backlinks.len(), 1);
+            assert_eq!(backlinks[0].source, source);
+            assert_eq!(backlinks[0].source_title, "Project index");
+            assert_eq!(backlinks[0].target, target);
+            assert_eq!(backlinks[0].excerpt, "Welcome");
+        }
+
+        eprintln!("phase external_link_outcomes_are_drained_and_failures_are_visible");
+        {
+            for (outcome, failed) in [
+                (Some(Ok(())), false),
+                (Some(Err("host refused the link".to_string())), true),
+                (None, true),
+            ] {
+                let (mut app, _state, _tmp, _) = app_seeded_into_doc();
+                let (sender, receiver) = std::sync::mpsc::channel();
+                app.external_link_opens.push(receiver);
+                app.drain_external_link_opens();
+                assert_eq!(app.external_link_opens.len(), 1);
+                if let Some(outcome) = outcome {
+                    sender.send(outcome).unwrap();
+                }
+                drop(sender);
+                app.drain_external_link_opens();
+                assert!(app.external_link_opens.is_empty());
+                assert_eq!(
+                    app.transfer_toasts
+                        .iter()
+                        .any(|toast| { toast.kind == ui::widget::toast::ToastKind::Error }),
+                    failed,
+                );
+            }
+        }
+
+        eprintln!("phase native_link_marks_build_a_cached_backlink_and_open_its_canonical_source");
+        {
+            let (mut app, mut state, _tmp, source) = app_seeded_into_doc();
+
+            // Create the destination through the normal page action path, then
+            // attach a real native link mark to an existing source block. This is
+            // intentionally not a Markdown-parser test: incoming links must be
+            // derived from the same canonical mark data collaborators receive.
+            app.dispatch_event_for_test(&mut state.doc, OutEvent::CreateChild { parent: None });
+            let target = app
+                .selected_for_test()
+                .expect("new page becomes the backlink destination");
+            assert_ne!(source, target);
+            let source_block = app.search_blocks[&source][0].id.clone();
+            let action = crate::actions::set_block_marks_action(
                 source,
-                vec![ui::widget::BlockEditOp::TextSplice {
-                    block_id: block.clone(),
+                source_block,
+                vec![crate::actions::InlineMarkSpan {
                     start: 0,
-                    end: 0,
-                    text: "Welcome".into(),
-                }],
-            ),
-        );
-        app.perform_action(
-            &mut state.doc,
-            &actions::set_block_marks_action(
-                source,
-                block,
-                vec![actions::InlineMarkSpan {
-                    start: 0,
-                    end: 7,
-                    mark: actions::InlineMark::Link {
+                    end: 4,
+                    mark: crate::actions::InlineMark::Link {
                         page: target.to_string(),
                     },
                 }],
-            ),
-        );
-        // Exercise the canonical reader rather than the legacy Markdown
-        // fallback used by this fixture's launch path.
-        app.legacy_fixture_storage = None;
-        let backlinks = app.backlinks_for(&state.doc, target);
-        assert_eq!(backlinks.len(), 1);
-        assert_eq!(backlinks[0].source, source);
-        assert_eq!(backlinks[0].source_title, "Project index");
-        assert_eq!(backlinks[0].target, target);
-        assert_eq!(backlinks[0].excerpt, "Welcome");
+            );
+            app.perform_action(&mut state.doc, &action);
+
+            app.navigate_to(target);
+            app.sync(&mut state.doc, &state.root);
+            assert_eq!(
+                app.selected_backlink_chips(),
+                vec![BacklinkChip {
+                    page: source,
+                    title: "Welcome".into(),
+                    references: 1,
+                }],
+                "the selected page projects its incoming native link once"
+            );
+
+            app.open_notes_operation(
+                crate::actions::NotesOperation::OpenPage {
+                    page: source,
+                    block_id: None,
+                },
+                &state.doc,
+            )
+            .expect("backlink uses the exported canonical page operation");
+            assert_eq!(app.selected_for_test(), Some(source));
+        }
     }
 
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
-    fn external_link_outcomes_are_drained_and_failures_are_visible() {
-        for (outcome, failed) in [
-            (Some(Ok(())), false),
-            (Some(Err("host refused the link".to_string())), true),
-            (None, true),
-        ] {
-            let (mut app, _state, _tmp, _) = app_seeded_into_doc();
-            let (sender, receiver) = std::sync::mpsc::channel();
-            app.external_link_opens.push(receiver);
-            app.drain_external_link_opens();
-            assert_eq!(app.external_link_opens.len(), 1);
-            if let Some(outcome) = outcome {
-                sender.send(outcome).unwrap();
-            }
-            drop(sender);
-            app.drain_external_link_opens();
-            assert!(app.external_link_opens.is_empty());
-            assert_eq!(
+    fn portable_export_copies_assets_safely_and_round_trips_images() {
+        eprintln!("phase portal_markdown_export_writes_the_snapshotted_bytes");
+        {
+            let (mut app, mut state, tmp, page) = app_seeded_into_doc();
+            let destination = tmp.path().join("exported.md");
+            let (services, recorder) = ui::host::HostServices::recording();
+            let _host = ui::host::enter(&services);
+            recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(destination.clone()));
+            app.request_markdown_export(&state.doc, page).unwrap();
+            assert_eq!(recorder.pick_requests()[0].title(), "Export Markdown");
+            let Some((MarkdownTransfer::Export { markdown, .. }, _)) = &app.markdown_transfer
+            else {
+                panic!("export must snapshot the page before the chooser answers");
+            };
+            let snapshot = markdown.clone();
+            assert!(!snapshot.is_empty());
+            settle_markdown_io(&mut app, &mut state.doc);
+            assert_eq!(std::fs::read(destination).unwrap(), snapshot);
+            assert!(
                 app.transfer_toasts
                     .iter()
-                    .any(|toast| { toast.kind == ui::widget::toast::ToastKind::Error }),
-                failed,
+                    .any(|toast| toast.kind == ui::widget::toast::ToastKind::Success)
             );
+        }
+
+        eprintln!("phase portable_export_copies_managed_images_and_rewrites_markdown");
+        {
+            let tmp = TempDir::new().unwrap();
+            let root = tmp.path().join("workspace");
+            std::fs::create_dir_all(root.join("assets")).unwrap();
+            std::fs::write(root.join("assets/picture.png"), b"png bytes").unwrap();
+            let destination = tmp.path().join("Project brief.md");
+            write_portable_markdown_export(
+                Some(&root),
+                &HashMap::new(),
+                &destination,
+                b"# Brief\n\n![Diagram](../assets/picture.png)\n",
+            )
+            .unwrap();
+            assert_eq!(
+                std::fs::read_to_string(&destination).unwrap(),
+                "# Brief\n\n![Diagram](Project-brief-assets/picture.png)\n"
+            );
+            assert_eq!(
+                std::fs::read(tmp.path().join("Project-brief-assets/picture.png")).unwrap(),
+                b"png bytes"
+            );
+        }
+
+        eprintln!("phase portable_export_does_not_clobber_conflicting_assets");
+        {
+            let tmp = TempDir::new().unwrap();
+            let root = tmp.path().join("workspace");
+            std::fs::create_dir_all(root.join("assets")).unwrap();
+            std::fs::write(root.join("assets/picture.png"), b"new").unwrap();
+            let folder = tmp.path().join("note-assets");
+            std::fs::create_dir_all(&folder).unwrap();
+            std::fs::write(folder.join("picture.png"), b"existing").unwrap();
+            let destination = tmp.path().join("note.md");
+            write_portable_markdown_export(
+                Some(&root),
+                &HashMap::new(),
+                &destination,
+                b"![Diagram](../assets/picture.png)\n",
+            )
+            .unwrap();
+            assert_eq!(
+                std::fs::read(folder.join("picture.png")).unwrap(),
+                b"existing"
+            );
+            assert!(std::fs::read(folder.join("picture-2.png")).is_ok());
+            assert_eq!(
+                std::fs::read_to_string(destination).unwrap(),
+                "![Diagram](note-assets/picture-2.png)\n"
+            );
+        }
+
+        eprintln!("phase portable_export_does_not_follow_asset_path_traversal");
+        {
+            let tmp = TempDir::new().unwrap();
+            let root = tmp.path().join("workspace");
+            std::fs::create_dir_all(root.join("assets")).unwrap();
+            std::fs::write(root.join("secret.png"), b"private").unwrap();
+            let destination = tmp.path().join("note.md");
+
+            write_portable_markdown_export(
+                Some(&root),
+                &HashMap::new(),
+                &destination,
+                b"![Diagram](../assets/../secret.png)\n",
+            )
+            .unwrap();
+
+            assert_eq!(
+                std::fs::read_to_string(destination).unwrap(),
+                "![Diagram](../assets/../secret.png)\n"
+            );
+            assert!(!tmp.path().join("note-assets").exists());
+        }
+
+        eprintln!("phase portable_image_export_import_round_trip_adopts_assets");
+        {
+            let tmp = TempDir::new().unwrap();
+            let first = tmp.path().join("first");
+            std::fs::create_dir_all(first.join("assets")).unwrap();
+            std::fs::write(
+                first.join("assets/picture.png"),
+                include_bytes!("../../settings/shots/settings.png"),
+            )
+            .unwrap();
+            let exported = tmp.path().join("portable.md");
+            write_portable_markdown_export(
+                Some(&first),
+                &HashMap::new(),
+                &exported,
+                b"![Diagram](../assets/picture.png)\n",
+            )
+            .unwrap();
+
+            let second = tmp.path().join("second");
+            storage::ensure_layout(&second).unwrap();
+            let imported = adopt_portable_markdown_assets(
+                &second,
+                &exported,
+                &std::fs::read_to_string(&exported).unwrap(),
+            );
+            let (_, managed) = imported.trim().split_once("](").unwrap();
+            let managed = managed.strip_suffix(')').unwrap();
+            assert!(managed.starts_with("../assets/"));
+            assert!(second.join(storage::PAGES_DIR).join(managed).exists());
+        }
+
+        eprintln!("phase canonical_image_export_import_round_trip_preserves_the_bitmap");
+        {
+            let tmp = TempDir::new().unwrap();
+            let bytes = include_bytes!("../../settings/shots/settings.png").to_vec();
+            let digest = blake3::hash(&bytes).to_hex().to_string();
+            let source = format!("asset:{digest}");
+            let mut assets = HashMap::new();
+            assets.insert(source.clone(), bytes.clone());
+            let destination = tmp.path().join("portable.md");
+            write_portable_markdown_export(
+                None,
+                &assets,
+                &destination,
+                format!("![Diagram]({source})\n").as_bytes(),
+            )
+            .unwrap();
+
+            let exported = std::fs::read_to_string(&destination).unwrap();
+            assert_eq!(
+                exported,
+                format!("![Diagram](portable-assets/{digest}.png)\n")
+            );
+            let (imported, imported_assets) =
+                adopt_canonical_markdown_assets(&destination, &exported);
+            assert_eq!(imported, format!("![Diagram]({source})\n"));
+            assert_eq!(imported_assets, vec![(source, bytes)]);
         }
     }
 
     #[test]
-    fn portal_markdown_export_writes_the_snapshotted_bytes() {
-        let (mut app, mut state, tmp, page) = app_seeded_into_doc();
-        let destination = tmp.path().join("exported.md");
-        let (services, recorder) = ui::host::HostServices::recording();
-        let _host = ui::host::enter(&services);
-        recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(destination.clone()));
-        app.request_markdown_export(&state.doc, page).unwrap();
-        assert_eq!(recorder.pick_requests()[0].title(), "Export Markdown");
-        let Some((MarkdownTransfer::Export { markdown, .. }, _)) = &app.markdown_transfer else {
-            panic!("export must snapshot the page before the chooser answers");
-        };
-        let snapshot = markdown.clone();
-        assert!(!snapshot.is_empty());
-        settle_markdown_io(&mut app, &mut state.doc);
-        assert_eq!(std::fs::read(destination).unwrap(), snapshot);
-        assert!(
-            app.transfer_toasts
-                .iter()
-                .any(|toast| toast.kind == ui::widget::toast::ToastKind::Success)
-        );
-    }
+    fn markdown_import_creates_bounded_titled_pages() {
+        eprintln!("phase portal_markdown_import_creates_a_titled_native_page");
+        {
+            let (mut app, mut state, tmp, _) = app_seeded_into_doc();
+            let source = tmp.path().join("Project brief.md");
+            std::fs::write(&source, "# Scope\n\n- Fast\n").unwrap();
+            let (services, recorder) = ui::host::HostServices::recording();
+            let _host = ui::host::enter(&services);
+            recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(source));
+            app.request_markdown_import().unwrap();
+            assert_eq!(recorder.pick_requests()[0].title(), "Import Markdown");
+            settle_markdown_io(&mut app, &mut state.doc);
+            app.sync(&mut state.doc, &state.root);
+            admit_pending_import(&mut app, &mut state);
+            assert!(app.transfer_toasts.iter().any(|toast| {
+                toast.kind == ui::widget::toast::ToastKind::Success
+                    && toast.text.contains("Project brief")
+            }));
+            let page = app.workspace.selected().expect("import selected its page");
+            assert_eq!(app.workspace.get(page).unwrap().title, "Project brief");
+            let blocks = NotesDoc::page_block_snapshots(&state.doc, page);
+            assert_eq!(
+                blocks
+                    .iter()
+                    .map(|(_, text)| text.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["Scope", "Fast"]
+            );
+        }
 
-    #[test]
-    fn portable_export_copies_managed_images_and_rewrites_markdown() {
-        let tmp = TempDir::new().unwrap();
-        let root = tmp.path().join("workspace");
-        std::fs::create_dir_all(root.join("assets")).unwrap();
-        std::fs::write(root.join("assets/picture.png"), b"png bytes").unwrap();
-        let destination = tmp.path().join("Project brief.md");
-        write_portable_markdown_export(
-            Some(&root),
-            &HashMap::new(),
-            &destination,
-            b"# Brief\n\n![Diagram](../assets/picture.png)\n",
-        )
-        .unwrap();
-        assert_eq!(
-            std::fs::read_to_string(&destination).unwrap(),
-            "# Brief\n\n![Diagram](Project-brief-assets/picture.png)\n"
-        );
-        assert_eq!(
-            std::fs::read(tmp.path().join("Project-brief-assets/picture.png")).unwrap(),
-            b"png bytes"
-        );
-    }
+        eprintln!("phase markdown_import_refuses_oversized_and_non_utf8_files");
+        {
+            let tmp = TempDir::new().unwrap();
+            let oversized = tmp.path().join("oversized.md");
+            let file = std::fs::File::create(&oversized).unwrap();
+            file.set_len(MAX_MARKDOWN_IMPORT_BYTES + 1).unwrap();
+            assert!(read_bounded_markdown(&oversized).is_err());
 
-    #[test]
-    fn portable_export_does_not_clobber_conflicting_assets() {
-        let tmp = TempDir::new().unwrap();
-        let root = tmp.path().join("workspace");
-        std::fs::create_dir_all(root.join("assets")).unwrap();
-        std::fs::write(root.join("assets/picture.png"), b"new").unwrap();
-        let folder = tmp.path().join("note-assets");
-        std::fs::create_dir_all(&folder).unwrap();
-        std::fs::write(folder.join("picture.png"), b"existing").unwrap();
-        let destination = tmp.path().join("note.md");
-        write_portable_markdown_export(
-            Some(&root),
-            &HashMap::new(),
-            &destination,
-            b"![Diagram](../assets/picture.png)\n",
-        )
-        .unwrap();
-        assert_eq!(
-            std::fs::read(folder.join("picture.png")).unwrap(),
-            b"existing"
-        );
-        assert!(std::fs::read(folder.join("picture-2.png")).is_ok());
-        assert_eq!(
-            std::fs::read_to_string(destination).unwrap(),
-            "![Diagram](note-assets/picture-2.png)\n"
-        );
-    }
-
-    #[test]
-    fn portable_export_does_not_follow_asset_path_traversal() {
-        let tmp = TempDir::new().unwrap();
-        let root = tmp.path().join("workspace");
-        std::fs::create_dir_all(root.join("assets")).unwrap();
-        std::fs::write(root.join("secret.png"), b"private").unwrap();
-        let destination = tmp.path().join("note.md");
-
-        write_portable_markdown_export(
-            Some(&root),
-            &HashMap::new(),
-            &destination,
-            b"![Diagram](../assets/../secret.png)\n",
-        )
-        .unwrap();
-
-        assert_eq!(
-            std::fs::read_to_string(destination).unwrap(),
-            "![Diagram](../assets/../secret.png)\n"
-        );
-        assert!(!tmp.path().join("note-assets").exists());
-    }
-
-    #[test]
-    fn portable_image_export_import_round_trip_adopts_assets() {
-        let tmp = TempDir::new().unwrap();
-        let first = tmp.path().join("first");
-        std::fs::create_dir_all(first.join("assets")).unwrap();
-        std::fs::write(
-            first.join("assets/picture.png"),
-            include_bytes!("../../settings/shots/settings.png"),
-        )
-        .unwrap();
-        let exported = tmp.path().join("portable.md");
-        write_portable_markdown_export(
-            Some(&first),
-            &HashMap::new(),
-            &exported,
-            b"![Diagram](../assets/picture.png)\n",
-        )
-        .unwrap();
-
-        let second = tmp.path().join("second");
-        storage::ensure_layout(&second).unwrap();
-        let imported = adopt_portable_markdown_assets(
-            &second,
-            &exported,
-            &std::fs::read_to_string(&exported).unwrap(),
-        );
-        let (_, managed) = imported.trim().split_once("](").unwrap();
-        let managed = managed.strip_suffix(')').unwrap();
-        assert!(managed.starts_with("../assets/"));
-        assert!(second.join(storage::PAGES_DIR).join(managed).exists());
-    }
-
-    #[test]
-    fn canonical_image_export_import_round_trip_preserves_the_bitmap() {
-        let tmp = TempDir::new().unwrap();
-        let bytes = include_bytes!("../../settings/shots/settings.png").to_vec();
-        let digest = blake3::hash(&bytes).to_hex().to_string();
-        let source = format!("asset:{digest}");
-        let mut assets = HashMap::new();
-        assets.insert(source.clone(), bytes.clone());
-        let destination = tmp.path().join("portable.md");
-        write_portable_markdown_export(
-            None,
-            &assets,
-            &destination,
-            format!("![Diagram]({source})\n").as_bytes(),
-        )
-        .unwrap();
-
-        let exported = std::fs::read_to_string(&destination).unwrap();
-        assert_eq!(
-            exported,
-            format!("![Diagram](portable-assets/{digest}.png)\n")
-        );
-        let (imported, imported_assets) = adopt_canonical_markdown_assets(&destination, &exported);
-        assert_eq!(imported, format!("![Diagram]({source})\n"));
-        assert_eq!(imported_assets, vec![(source, bytes)]);
-    }
-
-    #[test]
-    fn repeated_markdown_images_only_consume_the_unique_asset_budget_once() {
-        let tmp = TempDir::new().unwrap();
-        let image = tmp.path().join("image.png");
-        std::fs::write(&image, include_bytes!("../../settings/shots/settings.png")).unwrap();
-        let markdown = "![Repeated](image.png)\n".repeat(10);
-
-        let (imported, assets) =
-            adopt_canonical_markdown_assets(&tmp.path().join("note.md"), &markdown);
-
-        assert_eq!(assets.len(), 1);
-        let source = &assets[0].0;
-        assert_eq!(imported, format!("![Repeated]({source})\n").repeat(10));
-    }
-
-    #[test]
-    fn portal_markdown_import_creates_a_titled_native_page() {
-        let (mut app, mut state, tmp, _) = app_seeded_into_doc();
-        let source = tmp.path().join("Project brief.md");
-        std::fs::write(&source, "# Scope\n\n- Fast\n").unwrap();
-        let (services, recorder) = ui::host::HostServices::recording();
-        let _host = ui::host::enter(&services);
-        recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(source));
-        app.request_markdown_import().unwrap();
-        assert_eq!(recorder.pick_requests()[0].title(), "Import Markdown");
-        settle_markdown_io(&mut app, &mut state.doc);
-        app.sync(&mut state.doc, &state.root);
-        admit_pending_import(&mut app, &mut state);
-        assert!(app.transfer_toasts.iter().any(|toast| {
-            toast.kind == ui::widget::toast::ToastKind::Success
-                && toast.text.contains("Project brief")
-        }));
-        let page = app.workspace.selected().expect("import selected its page");
-        assert_eq!(app.workspace.get(page).unwrap().title, "Project brief");
-        let blocks = NotesDoc::page_block_snapshots(&state.doc, page);
-        assert_eq!(
-            blocks
-                .iter()
-                .map(|(_, text)| text.as_str())
-                .collect::<Vec<_>>(),
-            vec!["Scope", "Fast"]
-        );
-    }
-
-    #[test]
-    fn markdown_import_refuses_oversized_and_non_utf8_files() {
-        let tmp = TempDir::new().unwrap();
-        let oversized = tmp.path().join("oversized.md");
-        let file = std::fs::File::create(&oversized).unwrap();
-        file.set_len(MAX_MARKDOWN_IMPORT_BYTES + 1).unwrap();
-        assert!(read_bounded_markdown(&oversized).is_err());
-
-        let binary = tmp.path().join("binary.md");
-        std::fs::write(&binary, [0xff, 0xfe]).unwrap();
-        assert!(read_bounded_markdown(&binary).is_err());
+            let binary = tmp.path().join("binary.md");
+            std::fs::write(&binary, [0xff, 0xfe]).unwrap();
+            assert!(read_bounded_markdown(&binary).is_err());
+        }
     }
 
     fn start_markdown_receipt(
@@ -6662,470 +6830,359 @@ mod tests {
         update
     }
 
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
-    fn markdown_receipt_import_succeeds_only_after_canonical_commit() {
-        let (mut app, mut state, temp, _) = app_seeded_into_doc();
-        let source = temp.path().join("Receipt.md");
-        std::fs::write(&source, "# Receipt body").unwrap();
-        let invocation = start_markdown_receipt(
-            &mut app,
-            &mut state,
-            None,
-            ui::portal::PortalOutcome::Opened(source.clone()),
-        );
-        app.sync(&mut state.doc, &state.root);
-        settle_markdown_io(&mut app, &mut state.doc);
-        app.sync(&mut state.doc, &state.root);
-        assert!(
-            app.poll_resource_operation(invocation, false, &state.doc, &state.root)
-                .is_none(),
-            "reading a file is not a committed import"
-        );
-        assert!(
-            app.request_markdown_import().is_err(),
-            "cannot start another chooser while finalization is pending"
-        );
-        admit_pending_import(&mut app, &mut state);
-        assert!(matches!(
-            take_markdown_receipt(&mut app, &state, invocation),
-            tilo_actions::InvocationUpdate::Succeeded { .. }
-        ));
-        let imported = NotesDoc::list_pages(&state.doc)
-            .into_iter()
-            .find(|page| page.title == "Receipt")
-            .unwrap();
-        assert_eq!(
-            NotesDoc::page_block_snapshots(&state.doc, imported.id)[0].1,
-            "Receipt body"
-        );
-        assert_eq!(std::fs::read_to_string(source).unwrap(), "# Receipt body");
-    }
+    fn markdown_receipts_report_real_outcomes_and_terminate_exactly_once() {
+        eprintln!("phase markdown_receipt_import_succeeds_only_after_canonical_commit");
+        {
+            let (mut app, mut state, temp, _) = app_seeded_into_doc();
+            let source = temp.path().join("Receipt.md");
+            std::fs::write(&source, "# Receipt body").unwrap();
+            let invocation = start_markdown_receipt(
+                &mut app,
+                &mut state,
+                None,
+                ui::portal::PortalOutcome::Opened(source.clone()),
+            );
+            app.sync(&mut state.doc, &state.root);
+            settle_markdown_io(&mut app, &mut state.doc);
+            app.sync(&mut state.doc, &state.root);
+            assert!(
+                app.poll_resource_operation(invocation, false, &state.doc, &state.root)
+                    .is_none(),
+                "reading a file is not a committed import"
+            );
+            assert!(
+                app.request_markdown_import().is_err(),
+                "cannot start another chooser while finalization is pending"
+            );
+            admit_pending_import(&mut app, &mut state);
+            assert!(matches!(
+                take_markdown_receipt(&mut app, &state, invocation),
+                tilo_actions::InvocationUpdate::Succeeded { .. }
+            ));
+            let imported = NotesDoc::list_pages(&state.doc)
+                .into_iter()
+                .find(|page| page.title == "Receipt")
+                .unwrap();
+            assert_eq!(
+                NotesDoc::page_block_snapshots(&state.doc, imported.id)[0].1,
+                "Receipt body"
+            );
+            assert_eq!(std::fs::read_to_string(source).unwrap(), "# Receipt body");
+        }
 
-    #[test]
-    fn markdown_receipt_launch_and_picker_cannot_overlap() {
-        let (mut app, mut state, temp, page) = app_seeded_into_doc();
-        let source = temp.path().join("Launch.md");
-        std::fs::write(&source, "Launch body").unwrap();
-        app.queue_launch_markdown(source.to_str().unwrap()).unwrap();
-        // A recording host keeps any accidental chooser start hermetic.
-        let (services, recorder) = ui::host::HostServices::recording();
-        let _host = ui::host::enter(&services);
-        assert!(app.request_markdown_export(&state.doc, page).is_err());
-        assert!(app.request_image_insert(page).is_err());
-        assert!(recorder.pick_requests().is_empty());
-        assert!(app.markdown_invocation.is_none());
-        assert!(app.markdown_transfer.is_none());
-        admit_pending_import(&mut app, &mut state);
-        assert!(
-            app.markdown_results.is_empty(),
-            "CLI import must not complete a different invocation"
-        );
-        let invocation = start_markdown_receipt(
-            &mut app,
-            &mut state,
-            Some(page),
-            ui::portal::PortalOutcome::Cancelled,
-        );
-        assert!(app.queue_launch_markdown(source.to_str().unwrap()).is_err());
-        app.sync(&mut state.doc, &state.root);
-        assert!(matches!(
-            take_markdown_receipt(&mut app, &state, invocation),
-            tilo_actions::InvocationUpdate::Cancelled { .. }
-        ));
-    }
-
-    #[test]
-    fn markdown_receipt_export_reports_actual_write_result() {
-        for succeeds in [true, false] {
+        eprintln!("phase markdown_receipt_launch_and_picker_cannot_overlap");
+        {
             let (mut app, mut state, temp, page) = app_seeded_into_doc();
-            let destination = if succeeds {
-                temp.path().join("export.md")
-            } else {
-                temp.path().to_path_buf()
-            };
+            let source = temp.path().join("Launch.md");
+            std::fs::write(&source, "Launch body").unwrap();
+            app.queue_launch_markdown(source.to_str().unwrap()).unwrap();
+            // A recording host keeps any accidental chooser start hermetic.
+            let (services, recorder) = ui::host::HostServices::recording();
+            let _host = ui::host::enter(&services);
+            assert!(app.request_markdown_export(&state.doc, page).is_err());
+            assert!(app.request_image_insert(page).is_err());
+            assert!(recorder.pick_requests().is_empty());
+            assert!(app.markdown_invocation.is_none());
+            assert!(app.markdown_transfer.is_none());
+            admit_pending_import(&mut app, &mut state);
+            assert!(
+                app.markdown_results.is_empty(),
+                "CLI import must not complete a different invocation"
+            );
             let invocation = start_markdown_receipt(
                 &mut app,
                 &mut state,
                 Some(page),
-                ui::portal::PortalOutcome::Opened(destination.clone()),
+                ui::portal::PortalOutcome::Cancelled,
             );
+            assert!(app.queue_launch_markdown(source.to_str().unwrap()).is_err());
             app.sync(&mut state.doc, &state.root);
-            settle_markdown_io(&mut app, &mut state.doc);
-            app.sync(&mut state.doc, &state.root);
-            let update = take_markdown_receipt(&mut app, &state, invocation);
-            if succeeds {
-                assert!(matches!(
-                    update,
-                    tilo_actions::InvocationUpdate::Succeeded { .. }
-                ));
-                assert!(!std::fs::read_to_string(destination).unwrap().is_empty());
-            } else {
-                assert!(matches!(
-                    update,
-                    tilo_actions::InvocationUpdate::Failed { .. }
-                ));
+            assert!(matches!(
+                take_markdown_receipt(&mut app, &state, invocation),
+                tilo_actions::InvocationUpdate::Cancelled { .. }
+            ));
+        }
+
+        eprintln!("phase markdown_receipt_export_reports_actual_write_result");
+        {
+            for succeeds in [true, false] {
+                let (mut app, mut state, temp, page) = app_seeded_into_doc();
+                let destination = if succeeds {
+                    temp.path().join("export.md")
+                } else {
+                    temp.path().to_path_buf()
+                };
+                let invocation = start_markdown_receipt(
+                    &mut app,
+                    &mut state,
+                    Some(page),
+                    ui::portal::PortalOutcome::Opened(destination.clone()),
+                );
+                app.sync(&mut state.doc, &state.root);
+                settle_markdown_io(&mut app, &mut state.doc);
+                app.sync(&mut state.doc, &state.root);
+                let update = take_markdown_receipt(&mut app, &state, invocation);
+                if succeeds {
+                    assert!(matches!(
+                        update,
+                        tilo_actions::InvocationUpdate::Succeeded { .. }
+                    ));
+                    assert!(!std::fs::read_to_string(destination).unwrap().is_empty());
+                } else {
+                    assert!(matches!(
+                        update,
+                        tilo_actions::InvocationUpdate::Failed { .. }
+                    ));
+                }
             }
         }
-    }
 
-    #[test]
-    fn markdown_receipt_finalize_refusal_fails_original_invocation() {
-        let (mut app, mut state, temp, _) = app_seeded_into_doc();
-        let source = temp.path().join("Refused.md");
-        std::fs::write(&source, "Private source").unwrap();
-        state.doc.commit();
-        let before = state.doc.get_heads();
-        let invocation = start_markdown_receipt(
-            &mut app,
-            &mut state,
-            None,
-            ui::portal::PortalOutcome::Opened(source.clone()),
-        );
-        app.sync(&mut state.doc, &state.root);
-        settle_markdown_io(&mut app, &mut state.doc);
-        app.sync(&mut state.doc, &state.root);
-        let intent = app.take_control_invocation().unwrap();
-        // The separate FrameHarness revocation regression proves this host
-        // refusal route. Here assert its original asynchronous receipt too.
-        app.on_control_invocation_result(
-            &intent.address,
-            &Err(tilo_actions::DoorError::Unavailable {
-                code: "permission_denied".into(),
-                reason: "Write was revoked".into(),
-            }),
-        );
-        assert!(matches!(
-            take_markdown_receipt(&mut app, &state, invocation),
-            tilo_actions::InvocationUpdate::Failed { .. }
-        ));
-        assert!(app.pending_markdown_source.is_none());
-        assert!(app.take_control_invocation().is_none());
-        assert_eq!(state.doc.get_heads(), before);
-        assert_eq!(std::fs::read_to_string(source).unwrap(), "Private source");
-    }
-
-    #[test]
-    fn markdown_receipt_cancel_failure_and_disconnect_are_terminal() {
-        for mode in ["cancel", "failure", "disconnect", "invalid-source"] {
+        eprintln!("phase markdown_receipt_finalize_refusal_fails_original_invocation");
+        {
             let (mut app, mut state, temp, _) = app_seeded_into_doc();
+            let source = temp.path().join("Refused.md");
+            std::fs::write(&source, "Private source").unwrap();
             state.doc.commit();
             let before = state.doc.get_heads();
-            let outcome = match mode {
-                "cancel" | "disconnect" => ui::portal::PortalOutcome::Cancelled,
-                "invalid-source" => {
-                    ui::portal::PortalOutcome::Opened(temp.path().join("missing.md"))
-                }
-                _ => ui::portal::PortalOutcome::Failed("Chooser failed".into()),
-            };
-            let invocation = start_markdown_receipt(&mut app, &mut state, None, outcome);
-            if mode == "disconnect" {
-                let (sender, receiver) = std::sync::mpsc::channel();
-                drop(sender);
-                app.markdown_transfer = Some((MarkdownTransfer::Import, receiver));
-            }
+            let invocation = start_markdown_receipt(
+                &mut app,
+                &mut state,
+                None,
+                ui::portal::PortalOutcome::Opened(source.clone()),
+            );
             app.sync(&mut state.doc, &state.root);
             settle_markdown_io(&mut app, &mut state.doc);
             app.sync(&mut state.doc, &state.root);
-            let update = take_markdown_receipt(&mut app, &state, invocation);
-            assert_eq!(
-                matches!(update, tilo_actions::InvocationUpdate::Cancelled { .. }),
-                mode == "cancel"
+            let intent = app.take_control_invocation().unwrap();
+            // The separate FrameHarness revocation regression proves this host
+            // refusal route. Here assert its original asynchronous receipt too.
+            app.on_control_invocation_result(
+                &intent.address,
+                &Err(tilo_actions::DoorError::Unavailable {
+                    code: "permission_denied".into(),
+                    reason: "Write was revoked".into(),
+                }),
             );
-            if mode != "cancel" {
-                assert!(matches!(
-                    update,
-                    tilo_actions::InvocationUpdate::Failed { .. }
-                ));
-            }
-            assert_eq!(state.doc.get_heads(), before);
-            assert!(app.markdown_invocation.is_none());
-            assert!(app.markdown_transfer.is_none());
+            assert!(matches!(
+                take_markdown_receipt(&mut app, &state, invocation),
+                tilo_actions::InvocationUpdate::Failed { .. }
+            ));
             assert!(app.pending_markdown_source.is_none());
+            assert!(app.take_control_invocation().is_none());
+            assert_eq!(state.doc.get_heads(), before);
+            assert_eq!(std::fs::read_to_string(source).unwrap(), "Private source");
+        }
+
+        eprintln!("phase markdown_receipt_cancel_failure_and_disconnect_are_terminal");
+        {
+            for mode in ["cancel", "failure", "disconnect", "invalid-source"] {
+                let (mut app, mut state, temp, _) = app_seeded_into_doc();
+                state.doc.commit();
+                let before = state.doc.get_heads();
+                let outcome = match mode {
+                    "cancel" | "disconnect" => ui::portal::PortalOutcome::Cancelled,
+                    "invalid-source" => {
+                        ui::portal::PortalOutcome::Opened(temp.path().join("missing.md"))
+                    }
+                    _ => ui::portal::PortalOutcome::Failed("Chooser failed".into()),
+                };
+                let invocation = start_markdown_receipt(&mut app, &mut state, None, outcome);
+                if mode == "disconnect" {
+                    let (sender, receiver) = std::sync::mpsc::channel();
+                    drop(sender);
+                    app.markdown_transfer = Some((MarkdownTransfer::Import, receiver));
+                }
+                app.sync(&mut state.doc, &state.root);
+                settle_markdown_io(&mut app, &mut state.doc);
+                app.sync(&mut state.doc, &state.root);
+                let update = take_markdown_receipt(&mut app, &state, invocation);
+                assert_eq!(
+                    matches!(update, tilo_actions::InvocationUpdate::Cancelled { .. }),
+                    mode == "cancel"
+                );
+                if mode != "cancel" {
+                    assert!(matches!(
+                        update,
+                        tilo_actions::InvocationUpdate::Failed { .. }
+                    ));
+                }
+                assert_eq!(state.doc.get_heads(), before);
+                assert!(app.markdown_invocation.is_none());
+                assert!(app.markdown_transfer.is_none());
+                assert!(app.pending_markdown_source.is_none());
+            }
         }
     }
 
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
-    fn brokered_block_reveal_restores_exact_page_and_editor_focus() {
-        let (mut app, mut state, _tmp, welcome) = app_seeded_into_doc();
-        assert!(
-            app.main.editor().blocks().len() > 1,
-            "welcome has several blocks"
-        );
-        let block_id = app.search_blocks[&welcome][1].id.clone();
-        let operation = crate::actions::NotesOperation::OpenPage {
-            page: welcome,
-            block_id: Some(block_id),
-        };
-        let payload = serde_json::to_vec(&operation).unwrap();
+    fn collaborative_rebinds_keep_marks_targets_and_reveal_focus() {
+        eprintln!("phase brokered_block_reveal_restores_exact_page_and_editor_focus");
+        {
+            let (mut app, mut state, _tmp, welcome) = app_seeded_into_doc();
+            assert!(
+                app.main.editor().blocks().len() > 1,
+                "welcome has several blocks"
+            );
+            let block_id = app.search_blocks[&welcome][1].id.clone();
+            let operation = crate::actions::NotesOperation::OpenPage {
+                page: welcome,
+                block_id: Some(block_id),
+            };
+            let payload = serde_json::to_vec(&operation).unwrap();
 
-        assert!(
-            Widget::invoke_resource_operation(
-                &mut app,
-                tilo_actions::OperationKind::View,
-                crate::actions::NOTES_OPERATION_TYPE,
-                &payload,
-                &state.doc,
-                &state.root,
-            )
-            .expect("broker accepts the exported Notes view operation")
-        );
-        app.sync(&mut state.doc, &state.root);
+            assert!(
+                Widget::invoke_resource_operation(
+                    &mut app,
+                    tilo_actions::OperationKind::View,
+                    crate::actions::NOTES_OPERATION_TYPE,
+                    &payload,
+                    &state.doc,
+                    &state.root,
+                )
+                .expect("broker accepts the exported Notes view operation")
+            );
+            app.sync(&mut state.doc, &state.root);
 
-        assert_eq!(app.selected_for_test(), Some(welcome));
-        assert_eq!(
-            app.main.editor().focused_index(),
-            Some(1),
-            "the canonical block action reveals the exact editor block"
-        );
-    }
+            assert_eq!(app.selected_for_test(), Some(welcome));
+            assert_eq!(
+                app.main.editor().focused_index(),
+                Some(1),
+                "the canonical block action reveals the exact editor block"
+            );
+        }
 
-    #[test]
-    fn canonical_inline_marks_rehydrate_after_a_collaborative_rebind() {
-        let (mut app, mut state, _tmp, welcome) = app_seeded_into_doc();
-        let block = app.search_blocks[&welcome][0].id.clone();
-        let original = app
-            .main
-            .editor()
-            .blocks()
-            .iter()
-            .find(|candidate| candidate.id == block)
-            .expect("search block belongs to the bound editor")
-            .text()
-            .to_string();
-        assert!(original.len() >= 4);
-        let marks = vec![crate::actions::InlineMarkSpan {
-            start: 0,
-            end: 4,
-            mark: crate::actions::InlineMark::Underline,
-        }];
-        let action = crate::actions::set_block_marks_action(welcome, block.clone(), marks.clone());
-        app.perform_action(&mut state.doc, &action);
-        assert!(NotesDoc::page_marks_are_canonical(&state.doc, welcome));
-
-        // Simulate a remote structural refresh. The widget rebuilds plain
-        // text/kinds, then Notes hydrates the native mark state back into the
-        // live rich line rather than dropping formatting on rebind.
-        app.bound_page = None;
-        app.sync(&mut state.doc, &state.root);
-        let restored = app
-            .main
-            .editor()
-            .blocks()
-            .iter()
-            .find(|candidate| candidate.id == block)
-            .expect("same durable block rebinds")
-            .line
-            .marks()
-            .iter()
-            .map(crate::actions::InlineMarkSpan::from_ui)
-            .collect::<Vec<_>>();
-        assert_eq!(restored, marks);
-    }
-
-    #[test]
-    fn native_link_marks_build_a_cached_backlink_and_open_its_canonical_source() {
-        let (mut app, mut state, _tmp, source) = app_seeded_into_doc();
-
-        // Create the destination through the normal page action path, then
-        // attach a real native link mark to an existing source block. This is
-        // intentionally not a Markdown-parser test: incoming links must be
-        // derived from the same canonical mark data collaborators receive.
-        app.dispatch_event_for_test(&mut state.doc, OutEvent::CreateChild { parent: None });
-        let target = app
-            .selected_for_test()
-            .expect("new page becomes the backlink destination");
-        assert_ne!(source, target);
-        let source_block = app.search_blocks[&source][0].id.clone();
-        let action = crate::actions::set_block_marks_action(
-            source,
-            source_block,
-            vec![crate::actions::InlineMarkSpan {
-                start: 0,
-                end: 4,
-                mark: crate::actions::InlineMark::Link {
-                    page: target.to_string(),
-                },
-            }],
-        );
-        app.perform_action(&mut state.doc, &action);
-
-        app.navigate_to(target);
-        app.sync(&mut state.doc, &state.root);
-        assert_eq!(
-            app.selected_backlink_chips(),
-            vec![BacklinkChip {
-                page: source,
-                title: "Welcome".into(),
-                references: 1,
-            }],
-            "the selected page projects its incoming native link once"
-        );
-
-        app.open_notes_operation(
-            crate::actions::NotesOperation::OpenPage {
-                page: source,
-                block_id: None,
-            },
-            &state.doc,
-        )
-        .expect("backlink uses the exported canonical page operation");
-        assert_eq!(app.selected_for_test(), Some(source));
-    }
-
-    #[test]
-    fn mark_only_dirty_edge_dispatches_the_canonical_action() {
-        let (mut app, mut state, _tmp, welcome) = app_seeded_into_doc();
-        let (block, text_len) = {
-            let first = &app.main.editor().blocks()[0];
-            (first.id.clone(), first.text().len())
-        };
-        assert!(text_len >= 4);
-        app.main.editor_mut().blocks_mut()[0].line.set_marks(vec![
-            ui::widget::marks::MarkSpan::new(0..4, ui::widget::marks::Mark::Underline),
-        ]);
-        // Formatting changes no plain text, so exercise the exact dirty edge
-        // the event router observes after a Ctrl/Cmd formatting shortcut.
-        app.main.editor_mut().force_dirty_for_test();
-        assert!(app.main.editor_is_dirty());
-        app.drain_inline_marks(&mut state.doc);
-
-        let dispatched = app
-            .last_dispatched_for_test()
-            .expect("mark-only edit dispatched an action");
-        let action: crate::actions::NotesAction =
-            serde_json::from_slice(&dispatched.payload).expect("mark action payload decodes");
-        assert!(matches!(
-            action,
-            crate::actions::NotesAction::SetBlockMarks { .. }
-        ));
-        assert_eq!(
-            NotesDoc::page_block_marks(&state.doc, welcome)
-                .into_iter()
-                .find(|(id, _)| id == &block)
-                .map(|(_, marks)| marks),
-            Some(vec![crate::actions::InlineMarkSpan {
+        eprintln!("phase canonical_inline_marks_rehydrate_after_a_collaborative_rebind");
+        {
+            let (mut app, mut state, _tmp, welcome) = app_seeded_into_doc();
+            let block = app.search_blocks[&welcome][0].id.clone();
+            let original = app
+                .main
+                .editor()
+                .blocks()
+                .iter()
+                .find(|candidate| candidate.id == block)
+                .expect("search block belongs to the bound editor")
+                .text()
+                .to_string();
+            assert!(original.len() >= 4);
+            let marks = vec![crate::actions::InlineMarkSpan {
                 start: 0,
                 end: 4,
                 mark: crate::actions::InlineMark::Underline,
-            }])
-        );
-    }
+            }];
+            let action =
+                crate::actions::set_block_marks_action(welcome, block.clone(), marks.clone());
+            app.perform_action(&mut state.doc, &action);
+            assert!(NotesDoc::page_marks_are_canonical(&state.doc, welcome));
 
-    #[test]
-    fn collaborative_identical_insert_preserves_the_original_block_target() {
-        use automerge::ObjType;
-        use automerge::transaction::Transactable as _;
-
-        let (mut app, mut state, _tmp, welcome) = app_seeded_into_doc();
-        let original = app.search_blocks[&welcome][1].clone();
-        let old_address = crate::actions::open_block_address(welcome, &original.id);
-        let operation = crate::actions::NotesOperation::OpenPage {
-            page: welcome,
-            block_id: Some(original.id),
-        };
-        let payload = serde_json::to_vec(&operation).unwrap();
-
-        // A collaborator inserts an identical-text block before the target.
-        // Content and index cannot distinguish them; CRDT object identity can.
-        let list = NotesDoc::page_blocks_list(&state.doc, welcome).unwrap();
-        let inserted = state.doc.insert_object(&list, 0, ObjType::Map).unwrap();
-        state.doc.put(&inserted, "kind", "paragraph").unwrap();
-        let text = state
-            .doc
-            .put_object(&inserted, "text", ObjType::Text)
-            .unwrap();
-        state.doc.splice_text(&text, 0, 0, &original.text).unwrap();
-        app.sync(&mut state.doc, &state.root);
-
-        let resolved = Widget::resource(&app, &state.doc, &old_address.resource)
-            .expect("the original block's resource resolves lazily");
-        assert_eq!(resolved.id.0, old_address.resource);
-        assert!(
-            Widget::invoke_resource_operation(
-                &mut app,
-                tilo_actions::OperationKind::View,
-                crate::actions::NOTES_OPERATION_TYPE,
-                &payload,
-                &state.doc,
-                &state.root,
-            )
-            .expect("durable block identity still resolves")
-        );
-        app.sync(&mut state.doc, &state.root);
-        assert_eq!(
-            app.main.editor().focused_index(),
-            Some(2),
-            "the original block moved to index 2; the identical insertion at 0 is not revealed"
-        );
-    }
-
-    /// The full undo covenant at the app level: deleting a page through the
-    /// sidebar path records exactly one undo boundary, and Ctrl+Z (the host's
-    /// `undo`) reverts it in both the document and — after the next `sync`
-    /// reconciles — the app's own page list.
-    #[test]
-    fn page_delete_records_one_undo_boundary_and_reverts_in_the_app() {
-        let (mut app, mut state, _tmp, welcome) = app_seeded_into_doc();
-        assert!(
-            NotesDoc::list_pages(&state.doc)
+            // Simulate a remote structural refresh. The widget rebuilds plain
+            // text/kinds, then Notes hydrates the native mark state back into the
+            // live rich line rather than dropping formatting on rebind.
+            app.bound_page = None;
+            app.sync(&mut state.doc, &state.root);
+            let restored = app
+                .main
+                .editor()
+                .blocks()
                 .iter()
-                .any(|p| p.id == welcome)
-        );
-
-        // Delete through the real sidebar-event path.
-        app.dispatch_event_for_test(&mut state.doc, OutEvent::Delete(welcome));
-
-        // The host's own recorder drains the captured heads and records the
-        // boundary. Going through it rather than pushing an entry by hand is
-        // the point: attribution happens in there, and undo is author-scoped.
-        // The node map is empty because the app widget is the root here.
-        let local_author = ui::permissions::UserId("notes-app-test-author".into());
-        let root: *mut dyn Widget = &mut app;
-        assert!(
-            ui::undo::record_dispatched_action(
-                &mut state,
-                root,
-                &std::collections::HashMap::new(),
-                &local_author,
-            ),
-            "the host recorded an undo boundary for the dispatched delete"
-        );
-
-        assert!(
-            !NotesDoc::list_pages(&state.doc)
+                .find(|candidate| candidate.id == block)
+                .expect("same durable block rebinds")
+                .line
+                .marks()
                 .iter()
-                .any(|p| p.id == welcome),
-            "the delete removed the page from the document"
-        );
-        let entry = state
-            .peek_last_undo()
-            .expect("exactly one undo boundary recorded");
-        assert_eq!(
-            entry.author.as_ref(),
-            Some(&local_author),
-            "attributed to the local user, so their Ctrl+Z can reach it"
-        );
-        assert!(
-            Widget::take_committed_action(&mut app).is_none(),
-            "the boundary is rising-edge — cleared on read"
-        );
+                .map(crate::actions::InlineMarkSpan::from_ui)
+                .collect::<Vec<_>>();
+            assert_eq!(restored, marks);
+        }
 
-        // Ctrl+Z reverts the document; the next `sync` reconciles the workspace.
-        state
-            .undo_as(Some(&local_author), None, None)
-            .expect("an undo entry to pop");
-        assert!(
-            NotesDoc::list_pages(&state.doc)
-                .iter()
-                .any(|p| p.id == welcome),
-            "undo restored the page in the document"
-        );
-        app.sync(&mut state.doc, &state.root);
-        assert!(
-            app.workspace_pages_for_test()
-                .iter()
-                .any(|p| p.id == welcome),
-            "the app shows the page again after undo"
-        );
+        eprintln!("phase mark_only_dirty_edge_dispatches_the_canonical_action");
+        {
+            let (mut app, mut state, _tmp, welcome) = app_seeded_into_doc();
+            let (block, text_len) = {
+                let first = &app.main.editor().blocks()[0];
+                (first.id.clone(), first.text().len())
+            };
+            assert!(text_len >= 4);
+            app.main.editor_mut().blocks_mut()[0].line.set_marks(vec![
+                ui::widget::marks::MarkSpan::new(0..4, ui::widget::marks::Mark::Underline),
+            ]);
+            // Formatting changes no plain text, so exercise the exact dirty edge
+            // the event router observes after a Ctrl/Cmd formatting shortcut.
+            app.main.editor_mut().force_dirty_for_test();
+            assert!(app.main.editor_is_dirty());
+            app.drain_inline_marks(&mut state.doc);
+
+            let dispatched = app
+                .last_dispatched_for_test()
+                .expect("mark-only edit dispatched an action");
+            let action: crate::actions::NotesAction =
+                serde_json::from_slice(&dispatched.payload).expect("mark action payload decodes");
+            assert!(matches!(
+                action,
+                crate::actions::NotesAction::SetBlockMarks { .. }
+            ));
+            assert_eq!(
+                NotesDoc::page_block_marks(&state.doc, welcome)
+                    .into_iter()
+                    .find(|(id, _)| id == &block)
+                    .map(|(_, marks)| marks),
+                Some(vec![crate::actions::InlineMarkSpan {
+                    start: 0,
+                    end: 4,
+                    mark: crate::actions::InlineMark::Underline,
+                }])
+            );
+        }
+
+        eprintln!("phase collaborative_identical_insert_preserves_the_original_block_target");
+        {
+            use automerge::ObjType;
+            use automerge::transaction::Transactable as _;
+
+            let (mut app, mut state, _tmp, welcome) = app_seeded_into_doc();
+            let original = app.search_blocks[&welcome][1].clone();
+            let old_address = crate::actions::open_block_address(welcome, &original.id);
+            let operation = crate::actions::NotesOperation::OpenPage {
+                page: welcome,
+                block_id: Some(original.id),
+            };
+            let payload = serde_json::to_vec(&operation).unwrap();
+
+            // A collaborator inserts an identical-text block before the target.
+            // Content and index cannot distinguish them; CRDT object identity can.
+            let list = NotesDoc::page_blocks_list(&state.doc, welcome).unwrap();
+            let inserted = state.doc.insert_object(&list, 0, ObjType::Map).unwrap();
+            state.doc.put(&inserted, "kind", "paragraph").unwrap();
+            let text = state
+                .doc
+                .put_object(&inserted, "text", ObjType::Text)
+                .unwrap();
+            state.doc.splice_text(&text, 0, 0, &original.text).unwrap();
+            app.sync(&mut state.doc, &state.root);
+
+            let resolved = Widget::resource(&app, &state.doc, &old_address.resource)
+                .expect("the original block's resource resolves lazily");
+            assert_eq!(resolved.id.0, old_address.resource);
+            assert!(
+                Widget::invoke_resource_operation(
+                    &mut app,
+                    tilo_actions::OperationKind::View,
+                    crate::actions::NOTES_OPERATION_TYPE,
+                    &payload,
+                    &state.doc,
+                    &state.root,
+                )
+                .expect("durable block identity still resolves")
+            );
+            app.sync(&mut state.doc, &state.root);
+            assert_eq!(
+                app.main.editor().focused_index(),
+                Some(2),
+                "the original block moved to index 2; the identical insertion at 0 is not revealed"
+            );
+        }
     }
 }

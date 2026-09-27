@@ -30,6 +30,7 @@ thiserror.workspace = true
 blake3.workspace = true
 hex.workspace = true
 uuid.workspace = true
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -276,7 +276,15 @@ mod tests {
         ResourceViewSpec,
     };
 
+    /// Duplicate, unhandled and unsafe surface entries are rejected, and explicit resource-view
+    /// cardinality and bindings are validated.
+    /// Runs each phase below in order; every phase builds its own fixture.
     #[test]
+    fn protocol_surfaces_are_validated_before_publication() {
+        rejects_duplicate_unhandled_and_unsafe_surface_entries();
+        validates_explicit_resource_view_cardinality_and_bindings();
+    }
+
     fn rejects_duplicate_unhandled_and_unsafe_surface_entries() {
         let unsafe_effect =
             ActionSpec::operation("erase", "Erase", OperationKind::Effect, "test.erase", &())
@@ -307,7 +315,6 @@ mod tests {
         assert!(text.contains("not registered"));
     }
 
-    #[test]
     fn validates_explicit_resource_view_cardinality_and_bindings() {
         let open =
             ActionSpec::operation("open", "Open", OperationKind::View, "test.open", &()).unwrap();

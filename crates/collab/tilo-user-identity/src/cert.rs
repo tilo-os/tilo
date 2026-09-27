@@ -398,201 +398,215 @@ mod tests {
         (root_sk, cert)
     }
 
-    #[test]
-    fn sign_and_verify() {
-        let (_root, cert) = fresh_cert(DeviceCapabilities::primary());
-        verify_device_cert(&cert).unwrap();
-    }
-
-    #[test]
-    fn tampered_capability_fails() {
-        let (_root, mut cert) = fresh_cert(DeviceCapabilities::member());
-        cert.capabilities.can_admit_devices = true;
-        assert_eq!(
-            verify_device_cert(&cert).unwrap_err(),
-            DeviceCertError::BadSignature
-        );
-    }
-
-    #[test]
-    fn tampered_device_pubkey_fails() {
-        let (_root, mut cert) = fresh_cert(DeviceCapabilities::primary());
-        cert.device_public_key[0] ^= 0x01;
-        assert_eq!(
-            verify_device_cert(&cert).unwrap_err(),
-            DeviceCertError::BadSignature
-        );
-    }
-
-    #[test]
-    fn tampered_signature_fails() {
-        let (_root, mut cert) = fresh_cert(DeviceCapabilities::primary());
-        cert.signature[0] ^= 0x01;
-        assert_eq!(
-            verify_device_cert(&cert).unwrap_err(),
-            DeviceCertError::BadSignature
-        );
-    }
-
-    #[test]
-    fn tampered_user_pubkey_fails() {
-        let (_root, mut cert) = fresh_cert(DeviceCapabilities::primary());
-        // Flip a bit in the embedded user pubkey. The signature no
-        // longer verifies under the new pubkey.
-        cert.user_public_key[0] ^= 0x01;
-        let err = verify_device_cert(&cert).unwrap_err();
-        assert!(matches!(
-            err,
-            DeviceCertError::BadSignature | DeviceCertError::InvalidUserPublicKey
-        ));
-    }
-
-    #[test]
-    fn signed_by_different_root_fails() {
-        // Alice's cert signed with Bob's root key — mismatch caught
-        // by the pre-sign guard (BadSignature).
-        let (_, alice) = UserIdentity::generate("Alice", 1);
-        let (bob_sk, _) = UserIdentity::generate("Bob", 2);
-        let (_, dev) = crate::DeviceIdentity::generate("dev", 3);
-        let mut cert = DeviceCert {
-            user_public_key: alice.public_key,
-            device_public_key: dev.public_key,
-            device_label: dev.label,
-            capabilities: DeviceCapabilities::primary(),
-            issued_at_ns: 4,
-            expires_at_ns: None,
-            signature: [0u8; 64],
-        };
-        assert_eq!(
-            sign_device_cert(&mut cert, &bob_sk).unwrap_err(),
-            DeviceCertError::BadSignature
-        );
-    }
-
-    #[test]
-    fn expiry_semantics() {
-        let (root_sk, user) = UserIdentity::generate("Alice", 1);
-        let (_dev_sk, dev) = crate::DeviceIdentity::generate("dev", 2);
-        let mut cert = DeviceCert {
-            user_public_key: user.public_key,
-            device_public_key: dev.public_key,
-            device_label: dev.label,
-            capabilities: DeviceCapabilities::member(),
-            issued_at_ns: 100,
-            expires_at_ns: Some(200),
-            signature: [0u8; 64],
-        };
-        sign_device_cert(&mut cert, &root_sk).unwrap();
-        assert_eq!(
-            verify_device_cert_at(&cert, 99).unwrap_err(),
-            DeviceCertError::NotYetValid
-        );
-        // Before expiry
-        verify_device_cert_at(&cert, 150).unwrap();
-        // Exactly at expiry (`now >= expires_at_ns` — exclusive on
-        // the left side, inclusive on the right).
-        assert_eq!(
-            verify_device_cert_at(&cert, 200).unwrap_err(),
-            DeviceCertError::Expired
-        );
-        // After expiry
-        assert_eq!(
-            verify_device_cert_at(&cert, 300).unwrap_err(),
-            DeviceCertError::Expired
-        );
-
-        cert.expires_at_ns = Some(cert.issued_at_ns);
-        assert_eq!(
-            sign_device_cert(&mut cert, &root_sk).unwrap_err(),
-            DeviceCertError::InvalidValidity
-        );
-    }
-
-    #[test]
-    fn cert_round_trips_through_canonical() {
-        let (_root, cert) = fresh_cert(DeviceCapabilities::host());
-        let bytes = crate::canonical::canonical_bytes(&cert).unwrap();
-        let back: DeviceCert = crate::canonical::from_canonical_bytes(&bytes).unwrap();
-        assert_eq!(cert, back);
-        verify_device_cert(&back).unwrap();
-    }
-
-    /// Signature outputs must be reproducible from the same inputs
-    /// (Ed25519 is deterministic and we build the preimage
-    /// deterministically). Locks in the wire vectors — if this ever
-    /// fails, the signing preimage has drifted.
-    // `root_sk`/`root_pk` follows this crate's established signing-key /
-    // public-key naming convention; see the reason on `directory::tests`.
+    /// Certificates sign and verify, honour expiry, round-trip canonically, reproduce their
+    /// signature vector, and every capability preset is distinct.
     #[allow(
         clippy::similar_names,
         reason = "the _sk/_pk keypair naming convention is deliberate and used throughout this crate's tests"
     )]
     #[test]
-    fn signature_vector_is_reproducible() {
-        use ed25519_dalek::SigningKey;
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
+    )]
+    fn device_certificates_sign_verify_expire_and_round_trip() {
+        // Phase: sign_and_verify.
+        {
+            let (_root, cert) = fresh_cert(DeviceCapabilities::primary());
+            verify_device_cert(&cert).unwrap();
+        }
 
-        // Fixed-seed keypair for the vector. This is the ONLY test
-        // that uses a fixed seed; production always uses UnwrapErr(SysRng).
-        let seed = [1u8; 32];
-        let root_sk = SigningKey::from_bytes(&seed);
-        let root_pk = root_sk.verifying_key().to_bytes();
-
-        let device_pk = [2u8; 32];
-
-        let mut cert = DeviceCert {
-            user_public_key: root_pk,
-            device_public_key: device_pk,
-            device_label: "test-device".to_string(),
-            capabilities: DeviceCapabilities {
-                can_own_workspaces: true,
-                can_admit_devices: false,
-                can_act_as_host: false,
-                can_read_all_workspaces: false,
-            },
-            issued_at_ns: 1_000_000,
-            expires_at_ns: None,
-            signature: [0u8; 64],
-        };
-        sign_device_cert(&mut cert, &root_sk).unwrap();
-
-        // Re-sign an identical view; must yield the same signature
-        // (Ed25519 is deterministic, so this is a strong wire-ABI
-        // check — any drift in the preimage or postcard encoding
-        // would flip these bytes).
-        let sig_1 = cert.signature;
-        let mut cert2 = cert.clone();
-        cert2.signature = [0u8; 64];
-        sign_device_cert(&mut cert2, &root_sk).unwrap();
-        assert_eq!(sig_1, cert2.signature);
-    }
-
-    #[test]
-    fn all_capability_presets_are_distinct() {
-        // Each preset must produce a different signature — otherwise
-        // a peer could substitute one preset for another without
-        // touching the sig.
-        let (root_sk, user) = UserIdentity::generate("Alice", 1);
-        let (_dev_sk, dev) = crate::DeviceIdentity::generate("dev", 2);
-
-        let build = |caps: DeviceCapabilities| {
-            let mut c = DeviceCert {
+        // Phase: expiry_semantics.
+        {
+            let (root_sk, user) = UserIdentity::generate("Alice", 1);
+            let (_dev_sk, dev) = crate::DeviceIdentity::generate("dev", 2);
+            let mut cert = DeviceCert {
                 user_public_key: user.public_key,
                 device_public_key: dev.public_key,
-                device_label: dev.label.clone(),
-                capabilities: caps,
-                issued_at_ns: 3,
+                device_label: dev.label,
+                capabilities: DeviceCapabilities::member(),
+                issued_at_ns: 100,
+                expires_at_ns: Some(200),
+                signature: [0u8; 64],
+            };
+            sign_device_cert(&mut cert, &root_sk).unwrap();
+            assert_eq!(
+                verify_device_cert_at(&cert, 99).unwrap_err(),
+                DeviceCertError::NotYetValid
+            );
+            // Before expiry
+            verify_device_cert_at(&cert, 150).unwrap();
+            // Exactly at expiry (`now >= expires_at_ns` — exclusive on
+            // the left side, inclusive on the right).
+            assert_eq!(
+                verify_device_cert_at(&cert, 200).unwrap_err(),
+                DeviceCertError::Expired
+            );
+            // After expiry
+            assert_eq!(
+                verify_device_cert_at(&cert, 300).unwrap_err(),
+                DeviceCertError::Expired
+            );
+
+            cert.expires_at_ns = Some(cert.issued_at_ns);
+            assert_eq!(
+                sign_device_cert(&mut cert, &root_sk).unwrap_err(),
+                DeviceCertError::InvalidValidity
+            );
+        }
+
+        // Phase: cert_round_trips_through_canonical.
+        {
+            let (_root, cert) = fresh_cert(DeviceCapabilities::host());
+            let bytes = crate::canonical::canonical_bytes(&cert).unwrap();
+            let back: DeviceCert = crate::canonical::from_canonical_bytes(&bytes).unwrap();
+            assert_eq!(cert, back);
+            verify_device_cert(&back).unwrap();
+        }
+
+        // Phase: signature_vector_is_reproducible.
+        // Signature outputs must be reproducible from the same inputs
+        // (Ed25519 is deterministic and we build the preimage
+        // deterministically). Locks in the wire vectors — if this ever
+        // fails, the signing preimage has drifted.
+        // `root_sk`/`root_pk` follows this crate's established signing-key /
+        // public-key naming convention; see the reason on `directory::tests`.
+        {
+            use ed25519_dalek::SigningKey;
+
+            // Fixed-seed keypair for the vector. This is the ONLY test
+            // that uses a fixed seed; production always uses UnwrapErr(SysRng).
+            let seed = [1u8; 32];
+            let root_sk = SigningKey::from_bytes(&seed);
+            let root_pk = root_sk.verifying_key().to_bytes();
+
+            let device_pk = [2u8; 32];
+
+            let mut cert = DeviceCert {
+                user_public_key: root_pk,
+                device_public_key: device_pk,
+                device_label: "test-device".to_string(),
+                capabilities: DeviceCapabilities {
+                    can_own_workspaces: true,
+                    can_admit_devices: false,
+                    can_act_as_host: false,
+                    can_read_all_workspaces: false,
+                },
+                issued_at_ns: 1_000_000,
                 expires_at_ns: None,
                 signature: [0u8; 64],
             };
-            sign_device_cert(&mut c, &root_sk).unwrap();
-            c.signature
-        };
+            sign_device_cert(&mut cert, &root_sk).unwrap();
 
-        let s_primary = build(DeviceCapabilities::primary());
-        let s_member = build(DeviceCapabilities::member());
-        let s_host = build(DeviceCapabilities::host());
-        assert_ne!(s_primary, s_member);
-        assert_ne!(s_member, s_host);
-        assert_ne!(s_primary, s_host);
+            // Re-sign an identical view; must yield the same signature
+            // (Ed25519 is deterministic, so this is a strong wire-ABI
+            // check — any drift in the preimage or postcard encoding
+            // would flip these bytes).
+            let sig_1 = cert.signature;
+            let mut cert2 = cert.clone();
+            cert2.signature = [0u8; 64];
+            sign_device_cert(&mut cert2, &root_sk).unwrap();
+            assert_eq!(sig_1, cert2.signature);
+        }
+
+        // Phase: all_capability_presets_are_distinct.
+        {
+            // Each preset must produce a different signature — otherwise
+            // a peer could substitute one preset for another without
+            // touching the sig.
+            let (root_sk, user) = UserIdentity::generate("Alice", 1);
+            let (_dev_sk, dev) = crate::DeviceIdentity::generate("dev", 2);
+
+            let build = |caps: DeviceCapabilities| {
+                let mut c = DeviceCert {
+                    user_public_key: user.public_key,
+                    device_public_key: dev.public_key,
+                    device_label: dev.label.clone(),
+                    capabilities: caps,
+                    issued_at_ns: 3,
+                    expires_at_ns: None,
+                    signature: [0u8; 64],
+                };
+                sign_device_cert(&mut c, &root_sk).unwrap();
+                c.signature
+            };
+
+            let s_primary = build(DeviceCapabilities::primary());
+            let s_member = build(DeviceCapabilities::member());
+            let s_host = build(DeviceCapabilities::host());
+            assert_ne!(s_primary, s_member);
+            assert_ne!(s_member, s_host);
+            assert_ne!(s_primary, s_host);
+        }
+    }
+
+    /// Tampering with the capability, device key, signature or user key, or signing by a different
+    /// root, fails verification.
+    #[test]
+    fn tampering_with_any_certificate_field_or_root_fails_verification() {
+        // Phase: tampered_capability_fails.
+        {
+            let (_root, mut cert) = fresh_cert(DeviceCapabilities::member());
+            cert.capabilities.can_admit_devices = true;
+            assert_eq!(
+                verify_device_cert(&cert).unwrap_err(),
+                DeviceCertError::BadSignature
+            );
+        }
+
+        // Phase: tampered_device_pubkey_fails.
+        {
+            let (_root, mut cert) = fresh_cert(DeviceCapabilities::primary());
+            cert.device_public_key[0] ^= 0x01;
+            assert_eq!(
+                verify_device_cert(&cert).unwrap_err(),
+                DeviceCertError::BadSignature
+            );
+        }
+
+        // Phase: tampered_signature_fails.
+        {
+            let (_root, mut cert) = fresh_cert(DeviceCapabilities::primary());
+            cert.signature[0] ^= 0x01;
+            assert_eq!(
+                verify_device_cert(&cert).unwrap_err(),
+                DeviceCertError::BadSignature
+            );
+        }
+
+        // Phase: tampered_user_pubkey_fails.
+        {
+            let (_root, mut cert) = fresh_cert(DeviceCapabilities::primary());
+            // Flip a bit in the embedded user pubkey. The signature no
+            // longer verifies under the new pubkey.
+            cert.user_public_key[0] ^= 0x01;
+            let err = verify_device_cert(&cert).unwrap_err();
+            assert!(matches!(
+                err,
+                DeviceCertError::BadSignature | DeviceCertError::InvalidUserPublicKey
+            ));
+        }
+
+        // Phase: signed_by_different_root_fails.
+        {
+            // Alice's cert signed with Bob's root key — mismatch caught
+            // by the pre-sign guard (BadSignature).
+            let (_, alice) = UserIdentity::generate("Alice", 1);
+            let (bob_sk, _) = UserIdentity::generate("Bob", 2);
+            let (_, dev) = crate::DeviceIdentity::generate("dev", 3);
+            let mut cert = DeviceCert {
+                user_public_key: alice.public_key,
+                device_public_key: dev.public_key,
+                device_label: dev.label,
+                capabilities: DeviceCapabilities::primary(),
+                issued_at_ns: 4,
+                expires_at_ns: None,
+                signature: [0u8; 64],
+            };
+            assert_eq!(
+                sign_device_cert(&mut cert, &bob_sk).unwrap_err(),
+                DeviceCertError::BadSignature
+            );
+        }
     }
 }

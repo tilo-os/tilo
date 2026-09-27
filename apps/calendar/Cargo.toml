@@ -45,6 +45,7 @@ taffy.workspace = true
 tilo-dav = { path = "../../crates/system/tilo-dav", default-features = false }
 # RFC 5545 content lines: folding, parameter quoting and TEXT escaping.
 pim-lines = { path = "../../crates/text/pim-lines" }
+workspace-hack = { version = "0.1" }
 
 [features]
 thin = ["dep:runtime-dylib"]

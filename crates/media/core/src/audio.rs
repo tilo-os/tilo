@@ -807,9 +807,153 @@ mod tests {
     use super::*;
 
     #[test]
-    fn device_volume_uses_loud_channel_so_balance_does_not_decay() {
-        let volume = perceptual_from_channel_volumes(&[0.064, 0.512]).unwrap();
-        assert!((volume - 0.8).abs() < 0.001);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn audio_graph_parses_real_devices_streams_and_diffs_topology() {
+        // Phase `device_volume_uses_loud_channel_so_balance_does_not_decay`.
+        {
+            let volume = perceptual_from_channel_volumes(&[0.064, 0.512]).unwrap();
+            assert!((volume - 0.8).abs() < 0.001);
+        }
+        // Phase `parses_only_real_available_device_profiles`.
+        {
+            let g = parse_pw_dump(
+                r#"[{
+              "id": 7, "type": "PipeWire:Interface:Device",
+              "info": {"props":{"device.description":"USB headset"},"params":{
+                "Profile":[{"index":2}],
+                "EnumProfile":[
+                  {"index":1,"name":"off","description":"Off","available":"yes"},
+                  {"index":2,"name":"a2dp","description":"High Fidelity Playback","available":"yes"},
+                  {"index":3,"name":"hfp","description":"Headset","available":"no"}
+                ]}}
+            }]"#,
+            );
+            assert_eq!(g.hardware.len(), 1);
+            assert_eq!(g.hardware[0].active_profile, Some(2));
+            assert!(g.hardware[0].profiles[1].available);
+            assert!(!g.hardware[0].profiles[2].available);
+            assert_eq!(wpctl_set_profile_args(7, 2), ["set-profile", "7", "2"]);
+        }
+        // Phase `parses_sinks_sources_and_default`.
+        {
+            let g = parse_pw_dump(FIXTURE);
+            assert_eq!(g.sinks.len(), 2, "two sinks: {:?}", g.sinks);
+            assert_eq!(g.sources.len(), 1, "one source");
+            let def = g.default_sink().expect("a default sink");
+            assert_eq!(def.name, "alsa_output.pci-0000_66_00.6.analog-stereo");
+            assert_eq!(def.description, "Ryzen HD Audio Controller Analoges Stereo");
+            assert!(def.is_default);
+            // The second sink is the routing target and is NOT the default.
+            let hp = g
+                .sink_by_description("Headphones")
+                .expect("headphones sink");
+            assert!(!hp.is_default);
+            assert_eq!(
+                hp.serial, 269,
+                "serial is the routing handle, distinct from id"
+            );
+            assert_eq!(hp.id, 91);
+        }
+        // Phase `parses_streams_with_their_current_route`.
+        {
+            let g = parse_pw_dump(FIXTURE);
+            assert_eq!(g.playback_streams.len(), 2, "two playback streams");
+            let lw = g
+                .playback_streams
+                .iter()
+                .find(|s| s.app == "LibreWolf")
+                .expect("librewolf");
+            assert!(lw.playback);
+            // LibreWolf is linked to the default sink (node 51).
+            assert_eq!(lw.target_id, Some(51));
+            assert!(lw.media_name.as_deref().unwrap().contains("YouTube"));
+            assert!(lw.label().contains("LibreWolf — "));
+
+            // pw-play was explicitly moved onto the Headphones sink (node 91) — the
+            // per-app routing this feature exists to do, read back from the graph.
+            let pw = g
+                .playback_streams
+                .iter()
+                .find(|s| s.app == "pw-play")
+                .expect("pw-play");
+            assert_eq!(
+                pw.target_id,
+                Some(91),
+                "the moved stream reports its non-default sink"
+            );
+        }
+        // Phase `parses_perceptual_volume_and_mute`.
+        {
+            let g = parse_pw_dump(FIXTURE);
+            // The pw-play stream's raw channelVolumes were 0.125; cube root is
+            // exactly 0.5 — the perceptual value wpctl shows and set-volume takes.
+            let pw = g
+                .playback_streams
+                .iter()
+                .find(|s| s.app == "pw-play")
+                .unwrap();
+            assert!(
+                (pw.volume.unwrap() - 0.5).abs() < 1e-4,
+                "0.125.cbrt() == 0.5, got {:?}",
+                pw.volume
+            );
+            assert_eq!(pw.muted, Some(false));
+        }
+        // Phase `empty_document_is_empty_graph_not_fabricated`.
+        {
+            assert_eq!(parse_pw_dump(""), AudioGraph::default());
+            assert_eq!(parse_pw_dump("not json"), AudioGraph::default());
+            assert_eq!(parse_pw_dump("[]"), AudioGraph::default());
+        }
+        // Phase `diff_reports_hotplugged_devices`.
+        {
+            let before = parse_pw_dump(FIXTURE);
+            // Drop the Headphones sink → simulate an unplug; the graph now has one
+            // sink. Reparse a fixture without node 91 by filtering the string is
+            // awkward, so build the "after" graph by hand from `before`.
+            let mut after = before.clone();
+            after.sinks.retain(|d| d.description != "Headphones");
+            let delta = AudioGraph::diff(&before, &after);
+            assert_eq!(delta.removed_sinks.len(), 1, "the headphones unplugged");
+            assert_eq!(delta.removed_sinks[0].description, "Headphones");
+            assert!(delta.added_sinks.is_empty());
+
+            // And the reverse — replug — reports it as added.
+            let replug = AudioGraph::diff(&after, &before);
+            assert_eq!(replug.added_sinks.len(), 1);
+            assert_eq!(replug.added_sinks[0].description, "Headphones");
+            assert!(
+                AudioGraph::diff(&before, &before).is_empty(),
+                "no change ⇒ empty delta"
+            );
+        }
+        // Phase `topology_signature_ignores_volume_but_tracks_structure`.
+        {
+            let g = parse_pw_dump(FIXTURE);
+            let sig = g.topology_signature();
+            // A volume change is not a topology change.
+            let mut vol = g.clone();
+            vol.playback_streams[0].volume = Some(0.1);
+            assert_eq!(
+                sig,
+                vol.topology_signature(),
+                "volume drift is not structural"
+            );
+            // A new stream is.
+            let mut added = g.clone();
+            let mut ns = g.playback_streams[0].clone();
+            ns.id = 999;
+            ns.app = "music".into();
+            added.playback_streams.push(ns);
+            assert_ne!(
+                sig,
+                added.topology_signature(),
+                "a new app changes the topology"
+            );
+        }
     }
 
     /// A faithful, trimmed capture of a real `pw-dump` from a running
@@ -823,45 +967,32 @@ mod tests {
     const FIXTURE: &str = include_str!("audio_pw_dump_fixture.json");
 
     #[test]
-    fn parses_only_real_available_device_profiles() {
-        let g = parse_pw_dump(
-            r#"[{
-          "id": 7, "type": "PipeWire:Interface:Device",
-          "info": {"props":{"device.description":"USB headset"},"params":{
-            "Profile":[{"index":2}],
-            "EnumProfile":[
-              {"index":1,"name":"off","description":"Off","available":"yes"},
-              {"index":2,"name":"a2dp","description":"High Fidelity Playback","available":"yes"},
-              {"index":3,"name":"hfp","description":"Headset","available":"no"}
-            ]}}
-        }]"#,
-        );
-        assert_eq!(g.hardware.len(), 1);
-        assert_eq!(g.hardware[0].active_profile, Some(2));
-        assert!(g.hardware[0].profiles[1].available);
-        assert!(!g.hardware[0].profiles[2].available);
-        assert_eq!(wpctl_set_profile_args(7, 2), ["set-profile", "7", "2"]);
-    }
-
-    #[test]
-    fn parses_sinks_sources_and_default() {
-        let g = parse_pw_dump(FIXTURE);
-        assert_eq!(g.sinks.len(), 2, "two sinks: {:?}", g.sinks);
-        assert_eq!(g.sources.len(), 1, "one source");
-        let def = g.default_sink().expect("a default sink");
-        assert_eq!(def.name, "alsa_output.pci-0000_66_00.6.analog-stereo");
-        assert_eq!(def.description, "Ryzen HD Audio Controller Analoges Stereo");
-        assert!(def.is_default);
-        // The second sink is the routing target and is NOT the default.
-        let hp = g
-            .sink_by_description("Headphones")
-            .expect("headphones sink");
-        assert!(!hp.is_default);
-        assert_eq!(
-            hp.serial, 269,
-            "serial is the routing handle, distinct from id"
-        );
-        assert_eq!(hp.id, 91);
+    fn audio_control_args_target_the_right_keys() {
+        // Phase `route_args_target_the_serial_on_the_default_store`.
+        {
+            // Moving stream 84 to a sink whose object.serial is 269.
+            assert_eq!(
+                pw_metadata_route_args(84, 269),
+                vec!["-n", "default", "84", "target.object", "269"],
+            );
+        }
+        // Phase `unroute_args_delete_the_target_key`.
+        {
+            assert_eq!(
+                pw_metadata_unroute_args(84),
+                vec!["-n", "default", "-d", "84", "target.object"],
+            );
+        }
+        // Phase `volume_and_mute_and_default_args`.
+        {
+            assert_eq!(
+                wpctl_set_volume_args(84, 0.5),
+                vec!["set-volume", "84", "0.50"]
+            );
+            assert_eq!(wpctl_set_mute_args(84, true), vec!["set-mute", "84", "1"]);
+            assert_eq!(wpctl_set_mute_args(84, false), vec!["set-mute", "84", "0"]);
+            assert_eq!(wpctl_set_default_args(91), vec!["set-default", "91"]);
+        }
     }
 
     #[test]
@@ -882,135 +1013,5 @@ mod tests {
         let sources: Vec<_> = g.sources.iter().map(|d| d.name.as_str()).collect();
         assert_eq!(sources, ["alsa_input.usb-mic"]);
         assert!(g.record_streams.is_empty(), "{:?}", g.record_streams);
-    }
-
-    #[test]
-    fn parses_streams_with_their_current_route() {
-        let g = parse_pw_dump(FIXTURE);
-        assert_eq!(g.playback_streams.len(), 2, "two playback streams");
-        let lw = g
-            .playback_streams
-            .iter()
-            .find(|s| s.app == "LibreWolf")
-            .expect("librewolf");
-        assert!(lw.playback);
-        // LibreWolf is linked to the default sink (node 51).
-        assert_eq!(lw.target_id, Some(51));
-        assert!(lw.media_name.as_deref().unwrap().contains("YouTube"));
-        assert!(lw.label().contains("LibreWolf — "));
-
-        // pw-play was explicitly moved onto the Headphones sink (node 91) — the
-        // per-app routing this feature exists to do, read back from the graph.
-        let pw = g
-            .playback_streams
-            .iter()
-            .find(|s| s.app == "pw-play")
-            .expect("pw-play");
-        assert_eq!(
-            pw.target_id,
-            Some(91),
-            "the moved stream reports its non-default sink"
-        );
-    }
-
-    #[test]
-    fn parses_perceptual_volume_and_mute() {
-        let g = parse_pw_dump(FIXTURE);
-        // The pw-play stream's raw channelVolumes were 0.125; cube root is
-        // exactly 0.5 — the perceptual value wpctl shows and set-volume takes.
-        let pw = g
-            .playback_streams
-            .iter()
-            .find(|s| s.app == "pw-play")
-            .unwrap();
-        assert!(
-            (pw.volume.unwrap() - 0.5).abs() < 1e-4,
-            "0.125.cbrt() == 0.5, got {:?}",
-            pw.volume
-        );
-        assert_eq!(pw.muted, Some(false));
-    }
-
-    #[test]
-    fn empty_document_is_empty_graph_not_fabricated() {
-        assert_eq!(parse_pw_dump(""), AudioGraph::default());
-        assert_eq!(parse_pw_dump("not json"), AudioGraph::default());
-        assert_eq!(parse_pw_dump("[]"), AudioGraph::default());
-    }
-
-    #[test]
-    fn route_args_target_the_serial_on_the_default_store() {
-        // Moving stream 84 to a sink whose object.serial is 269.
-        assert_eq!(
-            pw_metadata_route_args(84, 269),
-            vec!["-n", "default", "84", "target.object", "269"],
-        );
-    }
-
-    #[test]
-    fn unroute_args_delete_the_target_key() {
-        assert_eq!(
-            pw_metadata_unroute_args(84),
-            vec!["-n", "default", "-d", "84", "target.object"],
-        );
-    }
-
-    #[test]
-    fn volume_and_mute_and_default_args() {
-        assert_eq!(
-            wpctl_set_volume_args(84, 0.5),
-            vec!["set-volume", "84", "0.50"]
-        );
-        assert_eq!(wpctl_set_mute_args(84, true), vec!["set-mute", "84", "1"]);
-        assert_eq!(wpctl_set_mute_args(84, false), vec!["set-mute", "84", "0"]);
-        assert_eq!(wpctl_set_default_args(91), vec!["set-default", "91"]);
-    }
-
-    #[test]
-    fn diff_reports_hotplugged_devices() {
-        let before = parse_pw_dump(FIXTURE);
-        // Drop the Headphones sink → simulate an unplug; the graph now has one
-        // sink. Reparse a fixture without node 91 by filtering the string is
-        // awkward, so build the "after" graph by hand from `before`.
-        let mut after = before.clone();
-        after.sinks.retain(|d| d.description != "Headphones");
-        let delta = AudioGraph::diff(&before, &after);
-        assert_eq!(delta.removed_sinks.len(), 1, "the headphones unplugged");
-        assert_eq!(delta.removed_sinks[0].description, "Headphones");
-        assert!(delta.added_sinks.is_empty());
-
-        // And the reverse — replug — reports it as added.
-        let replug = AudioGraph::diff(&after, &before);
-        assert_eq!(replug.added_sinks.len(), 1);
-        assert_eq!(replug.added_sinks[0].description, "Headphones");
-        assert!(
-            AudioGraph::diff(&before, &before).is_empty(),
-            "no change ⇒ empty delta"
-        );
-    }
-
-    #[test]
-    fn topology_signature_ignores_volume_but_tracks_structure() {
-        let g = parse_pw_dump(FIXTURE);
-        let sig = g.topology_signature();
-        // A volume change is not a topology change.
-        let mut vol = g.clone();
-        vol.playback_streams[0].volume = Some(0.1);
-        assert_eq!(
-            sig,
-            vol.topology_signature(),
-            "volume drift is not structural"
-        );
-        // A new stream is.
-        let mut added = g.clone();
-        let mut ns = g.playback_streams[0].clone();
-        ns.id = 999;
-        ns.app = "music".into();
-        added.playback_streams.push(ns);
-        assert_ne!(
-            sig,
-            added.topology_signature(),
-            "a new app changes the topology"
-        );
     }
 }

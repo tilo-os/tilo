@@ -533,166 +533,267 @@ fn build_probe(
         registry,
     ))
 }
-#[test]
 #[allow(
     clippy::too_many_lines,
     reason = "one actual App lifetime verifies descendant delivery, mutable admission and closed cancellation"
 )]
-fn real_app_descendant_focus_ime_semantics_and_measure_keep_child_binding() {
-    let temp = tempfile::tempdir().unwrap();
-    let root = temp.path().join("state");
-    let mut owners = crate::record::RecordOwners::new(root.clone());
-    let records = owners.open("so.tilo.binding-probe", "A").unwrap();
-    let views = Rc::new(crate::application_view::InstanceViewStore::new(root, "D", "A").unwrap());
-    let definition = ApplicationDefinition {
-        app_id: "so.tilo.binding-probe",
-        title: "Probe",
-        icon: IconDescriptor::Glyph("P"),
-        record_kind: crate::record::RecordKind::new("probe"),
-        required: vec![],
-        optional: vec![],
-        create: factory,
-    };
-    let context = HostContext::prepare(
-        &definition,
-        records.clone(),
-        views,
-        "D".into(),
-        1,
-        Rc::new(RefCell::new(
-            crate::permissions::PermissionContext::permissive(),
-        )),
-        crate::permissions::UserId("probe-author".into()),
-        tilo_actions::ActionContext::default(),
-        &LaunchTarget::New,
-    )
-    .unwrap();
-    let mut component = definition
-        .instantiate(context, LaunchTarget::New, RestoreInput::None)
-        .unwrap();
-    let checkout = component.record().clone();
-    let (sender, receiver) = std::sync::mpsc::channel();
-    component
-        .mount(move |event| {
-            sender.send(event).unwrap();
-        })
-        .unwrap();
-    let mut outer = crate::wake::WakeScope::new();
-    let (tx, rx) = std::sync::mpsc::channel();
-    outer
-        .bind(move |event| {
-            tx.send(event).unwrap();
-        })
-        .unwrap();
-    let mut state = State::new();
-    state.doc.put(ROOT, "marker", "shell").unwrap();
-    let mut app = App::from_scoped_parts_with_controlled_inputs(
-        outer,
-        state,
-        Box::new(
-            Column::new().push(Box::new(
-                crate::widget::Row::new().push(Box::new(
-                    crate::widget::Container::new()
-                        .with_child(Box::new(TileHost::from_component(component))),
-                )),
+#[test]
+fn bound_components_keep_child_binding_and_focused_document_history() {
+    // Case `real_app_descendant_focus_ime_semantics_and_measure_keep_child_binding`.
+    {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("state");
+        let mut owners = crate::record::RecordOwners::new(root.clone());
+        let records = owners.open("so.tilo.binding-probe", "A").unwrap();
+        let views =
+            Rc::new(crate::application_view::InstanceViewStore::new(root, "D", "A").unwrap());
+        let definition = ApplicationDefinition {
+            app_id: "so.tilo.binding-probe",
+            title: "Probe",
+            icon: IconDescriptor::Glyph("P"),
+            record_kind: crate::record::RecordKind::new("probe"),
+            required: vec![],
+            optional: vec![],
+            create: factory,
+        };
+        let context = HostContext::prepare(
+            &definition,
+            records.clone(),
+            views,
+            "D".into(),
+            1,
+            Rc::new(RefCell::new(
+                crate::permissions::PermissionContext::permissive(),
             )),
-        ),
-    );
-    CAPTURES.with_borrow_mut(Vec::clear);
-    app.init_layout();
-    app.refresh_focus_order();
-    let leaf = app.focusable_order[0];
-    app.set_focused_node(Some(leaf));
-    let _ = app.ime_window_state();
-    let leaf_id = app.accessibility_node_id(leaf).expect("exported");
-    app.dispatch_a11y_action(leaf_id, &crate::a11y::Action::Focus);
-    let layout_root = app.layout.root_node.unwrap();
-    app.layout.layout_dirty = true;
-    run_layout_pass(&mut app, layout_root, 400, 300, 1.0, true, None).unwrap();
-    assert!(
-        tilo_actions::door::resolve(
-            &app.collect_local_resources(),
-            &tilo_actions::ActionAddress::new("bound:probe", "follow-up")
+            crate::permissions::UserId("probe-author".into()),
+            tilo_actions::ActionContext::default(),
+            &LaunchTarget::New,
         )
-        .is_some(),
-        "fixture must publish its operation before admission"
-    );
-    let actor = app.collaboration.local_author.0.clone();
-    assert!(matches!(
-        app.invoke_resource_action(
-            ResourceInvocation::new(
-                &tilo_actions::ActionAddress::new("bound:probe", "follow-up"),
-                &actor,
+        .unwrap();
+        let mut component = definition
+            .instantiate(context, LaunchTarget::New, RestoreInput::None)
+            .unwrap();
+        let checkout = component.record().clone();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        component
+            .mount(move |event| {
+                sender.send(event).unwrap();
+            })
+            .unwrap();
+        let mut outer = crate::wake::WakeScope::new();
+        let (tx, rx) = std::sync::mpsc::channel();
+        outer
+            .bind(move |event| {
+                tx.send(event).unwrap();
+            })
+            .unwrap();
+        let mut state = State::new();
+        state.doc.put(ROOT, "marker", "shell").unwrap();
+        let mut app = App::from_scoped_parts_with_controlled_inputs(
+            outer,
+            state,
+            Box::new(
+                Column::new().push(Box::new(
+                    crate::widget::Row::new().push(Box::new(
+                        crate::widget::Container::new()
+                            .with_child(Box::new(TileHost::from_component(component))),
+                    )),
+                )),
+            ),
+        );
+        CAPTURES.with_borrow_mut(Vec::clear);
+        app.init_layout();
+        app.refresh_focus_order();
+        let leaf = app.focusable_order[0];
+        app.set_focused_node(Some(leaf));
+        let _ = app.ime_window_state();
+        let leaf_id = app.accessibility_node_id(leaf).expect("exported");
+        app.dispatch_a11y_action(leaf_id, &crate::a11y::Action::Focus);
+        let layout_root = app.layout.root_node.unwrap();
+        app.layout.layout_dirty = true;
+        run_layout_pass(&mut app, layout_root, 400, 300, 1.0, true, None).unwrap();
+        assert!(
+            tilo_actions::door::resolve(
+                &app.collect_local_resources(),
+                &tilo_actions::ActionAddress::new("bound:probe", "follow-up")
             )
-            .invocation(Some(tilo_actions::InvocationId::new())),
-        )
-        .unwrap(),
-        crate::widget::ResourceOperationStart::Accepted
-    ));
-    assert!(
-        records
-            .read(&checkout.id, |doc| doc
-                .get(ROOT, "follow-up")
+            .is_some(),
+            "fixture must publish its operation before admission"
+        );
+        let actor = app.collaboration.local_author.0.clone();
+        assert!(matches!(
+            app.invoke_resource_action(
+                ResourceInvocation::new(
+                    &tilo_actions::ActionAddress::new("bound:probe", "follow-up"),
+                    &actor,
+                )
+                .invocation(Some(tilo_actions::InvocationId::new())),
+            )
+            .unwrap(),
+            crate::widget::ResourceOperationStart::Accepted
+        ));
+        assert!(
+            records
+                .read(&checkout.id, |doc| doc
+                    .get(ROOT, "follow-up")
+                    .unwrap()
+                    .unwrap()
+                    .0
+                    .as_bool()
+                    .unwrap())
+                .unwrap()
+        );
+        assert!(app.state.doc.get(ROOT, "follow-up").unwrap().is_none());
+        let captures = CAPTURES.with_borrow_mut(std::mem::take);
+        assert_eq!(
+            captures
+                .iter()
+                .filter(|(label, _)| *label == "mutable-operation")
+                .count(),
+            1
+        );
+        for label in [
+            "build",
+            "sync",
+            "measure",
+            "apply",
+            "focus-order",
+            "focus",
+            "ime",
+            "accessibility",
+            "action",
+        ] {
+            assert!(
+                captures.iter().any(|(actual, _)| *actual == label),
+                "missing {label}"
+            );
+        }
+        for (label, mut request) in captures {
+            assert!(request.begin().complete(1));
+            assert!(receiver.try_recv().is_ok(), "{label} missed child");
+            assert!(rx.try_recv().is_err(), "{label} woke outer");
+        }
+        let close_probe = *app.actions.bound_invocations.keys().next().unwrap();
+        app.actions.local_invocations.insert(
+            close_probe,
+            (
+                tilo_actions::ActionAddress::new("bound:probe", "follow-up"),
+                tilo_actions::OperationKind::Effect,
+            ),
+        );
+        app.close_admission.save_waiting = true;
+        app.close_admission.save_local = Some(close_probe);
+        app.close_components();
+        assert_eq!(
+            CAPTURES.with_borrow(|c| c
+                .iter()
+                .filter(|(label, _)| *label == "mutable-cancel")
+                .count()),
+            1
+        );
+        assert_eq!(app.component_close_reports().len(), 1);
+        app.close_components();
+        assert_eq!(app.component_close_reports().len(), 1);
+        assert_eq!(app.take_component_close_reports().len(), 1);
+        assert!(app.take_component_close_reports().is_empty());
+    }
+
+    // Case `document_history_keeps_focused_record_after_focus_moves_and_revokes_live`.
+    {
+        let mut fixture = ActionFixture::new();
+        let mut entry_ids = Vec::new();
+        for (index, binding) in fixture.bindings.iter().enumerate() {
+            let hash = fixture
+                .records
+                .with(&binding.checkout.id, |doc| {
+                    doc.put(ROOT, "history_marker", format!("record-{index}"))
+                        .unwrap();
+                    doc.commit().unwrap()
+                })
+                .unwrap();
+            entry_ids.push(crate::history_source::entry_id_from_hash(&hash.to_string()));
+        }
+        fixture
+            .app
+            .state
+            .doc
+            .put(ROOT, "history_marker", "outer")
+            .unwrap();
+        let pending = fixture.app.state.doc.pending_ops();
+        let focus_for = |app: &App, instance| {
+            app.layout
+                .node_map
+                .keys()
+                .copied()
+                .find(|node| {
+                    app.bindings
+                        .binding_for(*node)
+                        .is_some_and(|binding| binding.instance_id == instance)
+                })
+                .unwrap()
+        };
+        fixture.app.focused_node = Some(focus_for(&fixture.app, fixture.bindings[0].instance_id));
+        fixture.app.open_document_history().unwrap();
+        fixture.app.focused_node = Some(focus_for(&fixture.app, fixture.bindings[1].instance_id));
+        fixture
+            .app
+            .select_document_history(&[entry_ids[0]])
+            .unwrap();
+        let snapshot = fixture.app.document_history_snapshot().unwrap().unwrap();
+        let after =
+            automerge::AutoCommit::load(&snapshot.comparison.unwrap().after_document).unwrap();
+        assert_eq!(
+            after
+                .get(ROOT, "history_marker")
                 .unwrap()
                 .unwrap()
                 .0
-                .as_bool()
-                .unwrap())
-            .unwrap()
-    );
-    assert!(app.state.doc.get(ROOT, "follow-up").unwrap().is_none());
-    let captures = CAPTURES.with_borrow_mut(std::mem::take);
-    assert_eq!(
-        captures
-            .iter()
-            .filter(|(label, _)| *label == "mutable-operation")
-            .count(),
-        1
-    );
-    for label in [
-        "build",
-        "sync",
-        "measure",
-        "apply",
-        "focus-order",
-        "focus",
-        "ime",
-        "accessibility",
-        "action",
-    ] {
-        assert!(
-            captures.iter().any(|(actual, _)| *actual == label),
-            "missing {label}"
+                .as_str(),
+            Some("record-0")
         );
+        assert!(
+            fixture
+                .app
+                .select_document_history(&[entry_ids[1]])
+                .is_err()
+        );
+        assert_eq!(fixture.app.state.doc.pending_ops(), pending);
+        *fixture.permissions.borrow_mut() =
+            crate::permissions::PermissionContext::from_capabilities(
+                crate::permissions::Actor::person(None, "fixture-user"),
+                vec![],
+            )
+            .at_unix_time(100);
+        assert!(fixture.app.document_history_snapshot().is_err());
+        assert!(!fixture.app.document_history.is_open());
     }
-    for (label, mut request) in captures {
-        assert!(request.begin().complete(1));
-        assert!(receiver.try_recv().is_ok(), "{label} missed child");
-        assert!(rx.try_recv().is_err(), "{label} woke outer");
+
+    // Case `document_history_does_not_fall_back_when_component_closes`.
+    {
+        let mut fixture = ActionFixture::new();
+        let binding = &fixture.bindings[0];
+        fixture.app.focused_node = fixture.app.layout.node_map.keys().copied().find(|node| {
+            fixture
+                .app
+                .bindings
+                .binding_for(*node)
+                .is_some_and(|candidate| candidate.instance_id == binding.instance_id)
+        });
+        assert!(fixture.app.focused_node.is_some());
+        fixture.app.open_document_history().unwrap();
+        binding.closing.set(true);
+        fixture.app.focused_node = None;
+        assert!(fixture.app.document_history_snapshot().is_err());
+        assert!(!fixture.app.document_history.is_open());
     }
-    let close_probe = *app.actions.bound_invocations.keys().next().unwrap();
-    app.actions.local_invocations.insert(
-        close_probe,
-        (
-            tilo_actions::ActionAddress::new("bound:probe", "follow-up"),
-            tilo_actions::OperationKind::Effect,
-        ),
-    );
-    app.close_admission.save_waiting = true;
-    app.close_admission.save_local = Some(close_probe);
-    app.close_components();
-    assert_eq!(
-        CAPTURES.with_borrow(|c| c
-            .iter()
-            .filter(|(label, _)| *label == "mutable-cancel")
-            .count()),
-        1
-    );
-    assert_eq!(app.component_close_reports().len(), 1);
-    app.close_components();
-    assert_eq!(app.component_close_reports().len(), 1);
-    assert_eq!(app.take_component_close_reports().len(), 1);
-    assert!(app.take_component_close_reports().is_empty());
+
+    // Case `document_history_requires_a_choice_when_multiple_components_have_no_focus`.
+    {
+        let mut fixture = ActionFixture::new();
+        fixture.app.focused_node = None;
+        assert!(fixture.app.open_document_history().is_err());
+        assert!(fixture.app.document_history_snapshot().unwrap().is_none());
+    }
 }
 struct ActionFixture {
     _temp: tempfile::TempDir,
@@ -700,101 +801,6 @@ struct ActionFixture {
     records: crate::record::RecordStore,
     bindings: Vec<crate::bound_dispatch::CallbackBinding>,
     permissions: Rc<RefCell<crate::permissions::PermissionContext>>,
-}
-
-#[test]
-fn document_history_keeps_focused_record_after_focus_moves_and_revokes_live() {
-    let mut fixture = ActionFixture::new();
-    let mut entry_ids = Vec::new();
-    for (index, binding) in fixture.bindings.iter().enumerate() {
-        let hash = fixture
-            .records
-            .with(&binding.checkout.id, |doc| {
-                doc.put(ROOT, "history_marker", format!("record-{index}"))
-                    .unwrap();
-                doc.commit().unwrap()
-            })
-            .unwrap();
-        entry_ids.push(crate::history_source::entry_id_from_hash(&hash.to_string()));
-    }
-    fixture
-        .app
-        .state
-        .doc
-        .put(ROOT, "history_marker", "outer")
-        .unwrap();
-    let pending = fixture.app.state.doc.pending_ops();
-    let focus_for = |app: &App, instance| {
-        app.layout
-            .node_map
-            .keys()
-            .copied()
-            .find(|node| {
-                app.bindings
-                    .binding_for(*node)
-                    .is_some_and(|binding| binding.instance_id == instance)
-            })
-            .unwrap()
-    };
-    fixture.app.focused_node = Some(focus_for(&fixture.app, fixture.bindings[0].instance_id));
-    fixture.app.open_document_history().unwrap();
-    fixture.app.focused_node = Some(focus_for(&fixture.app, fixture.bindings[1].instance_id));
-    fixture
-        .app
-        .select_document_history(&[entry_ids[0]])
-        .unwrap();
-    let snapshot = fixture.app.document_history_snapshot().unwrap().unwrap();
-    let after = automerge::AutoCommit::load(&snapshot.comparison.unwrap().after_document).unwrap();
-    assert_eq!(
-        after
-            .get(ROOT, "history_marker")
-            .unwrap()
-            .unwrap()
-            .0
-            .as_str(),
-        Some("record-0")
-    );
-    assert!(
-        fixture
-            .app
-            .select_document_history(&[entry_ids[1]])
-            .is_err()
-    );
-    assert_eq!(fixture.app.state.doc.pending_ops(), pending);
-    *fixture.permissions.borrow_mut() = crate::permissions::PermissionContext::from_capabilities(
-        crate::permissions::Actor::person(None, "fixture-user"),
-        vec![],
-    )
-    .at_unix_time(100);
-    assert!(fixture.app.document_history_snapshot().is_err());
-    assert!(!fixture.app.document_history.is_open());
-}
-
-#[test]
-fn document_history_does_not_fall_back_when_component_closes() {
-    let mut fixture = ActionFixture::new();
-    let binding = &fixture.bindings[0];
-    fixture.app.focused_node = fixture.app.layout.node_map.keys().copied().find(|node| {
-        fixture
-            .app
-            .bindings
-            .binding_for(*node)
-            .is_some_and(|candidate| candidate.instance_id == binding.instance_id)
-    });
-    assert!(fixture.app.focused_node.is_some());
-    fixture.app.open_document_history().unwrap();
-    binding.closing.set(true);
-    fixture.app.focused_node = None;
-    assert!(fixture.app.document_history_snapshot().is_err());
-    assert!(!fixture.app.document_history.is_open());
-}
-
-#[test]
-fn document_history_requires_a_choice_when_multiple_components_have_no_focus() {
-    let mut fixture = ActionFixture::new();
-    fixture.app.focused_node = None;
-    assert!(fixture.app.open_document_history().is_err());
-    assert!(fixture.app.document_history_snapshot().unwrap().is_none());
 }
 
 impl ActionFixture {
@@ -914,411 +920,619 @@ impl ActionFixture {
 include!("action_directory_snapshot_bound_tests.rs");
 include!("bound_record_sync_tests.rs");
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one controlled lifetime traces publication through refusal and delivery"
+)]
 #[test]
-fn task4_bound_publication_preserves_contracts_and_directed_owner() {
-    let mut fixture = ActionFixture::broker();
-    let outer = fixture.app.state.doc.get_heads();
-    let address = tilo_actions::ActionAddress::new("bound:probe", "follow-up");
-    let actor = fixture.app.collaboration.local_author.0.clone();
-    let error = fixture
-        .app
-        .invoke_resource_action(ResourceInvocation::new(&address, &actor).confirmed(true))
-        .unwrap_err();
-    assert_eq!(
-        crate::bound_dispatch::door_error_code(&error),
-        "ambiguous_action_target"
-    );
-    let resources = fixture.app.publication_resources();
-    let first = fixture
-        .app
-        .actions
-        .bound_publication
-        .alias(&fixture.bindings[0], "bound:probe")
-        .unwrap();
-    let second = fixture
-        .app
-        .actions
-        .bound_publication
-        .alias(&fixture.bindings[1], "bound:probe")
-        .unwrap();
-    assert_ne!(first, second);
-    let descriptor = |id: &str| {
-        tilo_actions::door::resolve(
-            &resources,
-            &tilo_actions::ActionAddress::new(id, "follow-up"),
-        )
-        .unwrap()
-    };
-    assert_eq!(
-        descriptor(&first).contract.confirmation,
-        tilo_actions::ConfirmationPolicy::None
-    );
-    assert_eq!(
-        descriptor(&second).contract.confirmation,
-        tilo_actions::ConfirmationPolicy::Confirm
-    );
-    let revision = fixture.app.action_directory_revision();
-    assert!(matches!(
-        fixture
+fn bound_publication_and_cache_keep_contracts_and_id_lifetimes() {
+    // Case `task4_bound_publication_preserves_contracts_and_directed_owner`.
+    {
+        let mut fixture = ActionFixture::broker();
+        let outer = fixture.app.state.doc.get_heads();
+        let address = tilo_actions::ActionAddress::new("bound:probe", "follow-up");
+        let actor = fixture.app.collaboration.local_author.0.clone();
+        let error = fixture
             .app
-            .resolve_action_directory(&revision, &second, "follow-up"),
-        runtime_collab::ActionDirectoryResolution::Found(_)
-    ));
-    fixture
-        .app
-        .invoke_resource_action(
-            ResourceInvocation::new(
-                &tilo_actions::ActionAddress::new(&second, "follow-up"),
-                &actor,
+            .invoke_resource_action(ResourceInvocation::new(&address, &actor).confirmed(true))
+            .unwrap_err();
+        assert_eq!(
+            crate::bound_dispatch::door_error_code(&error),
+            "ambiguous_action_target"
+        );
+        let resources = fixture.app.publication_resources();
+        let first = fixture
+            .app
+            .actions
+            .bound_publication
+            .alias(&fixture.bindings[0], "bound:probe")
+            .unwrap();
+        let second = fixture
+            .app
+            .actions
+            .bound_publication
+            .alias(&fixture.bindings[1], "bound:probe")
+            .unwrap();
+        assert_ne!(first, second);
+        let descriptor = |id: &str| {
+            tilo_actions::door::resolve(
+                &resources,
+                &tilo_actions::ActionAddress::new(id, "follow-up"),
             )
-            .confirmed(true)
-            .broker_admitted(true)
-            .evidence(Some(&serde_json::json!({"confirm": true})))
-            .invocation(Some(tilo_actions::InvocationId::new())),
-        )
-        .unwrap();
-    assert!(
-        fixture
-            .records
-            .read_history(&fixture.bindings[0].checkout.id, |_, history| history
-                .next_undo_in(&fixture.bindings[0].author, 11)
-                .is_none())
             .unwrap()
-    );
-    fixture
-        .records
-        .with_history(&fixture.bindings[1].checkout.id, |doc, history| {
-            assert!(doc.get(ROOT, "follow-up").unwrap().is_some());
-            assert_eq!(
-                history
-                    .next_undo_in(&fixture.bindings[1].author, 12)
-                    .unwrap()
-                    .instance_id,
-                Some(12)
-            );
-        })
-        .unwrap();
-    assert_eq!(fixture.app.state.doc.get_heads(), outer);
-}
-
-#[test]
-fn task4_bound_cache_tracks_permission_time_and_never_reuses_exhaustion() {
-    let mut fixture = ActionFixture::new();
-    DISCOVERY_COUNT.set(0);
-    let _ = fixture.app.collect_resources();
-    let first = DISCOVERY_COUNT.get();
-    let _ = fixture.app.collect_resources();
-    assert_eq!(DISCOVERY_COUNT.get(), first);
-    let expired = fixture.permissions.borrow().clone().at_unix_time(120);
-    *fixture.permissions.borrow_mut() = expired;
-    let resources = fixture.app.collect_resources();
-    assert!(
-        tilo_actions::door::resolve(
-            &resources,
-            &tilo_actions::ActionAddress::new("bound:probe", "follow-up")
-        )
-        .is_none()
-    );
-    assert!(DISCOVERY_COUNT.get() > first);
-    let expired = fixture.permissions.borrow().clone();
-    *fixture.permissions.borrow_mut() = expired.at_unix_time(100);
-    fixture
-        .records
-        .with_action_state(&fixture.bindings[0].checkout.id, |_, _, state| {
-            state.generation = Some(u64::MAX);
-        })
-        .unwrap();
-    fixture.bindings[0]
-        .with_document(&mut fixture.app.state.doc, |_, _| {})
-        .unwrap();
-    let _ = fixture.app.collect_resources();
-    let before = DISCOVERY_COUNT.get();
-    let _ = fixture.app.collect_resources();
-    assert!(DISCOVERY_COUNT.get() > before);
-    assert_eq!(
-        fixture
-            .records
-            .action_generation(&fixture.bindings[0].checkout.id)
-            .unwrap(),
-        None
-    );
-}
-
-#[test]
-fn task4_semantic_and_palette_targets_keep_equal_id_lifetimes() {
-    let mut fixture = ActionFixture::new();
-    fixture.app.refresh_semantic_tree();
-    let targets = fixture
-        .app
-        .accessibility
-        .semantic_tree
-        .bound_actions_for_test();
-    let (id, _) = targets
-        .iter()
-        .find(|(_, target)| {
-            target.address.instance_id == 12 && target.address.address.action == "view"
-        })
-        .unwrap();
-    let outer = fixture.app.state.doc.get_heads();
-    assert!(
+        };
+        assert_eq!(
+            descriptor(&first).contract.confirmation,
+            tilo_actions::ConfirmationPolicy::None
+        );
+        assert_eq!(
+            descriptor(&second).contract.confirmation,
+            tilo_actions::ConfirmationPolicy::Confirm
+        );
+        let revision = fixture.app.action_directory_revision();
+        assert!(matches!(
+            fixture
+                .app
+                .resolve_action_directory(&revision, &second, "follow-up"),
+            runtime_collab::ActionDirectoryResolution::Found(_)
+        ));
         fixture
             .app
-            .invoke_semantic_action(id, "view", None)
-            .unwrap()
-    );
-    fixture.app.open_action_palette();
-    let target = fixture.target(0, "view");
-    assert!(
+            .invoke_resource_action(
+                ResourceInvocation::new(
+                    &tilo_actions::ActionAddress::new(&second, "follow-up"),
+                    &actor,
+                )
+                .confirmed(true)
+                .broker_admitted(true)
+                .evidence(Some(&serde_json::json!({"confirm": true})))
+                .invocation(Some(tilo_actions::InvocationId::new())),
+            )
+            .unwrap();
+        assert!(
+            fixture
+                .records
+                .read_history(&fixture.bindings[0].checkout.id, |_, history| history
+                    .next_undo_in(&fixture.bindings[0].author, 11)
+                    .is_none())
+                .unwrap()
+        );
         fixture
+            .records
+            .with_history(&fixture.bindings[1].checkout.id, |doc, history| {
+                assert!(doc.get(ROOT, "follow-up").unwrap().is_some());
+                assert_eq!(
+                    history
+                        .next_undo_in(&fixture.bindings[1].author, 12)
+                        .unwrap()
+                        .instance_id,
+                    Some(12)
+                );
+            })
+            .unwrap();
+        assert_eq!(fixture.app.state.doc.get_heads(), outer);
+    }
+
+    // Case `task4_bound_cache_tracks_permission_time_and_never_reuses_exhaustion`.
+    {
+        let mut fixture = ActionFixture::new();
+        DISCOVERY_COUNT.set(0);
+        let _ = fixture.app.collect_resources();
+        let first = DISCOVERY_COUNT.get();
+        let _ = fixture.app.collect_resources();
+        assert_eq!(DISCOVERY_COUNT.get(), first);
+        let expired = fixture.permissions.borrow().clone().at_unix_time(120);
+        *fixture.permissions.borrow_mut() = expired;
+        let resources = fixture.app.collect_resources();
+        assert!(
+            tilo_actions::door::resolve(
+                &resources,
+                &tilo_actions::ActionAddress::new("bound:probe", "follow-up")
+            )
+            .is_none()
+        );
+        assert!(DISCOVERY_COUNT.get() > first);
+        let expired = fixture.permissions.borrow().clone();
+        *fixture.permissions.borrow_mut() = expired.at_unix_time(100);
+        fixture
+            .records
+            .with_action_state(&fixture.bindings[0].checkout.id, |_, _, state| {
+                state.generation = Some(u64::MAX);
+            })
+            .unwrap();
+        fixture.bindings[0]
+            .with_document(&mut fixture.app.state.doc, |_, _| {})
+            .unwrap();
+        let _ = fixture.app.collect_resources();
+        let before = DISCOVERY_COUNT.get();
+        let _ = fixture.app.collect_resources();
+        assert!(DISCOVERY_COUNT.get() > before);
+        assert_eq!(
+            fixture
+                .records
+                .action_generation(&fixture.bindings[0].checkout.id)
+                .unwrap(),
+            None
+        );
+    }
+
+    // Case `task4_semantic_and_palette_targets_keep_equal_id_lifetimes`.
+    {
+        let mut fixture = ActionFixture::new();
+        fixture.app.refresh_semantic_tree();
+        let targets = fixture
+            .app
+            .accessibility
+            .semantic_tree
+            .bound_actions_for_test();
+        let (id, _) = targets
+            .iter()
+            .find(|(_, target)| {
+                target.address.instance_id == 12 && target.address.address.action == "view"
+            })
+            .unwrap();
+        let outer = fixture.app.state.doc.get_heads();
+        assert!(
+            fixture
+                .app
+                .invoke_semantic_action(id, "view", None)
+                .unwrap()
+        );
+        fixture.app.open_action_palette();
+        let target = fixture.target(0, "view");
+        assert!(
+            fixture
+                .app
+                .actions
+                .action_palette
+                .as_mut()
+                .unwrap()
+                .activate_bound(&target)
+        );
+        let pending = fixture
             .app
             .actions
             .action_palette
             .as_mut()
             .unwrap()
-            .activate_bound(&target)
-    );
-    let pending = fixture
-        .app
-        .actions
-        .action_palette
-        .as_mut()
-        .unwrap()
-        .take_operation()
-        .unwrap();
-    assert!(
-        pending
-            .bound
-            .as_ref()
-            .unwrap()
-            .binding
-            .same_component(&target.binding)
-    );
-    assert_eq!(fixture.app.state.doc.get_heads(), outer);
-    fixture.app.close_components();
-    let actor = fixture.app.collaboration.local_author.0.clone();
-    assert!(
-        fixture
-            .app
-            .invoke_bound_target(
-                &target,
-                &ResourceInvocation::new(&target.address.address, &actor).confirmed(true)
-            )
-            .is_err()
-    );
-}
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one controlled lifetime traces publication through refusal and delivery"
-)]
-fn task4_bound_directory_limits_cursors_and_alias_refusal() {
-    let mut fixture = ActionFixture::broker();
-    let query = runtime_collab::ActionDirectoryQuery {
-        peer_id: 1,
-        revision: String::new(),
-        cursor: vec![],
-        needle: String::new(),
-        parent_resource: String::new(),
-        max_results: 1,
-        max_bytes: 8192,
-        max_work: 16,
-        max_depth: 8,
-    };
-    let first = fixture.app.action_directory_page(query.clone());
-    assert_eq!(first.rows.len(), 1);
-    assert!(!first.next_cursor.is_empty());
-    let second = fixture
-        .app
-        .action_directory_page(runtime_collab::ActionDirectoryQuery {
-            revision: first.revision.clone(),
-            cursor: first.next_cursor.clone(),
-            ..query.clone()
-        });
-    assert_eq!(second.rows.len(), 1);
-    assert_ne!(first.rows[0].resource, second.rows[0].resource);
-    assert_eq!(first.rows[0].visibility_action.as_deref(), Some("view"));
-    assert_eq!(
-        second.rows[0].visibility_action.as_deref(),
-        Some("follow-up")
-    );
-    let eager = fixture.app.publication_resources();
-    for page in [&first, &second] {
+            .take_operation()
+            .unwrap();
         assert!(
-            eager
-                .iter()
-                .any(|resource| resource.id.as_str() == page.rows[0].resource)
+            pending
+                .bound
+                .as_ref()
+                .unwrap()
+                .binding
+                .same_component(&target.binding)
+        );
+        assert_eq!(fixture.app.state.doc.get_heads(), outer);
+        fixture.app.close_components();
+        let actor = fixture.app.collaboration.local_author.0.clone();
+        assert!(
+            fixture
+                .app
+                .invoke_bound_target(
+                    &target,
+                    &ResourceInvocation::new(&target.address.address, &actor).confirmed(true)
+                )
+                .is_err()
         );
     }
-    let alias = second.rows[0].resource.clone();
-    let previous_permissions = fixture.permissions.borrow().clone();
-    *fixture.permissions.borrow_mut() = crate::permissions::PermissionContext::from_capabilities(
-        crate::permissions::Actor::person(None, "fixture-user"),
-        vec![],
-    )
-    .at_unix_time(100);
-    let stale = fixture
-        .app
-        .action_directory_page(runtime_collab::ActionDirectoryQuery {
-            revision: first.revision.clone(),
-            cursor: first.next_cursor,
-            ..query
-        });
-    assert!(stale.stale_cursor);
-    assert!(
-        fixture
+
+    // Case `task4_bound_directory_limits_cursors_and_alias_refusal`.
+    {
+        let mut fixture = ActionFixture::broker();
+        let query = runtime_collab::ActionDirectoryQuery {
+            peer_id: 1,
+            revision: String::new(),
+            cursor: vec![],
+            needle: String::new(),
+            parent_resource: String::new(),
+            max_results: 1,
+            max_bytes: 8192,
+            max_work: 16,
+            max_depth: 8,
+        };
+        let first = fixture.app.action_directory_page(query.clone());
+        assert_eq!(first.rows.len(), 1);
+        assert!(!first.next_cursor.is_empty());
+        let second = fixture
             .app
-            .resolve_publication_resource(&alias, "follow-up")
-            .is_none()
-    );
-    let actor = fixture.app.collaboration.local_author.0.clone();
-    assert!(
-        fixture
-            .app
-            .invoke_resource_action(
-                ResourceInvocation::new(
-                    &tilo_actions::ActionAddress::new(&alias, "follow-up"),
-                    &actor,
-                )
-                .confirmed(true)
-                .broker_admitted(true),
+            .action_directory_page(runtime_collab::ActionDirectoryQuery {
+                revision: first.revision.clone(),
+                cursor: first.next_cursor.clone(),
+                ..query.clone()
+            });
+        assert_eq!(second.rows.len(), 1);
+        assert_ne!(first.rows[0].resource, second.rows[0].resource);
+        assert_eq!(first.rows[0].visibility_action.as_deref(), Some("view"));
+        assert_eq!(
+            second.rows[0].visibility_action.as_deref(),
+            Some("follow-up")
+        );
+        let eager = fixture.app.publication_resources();
+        for page in [&first, &second] {
+            assert!(
+                eager
+                    .iter()
+                    .any(|resource| resource.id.as_str() == page.rows[0].resource)
+            );
+        }
+        let alias = second.rows[0].resource.clone();
+        let previous_permissions = fixture.permissions.borrow().clone();
+        *fixture.permissions.borrow_mut() =
+            crate::permissions::PermissionContext::from_capabilities(
+                crate::permissions::Actor::person(None, "fixture-user"),
+                vec![],
             )
-            .is_err()
-    );
-    *fixture.permissions.borrow_mut() = previous_permissions;
-    for malformed in [
-        format!("{}broken", crate::bound_dispatch::PUBLICATION_PREFIX),
-        format!("{alias}:extra"),
-        format!(
-            "{}{}",
-            crate::bound_dispatch::PUBLICATION_PREFIX,
-            "x".repeat(4096)
-        ),
-    ] {
+            .at_unix_time(100);
+        let stale = fixture
+            .app
+            .action_directory_page(runtime_collab::ActionDirectoryQuery {
+                revision: first.revision.clone(),
+                cursor: first.next_cursor,
+                ..query
+            });
+        assert!(stale.stale_cursor);
+        assert!(
+            fixture
+                .app
+                .resolve_publication_resource(&alias, "follow-up")
+                .is_none()
+        );
+        let actor = fixture.app.collaboration.local_author.0.clone();
+        assert!(
+            fixture
+                .app
+                .invoke_resource_action(
+                    ResourceInvocation::new(
+                        &tilo_actions::ActionAddress::new(&alias, "follow-up"),
+                        &actor,
+                    )
+                    .confirmed(true)
+                    .broker_admitted(true),
+                )
+                .is_err()
+        );
+        *fixture.permissions.borrow_mut() = previous_permissions;
+        for malformed in [
+            format!("{}broken", crate::bound_dispatch::PUBLICATION_PREFIX),
+            format!("{alias}:extra"),
+            format!(
+                "{}{}",
+                crate::bound_dispatch::PUBLICATION_PREFIX,
+                "x".repeat(4096)
+            ),
+        ] {
+            assert!(
+                fixture
+                    .app
+                    .actions
+                    .bound_publication
+                    .target(&tilo_actions::ActionAddress::new(&malformed, "view"))
+                    .is_err()
+            );
+            assert!(
+                fixture
+                    .app
+                    .resolve_publication_resource(&malformed, "view")
+                    .is_none()
+            );
+        }
+        fixture.app.close_components();
+        assert!(
+            fixture
+                .app
+                .resolve_publication_resource(&alias, "follow-up")
+                .is_none()
+        );
+        let mut replacement = ActionFixture::broker();
+        fixture.app.actions.bound_broker_route_for_test =
+            replacement.app.actions.bound_broker_route_for_test.clone();
+        fixture.app.root_widget = std::mem::replace(
+            &mut replacement.app.root_widget,
+            Box::new(crate::widget::Text::new("empty")),
+        );
+        fixture.app.invalidate_widget_resource_cache();
+        let replacements = fixture.app.publication_resources();
+        assert!(!replacements.is_empty());
+        assert!(
+            replacements
+                .iter()
+                .all(|resource| resource.id.as_str() != alias)
+        );
+        assert!(
+            fixture
+                .app
+                .resolve_publication_resource(&alias, "view")
+                .is_none()
+        );
+    }
+
+    // Case `task4_reserved_publication_collision_never_routes_to_legacy_widget`.
+    {
+        let mut fixture = ActionFixture::broker();
+        let alias = fixture
+            .app
+            .actions
+            .bound_publication
+            .alias(&fixture.bindings[1], "bound:probe")
+            .unwrap();
+        let old = std::mem::replace(
+            &mut fixture.app.root_widget,
+            Box::new(crate::widget::Text::new("empty")),
+        );
+        fixture.app.root_widget = Box::new(
+            Column::new()
+                .push(Box::new(Probe {
+                    collision: Some(alias.clone()),
+                    ..Probe::default()
+                }))
+                .push(old),
+        );
+        fixture
+            .app
+            .actions
+            .action_registry
+            .register::<FollowUp>("bound.apply");
+        fixture.app.invalidate_widget_resource_cache();
+        let resources = fixture.app.publication_resources();
+        assert_eq!(
+            resources
+                .iter()
+                .filter(|resource| resource.id.as_str() == alias)
+                .count(),
+            1
+        );
+        let descriptor = tilo_actions::door::resolve(
+            &resources,
+            &tilo_actions::ActionAddress::new(&alias, "follow-up"),
+        )
+        .unwrap();
+        assert_eq!(
+            descriptor.contract.confirmation,
+            tilo_actions::ConfirmationPolicy::Confirm
+        );
         assert!(
             fixture
                 .app
                 .actions
                 .bound_publication
-                .target(&tilo_actions::ActionAddress::new(&malformed, "view"))
+                .alias(&fixture.bindings[0], &"x".repeat(4096))
                 .is_err()
         );
-        assert!(
-            fixture
-                .app
-                .resolve_publication_resource(&malformed, "view")
-                .is_none()
+    }
+
+    // Case `task4_bound_control_authority_refreshes_without_an_outer_generation_change`.
+    {
+        let mut fixture = ActionFixture::new();
+        CONTROL_AUTHORITY.with_borrow_mut(Vec::clear);
+        fixture.app.refresh_control_action_availability();
+        assert_eq!(
+            CONTROL_AUTHORITY.with_borrow(Clone::clone),
+            vec![(false, true), (true, true)]
+        );
+        *fixture.permissions.borrow_mut() =
+            crate::permissions::PermissionContext::from_capabilities(
+                crate::permissions::Actor::person(None, "fixture-user"),
+                vec![],
+            )
+            .at_unix_time(100);
+        CONTROL_AUTHORITY.with_borrow_mut(Vec::clear);
+        fixture.app.refresh_control_action_availability();
+        assert_eq!(
+            CONTROL_AUTHORITY.with_borrow(Clone::clone),
+            vec![(false, false), (true, false)]
         );
     }
-    fixture.app.close_components();
-    assert!(
-        fixture
-            .app
-            .resolve_publication_resource(&alias, "follow-up")
-            .is_none()
-    );
-    let mut replacement = ActionFixture::broker();
-    fixture.app.actions.bound_broker_route_for_test =
-        replacement.app.actions.bound_broker_route_for_test.clone();
-    fixture.app.root_widget = std::mem::replace(
-        &mut replacement.app.root_widget,
-        Box::new(crate::widget::Text::new("empty")),
-    );
-    fixture.app.invalidate_widget_resource_cache();
-    let replacements = fixture.app.publication_resources();
-    assert!(!replacements.is_empty());
-    assert!(
-        replacements
-            .iter()
-            .all(|resource| resource.id.as_str() != alias)
-    );
-    assert!(
-        fixture
-            .app
-            .resolve_publication_resource(&alias, "view")
-            .is_none()
-    );
 }
 
 #[test]
-fn task4_compound_view_and_noop_effect_preserve_pending_typing() {
-    for (action, mode) in [("view", 0), ("follow-up", 2), ("view", 1)] {
-        COMPOUND_MODE.set(mode);
-        let mut fixture = ActionFixture::with_same_record(true);
-        let a = fixture.bindings[0].clone();
-        let b = fixture.bindings[1].clone();
-        a.with_document(&mut fixture.app.state.doc, |doc, _| {
-            doc.put(ROOT, "typing", "first").unwrap();
-        })
-        .unwrap();
-        let pending_before = fixture
-            .records
-            .read(
-                &a.checkout.id,
-                automerge::transaction::Transactable::pending_ops,
-            )
-            .unwrap();
-        let target = fixture.target(1, action);
-        fixture
-            .app
-            .invoke_bound_target(
-                &target,
-                &ResourceInvocation::new(&target.address.address, "fixture-user")
-                    .confirmed(true)
-                    .invocation(Some(tilo_actions::InvocationId(uuid::Uuid::from_u128(91)))),
-            )
-            .unwrap();
-        if mode == 0 {
-            assert_eq!(
-                fixture
-                    .records
-                    .read(
-                        &a.checkout.id,
-                        automerge::transaction::Transactable::pending_ops
-                    )
-                    .unwrap(),
-                pending_before
-            );
-        }
-        let b_entry = fixture
-            .records
-            .read_history(&a.checkout.id, |_, history| {
-                history.next_undo_in(&b.author, b.instance_id).cloned()
+fn compound_bound_effects_preserve_typing_custody_and_redo() {
+    // Case `task4_compound_view_and_noop_effect_preserve_pending_typing`.
+    {
+        for (action, mode) in [("view", 0), ("follow-up", 2), ("view", 1)] {
+            COMPOUND_MODE.set(mode);
+            let mut fixture = ActionFixture::with_same_record(true);
+            let a = fixture.bindings[0].clone();
+            let b = fixture.bindings[1].clone();
+            a.with_document(&mut fixture.app.state.doc, |doc, _| {
+                doc.put(ROOT, "typing", "first").unwrap();
             })
             .unwrap();
-        assert_eq!(b_entry.is_some(), mode == 1);
-        if mode != 1 {
-            assert!(
-                fixture
-                    .records
-                    .read_history(&a.checkout.id, |_, history| history
-                        .next_undo_in(&a.author, a.instance_id)
-                        .is_none())
-                    .unwrap()
-            );
-        }
-        a.with_document(&mut fixture.app.state.doc, |doc, _| {
-            doc.put(ROOT, "typing", "continued").unwrap();
-        })
-        .unwrap();
-        a.history_request(&mut fixture.app.state.doc, crate::undo::UndoRequest::Undo)
-            .unwrap()
-            .unwrap();
-        fixture
-            .records
-            .read(&a.checkout.id, |doc| {
-                assert_eq!(doc.get(ROOT, "typing").unwrap().is_some(), mode == 1);
-                assert_eq!(doc.get(ROOT, "follow-up").unwrap().is_some(), mode == 1);
+            let pending_before = fixture
+                .records
+                .read(
+                    &a.checkout.id,
+                    automerge::transaction::Transactable::pending_ops,
+                )
+                .unwrap();
+            let target = fixture.target(1, action);
+            fixture
+                .app
+                .invoke_bound_target(
+                    &target,
+                    &ResourceInvocation::new(&target.address.address, "fixture-user")
+                        .confirmed(true)
+                        .invocation(Some(tilo_actions::InvocationId(uuid::Uuid::from_u128(91)))),
+                )
+                .unwrap();
+            if mode == 0 {
+                assert_eq!(
+                    fixture
+                        .records
+                        .read(
+                            &a.checkout.id,
+                            automerge::transaction::Transactable::pending_ops
+                        )
+                        .unwrap(),
+                    pending_before
+                );
+            }
+            let b_entry = fixture
+                .records
+                .read_history(&a.checkout.id, |_, history| {
+                    history.next_undo_in(&b.author, b.instance_id).cloned()
+                })
+                .unwrap();
+            assert_eq!(b_entry.is_some(), mode == 1);
+            if mode != 1 {
+                assert!(
+                    fixture
+                        .records
+                        .read_history(&a.checkout.id, |_, history| history
+                            .next_undo_in(&a.author, a.instance_id)
+                            .is_none())
+                        .unwrap()
+                );
+            }
+            a.with_document(&mut fixture.app.state.doc, |doc, _| {
+                doc.put(ROOT, "typing", "continued").unwrap();
             })
             .unwrap();
-        COMPOUND_MODE.set(0);
+            a.history_request(&mut fixture.app.state.doc, crate::undo::UndoRequest::Undo)
+                .unwrap()
+                .unwrap();
+            fixture
+                .records
+                .read(&a.checkout.id, |doc| {
+                    assert_eq!(doc.get(ROOT, "typing").unwrap().is_some(), mode == 1);
+                    assert_eq!(doc.get(ROOT, "follow-up").unwrap().is_some(), mode == 1);
+                })
+                .unwrap();
+            COMPOUND_MODE.set(0);
+        }
     }
-}
 
-#[test]
-fn task4_undeclared_effect_spans_are_retained_excluded_and_keep_custody() {
-    for mode in [3, 4, 5, 6] {
-        COMPOUND_MODE.set(mode);
-        CAPTURES.with_borrow_mut(Vec::clear);
+    // Case `task4_undeclared_effect_spans_are_retained_excluded_and_keep_custody`.
+    {
+        for mode in [3, 4, 5, 6] {
+            COMPOUND_MODE.set(mode);
+            CAPTURES.with_borrow_mut(Vec::clear);
+            let mut fixture = ActionFixture::with_same_record(true);
+            let a = fixture.bindings[0].clone();
+            let b = fixture.bindings[1].clone();
+            a.with_document(&mut fixture.app.state.doc, |doc, _| {
+                doc.put(ROOT, "typing", "prior").unwrap();
+            })
+            .unwrap();
+            let generation = fixture.records.action_generation(&a.checkout.id).unwrap();
+            let target = fixture.target(1, "follow-up");
+            let error = fixture
+                .app
+                .invoke_bound_target(
+                    &target,
+                    &ResourceInvocation::new(&target.address.address, "fixture-user")
+                        .confirmed(true)
+                        .invocation(Some(tilo_actions::InvocationId(uuid::Uuid::from_u128(92)))),
+                )
+                .unwrap_err();
+            assert_eq!(
+                crate::bound_dispatch::door_error_code(&error),
+                "undeclared_document_mutation"
+            );
+            assert!(error.to_string().contains("retained"));
+            assert_ne!(
+                fixture.records.action_generation(&a.checkout.id).unwrap(),
+                generation
+            );
+            b.with_document(&mut fixture.app.state.doc, |doc, _| {
+                doc.put(ROOT, "later", true).unwrap();
+            })
+            .unwrap();
+            b.history_request(&mut fixture.app.state.doc, crate::undo::UndoRequest::Undo)
+                .unwrap()
+                .unwrap();
+            if mode != 3 {
+                b.history_request(&mut fixture.app.state.doc, crate::undo::UndoRequest::Undo)
+                    .unwrap()
+                    .unwrap();
+            }
+            assert!(!b.undo_status(&mut fixture.app.state.doc).unwrap().can_undo);
+            a.history_request(&mut fixture.app.state.doc, crate::undo::UndoRequest::Undo)
+                .unwrap()
+                .unwrap();
+            fixture
+                .records
+                .read(&a.checkout.id, |doc| {
+                    assert!(doc.get(ROOT, "later").unwrap().is_none());
+                    assert!(doc.get(ROOT, "typing").unwrap().is_none());
+                    assert!(doc.get(ROOT, "follow-up").unwrap().is_none());
+                    assert_eq!(
+                        doc.get(ROOT, "raw-before").unwrap().is_some(),
+                        matches!(mode, 3 | 4 | 6)
+                    );
+                    assert_eq!(
+                        doc.get(ROOT, "raw-after").unwrap().is_some(),
+                        matches!(mode, 5 | 6)
+                    );
+                })
+                .unwrap();
+            drop(fixture);
+            assert!(CAPTURES.with_borrow(|captures| {
+                captures.iter().any(|(name, _)| *name == "mutable-cancel")
+            }));
+            COMPOUND_MODE.set(0);
+        }
+    }
+
+    // Case `task4_compound_contextual_optimistic_noop_and_failed_producers`.
+    {
+        for mode in [7, 8, 9, 10] {
+            COMPOUND_MODE.set(mode);
+            let mut fixture = ActionFixture::with_same_record(true);
+            let a = fixture.bindings[0].clone();
+            let b = fixture.bindings[1].clone();
+            a.with_document(&mut fixture.app.state.doc, |doc, _| {
+                doc.put(ROOT, "typing", "prior").unwrap();
+            })
+            .unwrap();
+            let target = fixture.target(1, "follow-up");
+            fixture
+                .app
+                .invoke_bound_target(
+                    &target,
+                    &ResourceInvocation::new(&target.address.address, "fixture-user")
+                        .confirmed(true),
+                )
+                .unwrap();
+            assert_eq!(
+                b.undo_status(&mut fixture.app.state.doc).unwrap().can_undo,
+                mode < 9
+            );
+            if mode < 9 {
+                b.history_request(&mut fixture.app.state.doc, crate::undo::UndoRequest::Undo)
+                    .unwrap()
+                    .unwrap();
+                assert!(!b.undo_status(&mut fixture.app.state.doc).unwrap().can_undo);
+            } else {
+                assert!(
+                    fixture
+                        .records
+                        .read_history(&a.checkout.id, |_, history| history
+                            .next_undo_in(&a.author, a.instance_id)
+                            .is_none())
+                        .unwrap()
+                );
+            }
+            a.history_request(&mut fixture.app.state.doc, crate::undo::UndoRequest::Undo)
+                .unwrap()
+                .unwrap();
+            fixture
+                .records
+                .read(&a.checkout.id, |doc| {
+                    assert!(doc.get(ROOT, "typing").unwrap().is_none());
+                    assert!(doc.get(ROOT, "follow-up").unwrap().is_none());
+                    assert!(doc.get(ROOT, "failed-action").unwrap().is_none());
+                })
+                .unwrap();
+            COMPOUND_MODE.set(0);
+        }
+    }
+
+    // Case `task4_compound_unwind_restores_frame_and_preserves_unrelated_redo`.
+    {
+        COMPOUND_MODE.set(11);
         let mut fixture = ActionFixture::with_same_record(true);
         let a = fixture.bindings[0].clone();
         let b = fixture.bindings[1].clone();
@@ -1326,26 +1540,20 @@ fn task4_undeclared_effect_spans_are_retained_excluded_and_keep_custody() {
             doc.put(ROOT, "typing", "prior").unwrap();
         })
         .unwrap();
-        let generation = fixture.records.action_generation(&a.checkout.id).unwrap();
+        a.history_request(&mut fixture.app.state.doc, crate::undo::UndoRequest::Undo)
+            .unwrap()
+            .unwrap();
         let target = fixture.target(1, "follow-up");
-        let error = fixture
-            .app
-            .invoke_bound_target(
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = fixture.app.invoke_bound_target(
                 &target,
-                &ResourceInvocation::new(&target.address.address, "fixture-user")
-                    .confirmed(true)
-                    .invocation(Some(tilo_actions::InvocationId(uuid::Uuid::from_u128(92)))),
-            )
-            .unwrap_err();
-        assert_eq!(
-            crate::bound_dispatch::door_error_code(&error),
-            "undeclared_document_mutation"
-        );
-        assert!(error.to_string().contains("retained"));
-        assert_ne!(
-            fixture.records.action_generation(&a.checkout.id).unwrap(),
-            generation
-        );
+                &ResourceInvocation::new(&target.address.address, "fixture-user").confirmed(true),
+            );
+        }));
+        assert!(result.is_err());
+        COMPOUND_MODE.set(0);
+        assert!(a.undo_status(&mut fixture.app.state.doc).unwrap().can_redo);
+        assert!(!b.undo_status(&mut fixture.app.state.doc).unwrap().can_undo);
         b.with_document(&mut fixture.app.state.doc, |doc, _| {
             doc.put(ROOT, "later", true).unwrap();
         })
@@ -1353,178 +1561,108 @@ fn task4_undeclared_effect_spans_are_retained_excluded_and_keep_custody() {
         b.history_request(&mut fixture.app.state.doc, crate::undo::UndoRequest::Undo)
             .unwrap()
             .unwrap();
-        if mode != 3 {
-            b.history_request(&mut fixture.app.state.doc, crate::undo::UndoRequest::Undo)
-                .unwrap()
-                .unwrap();
-        }
-        assert!(!b.undo_status(&mut fixture.app.state.doc).unwrap().can_undo);
-        a.history_request(&mut fixture.app.state.doc, crate::undo::UndoRequest::Undo)
+        a.history_request(&mut fixture.app.state.doc, crate::undo::UndoRequest::Redo)
             .unwrap()
             .unwrap();
         fixture
             .records
             .read(&a.checkout.id, |doc| {
+                assert!(doc.get(ROOT, "raw-unwind").unwrap().is_some());
+                assert!(doc.get(ROOT, "typing").unwrap().is_some());
                 assert!(doc.get(ROOT, "later").unwrap().is_none());
-                assert!(doc.get(ROOT, "typing").unwrap().is_none());
-                assert!(doc.get(ROOT, "follow-up").unwrap().is_none());
-                assert_eq!(
-                    doc.get(ROOT, "raw-before").unwrap().is_some(),
-                    matches!(mode, 3 | 4 | 6)
-                );
-                assert_eq!(
-                    doc.get(ROOT, "raw-after").unwrap().is_some(),
-                    matches!(mode, 5 | 6)
-                );
             })
             .unwrap();
-        drop(fixture);
-        assert!(CAPTURES.with_borrow(|captures| {
-            captures.iter().any(|(name, _)| *name == "mutable-cancel")
-        }));
-        COMPOUND_MODE.set(0);
     }
-}
 
-#[test]
-fn task4_compound_contextual_optimistic_noop_and_failed_producers() {
-    for mode in [7, 8, 9, 10] {
-        COMPOUND_MODE.set(mode);
-        let mut fixture = ActionFixture::with_same_record(true);
-        let a = fixture.bindings[0].clone();
-        let b = fixture.bindings[1].clone();
-        a.with_document(&mut fixture.app.state.doc, |doc, _| {
-            doc.put(ROOT, "typing", "prior").unwrap();
-        })
-        .unwrap();
-        let target = fixture.target(1, "follow-up");
-        fixture
-            .app
-            .invoke_bound_target(
-                &target,
-                &ResourceInvocation::new(&target.address.address, "fixture-user").confirmed(true),
+    // Case `task4_pending_status_selects_its_owner_without_closing_typing`.
+    {
+        let mut fixture = ActionFixture::new();
+        let binding = fixture.bindings[0].clone();
+        let outer = fixture.app.state.doc.get_heads();
+        binding
+            .with_document(&mut fixture.app.state.doc, |doc, _| {
+                doc.put(ROOT, "typing", "pending").unwrap();
+            })
+            .unwrap();
+        let pending = fixture
+            .records
+            .read(
+                &binding.checkout.id,
+                automerge::transaction::Transactable::pending_ops,
             )
             .unwrap();
-        assert_eq!(
-            b.undo_status(&mut fixture.app.state.doc).unwrap().can_undo,
-            mode < 9
-        );
-        if mode < 9 {
-            b.history_request(&mut fixture.app.state.doc, crate::undo::UndoRequest::Undo)
+        assert!(
+            binding
+                .undo_status(&mut fixture.app.state.doc)
                 .unwrap()
-                .unwrap();
-            assert!(!b.undo_status(&mut fixture.app.state.doc).unwrap().can_undo);
-        } else {
-            assert!(
-                fixture
-                    .records
-                    .read_history(&a.checkout.id, |_, history| history
-                        .next_undo_in(&a.author, a.instance_id)
-                        .is_none())
-                    .unwrap()
-            );
-        }
-        a.history_request(&mut fixture.app.state.doc, crate::undo::UndoRequest::Undo)
+                .can_undo
+        );
+        assert!(
+            !fixture.bindings[1]
+                .undo_status(&mut fixture.app.state.doc)
+                .unwrap()
+                .can_undo
+        );
+        assert_eq!(
+            fixture
+                .records
+                .read(
+                    &binding.checkout.id,
+                    automerge::transaction::Transactable::pending_ops
+                )
+                .unwrap(),
+            pending
+        );
+        let entry = binding
+            .history_request(&mut fixture.app.state.doc, crate::undo::UndoRequest::Undo)
             .unwrap()
             .unwrap();
-        fixture
-            .records
-            .read(&a.checkout.id, |doc| {
-                assert!(doc.get(ROOT, "typing").unwrap().is_none());
-                assert!(doc.get(ROOT, "follow-up").unwrap().is_none());
-                assert!(doc.get(ROOT, "failed-action").unwrap().is_none());
-            })
-            .unwrap();
-        COMPOUND_MODE.set(0);
+        assert_eq!(entry.instance_id, Some(11));
+        assert!(
+            binding
+                .undo_status(&mut fixture.app.state.doc)
+                .unwrap()
+                .can_redo
+        );
+        assert!(
+            fixture
+                .records
+                .read(&binding.checkout.id, |doc| doc
+                    .get(ROOT, "typing")
+                    .unwrap()
+                    .is_none())
+                .unwrap()
+        );
+        assert_eq!(fixture.app.state.doc.get_heads(), outer);
     }
 }
 
-#[test]
-fn task4_compound_unwind_restores_frame_and_preserves_unrelated_redo() {
-    COMPOUND_MODE.set(11);
-    let mut fixture = ActionFixture::with_same_record(true);
-    let a = fixture.bindings[0].clone();
-    let b = fixture.bindings[1].clone();
-    a.with_document(&mut fixture.app.state.doc, |doc, _| {
-        doc.put(ROOT, "typing", "prior").unwrap();
-    })
-    .unwrap();
-    a.history_request(&mut fixture.app.state.doc, crate::undo::UndoRequest::Undo)
-        .unwrap()
-        .unwrap();
-    let target = fixture.target(1, "follow-up");
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let _ = fixture.app.invoke_bound_target(
-            &target,
-            &ResourceInvocation::new(&target.address.address, "fixture-user").confirmed(true),
-        );
-    }));
-    assert!(result.is_err());
-    COMPOUND_MODE.set(0);
-    assert!(a.undo_status(&mut fixture.app.state.doc).unwrap().can_redo);
-    assert!(!b.undo_status(&mut fixture.app.state.doc).unwrap().can_undo);
-    b.with_document(&mut fixture.app.state.doc, |doc, _| {
-        doc.put(ROOT, "later", true).unwrap();
-    })
-    .unwrap();
-    b.history_request(&mut fixture.app.state.doc, crate::undo::UndoRequest::Undo)
-        .unwrap()
-        .unwrap();
-    a.history_request(&mut fixture.app.state.doc, crate::undo::UndoRequest::Redo)
-        .unwrap()
-        .unwrap();
-    fixture
-        .records
-        .read(&a.checkout.id, |doc| {
-            assert!(doc.get(ROOT, "raw-unwind").unwrap().is_some());
-            assert!(doc.get(ROOT, "typing").unwrap().is_some());
-            assert!(doc.get(ROOT, "later").unwrap().is_none());
-        })
-        .unwrap();
-}
-
-#[test]
 #[allow(
     clippy::too_many_lines,
-    reason = "fresh and revoked authority share the full visible-row and activation oracle"
+    reason = "fresh and revoked authority share the full visible-row and activation oracle; one controlled paging fixture covers completion, revocation and prompt pause"
 )]
-fn task4_denied_bound_provider_rows_are_not_disclosed() {
-    for initially_allowed in [false, true] {
-        let mut fixture = ActionFixture::with_authority(false, true);
-        let denied = crate::permissions::PermissionContext::from_capabilities(
-            crate::permissions::Actor::person(None, "fixture-user"),
-            vec![],
-        )
-        .at_unix_time(100);
-        if !initially_allowed {
-            *fixture.permissions.borrow_mut() = denied.clone();
-        }
-        fixture.app.open_action_palette();
-        fixture
-            .app
-            .actions
-            .action_palette
-            .as_mut()
-            .unwrap()
-            .set_query("sealed");
-        fixture
-            .app
-            .actions
-            .action_palette
-            .as_mut()
-            .unwrap()
-            .advance_search_page();
-        if initially_allowed {
-            assert!(
-                fixture
-                    .app
-                    .action_palette()
-                    .unwrap()
-                    .result_labels()
-                    .contains(&"Hidden sealed write title".to_owned())
-            );
-            *fixture.permissions.borrow_mut() = denied;
-            fixture.app.refresh_action_palette_resources();
+#[test]
+fn bound_search_and_palette_disclose_only_authorized_provider_rows() {
+    // Case `task4_denied_bound_provider_rows_are_not_disclosed`.
+    {
+        for initially_allowed in [false, true] {
+            let mut fixture = ActionFixture::with_authority(false, true);
+            let denied = crate::permissions::PermissionContext::from_capabilities(
+                crate::permissions::Actor::person(None, "fixture-user"),
+                vec![],
+            )
+            .at_unix_time(100);
+            if !initially_allowed {
+                *fixture.permissions.borrow_mut() = denied.clone();
+            }
+            fixture.app.open_action_palette();
+            fixture
+                .app
+                .actions
+                .action_palette
+                .as_mut()
+                .unwrap()
+                .set_query("sealed");
             fixture
                 .app
                 .actions
@@ -1532,569 +1670,518 @@ fn task4_denied_bound_provider_rows_are_not_disclosed() {
                 .as_mut()
                 .unwrap()
                 .advance_search_page();
-        }
-        let labels = fixture.app.action_palette().unwrap().result_labels();
-        assert!(!labels.contains(&"Hidden sealed write title".to_owned()));
-        let allowed = labels
-            .iter()
-            .position(|label| label == "Allowed sealed sibling title")
-            .unwrap();
-        fixture
-            .app
-            .actions
-            .action_palette
-            .as_mut()
-            .unwrap()
-            .set_cursor(allowed);
-        assert!(
-            fixture
-                .app
-                .action_palette_handle_key(&action_palette_tests::synth_enter())
-        );
-        for (index, binding) in fixture.bindings.iter().enumerate() {
-            fixture
-                .records
-                .read(&binding.checkout.id, |doc| {
-                    assert_eq!(doc.get(ROOT, "follow-up").unwrap().is_some(), index == 1);
-                })
-                .unwrap();
-        }
-        fixture.app.open_action_palette();
-        fixture
-            .app
-            .actions
-            .action_palette
-            .as_mut()
-            .unwrap()
-            .set_query("sealedopaque");
-        fixture
-            .app
-            .actions
-            .action_palette
-            .as_mut()
-            .unwrap()
-            .advance_search_page();
-        let labels = fixture.app.action_palette().unwrap().result_labels();
-        assert!(!labels.contains(&"Hidden sealedopaque title".to_owned()));
-        assert!(labels.contains(&"Allowed sealedopaque title".to_owned()));
-        assert!(
-            fixture
-                .records
-                .read(&fixture.bindings[0].checkout.id, |doc| doc
-                    .get(ROOT, "navigation")
+            if initially_allowed {
+                assert!(
+                    fixture
+                        .app
+                        .action_palette()
+                        .unwrap()
+                        .result_labels()
+                        .contains(&"Hidden sealed write title".to_owned())
+                );
+                *fixture.permissions.borrow_mut() = denied;
+                fixture.app.refresh_action_palette_resources();
+                fixture
+                    .app
+                    .actions
+                    .action_palette
+                    .as_mut()
                     .unwrap()
-                    .is_none())
-                .unwrap()
-        );
-        assert!(
+                    .advance_search_page();
+            }
+            let labels = fixture.app.action_palette().unwrap().result_labels();
+            assert!(!labels.contains(&"Hidden sealed write title".to_owned()));
+            let allowed = labels
+                .iter()
+                .position(|label| label == "Allowed sealed sibling title")
+                .unwrap();
             fixture
                 .app
-                .state
-                .doc
-                .get(ROOT, "follow-up")
+                .actions
+                .action_palette
+                .as_mut()
                 .unwrap()
-                .is_none()
-        );
+                .set_cursor(allowed);
+            assert!(
+                fixture
+                    .app
+                    .action_palette_handle_key(&action_palette_tests::synth_enter())
+            );
+            for (index, binding) in fixture.bindings.iter().enumerate() {
+                fixture
+                    .records
+                    .read(&binding.checkout.id, |doc| {
+                        assert_eq!(doc.get(ROOT, "follow-up").unwrap().is_some(), index == 1);
+                    })
+                    .unwrap();
+            }
+            fixture.app.open_action_palette();
+            fixture
+                .app
+                .actions
+                .action_palette
+                .as_mut()
+                .unwrap()
+                .set_query("sealedopaque");
+            fixture
+                .app
+                .actions
+                .action_palette
+                .as_mut()
+                .unwrap()
+                .advance_search_page();
+            let labels = fixture.app.action_palette().unwrap().result_labels();
+            assert!(!labels.contains(&"Hidden sealedopaque title".to_owned()));
+            assert!(labels.contains(&"Allowed sealedopaque title".to_owned()));
+            assert!(
+                fixture
+                    .records
+                    .read(&fixture.bindings[0].checkout.id, |doc| doc
+                        .get(ROOT, "navigation")
+                        .unwrap()
+                        .is_none())
+                    .unwrap()
+            );
+            assert!(
+                fixture
+                    .app
+                    .state
+                    .doc
+                    .get(ROOT, "follow-up")
+                    .unwrap()
+                    .is_none()
+            );
+        }
     }
-}
 
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one controlled paging fixture covers completion, revocation and prompt pause"
-)]
-fn task4_completed_bound_search_validation_is_bounded() {
-    let mut fixture = ActionFixture::with_authority(false, true);
-    let confirmation = fixture.target(1, "follow-up");
-    let counts = Rc::new([Cell::new(0), Cell::new(0)]);
-    PAGED_SEARCH_COUNTS.with_borrow_mut(|slot| *slot = Some(counts.clone()));
-    fixture.app.open_action_palette();
-    PAGED_SEARCH_COUNTS.with_borrow_mut(|slot| *slot = None);
-    let palette = fixture.app.actions.action_palette.as_mut().unwrap();
-    palette.set_query("paged");
-    let mut ticks = 0;
-    while palette.advance_search_page().pending {
-        ticks += 1;
-        assert!(ticks < 20, "initial bounded query must finish");
-    }
-    assert_eq!(palette.result_labels().len(), 130, "no total-kind clipping");
-    let step = |palette: &mut crate::action_palette::ActionPalette| {
-        for counter in counts.iter() {
-            counter.set(0);
+    // Case `task4_completed_bound_search_validation_is_bounded`.
+    {
+        let mut fixture = ActionFixture::with_authority(false, true);
+        let confirmation = fixture.target(1, "follow-up");
+        let counts = Rc::new([Cell::new(0), Cell::new(0)]);
+        PAGED_SEARCH_COUNTS.with_borrow_mut(|slot| *slot = Some(counts.clone()));
+        fixture.app.open_action_palette();
+        PAGED_SEARCH_COUNTS.with_borrow_mut(|slot| *slot = None);
+        let palette = fixture.app.actions.action_palette.as_mut().unwrap();
+        palette.set_query("paged");
+        let mut ticks = 0;
+        while palette.advance_search_page().pending {
+            ticks += 1;
+            assert!(ticks < 20, "initial bounded query must finish");
         }
-        let progress = palette.advance_search_page();
-        let callbacks: usize = counts.iter().map(Cell::get).sum();
-        assert!(
-            callbacks <= 32,
-            "{callbacks} resolver callbacks in one step"
-        );
-        assert!(progress.inspected <= 32);
-        assert!(callbacks <= progress.inspected, "unaccounted provider work");
-        progress
-    };
-    // A completed-query redraw starts at most one finite validation pass.
-    let mut progress = step(palette);
-    ticks = 0;
-    while progress.pending {
-        progress = step(palette);
-        ticks += 1;
-        assert!(
-            ticks < 20,
-            "completed validation must stop requesting redraws"
-        );
-    }
-    assert_eq!(palette.result_labels().len(), 130);
-    // Revoke during the next finite pass after this owner was visited;
-    // queue order must not make the already-validated-row oracle accidental.
-    ticks = 0;
-    loop {
-        assert!(step(palette).pending);
-        if counts[0].get() > 0 {
-            break;
+        assert_eq!(palette.result_labels().len(), 130, "no total-kind clipping");
+        let step = |palette: &mut crate::action_palette::ActionPalette| {
+            for counter in counts.iter() {
+                counter.set(0);
+            }
+            let progress = palette.advance_search_page();
+            let callbacks: usize = counts.iter().map(Cell::get).sum();
+            assert!(
+                callbacks <= 32,
+                "{callbacks} resolver callbacks in one step"
+            );
+            assert!(progress.inspected <= 32);
+            assert!(callbacks <= progress.inspected, "unaccounted provider work");
+            progress
+        };
+        // A completed-query redraw starts at most one finite validation pass.
+        let mut progress = step(palette);
+        ticks = 0;
+        while progress.pending {
+            progress = step(palette);
+            ticks += 1;
+            assert!(
+                ticks < 20,
+                "completed validation must stop requesting redraws"
+            );
         }
-        ticks += 1;
-        assert!(ticks < 5, "the first owner must participate in this pass");
-    }
-    *fixture.permissions.borrow_mut() = crate::permissions::PermissionContext::from_capabilities(
-        crate::permissions::Actor::person(None, "fixture-user"),
-        vec![],
-    )
-    .at_unix_time(100);
-    ticks = 0;
-    loop {
-        progress = step(palette);
+        assert_eq!(palette.result_labels().len(), 130);
+        // Revoke during the next finite pass after this owner was visited;
+        // queue order must not make the already-validated-row oracle accidental.
+        ticks = 0;
+        loop {
+            assert!(step(palette).pending);
+            if counts[0].get() > 0 {
+                break;
+            }
+            ticks += 1;
+            assert!(ticks < 5, "the first owner must participate in this pass");
+        }
+        *fixture.permissions.borrow_mut() =
+            crate::permissions::PermissionContext::from_capabilities(
+                crate::permissions::Actor::person(None, "fixture-user"),
+                vec![],
+            )
+            .at_unix_time(100);
+        ticks = 0;
+        loop {
+            progress = step(palette);
+            assert!(
+                palette
+                    .result_labels()
+                    .iter()
+                    .all(|label| !label.starts_with("Revoked")),
+                "unchecked stale rows must remain hidden"
+            );
+            if !progress.pending {
+                break;
+            }
+            ticks += 1;
+            assert!(ticks < 20, "revocation validation must finish");
+        }
+        assert_eq!(palette.result_labels().len(), 65);
         assert!(
             palette
                 .result_labels()
                 .iter()
-                .all(|label| !label.starts_with("Revoked")),
-            "unchecked stale rows must remain hidden"
+                .all(|label| label.starts_with("Allowed"))
         );
-        if !progress.pending {
-            break;
+        // The existing strict owner's follow-up enters the real confirmation
+        // field. A partially drained validation pass must pause behind it.
+        palette.set_query("");
+        for tick in 0..20 {
+            if !palette.advance_search_page().pending {
+                break;
+            }
+            assert!(tick < 19, "reset query must complete");
         }
-        ticks += 1;
-        assert!(ticks < 20, "revocation validation must finish");
-    }
-    assert_eq!(palette.result_labels().len(), 65);
-    assert!(
-        palette
-            .result_labels()
-            .iter()
-            .all(|label| label.starts_with("Allowed"))
-    );
-    // The existing strict owner's follow-up enters the real confirmation
-    // field. A partially drained validation pass must pause behind it.
-    palette.set_query("");
-    for tick in 0..20 {
-        if !palette.advance_search_page().pending {
-            break;
-        }
-        assert!(tick < 19, "reset query must complete");
-    }
-    assert!(step(palette).pending);
-    assert!(palette.activate_bound(&confirmation));
-    assert!(palette.in_argument_mode());
-    assert!(palette.result_labels().is_empty());
-    for _ in 0..2 {
-        let progress = step(palette);
-        assert_eq!(progress.inspected, 0);
-        assert!(!progress.pending);
+        assert!(step(palette).pending);
+        assert!(palette.activate_bound(&confirmation));
+        assert!(palette.in_argument_mode());
         assert!(palette.result_labels().is_empty());
-    }
-    palette.open();
-    for tick in 0..20 {
-        if !palette.advance_search_page().pending {
-            break;
+        for _ in 0..2 {
+            let progress = step(palette);
+            assert_eq!(progress.inspected, 0);
+            assert!(!progress.pending);
+            assert!(palette.result_labels().is_empty());
         }
-        assert!(tick < 19, "reset query must complete");
+        palette.open();
+        for tick in 0..20 {
+            if !palette.advance_search_page().pending {
+                break;
+            }
+            assert!(tick < 19, "reset query must complete");
+        }
+        assert_eq!(
+            palette
+                .result_labels()
+                .iter()
+                .filter(|label| label.starts_with("Allowed"))
+                .count(),
+            65
+        );
     }
-    assert_eq!(
-        palette
-            .result_labels()
-            .iter()
-            .filter(|label| label.starts_with("Allowed"))
-            .count(),
-        65
-    );
-}
 
-#[test]
-fn task4_pending_status_selects_its_owner_without_closing_typing() {
-    let mut fixture = ActionFixture::new();
-    let binding = fixture.bindings[0].clone();
-    let outer = fixture.app.state.doc.get_heads();
-    binding
-        .with_document(&mut fixture.app.state.doc, |doc, _| {
-            doc.put(ROOT, "typing", "pending").unwrap();
-        })
-        .unwrap();
-    let pending = fixture
-        .records
-        .read(
-            &binding.checkout.id,
-            automerge::transaction::Transactable::pending_ops,
+    // Case `task4_lazy_palette_and_opaque_navigation_keep_provider_owner`.
+    {
+        let mut fixture = ActionFixture::new();
+        fixture.app.open_action_palette();
+        let palette = fixture.app.actions.action_palette.as_mut().unwrap();
+        palette.set_query("lazy");
+        for _ in 0..4 {
+            palette.advance_search_page();
+        }
+        let targets = palette.referenced_bound_targets();
+        assert_eq!(targets.len(), 2);
+        fixture.app.refresh_action_palette_resources();
+        let target = targets
+            .iter()
+            .find(|target| target.address.instance_id == 12)
+            .unwrap();
+        let palette = fixture.app.actions.action_palette.as_mut().unwrap();
+        assert!(palette.activate_bound(target));
+        let pending = palette.take_operation().unwrap();
+        assert!(
+            pending
+                .bound
+                .unwrap()
+                .binding
+                .same_component(&target.binding)
+        );
+        fixture
+            .app
+            .invoke_bound_target(
+                target,
+                &ResourceInvocation::new(&target.address.address, "fixture-user").confirmed(true),
+            )
+            .unwrap();
+        fixture.app.open_action_palette();
+        let palette = fixture.app.actions.action_palette.as_mut().unwrap();
+        palette.set_query("opaque");
+        for _ in 0..4 {
+            palette.advance_search_page();
+        }
+        assert_eq!(palette.len(), 2);
+        palette.set_cursor(1);
+        palette.activate_selected();
+        let (id, binding) = palette.take_scoped_navigation().unwrap();
+        let binding = binding.unwrap();
+        crate::bound_dispatch::activate_bound_search(
+            fixture.app.root_widget.as_mut(),
+            &mut fixture.app.state.doc,
+            &binding,
+            &id,
         )
         .unwrap();
-    assert!(
-        binding
-            .undo_status(&mut fixture.app.state.doc)
-            .unwrap()
-            .can_undo
-    );
-    assert!(
-        !fixture.bindings[1]
-            .undo_status(&mut fixture.app.state.doc)
-            .unwrap()
-            .can_undo
-    );
-    assert_eq!(
-        fixture
-            .records
-            .read(
-                &binding.checkout.id,
-                automerge::transaction::Transactable::pending_ops
-            )
-            .unwrap(),
-        pending
-    );
-    let entry = binding
-        .history_request(&mut fixture.app.state.doc, crate::undo::UndoRequest::Undo)
-        .unwrap()
-        .unwrap();
-    assert_eq!(entry.instance_id, Some(11));
-    assert!(
-        binding
-            .undo_status(&mut fixture.app.state.doc)
-            .unwrap()
-            .can_redo
-    );
-    assert!(
-        fixture
-            .records
-            .read(&binding.checkout.id, |doc| doc
-                .get(ROOT, "typing")
-                .unwrap()
-                .is_none())
-            .unwrap()
-    );
-    assert_eq!(fixture.app.state.doc.get_heads(), outer);
+        for owner in &fixture.bindings {
+            assert_eq!(
+                fixture
+                    .records
+                    .read(&owner.checkout.id, |doc| doc
+                        .get(ROOT, "navigation")
+                        .unwrap()
+                        .is_some())
+                    .unwrap(),
+                owner.same_component(&binding)
+            );
+        }
+        assert!(fixture.app.state.doc.get_heads().is_empty());
+    }
 }
 
-#[test]
 #[allow(
     clippy::too_many_lines,
-    reason = "one controlled lifetime traces publication through refusal and delivery"
+    reason = "one controlled lifetime traces publication through refusal and delivery; one broker-route refusal test exercises every invalid witness against the same fixture"
 )]
-fn task4_qualified_broker_request_retains_chosen_contract_and_directed_owner() {
-    let mut fixture = ActionFixture::broker();
-    let target = fixture.target(1, "follow-up");
-    let resources = fixture.app.publication_resources();
-    let actor = fixture.app.collaboration.local_author.0.clone();
-    let evidence = serde_json::json!({"token": "controlled-confirmation"});
-    let mut requests = Vec::new();
-    // This seam captures submission only; no broker acceptance is simulated.
-    fixture
-        .app
-        .invoke_bound_target_with_broker(
-            &target,
-            &ResourceInvocation::new(&target.address.address, &actor)
-                .confirmed(true)
-                .evidence(Some(&evidence)),
-            Some(&mut |request| requests.push(request)),
+#[test]
+fn bound_broker_routes_keep_the_chosen_contract_and_refuse_bad_witnesses() {
+    // Case `task4_qualified_broker_request_retains_chosen_contract_and_directed_owner`.
+    {
+        let mut fixture = ActionFixture::broker();
+        let target = fixture.target(1, "follow-up");
+        let resources = fixture.app.publication_resources();
+        let actor = fixture.app.collaboration.local_author.0.clone();
+        let evidence = serde_json::json!({"token": "controlled-confirmation"});
+        let mut requests = Vec::new();
+        // This seam captures submission only; no broker acceptance is simulated.
+        fixture
+            .app
+            .invoke_bound_target_with_broker(
+                &target,
+                &ResourceInvocation::new(&target.address.address, &actor)
+                    .confirmed(true)
+                    .evidence(Some(&evidence)),
+                Some(&mut |request| requests.push(request)),
+            )
+            .unwrap();
+        assert_eq!(requests.len(), 1);
+        let CollabRequest::RemoteAction {
+            message: tilo_actions::remote::RemoteActionMessage::Invoke(request),
+        } = requests.pop().unwrap()
+        else {
+            panic!("expected action request")
+        };
+        assert_eq!(
+            request.target.provider,
+            tilo_actions::remote::OWN_PROVIDER,
+            "an app routes its own action through the host"
+        );
+        assert_eq!(
+            fixture
+                .app
+                .actions
+                .broker_requests
+                .get(&BrokerReply::Receipt(request.invocation)),
+            Some(&0)
+        );
+        assert_eq!(
+            request.argument,
+            tilo_actions::remote::InvokeArgument::Json(serde_json::Map::new())
+        );
+        assert_eq!(
+            request.confirmation,
+            App::broker_confirmation(Some(&evidence))
+        );
+        let resource = request.target.address.resource;
+        let action = request.target.address.action;
+        let descriptor = tilo_actions::door::resolve(
+            &resources,
+            &tilo_actions::ActionAddress::new(&resource, &action),
         )
         .unwrap();
-    assert_eq!(requests.len(), 1);
-    let CollabRequest::RemoteAction {
-        message: tilo_actions::remote::RemoteActionMessage::Invoke(request),
-    } = requests.pop().unwrap()
-    else {
-        panic!("expected action request")
-    };
-    assert_eq!(
-        request.target.provider,
-        tilo_actions::remote::OWN_PROVIDER,
-        "an app routes its own action through the host"
-    );
-    assert_eq!(
-        fixture
-            .app
-            .actions
-            .broker_requests
-            .get(&BrokerReply::Receipt(request.invocation)),
-        Some(&0)
-    );
-    assert_eq!(
-        request.argument,
-        tilo_actions::remote::InvokeArgument::Json(serde_json::Map::new())
-    );
-    assert_eq!(
-        request.confirmation,
-        App::broker_confirmation(Some(&evidence))
-    );
-    let resource = request.target.address.resource;
-    let action = request.target.address.action;
-    let descriptor = tilo_actions::door::resolve(
-        &resources,
-        &tilo_actions::ActionAddress::new(&resource, &action),
-    )
-    .unwrap();
-    assert_eq!(
-        descriptor.contract.confirmation,
-        tilo_actions::ConfirmationPolicy::Confirm
-    );
-    assert!(
-        fixture
-            .app
-            .actions
-            .bound_publication
-            .target(&tilo_actions::ActionAddress::new(&resource, &action))
-            .unwrap()
-            .unwrap()
-            .binding
-            .same_component(&target.binding)
-    );
-    for binding in &fixture.bindings {
+        assert_eq!(
+            descriptor.contract.confirmation,
+            tilo_actions::ConfirmationPolicy::Confirm
+        );
         assert!(
             fixture
-                .records
-                .read(&binding.checkout.id, |doc| doc
-                    .get(ROOT, "follow-up")
-                    .unwrap()
-                    .is_none())
+                .app
+                .actions
+                .bound_publication
+                .target(&tilo_actions::ActionAddress::new(&resource, &action))
                 .unwrap()
+                .unwrap()
+                .binding
+                .same_component(&target.binding)
         );
-    }
-    fixture
-        .app
-        .invoke_published_action(41, resource, action, None, &actor, None);
-    assert!(
-        fixture
-            .records
-            .read_history(&fixture.bindings[0].checkout.id, |_, history| history
-                .next_undo_in(&fixture.bindings[0].author, 11)
-                .is_none())
-            .unwrap()
-    );
-    assert!(
-        fixture
-            .records
-            .read(&target.binding.checkout.id, |doc| doc
-                .get(ROOT, "follow-up")
-                .unwrap()
-                .is_some())
-            .unwrap()
-    );
-    assert_eq!(
-        fixture
-            .records
-            .read_history(&target.binding.checkout.id, |_, history| history.revision())
-            .unwrap(),
-        1
-    );
-    let before = fixture.app.actions.next_broker_request_id;
-    let mut sent = false;
-    assert!(
-        App::dispatch_broker_request(
-            &mut fixture.app.actions.next_broker_request_id,
-            false,
-            &target.address.address,
-            None,
-            None,
-            None,
-            |_, _| sent = true
-        )
-        .is_err()
-    );
-    assert!(!sent);
-    assert_eq!(fixture.app.actions.next_broker_request_id, before);
-}
-
-#[test]
-fn task4_checked_action_reuses_same_record_frame_and_refuses_cross_record() {
-    for shared in [true, false] {
-        let mut fixture = ActionFixture::with_same_record(shared);
-        let target = fixture.target(1, "apply");
-        let first = fixture.bindings[0].clone();
-        let outer = fixture.app.state.doc.get_heads();
-        let actor = fixture.app.collaboration.local_author.0.clone();
-        let result = first
-            .with_document(&mut fixture.app.state.doc, |doc, _| {
-                doc.put(ROOT, "before-nested", "A").unwrap();
-                let result = crate::bound_dispatch::invoke_resource_action(
-                    fixture.app.root_widget.as_mut(),
-                    doc,
-                    &target,
-                    fixture.app.actions.action_transport.as_mut(),
-                    None,
-                    None,
-                    &actor,
-                    true,
-                    false,
-                    tilo_actions::InvocationId::new(),
-                    None,
-                );
-                doc.put(ROOT, "after-nested", "A").unwrap();
-                result
-            })
-            .unwrap();
-        if shared {
-            result.unwrap();
-            first
-                .history_request(&mut fixture.app.state.doc, crate::undo::UndoRequest::Undo)
-                .unwrap()
-                .unwrap();
-            fixture
-                .records
-                .read_history(&first.checkout.id, |doc, history| {
-                    assert!(doc.get(ROOT, "after-nested").unwrap().is_none());
-                    assert!(doc.get(ROOT, "before-nested").unwrap().is_some());
-                    assert!(doc.get(ROOT, "follow-up").unwrap().is_some());
-                    assert_eq!(
-                        history.next_undo_in(&first.author, 12).unwrap().instance_id,
-                        Some(12)
-                    );
-                })
-                .unwrap();
-        } else {
-            assert!(matches!(
-                result,
-                Err(crate::bound_dispatch::BoundActionError::Dispatch(
-                    crate::bound_dispatch::BoundDispatchError::CrossRecordReentry
-                ))
-            ));
+        for binding in &fixture.bindings {
             assert!(
                 fixture
                     .records
-                    .read(&target.binding.checkout.id, |doc| doc
+                    .read(&binding.checkout.id, |doc| doc
                         .get(ROOT, "follow-up")
                         .unwrap()
                         .is_none())
                     .unwrap()
             );
         }
-        assert_eq!(fixture.app.state.doc.get_heads(), outer);
-    }
-}
-#[test]
-fn task4_lazy_palette_and_opaque_navigation_keep_provider_owner() {
-    let mut fixture = ActionFixture::new();
-    fixture.app.open_action_palette();
-    let palette = fixture.app.actions.action_palette.as_mut().unwrap();
-    palette.set_query("lazy");
-    for _ in 0..4 {
-        palette.advance_search_page();
-    }
-    let targets = palette.referenced_bound_targets();
-    assert_eq!(targets.len(), 2);
-    fixture.app.refresh_action_palette_resources();
-    let target = targets
-        .iter()
-        .find(|target| target.address.instance_id == 12)
-        .unwrap();
-    let palette = fixture.app.actions.action_palette.as_mut().unwrap();
-    assert!(palette.activate_bound(target));
-    let pending = palette.take_operation().unwrap();
-    assert!(
-        pending
-            .bound
-            .unwrap()
-            .binding
-            .same_component(&target.binding)
-    );
-    fixture
-        .app
-        .invoke_bound_target(
-            target,
-            &ResourceInvocation::new(&target.address.address, "fixture-user").confirmed(true),
-        )
-        .unwrap();
-    fixture.app.open_action_palette();
-    let palette = fixture.app.actions.action_palette.as_mut().unwrap();
-    palette.set_query("opaque");
-    for _ in 0..4 {
-        palette.advance_search_page();
-    }
-    assert_eq!(palette.len(), 2);
-    palette.set_cursor(1);
-    palette.activate_selected();
-    let (id, binding) = palette.take_scoped_navigation().unwrap();
-    let binding = binding.unwrap();
-    crate::bound_dispatch::activate_bound_search(
-        fixture.app.root_widget.as_mut(),
-        &mut fixture.app.state.doc,
-        &binding,
-        &id,
-    )
-    .unwrap();
-    for owner in &fixture.bindings {
+        fixture
+            .app
+            .invoke_published_action(41, resource, action, None, &actor, None);
+        assert!(
+            fixture
+                .records
+                .read_history(&fixture.bindings[0].checkout.id, |_, history| history
+                    .next_undo_in(&fixture.bindings[0].author, 11)
+                    .is_none())
+                .unwrap()
+        );
+        assert!(
+            fixture
+                .records
+                .read(&target.binding.checkout.id, |doc| doc
+                    .get(ROOT, "follow-up")
+                    .unwrap()
+                    .is_some())
+                .unwrap()
+        );
         assert_eq!(
             fixture
                 .records
-                .read(&owner.checkout.id, |doc| doc
-                    .get(ROOT, "navigation")
-                    .unwrap()
-                    .is_some())
+                .read_history(&target.binding.checkout.id, |_, history| history.revision())
                 .unwrap(),
-            owner.same_component(&binding)
+            1
         );
+        let before = fixture.app.actions.next_broker_request_id;
+        let mut sent = false;
+        assert!(
+            App::dispatch_broker_request(
+                &mut fixture.app.actions.next_broker_request_id,
+                false,
+                &target.address.address,
+                None,
+                None,
+                None,
+                |_, _| sent = true
+            )
+            .is_err()
+        );
+        assert!(!sent);
+        assert_eq!(fixture.app.actions.next_broker_request_id, before);
     }
-    assert!(fixture.app.state.doc.get_heads().is_empty());
-}
 
-#[test]
-fn task4_reserved_publication_collision_never_routes_to_legacy_widget() {
-    let mut fixture = ActionFixture::broker();
-    let alias = fixture
-        .app
-        .actions
-        .bound_publication
-        .alias(&fixture.bindings[1], "bound:probe")
-        .unwrap();
-    let old = std::mem::replace(
-        &mut fixture.app.root_widget,
-        Box::new(crate::widget::Text::new("empty")),
-    );
-    fixture.app.root_widget = Box::new(
-        Column::new()
-            .push(Box::new(Probe {
-                collision: Some(alias.clone()),
-                ..Probe::default()
-            }))
-            .push(old),
-    );
-    fixture
-        .app
-        .actions
-        .action_registry
-        .register::<FollowUp>("bound.apply");
-    fixture.app.invalidate_widget_resource_cache();
-    let resources = fixture.app.publication_resources();
-    assert_eq!(
-        resources
-            .iter()
-            .filter(|resource| resource.id.as_str() == alias)
-            .count(),
-        1
-    );
-    let descriptor = tilo_actions::door::resolve(
-        &resources,
-        &tilo_actions::ActionAddress::new(&alias, "follow-up"),
-    )
-    .unwrap();
-    assert_eq!(
-        descriptor.contract.confirmation,
-        tilo_actions::ConfirmationPolicy::Confirm
-    );
-    assert!(
-        fixture
+    // Case `task4_checked_action_reuses_same_record_frame_and_refuses_cross_record`.
+    {
+        for shared in [true, false] {
+            let mut fixture = ActionFixture::with_same_record(shared);
+            let target = fixture.target(1, "apply");
+            let first = fixture.bindings[0].clone();
+            let outer = fixture.app.state.doc.get_heads();
+            let actor = fixture.app.collaboration.local_author.0.clone();
+            let result = first
+                .with_document(&mut fixture.app.state.doc, |doc, _| {
+                    doc.put(ROOT, "before-nested", "A").unwrap();
+                    let result = crate::bound_dispatch::invoke_resource_action(
+                        fixture.app.root_widget.as_mut(),
+                        doc,
+                        &target,
+                        fixture.app.actions.action_transport.as_mut(),
+                        None,
+                        None,
+                        &actor,
+                        true,
+                        false,
+                        tilo_actions::InvocationId::new(),
+                        None,
+                    );
+                    doc.put(ROOT, "after-nested", "A").unwrap();
+                    result
+                })
+                .unwrap();
+            if shared {
+                result.unwrap();
+                first
+                    .history_request(&mut fixture.app.state.doc, crate::undo::UndoRequest::Undo)
+                    .unwrap()
+                    .unwrap();
+                fixture
+                    .records
+                    .read_history(&first.checkout.id, |doc, history| {
+                        assert!(doc.get(ROOT, "after-nested").unwrap().is_none());
+                        assert!(doc.get(ROOT, "before-nested").unwrap().is_some());
+                        assert!(doc.get(ROOT, "follow-up").unwrap().is_some());
+                        assert_eq!(
+                            history.next_undo_in(&first.author, 12).unwrap().instance_id,
+                            Some(12)
+                        );
+                    })
+                    .unwrap();
+            } else {
+                assert!(matches!(
+                    result,
+                    Err(crate::bound_dispatch::BoundActionError::Dispatch(
+                        crate::bound_dispatch::BoundDispatchError::CrossRecordReentry
+                    ))
+                ));
+                assert!(
+                    fixture
+                        .records
+                        .read(&target.binding.checkout.id, |doc| doc
+                            .get(ROOT, "follow-up")
+                            .unwrap()
+                            .is_none())
+                        .unwrap()
+                );
+            }
+            assert_eq!(fixture.app.state.doc.get_heads(), outer);
+        }
+    }
+
+    // Case `task4_bound_broker_route_refuses_wrong_app_workspace_record_and_missing_witness`.
+    {
+        let mut fixture = ActionFixture::broker();
+        let target = fixture.target(1, "follow-up");
+        let matching = fixture
+            .app
+            .actions
+            .bound_broker_route_for_test
+            .clone()
+            .unwrap();
+        assert_eq!(fixture.app.publication_app_id(), matching.route.app_id);
+        let alias = fixture
             .app
             .actions
             .bound_publication
-            .alias(&fixture.bindings[0], &"x".repeat(4096))
-            .is_err()
-    );
+            .alias(&target.binding, "bound:probe")
+            .unwrap();
+        let revision = fixture.app.action_directory_revision();
+        let mut wrong_app = matching.clone();
+        wrong_app.route.app_id = "so.tilo.other".into();
+        let mut wrong_workspace = matching.clone();
+        wrong_workspace.route.cluster_id = uuid::Uuid::nil();
+        let mut wrong_record = matching.clone();
+        wrong_record.route.record = Some("different-record".into());
+        for witness in [
+            Some(wrong_app),
+            Some(wrong_workspace),
+            Some(wrong_record),
+            None,
+        ] {
+            assert_bound_broker_route_refused(&mut fixture, &target, &alias, &revision, witness);
+        }
+        let mut replacement = matching;
+        replacement.epoch = uuid::Uuid::new_v4();
+        fixture.app.actions.bound_broker_route_for_test = Some(replacement);
+        assert_ne!(fixture.app.action_directory_revision(), revision);
+        assert!(
+            fixture
+                .app
+                .resolve_publication_resource(&alias, "follow-up")
+                .is_some()
+        );
+    }
 }
+
 fn assert_bound_broker_route_refused(
     fixture: &mut ActionFixture,
     target: &crate::bound_dispatch::BoundActionTarget,
@@ -2162,74 +2249,4 @@ fn assert_bound_broker_route_refused(
             .confirmed(true),
         )
         .unwrap();
-}
-
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one broker-route refusal test exercises every invalid witness against the same fixture"
-)]
-fn task4_bound_broker_route_refuses_wrong_app_workspace_record_and_missing_witness() {
-    let mut fixture = ActionFixture::broker();
-    let target = fixture.target(1, "follow-up");
-    let matching = fixture
-        .app
-        .actions
-        .bound_broker_route_for_test
-        .clone()
-        .unwrap();
-    assert_eq!(fixture.app.publication_app_id(), matching.route.app_id);
-    let alias = fixture
-        .app
-        .actions
-        .bound_publication
-        .alias(&target.binding, "bound:probe")
-        .unwrap();
-    let revision = fixture.app.action_directory_revision();
-    let mut wrong_app = matching.clone();
-    wrong_app.route.app_id = "so.tilo.other".into();
-    let mut wrong_workspace = matching.clone();
-    wrong_workspace.route.cluster_id = uuid::Uuid::nil();
-    let mut wrong_record = matching.clone();
-    wrong_record.route.record = Some("different-record".into());
-    for witness in [
-        Some(wrong_app),
-        Some(wrong_workspace),
-        Some(wrong_record),
-        None,
-    ] {
-        assert_bound_broker_route_refused(&mut fixture, &target, &alias, &revision, witness);
-    }
-    let mut replacement = matching;
-    replacement.epoch = uuid::Uuid::new_v4();
-    fixture.app.actions.bound_broker_route_for_test = Some(replacement);
-    assert_ne!(fixture.app.action_directory_revision(), revision);
-    assert!(
-        fixture
-            .app
-            .resolve_publication_resource(&alias, "follow-up")
-            .is_some()
-    );
-}
-
-#[test]
-fn task4_bound_control_authority_refreshes_without_an_outer_generation_change() {
-    let mut fixture = ActionFixture::new();
-    CONTROL_AUTHORITY.with_borrow_mut(Vec::clear);
-    fixture.app.refresh_control_action_availability();
-    assert_eq!(
-        CONTROL_AUTHORITY.with_borrow(Clone::clone),
-        vec![(false, true), (true, true)]
-    );
-    *fixture.permissions.borrow_mut() = crate::permissions::PermissionContext::from_capabilities(
-        crate::permissions::Actor::person(None, "fixture-user"),
-        vec![],
-    )
-    .at_unix_time(100);
-    CONTROL_AUTHORITY.with_borrow_mut(Vec::clear);
-    fixture.app.refresh_control_action_availability();
-    assert_eq!(
-        CONTROL_AUTHORITY.with_borrow(Clone::clone),
-        vec![(false, false), (true, false)]
-    );
 }

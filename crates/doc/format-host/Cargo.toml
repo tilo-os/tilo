@@ -34,6 +34,7 @@ notify = { workspace = true, default-features = true }
 anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
+workspace-hack = { version = "0.1" }
 
 [build-dependencies]
 capnpc.workspace = true

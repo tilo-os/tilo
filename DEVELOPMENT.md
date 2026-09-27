@@ -96,7 +96,7 @@ For a native integration test without a full workspace dispatch, use
 **Development / focused native test** (`focused-test.yml`). Select a full source
 commit SHA, one Cargo package, integration target and exact Rust test path. For
 example: package `shell`, target `it`, test
-`concept_parity_spec::overview_add_workspace::overview_add_workspace_click_appends_workspace`.
+`concept_parity_spec::overview_add_workspace::overview_add_workspace_button_renders_and_click_appends_workspace`.
 Use operation `check-tests` with the target/name empty to compile that package's
 test targets. Both modes use `--locked` on one native x86-64 runner and share the
 normal download/compiler caches. Missing or ignored tests fail. The job records
@@ -399,7 +399,7 @@ multiple-file and folder dialogs, with results delivered on the existing picker
 channel. To exercise the host picker without opening or modifying a document:
 
 ```powershell
-cargo run --locked -p ui --example native-file-picker --features portal -- open
+cargo run --locked -p ui-examples --example native-file-picker --features portal -- open
 # Also accepts: multiple, directory, save
 cargo test --locked -p ui --lib --features portal portal::
 ```
@@ -582,7 +582,7 @@ installed apps discover their adjacent DLL automatically. Requiring PDFium durin
 tests prevents a missing renderer from leaving backend tests unverified.
 PDF Viewer captures wait for the production worker's visible pages and thumbnails;
 unfinished rendering fails after 15 seconds. The explicit `loading` scenario keeps
-its intentional placeholder. `cargo test --locked -p pdf-viewer --test capture`
+its intentional placeholder. `cargo test --locked -p pdf-viewer --test it capture::`
 exercises this worker path separately from the synchronous library tests.
 
 Books opens EPUBs through its background importer and wakes idle windows when an
@@ -785,7 +785,7 @@ installer registers to open the installed executable. This route launches a
 normal Clocks window; it does not yet focus an already-running instance. The
 registered command ignores URI contents rather than forwarding them as arguments.
 
-For device verification, build `cargo build --locked -p ui --example windows-host
+For device verification, build `cargo build --locked -p ui-examples --example windows-host
 --features notifications`. The helper accepts `history so.tilo.clocks` to inspect
 only Clocks' notifications and `remove so.tilo.clocks TAG` to dismiss one test
 notification. `show ID TAG TITLE BODY` exercises the production SDK API; Windows
@@ -1099,7 +1099,8 @@ before failing; treat a FLAKY entry as a bug, not as noise. Each run goes
 through `tools/with-test-environment.sh` (directly, or via `tools/test-env.sh`),
 which sets `LANG=C.UTF-8` and
 `TZ=UTC`, points `HOME` and every XDG base directory at a fresh temporary tree
-and removes the desktop session (D-Bus session bus, display, keyring socket).
+and removes the desktop session (D-Bus buses, display, keyring socket; see
+[Tests never touch your desktop](#tests-never-touch-your-desktop)).
 GPU tests use Mesa's llvmpipe Vulkan driver and audio tests an isolated
 PulseAudio endpoint (`tools/with-headless-audio.sh`).
 
@@ -1118,6 +1119,41 @@ nextest's build metadata, without Cargo) from a cleared one (`env -i`), so a
 test cannot see your identity, preferences, installed apps, locale or live
 session. A test that passes under plain `cargo test` but not
 here depends on one of those.
+
+### Tests never touch your desktop
+
+Every test runs as if on a machine with no desktop, whoever runs it and
+however, because a test that reaches a live session pauses its media, opens
+file choosers on it or ends it:
+
+- **Cargo's runner.** `.cargo/config.toml` sets `tools/cargo-runner.sh` as the
+  Linux runner, so `cargo test`, `cargo nextest` and `cargo bench` start every
+  test binary (and doctest) inside `tools/with-test-environment.sh`. That
+  gives it a fresh `HOME` and XDG tree, no display, and points
+  `DBUS_SESSION_BUS_ADDRESS` and `DBUS_SYSTEM_BUS_ADDRESS` at sockets nothing
+  listens on, so the session bus, portals, media players, notifications, the
+  secret service, the systemd user manager and logind are all out of reach.
+  An enclosing test environment (CI, `tools/test-env.sh`) is kept. `cargo run`
+  targets start unchanged.
+- **A test binary started by hand** skips the runner. A test that starts a
+  compositor or other desktop-facing process calls
+  `tilo_test_env::require_isolated_desktop()` first, which refuses to go on
+  outside the test environment. Run such a binary as
+  `tools/with-test-environment.sh target/debug/deps/<test>`.
+- **Tests that need a bus bring their own**: a p2p `UnixStream` pair (see
+  `crates/session/shell/tests/portal_test.rs`) or a private `dbus-daemon`, and
+  hand that connection or address to the code under test.
+- **Shell and Python suites** run through `tools/ci/suites.py`, which wraps
+  each in `tools/with-test-environment.sh`. A shell test that runs session
+  code sources `tools/desktop-isolation.sh`: `tilo_test_isolate "$@"` re-runs the
+  script in the test environment when started directly, and
+  `tilo_stage_script SRC DEST NAME=PATH...` stages a packaged script from the
+  tree with its command variables rewritten, failing when the copy still runs
+  an installed `/usr/libexec/tilo*`, `/usr/bin/tilo-*`, `systemctl` or
+  `loginctl`.
+- **Hardware state** (backlight, keyboard light, sysfs) is not covered by the
+  environment. Tests pass a fixture root (`set_brightness_in(root, …)`) or a
+  recording `os_actions::Dispatcher`.
 
 **Capability-gated tests.** A test that needs a GPU adapter, audio output,
 media codecs, `/dev/fuse` or fanotify uses `tilo_test_env::require_capability!`
@@ -1376,6 +1412,31 @@ fails if a production `os/Containerfile*` enables `dev-overrides` or
 `--backend headless` is what makes the live compositor runnable in CI, over SSH
 and inside a container with no display forwarded.
 
+## Dependency features: workspace-hack
+
+Cargo resolves third-party features per `-p` selection, so `cargo test -p a`
+and `cargo test -p a -p b` can compile the same dependency twice with different
+features and share nothing in `target/` or sccache. `crates/workspace-hack`,
+generated by [cargo hakari](https://docs.rs/cargo-hakari), depends on every
+third-party crate the workspace builds with more than one feature set, with the
+union of those features, and managed members depend on it, so every selection
+builds each dependency once. Settings and the deliberate exclusions live in
+`.config/hakari.toml`.
+
+After adding, removing or changing a dependency or its features, regenerate and
+commit the result with your change (`cargo install --locked cargo-hakari
+--version 0.9.39` once):
+
+```bash
+cargo hakari generate      # rewrite crates/workspace-hack/Cargo.toml
+cargo hakari manage-deps   # add `workspace-hack` to new members
+```
+
+CI / fast quality runs `cargo hakari generate --diff`, `manage-deps --dry-run`
+and `verify`, and fails until both commands leave nothing to change. Neither
+moves a locked version; `Cargo.lock` only gains or loses `workspace-hack`
+edges. Never edit between the `HAKARI SECTION` markers by hand.
+
 ## Pre-commit hook
 
 Enable the repo's git hooks once per clone:
@@ -1421,7 +1482,7 @@ To prepare the native runtime in a disposable local directory:
 asset=$(bash tools/ci/install-pdfium.sh --asset-name)
 ./os/dev/cache-github-assets.sh "$asset"
 export TILO_PDFIUM_LIB=$(bash tools/ci/install-pdfium.sh os/external-assets/cache /tmp/tilo-pdfium/8057 os/external-assets/github-assets.tsv)
-cargo test --locked -p pdf-viewer --test capture
+cargo test --locked -p pdf-viewer --test it capture::
 ```
 
 The installer verifies the archive before writing, retains its license files,

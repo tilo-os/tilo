@@ -1,4 +1,5 @@
 [package]
+autotests = false
 name = "registry-server"
 version = "0.1.0"
 edition = "2024"
@@ -53,10 +54,15 @@ zeroize.workspace = true
 # compiled into an older pinned application image.
 reqwest = { workspace = true, features = ["blocking", "json"] }
 tilo-net = { path = "../../system/tilo-net", features = ["blocking"] }
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 getrandom.workspace = true
 tempfile.workspace = true
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
 
 [lints]
 workspace = true

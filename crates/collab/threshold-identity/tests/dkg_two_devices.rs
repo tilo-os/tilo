@@ -90,7 +90,16 @@ fn threshold_sign(
     a.aggregate_signature(&[p_a, p_b]).unwrap()
 }
 
+/// Both devices derive the same 2-of-2 group key, it rotates away from the 1-of-1
+/// bootstrap key, and fixed seeds reproduce it.
+/// Runs each phase below in order; every phase builds its own fixture.
 #[test]
+fn a_two_device_dkg_derives_one_deterministic_rotated_group_key() {
+    dkg_produces_matching_group_public_key_on_both_devices();
+    dkg_rotates_group_public_key_away_from_bootstrap();
+    deterministic_dkg_for_fixed_seeds();
+}
+
 fn dkg_produces_matching_group_public_key_on_both_devices() {
     let (a, b) = run_two_device_dkg();
     assert_eq!(a.group_public_key, b.group_public_key);
@@ -108,7 +117,6 @@ fn dkg_produces_matching_group_public_key_on_both_devices() {
     clippy::similar_names,
     reason = "_a/_b device-pair naming is deliberate and used throughout this crate's multi-device tests"
 )]
-#[test]
 fn dkg_rotates_group_public_key_away_from_bootstrap() {
     // The 1-of-1 bootstrap key MUST differ from the 2-of-2 DKG key —
     // this rotation is accepted by the design.
@@ -130,7 +138,16 @@ fn dkg_rotates_group_public_key_away_from_bootstrap() {
     assert_ne!(a.group_public_key, pre_dkg_key);
 }
 
+/// A 2-of-2 signature verifies through `collab_types` and FROST's own verifier, and a single
+/// partial cannot aggregate below the threshold.
+/// Runs each phase below in order; every phase builds its own fixture.
 #[test]
+fn two_device_threshold_signatures_verify_and_need_the_full_quorum() {
+    two_device_threshold_sign_verifies_via_tilo_collab_types();
+    two_device_threshold_sign_also_passes_frost_verifier();
+    single_partial_cannot_aggregate_below_threshold();
+}
+
 fn two_device_threshold_sign_verifies_via_tilo_collab_types() {
     // HEADLINE INTEROP TEST.
     let (a, b) = run_two_device_dkg();
@@ -145,7 +162,6 @@ fn two_device_threshold_sign_verifies_via_tilo_collab_types() {
         .expect("threshold-produced sig must verify via collab_types::verify_event");
 }
 
-#[test]
 fn two_device_threshold_sign_also_passes_frost_verifier() {
     let (a, b) = run_two_device_dkg();
     let payload: Vec<u8> = b"some message".to_vec();
@@ -154,7 +170,6 @@ fn two_device_threshold_sign_also_passes_frost_verifier() {
     verify_threshold_signature(&a.group_public_key, &canon, &sig).unwrap();
 }
 
-#[test]
 fn single_partial_cannot_aggregate_below_threshold() {
     // To produce a partial at all FROST needs commitments from every
     // signer in the round-2 quorum (else round-2 fails with "Incorrect
@@ -188,7 +203,6 @@ fn single_partial_cannot_aggregate_below_threshold() {
     );
 }
 
-#[test]
 fn deterministic_dkg_for_fixed_seeds() {
     // Two independent runs with the same seeds must produce the same
     // group public key — useful for replay-based and reproducible CI tests.
@@ -197,7 +211,14 @@ fn deterministic_dkg_for_fixed_seeds() {
     assert_eq!(a1.group_public_key, a2.group_public_key);
 }
 
+/// A device share restores a working signer; truncated bytes and impossible totals are refused.
+/// Runs each phase below in order; every phase builds its own fixture.
 #[test]
+fn device_share_restore_accepts_a_real_share_and_rejects_malformed_ones() {
+    device_share_round_trip_restores_a_real_signer();
+    device_share_restore_rejects_truncation_and_impossible_totals();
+}
+
 fn device_share_round_trip_restores_a_real_signer() {
     let (a, b) = run_two_device_dkg();
     let sealed = a.export_device_secret().unwrap();
@@ -210,7 +231,6 @@ fn device_share_round_trip_restores_a_real_signer() {
     verify_threshold_signature(&restored.group_public_key, &payload, &sig).unwrap();
 }
 
-#[test]
 fn device_share_restore_rejects_truncation_and_impossible_totals() {
     let (a, _) = run_two_device_dkg();
     let mut sealed = a.export_device_secret().unwrap();

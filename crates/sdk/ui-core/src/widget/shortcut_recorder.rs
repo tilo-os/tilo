@@ -438,27 +438,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn reset_exists_only_for_a_changed_binding() {
-        let unchanged = ShortcutRecorder::new("x", "x", "Super+Left", "Super+Left");
-        assert!(unchanged.reset_rect().is_none());
-        let changed = ShortcutRecorder::new("x", "x", "Super+H", "Super+Left");
-        assert!(changed.reset_rect().is_some());
-    }
+    fn binding_display_names_keys_and_offers_reset_only_when_changed() {
+        // Case `reset_exists_only_for_a_changed_binding`.
+        {
+            let unchanged = ShortcutRecorder::new("x", "x", "Super+Left", "Super+Left");
+            assert!(unchanged.reset_rect().is_none());
+            let changed = ShortcutRecorder::new("x", "x", "Super+H", "Super+Left");
+            assert!(changed.reset_rect().is_some());
+        }
 
-    #[test]
-    fn visual_binding_uses_readable_named_keys() {
-        let recorder = ShortcutRecorder::new("x", "x", "Super+Down", "Super+Left");
-        assert_eq!(
-            recorder
-                .binding()
-                .keycap_labels(PlatformConventions::new(crate::platform::Platform::Linux)),
-            ["Super", "Down"]
-        );
-        assert_eq!(
-            recorder
-                .binding()
-                .keycap_labels(PlatformConventions::new(crate::platform::Platform::MacOs)),
-            ["⌘", "Down"]
-        );
+        // Case `visual_binding_uses_readable_named_keys`.
+        {
+            let recorder = ShortcutRecorder::new("x", "x", "Super+Down", "Super+Left");
+            assert_eq!(
+                recorder
+                    .binding()
+                    .keycap_labels(PlatformConventions::new(crate::platform::Platform::Linux)),
+                ["Super", "Down"]
+            );
+            assert_eq!(
+                recorder
+                    .binding()
+                    .keycap_labels(PlatformConventions::new(crate::platform::Platform::MacOs)),
+                ["⌘", "Down"]
+            );
+        }
     }
 }

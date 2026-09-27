@@ -311,8 +311,16 @@ where
 /// The session bus, connected once on the session runtime and shared by
 /// every MPRIS conversation. `None` when there is no session bus; the next
 /// call tries again.
+///
+/// This crate's unit tests have no bus at all: a media command or pause sent
+/// by one of them must never reach a player of whoever runs the tests. The
+/// integration tests hand the process a scratch bus address instead
+/// (`tests/dbus_runtime_context.rs`).
 async fn session_bus() -> Option<zbus::Connection> {
     static BUS: tokio::sync::OnceCell<zbus::Connection> = tokio::sync::OnceCell::const_new();
+    if cfg!(test) {
+        return None;
+    }
     BUS.get_or_try_init(zbus::Connection::session)
         .await
         .map_err(|error| {
@@ -1588,247 +1596,263 @@ mod tests {
     }
 
     #[test]
-    fn commands_map_to_the_spec_method_names() {
-        // Wire names in the MPRIS spec, not ours to rename.
-        assert_eq!(Command::PlayPause.method(), "PlayPause");
-        assert_eq!(Command::Pause.method(), "Pause");
-        assert_eq!(Command::Next.method(), "Next");
-        assert_eq!(Command::Previous.method(), "Previous");
-        assert_eq!(Command::Stop.method(), "Stop");
-    }
-
-    #[test]
-    fn the_well_known_names_match_the_spec() {
-        assert_eq!(MPRIS_PREFIX, "org.mpris.MediaPlayer2.");
-        assert_eq!(MPRIS_PATH, "/org/mpris/MediaPlayer2");
-        assert_eq!(PLAYER_IFACE, "org.mpris.MediaPlayer2.Player");
-    }
-
-    #[test]
-    fn generic_player_becomes_a_portable_signed_app_report() {
-        let observed = observation("https://media.example/film.mp4");
-        let first = report_from_observation(&observed, &[browser()]).unwrap();
-        let second = report_from_observation(&observed, &[browser()]).unwrap();
-
-        assert_eq!(first, second, "session identity must be stable");
-        assert_eq!(first.session.app_id, "so.tilo.browser");
-        assert_eq!(first.session.position_ms, 4_000);
-        assert_eq!(first.session.duration_ms, Some(9_000));
-        assert!(first.session.has_video);
-        assert!(matches!(
-            first.source,
-            HandoffSource::RemoteStream { ref url }
-                if url == "https://media.example/film.mp4"
-        ));
-        assert_eq!(
-            first.controller_bus_name.as_deref(),
-            Some("org.mpris.MediaPlayer2.browser")
-        );
-    }
-
-    #[test]
-    fn local_paths_stay_in_the_private_transfer_source() {
-        let report = report_from_observation(
-            &observation("file:///home/alice/Videos/My%20Film.mp4"),
-            &[browser()],
-        )
-        .unwrap();
-
-        assert!(matches!(
-            report.source,
-            HandoffSource::LocalFile { ref path }
-                if path == &PathBuf::from("/home/alice/Videos/My Film.mp4")
-        ));
-        assert!(!format!("{:?}", report.session).contains("/home/alice"));
-    }
-
-    #[test]
-    fn unsafe_or_nonportable_urls_are_rejected() {
-        assert!(
-            report_from_observation(
-                &observation("https://alice:secret@media.example/film.mp4"),
-                &[browser()]
-            )
-            .is_none()
-        );
-        assert!(
-            report_from_observation(
-                &observation("https://media.example/film.mp4?access_token=secret"),
-                &[browser()]
-            )
-            .is_none()
-        );
-        assert!(
-            report_from_observation(
-                &observation("blob:https://media.example/ephemeral"),
-                &[browser()]
-            )
-            .is_none()
-        );
-        assert!(
-            report_from_observation(&observation("file://server/share/film.mp4"), &[browser()])
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn destination_resume_sources_are_canonical_and_bearer_free() {
-        assert_eq!(
-            resume_uri(&ResumeSource::LocalFile(PathBuf::from(
-                "/home/alice/My Film.mp4"
-            ))),
-            Some("file:///home/alice/My%20Film.mp4".into())
-        );
-        assert_eq!(
-            resume_uri(&ResumeSource::Uri(
-                "https://media.example/film.mp4?v=42".into()
-            )),
-            Some("https://media.example/film.mp4?v=42".into())
-        );
-        assert!(
-            resume_uri(&ResumeSource::Uri(
-                "https://media.example/film.mp4?%61ccess_token=secret".into()
-            ))
-            .is_none()
-        );
-    }
-
-    #[test]
-    fn destination_only_accepts_an_observed_or_seekable_exact_playhead() {
-        assert_eq!(
-            required_seek(4_100_000, 4_000_000, false),
-            SeekDecision::Satisfied
-        );
-        assert_eq!(
-            required_seek(1_000_000, 4_000_000, true),
-            SeekDecision::Offset(3_000_000)
-        );
-        assert_eq!(
-            required_seek(1_000_000, 4_000_000, false),
-            SeekDecision::Impossible
-        );
-        assert_eq!(required_seek(-1, 4_000_000, true), SeekDecision::Impossible);
-    }
-
-    #[test]
-    fn cancelled_resume_cannot_start_or_publish_a_late_acceptance() {
-        let request_id = [21; 16];
-        let now = Instant::now();
-        let mut resumes = ResumeState::default();
-
-        assert!(!resumes.cancel(request_id, now));
-        assert!(resumes.begin(request_id, now).is_none());
-        assert!(resumes.take_accepted().is_empty());
-    }
-
-    #[test]
-    fn cancellation_after_worker_launch_blocks_every_later_mutation() {
-        let request_id = [22; 16];
-        let now = Instant::now();
-        let mut resumes = ResumeState::default();
-        let authority = resumes.begin(request_id, now).unwrap();
-        let mut mutations = Vec::new();
-
-        assert_eq!(
-            mutate_now(&authority, || mutations.push("open-uri")),
-            Some(())
-        );
-        assert!(resumes.cancel(request_id, now));
-        assert_eq!(mutate_now(&authority, || mutations.push("seek")), None);
-        assert_eq!(mutate_now(&authority, || mutations.push("play")), None);
-        resumes.finish(&authority, true);
-
-        assert_eq!(mutations, ["open-uri"]);
-        assert!(resumes.take_accepted().is_empty());
-    }
-
-    #[test]
-    fn cancellation_is_linearized_after_an_in_flight_mutation() {
-        let request_id = [24; 16];
-        let now = Instant::now();
-        let resumes = Arc::new(Mutex::new(ResumeState::default()));
-        let authority = resumes.lock().unwrap().begin(request_id, now).unwrap();
-        let mutation_authority = authority.clone();
-        let (mutation_started_tx, mutation_started_rx) = mpsc::channel();
-        let (release_mutation_tx, release_mutation_rx) = mpsc::channel();
-        let mutation = std::thread::spawn(move || {
-            mutate_now(&mutation_authority, || {
-                mutation_started_tx.send(()).unwrap();
-                release_mutation_rx.recv().unwrap();
-            })
-        });
-        mutation_started_rx.recv().unwrap();
-
-        let cancel_resumes = Arc::clone(&resumes);
-        let (cancel_started_tx, cancel_started_rx) = mpsc::channel();
-        let (cancelled_tx, cancelled_rx) = mpsc::channel();
-        let cancellation = std::thread::spawn(move || {
-            cancel_started_tx.send(()).unwrap();
-            let cancelled = cancel_resumes.lock().unwrap().cancel(request_id, now);
-            cancelled_tx.send(cancelled).unwrap();
-        });
-        cancel_started_rx.recv().unwrap();
-        assert!(
-            cancelled_rx
-                .recv_timeout(Duration::from_millis(20))
-                .is_err(),
-            "cancel must wait for the already-started mutation to leave its gate"
-        );
-
-        release_mutation_tx.send(()).unwrap();
-        assert_eq!(mutation.join().unwrap(), Some(()));
-        assert!(cancelled_rx.recv_timeout(Duration::from_secs(1)).unwrap());
-        cancellation.join().unwrap();
-        assert_eq!(mutate_now(&authority, || panic!("late mutation ran")), None);
-        resumes.lock().unwrap().finish(&authority, true);
-        assert!(resumes.lock().unwrap().take_accepted().is_empty());
-    }
-
-    #[test]
-    fn cancellation_retracts_completion_and_tombstones_are_bounded() {
-        let request_id = [23; 16];
-        let now = Instant::now();
-        let mut resumes = ResumeState::default();
-        let authority = resumes.begin(request_id, now).unwrap();
-        resumes.finish(&authority, true);
-        assert!(resumes.cancel(request_id, now));
-        assert!(resumes.take_accepted().is_empty());
-
-        for index in 0..=MAX_CANCELLED_RESUMES {
-            let mut id = [0; 16];
-            id[..8].copy_from_slice(&u64::try_from(index).unwrap().to_be_bytes());
-            id[15] = 1;
-            let _ = resumes.cancel(id, now);
+    fn mpris_names_commands_and_dispatch_follow_the_spec_without_blocking() {
+        fn commands_map_to_the_spec_method_names() {
+            // Wire names in the MPRIS spec, not ours to rename.
+            assert_eq!(Command::PlayPause.method(), "PlayPause");
+            assert_eq!(Command::Pause.method(), "Pause");
+            assert_eq!(Command::Next.method(), "Next");
+            assert_eq!(Command::Previous.method(), "Previous");
+            assert_eq!(Command::Stop.method(), "Stop");
         }
-        assert_eq!(resumes.cancelled.len(), MAX_CANCELLED_RESUMES);
+
+        fn the_well_known_names_match_the_spec() {
+            assert_eq!(MPRIS_PREFIX, "org.mpris.MediaPlayer2.");
+            assert_eq!(MPRIS_PATH, "/org/mpris/MediaPlayer2");
+            assert_eq!(PLAYER_IFACE, "org.mpris.MediaPlayer2.Player");
+        }
+
+        fn ambiguous_or_stopped_players_are_not_advertised() {
+            let observed = observation("https://media.example/film.mp4");
+            assert!(report_from_observation(&observed, &[browser(), browser()]).is_none());
+
+            let mut stopped = observed;
+            stopped.status = "Stopped".into();
+            assert!(report_from_observation(&stopped, &[browser()]).is_none());
+        }
+
+        /// Must survive a machine with no session bus and no player. Unit
+        /// tests have no bus (see `session_bus`), so the command reaches no
+        /// player.
+        fn send_dispatches_without_waiting_on_the_bus() {
+            let started = std::time::Instant::now();
+            let (tx, _outcomes) = mpsc::channel();
+            let dispatched = send(Command::PlayPause, move |outcome| {
+                let _ = tx.send(outcome);
+            });
+            let elapsed = started.elapsed();
+            assert!(dispatched, "the session runtime takes the command");
+            // Any bus round trip happens on the session runtime, never here.
+            assert!(
+                elapsed < DEADLINE,
+                "the input path must not wait on the bus: took {elapsed:?}"
+            );
+        }
+
+        commands_map_to_the_spec_method_names();
+        the_well_known_names_match_the_spec();
+        ambiguous_or_stopped_players_are_not_advertised();
+        send_dispatches_without_waiting_on_the_bus();
     }
 
     #[test]
-    fn ambiguous_or_stopped_players_are_not_advertised() {
-        let observed = observation("https://media.example/film.mp4");
-        assert!(report_from_observation(&observed, &[browser(), browser()]).is_none());
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn player_reports_are_portable_signed_and_reject_unsafe_sources() {
+        fn generic_player_becomes_a_portable_signed_app_report() {
+            let observed = observation("https://media.example/film.mp4");
+            let first = report_from_observation(&observed, &[browser()]).unwrap();
+            let second = report_from_observation(&observed, &[browser()]).unwrap();
 
-        let mut stopped = observed;
-        stopped.status = "Stopped".into();
-        assert!(report_from_observation(&stopped, &[browser()]).is_none());
+            assert_eq!(first, second, "session identity must be stable");
+            assert_eq!(first.session.app_id, "so.tilo.browser");
+            assert_eq!(first.session.position_ms, 4_000);
+            assert_eq!(first.session.duration_ms, Some(9_000));
+            assert!(first.session.has_video);
+            assert!(matches!(
+                first.source,
+                HandoffSource::RemoteStream { ref url }
+                    if url == "https://media.example/film.mp4"
+            ));
+            assert_eq!(
+                first.controller_bus_name.as_deref(),
+                Some("org.mpris.MediaPlayer2.browser")
+            );
+        }
+
+        fn local_paths_stay_in_the_private_transfer_source() {
+            let report = report_from_observation(
+                &observation("file:///home/alice/Videos/My%20Film.mp4"),
+                &[browser()],
+            )
+            .unwrap();
+
+            assert!(matches!(
+                report.source,
+                HandoffSource::LocalFile { ref path }
+                    if path == &PathBuf::from("/home/alice/Videos/My Film.mp4")
+            ));
+            assert!(!format!("{:?}", report.session).contains("/home/alice"));
+        }
+
+        fn unsafe_or_nonportable_urls_are_rejected() {
+            assert!(
+                report_from_observation(
+                    &observation("https://alice:secret@media.example/film.mp4"),
+                    &[browser()]
+                )
+                .is_none()
+            );
+            assert!(
+                report_from_observation(
+                    &observation("https://media.example/film.mp4?access_token=secret"),
+                    &[browser()]
+                )
+                .is_none()
+            );
+            assert!(
+                report_from_observation(
+                    &observation("blob:https://media.example/ephemeral"),
+                    &[browser()]
+                )
+                .is_none()
+            );
+            assert!(
+                report_from_observation(&observation("file://server/share/film.mp4"), &[browser()])
+                    .is_none()
+            );
+        }
+
+        fn destination_resume_sources_are_canonical_and_bearer_free() {
+            assert_eq!(
+                resume_uri(&ResumeSource::LocalFile(PathBuf::from(
+                    "/home/alice/My Film.mp4"
+                ))),
+                Some("file:///home/alice/My%20Film.mp4".into())
+            );
+            assert_eq!(
+                resume_uri(&ResumeSource::Uri(
+                    "https://media.example/film.mp4?v=42".into()
+                )),
+                Some("https://media.example/film.mp4?v=42".into())
+            );
+            assert!(
+                resume_uri(&ResumeSource::Uri(
+                    "https://media.example/film.mp4?%61ccess_token=secret".into()
+                ))
+                .is_none()
+            );
+        }
+
+        fn destination_only_accepts_an_observed_or_seekable_exact_playhead() {
+            assert_eq!(
+                required_seek(4_100_000, 4_000_000, false),
+                SeekDecision::Satisfied
+            );
+            assert_eq!(
+                required_seek(1_000_000, 4_000_000, true),
+                SeekDecision::Offset(3_000_000)
+            );
+            assert_eq!(
+                required_seek(1_000_000, 4_000_000, false),
+                SeekDecision::Impossible
+            );
+            assert_eq!(required_seek(-1, 4_000_000, true), SeekDecision::Impossible);
+        }
+
+        generic_player_becomes_a_portable_signed_app_report();
+        local_paths_stay_in_the_private_transfer_source();
+        unsafe_or_nonportable_urls_are_rejected();
+        destination_resume_sources_are_canonical_and_bearer_free();
+        destination_only_accepts_an_observed_or_seekable_exact_playhead();
     }
 
-    /// Must survive a machine with no session bus and no player — which
-    /// is exactly what CI is.
     #[test]
-    fn send_dispatches_without_waiting_on_the_bus() {
-        let started = std::time::Instant::now();
-        let (tx, _outcomes) = mpsc::channel();
-        let dispatched = send(Command::PlayPause, move |outcome| {
-            let _ = tx.send(outcome);
-        });
-        let elapsed = started.elapsed();
-        assert!(dispatched, "the session runtime takes the command");
-        // The bus round trip happens on the session runtime; a dev machine
-        // with a player delivers an outcome later, CI (no bus) never does.
-        assert!(
-            elapsed < DEADLINE,
-            "the input path must not wait on the bus: took {elapsed:?}"
-        );
+    fn resume_cancellation_is_linearized_and_blocks_late_effects() {
+        fn cancelled_resume_cannot_start_or_publish_a_late_acceptance() {
+            let request_id = [21; 16];
+            let now = Instant::now();
+            let mut resumes = ResumeState::default();
+
+            assert!(!resumes.cancel(request_id, now));
+            assert!(resumes.begin(request_id, now).is_none());
+            assert!(resumes.take_accepted().is_empty());
+        }
+
+        fn cancellation_after_worker_launch_blocks_every_later_mutation() {
+            let request_id = [22; 16];
+            let now = Instant::now();
+            let mut resumes = ResumeState::default();
+            let authority = resumes.begin(request_id, now).unwrap();
+            let mut mutations = Vec::new();
+
+            assert_eq!(
+                mutate_now(&authority, || mutations.push("open-uri")),
+                Some(())
+            );
+            assert!(resumes.cancel(request_id, now));
+            assert_eq!(mutate_now(&authority, || mutations.push("seek")), None);
+            assert_eq!(mutate_now(&authority, || mutations.push("play")), None);
+            resumes.finish(&authority, true);
+
+            assert_eq!(mutations, ["open-uri"]);
+            assert!(resumes.take_accepted().is_empty());
+        }
+
+        fn cancellation_is_linearized_after_an_in_flight_mutation() {
+            let request_id = [24; 16];
+            let now = Instant::now();
+            let resumes = Arc::new(Mutex::new(ResumeState::default()));
+            let authority = resumes.lock().unwrap().begin(request_id, now).unwrap();
+            let mutation_authority = authority.clone();
+            let (mutation_started_tx, mutation_started_rx) = mpsc::channel();
+            let (release_mutation_tx, release_mutation_rx) = mpsc::channel();
+            let mutation = std::thread::spawn(move || {
+                mutate_now(&mutation_authority, || {
+                    mutation_started_tx.send(()).unwrap();
+                    release_mutation_rx.recv().unwrap();
+                })
+            });
+            mutation_started_rx.recv().unwrap();
+
+            let cancel_resumes = Arc::clone(&resumes);
+            let (cancel_started_tx, cancel_started_rx) = mpsc::channel();
+            let (cancelled_tx, cancelled_rx) = mpsc::channel();
+            let cancellation = std::thread::spawn(move || {
+                cancel_started_tx.send(()).unwrap();
+                let cancelled = cancel_resumes.lock().unwrap().cancel(request_id, now);
+                cancelled_tx.send(cancelled).unwrap();
+            });
+            cancel_started_rx.recv().unwrap();
+            assert!(
+                cancelled_rx
+                    .recv_timeout(Duration::from_millis(20))
+                    .is_err(),
+                "cancel must wait for the already-started mutation to leave its gate"
+            );
+
+            release_mutation_tx.send(()).unwrap();
+            assert_eq!(mutation.join().unwrap(), Some(()));
+            assert!(cancelled_rx.recv_timeout(Duration::from_secs(1)).unwrap());
+            cancellation.join().unwrap();
+            assert_eq!(mutate_now(&authority, || panic!("late mutation ran")), None);
+            resumes.lock().unwrap().finish(&authority, true);
+            assert!(resumes.lock().unwrap().take_accepted().is_empty());
+        }
+
+        fn cancellation_retracts_completion_and_tombstones_are_bounded() {
+            let request_id = [23; 16];
+            let now = Instant::now();
+            let mut resumes = ResumeState::default();
+            let authority = resumes.begin(request_id, now).unwrap();
+            resumes.finish(&authority, true);
+            assert!(resumes.cancel(request_id, now));
+            assert!(resumes.take_accepted().is_empty());
+
+            for index in 0..=MAX_CANCELLED_RESUMES {
+                let mut id = [0; 16];
+                id[..8].copy_from_slice(&u64::try_from(index).unwrap().to_be_bytes());
+                id[15] = 1;
+                let _ = resumes.cancel(id, now);
+            }
+            assert_eq!(resumes.cancelled.len(), MAX_CANCELLED_RESUMES);
+        }
+
+        cancelled_resume_cannot_start_or_publish_a_late_acceptance();
+        cancellation_after_worker_launch_blocks_every_later_mutation();
+        cancellation_is_linearized_after_an_in_flight_mutation();
+        cancellation_retracts_completion_and_tombstones_are_bounded();
     }
 }

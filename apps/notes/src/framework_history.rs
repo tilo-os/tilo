@@ -404,76 +404,79 @@ mod tree_geometry_tests {
     use super::*;
 
     #[test]
-    fn neighbouring_selection_pills_keep_a_token_gap() {
-        let theme = Theme::dark();
-        let m = TreeRowMetrics::new(&theme, 1.0);
-        let pane = m.pane(Rect::new(0.0, 0.0, 1280.0, 400.0)).unwrap();
-        assert!(
-            m.pane(Rect::new(0.0, 0.0, m.min_panel_w - 1.0, 400.0))
-                .is_none(),
-            "below the compact breakpoint the tree yields to the page"
-        );
-        let a = m.pill(m.row(pane, 0));
-        let b = m.pill(m.row(pane, 1));
-        let gap = b.y0 - a.y1;
-        assert!(
-            (gap - f64::from(theme.tokens.spacing.s1)).abs() < 1e-9,
-            "pill gap {gap} is not s1"
-        );
-        assert!(
-            a.x0 > pane.x0 && a.x1 < pane.x1,
-            "pill is inset from the pane sides"
-        );
-    }
-
-    #[test]
-    fn labels_sit_on_their_measured_line_centred_in_the_row() {
-        let theme = Theme::dark();
-        for scale in [1.0_f32, 2.0] {
-            let m = TreeRowMetrics::new(&theme, scale);
+    fn history_tree_pane_rows_are_gapped_centred_and_registered_on_every_preset() {
+        eprintln!("phase neighbouring_selection_pills_keep_a_token_gap");
+        {
+            let theme = Theme::dark();
+            let m = TreeRowMetrics::new(&theme, 1.0);
             let pane = m.pane(Rect::new(0.0, 0.0, 1280.0, 400.0)).unwrap();
-            let row = m.row(pane, 3);
-            let origin = m.label_origin(row, 1);
-            let centre = origin.y + m.line_h / 2.0;
-            assert!((centre - row.center().y).abs() < 1e-9, "scale {scale}");
-            assert!(m.row_h >= m.line_h + f64::from(theme.tokens.spacing.s2));
-            assert!(m.row_h.fract().abs() < 1e-9, "whole-pixel rows at {scale}");
-            let depth0 = m.label_origin(row, 0).x;
-            assert!((origin.x - depth0 - f64::from(theme.tokens.spacing.s4)).abs() < 1e-9);
-        }
-    }
-
-    #[test]
-    fn tree_pane_edge_and_selection_register_on_every_preset() {
-        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
-            let raised = theme.tokens.colors.surfaces.raised;
             assert!(
-                ui::surface::edge_delta(edge_on(raised), raised)
-                    >= ui::tokens::colors::HAIRLINE_MIN_DELTA,
-                "{}",
-                theme.name
+                m.pane(Rect::new(0.0, 0.0, m.min_panel_w - 1.0, 400.0))
+                    .is_none(),
+                "below the compact breakpoint the tree yields to the page"
             );
-            // The selected page must be a contrast step off the pane, not
-            // the pane's own colour with an outline. High contrast paints one
-            // flat black tier, so there the fill is the toolkit's own lift
-            // fallback (a grey that moves less than a hairline in luminance
-            // terms) and the derived edge carries the step.
-            let lifted = crate::sidebar::selection_fill_on_raised(&theme);
-            let moved = ui::surface::edge_delta(lifted, raised);
-            assert!(moved > 0.0, "{} selection fill equals the pane", theme.name);
-            if theme.name != "High Contrast" {
+            let a = m.pill(m.row(pane, 0));
+            let b = m.pill(m.row(pane, 1));
+            let gap = b.y0 - a.y1;
+            assert!(
+                (gap - f64::from(theme.tokens.spacing.s1)).abs() < 1e-9,
+                "pill gap {gap} is not s1"
+            );
+            assert!(
+                a.x0 > pane.x0 && a.x1 < pane.x1,
+                "pill is inset from the pane sides"
+            );
+        }
+
+        eprintln!("phase labels_sit_on_their_measured_line_centred_in_the_row");
+        {
+            let theme = Theme::dark();
+            for scale in [1.0_f32, 2.0] {
+                let m = TreeRowMetrics::new(&theme, scale);
+                let pane = m.pane(Rect::new(0.0, 0.0, 1280.0, 400.0)).unwrap();
+                let row = m.row(pane, 3);
+                let origin = m.label_origin(row, 1);
+                let centre = origin.y + m.line_h / 2.0;
+                assert!((centre - row.center().y).abs() < 1e-9, "scale {scale}");
+                assert!(m.row_h >= m.line_h + f64::from(theme.tokens.spacing.s2));
+                assert!(m.row_h.fract().abs() < 1e-9, "whole-pixel rows at {scale}");
+                let depth0 = m.label_origin(row, 0).x;
+                assert!((origin.x - depth0 - f64::from(theme.tokens.spacing.s4)).abs() < 1e-9);
+            }
+        }
+
+        eprintln!("phase tree_pane_edge_and_selection_register_on_every_preset");
+        {
+            for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+                let raised = theme.tokens.colors.surfaces.raised;
                 assert!(
-                    moved >= ui::tokens::colors::HAIRLINE_MIN_DELTA,
-                    "{} selection fill {lifted:?} does not move off raised {raised:?}",
+                    ui::surface::edge_delta(edge_on(raised), raised)
+                        >= ui::tokens::colors::HAIRLINE_MIN_DELTA,
+                    "{}",
+                    theme.name
+                );
+                // The selected page must be a contrast step off the pane, not
+                // the pane's own colour with an outline. High contrast paints one
+                // flat black tier, so there the fill is the toolkit's own lift
+                // fallback (a grey that moves less than a hairline in luminance
+                // terms) and the derived edge carries the step.
+                let lifted = crate::sidebar::selection_fill_on_raised(&theme);
+                let moved = ui::surface::edge_delta(lifted, raised);
+                assert!(moved > 0.0, "{} selection fill equals the pane", theme.name);
+                if theme.name != "High Contrast" {
+                    assert!(
+                        moved >= ui::tokens::colors::HAIRLINE_MIN_DELTA,
+                        "{} selection fill {lifted:?} does not move off raised {raised:?}",
+                        theme.name
+                    );
+                }
+                assert!(
+                    ui::surface::edge_delta(edge_on(lifted), lifted)
+                        >= ui::tokens::colors::HAIRLINE_MIN_DELTA,
+                    "{} selection edge does not register on its fill",
                     theme.name
                 );
             }
-            assert!(
-                ui::surface::edge_delta(edge_on(lifted), lifted)
-                    >= ui::tokens::colors::HAIRLINE_MIN_DELTA,
-                "{} selection edge does not register on its fill",
-                theme.name
-            );
         }
     }
 }

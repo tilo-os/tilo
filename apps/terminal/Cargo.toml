@@ -45,6 +45,7 @@ anyhow.workspace = true
 # OSC 52 clipboard writes carry base64-encoded payloads.
 base64.workspace = true
 tilo-content = { path = "../../crates/system/content" }
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tempfile.workspace = true

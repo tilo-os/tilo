@@ -205,10 +205,19 @@ mod tests {
         (a, b)
     }
 
+    /// An action replays to an identical doc on a peer, concurrent envelopes replay from their
+    /// recorded base, and a replayed change dedupes against a native Automerge merge.
+    /// Runs each phase below in order; every phase builds its own fixture.
+    #[test]
+    fn envelopes_replay_deterministically_on_peers() {
+        action_replays_to_identical_doc_on_peer();
+        concurrent_envelopes_replay_from_their_recorded_base();
+        replayed_change_dedupes_against_native_automerge_merge();
+    }
+
     /// THE HEADLINE TEST. An action applied on replica A, replicated, and
     /// replayed on replica B (from the same state) yields the **identical**
     /// document — same head hashes, not merely the same values.
-    #[test]
     fn action_replays_to_identical_doc_on_peer() {
         let (mut a, mut b) = two_replicas();
         assert_eq!(
@@ -246,7 +255,6 @@ mod tests {
     /// Replay must still reproduce each action at its recorded base and merge
     /// the resulting CRDT change; applying either payload directly to the
     /// newer live state would make document-reading actions order-dependent.
-    #[test]
     fn concurrent_envelopes_replay_from_their_recorded_base() {
         let (mut a, mut b) = two_replicas();
         let left = Counter::Put {
@@ -288,7 +296,6 @@ mod tests {
     /// so if the replicas later exchange native Automerge changes (ordinary
     /// CRDT sync) the duplicate dedupes instead of double-applying — why
     /// pinning actor + time on every apply matters.
-    #[test]
     fn replayed_change_dedupes_against_native_automerge_merge() {
         let (mut a, mut b) = two_replicas();
         let action = Counter::Append {
@@ -320,9 +327,21 @@ mod tests {
         assert_eq!(b.length(&list), 1, "no double-apply");
     }
 
+    /// Client-local dispatch applies and replicates; server-preferred routes to the host without a
+    /// local apply and refuses without a host; the registry rejects unknown types and flattens nested
+    /// resources.
+    /// Runs each phase below in order; every phase builds its own fixture.
+    #[test]
+    fn dispatch_routes_by_placement_and_the_registry_knows_its_types() {
+        client_local_dispatch_applies_and_replicates();
+        server_preferred_routes_to_host_without_local_apply();
+        server_preferred_refuses_without_host();
+        registry_rejects_unknown_type();
+        flatten_walks_nested_resources();
+    }
+
     /// `ClientLocal` dispatch applies locally and replicates exactly one
     /// envelope through the transport.
-    #[test]
     fn client_local_dispatch_applies_and_replicates() {
         let (mut a, _) = two_replicas();
         let action = Counter::Put {
@@ -352,7 +371,6 @@ mod tests {
         }
     }
 
-    #[test]
     fn server_preferred_routes_to_host_without_local_apply() {
         let (mut a, _) = two_replicas();
         let before = a.get_heads();
@@ -373,7 +391,6 @@ mod tests {
         assert_eq!(d.envelope().locus, ExecutionLocus::ServerPreferred);
     }
 
-    #[test]
     fn server_preferred_refuses_without_host() {
         let (mut a, _) = two_replicas();
         let before = a.get_heads();
@@ -394,7 +411,6 @@ mod tests {
         assert!(a.get(&ROOT, "queue").unwrap().is_none());
     }
 
-    #[test]
     fn registry_rejects_unknown_type() {
         let reg = registry();
         let bogus = EncodedAction {
@@ -419,7 +435,6 @@ mod tests {
 
     /// Resource forests flatten depth-first, parents before children, with
     /// composite keys.
-    #[test]
     fn flatten_walks_nested_resources() {
         let put = Counter::Put {
             key: "k".into(),

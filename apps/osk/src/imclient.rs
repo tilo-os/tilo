@@ -532,141 +532,150 @@ mod tests {
     }
 
     #[test]
-    fn purpose_from_wire_maps_every_known_value() {
-        use content_purpose as cp;
-        assert_eq!(purpose_from_wire(cp::NORMAL), InputPurpose::Text);
-        assert_eq!(purpose_from_wire(cp::ALPHA), InputPurpose::Text);
-        assert_eq!(purpose_from_wire(cp::DIGITS), InputPurpose::Pin);
-        assert_eq!(purpose_from_wire(cp::NUMBER), InputPurpose::Number);
-        assert_eq!(purpose_from_wire(cp::PHONE), InputPurpose::Telephone);
-        assert_eq!(purpose_from_wire(cp::URL), InputPurpose::Url);
-        assert_eq!(purpose_from_wire(cp::EMAIL), InputPurpose::Email);
-        assert_eq!(purpose_from_wire(cp::NAME), InputPurpose::Text);
-        assert_eq!(purpose_from_wire(cp::PASSWORD), InputPurpose::Password);
-        assert_eq!(purpose_from_wire(cp::PIN), InputPurpose::Pin);
-        assert_eq!(purpose_from_wire(cp::DATE), InputPurpose::Date);
-        assert_eq!(purpose_from_wire(cp::TIME), InputPurpose::Time);
-        assert_eq!(purpose_from_wire(cp::DATETIME), InputPurpose::Date);
-        assert_eq!(purpose_from_wire(cp::TERMINAL), InputPurpose::Text);
+    fn purpose_from_wire_maps_known_values_and_reducer_starts_hidden_text() {
+        eprintln!("phase purpose_from_wire_maps_every_known_value");
+        {
+            use content_purpose as cp;
+            assert_eq!(purpose_from_wire(cp::NORMAL), InputPurpose::Text);
+            assert_eq!(purpose_from_wire(cp::ALPHA), InputPurpose::Text);
+            assert_eq!(purpose_from_wire(cp::DIGITS), InputPurpose::Pin);
+            assert_eq!(purpose_from_wire(cp::NUMBER), InputPurpose::Number);
+            assert_eq!(purpose_from_wire(cp::PHONE), InputPurpose::Telephone);
+            assert_eq!(purpose_from_wire(cp::URL), InputPurpose::Url);
+            assert_eq!(purpose_from_wire(cp::EMAIL), InputPurpose::Email);
+            assert_eq!(purpose_from_wire(cp::NAME), InputPurpose::Text);
+            assert_eq!(purpose_from_wire(cp::PASSWORD), InputPurpose::Password);
+            assert_eq!(purpose_from_wire(cp::PIN), InputPurpose::Pin);
+            assert_eq!(purpose_from_wire(cp::DATE), InputPurpose::Date);
+            assert_eq!(purpose_from_wire(cp::TIME), InputPurpose::Time);
+            assert_eq!(purpose_from_wire(cp::DATETIME), InputPurpose::Date);
+            assert_eq!(purpose_from_wire(cp::TERMINAL), InputPurpose::Text);
+        }
+
+        eprintln!("phase purpose_from_wire_unknown_falls_back_to_text");
+        {
+            // A value the protocol doesn't define (or a future addition) must not
+            // panic and must degrade to the safe free-text layout.
+            assert_eq!(purpose_from_wire(99), InputPurpose::Text);
+            assert_eq!(purpose_from_wire(u32::MAX), InputPurpose::Text);
+        }
+
+        eprintln!("phase reducer_starts_hidden_and_text");
+        {
+            let s = ImState::new();
+            assert!(!s.visible());
+            assert_eq!(s.purpose(), InputPurpose::Text);
+        }
     }
 
     #[test]
-    fn purpose_from_wire_unknown_falls_back_to_text() {
-        // A value the protocol doesn't define (or a future addition) must not
-        // panic and must degrade to the safe free-text layout.
-        assert_eq!(purpose_from_wire(99), InputPurpose::Text);
-        assert_eq!(purpose_from_wire(u32::MAX), InputPurpose::Text);
+    fn reducer_reports_each_visibility_transition_once() {
+        eprintln!("phase activate_shows_and_reports_the_transition");
+        {
+            let mut s = ImState::new();
+            let t = s.reduce(ImEvent::Activate);
+            assert!(s.visible());
+            assert_eq!(t.visibility_changed, Some(true));
+            // No content type yet → still the default text layout.
+            assert_eq!(s.purpose(), InputPurpose::Text);
+            assert_eq!(t.purpose_changed, None);
+        }
+
+        eprintln!("phase deactivate_hides_and_reports_the_transition");
+        {
+            let mut s = ImState::new();
+            s.reduce(ImEvent::Activate);
+            let t = s.reduce(ImEvent::Deactivate);
+            assert!(!s.visible());
+            assert_eq!(t.visibility_changed, Some(false));
+        }
+
+        eprintln!("phase repeated_activate_does_not_re_report_visibility");
+        {
+            // Defensive: a second activate while already visible shouldn't claim a
+            // visibility change (the window is already shown).
+            let mut s = ImState::new();
+            s.reduce(ImEvent::Activate);
+            let t = s.reduce(ImEvent::Activate);
+            assert_eq!(t.visibility_changed, None);
+            assert!(s.visible());
+        }
+
+        eprintln!("phase full_focus_cycle_number_field");
+        {
+            // The exact sequence a compositor sends when focusing a number field,
+            // then blurring it.
+            let mut s = ImState::new();
+
+            let t = s.reduce(ImEvent::Activate);
+            assert_eq!(t.visibility_changed, Some(true));
+
+            s.reduce(purpose_only(content_purpose::NUMBER));
+            let t = s.reduce(ImEvent::Done);
+            assert!(s.visible());
+            assert_eq!(s.purpose(), InputPurpose::Number);
+            assert_eq!(t.purpose_changed, Some(InputPurpose::Number));
+
+            let t = s.reduce(ImEvent::Deactivate);
+            assert!(!s.visible());
+            assert_eq!(t.visibility_changed, Some(false));
+        }
     }
 
     #[test]
-    fn reducer_starts_hidden_and_text() {
-        let s = ImState::new();
-        assert!(!s.visible());
-        assert_eq!(s.purpose(), InputPurpose::Text);
-    }
+    fn reducer_applies_content_type_purpose_only_on_done() {
+        eprintln!("phase content_type_is_pending_until_done");
+        {
+            let mut s = ImState::new();
+            s.reduce(ImEvent::Activate);
+            // content_type alone does NOT change the applied purpose...
+            let t = s.reduce(purpose_only(content_purpose::NUMBER));
+            assert_eq!(s.purpose(), InputPurpose::Text);
+            assert_eq!(t.purpose_changed, None);
+            // ...the following `done` applies it.
+            let t = s.reduce(ImEvent::Done);
+            assert_eq!(s.purpose(), InputPurpose::Number);
+            assert_eq!(t.purpose_changed, Some(InputPurpose::Number));
+        }
 
-    #[test]
-    fn activate_shows_and_reports_the_transition() {
-        let mut s = ImState::new();
-        let t = s.reduce(ImEvent::Activate);
-        assert!(s.visible());
-        assert_eq!(t.visibility_changed, Some(true));
-        // No content type yet → still the default text layout.
-        assert_eq!(s.purpose(), InputPurpose::Text);
-        assert_eq!(t.purpose_changed, None);
-    }
+        eprintln!("phase done_without_pending_purpose_is_a_noop");
+        {
+            let mut s = ImState::new();
+            s.reduce(ImEvent::Activate);
+            let t = s.reduce(ImEvent::Done);
+            assert_eq!(t.purpose_changed, None);
+            assert_eq!(s.purpose(), InputPurpose::Text);
+        }
 
-    #[test]
-    fn deactivate_hides_and_reports_the_transition() {
-        let mut s = ImState::new();
-        s.reduce(ImEvent::Activate);
-        let t = s.reduce(ImEvent::Deactivate);
-        assert!(!s.visible());
-        assert_eq!(t.visibility_changed, Some(false));
-    }
+        eprintln!("phase activate_clears_a_stale_purpose_between_fields");
+        {
+            // Focus an email field, then move to a plain text field. Re-activation
+            // must reset to text so the email layout doesn't linger before the new
+            // field's content_type (if any) arrives.
+            let mut s = ImState::new();
+            s.reduce(ImEvent::Activate);
+            s.reduce(purpose_only(content_purpose::EMAIL));
+            s.reduce(ImEvent::Done);
+            assert_eq!(s.purpose(), InputPurpose::Email);
 
-    #[test]
-    fn content_type_is_pending_until_done() {
-        let mut s = ImState::new();
-        s.reduce(ImEvent::Activate);
-        // content_type alone does NOT change the applied purpose...
-        let t = s.reduce(purpose_only(content_purpose::NUMBER));
-        assert_eq!(s.purpose(), InputPurpose::Text);
-        assert_eq!(t.purpose_changed, None);
-        // ...the following `done` applies it.
-        let t = s.reduce(ImEvent::Done);
-        assert_eq!(s.purpose(), InputPurpose::Number);
-        assert_eq!(t.purpose_changed, Some(InputPurpose::Number));
-    }
+            // New field gains focus.
+            let t = s.reduce(ImEvent::Activate);
+            assert_eq!(s.purpose(), InputPurpose::Text);
+            assert_eq!(t.purpose_changed, Some(InputPurpose::Text));
+        }
 
-    #[test]
-    fn done_without_pending_purpose_is_a_noop() {
-        let mut s = ImState::new();
-        s.reduce(ImEvent::Activate);
-        let t = s.reduce(ImEvent::Done);
-        assert_eq!(t.purpose_changed, None);
-        assert_eq!(s.purpose(), InputPurpose::Text);
-    }
+        eprintln!("phase switching_purpose_while_visible_reports_only_purpose");
+        {
+            let mut s = ImState::new();
+            s.reduce(ImEvent::Activate);
+            s.reduce(purpose_only(content_purpose::NUMBER));
+            s.reduce(ImEvent::Done);
 
-    #[test]
-    fn full_focus_cycle_number_field() {
-        // The exact sequence a compositor sends when focusing a number field,
-        // then blurring it.
-        let mut s = ImState::new();
-
-        let t = s.reduce(ImEvent::Activate);
-        assert_eq!(t.visibility_changed, Some(true));
-
-        s.reduce(purpose_only(content_purpose::NUMBER));
-        let t = s.reduce(ImEvent::Done);
-        assert!(s.visible());
-        assert_eq!(s.purpose(), InputPurpose::Number);
-        assert_eq!(t.purpose_changed, Some(InputPurpose::Number));
-
-        let t = s.reduce(ImEvent::Deactivate);
-        assert!(!s.visible());
-        assert_eq!(t.visibility_changed, Some(false));
-    }
-
-    #[test]
-    fn activate_clears_a_stale_purpose_between_fields() {
-        // Focus an email field, then move to a plain text field. Re-activation
-        // must reset to text so the email layout doesn't linger before the new
-        // field's content_type (if any) arrives.
-        let mut s = ImState::new();
-        s.reduce(ImEvent::Activate);
-        s.reduce(purpose_only(content_purpose::EMAIL));
-        s.reduce(ImEvent::Done);
-        assert_eq!(s.purpose(), InputPurpose::Email);
-
-        // New field gains focus.
-        let t = s.reduce(ImEvent::Activate);
-        assert_eq!(s.purpose(), InputPurpose::Text);
-        assert_eq!(t.purpose_changed, Some(InputPurpose::Text));
-    }
-
-    #[test]
-    fn repeated_activate_does_not_re_report_visibility() {
-        // Defensive: a second activate while already visible shouldn't claim a
-        // visibility change (the window is already shown).
-        let mut s = ImState::new();
-        s.reduce(ImEvent::Activate);
-        let t = s.reduce(ImEvent::Activate);
-        assert_eq!(t.visibility_changed, None);
-        assert!(s.visible());
-    }
-
-    #[test]
-    fn switching_purpose_while_visible_reports_only_purpose() {
-        let mut s = ImState::new();
-        s.reduce(ImEvent::Activate);
-        s.reduce(purpose_only(content_purpose::NUMBER));
-        s.reduce(ImEvent::Done);
-
-        // Field re-reports a different purpose without a re-activate.
-        s.reduce(purpose_only(content_purpose::EMAIL));
-        let t = s.reduce(ImEvent::Done);
-        assert_eq!(t.visibility_changed, None);
-        assert_eq!(t.purpose_changed, Some(InputPurpose::Email));
+            // Field re-reports a different purpose without a re-activate.
+            s.reduce(purpose_only(content_purpose::EMAIL));
+            let t = s.reduce(ImEvent::Done);
+            assert_eq!(t.visibility_changed, None);
+            assert_eq!(t.purpose_changed, Some(InputPurpose::Email));
+        }
     }
 }

@@ -313,7 +313,7 @@ impl NotificationBackend {
         {
             let target = clone_field(notification, "default-action-target");
             specs.insert(action.clone(), ActionSpec { target });
-            rendered.push((action, "Open".to_string()));
+            rendered.push((action, crate::shell::i18n::t("portal-notification-open")));
         }
 
         let buttons = notification
@@ -491,7 +491,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn priority_maps_to_shell_urgency_and_bad_values_fail_safe() {
+    fn notifications_map_priority_reduce_markup_and_bound_the_reverse_map() {
+        // Phase `priority_maps_to_shell_urgency_and_bad_values_fail_safe`.
         for (priority, expected) in [("low", 0), ("normal", 1), ("high", 2), ("urgent", 2)] {
             let mut values = HashMap::new();
             values.insert(
@@ -501,32 +502,28 @@ mod tests {
             assert_eq!(NotificationBackend::urgency(&values), expected);
         }
         assert_eq!(NotificationBackend::urgency(&HashMap::new()), 1);
-    }
-
-    #[test]
-    fn markup_is_reduced_to_safe_text() {
+        // Phase `markup_is_reduced_to_safe_text`.
         assert_eq!(
             markup_to_plain_text("Hello <b>world</b> &amp; <a href='x'>friends</a>"),
             "Hello world & friends"
         );
-    }
-
-    #[test]
-    fn reverse_map_is_bounded_and_cleans_up() {
-        let handle = NotificationPortalHandle::default();
-        for index in 0..=MAX_ACTIVE_PORTAL_NOTIFICATIONS {
-            handle.upsert(
-                ("org.example.App".into(), index.to_string()),
-                || u32::try_from(index + 1).unwrap(),
-                HashMap::new(),
+        // Phase `reverse_map_is_bounded_and_cleans_up`.
+        {
+            let handle = NotificationPortalHandle::default();
+            for index in 0..=MAX_ACTIVE_PORTAL_NOTIFICATIONS {
+                handle.upsert(
+                    ("org.example.App".into(), index.to_string()),
+                    || u32::try_from(index + 1).unwrap(),
+                    HashMap::new(),
+                );
+            }
+            assert_eq!(handle.active_keys().len(), MAX_ACTIVE_PORTAL_NOTIFICATIONS);
+            assert!(!handle.active_keys().iter().any(|(_, id)| id == "0"));
+            handle.close_numeric(2);
+            assert_eq!(
+                handle.active_keys().len(),
+                MAX_ACTIVE_PORTAL_NOTIFICATIONS - 1
             );
         }
-        assert_eq!(handle.active_keys().len(), MAX_ACTIVE_PORTAL_NOTIFICATIONS);
-        assert!(!handle.active_keys().iter().any(|(_, id)| id == "0"));
-        handle.close_numeric(2);
-        assert_eq!(
-            handle.active_keys().len(),
-            MAX_ACTIVE_PORTAL_NOTIFICATIONS - 1
-        );
     }
 }

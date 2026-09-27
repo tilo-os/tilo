@@ -76,29 +76,32 @@ mod tests {
     }
 
     #[test]
-    fn rects_split_evenly_and_fill_width() {
-        let s = sugg(&["quick", "quack", "quiche"]);
-        let rects = suggestion_rects(&s, Rect::new(0.0, 0.0, 600.0, 40.0));
-        assert_eq!(rects.len(), 3);
-        for (_, r) in &rects {
-            assert!((r.width() - 200.0).abs() < 1.0);
+    fn suggestion_chip_rects_split_evenly_and_fill_width() {
+        eprintln!("phase rects_split_evenly_and_fill_width");
+        {
+            let s = sugg(&["quick", "quack", "quiche"]);
+            let rects = suggestion_rects(&s, Rect::new(0.0, 0.0, 600.0, 40.0));
+            assert_eq!(rects.len(), 3);
+            for (_, r) in &rects {
+                assert!((r.width() - 200.0).abs() < 1.0);
+            }
+            assert!((rects.last().unwrap().1.x1 - 600.0).abs() < 1e-6);
+            assert!((rects.first().unwrap().1.x0 - 0.0).abs() < 1e-6);
         }
-        assert!((rects.last().unwrap().1.x1 - 600.0).abs() < 1e-6);
-        assert!((rects.first().unwrap().1.x0 - 0.0).abs() < 1e-6);
-    }
 
-    #[test]
-    fn no_suggestions_yields_no_rects() {
-        assert!(suggestion_rects(&[], Rect::new(0.0, 0.0, 600.0, 40.0)).is_empty());
-        let s = sugg(&["x"]);
-        assert!(suggestion_rects(&s, Rect::new(0.0, 0.0, 0.0, 40.0)).is_empty());
-    }
+        eprintln!("phase no_suggestions_yields_no_rects");
+        {
+            assert!(suggestion_rects(&[], Rect::new(0.0, 0.0, 600.0, 40.0)).is_empty());
+            let s = sugg(&["x"]);
+            assert!(suggestion_rects(&s, Rect::new(0.0, 0.0, 0.0, 40.0)).is_empty());
+        }
 
-    #[test]
-    fn single_chip_fills_the_row() {
-        let s = sugg(&["hello"]);
-        let rects = suggestion_rects(&s, Rect::new(10.0, 0.0, 610.0, 40.0));
-        assert_eq!(rects.len(), 1);
-        assert_eq!(rects[0].1, Rect::new(10.0, 0.0, 610.0, 40.0));
+        eprintln!("phase single_chip_fills_the_row");
+        {
+            let s = sugg(&["hello"]);
+            let rects = suggestion_rects(&s, Rect::new(10.0, 0.0, 610.0, 40.0));
+            assert_eq!(rects.len(), 1);
+            assert_eq!(rects[0].1, Rect::new(10.0, 0.0, 610.0, 40.0));
+        }
     }
 }

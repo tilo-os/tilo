@@ -110,75 +110,71 @@ mod tests {
     }
 
     #[test]
-    fn focused_recent_user_launch_is_allowed() {
+    fn activation_is_granted_only_for_a_fresh_focused_user_launch() {
+        // Phase `focused_recent_user_launch_is_allowed`.
         assert_eq!(evaluate_token_creation(valid()), Ok(()));
-    }
-
-    #[test]
-    fn background_and_forged_requests_are_denied_independently() {
-        let cases = [
-            (
-                ActivationFacts {
-                    age: Duration::from_secs(11),
-                    ..valid()
-                },
-                ActivationDenial::Expired,
-            ),
-            (
-                ActivationFacts {
-                    serial_belongs_to_source: false,
-                    ..valid()
-                },
-                ActivationDenial::UnknownSerial,
-            ),
-            (
-                ActivationFacts {
-                    seat_is_owned: false,
-                    ..valid()
-                },
-                ActivationDenial::WrongSeat,
-            ),
-            (
-                ActivationFacts {
-                    source_exists: false,
-                    ..valid()
-                },
-                ActivationDenial::MissingSource,
-            ),
-            (
-                ActivationFacts {
-                    source_belongs_to_creator: false,
-                    ..valid()
-                },
-                ActivationDenial::WrongSourceClient,
-            ),
-            (
-                ActivationFacts {
-                    source_was_focused: false,
-                    ..valid()
-                },
-                ActivationDenial::SourceNotFocused,
-            ),
-        ];
-        for (facts, denial) in cases {
-            assert_eq!(evaluate_token_creation(facts), Err(denial));
+        // Phase `background_and_forged_requests_are_denied_independently`.
+        {
+            let cases = [
+                (
+                    ActivationFacts {
+                        age: Duration::from_secs(11),
+                        ..valid()
+                    },
+                    ActivationDenial::Expired,
+                ),
+                (
+                    ActivationFacts {
+                        serial_belongs_to_source: false,
+                        ..valid()
+                    },
+                    ActivationDenial::UnknownSerial,
+                ),
+                (
+                    ActivationFacts {
+                        seat_is_owned: false,
+                        ..valid()
+                    },
+                    ActivationDenial::WrongSeat,
+                ),
+                (
+                    ActivationFacts {
+                        source_exists: false,
+                        ..valid()
+                    },
+                    ActivationDenial::MissingSource,
+                ),
+                (
+                    ActivationFacts {
+                        source_belongs_to_creator: false,
+                        ..valid()
+                    },
+                    ActivationDenial::WrongSourceClient,
+                ),
+                (
+                    ActivationFacts {
+                        source_was_focused: false,
+                        ..valid()
+                    },
+                    ActivationDenial::SourceNotFocused,
+                ),
+            ];
+            for (facts, denial) in cases {
+                assert_eq!(evaluate_token_creation(facts), Err(denial));
+            }
         }
-    }
-
-    #[test]
-    fn recent_serial_delivered_to_another_client_is_denied() {
-        let facts = ActivationFacts {
-            serial_belongs_to_source: false,
-            ..valid()
-        };
-        assert_eq!(
-            evaluate_token_creation(facts),
-            Err(ActivationDenial::UnknownSerial)
-        );
-    }
-
-    #[test]
-    fn stale_foreign_or_mismatched_target_is_denied() {
+        // Phase `recent_serial_delivered_to_another_client_is_denied`.
+        {
+            let facts = ActivationFacts {
+                serial_belongs_to_source: false,
+                ..valid()
+            };
+            assert_eq!(
+                evaluate_token_creation(facts),
+                Err(ActivationDenial::UnknownSerial)
+            );
+        }
+        // Phase `stale_foreign_or_mismatched_target_is_denied`.
         assert_eq!(
             evaluate_activation_request(Duration::from_secs(11), true, true),
             Err(ActivationDenial::Expired)
@@ -191,10 +187,7 @@ mod tests {
             evaluate_activation_request(Duration::from_millis(5), true, false),
             Err(ActivationDenial::AppIdMismatch)
         );
-    }
-
-    #[test]
-    fn desktop_suffix_is_the_only_app_id_normalisation() {
+        // Phase `desktop_suffix_is_the_only_app_id_normalisation`.
         assert!(app_ids_match(
             "org.example.Editor.desktop",
             "org.example.Editor"

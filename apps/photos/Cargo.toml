@@ -1,4 +1,5 @@
 [package]
+autotests = false
 name = "photos"
 version = "0.1.0"
 edition = "2024"
@@ -40,6 +41,7 @@ taffy.workspace = true
 image = { workspace = true, features = ["jpeg", "png", "webp"] }
 tilo-ocr = { path = "../../crates/media/ocr" }
 kamadak-exif = "0.6.1"
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
@@ -50,6 +52,10 @@ runtime-fs = { path = "../../crates/runtime/runtime-fs" }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 libc.workspace = true
 vello_encoding.workspace = true
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
 
 [lints]
 workspace = true

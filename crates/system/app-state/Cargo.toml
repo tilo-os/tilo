@@ -29,6 +29,7 @@ thiserror.workspace = true
 tracing.workspace = true
 # The home an app is handed bounds the directories it makes durable.
 xdg-paths = { path = "../xdg-paths" }
+workspace-hack = { version = "0.1" }
 
 [target.'cfg(windows)'.dependencies]
 # Compare volume/file identities through live Windows handles.

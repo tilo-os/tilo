@@ -60,148 +60,153 @@ fn finish(mut child: Child) {
     assert!(child.wait().unwrap().success());
 }
 
+/// A fresh lock path per phase, so no phase observes another's lock.
+fn fresh_lock_path() -> (tempfile::TempDir, std::path::PathBuf) {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("lock");
+    (temp, path)
+}
+
 #[test]
 #[allow(
     clippy::disallowed_methods,
     reason = "demonstrates the raw flock behavior the guard exists to prevent"
 )]
-fn closing_without_unlock_leaves_the_lock_with_an_inheriting_child() {
+fn the_guard_releases_its_lock_even_while_a_child_inherits_the_descriptor() {
+    // Phase: closing without unlock leaves the lock with an inheriting child.
     // The failure the guard exists to prevent: the child's inherited copy of
     // the description keeps a merely closed lock alive.
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("lock");
-    let file = open_lock_file(&path).unwrap();
-    rustix::fs::flock(&file, rustix::fs::FlockOperation::LockExclusive).unwrap();
-    let child = child_holding(&file);
-    assert_child_holds(&child, &path);
-    drop(file);
-    assert!(busy(FileLock::try_open(&path, LockMode::Exclusive)));
-    finish(child);
-    drop(FileLock::try_open(&path, LockMode::Exclusive).unwrap());
-}
-
-#[test]
-fn dropping_the_guard_releases_the_lock_while_a_child_holds_the_inherited_fd() {
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("lock");
-    let guard = FileLock::open(&path, LockMode::Exclusive).unwrap();
-    let mut child = child_holding(guard.file());
-    assert_child_holds(&child, &path);
-    drop(guard);
-    assert!(
-        child.try_wait().unwrap().is_none(),
-        "the child is still alive"
-    );
-    drop(FileLock::try_open(&path, LockMode::Exclusive).unwrap());
-    finish(child);
-}
-
-#[test]
-fn explicit_unlock_also_releases_an_inherited_lock() {
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("lock");
-    let guard = FileLock::open(&path, LockMode::Shared).unwrap();
-    let child = child_holding(guard.file());
-    assert_child_holds(&child, &path);
-    guard.unlock().unwrap();
-    drop(FileLock::try_open(&path, LockMode::Exclusive).unwrap());
-    finish(child);
-}
-
-#[test]
-fn the_lock_descriptor_is_close_on_exec() {
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("lock");
-    let file = File::from(
-        rustix::fs::open(
-            &path,
-            rustix::fs::OFlags::RDWR | rustix::fs::OFlags::CREATE,
-            rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
-        )
-        .unwrap(),
-    );
-    assert!(
-        !rustix::io::fcntl_getfd(&file)
-            .unwrap()
-            .contains(rustix::io::FdFlags::CLOEXEC)
-    );
-    let guard = FileLock::exclusive(file).unwrap();
-    assert!(
-        rustix::io::fcntl_getfd(guard.file())
-            .unwrap()
-            .contains(rustix::io::FdFlags::CLOEXEC)
-    );
-}
-
-#[test]
-fn try_variants_fail_fast_under_contention() {
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("lock");
-    let _held = FileLock::open(&path, LockMode::Exclusive).unwrap();
-    let started = Instant::now();
-    assert!(busy(FileLock::try_open(&path, LockMode::Exclusive)));
-    assert!(busy(FileLock::try_shared(open_lock_file(&path).unwrap())));
-    assert!(
-        started.elapsed() < Duration::from_secs(1),
-        "a try variant must not wait for the holder"
-    );
-}
-
-#[test]
-fn shared_holders_coexist_and_exclude_an_exclusive_one() {
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("lock");
-    let first = FileLock::open(&path, LockMode::Shared).unwrap();
-    let second = FileLock::try_open(&path, LockMode::Shared).unwrap();
-    assert_eq!(second.mode(), LockMode::Shared);
-    assert!(busy(FileLock::try_open(&path, LockMode::Exclusive)));
-    drop(first);
-    assert!(busy(FileLock::try_open(&path, LockMode::Exclusive)));
-    drop(second);
-    let exclusive = FileLock::try_open(&path, LockMode::Exclusive).unwrap();
-    assert!(busy(FileLock::try_open(&path, LockMode::Shared)));
-    drop(exclusive);
-    drop(FileLock::try_open(&path, LockMode::Shared).unwrap());
-}
-
-#[test]
-fn a_blocking_lock_is_granted_once_the_holder_drops() {
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("lock");
-    let held = FileLock::open(&path, LockMode::Shared).unwrap();
-    let (ready, waiting) = std::sync::mpsc::channel();
-    let waiter = std::thread::spawn(move || {
+    {
+        let (_temp, path) = fresh_lock_path();
         let file = open_lock_file(&path).unwrap();
-        ready.send(()).unwrap();
-        FileLock::exclusive(file).unwrap().mode()
-    });
-    waiting.recv().unwrap();
-    drop(held);
-    assert_eq!(waiter.join().unwrap(), LockMode::Exclusive);
+        rustix::fs::flock(&file, rustix::fs::FlockOperation::LockExclusive).unwrap();
+        let child = child_holding(&file);
+        assert_child_holds(&child, &path);
+        drop(file);
+        assert!(busy(FileLock::try_open(&path, LockMode::Exclusive)));
+        finish(child);
+        drop(FileLock::try_open(&path, LockMode::Exclusive).unwrap());
+    }
+
+    // Phase: dropping the guard releases the lock while a child holds the
+    // inherited fd.
+    {
+        let (_temp, path) = fresh_lock_path();
+        let guard = FileLock::open(&path, LockMode::Exclusive).unwrap();
+        let mut child = child_holding(guard.file());
+        assert_child_holds(&child, &path);
+        drop(guard);
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "the child is still alive"
+        );
+        drop(FileLock::try_open(&path, LockMode::Exclusive).unwrap());
+        finish(child);
+    }
+
+    // Phase: explicit unlock also releases an inherited lock.
+    {
+        let (_temp, path) = fresh_lock_path();
+        let guard = FileLock::open(&path, LockMode::Shared).unwrap();
+        let child = child_holding(guard.file());
+        assert_child_holds(&child, &path);
+        guard.unlock().unwrap();
+        drop(FileLock::try_open(&path, LockMode::Exclusive).unwrap());
+        finish(child);
+    }
+
+    // Phase: the lock descriptor is close-on-exec.
+    {
+        let (_temp, path) = fresh_lock_path();
+        let file = File::from(
+            rustix::fs::open(
+                &path,
+                rustix::fs::OFlags::RDWR | rustix::fs::OFlags::CREATE,
+                rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
+            )
+            .unwrap(),
+        );
+        assert!(
+            !rustix::io::fcntl_getfd(&file)
+                .unwrap()
+                .contains(rustix::io::FdFlags::CLOEXEC)
+        );
+        let guard = FileLock::exclusive(file).unwrap();
+        assert!(
+            rustix::io::fcntl_getfd(guard.file())
+                .unwrap()
+                .contains(rustix::io::FdFlags::CLOEXEC)
+        );
+    }
 }
 
 #[test]
-fn conversion_changes_what_peers_may_hold() {
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("lock");
-    let guard = FileLock::open(&path, LockMode::Shared).unwrap();
-    let guard = guard.try_convert(LockMode::Exclusive).unwrap();
-    assert!(busy(FileLock::try_open(&path, LockMode::Shared)));
-    let guard = guard.try_convert(LockMode::Shared).unwrap();
-    let peer = FileLock::try_open(&path, LockMode::Shared).unwrap();
-    // A failed upgrade drops the guard, leaving only the peer's lock.
-    assert!(matches!(
-        guard.try_convert(LockMode::Exclusive),
-        Err(TryLockError::WouldBlock)
-    ));
-    drop(peer);
-    drop(FileLock::try_open(&path, LockMode::Exclusive).unwrap());
+fn peers_are_admitted_by_mode_and_by_the_current_holders() {
+    // Phase: try variants fail fast under contention.
+    {
+        let (_temp, path) = fresh_lock_path();
+        let _held = FileLock::open(&path, LockMode::Exclusive).unwrap();
+        let started = Instant::now();
+        assert!(busy(FileLock::try_open(&path, LockMode::Exclusive)));
+        assert!(busy(FileLock::try_shared(open_lock_file(&path).unwrap())));
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "a try variant must not wait for the holder"
+        );
+    }
+
+    // Phase: shared holders coexist and exclude an exclusive one.
+    {
+        let (_temp, path) = fresh_lock_path();
+        let first = FileLock::open(&path, LockMode::Shared).unwrap();
+        let second = FileLock::try_open(&path, LockMode::Shared).unwrap();
+        assert_eq!(second.mode(), LockMode::Shared);
+        assert!(busy(FileLock::try_open(&path, LockMode::Exclusive)));
+        drop(first);
+        assert!(busy(FileLock::try_open(&path, LockMode::Exclusive)));
+        drop(second);
+        let exclusive = FileLock::try_open(&path, LockMode::Exclusive).unwrap();
+        assert!(busy(FileLock::try_open(&path, LockMode::Shared)));
+        drop(exclusive);
+        drop(FileLock::try_open(&path, LockMode::Shared).unwrap());
+    }
+
+    // Phase: a blocking lock is granted once the holder drops.
+    {
+        let (_temp, path) = fresh_lock_path();
+        let held = FileLock::open(&path, LockMode::Shared).unwrap();
+        let (ready, waiting) = std::sync::mpsc::channel();
+        let waiter = std::thread::spawn(move || {
+            let file = open_lock_file(&path).unwrap();
+            ready.send(()).unwrap();
+            FileLock::exclusive(file).unwrap().mode()
+        });
+        waiting.recv().unwrap();
+        drop(held);
+        assert_eq!(waiter.join().unwrap(), LockMode::Exclusive);
+    }
+
+    // Phase: conversion changes what peers may hold.
+    {
+        let (_temp, path) = fresh_lock_path();
+        let guard = FileLock::open(&path, LockMode::Shared).unwrap();
+        let guard = guard.try_convert(LockMode::Exclusive).unwrap();
+        assert!(busy(FileLock::try_open(&path, LockMode::Shared)));
+        let guard = guard.try_convert(LockMode::Shared).unwrap();
+        let peer = FileLock::try_open(&path, LockMode::Shared).unwrap();
+        // A failed upgrade drops the guard, leaving only the peer's lock.
+        assert!(matches!(
+            guard.try_convert(LockMode::Exclusive),
+            Err(TryLockError::WouldBlock)
+        ));
+        drop(peer);
+        drop(FileLock::try_open(&path, LockMode::Exclusive).unwrap());
+    }
 }
 
 #[test]
 fn an_exclusive_holder_records_its_pid_for_diagnostics() {
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("lock");
+    let (_temp, path) = fresh_lock_path();
     assert_eq!(owner_pid(&path), None);
     let shared = FileLock::open(&path, LockMode::Shared).unwrap();
     assert!(shared.record_owner().is_err());

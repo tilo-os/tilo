@@ -374,6 +374,263 @@ pub fn display_snapshot_path() -> Option<std::path::PathBuf> {
     xdg_paths::xdg::runtime_dir().map(|path| path.join("tilo/display-state.json"))
 }
 
+/// What kind of input device libinput reports, as far as Settings cares:
+/// each kind has its own section, shown only while one is attached.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InputDeviceKind {
+    Touchpad,
+    /// Any relative pointer that is not a touchpad: mice, trackballs,
+    /// pointing sticks.
+    Mouse,
+    Keyboard,
+    Touchscreen,
+    /// A drawing tablet's pen digitiser.
+    Tablet,
+    /// The button pad on a drawing tablet.
+    TabletPad,
+    #[default]
+    #[serde(other)]
+    Other,
+}
+
+/// The identity input preferences are keyed by: USB vendor and product id
+/// plus the kernel's device name, so two identical tablets share settings
+/// while a tablet's pen and pad (same ids, different names) do not.
+pub fn input_device_key(vendor: u32, product: u32, name: &str) -> String {
+    format!("{vendor:04x}:{product:04x}:{}", name.trim())
+}
+
+/// One attached input device, as the compositor sees it right now.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct InputDeviceSnapshot {
+    /// [`input_device_key`] of the device.
+    pub key: String,
+    pub name: String,
+    pub kind: InputDeviceKind,
+    /// Physical buttons on a tablet pad; zero for every other kind.
+    pub pad_buttons: u32,
+}
+
+/// Read-only state written atomically by the compositor in the private user
+/// runtime directory: the input devices attached right now. Like
+/// [`DisplayHardwareSnapshot`] it is separate from durable intent, so
+/// unplugging a device hides its section without forgetting its settings.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct InputHardwareSnapshot {
+    pub publisher_pid: u32,
+    /// Paired with the PID so a stale file cannot outlive its compositor.
+    pub publisher_start_ticks: u64,
+    pub devices: Vec<InputDeviceSnapshot>,
+}
+
+impl InputHardwareSnapshot {
+    /// The live snapshot, or `None` when no running compositor published one.
+    pub fn load() -> Option<Self> {
+        Self::load_at(&input_snapshot_path()?)
+    }
+
+    pub fn load_at(path: &std::path::Path) -> Option<Self> {
+        let snapshot: Self = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+        let live_start = process_start_ticks(snapshot.publisher_pid)?;
+        (snapshot.publisher_pid != 0 && live_start == snapshot.publisher_start_ticks)
+            .then_some(snapshot)
+    }
+
+    /// # Errors
+    ///
+    /// Returns an error if `XDG_RUNTIME_DIR` is unset or relative, or the
+    /// snapshot file can't be written.
+    pub fn save(&self) -> std::io::Result<()> {
+        let path = input_snapshot_path()
+            .ok_or_else(|| std::io::Error::other("XDG_RUNTIME_DIR is unavailable"))?;
+        self.save_at(&path)
+    }
+
+    /// # Errors
+    ///
+    /// Returns an error if `self` can't be serialised or written to `path`.
+    pub fn save_at(&self, path: &std::path::Path) -> std::io::Result<()> {
+        let mut body = serde_json::to_vec_pretty(self).map_err(std::io::Error::other)?;
+        body.push(b'\n');
+        atomic_file::write_creating_parent(path, &body)
+    }
+
+    /// Whether at least one device of `kind` is attached.
+    pub fn has(&self, kind: InputDeviceKind) -> bool {
+        self.devices.iter().any(|device| device.kind == kind)
+    }
+
+    /// The attached devices of `kind`, one entry per identity.
+    pub fn of_kind(&self, kind: InputDeviceKind) -> Vec<&InputDeviceSnapshot> {
+        let mut seen = BTreeSet::new();
+        self.devices
+            .iter()
+            .filter(|device| device.kind == kind && seen.insert(device.key.as_str()))
+            .collect()
+    }
+}
+
+/// Private session state path for [`InputHardwareSnapshot`]; like
+/// [`display_snapshot_path`] it never falls back to a shared directory.
+pub fn input_snapshot_path() -> Option<std::path::PathBuf> {
+    xdg_paths::xdg::runtime_dir().map(|path| path.join("tilo/input-state.json"))
+}
+
+/// `input` key holding per-tablet settings, keyed by [`input_device_key`].
+pub const TABLETS_KEY: &str = "tablets";
+
+/// What a pen barrel button does. `Default` reports the button as itself:
+/// tablet-aware apps see a pen button, everything else a right (lower
+/// button) or middle (upper button) click.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StylusButtonAction {
+    #[default]
+    Default,
+    Left,
+    Middle,
+    Right,
+    Back,
+    Forward,
+    /// Press the chord bound to this desktop shortcut.
+    Shortcut(ShortcutAction),
+    Disabled,
+}
+
+/// Pressure curves Settings offers, softest first, as Bézier control points
+/// `[x1, y1, x2, y2]` between `(0, 0)` and `(1, 1)`. The middle one is linear.
+pub const PRESSURE_CURVE_PRESETS: [[f64; 4]; 7] = [
+    [0.0, 0.75, 0.25, 1.0],
+    [0.0, 0.5, 0.5, 1.0],
+    [0.0, 0.25, 0.75, 1.0],
+    [0.0, 0.0, 1.0, 1.0],
+    [0.25, 0.0, 1.0, 0.75],
+    [0.5, 0.0, 1.0, 0.5],
+    [0.75, 0.0, 1.0, 0.25],
+];
+
+/// The preset for a soft (`0.0`) … firm (`1.0`) slider position.
+pub fn pressure_curve_for_feel(feel: f64) -> [f64; 4] {
+    let feel = if feel.is_finite() {
+        feel.clamp(0.0, 1.0)
+    } else {
+        0.5
+    };
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "feel is clamped to [0, 1], so the index is within 0..=6"
+    )]
+    let index = (feel * 6.0).round() as usize;
+    PRESSURE_CURVE_PRESETS
+        .get(index)
+        .copied()
+        .unwrap_or(PRESSURE_CURVE_PRESETS[3])
+}
+
+/// The slider position of the preset nearest to `curve`.
+pub fn feel_for_pressure_curve(curve: [f64; 4]) -> f64 {
+    let distance = |preset: &[f64; 4]| -> f64 {
+        preset
+            .iter()
+            .zip(curve.iter())
+            .map(|(a, b)| (a - b).powi(2))
+            .sum()
+    };
+    let nearest = PRESSURE_CURVE_PRESETS
+        .iter()
+        .enumerate()
+        .min_by(|(_, a), (_, b)| distance(a).total_cmp(&distance(b)))
+        .map_or(3, |(index, _)| index);
+    #[allow(clippy::cast_precision_loss, reason = "index is at most 6")]
+    let position = nearest as f64 / 6.0;
+    position
+}
+
+/// One drawing tablet's settings, stored per device identity so each
+/// tablet keeps its own mapping when several are used.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TabletConfig {
+    /// Collision-free output key ([`OutputDescriptor::connector`]) the
+    /// tablet maps onto; `None` spans the whole desktop.
+    pub output: Option<String>,
+    /// Use only the part of the tablet that has the target's shape, so
+    /// strokes are not stretched.
+    pub keep_aspect: bool,
+    /// Turn the tablet half a turn, for use with its buttons on the right.
+    pub left_handed: bool,
+    /// Bézier control points `[x1, y1, x2, y2]`; see
+    /// [`PRESSURE_CURVE_PRESETS`].
+    pub pressure_curve: [f64; 4],
+    /// The barrel button nearest the tip.
+    pub lower_button: StylusButtonAction,
+    /// The barrel button further from the tip.
+    pub upper_button: StylusButtonAction,
+    /// A third barrel button, on pens that have one.
+    pub third_button: StylusButtonAction,
+    /// Pad button number (libinput's, from zero) to the shortcut it runs.
+    pub pad_buttons: BTreeMap<u32, ShortcutAction>,
+}
+
+impl Default for TabletConfig {
+    fn default() -> Self {
+        Self {
+            output: None,
+            keep_aspect: false,
+            left_handed: false,
+            pressure_curve: PRESSURE_CURVE_PRESETS[3],
+            lower_button: StylusButtonAction::Default,
+            upper_button: StylusButtonAction::Default,
+            third_button: StylusButtonAction::Default,
+            pad_buttons: BTreeMap::new(),
+        }
+    }
+}
+
+/// Every tablet's settings from an `input` section. One malformed tablet
+/// entry is skipped rather than discarding the others.
+pub fn tablets_from_section(
+    section: &serde_json::Map<String, serde_json::Value>,
+) -> BTreeMap<String, TabletConfig> {
+    section
+        .get(TABLETS_KEY)
+        .map(tablets_from_value)
+        .unwrap_or_default()
+}
+
+fn tablets_from_value(value: &serde_json::Value) -> BTreeMap<String, TabletConfig> {
+    value
+        .as_object()
+        .map(|tablets| {
+            tablets
+                .iter()
+                .filter_map(|(key, value)| {
+                    serde_json::from_value(value.clone())
+                        .ok()
+                        .map(|config| (key.clone(), config))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Serde half of [`tablets_from_section`], for `deserialize_with`: one bad
+/// tablet cannot make the whole `input` section unreadable.
+///
+/// # Errors
+///
+/// Only when the input is not JSON at all; malformed tablets are skipped.
+pub fn lenient_tablets<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<BTreeMap<String, TabletConfig>, D::Error> {
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(tablets_from_value(&value))
+}
+
 // Four independent, user-facing toggles (Enabled, Primary, HDR, VRR), not a state
 // machine — and this document's JSON shape and field names are load-bearing across
 // `apps/settings` and `shell`, so folding them into a bitflags type ripples well
@@ -616,6 +873,10 @@ pub const DEFAULT_MOUSE_NATURAL_SCROLL: bool = false;
 /// the touchpad-toggle hardware key flips it and the compositor applies it
 /// to every touchpad through libinput's send-events mode.
 pub const TOUCHPAD_ENABLED_KEY: &str = "touchpad_enabled";
+/// `input` key for switching touchpads off while an external mouse is
+/// connected (libinput's disabled-on-external-mouse send-events mode). Absent
+/// means off.
+pub const TOUCHPAD_DISABLED_ON_EXTERNAL_MOUSE_KEY: &str = "touchpad_disabled_on_external_mouse";
 
 /// How a clickpad (a touchpad whose whole surface is the button) decides
 /// which button a physical press means. libinput decides per device which of
@@ -725,6 +986,8 @@ pub struct RichInputConfig {
     pub mouse_natural_scroll: Option<bool>,
     pub tap_to_click: bool,
     pub tap_drag: bool,
+    /// Keep a tap-and-drag going after the finger lifts, until the next tap.
+    pub tap_drag_lock: bool,
     pub disable_while_typing: bool,
     pub middle_emulation: bool,
     pub left_handed: bool,
@@ -743,6 +1006,9 @@ pub struct RichInputConfig {
     #[serde(alias = "layouts")]
     pub keyboard_layouts: Vec<String>,
     pub compose_key: Option<String>,
+    /// What Caps Lock does: `None` keeps it Caps Lock; `ctrl`, `escape` or
+    /// `backspace` turn it into that key.
+    pub caps_lock: Option<String>,
     pub touchpad_gestures: bool,
     pub touchpad_click_method: TouchpadClickMethod,
     pub touchpad_scroll_method: TouchpadScrollMethod,
@@ -750,7 +1016,9 @@ pub struct RichInputConfig {
     /// [`SCROLL_SPEED_MIN`] … [`SCROLL_SPEED_MAX`].
     #[serde(default = "default_scroll_speed")]
     pub scroll_speed: f64,
-    pub pen_output: Option<String>,
+    /// Per-tablet settings keyed by [`input_device_key`].
+    #[serde(deserialize_with = "lenient_tablets")]
+    pub tablets: BTreeMap<String, TabletConfig>,
 }
 
 impl Default for RichInputConfig {
@@ -764,6 +1032,7 @@ impl Default for RichInputConfig {
             mouse_natural_scroll: Some(DEFAULT_MOUSE_NATURAL_SCROLL),
             tap_to_click: true,
             tap_drag: true,
+            tap_drag_lock: false,
             disable_while_typing: true,
             middle_emulation: true,
             left_handed: false,
@@ -774,11 +1043,12 @@ impl Default for RichInputConfig {
             keyboard_layout: "us".into(),
             keyboard_layouts: vec!["us".into()],
             compose_key: None,
+            caps_lock: None,
             touchpad_gestures: true,
             touchpad_click_method: TouchpadClickMethod::Default,
             touchpad_scroll_method: TouchpadScrollMethod::TwoFinger,
             scroll_speed: default_scroll_speed(),
-            pen_output: None,
+            tablets: BTreeMap::new(),
         }
     }
 }
@@ -984,6 +1254,10 @@ impl RichInputConfig {
             .get(SCROLL_SPEED_KEY)
             .and_then(serde_json::Value::as_f64)
             .map_or(1.0, clamp_scroll_speed);
+        config.caps_lock = section
+            .get("caps_lock")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
         config.normalise_sources();
         config
     }
@@ -1050,6 +1324,21 @@ impl RichInputConfig {
             .collect()
     }
 
+    /// Make the source after the active one active, wrapping, and return
+    /// its index. `None` with fewer than two sources: there is nothing to
+    /// switch to.
+    pub fn select_next_source(&mut self) -> Option<usize> {
+        if self.keyboard_layouts.len() < 2 {
+            return None;
+        }
+        let next = self
+            .active_source_index()
+            .saturating_add(1)
+            .checked_rem(self.keyboard_layouts.len())?;
+        self.keyboard_layout = self.keyboard_layouts.get(next)?.clone();
+        Some(next)
+    }
+
     /// Position of the active source in the full source list.
     pub fn active_source_index(&self) -> usize {
         self.keyboard_layouts
@@ -1084,13 +1373,23 @@ impl RichInputConfig {
         }
     }
 
-    /// XKB option fragments owned by this preference section. Layout
-    /// switching is Alt+Shift because Super+Space is Tilo global search;
-    /// Compose remains independently configurable.
+    /// XKB option fragments owned by this preference section. No XKB group
+    /// toggle: switching sources is the compositor's rebindable
+    /// input-source shortcut, which persists the choice and shows it —
+    /// an XKB toggle would switch silently, forget it on reload, and
+    /// collide with Alt+Shift+Tab. A Caps Lock remap yields to Compose on
+    /// Caps Lock, the more specific choice.
     pub fn xkb_options(&self) -> Vec<String> {
         let mut options = Vec::new();
-        if self.sources().len() > 1 {
-            options.push("grp:alt_shift_toggle".into());
+        if self.compose_key.as_deref() != Some("caps")
+            && let Some(option) = match self.caps_lock.as_deref() {
+                Some("ctrl") => Some("ctrl:nocaps"),
+                Some("escape") => Some("caps:escape"),
+                Some("backspace") => Some("caps:backspace"),
+                _ => None,
+            }
+        {
+            options.push(option.into());
         }
         if let Some(option) = match self.compose_key.as_deref() {
             Some("ralt") => Some("compose:ralt"),
@@ -1159,6 +1458,10 @@ pub enum ShortcutAction {
     MagnifierZoomIn,
     MagnifierZoomOut,
     PowerMenu,
+    /// Switch to the next keyboard input source.
+    NextInputSource,
+    /// Open the emoji picker over the focused text field.
+    EmojiPicker,
 }
 
 impl ShortcutAction {
@@ -1365,56 +1668,57 @@ mod quick_settings_tests {
     use super::{QuickSettingsConfig, QuickSettingsControl};
 
     #[test]
-    fn quick_settings_config_deduplicates_and_keeps_network_recovery() {
-        let config = QuickSettingsConfig {
-            controls: vec![
-                QuickSettingsControl::NightLight,
-                QuickSettingsControl::NightLight,
-            ],
+    fn quick_settings_order_dedupes_persists_and_keeps_recovery_controls() {
+        // Phase `quick_settings_config_deduplicates_and_keeps_network_recovery`.
+        {
+            let config = QuickSettingsConfig {
+                controls: vec![
+                    QuickSettingsControl::NightLight,
+                    QuickSettingsControl::NightLight,
+                ],
+            }
+            .normalised();
+            assert_eq!(
+                config.controls,
+                vec![QuickSettingsControl::Wifi, QuickSettingsControl::NightLight]
+            );
         }
-        .normalised();
-        assert_eq!(
-            config.controls,
-            vec![QuickSettingsControl::Wifi, QuickSettingsControl::NightLight]
-        );
-    }
+        // Phase `airplane_is_available_but_not_a_default_control`.
+        {
+            assert!(
+                !QuickSettingsConfig::default()
+                    .controls
+                    .contains(&QuickSettingsControl::AirplaneMode)
+            );
+        }
+        // Phase `quick_settings_order_survives_restart_without_replacing_other_settings`.
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("tilo/settings.json");
+            crate::update_section_at(
+                &path,
+                "appearance",
+                serde_json::json!({"theme": "dark"})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            )
+            .unwrap();
+            let expected = QuickSettingsConfig {
+                controls: vec![
+                    QuickSettingsControl::NightLight,
+                    QuickSettingsControl::Wifi,
+                    QuickSettingsControl::Bluetooth,
+                ],
+            };
+            expected.save_at(&path).unwrap();
 
-    #[test]
-    fn airplane_is_available_but_not_a_default_control() {
-        assert!(
-            !QuickSettingsConfig::default()
-                .controls
-                .contains(&QuickSettingsControl::AirplaneMode)
-        );
-    }
-
-    #[test]
-    fn quick_settings_order_survives_restart_without_replacing_other_settings() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("tilo/settings.json");
-        crate::update_section_at(
-            &path,
-            "appearance",
-            serde_json::json!({"theme": "dark"})
-                .as_object()
-                .unwrap()
-                .clone(),
-        )
-        .unwrap();
-        let expected = QuickSettingsConfig {
-            controls: vec![
-                QuickSettingsControl::NightLight,
-                QuickSettingsControl::Wifi,
-                QuickSettingsControl::Bluetooth,
-            ],
-        };
-        expected.save_at(&path).unwrap();
-
-        assert_eq!(QuickSettingsConfig::load_at(&path), expected);
-        assert_eq!(
-            crate::load_at(&path)["appearance"]["theme"],
-            serde_json::json!("dark")
-        );
+            assert_eq!(QuickSettingsConfig::load_at(&path), expected);
+            assert_eq!(
+                crate::load_at(&path)["appearance"]["theme"],
+                serde_json::json!("dark")
+            );
+        }
     }
 }
 
@@ -1640,6 +1944,7 @@ pub fn fixed_shell_chords() -> Vec<(&'static str, KeyChord)> {
     let mut fixed = vec![
         ("Switch windows", chord(&["Alt"], "tab")),
         ("Switch windows", chord(&["Alt", "Shift"], "tab")),
+        ("Switch windows of the app", chord(&["Alt"], "`")),
         ("Close tab", chord(&["Alt"], "f4")),
         ("Close tab", chord(&["Super"], "w")),
         ("Previous workspace", chord(&["Super"], "pageup")),
@@ -1795,6 +2100,11 @@ impl Default for ShortcutConfig {
             // The session action sheet: the chord every PC user tries when
             // something has hung.
             (ShortcutAction::PowerMenu, ctrl_alt_chord("delete")),
+            // Super+Space is global search; the Alt-modified chord is the
+            // nearest free spelling of the GNOME/Windows convention.
+            (ShortcutAction::NextInputSource, super_alt_chord("space")),
+            // Windows' emoji panel key; GNOME uses Super+. for the same.
+            (ShortcutAction::EmojiPicker, super_chord(".")),
         ]
         .into_iter()
         .collect();
@@ -2051,160 +2361,152 @@ mod tests {
         }
     }
     #[test]
-    fn rejects_modes_the_connector_does_not_advertise() {
-        let mut cfg = DisplayConfig::default();
-        cfg.outputs.insert(
-            "DP-1".into(),
-            OutputConfig {
-                mode: Some(OutputMode {
-                    width: 3840,
-                    height: 2160,
-                    refresh_mhz: 60_000,
-                }),
-                ..Default::default()
-            },
-        );
-        assert!(matches!(
-            cfg.validate_for(&[display("DP-1")]),
-            Err(DisplayConfigError::UnsupportedMode { .. })
-        ));
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn display_layouts_reject_unadvertised_modes_and_invalid_mirrors() {
+        // Phase `rejects_modes_the_connector_does_not_advertise`.
+        {
+            let mut cfg = DisplayConfig::default();
+            cfg.outputs.insert(
+                "DP-1".into(),
+                OutputConfig {
+                    mode: Some(OutputMode {
+                        width: 3840,
+                        height: 2160,
+                        refresh_mhz: 60_000,
+                    }),
+                    ..Default::default()
+                },
+            );
+            assert!(matches!(
+                cfg.validate_for(&[display("DP-1")]),
+                Err(DisplayConfigError::UnsupportedMode { .. })
+            ));
+        }
+        // Phase `legacy_unqualified_connector_never_cross_targets_qualified_duplicates`.
+        {
+            let first = OutputDescriptor {
+                connector: "pci:0000:01:00.0/HDMI-A-1".into(),
+                connector_label: "HDMI-A-1".into(),
+                modes: vec![],
+                hdr: false,
+                vrr: false,
+                color_profiles: vec![],
+                monitor: None,
+            };
+            let second = OutputDescriptor {
+                connector: "pci:0000:03:00.0/HDMI-A-1".into(),
+                connector_label: "HDMI-A-1".into(),
+                modes: vec![],
+                hdr: false,
+                vrr: false,
+                color_profiles: vec![],
+                monitor: None,
+            };
+            let mut config = DisplayConfig::default();
+            config.outputs.insert(
+                "HDMI-A-1".into(),
+                OutputConfig {
+                    enabled: false,
+                    ..Default::default()
+                },
+            );
 
-    #[test]
-    fn legacy_unqualified_connector_never_cross_targets_qualified_duplicates() {
-        let first = OutputDescriptor {
-            connector: "pci:0000:01:00.0/HDMI-A-1".into(),
-            connector_label: "HDMI-A-1".into(),
-            modes: vec![],
-            hdr: false,
-            vrr: false,
-            color_profiles: vec![],
-            monitor: None,
-        };
-        let second = OutputDescriptor {
-            connector: "pci:0000:03:00.0/HDMI-A-1".into(),
-            connector_label: "HDMI-A-1".into(),
-            modes: vec![],
-            hdr: false,
-            vrr: false,
-            color_profiles: vec![],
-            monitor: None,
-        };
-        let mut config = DisplayConfig::default();
-        config.outputs.insert(
-            "HDMI-A-1".into(),
-            OutputConfig {
-                enabled: false,
-                ..Default::default()
-            },
-        );
+            assert!(config.output_for(&first.connector).is_none());
+            assert!(config.output_for(&second.connector).is_none());
+            assert_eq!(first.label(), "HDMI-A-1");
+            assert_eq!(first.card_qualifier(), Some("pci:0000:01:00.0"));
 
-        assert!(config.output_for(&first.connector).is_none());
-        assert!(config.output_for(&second.connector).is_none());
-        assert_eq!(first.label(), "HDMI-A-1");
-        assert_eq!(first.card_qualifier(), Some("pci:0000:01:00.0"));
+            // Snapshots written before `connector_label` existed remain readable
+            // and continue to present the historical raw connector label.
+            let legacy: OutputDescriptor = serde_json::from_value(serde_json::json!({
+                "connector": "HDMI-A-1",
+                "modes": [], "hdr": false, "vrr": false, "color_profiles": []
+            }))
+            .expect("old snapshot remains compatible");
+            assert_eq!(legacy.label(), "HDMI-A-1");
+            assert_eq!(legacy.card_qualifier(), None);
+        }
+        // Phase `rejects_mirror_cycles`.
+        {
+            let mut cfg = DisplayConfig::default();
+            cfg.outputs.insert(
+                "DP-1".into(),
+                OutputConfig {
+                    mirror_of: Some("DP-2".into()),
+                    ..Default::default()
+                },
+            );
+            cfg.outputs.insert(
+                "DP-2".into(),
+                OutputConfig {
+                    mirror_of: Some("DP-1".into()),
+                    ..Default::default()
+                },
+            );
+            assert!(matches!(
+                cfg.validate_for(&[display("DP-1"), display("DP-2")]),
+                Err(DisplayConfigError::MirrorCycle { .. })
+            ));
+        }
+        // Phase `rejects_mirror_pair_with_different_explicit_modes`.
+        {
+            let mut left = display("DP-1");
+            left.modes.push(OutputMode {
+                width: 1280,
+                height: 720,
+                refresh_mhz: 60_000,
+            });
+            let right = display("DP-2");
+            let mut cfg = DisplayConfig::default();
+            cfg.outputs.insert(
+                "DP-1".into(),
+                OutputConfig {
+                    mode: Some(left.modes[1]),
+                    mirror_of: Some("DP-2".into()),
+                    ..Default::default()
+                },
+            );
+            cfg.outputs.insert(
+                "DP-2".into(),
+                OutputConfig {
+                    mode: Some(right.modes[0]),
+                    ..Default::default()
+                },
+            );
+            assert!(matches!(
+                cfg.validate_for(&[left, right]),
+                Err(DisplayConfigError::IncompatibleMirrorModes { .. })
+            ));
+        }
+        // Phase `mirror_pair_accepts_same_resolution_at_different_refresh_rates`.
+        {
+            let mut panel = display("eDP-1");
+            panel.modes[0].refresh_mhz = 60_000;
+            let mut usb_c = display("DP-1");
+            usb_c.modes[0].refresh_mhz = 59_940;
+            let mut cfg = DisplayConfig::default();
+            cfg.outputs.insert(
+                "eDP-1".into(),
+                OutputConfig {
+                    primary: true,
+                    mode: Some(panel.modes[0]),
+                    ..Default::default()
+                },
+            );
+            cfg.outputs.insert(
+                "DP-1".into(),
+                OutputConfig {
+                    mode: Some(usb_c.modes[0]),
+                    mirror_of: Some("eDP-1".into()),
+                    ..Default::default()
+                },
+            );
 
-        // Snapshots written before `connector_label` existed remain readable
-        // and continue to present the historical raw connector label.
-        let legacy: OutputDescriptor = serde_json::from_value(serde_json::json!({
-            "connector": "HDMI-A-1",
-            "modes": [], "hdr": false, "vrr": false, "color_profiles": []
-        }))
-        .expect("old snapshot remains compatible");
-        assert_eq!(legacy.label(), "HDMI-A-1");
-        assert_eq!(legacy.card_qualifier(), None);
-    }
-    #[test]
-    fn rejects_mirror_cycles() {
-        let mut cfg = DisplayConfig::default();
-        cfg.outputs.insert(
-            "DP-1".into(),
-            OutputConfig {
-                mirror_of: Some("DP-2".into()),
-                ..Default::default()
-            },
-        );
-        cfg.outputs.insert(
-            "DP-2".into(),
-            OutputConfig {
-                mirror_of: Some("DP-1".into()),
-                ..Default::default()
-            },
-        );
-        assert!(matches!(
-            cfg.validate_for(&[display("DP-1"), display("DP-2")]),
-            Err(DisplayConfigError::MirrorCycle { .. })
-        ));
-    }
-    #[test]
-    fn rejects_mirror_pair_with_different_explicit_modes() {
-        let mut left = display("DP-1");
-        left.modes.push(OutputMode {
-            width: 1280,
-            height: 720,
-            refresh_mhz: 60_000,
-        });
-        let right = display("DP-2");
-        let mut cfg = DisplayConfig::default();
-        cfg.outputs.insert(
-            "DP-1".into(),
-            OutputConfig {
-                mode: Some(left.modes[1]),
-                mirror_of: Some("DP-2".into()),
-                ..Default::default()
-            },
-        );
-        cfg.outputs.insert(
-            "DP-2".into(),
-            OutputConfig {
-                mode: Some(right.modes[0]),
-                ..Default::default()
-            },
-        );
-        assert!(matches!(
-            cfg.validate_for(&[left, right]),
-            Err(DisplayConfigError::IncompatibleMirrorModes { .. })
-        ));
-    }
-
-    #[test]
-    fn mirror_pair_accepts_same_resolution_at_different_refresh_rates() {
-        let mut panel = display("eDP-1");
-        panel.modes[0].refresh_mhz = 60_000;
-        let mut usb_c = display("DP-1");
-        usb_c.modes[0].refresh_mhz = 59_940;
-        let mut cfg = DisplayConfig::default();
-        cfg.outputs.insert(
-            "eDP-1".into(),
-            OutputConfig {
-                primary: true,
-                mode: Some(panel.modes[0]),
-                ..Default::default()
-            },
-        );
-        cfg.outputs.insert(
-            "DP-1".into(),
-            OutputConfig {
-                mode: Some(usb_c.modes[0]),
-                mirror_of: Some("eDP-1".into()),
-                ..Default::default()
-            },
-        );
-
-        assert_eq!(cfg.validate_for(&[panel, usb_c]), Ok(()));
-    }
-
-    #[test]
-    fn display_confirmation_expiry_is_a_precise_state_transition() {
-        let mut transaction = DisplayTransaction {
-            state: DisplayTransactionState::AwaitingConfirmation,
-            deadline_unix_ms: Some(25_000),
-            ..Default::default()
-        };
-        assert!(!transaction.expired(24_999));
-        assert!(transaction.expired(25_000));
-        transaction.state = DisplayTransactionState::Confirmed;
-        assert!(!transaction.expired(u64::MAX));
+            assert_eq!(cfg.validate_for(&[panel, usb_c]), Ok(()));
+        }
     }
 
     #[test]
@@ -2224,8 +2526,23 @@ mod tests {
     }
 
     #[test]
-    fn missing_transaction_section_does_not_create_a_phantom_request() {
-        assert!(DisplayTransaction::from_section(serde_json::Map::new()).is_none());
+    fn display_confirmations_are_precise_transitions_without_phantom_requests() {
+        // Phase `display_confirmation_expiry_is_a_precise_state_transition`.
+        {
+            let mut transaction = DisplayTransaction {
+                state: DisplayTransactionState::AwaitingConfirmation,
+                deadline_unix_ms: Some(25_000),
+                ..Default::default()
+            };
+            assert!(!transaction.expired(24_999));
+            assert!(transaction.expired(25_000));
+            transaction.state = DisplayTransactionState::Confirmed;
+            assert!(!transaction.expired(u64::MAX));
+        }
+        // Phase `missing_transaction_section_does_not_create_a_phantom_request`.
+        {
+            assert!(DisplayTransaction::from_section(serde_json::Map::new()).is_none());
+        }
     }
 
     #[test]
@@ -2245,46 +2562,6 @@ mod tests {
             process_start_ticks(stale.publisher_pid),
             Some(stale.publisher_start_ticks)
         );
-    }
-    #[test]
-    #[cfg(not(target_os = "linux"))]
-    fn unavailable_linux_process_identity_is_not_invented() {
-        assert_eq!(process_start_ticks(std::process::id()), None);
-    }
-
-    #[test]
-    fn shortcut_parser_normalises_and_rejects_plain_letters() {
-        assert_eq!(KeyChord::parse("meta + K").unwrap().display(), "Super+k");
-        assert!(KeyChord::parse("k").is_err());
-    }
-    #[test]
-    fn window_management_defaults_are_coherent_and_conflict_free() {
-        let cfg = ShortcutConfig::default();
-        assert_eq!(
-            cfg.bindings[&ShortcutAction::ToggleMaximize].display(),
-            "Super+Up"
-        );
-        assert_eq!(
-            cfg.bindings[&ShortcutAction::PreviousWorkspace].display(),
-            "Super+Page Up"
-        );
-        assert_eq!(
-            cfg.bindings[&ShortcutAction::NextWorkspace].display(),
-            "Super+Page Down"
-        );
-        assert_eq!(
-            cfg.bindings[&ShortcutAction::DetachTab].display(),
-            "Super+Shift+Enter"
-        );
-        assert_eq!(
-            cfg.bindings[&ShortcutAction::AttachTabLeft].display(),
-            "Super+["
-        );
-        assert_eq!(
-            cfg.bindings[&ShortcutAction::AttachTabRight].display(),
-            "Super+]"
-        );
-        assert!(cfg.validate().is_ok());
     }
 
     #[test]
@@ -2327,106 +2604,177 @@ mod tests {
         assert_eq!(shown(ShortcutAction::MagnifierZoomIn), "Super+Alt+=");
         assert_eq!(shown(ShortcutAction::MagnifierZoomOut), "Super+Alt+-");
         assert_eq!(shown(ShortcutAction::PowerMenu), "Ctrl+Alt+Delete");
+        assert_eq!(shown(ShortcutAction::EmojiPicker), "Super+.");
         assert_eq!(ShortcutAction::OpenFiles.focus_group_index(), None);
         assert!(cfg.validate().is_ok(), "no two defaults share a chord");
     }
 
     #[test]
-    fn shortcut_conflicts_are_rejected_without_overwriting() {
-        let mut cfg = ShortcutConfig::default();
-        let old = cfg.bindings[&ShortcutAction::Lock].clone();
-        assert_eq!(
-            cfg.set(ShortcutAction::Lock, KeyChord::parse("Super+K").unwrap()),
-            Err(ShortcutConfigError::InvalidChord)
-        );
-        assert_eq!(cfg.bindings[&ShortcutAction::Lock], old);
+    #[cfg(not(target_os = "linux"))]
+    fn unavailable_linux_process_identity_is_not_invented() {
+        assert_eq!(process_start_ticks(std::process::id()), None);
     }
 
     #[test]
-    fn reserved_and_duplicate_shortcuts_are_rejected_at_the_public_setter() {
-        let mut cfg = ShortcutConfig::default();
-        for key in ["f1", "printscreen"] {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn shortcuts_are_normalised_conflict_free_and_reload_unchanged() {
+        // Phase `shortcut_parser_normalises_and_rejects_plain_letters`.
+        {
+            assert_eq!(KeyChord::parse("meta + K").unwrap().display(), "Super+k");
+            assert!(KeyChord::parse("k").is_err());
+        }
+        // Phase `window_management_defaults_are_coherent_and_conflict_free`.
+        {
+            let cfg = ShortcutConfig::default();
             assert_eq!(
-                cfg.set(
-                    ShortcutAction::Search,
-                    KeyChord {
-                        modifiers: BTreeSet::from(["Ctrl".to_string()]),
-                        key: key.into(),
-                    },
-                ),
-                Err(ShortcutConfigError::ReservedSystemKey),
-                "{key} must remain compositor-owned"
+                cfg.bindings[&ShortcutAction::ToggleMaximize].display(),
+                "Super+Up"
+            );
+            assert_eq!(
+                cfg.bindings[&ShortcutAction::PreviousWorkspace].display(),
+                "Super+Page Up"
+            );
+            assert_eq!(
+                cfg.bindings[&ShortcutAction::NextWorkspace].display(),
+                "Super+Page Down"
+            );
+            assert_eq!(
+                cfg.bindings[&ShortcutAction::DetachTab].display(),
+                "Super+Shift+Enter"
+            );
+            assert_eq!(
+                cfg.bindings[&ShortcutAction::AttachTabLeft].display(),
+                "Super+["
+            );
+            assert_eq!(
+                cfg.bindings[&ShortcutAction::AttachTabRight].display(),
+                "Super+]"
+            );
+            assert!(cfg.validate().is_ok());
+        }
+        // Phase `shortcut_conflicts_are_rejected_without_overwriting`.
+        {
+            let mut cfg = ShortcutConfig::default();
+            let old = cfg.bindings[&ShortcutAction::Lock].clone();
+            assert_eq!(
+                cfg.set(ShortcutAction::Lock, KeyChord::parse("Super+K").unwrap()),
+                Err(ShortcutConfigError::InvalidChord)
+            );
+            assert_eq!(cfg.bindings[&ShortcutAction::Lock], old);
+        }
+        // Phase `reserved_and_duplicate_shortcuts_are_rejected_at_the_public_setter`.
+        {
+            let mut cfg = ShortcutConfig::default();
+            for key in ["f1", "printscreen"] {
+                assert_eq!(
+                    cfg.set(
+                        ShortcutAction::Search,
+                        KeyChord {
+                            modifiers: BTreeSet::from(["Ctrl".to_string()]),
+                            key: key.into(),
+                        },
+                    ),
+                    Err(ShortcutConfigError::ReservedSystemKey),
+                    "{key} must remain compositor-owned"
+                );
+            }
+            cfg.set(ShortcutAction::Search, KeyChord::parse("Ctrl+J").unwrap())
+                .unwrap();
+            assert_eq!(
+                cfg.set(ShortcutAction::NextTab, KeyChord::parse("Ctrl+J").unwrap()),
+                Err(ShortcutConfigError::Conflict(ShortcutAction::Search))
             );
         }
-        cfg.set(ShortcutAction::Search, KeyChord::parse("Ctrl+J").unwrap())
-            .unwrap();
-        assert_eq!(
-            cfg.set(ShortcutAction::NextTab, KeyChord::parse("Ctrl+J").unwrap()),
-            Err(ShortcutConfigError::Conflict(ShortcutAction::Search))
-        );
+        // Phase `corrupt_persisted_shortcuts_normalise_without_ambiguous_ownership`.
+        {
+            let mut corrupt = ShortcutConfig::default();
+            corrupt.bindings.insert(
+                ShortcutAction::Search,
+                KeyChord {
+                    modifiers: BTreeSet::from(["Ctrl".to_string()]),
+                    key: "f1".into(),
+                },
+            );
+            corrupt
+                .bindings
+                .insert(ShortcutAction::Lock, KeyChord::parse("Alt+L").unwrap());
+            corrupt.bindings.insert(
+                ShortcutAction::PreviousTab,
+                KeyChord::parse("Ctrl+J").unwrap(),
+            );
+            corrupt
+                .bindings
+                .insert(ShortcutAction::NextTab, KeyChord::parse("Ctrl+J").unwrap());
+
+            let repaired = ShortcutConfig::normalise(corrupt);
+            assert_eq!(
+                repaired.bindings[&ShortcutAction::Search].display(),
+                "Super+k",
+                "reserved persisted keys revert to their action default"
+            );
+            assert_eq!(
+                repaired.bindings[&ShortcutAction::Lock].display(),
+                "Super+l",
+                "the native lock chord is immutable"
+            );
+            assert_eq!(
+                repaired.bindings[&ShortcutAction::PreviousTab].display(),
+                "Ctrl+j",
+                "the first action in stable action order owns a duplicate"
+            );
+            assert_eq!(
+                repaired.bindings[&ShortcutAction::NextTab].display(),
+                "Ctrl+Tab",
+                "the duplicate action deterministically falls back to default"
+            );
+            assert!(repaired.validate().is_ok());
+        }
+        // Phase `saved_shortcuts_reload_as_the_same_valid_effective_config`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("tilo/settings.json");
+
+            let mut saved = ShortcutConfig::default();
+            saved
+                .set(ShortcutAction::NextTab, KeyChord::parse("Ctrl+J").unwrap())
+                .unwrap();
+            saved.save_at(&path).unwrap();
+            let reloaded = ShortcutConfig::load_at(&path);
+
+            assert_eq!(reloaded, saved);
+            assert!(reloaded.validate().is_ok());
+        }
+        // Phase `desktop_navigation_defaults_are_complete_and_conflict_free`.
+        {
+            let cfg = ShortcutConfig::default();
+            assert_eq!(cfg.bindings.len(), 45);
+            assert_eq!(cfg.bindings[&ShortcutAction::Remark].display(), "Super+m");
+            let unique: BTreeSet<_> = cfg.bindings.values().collect();
+            assert_eq!(unique.len(), cfg.bindings.len());
+            assert_eq!(
+                cfg.bindings[&ShortcutAction::FocusPreviousWindow].display(),
+                "Super+Left"
+            );
+            assert_eq!(
+                cfg.bindings[&ShortcutAction::FocusNextWindow].display(),
+                "Super+Right"
+            );
+            assert_eq!(
+                cfg.bindings[&ShortcutAction::PreviousTab].display(),
+                "Ctrl+Shift+Tab"
+            );
+            assert_eq!(cfg.bindings[&ShortcutAction::NextTab].display(), "Ctrl+Tab");
+            // Reordering within a display keeps Super+Shift+arrows; moving to
+            // the neighbouring display adds Ctrl to the same gesture.
+            assert_eq!(
+                cfg.bindings[&ShortcutAction::MoveGroupToNextDisplay].display(),
+                "Super+Ctrl+Shift+Right"
+            );
+        }
     }
-
-    #[test]
-    fn corrupt_persisted_shortcuts_normalise_without_ambiguous_ownership() {
-        let mut corrupt = ShortcutConfig::default();
-        corrupt.bindings.insert(
-            ShortcutAction::Search,
-            KeyChord {
-                modifiers: BTreeSet::from(["Ctrl".to_string()]),
-                key: "f1".into(),
-            },
-        );
-        corrupt
-            .bindings
-            .insert(ShortcutAction::Lock, KeyChord::parse("Alt+L").unwrap());
-        corrupt.bindings.insert(
-            ShortcutAction::PreviousTab,
-            KeyChord::parse("Ctrl+J").unwrap(),
-        );
-        corrupt
-            .bindings
-            .insert(ShortcutAction::NextTab, KeyChord::parse("Ctrl+J").unwrap());
-
-        let repaired = ShortcutConfig::normalise(corrupt);
-        assert_eq!(
-            repaired.bindings[&ShortcutAction::Search].display(),
-            "Super+k",
-            "reserved persisted keys revert to their action default"
-        );
-        assert_eq!(
-            repaired.bindings[&ShortcutAction::Lock].display(),
-            "Super+l",
-            "the native lock chord is immutable"
-        );
-        assert_eq!(
-            repaired.bindings[&ShortcutAction::PreviousTab].display(),
-            "Ctrl+j",
-            "the first action in stable action order owns a duplicate"
-        );
-        assert_eq!(
-            repaired.bindings[&ShortcutAction::NextTab].display(),
-            "Ctrl+Tab",
-            "the duplicate action deterministically falls back to default"
-        );
-        assert!(repaired.validate().is_ok());
-    }
-
-    #[test]
-    fn saved_shortcuts_reload_as_the_same_valid_effective_config() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("tilo/settings.json");
-
-        let mut saved = ShortcutConfig::default();
-        saved
-            .set(ShortcutAction::NextTab, KeyChord::parse("Ctrl+J").unwrap())
-            .unwrap();
-        saved.save_at(&path).unwrap();
-        let reloaded = ShortcutConfig::load_at(&path);
-
-        assert_eq!(reloaded, saved);
-        assert!(reloaded.validate().is_ok());
-    }
-
     #[test]
     fn a_chord_runs_any_published_action_but_never_takes_a_desktop_chord() {
         let dir = tempfile::tempdir().unwrap();
@@ -2479,102 +2827,81 @@ mod tests {
     }
 
     #[test]
-    fn desktop_navigation_defaults_are_complete_and_conflict_free() {
-        let cfg = ShortcutConfig::default();
-        assert_eq!(cfg.bindings.len(), 43);
-        assert_eq!(cfg.bindings[&ShortcutAction::Remark].display(), "Super+m");
-        let unique: BTreeSet<_> = cfg.bindings.values().collect();
-        assert_eq!(unique.len(), cfg.bindings.len());
-        assert_eq!(
-            cfg.bindings[&ShortcutAction::FocusPreviousWindow].display(),
-            "Super+Left"
-        );
-        assert_eq!(
-            cfg.bindings[&ShortcutAction::FocusNextWindow].display(),
-            "Super+Right"
-        );
-        assert_eq!(
-            cfg.bindings[&ShortcutAction::PreviousTab].display(),
-            "Ctrl+Shift+Tab"
-        );
-        assert_eq!(cfg.bindings[&ShortcutAction::NextTab].display(), "Ctrl+Tab");
-        // Reordering within a display keeps Super+Shift+arrows; moving to
-        // the neighbouring display adds Ctrl to the same gesture.
-        assert_eq!(
-            cfg.bindings[&ShortcutAction::MoveGroupToNextDisplay].display(),
-            "Super+Ctrl+Shift+Right"
-        );
-    }
+    fn input_sources_and_pointer_settings_migrate_validate_and_survive_damage() {
+        // Phase `legacy_single_keyboard_layout_migrates_into_sources`.
+        {
+            let section = serde_json::json!({ "keyboard_layout": "de" })
+                .as_object()
+                .unwrap()
+                .clone();
+            let cfg = RichInputConfig::from_section(&section);
+            assert_eq!(cfg.keyboard_layout, "de");
+            assert_eq!(cfg.keyboard_layouts, ["de"]);
+            assert_eq!(cfg.active_source_index(), 0);
+        }
+        // Phase `scroll_defaults_match_gnome_and_keep_legacy_global_documents`.
+        {
+            let empty = RichInputConfig::from_section(&serde_json::Map::new());
+            assert_eq!(empty.touchpad_natural_scroll, Some(true));
+            assert_eq!(empty.mouse_natural_scroll, Some(false));
 
-    #[test]
-    fn legacy_single_keyboard_layout_migrates_into_sources() {
-        let section = serde_json::json!({ "keyboard_layout": "de" })
+            let legacy = serde_json::json!({ "natural_scroll": false })
+                .as_object()
+                .unwrap()
+                .clone();
+            let legacy = RichInputConfig::from_section(&legacy);
+            assert_eq!(legacy.touchpad_natural_scroll, Some(false));
+            assert_eq!(legacy.mouse_natural_scroll, Some(false));
+        }
+        // Phase `keyboard_sources_are_validated_deduplicated_and_bounded`.
+        {
+            let section = serde_json::json!({
+                "keyboard_layout": "de:nodeadkeys",
+                "keyboard_layouts": [
+                    "us", "de:nodeadkeys", "us", "../evil", "fr", "es", "gb"
+                ]
+            })
             .as_object()
             .unwrap()
             .clone();
-        let cfg = RichInputConfig::from_section(&section);
-        assert_eq!(cfg.keyboard_layout, "de");
-        assert_eq!(cfg.keyboard_layouts, ["de"]);
-        assert_eq!(cfg.active_source_index(), 0);
-    }
-
-    #[test]
-    fn scroll_defaults_match_gnome_and_keep_legacy_global_documents() {
-        let empty = RichInputConfig::from_section(&serde_json::Map::new());
-        assert_eq!(empty.touchpad_natural_scroll, Some(true));
-        assert_eq!(empty.mouse_natural_scroll, Some(false));
-
-        let legacy = serde_json::json!({ "natural_scroll": false })
+            let cfg = RichInputConfig::from_section(&section);
+            assert_eq!(cfg.keyboard_layouts.len(), MAX_KEYBOARD_INPUT_SOURCES);
+            assert_eq!(cfg.keyboard_layouts, ["us", "de:nodeadkeys", "fr", "es"]);
+            assert_eq!(cfg.active_source_index(), 1);
+            assert_eq!(cfg.sources()[1].variant.as_deref(), Some("nodeadkeys"));
+        }
+        // Phase `keyboard_options_do_not_steal_the_shell_search_shortcut`.
+        {
+            let mut cfg = RichInputConfig {
+                keyboard_layouts: vec!["us".into(), "de".into()],
+                compose_key: Some("ralt".into()),
+                ..Default::default()
+            };
+            cfg.normalise_sources();
+            assert_eq!(
+                cfg.xkb_options(),
+                ["compose:ralt"],
+                "no XKB group toggle: it collides with Alt+Shift+Tab and switches silently"
+            );
+            assert_eq!(
+                ShortcutConfig::default().bindings[&ShortcutAction::NextInputSource].display(),
+                "Super+Alt+Space"
+            );
+        }
+        // Phase `malformed_pointer_field_does_not_discard_keyboard_sources`.
+        {
+            let section = serde_json::json!({
+                "pointer_speed": "fast",
+                "keyboard_layout": "de",
+                "keyboard_layouts": ["us", "de"]
+            })
             .as_object()
             .unwrap()
             .clone();
-        let legacy = RichInputConfig::from_section(&legacy);
-        assert_eq!(legacy.touchpad_natural_scroll, Some(false));
-        assert_eq!(legacy.mouse_natural_scroll, Some(false));
-    }
-
-    #[test]
-    fn keyboard_sources_are_validated_deduplicated_and_bounded() {
-        let section = serde_json::json!({
-            "keyboard_layout": "de:nodeadkeys",
-            "keyboard_layouts": [
-                "us", "de:nodeadkeys", "us", "../evil", "fr", "es", "gb"
-            ]
-        })
-        .as_object()
-        .unwrap()
-        .clone();
-        let cfg = RichInputConfig::from_section(&section);
-        assert_eq!(cfg.keyboard_layouts.len(), MAX_KEYBOARD_INPUT_SOURCES);
-        assert_eq!(cfg.keyboard_layouts, ["us", "de:nodeadkeys", "fr", "es"]);
-        assert_eq!(cfg.active_source_index(), 1);
-        assert_eq!(cfg.sources()[1].variant.as_deref(), Some("nodeadkeys"));
-    }
-
-    #[test]
-    fn keyboard_options_do_not_steal_the_shell_search_shortcut() {
-        let mut cfg = RichInputConfig {
-            keyboard_layouts: vec!["us".into(), "de".into()],
-            compose_key: Some("ralt".into()),
-            ..Default::default()
-        };
-        cfg.normalise_sources();
-        assert_eq!(cfg.xkb_options(), ["grp:alt_shift_toggle", "compose:ralt"]);
-    }
-
-    #[test]
-    fn malformed_pointer_field_does_not_discard_keyboard_sources() {
-        let section = serde_json::json!({
-            "pointer_speed": "fast",
-            "keyboard_layout": "de",
-            "keyboard_layouts": ["us", "de"]
-        })
-        .as_object()
-        .unwrap()
-        .clone();
-        let cfg = RichInputConfig::from_section(&section);
-        assert_eq!(cfg.keyboard_layouts, ["us", "de"]);
-        assert_eq!(cfg.active_source_index(), 1);
+            let cfg = RichInputConfig::from_section(&section);
+            assert_eq!(cfg.keyboard_layouts, ["us", "de"]);
+            assert_eq!(cfg.active_source_index(), 1);
+        }
     }
 
     #[test]
@@ -2596,6 +2923,111 @@ mod tests {
         assert_eq!(back.touchpad_click_method, TouchpadClickMethod::Clickfinger);
         assert_eq!(back.touchpad_scroll_method, TouchpadScrollMethod::Edge);
         assert!((back.scroll_speed - 2.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn input_snapshot_is_trusted_only_from_its_live_publisher() {
+        let dir = std::env::temp_dir().join(format!("tilo-input-state-{}", std::process::id()));
+        let path = dir.join("input-state.json");
+        let pen = InputDeviceSnapshot {
+            key: input_device_key(0x056a, 0x0374, "Wacom Intuos S Pen"),
+            name: "Wacom Intuos S Pen".into(),
+            kind: InputDeviceKind::Tablet,
+            pad_buttons: 0,
+        };
+        assert_eq!(pen.key, "056a:0374:Wacom Intuos S Pen");
+        let pid = std::process::id();
+        let live = InputHardwareSnapshot {
+            publisher_pid: pid,
+            publisher_start_ticks: process_start_ticks(pid).unwrap_or_default(),
+            devices: vec![pen.clone(), pen],
+        };
+        live.save_at(&path).unwrap();
+        let back = InputHardwareSnapshot::load_at(&path).expect("live publisher");
+        assert!(back.has(InputDeviceKind::Tablet));
+        assert!(!back.has(InputDeviceKind::Touchpad));
+        assert_eq!(
+            back.of_kind(InputDeviceKind::Tablet).len(),
+            1,
+            "one section per identity, however many handles libinput opened"
+        );
+
+        let stale = InputHardwareSnapshot {
+            publisher_start_ticks: live.publisher_start_ticks.wrapping_add(1),
+            ..live
+        };
+        stale.save_at(&path).unwrap();
+        assert!(
+            InputHardwareSnapshot::load_at(&path).is_none(),
+            "a reused PID must not resurrect a dead compositor's devices"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[allow(
+        clippy::float_cmp,
+        reason = "presets are exact constants handed back unchanged"
+    )]
+    fn tablet_settings_round_trip_per_device_and_survive_a_bad_neighbour() {
+        let mut pen = TabletConfig {
+            output: Some("DP-2".into()),
+            keep_aspect: true,
+            left_handed: true,
+            pressure_curve: pressure_curve_for_feel(0.0),
+            lower_button: StylusButtonAction::Right,
+            upper_button: StylusButtonAction::Shortcut(ShortcutAction::Search),
+            ..TabletConfig::default()
+        };
+        pen.pad_buttons.insert(3, ShortcutAction::WorkspaceOverview);
+        let key = input_device_key(0x056a, 0x0374, "Wacom Intuos S Pen");
+        let section = serde_json::json!({
+            TABLETS_KEY: {
+                key.clone(): serde_json::to_value(&pen).unwrap(),
+                "0000:0000:Broken": {"keep_aspect": "sometimes"},
+            }
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let value = serde_json::to_value(&pen).unwrap();
+        assert_eq!(
+            value["upper_button"],
+            serde_json::json!({"shortcut": "search"})
+        );
+        assert_eq!(value["lower_button"], "right");
+        assert_eq!(value["pad_buttons"]["3"], "workspace_overview");
+
+        let tablets = tablets_from_section(&section);
+        assert_eq!(tablets.get(&key), Some(&pen));
+        assert_eq!(tablets.len(), 1, "a malformed entry is skipped, not fatal");
+
+        let rich = RichInputConfig::from_section(&section);
+        assert_eq!(rich.tablets.get(&key), Some(&pen));
+
+        let fresh = TabletConfig::default();
+        assert_eq!(fresh.output, None, "a new tablet spans the whole desktop");
+        assert_eq!(fresh.pressure_curve, [0.0, 0.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    #[allow(
+        clippy::float_cmp,
+        reason = "presets are exact constants handed back unchanged"
+    )]
+    fn tip_feel_positions_and_curves_map_both_ways() {
+        assert_eq!(pressure_curve_for_feel(0.5), PRESSURE_CURVE_PRESETS[3]);
+        assert_eq!(pressure_curve_for_feel(0.0), PRESSURE_CURVE_PRESETS[0]);
+        assert_eq!(pressure_curve_for_feel(1.0), PRESSURE_CURVE_PRESETS[6]);
+        assert_eq!(pressure_curve_for_feel(f64::NAN), PRESSURE_CURVE_PRESETS[3]);
+        for (index, preset) in PRESSURE_CURVE_PRESETS.iter().enumerate() {
+            let feel = feel_for_pressure_curve(*preset);
+            assert_eq!(pressure_curve_for_feel(feel), *preset, "preset {index}");
+        }
+        assert!(
+            (feel_for_pressure_curve([0.02, 0.73, 0.26, 0.98]) - 0.0).abs() < f64::EPSILON,
+            "a hand-edited curve reads as its nearest preset"
+        );
     }
 
     #[test]
@@ -2659,7 +3091,62 @@ mod tests {
             0,
             "an engine types on the primary layout"
         );
-        assert_eq!(cfg.xkb_options(), ["grp:alt_shift_toggle"]);
+        assert!(cfg.xkb_options().is_empty());
+    }
+
+    #[test]
+    fn the_next_source_wraps_through_layouts_and_engines() {
+        let mut cfg = RichInputConfig {
+            keyboard_layout: "de".into(),
+            keyboard_layouts: vec!["us".into(), "de".into(), "fr".into()],
+            ..Default::default()
+        };
+        assert_eq!(cfg.select_next_source(), Some(2));
+        assert_eq!(cfg.keyboard_layout, "fr");
+        assert_eq!(cfg.select_next_source(), Some(0));
+        assert_eq!(cfg.keyboard_layout, "us");
+        let mut single = RichInputConfig::default();
+        assert_eq!(single.select_next_source(), None);
+        assert_eq!(single.keyboard_layout, "us");
+        let mut with_engine = RichInputConfig {
+            keyboard_layout: "us".into(),
+            keyboard_layouts: vec!["us".into(), "ime/pinyin".into()],
+            ..Default::default()
+        };
+        assert_eq!(with_engine.select_next_source(), Some(1));
+        assert_eq!(
+            with_engine.active_input_method(),
+            Some(InputMethodEngine::Pinyin)
+        );
+    }
+
+    #[test]
+    fn caps_lock_remaps_map_to_standard_xkb_options() {
+        for (choice, option) in [
+            ("ctrl", "ctrl:nocaps"),
+            ("escape", "caps:escape"),
+            ("backspace", "caps:backspace"),
+        ] {
+            let section = serde_json::json!({ "caps_lock": choice })
+                .as_object()
+                .unwrap()
+                .clone();
+            assert_eq!(
+                RichInputConfig::from_section(&section).xkb_options(),
+                [option]
+            );
+        }
+        let composing = RichInputConfig {
+            caps_lock: Some("escape".into()),
+            compose_key: Some("caps".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            composing.xkb_options(),
+            ["compose:caps"],
+            "Caps Lock cannot be both Compose and Escape"
+        );
+        assert!(RichInputConfig::default().xkb_options().is_empty());
     }
 
     #[test]

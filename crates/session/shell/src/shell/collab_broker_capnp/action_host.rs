@@ -1751,12 +1751,52 @@ impl CapnpBrokerState {
         Ok(self.receipt_for(request.invocation, job))
     }
 
+    /// Run saved shortcut `shortcut_id` in `room` for `caller`, who is at
+    /// the screen: every step that needs confirmation and every question
+    /// waits in [`Self::take_step_prompt`] until the compositor's sheet
+    /// answers it.
+    ///
+    /// # Errors
+    ///
+    /// Why the shortcut cannot run for `caller`.
+    pub(crate) fn start_interactive_shortcut_run(
+        self: &Arc<Self>,
+        caller: &Caller,
+        room: &str,
+        shortcut_id: &str,
+        inputs: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<u64, ActionHostError> {
+        let shortcut = self
+            .saved_shortcut(caller, room, shortcut_id)
+            .ok_or(ActionHostError::UnknownAction)?;
+        let hooks = automation_host::SheetHooks::new(self.step_prompts.clone(), &shortcut.name);
+        self.start_shortcut_run(
+            caller,
+            room,
+            shortcut,
+            automation_host::RunStart {
+                run: tilo_automation::RunId::new(),
+                trigger: tilo_automation::RunTrigger::Manual,
+                mode: tilo_automation::RunMode::Interactive,
+                inputs,
+            },
+            hooks,
+        )
+    }
+
+    /// The oldest step of an interactive run waiting for its person.
+    pub(crate) fn take_step_prompt(&self) -> Option<automation_host::PromptedStep> {
+        self.step_prompts.take_next()
+    }
+
     /// Start one of saved shortcut `shortcut_id`'s triggers, `trigger`, in
     /// `room` on behalf of `caller`, who must be the person who saved it.
     ///
-    /// Nobody is present at a triggered run: a step asking for confirmation
-    /// proceeds only when its saver consented to exactly that action in
-    /// advance, and a question stops the run. Before anything runs the
+    /// A keyboard trigger means the person is at the screen: its run asks
+    /// them through the compositor's sheet, like a palette run. Nobody is
+    /// present at a scheduled run: a step asking for confirmation proceeds
+    /// only when its saver consented to exactly that action in advance, and
+    /// a question stops the run. Before anything runs the
     /// shortcut is checked again against what `caller` is offered now, so a
     /// shortcut that was deleted, lost the trigger, or reaches past a grant
     /// that has since been revoked does not start.
@@ -1802,6 +1842,21 @@ impl CapnpBrokerState {
                     .join("; "),
             }
         })?;
+        if matches!(trigger, tilo_automation::TriggerSpec::Keyboard { .. }) {
+            let hooks = automation_host::SheetHooks::new(self.step_prompts.clone(), &shortcut.name);
+            return self.start_shortcut_run(
+                caller,
+                room,
+                shortcut,
+                automation_host::RunStart {
+                    run,
+                    trigger: tilo_automation::RunTrigger::Fired(trigger.clone()),
+                    mode: tilo_automation::RunMode::Interactive,
+                    inputs: serde_json::Map::new(),
+                },
+                hooks,
+            );
+        }
         self.start_shortcut_run(
             caller,
             room,

@@ -433,8 +433,25 @@ mod live {
     /// while the loopback test constructs [`IrohTransport`] directly and does
     /// not depend on this probe (iroh QUIC needs no session).
     pub fn environment_supports_media() -> bool {
-        std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_some()
-            || std::env::var_os("WAYLAND_DISPLAY").is_some()
+        session_bus_present() || std::env::var_os("WAYLAND_DISPLAY").is_some()
+    }
+
+    /// A session bus address that names a socket which exists. The test
+    /// environment points the address at one that never does.
+    fn session_bus_present() -> bool {
+        let Some(address) = std::env::var_os("DBUS_SESSION_BUS_ADDRESS") else {
+            return false;
+        };
+        let address = address.to_string_lossy();
+        address
+            .split(';')
+            .any(|entry| match entry.strip_prefix("unix:path=") {
+                Some(rest) => {
+                    let path = rest.split(',').next().unwrap_or_default();
+                    std::path::Path::new(path).exists()
+                }
+                None => !entry.is_empty(),
+            })
     }
 
     /// Every media object on the stream: a little-endian `u32` length, then
@@ -758,105 +775,134 @@ mod tests {
     use super::*;
 
     #[test]
-    fn media_object_wire_round_trips() {
-        let obj = MediaObject {
-            sender: "u_a71c".into(),
-            kind: TrackKind::Video,
-            seq: 42,
-            pts: Duration::from_millis(1234),
-            payload: vec![9, 8, 7, 6, 5],
-        };
-        let wire = obj.to_wire();
-        let back = MediaObject::from_wire(&wire).expect("decodes");
-        assert_eq!(back, obj);
-    }
-
-    #[test]
-    fn media_object_wire_rejects_truncation() {
-        let obj = MediaObject {
-            sender: "x".into(),
-            kind: TrackKind::Audio,
-            seq: 1,
-            pts: Duration::ZERO,
-            payload: vec![1, 2, 3],
-        };
-        let mut wire = obj.to_wire();
-        wire.truncate(wire.len() - 1); // lose a payload byte
-        assert!(
-            MediaObject::from_wire(&wire).is_none(),
-            "truncated frame is dropped, not panicked"
-        );
-    }
-
-    #[test]
-    fn media_object_wire_rejects_trailing_and_oversized_fields() {
-        let obj = MediaObject {
-            sender: "x".into(),
-            kind: TrackKind::Audio,
-            seq: 1,
-            pts: Duration::ZERO,
-            payload: vec![1],
-        };
-        let mut trailing = obj.to_wire();
-        trailing.push(0);
-        assert!(MediaObject::from_wire(&trailing).is_none());
-
-        let too_large = MediaObject {
-            sender: "x".into(),
-            kind: TrackKind::Video,
-            seq: 2,
-            pts: Duration::ZERO,
-            payload: vec![0; MAX_MEDIA_PAYLOAD + 1],
-        };
-        assert!(too_large.try_to_wire().is_none());
-    }
-
-    #[test]
-    fn simulated_transport_round_trips_objects() {
-        let mut t = SimulatedTransport::default();
-        assert!(!t.is_live());
-        t.publish(TrackKind::Audio);
-        t.subscribe(Subscription {
-            peer: "u_a71c".into(),
-            kind: TrackKind::Audio,
-        });
-        t.send(MediaObject {
-            sender: "u_me".into(),
-            kind: TrackKind::Audio,
-            seq: 0,
-            pts: Duration::from_millis(0),
-            payload: vec![1, 2, 3],
-        });
-        let got = t.poll();
-        assert_eq!(got.len(), 1);
-        assert_eq!(got[0].payload, vec![1, 2, 3]);
-        assert!(t.poll().is_empty(), "poll drains the queue");
-    }
-
-    #[test]
-    fn simulated_transport_is_bounded_and_backpressures() {
-        let mut t = SimulatedTransport::default();
-        for seq in 0..MAX_MEDIA_QUEUE as u64 {
-            assert!(t.send(MediaObject {
-                sender: "sender".into(),
-                kind: TrackKind::Audio,
-                seq,
-                pts: Duration::ZERO,
-                payload: vec![1],
-            }));
+    fn media_object_wire_round_trips_and_rejects_malformed_frames() {
+        // Phase: media_object_wire_round_trips.
+        {
+            let obj = MediaObject {
+                sender: "u_a71c".into(),
+                kind: TrackKind::Video,
+                seq: 42,
+                pts: Duration::from_millis(1234),
+                payload: vec![9, 8, 7, 6, 5],
+            };
+            let wire = obj.to_wire();
+            let back = MediaObject::from_wire(&wire).expect("decodes");
+            assert_eq!(back, obj);
         }
-        assert!(
-            !t.send(MediaObject {
-                sender: "sender".into(),
+        // Phase: media_object_wire_rejects_truncation.
+        {
+            let obj = MediaObject {
+                sender: "x".into(),
                 kind: TrackKind::Audio,
-                seq: MAX_MEDIA_QUEUE as u64,
+                seq: 1,
+                pts: Duration::ZERO,
+                payload: vec![1, 2, 3],
+            };
+            let mut wire = obj.to_wire();
+            wire.truncate(wire.len() - 1); // lose a payload byte
+            assert!(
+                MediaObject::from_wire(&wire).is_none(),
+                "truncated frame is dropped, not panicked"
+            );
+        }
+        // Phase: media_object_wire_rejects_trailing_and_oversized_fields.
+        {
+            let obj = MediaObject {
+                sender: "x".into(),
+                kind: TrackKind::Audio,
+                seq: 1,
                 pts: Duration::ZERO,
                 payload: vec![1],
-            }),
-            "a full realtime queue rejects rather than growing"
-        );
-        assert_eq!(t.poll().len(), MAX_MEDIA_POLL);
-        assert_eq!(t.poll().len(), MAX_MEDIA_QUEUE - MAX_MEDIA_POLL);
+            };
+            let mut trailing = obj.to_wire();
+            trailing.push(0);
+            assert!(MediaObject::from_wire(&trailing).is_none());
+
+            let too_large = MediaObject {
+                sender: "x".into(),
+                kind: TrackKind::Video,
+                seq: 2,
+                pts: Duration::ZERO,
+                payload: vec![0; MAX_MEDIA_PAYLOAD + 1],
+            };
+            assert!(too_large.try_to_wire().is_none());
+        }
+    }
+
+    #[test]
+    fn simulated_media_path_is_the_default_and_is_bounded_and_idempotent() {
+        // Phase: engine_construction_never_binds_live_transport.
+        {
+            // The app constructor runs before the window's first frame. Even when
+            // a desktop environment is advertised it must remain a pure local
+            // allocation; endpoint setup belongs to `activate_for_call`.
+            let e = MediaEngine::new();
+            assert!(!e.is_live());
+            assert_eq!(e.description(), "simulated (local)");
+        }
+        // Phase: simulated_transport_round_trips_objects.
+        {
+            let mut t = SimulatedTransport::default();
+            assert!(!t.is_live());
+            t.publish(TrackKind::Audio);
+            t.subscribe(Subscription {
+                peer: "u_a71c".into(),
+                kind: TrackKind::Audio,
+            });
+            t.send(MediaObject {
+                sender: "u_me".into(),
+                kind: TrackKind::Audio,
+                seq: 0,
+                pts: Duration::from_millis(0),
+                payload: vec![1, 2, 3],
+            });
+            let got = t.poll();
+            assert_eq!(got.len(), 1);
+            assert_eq!(got[0].payload, vec![1, 2, 3]);
+            assert!(t.poll().is_empty(), "poll drains the queue");
+        }
+        // Phase: simulated_transport_is_bounded_and_backpressures.
+        {
+            let mut t = SimulatedTransport::default();
+            for seq in 0..MAX_MEDIA_QUEUE as u64 {
+                assert!(t.send(MediaObject {
+                    sender: "sender".into(),
+                    kind: TrackKind::Audio,
+                    seq,
+                    pts: Duration::ZERO,
+                    payload: vec![1],
+                }));
+            }
+            assert!(
+                !t.send(MediaObject {
+                    sender: "sender".into(),
+                    kind: TrackKind::Audio,
+                    seq: MAX_MEDIA_QUEUE as u64,
+                    pts: Duration::ZERO,
+                    payload: vec![1],
+                }),
+                "a full realtime queue rejects rather than growing"
+            );
+            assert_eq!(t.poll().len(), MAX_MEDIA_POLL);
+            assert_eq!(t.poll().len(), MAX_MEDIA_QUEUE - MAX_MEDIA_POLL);
+        }
+        // Phase: publish_unpublish_is_idempotent.
+        {
+            let mut t = SimulatedTransport::default();
+            t.publish(TrackKind::Video);
+            t.publish(TrackKind::Video);
+            t.unpublish(TrackKind::Video);
+            t.unpublish(TrackKind::Video);
+            // No panic, no duplicate state leakage — round-trips cleanly.
+            t.send(MediaObject {
+                sender: "x".into(),
+                kind: TrackKind::Video,
+                seq: 1,
+                pts: Duration::ZERO,
+                payload: vec![],
+            });
+            assert_eq!(t.poll().len(), 1);
+        }
     }
 
     /// Binding runs on the app runtime and wakes the event loop; until then
@@ -892,45 +938,6 @@ mod tests {
         assert!(!engine.take_bound(), "a failed bind announces nothing");
         assert!(!engine.is_live());
         assert_eq!(engine.local_ticket().as_deref(), Some("sim://local"));
-    }
-
-    #[test]
-    fn engine_defaults_to_simulated_without_live_feature() {
-        let e = MediaEngine::new();
-        // Without `live-media`, or without a supporting environment, the
-        // engine must be the simulator and never the live transport.
-        if !cfg!(feature = "live-media") {
-            assert!(!e.is_live());
-            assert_eq!(e.description(), "simulated (local)");
-        }
-    }
-
-    #[test]
-    fn engine_construction_never_binds_live_transport() {
-        // The app constructor runs before the window's first frame. Even when
-        // a desktop environment is advertised it must remain a pure local
-        // allocation; endpoint setup belongs to `activate_for_call`.
-        let e = MediaEngine::new();
-        assert!(!e.is_live());
-        assert_eq!(e.description(), "simulated (local)");
-    }
-
-    #[test]
-    fn publish_unpublish_is_idempotent() {
-        let mut t = SimulatedTransport::default();
-        t.publish(TrackKind::Video);
-        t.publish(TrackKind::Video);
-        t.unpublish(TrackKind::Video);
-        t.unpublish(TrackKind::Video);
-        // No panic, no duplicate state leakage — round-trips cleanly.
-        t.send(MediaObject {
-            sender: "x".into(),
-            kind: TrackKind::Video,
-            seq: 1,
-            pts: Duration::ZERO,
-            payload: vec![],
-        });
-        assert_eq!(t.poll().len(), 1);
     }
 
     // -- Real transport + codec loopback (only compiled with `live-media`) ----

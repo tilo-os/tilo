@@ -1488,661 +1488,699 @@ fn run_new(args: NewArgs) -> Result<()> {
 mod tests {
     use super::*;
 
+    /// new exposes the sparse list, typed async, durable document, accessible QR and professional
+    /// workspace templates, and can enter dev but cannot dev a dry run.
     #[test]
-    fn new_exposes_the_sparse_list_template() {
-        let cli = Cli::try_parse_from(["tilo-app", "new", "activity-feed", "--template", "list"])
-            .expect("list template command");
-        let Command::New(args) = cli.command else {
-            panic!("expected new command");
-        };
-        assert!(matches!(args.template, Some(TemplateArg::List)));
+    fn new_exposes_every_app_template_and_refuses_to_dev_a_dry_run() {
+        // Phase: new_exposes_the_sparse_list_template.
+        {
+            let cli =
+                Cli::try_parse_from(["tilo-app", "new", "activity-feed", "--template", "list"])
+                    .expect("list template command");
+            let Command::New(args) = cli.command else {
+                panic!("expected new command");
+            };
+            assert!(matches!(args.template, Some(TemplateArg::List)));
+        }
+
+        // Phase: new_exposes_the_typed_async_template.
+        {
+            let cli = Cli::try_parse_from(["tilo-app", "new", "repo-scan", "--template", "async"])
+                .expect("async template command");
+            let Command::New(args) = cli.command else {
+                panic!("expected new command");
+            };
+            assert!(matches!(args.template, Some(TemplateArg::Async)));
+        }
+
+        // Phase: new_exposes_the_durable_document_template.
+        {
+            let cli = Cli::try_parse_from(["tilo-app", "new", "notes", "--template", "document"])
+                .expect("document template command");
+            let Command::New(args) = cli.command else {
+                panic!("expected new command");
+            };
+            assert!(matches!(args.template, Some(TemplateArg::Document)));
+        }
+
+        // Phase: new_exposes_the_accessible_qr_template.
+        {
+            let cli = Cli::try_parse_from(["tilo-app", "new", "qr-code", "--template", "qr"])
+                .expect("QR template command");
+            let Command::New(args) = cli.command else {
+                panic!("expected new command");
+            };
+            assert!(matches!(args.template, Some(TemplateArg::Qr)));
+        }
+
+        // Phase: new_exposes_the_professional_workspace_template.
+        {
+            let cli = Cli::try_parse_from([
+                "tilo-app",
+                "new",
+                "project-studio",
+                "--template",
+                "workspace",
+            ])
+            .expect("workspace template command");
+            let Command::New(args) = cli.command else {
+                panic!("expected new command");
+            };
+            assert!(matches!(args.template, Some(TemplateArg::Workspace)));
+        }
+
+        // Phase: new_can_enter_dev_but_cannot_dev_a_dry_run.
+        {
+            let cli = Cli::try_parse_from(["tilo-app", "new", "notes", "--dev"])
+                .expect("create-and-develop command");
+            let Command::New(args) = cli.command else {
+                panic!("expected new command");
+            };
+            assert!(args.dev);
+            assert!(!args.dry_run);
+
+            assert!(
+                Cli::try_parse_from(["tilo-app", "new", "notes", "--dev", "--dry-run"]).is_err()
+            );
+        }
     }
 
+    /// add commands expose safe repeatable generation options and explicit, scoped component mount
+    /// options, and the reusable list, table and advanced text templates.
     #[test]
-    fn new_exposes_the_typed_async_template() {
-        let cli = Cli::try_parse_from(["tilo-app", "new", "repo-scan", "--template", "async"])
-            .expect("async template command");
-        let Command::New(args) = cli.command else {
-            panic!("expected new command");
-        };
-        assert!(matches!(args.template, Some(TemplateArg::Async)));
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
+    )]
+    fn add_commands_expose_safe_explicit_generation_options_and_templates() {
+        // Phase: add_commands_expose_safe_repeatable_generation_options.
+        {
+            let screen = Cli::try_parse_from([
+                "tilo-app",
+                "add",
+                "screen",
+                "account-settings",
+                "--title",
+                "Account",
+                "--template",
+                "settings",
+                "--link-from",
+                "main",
+                "--app",
+                "apps/demo/src",
+                "--dry-run",
+            ])
+            .expect("screen command");
+            let Command::Add(AddArgs {
+                command:
+                    Some(AddCommand::Screen {
+                        name,
+                        title,
+                        template,
+                        link_from,
+                        options,
+                    }),
+            }) = screen.command
+            else {
+                panic!("expected add screen command");
+            };
+            assert_eq!(name, "account-settings");
+            assert_eq!(title.as_deref(), Some("Account"));
+            assert!(matches!(template, ScreenTemplateArg::Settings));
+            assert_eq!(link_from.as_deref(), Some("main"));
+            assert_eq!(options.app, Some(PathBuf::from("apps/demo/src")));
+            assert!(options.dry_run);
+            assert!(!options.force);
 
-    #[test]
-    fn new_exposes_the_durable_document_template() {
-        let cli = Cli::try_parse_from(["tilo-app", "new", "notes", "--template", "document"])
-            .expect("document template command");
-        let Command::New(args) = cli.command else {
-            panic!("expected new command");
-        };
-        assert!(matches!(args.template, Some(TemplateArg::Document)));
-    }
+            let component = Cli::try_parse_from([
+                "tilo-app",
+                "add",
+                "component",
+                "profile-card",
+                "--template",
+                "form",
+                "--app",
+                "apps/demo",
+                "--dry-run",
+            ])
+            .expect("component command");
+            let Command::Add(AddArgs {
+                command:
+                    Some(AddCommand::Component {
+                        name,
+                        template,
+                        options,
+                        ..
+                    }),
+            }) = component.command
+            else {
+                panic!("expected add component command");
+            };
+            assert_eq!(name, "profile-card");
+            assert!(matches!(template, ComponentTemplateArg::Form));
+            assert_eq!(options.app, Some(PathBuf::from("apps/demo")));
+            assert!(options.dry_run);
 
-    #[test]
-    fn new_exposes_the_accessible_qr_template() {
-        let cli = Cli::try_parse_from(["tilo-app", "new", "qr-code", "--template", "qr"])
-            .expect("QR template command");
-        let Command::New(args) = cli.command else {
-            panic!("expected new command");
-        };
-        assert!(matches!(args.template, Some(TemplateArg::Qr)));
-    }
-
-    #[test]
-    fn new_exposes_the_professional_workspace_template() {
-        let cli = Cli::try_parse_from([
-            "tilo-app",
-            "new",
-            "project-studio",
-            "--template",
-            "workspace",
-        ])
-        .expect("workspace template command");
-        let Command::New(args) = cli.command else {
-            panic!("expected new command");
-        };
-        assert!(matches!(args.template, Some(TemplateArg::Workspace)));
-    }
-
-    #[test]
-    fn new_can_enter_dev_but_cannot_dev_a_dry_run() {
-        let cli = Cli::try_parse_from(["tilo-app", "new", "notes", "--dev"])
-            .expect("create-and-develop command");
-        let Command::New(args) = cli.command else {
-            panic!("expected new command");
-        };
-        assert!(args.dev);
-        assert!(!args.dry_run);
-
-        assert!(Cli::try_parse_from(["tilo-app", "new", "notes", "--dev", "--dry-run"]).is_err());
-    }
-
-    #[test]
-    fn add_commands_expose_safe_repeatable_generation_options() {
-        let screen = Cli::try_parse_from([
-            "tilo-app",
-            "add",
-            "screen",
-            "account-settings",
-            "--title",
-            "Account",
-            "--template",
-            "settings",
-            "--link-from",
-            "main",
-            "--app",
-            "apps/demo/src",
-            "--dry-run",
-        ])
-        .expect("screen command");
-        let Command::Add(AddArgs {
-            command:
-                Some(AddCommand::Screen {
-                    name,
-                    title,
-                    template,
-                    link_from,
-                    options,
-                }),
-        }) = screen.command
-        else {
-            panic!("expected add screen command");
-        };
-        assert_eq!(name, "account-settings");
-        assert_eq!(title.as_deref(), Some("Account"));
-        assert!(matches!(template, ScreenTemplateArg::Settings));
-        assert_eq!(link_from.as_deref(), Some("main"));
-        assert_eq!(options.app, Some(PathBuf::from("apps/demo/src")));
-        assert!(options.dry_run);
-        assert!(!options.force);
-
-        let component = Cli::try_parse_from([
-            "tilo-app",
-            "add",
-            "component",
-            "profile-card",
-            "--template",
-            "form",
-            "--app",
-            "apps/demo",
-            "--dry-run",
-        ])
-        .expect("component command");
-        let Command::Add(AddArgs {
-            command:
-                Some(AddCommand::Component {
-                    name,
-                    template,
-                    options,
-                    ..
-                }),
-        }) = component.command
-        else {
-            panic!("expected add component command");
-        };
-        assert_eq!(name, "profile-card");
-        assert!(matches!(template, ComponentTemplateArg::Form));
-        assert_eq!(options.app, Some(PathBuf::from("apps/demo")));
-        assert!(options.dry_run);
-
-        let tree_component = Cli::try_parse_from([
-            "tilo-app",
-            "add",
-            "component",
-            "project-tree",
-            "--template",
-            "tree",
-        ])
-        .expect("tree component command");
-        assert!(matches!(
-            tree_component.command,
-            Command::Add(AddArgs {
-                command: Some(AddCommand::Component {
-                    template: ComponentTemplateArg::Tree,
-                    ..
+            let tree_component = Cli::try_parse_from([
+                "tilo-app",
+                "add",
+                "component",
+                "project-tree",
+                "--template",
+                "tree",
+            ])
+            .expect("tree component command");
+            assert!(matches!(
+                tree_component.command,
+                Command::Add(AddArgs {
+                    command: Some(AddCommand::Component {
+                        template: ComponentTemplateArg::Tree,
+                        ..
+                    })
                 })
-            })
-        ));
+            ));
 
-        let locale = Cli::try_parse_from(["tilo-app", "add", "locale", "de-DE", "--force"])
-            .expect("locale command");
-        let Command::Add(AddArgs {
-            command: Some(AddCommand::Locale { locale, options }),
-        }) = locale.command
-        else {
-            panic!("expected add locale command");
-        };
-        assert_eq!(locale, "de-DE");
-        assert!(options.force);
+            let locale = Cli::try_parse_from(["tilo-app", "add", "locale", "de-DE", "--force"])
+                .expect("locale command");
+            let Command::Add(AddArgs {
+                command: Some(AddCommand::Locale { locale, options }),
+            }) = locale.command
+            else {
+                panic!("expected add locale command");
+            };
+            assert_eq!(locale, "de-DE");
+            assert!(options.force);
 
-        let wizard = Cli::try_parse_from(["tilo-app", "add"]).expect("add wizard command");
-        let Command::Add(AddArgs { command: None }) = wizard.command else {
-            panic!("expected interactive add command");
-        };
-    }
+            let wizard = Cli::try_parse_from(["tilo-app", "add"]).expect("add wizard command");
+            let Command::Add(AddArgs { command: None }) = wizard.command else {
+                panic!("expected interactive add command");
+            };
+        }
 
-    #[test]
-    fn add_component_mount_options_are_explicit_and_scoped() {
-        let mounted = Cli::try_parse_from([
-            "tilo-app",
-            "add",
-            "component",
-            "activity-card",
-            "--mount",
-            "main",
-            "--id",
-            "summary",
-            "--parent",
-            "content",
-            "--index",
-            "1",
-            "--props",
-            r#"{"title":"Recent","detail":"Ready"}"#,
-        ])
-        .expect("mounted component command");
-        assert!(matches!(
-            mounted.command,
-            Command::Add(AddArgs {
-                command: Some(AddCommand::Component {
-                    mount: Some(screen),
-                    id: Some(id),
-                    parent: Some(parent),
-                    index: Some(1),
-                    props: Some(_),
-                    ..
-                })
-            }) if screen == "main" && id == "summary" && parent == "content"
-        ));
-        assert!(
-            Cli::try_parse_from([
+        // Phase: add_component_mount_options_are_explicit_and_scoped.
+        {
+            let mounted = Cli::try_parse_from([
                 "tilo-app",
                 "add",
                 "component",
                 "activity-card",
+                "--mount",
+                "main",
+                "--id",
+                "summary",
                 "--parent",
                 "content",
+                "--index",
+                "1",
+                "--props",
+                r#"{"title":"Recent","detail":"Ready"}"#,
             ])
-            .is_err()
-        );
-    }
+            .expect("mounted component command");
+            assert!(matches!(
+                mounted.command,
+                Command::Add(AddArgs {
+                    command: Some(AddCommand::Component {
+                        mount: Some(screen),
+                        id: Some(id),
+                        parent: Some(parent),
+                        index: Some(1),
+                        props: Some(_),
+                        ..
+                    })
+                }) if screen == "main" && id == "summary" && parent == "content"
+            ));
+            assert!(
+                Cli::try_parse_from([
+                    "tilo-app",
+                    "add",
+                    "component",
+                    "activity-card",
+                    "--parent",
+                    "content",
+                ])
+                .is_err()
+            );
+        }
 
-    #[test]
-    fn add_command_exposes_the_reusable_list_template() {
-        let cli = Cli::try_parse_from([
-            "tilo-app",
-            "add",
-            "component",
-            "activity-list",
-            "--template",
-            "list",
-        ])
-        .expect("list component command");
+        // Phase: add_command_exposes_the_reusable_list_template.
+        {
+            let cli = Cli::try_parse_from([
+                "tilo-app",
+                "add",
+                "component",
+                "activity-list",
+                "--template",
+                "list",
+            ])
+            .expect("list component command");
 
-        assert!(matches!(
-            cli.command,
-            Command::Add(AddArgs {
-                command: Some(AddCommand::Component {
-                    template: ComponentTemplateArg::List,
-                    ..
+            assert!(matches!(
+                cli.command,
+                Command::Add(AddArgs {
+                    command: Some(AddCommand::Component {
+                        template: ComponentTemplateArg::List,
+                        ..
+                    })
                 })
-            })
-        ));
-    }
+            ));
+        }
 
-    #[test]
-    fn add_command_exposes_the_reusable_table_template() {
-        let cli = Cli::try_parse_from([
-            "tilo-app",
-            "add",
-            "component",
-            "results-table",
-            "--template",
-            "table",
-        ])
-        .expect("table component command");
+        // Phase: add_command_exposes_the_reusable_table_template.
+        {
+            let cli = Cli::try_parse_from([
+                "tilo-app",
+                "add",
+                "component",
+                "results-table",
+                "--template",
+                "table",
+            ])
+            .expect("table component command");
 
-        assert!(matches!(
-            cli.command,
-            Command::Add(AddArgs {
-                command: Some(AddCommand::Component {
-                    template: ComponentTemplateArg::Table,
-                    ..
+            assert!(matches!(
+                cli.command,
+                Command::Add(AddArgs {
+                    command: Some(AddCommand::Component {
+                        template: ComponentTemplateArg::Table,
+                        ..
+                    })
                 })
-            })
-        ));
-    }
+            ));
+        }
 
-    #[test]
-    fn add_command_exposes_the_advanced_text_template() {
-        let cli = Cli::try_parse_from([
-            "tilo-app",
-            "add",
-            "component",
-            "article-body",
-            "--template",
-            "text",
-        ])
-        .expect("text component command");
+        // Phase: add_command_exposes_the_advanced_text_template.
+        {
+            let cli = Cli::try_parse_from([
+                "tilo-app",
+                "add",
+                "component",
+                "article-body",
+                "--template",
+                "text",
+            ])
+            .expect("text component command");
 
-        assert!(matches!(
-            cli.command,
-            Command::Add(AddArgs {
-                command: Some(AddCommand::Component {
-                    template: ComponentTemplateArg::Text,
-                    ..
+            assert!(matches!(
+                cli.command,
+                Command::Add(AddArgs {
+                    command: Some(AddCommand::Component {
+                        template: ComponentTemplateArg::Text,
+                        ..
+                    })
                 })
-            })
-        ));
+            ));
+        }
     }
 
+    /// locale sync exposes preservation and explicit repair options; run and test accept a descendant
+    /// path and forwarded arguments; certify accepts one app or a workspace root.
     #[test]
-    fn locale_sync_exposes_preservation_and_explicit_repair_options() {
-        let cli = Cli::try_parse_from([
-            "tilo-app",
-            "locale",
-            "sync",
-            "de-DE",
-            "--prune",
-            "--reset-variables",
-            "--app",
-            "apps/demo/src",
-            "--dry-run",
-        ])
-        .expect("locale sync command");
-        let Command::Locale(LocaleArgs {
-            command:
-                LocaleCommand::Sync {
-                    locale,
-                    prune,
-                    reset_variables,
-                    app,
-                    dry_run,
-                },
-        }) = cli.command
-        else {
-            panic!("expected locale sync command");
-        };
-        assert_eq!(locale.as_deref(), Some("de-DE"));
-        assert!(prune);
-        assert!(reset_variables);
-        assert_eq!(app, Some(PathBuf::from("apps/demo/src")));
-        assert!(dry_run);
-    }
+    fn maintenance_commands_accept_explicit_repairs_and_app_paths() {
+        // Phase: locale_sync_exposes_preservation_and_explicit_repair_options.
+        {
+            let cli = Cli::try_parse_from([
+                "tilo-app",
+                "locale",
+                "sync",
+                "de-DE",
+                "--prune",
+                "--reset-variables",
+                "--app",
+                "apps/demo/src",
+                "--dry-run",
+            ])
+            .expect("locale sync command");
+            let Command::Locale(LocaleArgs {
+                command:
+                    LocaleCommand::Sync {
+                        locale,
+                        prune,
+                        reset_variables,
+                        app,
+                        dry_run,
+                    },
+            }) = cli.command
+            else {
+                panic!("expected locale sync command");
+            };
+            assert_eq!(locale.as_deref(), Some("de-DE"));
+            assert!(prune);
+            assert!(reset_variables);
+            assert_eq!(app, Some(PathBuf::from("apps/demo/src")));
+            assert!(dry_run);
+        }
 
-    #[test]
-    fn run_and_test_accept_a_descendant_path_and_forwarded_arguments() {
-        let run = Cli::try_parse_from([
-            "tilo-app",
-            "run",
-            "apps/demo/src",
-            "--",
-            "--shots",
-            "preview.png",
-        ])
-        .expect("run CLI");
-        let Command::Run(run) = run.command else {
-            panic!("expected run command");
-        };
-        assert_eq!(run.path, Some(PathBuf::from("apps/demo/src")));
-        assert_eq!(
-            run.forwarded,
-            [OsString::from("--shots"), OsString::from("preview.png")]
-        );
+        // Phase: run_and_test_accept_a_descendant_path_and_forwarded_arguments.
+        {
+            let run = Cli::try_parse_from([
+                "tilo-app",
+                "run",
+                "apps/demo/src",
+                "--",
+                "--shots",
+                "preview.png",
+            ])
+            .expect("run CLI");
+            let Command::Run(run) = run.command else {
+                panic!("expected run command");
+            };
+            assert_eq!(run.path, Some(PathBuf::from("apps/demo/src")));
+            assert_eq!(
+                run.forwarded,
+                [OsString::from("--shots"), OsString::from("preview.png")]
+            );
 
-        let test =
-            Cli::try_parse_from(["tilo-app", "test", "--", "--nocapture"]).expect("test CLI");
-        let Command::Test(test) = test.command else {
-            panic!("expected test command");
-        };
-        assert_eq!(test.path, None);
-        assert_eq!(test.forwarded, [OsString::from("--nocapture")]);
-    }
+            let test =
+                Cli::try_parse_from(["tilo-app", "test", "--", "--nocapture"]).expect("test CLI");
+            let Command::Test(test) = test.command else {
+                panic!("expected test command");
+            };
+            assert_eq!(test.path, None);
+            assert_eq!(test.forwarded, [OsString::from("--nocapture")]);
+        }
 
-    #[test]
-    fn certify_accepts_one_app_or_a_workspace_root() {
-        let app = Cli::try_parse_from(["tilo-app", "certify", "apps/demo/src"])
-            .expect("single-app certification CLI");
-        let Command::Certify(app) = app.command else {
-            panic!("expected certify command");
-        };
-        assert_eq!(app.path, Some(PathBuf::from("apps/demo/src")));
-        assert!(!app.workspace);
-        assert!(app.responsive_artifacts.is_none());
+        // Phase: certify_accepts_one_app_or_a_workspace_root.
+        {
+            let app = Cli::try_parse_from(["tilo-app", "certify", "apps/demo/src"])
+                .expect("single-app certification CLI");
+            let Command::Certify(app) = app.command else {
+                panic!("expected certify command");
+            };
+            assert_eq!(app.path, Some(PathBuf::from("apps/demo/src")));
+            assert!(!app.workspace);
+            assert!(app.responsive_artifacts.is_none());
 
-        let workspace = Cli::try_parse_from([
-            "tilo-app",
-            "certify",
-            ".",
-            "--workspace",
-            "--responsive-artifacts",
-            "target/acceptance",
-        ])
-        .expect("workspace certification CLI");
-        let Command::Certify(workspace) = workspace.command else {
-            panic!("expected certify command");
-        };
-        assert_eq!(workspace.path, Some(PathBuf::from(".")));
-        assert!(workspace.workspace);
-        assert_eq!(
-            workspace.responsive_artifacts,
-            Some(PathBuf::from("target/acceptance"))
-        );
-
-        assert!(
-            Cli::try_parse_from([
+            let workspace = Cli::try_parse_from([
                 "tilo-app",
                 "certify",
-                "apps/demo",
+                ".",
+                "--workspace",
                 "--responsive-artifacts",
                 "target/acceptance",
             ])
-            .is_err(),
-            "a fleet artifact request without --workspace is ambiguous"
-        );
+            .expect("workspace certification CLI");
+            let Command::Certify(workspace) = workspace.command else {
+                panic!("expected certify command");
+            };
+            assert_eq!(workspace.path, Some(PathBuf::from(".")));
+            assert!(workspace.workspace);
+            assert_eq!(
+                workspace.responsive_artifacts,
+                Some(PathBuf::from("target/acceptance"))
+            );
+
+            assert!(
+                Cli::try_parse_from([
+                    "tilo-app",
+                    "certify",
+                    "apps/demo",
+                    "--responsive-artifacts",
+                    "target/acceptance",
+                ])
+                .is_err(),
+                "a fleet artifact request without --workspace is ambiguous"
+            );
+        }
     }
 
+    /// Responsive acceptance covers shape, copy, type and contrast, and the PNG gate rejects blank or
+    /// wrong-sized frames.
     #[test]
-    fn responsive_acceptance_covers_shape_copy_type_and_contrast() {
-        let runs = responsive_acceptance_runs(Path::new("/tmp/acceptance/browser"));
-        assert_eq!(
-            runs.iter().map(|run| run.name).collect::<Vec<_>>(),
-            ["default", "expanded-copy", "large-type", "high-contrast"]
-        );
-        assert!(runs.iter().all(|run| {
-            run.args.first() == Some(&OsString::from("--responsive-matrix"))
-                && run
+    fn responsive_acceptance_covers_the_layout_and_rejects_bad_frames() {
+        // Phase: responsive_acceptance_covers_shape_copy_type_and_contrast.
+        {
+            let runs = responsive_acceptance_runs(Path::new("/tmp/acceptance/browser"));
+            assert_eq!(
+                runs.iter().map(|run| run.name).collect::<Vec<_>>(),
+                ["default", "expanded-copy", "large-type", "high-contrast"]
+            );
+            assert!(runs.iter().all(|run| {
+                run.args.first() == Some(&OsString::from("--responsive-matrix"))
+                    && run
+                        .args
+                        .get(1)
+                        .is_some_and(|path| Path::new(path).is_absolute())
+            }));
+            assert!(runs[1].args.contains(&OsString::from("--pseudo-locale")));
+            assert_eq!(runs[1].audit_extra, [OsString::from("--pseudo-locale")]);
+            assert!(
+                runs[2]
                     .args
-                    .get(1)
-                    .is_some_and(|path| Path::new(path).is_absolute())
-        }));
-        assert!(runs[1].args.contains(&OsString::from("--pseudo-locale")));
-        assert_eq!(runs[1].audit_extra, [OsString::from("--pseudo-locale")]);
-        assert!(
-            runs[2]
-                .args
-                .windows(2)
-                .any(|pair| { pair == [OsString::from("--text-scale"), OsString::from("2")] })
-        );
-        assert_eq!(RESPONSIVE_AUDIT_VIEWPORTS[0], ("phone", (390, 844)));
-        assert_eq!(
-            RESPONSIVE_AUDIT_VIEWPORTS.last(),
-            Some(&("desktop", (1920, 1080)))
-        );
-        assert_eq!(runs[3].shot_theme, Some("high-contrast"));
-    }
-
-    #[test]
-    fn responsive_png_gate_rejects_blank_or_wrong_sized_frames() {
-        let dir = tempfile::tempdir().expect("temporary screenshots");
-        let blank_path = dir.path().join("blank-phone.png");
-        image::RgbaImage::from_pixel(100, 80, image::Rgba([12, 13, 15, 255]))
-            .save(&blank_path)
-            .expect("write blank PNG");
-        assert!(validate_responsive_png(&blank_path, (100, 80)).is_err());
-
-        let mut painted = image::RgbaImage::from_pixel(100, 80, image::Rgba([12, 13, 15, 255]));
-        for x in 0..10 {
-            for y in 0..80 {
-                painted.put_pixel(x, y, image::Rgba([240, 240, 240, 255]));
-            }
+                    .windows(2)
+                    .any(|pair| { pair == [OsString::from("--text-scale"), OsString::from("2")] })
+            );
+            assert_eq!(RESPONSIVE_AUDIT_VIEWPORTS[0], ("phone", (390, 844)));
+            assert_eq!(
+                RESPONSIVE_AUDIT_VIEWPORTS.last(),
+                Some(&("desktop", (1920, 1080)))
+            );
+            assert_eq!(runs[3].shot_theme, Some("high-contrast"));
         }
-        let painted_path = dir.path().join("painted-phone.png");
-        painted.save(&painted_path).expect("write painted PNG");
-        validate_responsive_png(&painted_path, (100, 80)).expect("painted frame is useful");
-        assert!(validate_responsive_png(&painted_path, (80, 100)).is_err());
 
-        // A sparse but explicit empty state is useful UI. Even a compact
-        // centred title/action treatment occupies little of a desktop frame.
-        let mut sparse = image::RgbaImage::from_pixel(100, 100, image::Rgba([12, 13, 15, 255]));
-        for x in 47..53 {
-            for y in 47..53 {
-                sparse.put_pixel(x, y, image::Rgba([240, 240, 240, 255]));
+        // Phase: responsive_png_gate_rejects_blank_or_wrong_sized_frames.
+        {
+            let dir = tempfile::tempdir().expect("temporary screenshots");
+            let blank_path = dir.path().join("blank-phone.png");
+            image::RgbaImage::from_pixel(100, 80, image::Rgba([12, 13, 15, 255]))
+                .save(&blank_path)
+                .expect("write blank PNG");
+            assert!(validate_responsive_png(&blank_path, (100, 80)).is_err());
+
+            let mut painted = image::RgbaImage::from_pixel(100, 80, image::Rgba([12, 13, 15, 255]));
+            for x in 0..10 {
+                for y in 0..80 {
+                    painted.put_pixel(x, y, image::Rgba([240, 240, 240, 255]));
+                }
             }
+            let painted_path = dir.path().join("painted-phone.png");
+            painted.save(&painted_path).expect("write painted PNG");
+            validate_responsive_png(&painted_path, (100, 80)).expect("painted frame is useful");
+            assert!(validate_responsive_png(&painted_path, (80, 100)).is_err());
+
+            // A sparse but explicit empty state is useful UI. Even a compact
+            // centred title/action treatment occupies little of a desktop frame.
+            let mut sparse = image::RgbaImage::from_pixel(100, 100, image::Rgba([12, 13, 15, 255]));
+            for x in 47..53 {
+                for y in 47..53 {
+                    sparse.put_pixel(x, y, image::Rgba([240, 240, 240, 255]));
+                }
+            }
+            let sparse_path = dir.path().join("sparse-empty-state.png");
+            sparse.save(&sparse_path).expect("write sparse PNG");
+            validate_responsive_png(&sparse_path, (100, 100))
+                .expect("explicit sparse empty state is useful");
+
+            let mut near_blank =
+                image::RgbaImage::from_pixel(100, 100, image::Rgba([12, 13, 15, 255]));
+            near_blank.put_pixel(50, 50, image::Rgba([240, 240, 240, 255]));
+            let near_blank_path = dir.path().join("near-blank.png");
+            near_blank
+                .save(&near_blank_path)
+                .expect("write near-blank PNG");
+            assert!(validate_responsive_png(&near_blank_path, (100, 100)).is_err());
         }
-        let sparse_path = dir.path().join("sparse-empty-state.png");
-        sparse.save(&sparse_path).expect("write sparse PNG");
-        validate_responsive_png(&sparse_path, (100, 100))
-            .expect("explicit sparse empty state is useful");
-
-        let mut near_blank = image::RgbaImage::from_pixel(100, 100, image::Rgba([12, 13, 15, 255]));
-        near_blank.put_pixel(50, 50, image::Rgba([240, 240, 240, 255]));
-        let near_blank_path = dir.path().join("near-blank.png");
-        near_blank
-            .save(&near_blank_path)
-            .expect("write near-blank PNG");
-        assert!(validate_responsive_png(&near_blank_path, (100, 100)).is_err());
     }
 
+    /// shot and inspect expose direct artifact workflows; scenario run selects a case and viewport;
+    /// check composes tests, audited scenarios and artifacts; dev exposes a bounded restart loop; package
+    /// exposes reproducible build and signing options.
     #[test]
-    fn shot_and_inspect_expose_direct_artifact_workflows() {
-        let shot = Cli::try_parse_from([
-            "tilo-app",
-            "shot",
-            "apps/demo/src",
-            "--output",
-            "dark.png",
-            "--viewport",
-            "1440x900",
-            "--scenario",
-            "populated",
-            "--",
-            "--theme",
-            "dark",
-        ])
-        .expect("shot CLI");
-        let Command::Shot(shot) = shot.command else {
-            panic!("expected shot command");
-        };
-        assert_eq!(shot.path, Some(PathBuf::from("apps/demo/src")));
-        assert_eq!(shot.output, PathBuf::from("dark.png"));
-        assert_eq!(shot.viewport, Some((1440, 900)));
-        assert_eq!(shot.scenario.as_deref(), Some("populated"));
-        assert_eq!(
-            shot.forwarded,
-            [OsString::from("--theme"), OsString::from("dark")]
-        );
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
+    )]
+    fn workflow_commands_expose_bounded_reproducible_options() {
+        // Phase: shot_and_inspect_expose_direct_artifact_workflows.
+        {
+            let shot = Cli::try_parse_from([
+                "tilo-app",
+                "shot",
+                "apps/demo/src",
+                "--output",
+                "dark.png",
+                "--viewport",
+                "1440x900",
+                "--scenario",
+                "populated",
+                "--",
+                "--theme",
+                "dark",
+            ])
+            .expect("shot CLI");
+            let Command::Shot(shot) = shot.command else {
+                panic!("expected shot command");
+            };
+            assert_eq!(shot.path, Some(PathBuf::from("apps/demo/src")));
+            assert_eq!(shot.output, PathBuf::from("dark.png"));
+            assert_eq!(shot.viewport, Some((1440, 900)));
+            assert_eq!(shot.scenario.as_deref(), Some("populated"));
+            assert_eq!(
+                shot.forwarded,
+                [OsString::from("--theme"), OsString::from("dark")]
+            );
 
-        let inspect = Cli::try_parse_from([
-            "tilo-app",
-            "inspect",
-            "apps/demo/src/lib.rs",
-            "--viewport",
-            "1280X800",
-            "--actions",
-            "actions.json",
-            "--dump",
-            "state.json",
-            "--targets",
-            "targets.json",
-            "--audit",
-            "--audit-report",
-            "audit.json",
-        ])
-        .expect("inspect CLI");
-        let Command::Inspect(inspect) = inspect.command else {
-            panic!("expected inspect command");
-        };
-        assert_eq!(inspect.viewport, Some((1280, 800)));
-        assert_eq!(inspect.output, PathBuf::from("inspect.json"));
-        assert_eq!(inspect.actions, Some(PathBuf::from("actions.json")));
-        assert_eq!(inspect.dump, Some(PathBuf::from("state.json")));
-        assert_eq!(inspect.targets, Some(PathBuf::from("targets.json")));
-        assert!(inspect.audit);
-        assert_eq!(inspect.audit_report, Some(PathBuf::from("audit.json")));
+            let inspect = Cli::try_parse_from([
+                "tilo-app",
+                "inspect",
+                "apps/demo/src/lib.rs",
+                "--viewport",
+                "1280X800",
+                "--actions",
+                "actions.json",
+                "--dump",
+                "state.json",
+                "--targets",
+                "targets.json",
+                "--audit",
+                "--audit-report",
+                "audit.json",
+            ])
+            .expect("inspect CLI");
+            let Command::Inspect(inspect) = inspect.command else {
+                panic!("expected inspect command");
+            };
+            assert_eq!(inspect.viewport, Some((1280, 800)));
+            assert_eq!(inspect.output, PathBuf::from("inspect.json"));
+            assert_eq!(inspect.actions, Some(PathBuf::from("actions.json")));
+            assert_eq!(inspect.dump, Some(PathBuf::from("state.json")));
+            assert_eq!(inspect.targets, Some(PathBuf::from("targets.json")));
+            assert!(inspect.audit);
+            assert_eq!(inspect.audit_report, Some(PathBuf::from("audit.json")));
 
-        assert!(Cli::try_parse_from(["tilo-app", "inspect", "--viewport", "1280x0"]).is_err());
-    }
+            assert!(Cli::try_parse_from(["tilo-app", "inspect", "--viewport", "1280x0"]).is_err());
+        }
 
-    #[test]
-    fn scenario_run_selects_a_case_and_viewport() {
-        let cli = Cli::try_parse_from([
-            "tilo-app",
-            "scenario",
-            "run",
-            "empty-state",
-            "--viewport",
-            "1024x768",
-            "--app",
-            "apps/demo/src",
-            "--artifacts",
-            "target/scenarios",
-            "--audit",
-        ])
-        .expect("scenario CLI");
-        let Command::Scenario(ScenarioArgs {
-            command:
-                ScenarioCommand::Run {
-                    name,
-                    app,
-                    viewport,
-                    artifacts,
-                    audit,
-                },
-        }) = cli.command
-        else {
-            panic!("expected scenario run command");
-        };
-        assert_eq!(name.as_deref(), Some("empty-state"));
-        assert_eq!(app, Some(PathBuf::from("apps/demo/src")));
-        assert_eq!(viewport, Some((1024, 768)));
-        assert_eq!(artifacts, Some(PathBuf::from("target/scenarios")));
-        assert!(audit);
-    }
+        // Phase: scenario_run_selects_a_case_and_viewport.
+        {
+            let cli = Cli::try_parse_from([
+                "tilo-app",
+                "scenario",
+                "run",
+                "empty-state",
+                "--viewport",
+                "1024x768",
+                "--app",
+                "apps/demo/src",
+                "--artifacts",
+                "target/scenarios",
+                "--audit",
+            ])
+            .expect("scenario CLI");
+            let Command::Scenario(ScenarioArgs {
+                command:
+                    ScenarioCommand::Run {
+                        name,
+                        app,
+                        viewport,
+                        artifacts,
+                        audit,
+                    },
+            }) = cli.command
+            else {
+                panic!("expected scenario run command");
+            };
+            assert_eq!(name.as_deref(), Some("empty-state"));
+            assert_eq!(app, Some(PathBuf::from("apps/demo/src")));
+            assert_eq!(viewport, Some((1024, 768)));
+            assert_eq!(artifacts, Some(PathBuf::from("target/scenarios")));
+            assert!(audit);
+        }
 
-    #[test]
-    fn check_composes_tests_audited_scenarios_and_artifacts() {
-        let cli = Cli::try_parse_from([
-            "tilo-app",
-            "check",
-            "apps/demo/src",
-            "--viewport",
-            "1280x720",
-            "--artifacts",
-            "target/check",
-            "--fix",
-            "--",
-            "--nocapture",
-        ])
-        .expect("check CLI");
-        let Command::Check(args) = cli.command else {
-            panic!("expected check command");
-        };
-        assert_eq!(args.path, Some(PathBuf::from("apps/demo/src")));
-        assert_eq!(args.viewport, Some((1280, 720)));
-        assert_eq!(args.artifacts, Some(PathBuf::from("target/check")));
-        assert!(!args.no_scenarios);
-        assert!(args.fix);
-        assert_eq!(args.forwarded, [OsString::from("--nocapture")]);
-    }
+        // Phase: check_composes_tests_audited_scenarios_and_artifacts.
+        {
+            let cli = Cli::try_parse_from([
+                "tilo-app",
+                "check",
+                "apps/demo/src",
+                "--viewport",
+                "1280x720",
+                "--artifacts",
+                "target/check",
+                "--fix",
+                "--",
+                "--nocapture",
+            ])
+            .expect("check CLI");
+            let Command::Check(args) = cli.command else {
+                panic!("expected check command");
+            };
+            assert_eq!(args.path, Some(PathBuf::from("apps/demo/src")));
+            assert_eq!(args.viewport, Some((1280, 720)));
+            assert_eq!(args.artifacts, Some(PathBuf::from("target/check")));
+            assert!(!args.no_scenarios);
+            assert!(args.fix);
+            assert_eq!(args.forwarded, [OsString::from("--nocapture")]);
+        }
 
-    #[test]
-    fn dev_exposes_a_bounded_restart_loop() {
-        let cli = Cli::try_parse_from([
-            "tilo-app",
-            "dev",
-            "apps/demo/src",
-            "--debounce-ms",
-            "75",
-            "--app-only",
-            "--",
-            "--document",
-            "sample.qdoc",
-        ])
-        .expect("dev CLI");
-        let Command::Dev(dev) = cli.command else {
-            panic!("expected dev command");
-        };
-        assert_eq!(dev.path, Some(PathBuf::from("apps/demo/src")));
-        assert_eq!(dev.debounce_ms.get(), 75);
-        assert!(dev.app_only);
-        assert_eq!(
-            dev.forwarded,
-            [OsString::from("--document"), OsString::from("sample.qdoc")]
-        );
-        assert!(Cli::try_parse_from(["tilo-app", "dev", "--debounce-ms", "0"]).is_err());
-    }
+        // Phase: dev_exposes_a_bounded_restart_loop.
+        {
+            let cli = Cli::try_parse_from([
+                "tilo-app",
+                "dev",
+                "apps/demo/src",
+                "--debounce-ms",
+                "75",
+                "--app-only",
+                "--",
+                "--document",
+                "sample.qdoc",
+            ])
+            .expect("dev CLI");
+            let Command::Dev(dev) = cli.command else {
+                panic!("expected dev command");
+            };
+            assert_eq!(dev.path, Some(PathBuf::from("apps/demo/src")));
+            assert_eq!(dev.debounce_ms.get(), 75);
+            assert!(dev.app_only);
+            assert_eq!(
+                dev.forwarded,
+                [OsString::from("--document"), OsString::from("sample.qdoc")]
+            );
+            assert!(Cli::try_parse_from(["tilo-app", "dev", "--debounce-ms", "0"]).is_err());
+        }
 
-    #[test]
-    fn package_exposes_reproducible_build_and_signing_options() {
-        let cli = Cli::try_parse_from([
-            "tilo-app",
-            "package",
-            "apps/demo/src",
-            "--output",
-            "dist/demo-dev.tapp",
-            "--identity",
-            "publisher.json",
-            "--profile",
-            "distribution",
-            "--fat",
-            "--target",
-            "x86_64-unknown-linux-gnu",
-            "--features",
-            "sqlite,telemetry",
-            "--no-default-features",
-            "--force",
-        ])
-        .expect("package CLI");
-        let Command::Package(package) = cli.command else {
-            panic!("expected package command");
-        };
-        assert_eq!(package.path, Some(PathBuf::from("apps/demo/src")));
-        assert_eq!(package.output, Some(PathBuf::from("dist/demo-dev.tapp")));
-        assert_eq!(package.identity, Some(PathBuf::from("publisher.json")));
-        assert_eq!(package.profile.as_deref(), Some("distribution"));
-        assert!(package.fat);
-        assert_eq!(package.target.as_deref(), Some("x86_64-unknown-linux-gnu"));
-        assert_eq!(package.features, ["sqlite", "telemetry"]);
-        assert!(package.no_default_features);
-        assert!(package.force);
+        // Phase: package_exposes_reproducible_build_and_signing_options.
+        {
+            let cli = Cli::try_parse_from([
+                "tilo-app",
+                "package",
+                "apps/demo/src",
+                "--output",
+                "dist/demo-dev.tapp",
+                "--identity",
+                "publisher.json",
+                "--profile",
+                "distribution",
+                "--fat",
+                "--target",
+                "x86_64-unknown-linux-gnu",
+                "--features",
+                "sqlite,telemetry",
+                "--no-default-features",
+                "--force",
+            ])
+            .expect("package CLI");
+            let Command::Package(package) = cli.command else {
+                panic!("expected package command");
+            };
+            assert_eq!(package.path, Some(PathBuf::from("apps/demo/src")));
+            assert_eq!(package.output, Some(PathBuf::from("dist/demo-dev.tapp")));
+            assert_eq!(package.identity, Some(PathBuf::from("publisher.json")));
+            assert_eq!(package.profile.as_deref(), Some("distribution"));
+            assert!(package.fat);
+            assert_eq!(package.target.as_deref(), Some("x86_64-unknown-linux-gnu"));
+            assert_eq!(package.features, ["sqlite", "telemetry"]);
+            assert!(package.no_default_features);
+            assert!(package.force);
 
-        let defaults = Cli::try_parse_from(["tilo-app", "package"]).expect("package defaults");
-        let Command::Package(defaults) = defaults.command else {
-            panic!("expected package command");
-        };
-        assert_eq!(defaults.profile, None);
-        assert!(!defaults.fat);
-        assert!(!defaults.force);
+            let defaults = Cli::try_parse_from(["tilo-app", "package"]).expect("package defaults");
+            let Command::Package(defaults) = defaults.command else {
+                panic!("expected package command");
+            };
+            assert_eq!(defaults.profile, None);
+            assert!(!defaults.fat);
+            assert!(!defaults.force);
+        }
     }
 
     #[test]
@@ -2183,93 +2221,35 @@ mod tests {
         }
     }
 
+    /// UI builder commands require unambiguous node sources; ui set accepts one typed property edit;
+    /// ui apply reads and publishes one complete batch.
     #[test]
-    fn ui_builder_commands_require_unambiguous_node_sources() {
-        let edit = Cli::try_parse_from([
-            "tilo-app",
-            "ui",
-            "edit",
-            "ui/main.json",
-            "--builder",
-            "/opt/tilo-ui-builder",
-        ])
-        .expect("UI edit command");
-        let Command::Ui(UiArgs {
-            command: UiCommand::Edit { file, builder },
-        }) = edit.command
-        else {
-            panic!("expected UI edit command");
-        };
-        assert_eq!(file, PathBuf::from("ui/main.json"));
-        assert_eq!(builder, Some(OsString::from("/opt/tilo-ui-builder")));
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
+    )]
+    fn ui_builder_commands_take_unambiguous_sources_and_whole_edits() {
+        // Phase: ui_builder_commands_require_unambiguous_node_sources.
+        {
+            let edit = Cli::try_parse_from([
+                "tilo-app",
+                "ui",
+                "edit",
+                "ui/main.json",
+                "--builder",
+                "/opt/tilo-ui-builder",
+            ])
+            .expect("UI edit command");
+            let Command::Ui(UiArgs {
+                command: UiCommand::Edit { file, builder },
+            }) = edit.command
+            else {
+                panic!("expected UI edit command");
+            };
+            assert_eq!(file, PathBuf::from("ui/main.json"));
+            assert_eq!(builder, Some(OsString::from("/opt/tilo-ui-builder")));
 
-        let insert = Cli::try_parse_from([
-            "tilo-app",
-            "ui",
-            "insert",
-            "ui/main.json",
-            "--parent",
-            "root",
-            "--index",
-            "2",
-            "--node",
-            r#"{"type":"spacer","id":"gap"}"#,
-        ])
-        .expect("UI insert command");
-        let Command::Ui(UiArgs {
-            command:
-                UiCommand::Insert {
-                    parent,
-                    index,
-                    source,
-                    ..
-                },
-        }) = insert.command
-        else {
-            panic!("expected UI insert command");
-        };
-        assert_eq!(parent, "root");
-        assert_eq!(index, 2);
-        assert!(source.node.is_some());
-        assert!(source.node_file.is_none());
-
-        let component = Cli::try_parse_from([
-            "tilo-app",
-            "ui",
-            "component",
-            "ui/main.json",
-            "profile-card",
-            "--props",
-            r#"{"title":"Ada","detail":"Owner"}"#,
-        ])
-        .expect("UI component command");
-        let Command::Ui(UiArgs {
-            command:
-                UiCommand::Component {
-                    file,
-                    name,
-                    id,
-                    parent,
-                    index,
-                    props,
-                },
-        }) = component.command
-        else {
-            panic!("expected UI component command");
-        };
-        assert_eq!(file, PathBuf::from("ui/main.json"));
-        assert_eq!(name, "profile-card");
-        assert_eq!(id, None);
-        assert_eq!(parent, "root");
-        assert_eq!(index, None);
-        assert!(props.contains("Ada"));
-
-        assert!(
-            Cli::try_parse_from(["tilo-app", "ui", "replace", "ui/main.json", "--id", "body",])
-                .is_err()
-        );
-        assert!(
-            Cli::try_parse_from([
+            let insert = Cli::try_parse_from([
                 "tilo-app",
                 "ui",
                 "insert",
@@ -2277,59 +2257,85 @@ mod tests {
                 "--parent",
                 "root",
                 "--index",
-                "0",
+                "2",
                 "--node",
-                r#"{"type":"spacer","id":"a"}"#,
-                "--node-file",
-                "node.json",
+                r#"{"type":"spacer","id":"gap"}"#,
             ])
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn ui_set_accepts_one_typed_property_edit() {
-        let set = Cli::try_parse_from([
-            "tilo-app",
-            "ui",
-            "set",
-            "ui/main.json",
-            "--id",
-            "title",
-            "--property",
-            "text.value",
-            "--value",
-            "Recent projects",
-        ])
-        .expect("UI property command");
-        assert!(matches!(
-            set.command,
-            Command::Ui(UiArgs {
-                command: UiCommand::Set {
-                    edit: PropertyEditArgs {
-                        value: Some(_),
-                        unset: false,
+            .expect("UI insert command");
+            let Command::Ui(UiArgs {
+                command:
+                    UiCommand::Insert {
+                        parent,
+                        index,
+                        source,
+                        ..
                     },
-                    ..
-                }
-            })
-        ));
+            }) = insert.command
+            else {
+                panic!("expected UI insert command");
+            };
+            assert_eq!(parent, "root");
+            assert_eq!(index, 2);
+            assert!(source.node.is_some());
+            assert!(source.node_file.is_none());
 
-        assert!(
-            Cli::try_parse_from([
+            let component = Cli::try_parse_from([
                 "tilo-app",
                 "ui",
-                "set",
+                "component",
                 "ui/main.json",
-                "--id",
-                "title",
-                "--property",
-                "size",
+                "profile-card",
+                "--props",
+                r#"{"title":"Ada","detail":"Owner"}"#,
             ])
-            .is_err()
-        );
-        assert!(
-            Cli::try_parse_from([
+            .expect("UI component command");
+            let Command::Ui(UiArgs {
+                command:
+                    UiCommand::Component {
+                        file,
+                        name,
+                        id,
+                        parent,
+                        index,
+                        props,
+                    },
+            }) = component.command
+            else {
+                panic!("expected UI component command");
+            };
+            assert_eq!(file, PathBuf::from("ui/main.json"));
+            assert_eq!(name, "profile-card");
+            assert_eq!(id, None);
+            assert_eq!(parent, "root");
+            assert_eq!(index, None);
+            assert!(props.contains("Ada"));
+
+            assert!(
+                Cli::try_parse_from(["tilo-app", "ui", "replace", "ui/main.json", "--id", "body",])
+                    .is_err()
+            );
+            assert!(
+                Cli::try_parse_from([
+                    "tilo-app",
+                    "ui",
+                    "insert",
+                    "ui/main.json",
+                    "--parent",
+                    "root",
+                    "--index",
+                    "0",
+                    "--node",
+                    r#"{"type":"spacer","id":"a"}"#,
+                    "--node-file",
+                    "node.json",
+                ])
+                .is_err()
+            );
+        }
+
+        // Phase: ui_set_accepts_one_typed_property_edit.
+        {
+            let set = Cli::try_parse_from([
                 "tilo-app",
                 "ui",
                 "set",
@@ -2337,64 +2343,105 @@ mod tests {
                 "--id",
                 "title",
                 "--property",
-                "size",
+                "text.value",
                 "--value",
-                "24",
-                "--unset",
+                "Recent projects",
             ])
-            .is_err()
-        );
-        assert_eq!(
-            parse_ui_property_value("true".into()),
-            serde_json::json!(true)
-        );
-        assert_eq!(parse_ui_property_value("24".into()), serde_json::json!(24));
-        assert_eq!(
-            parse_ui_property_value("Recent projects".into()),
-            serde_json::json!("Recent projects")
-        );
+            .expect("UI property command");
+            assert!(matches!(
+                set.command,
+                Command::Ui(UiArgs {
+                    command: UiCommand::Set {
+                        edit: PropertyEditArgs {
+                            value: Some(_),
+                            unset: false,
+                        },
+                        ..
+                    }
+                })
+            ));
 
-        let apply =
-            Cli::try_parse_from(["tilo-app", "ui", "apply", "ui/main.json", "ui/edits.json"])
-                .expect("UI batch command");
-        assert!(matches!(
-            apply.command,
-            Command::Ui(UiArgs {
-                command: UiCommand::Apply { file, edits }
-            }) if file.as_path() == std::path::Path::new("ui/main.json")
-                && edits.as_path() == std::path::Path::new("ui/edits.json")
-        ));
-    }
+            assert!(
+                Cli::try_parse_from([
+                    "tilo-app",
+                    "ui",
+                    "set",
+                    "ui/main.json",
+                    "--id",
+                    "title",
+                    "--property",
+                    "size",
+                ])
+                .is_err()
+            );
+            assert!(
+                Cli::try_parse_from([
+                    "tilo-app",
+                    "ui",
+                    "set",
+                    "ui/main.json",
+                    "--id",
+                    "title",
+                    "--property",
+                    "size",
+                    "--value",
+                    "24",
+                    "--unset",
+                ])
+                .is_err()
+            );
+            assert_eq!(
+                parse_ui_property_value("true".into()),
+                serde_json::json!(true)
+            );
+            assert_eq!(parse_ui_property_value("24".into()), serde_json::json!(24));
+            assert_eq!(
+                parse_ui_property_value("Recent projects".into()),
+                serde_json::json!("Recent projects")
+            );
 
-    #[test]
-    fn ui_apply_reads_and_publishes_one_complete_batch() {
-        let temp = tempfile::tempdir().expect("temp dir");
-        let graph = temp.path().join("main.json");
-        let edits = temp.path().join("edits.json");
-        tilo_app_cli::init_ui_graph(&graph, "Projects", false).unwrap();
-        std::fs::write(
-            &edits,
-            r#"[
-              {"op":"set-property","id":"title","property":"text.value","value":"Recent projects"},
-              {"op":"insert","parent":"root","index":2,"node":{"type":"button","id":"open","label":"Open"}}
-            ]"#,
-        )
-        .unwrap();
+            let apply =
+                Cli::try_parse_from(["tilo-app", "ui", "apply", "ui/main.json", "ui/edits.json"])
+                    .expect("UI batch command");
+            assert!(matches!(
+                apply.command,
+                Command::Ui(UiArgs {
+                    command: UiCommand::Apply { file, edits }
+                }) if file.as_path() == std::path::Path::new("ui/main.json")
+                    && edits.as_path() == std::path::Path::new("ui/edits.json")
+            ));
+        }
 
-        run_ui(UiArgs {
-            command: UiCommand::Apply {
-                file: graph.clone(),
-                edits,
-            },
-        })
-        .expect("apply batch through CLI handler");
+        // Phase: ui_apply_reads_and_publishes_one_complete_batch.
+        {
+            let temp = tempfile::tempdir().expect("temp dir");
+            let graph = temp.path().join("main.json");
+            let edits = temp.path().join("edits.json");
+            tilo_app_cli::init_ui_graph(&graph, "Projects", false).unwrap();
+            std::fs::write(
+                &edits,
+                r#"[
+                  {"op":"set-property","id":"title","property":"text.value","value":"Recent projects"},
+                  {"op":"insert","parent":"root","index":2,"node":{"type":"button","id":"open","label":"Open"}}
+                ]"#,
+            )
+            .unwrap();
 
-        let document = tilo_app_cli::load_ui_graph(&graph).unwrap();
-        assert!(document.node("open").is_some());
-        assert!(
-            std::fs::read_to_string(graph)
-                .unwrap()
-                .contains("Recent projects")
-        );
+            run_ui(UiArgs {
+                command: UiCommand::Apply {
+                    file: graph.clone(),
+                    edits,
+                },
+            })
+            .expect("apply batch through CLI handler");
+
+            let document = tilo_app_cli::load_ui_graph(&graph).unwrap();
+            assert!(document.node("open").is_some());
+            assert!(
+                std::fs::read_to_string(graph)
+                    .unwrap()
+                    .contains("Recent projects")
+            );
+        }
     }
 }

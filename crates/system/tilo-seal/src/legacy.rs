@@ -130,29 +130,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn blake3_key_is_order_sensitive_and_symmetric_in_the_agreement() {
-        let a = SecretKey::from_bytes([0x11; 32]);
-        let b = SecretKey::from_bytes([0x22; 32]);
-        let ka = blake3_x25519_key(&a, &b.public_key().unwrap(), b"d", &[b"x", b"y"]).unwrap();
-        let kb = blake3_x25519_key(&b, &a.public_key().unwrap(), b"d", &[b"x", b"y"]).unwrap();
-        assert_eq!(ka, kb);
-        let swapped = blake3_x25519_key(&a, &b.public_key().unwrap(), b"d", &[b"y", b"x"]).unwrap();
-        assert_ne!(ka, swapped);
-    }
-
-    #[test]
-    fn transition_seal_opens_with_the_legacy_reader() {
-        let key = SymmetricKey::from_bytes([9; 32]);
-        let (nonce, ct) = seal_chacha20poly1305_for_transition(&key, b"aad", b"pt").unwrap();
-        assert_eq!(
-            open_chacha20poly1305(&key, &nonce, b"aad", &ct)
-                .unwrap()
-                .as_slice(),
-            b"pt"
-        );
-        assert_eq!(
-            open_chacha20poly1305(&key, &nonce, b"other", &ct),
-            Err(Error::Authentication)
-        );
+    fn legacy_keys_and_transition_seals_stay_readable() {
+        // Phase `blake3_key_is_order_sensitive_and_symmetric_in_the_agreement`.
+        {
+            let a = SecretKey::from_bytes([0x11; 32]);
+            let b = SecretKey::from_bytes([0x22; 32]);
+            let ka = blake3_x25519_key(&a, &b.public_key().unwrap(), b"d", &[b"x", b"y"]).unwrap();
+            let kb = blake3_x25519_key(&b, &a.public_key().unwrap(), b"d", &[b"x", b"y"]).unwrap();
+            assert_eq!(ka, kb);
+            let swapped =
+                blake3_x25519_key(&a, &b.public_key().unwrap(), b"d", &[b"y", b"x"]).unwrap();
+            assert_ne!(ka, swapped);
+        }
+        // Phase `transition_seal_opens_with_the_legacy_reader`.
+        {
+            let key = SymmetricKey::from_bytes([9; 32]);
+            let (nonce, ct) = seal_chacha20poly1305_for_transition(&key, b"aad", b"pt").unwrap();
+            assert_eq!(
+                open_chacha20poly1305(&key, &nonce, b"aad", &ct)
+                    .unwrap()
+                    .as_slice(),
+                b"pt"
+            );
+            assert_eq!(
+                open_chacha20poly1305(&key, &nonce, b"other", &ct),
+                Err(Error::Authentication)
+            );
+        }
     }
 }

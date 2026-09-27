@@ -2101,510 +2101,537 @@ mod tests {
         ids
     }
 
+    /// Continuity controls, conflict summaries, refused future provenance and redacted audit rows.
     #[test]
-    fn continuity_ui_exposes_master_and_every_typed_capability_control() {
-        let dir = tempfile::tempdir().unwrap();
-        let pane = DeviceMeshPane::with_path(&dir.path().join("relay.toml"));
-        let composition = pane.build_composition();
-        let ids = test_ids(composition.as_ref());
+    fn continuity_controls_are_typed_audited_and_refuse_future_provenance() {
+        // Case `continuity_ui_exposes_master_and_every_typed_capability_control`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let pane = DeviceMeshPane::with_path(&dir.path().join("relay.toml"));
+            let composition = pane.build_composition();
+            let ids = test_ids(composition.as_ref());
 
-        assert!(ids.iter().any(|id| id == CONTINUITY_ENABLED_KEY));
-        for capability in Capability::ALL {
-            let key = continuity_key(capability);
-            assert!(ids.iter().any(|id| id == &key), "missing {key}");
+            assert!(ids.iter().any(|id| id == CONTINUITY_ENABLED_KEY));
+            for capability in Capability::ALL {
+                let key = continuity_key(capability);
+                assert!(ids.iter().any(|id| id == &key), "missing {key}");
+            }
+        }
+
+        // Case `roaming_conflict_summaries_name_deterministic_winners_without_secrets`.
+        {
+            let origin = |id: &str, label: &str, counter| Origin {
+                device_id: id.into(),
+                device_label: label.into(),
+                counter,
+            };
+            let projection = RoamingProvenance {
+                schema_version: SCHEMA_VERSION,
+                generated_unix_ms: 1,
+                settings: vec![SettingResolution {
+                    key: "tilo.appearance.theme".into(),
+                    winner: origin("b", "Laptop", 8),
+                    alternatives: vec![origin("a", "Desktop", 7)],
+                }],
+                wifi: vec![WifiResolution {
+                    network_id: "ab".repeat(32),
+                    ssid: "Home".into(),
+                    security: "WPA2".into(),
+                    winner: origin("b", "Laptop", 9),
+                    alternatives: Vec::new(),
+                }],
+            };
+            let summaries = provenance_summaries(&projection);
+            assert_eq!(
+                summaries,
+                vec![
+                    (
+                        "tilo.appearance.theme".into(),
+                        "Resolved to Laptop · revision 8; differs from Desktop".into()
+                    ),
+                    (
+                        "Wi-Fi · Home".into(),
+                        "Sealed WPA2 profile. From Laptop · revision 9".into()
+                    )
+                ]
+            );
+            let encoded = format!("{summaries:?}");
+            assert!(!encoded.contains("password"));
+            assert!(!encoded.contains("sealed_secret"));
+        }
+
+        // Case `future_provenance_is_refused_instead_of_partially_rendered`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir
+                .path()
+                .join(settings_store::roaming_provenance::FILE_NAME);
+            std::fs::write(&path, r#"{"schema_version":99}"#).unwrap();
+            let (projection, status, _) = load_roaming_provenance(Some(&path));
+            assert!(projection.is_none());
+            assert!(
+                status
+                    .unwrap()
+                    .contains("unsupported roaming provenance schema 99")
+            );
+        }
+
+        // Case `continuity_edits_persist_locally_and_append_redacted_audit_rows`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let mut pane = DeviceMeshPane::with_path(&dir.path().join("relay.toml"));
+            pane.apply_command(&crate::actions::DeviceMeshOperation::SetService {
+                service: "continuity.enabled".into(),
+                enabled: true,
+            });
+            pane.apply_command(&crate::actions::DeviceMeshOperation::SetService {
+                service: "continuity.clipboard".into(),
+                enabled: true,
+            });
+
+            let saved = ContinuityPrivacy::load_at(&dir.path().join("settings.json"));
+            assert!(saved.enabled);
+            assert!(saved.effective(Capability::Clipboard));
+            assert_eq!(saved.audit.len(), 2);
+            let encoded = serde_json::to_string(&saved.audit).unwrap();
+            for forbidden in ["payload", "token", "address", "file_name"] {
+                assert!(!encoded.contains(forbidden));
+            }
         }
     }
 
+    /// Relay config shape, honest missing config, file policy intents and non-blocking coalesced applies.
     #[test]
-    fn roaming_conflict_summaries_name_deterministic_winners_without_secrets() {
-        let origin = |id: &str, label: &str, counter| Origin {
-            device_id: id.into(),
-            device_label: label.into(),
-            counter,
-        };
-        let projection = RoamingProvenance {
-            schema_version: SCHEMA_VERSION,
-            generated_unix_ms: 1,
-            settings: vec![SettingResolution {
-                key: "tilo.appearance.theme".into(),
-                winner: origin("b", "Laptop", 8),
-                alternatives: vec![origin("a", "Desktop", 7)],
-            }],
-            wifi: vec![WifiResolution {
-                network_id: "ab".repeat(32),
-                ssid: "Home".into(),
-                security: "WPA2".into(),
-                winner: origin("b", "Laptop", 9),
-                alternatives: Vec::new(),
-            }],
-        };
-        let summaries = provenance_summaries(&projection);
-        assert_eq!(
-            summaries,
-            vec![
-                (
-                    "tilo.appearance.theme".into(),
-                    "Resolved to Laptop · revision 8; differs from Desktop".into()
-                ),
-                (
-                    "Wi-Fi · Home".into(),
-                    "Sealed WPA2 profile. From Laptop · revision 9".into()
-                )
-            ]
-        );
-        let encoded = format!("{summaries:?}");
-        assert!(!encoded.contains("password"));
-        assert!(!encoded.contains("sealed_secret"));
-    }
+    fn relay_config_edits_are_real_honest_and_coalesced() {
+        // Case `edits_write_the_real_relay_config_shape`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("relay.toml");
+            let mut config = RelayConfig::default();
+            config.workspaces.push(WorkspaceBinding {
+                id: 7,
+                pin: true,
+                replication: ReplicationIntent::OnDemand,
+                admitted_users: Vec::new(),
+            });
+            config.save(&path).unwrap();
 
-    #[test]
-    fn future_provenance_is_refused_instead_of_partially_rendered() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir
-            .path()
-            .join(settings_store::roaming_provenance::FILE_NAME);
-        std::fs::write(&path, r#"{"schema_version":99}"#).unwrap();
-        let (projection, status, _) = load_roaming_provenance(Some(&path));
-        assert!(projection.is_none());
-        assert!(
-            status
-                .unwrap()
-                .contains("unsupported roaming provenance schema 99")
-        );
-    }
+            let mut pane = DeviceMeshPane::with_path(&path);
+            let mut doc = AutoCommit::new();
+            pane.sync(&mut doc, &automerge::ROOT);
+            pane.apply_command(&crate::actions::DeviceMeshOperation::SetRole {
+                role: ROLE_ACTIVE.into(),
+            });
+            pane.apply_command(&crate::actions::DeviceMeshOperation::SetReplication {
+                replication: REPLICATION_FULL.into(),
+            });
+            pane.apply_command(&crate::actions::DeviceMeshOperation::SetService {
+                service: "remote_control_relay".into(),
+                enabled: false,
+            });
 
-    #[test]
-    fn continuity_edits_persist_locally_and_append_redacted_audit_rows() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut pane = DeviceMeshPane::with_path(&dir.path().join("relay.toml"));
-        pane.apply_command(&crate::actions::DeviceMeshOperation::SetService {
-            service: "continuity.enabled".into(),
-            enabled: true,
-        });
-        pane.apply_command(&crate::actions::DeviceMeshOperation::SetService {
-            service: "continuity.clipboard".into(),
-            enabled: true,
-        });
-
-        let saved = ContinuityPrivacy::load_at(&dir.path().join("settings.json"));
-        assert!(saved.enabled);
-        assert!(saved.effective(Capability::Clipboard));
-        assert_eq!(saved.audit.len(), 2);
-        let encoded = serde_json::to_string(&saved.audit).unwrap();
-        for forbidden in ["payload", "token", "address", "file_name"] {
-            assert!(!encoded.contains(forbidden));
+            let saved = RelayConfig::load(&path).unwrap();
+            assert_eq!(saved.device_role, DeviceRole::Hybrid);
+            assert_eq!(
+                saved.workspaces[0].replication,
+                ReplicationIntent::FullWorkspace
+            );
+            assert!(!saved.services.remote_control_relay);
         }
-    }
 
-    #[test]
-    fn edits_write_the_real_relay_config_shape() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("relay.toml");
-        let mut config = RelayConfig::default();
-        config.workspaces.push(WorkspaceBinding {
-            id: 7,
-            pin: true,
-            replication: ReplicationIntent::OnDemand,
-            admitted_users: Vec::new(),
-        });
-        config.save(&path).unwrap();
+        // Case `missing_config_is_honest_and_not_created_until_an_edit`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("relay.toml");
+            let mut pane = DeviceMeshPane::with_path(&path);
+            assert!(pane.load_status.contains("Not configured"));
+            assert_eq!(pane.config.device_role, DeviceRole::Interactive);
+            assert_eq!(
+                pane.config.services,
+                tilo_relay_protocol::ServiceCapabilities::default()
+            );
+            let mut doc = AutoCommit::new();
+            pane.sync(&mut doc, &automerge::ROOT);
+            assert!(!path.exists());
+            pane.apply_command(&crate::actions::DeviceMeshOperation::SetRole {
+                role: ROLE_ACTIVE.into(),
+            });
+            assert!(path.exists());
+        }
 
-        let mut pane = DeviceMeshPane::with_path(&path);
-        let mut doc = AutoCommit::new();
-        pane.sync(&mut doc, &automerge::ROOT);
-        pane.apply_command(&crate::actions::DeviceMeshOperation::SetRole {
-            role: ROLE_ACTIVE.into(),
-        });
-        pane.apply_command(&crate::actions::DeviceMeshOperation::SetReplication {
-            replication: REPLICATION_FULL.into(),
-        });
-        pane.apply_command(&crate::actions::DeviceMeshOperation::SetService {
-            service: "remote_control_relay".into(),
-            enabled: false,
-        });
+        // Case `file_policy_labels_map_to_the_existing_replication_intents`.
+        {
+            assert_eq!(
+                replication_from_label(REPLICATION_WORKSPACE),
+                Some(ReplicationIntent::WorkspaceOnly)
+            );
+            assert_eq!(
+                replication_from_label(REPLICATION_ON_DEMAND),
+                Some(ReplicationIntent::OnDemand)
+            );
+            assert_eq!(
+                replication_from_label(REPLICATION_FULL),
+                Some(ReplicationIntent::FullWorkspace)
+            );
+            assert_eq!(
+                replication_label(&ReplicationIntent::OnDemand),
+                REPLICATION_ON_DEMAND
+            );
+            assert_eq!(
+                replication_label(&ReplicationIntent::FullWorkspace),
+                REPLICATION_FULL
+            );
+            assert!(
+                replication_description(&ReplicationIntent::OnDemand)
+                    .contains("preview thumbnails")
+            );
+            assert!(
+                replication_description(&ReplicationIntent::FullWorkspace)
+                    .contains("full file copies")
+            );
+        }
 
-        let saved = RelayConfig::load(&path).unwrap();
-        assert_eq!(saved.device_role, DeviceRole::Hybrid);
-        assert_eq!(
-            saved.workspaces[0].replication,
-            ReplicationIntent::FullWorkspace
-        );
-        assert!(!saved.services.remote_control_relay);
-    }
+        // Case `active_config_apply_is_polled_without_blocking_and_coalesces_edits`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let mut pane = DeviceMeshPane::with_path(&dir.path().join("relay.toml"));
+            pane.config_path = PathBuf::from(DEFAULT_CONFIG);
+            let mut command = Command::new("sleep");
+            command.arg("2");
+            pane.apply_child = Some(
+                bounded_command::spawn_prepared(command, None, 64, Duration::from_secs(5)).unwrap(),
+            );
 
-    #[test]
-    fn missing_config_is_honest_and_not_created_until_an_edit() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("relay.toml");
-        let mut pane = DeviceMeshPane::with_path(&path);
-        assert!(pane.load_status.contains("Not configured"));
-        assert_eq!(pane.config.device_role, DeviceRole::Interactive);
-        assert_eq!(
-            pane.config.services,
-            tilo_relay_protocol::ServiceCapabilities::default()
-        );
-        let mut doc = AutoCommit::new();
-        pane.sync(&mut doc, &automerge::ROOT);
-        assert!(!path.exists());
-        pane.apply_command(&crate::actions::DeviceMeshOperation::SetRole {
-            role: ROLE_ACTIVE.into(),
-        });
-        assert!(path.exists());
-    }
-
-    #[test]
-    fn file_policy_labels_map_to_the_existing_replication_intents() {
-        assert_eq!(
-            replication_from_label(REPLICATION_WORKSPACE),
-            Some(ReplicationIntent::WorkspaceOnly)
-        );
-        assert_eq!(
-            replication_from_label(REPLICATION_ON_DEMAND),
-            Some(ReplicationIntent::OnDemand)
-        );
-        assert_eq!(
-            replication_from_label(REPLICATION_FULL),
-            Some(ReplicationIntent::FullWorkspace)
-        );
-        assert_eq!(
-            replication_label(&ReplicationIntent::OnDemand),
-            REPLICATION_ON_DEMAND
-        );
-        assert_eq!(
-            replication_label(&ReplicationIntent::FullWorkspace),
-            REPLICATION_FULL
-        );
-        assert!(
-            replication_description(&ReplicationIntent::OnDemand).contains("preview thumbnails")
-        );
-        assert!(
-            replication_description(&ReplicationIntent::FullWorkspace).contains("full file copies")
-        );
-    }
-
-    #[test]
-    fn advanced_services_only_appear_for_devices_that_can_serve() {
-        assert!(!shows_advanced_services(DeviceRole::Interactive));
-        assert!(shows_advanced_services(DeviceRole::Hybrid));
-        assert!(shows_advanced_services(DeviceRole::AlwaysOnServer));
-    }
-
-    #[test]
-    fn changing_between_personal_and_serving_roles_requests_a_rebuild() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("relay.toml");
-        let config = RelayConfig {
-            device_role: DeviceRole::Interactive,
-            ..RelayConfig::default()
-        };
-        config.save(&path).unwrap();
-        let mut pane = DeviceMeshPane::with_path(&path);
-        let mut doc = AutoCommit::new();
-        pane.sync(&mut doc, &automerge::ROOT);
-        assert!(!pane.take_structure_dirty());
-
-        pane.apply_command(&crate::actions::DeviceMeshOperation::SetRole {
-            role: ROLE_ACTIVE.into(),
-        });
-
-        assert!(pane.take_structure_dirty());
-        assert_eq!(pane.config.device_role, DeviceRole::Hybrid);
-    }
-
-    #[test]
-    fn always_available_is_one_outcome_that_enables_full_sync() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("relay.toml");
-        let mut config = RelayConfig {
-            device_role: DeviceRole::Interactive,
-            services: tilo_relay_protocol::ServiceCapabilities::default(),
-            ..RelayConfig::default()
-        };
-        config.workspaces.push(WorkspaceBinding {
-            id: 7,
-            pin: false,
-            replication: ReplicationIntent::OnDemand,
-            admitted_users: Vec::new(),
-        });
-        config.save(&path).unwrap();
-
-        let mut pane = DeviceMeshPane::with_path(&path);
-        let mut doc = AutoCommit::new();
-        pane.sync(&mut doc, &automerge::ROOT);
-        pane.apply_command(&crate::actions::DeviceMeshOperation::SetRole {
-            role: ROLE_SERVER.into(),
-        });
-
-        let saved = RelayConfig::load(&path).unwrap();
-        assert_eq!(saved.device_role, DeviceRole::AlwaysOnServer);
-        assert!(saved.services.workspace_replication);
-        assert!(saved.services.full_content_replication);
-        assert!(saved.services.inbound_relay);
-        assert!(saved.workspaces[0].pin);
-        assert_eq!(
-            saved.workspaces[0].replication,
-            ReplicationIntent::FullWorkspace
-        );
-    }
-
-    #[test]
-    fn replicated_document_edits_cannot_change_local_device_role() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("relay.toml");
-        let config = RelayConfig {
-            device_role: DeviceRole::Interactive,
-            ..RelayConfig::default()
-        };
-        config.save(&path).unwrap();
-        let mut pane = DeviceMeshPane::with_path(&path);
-        let mut doc = AutoCommit::new();
-        pane.sync(&mut doc, &automerge::ROOT);
-
-        doc.put(&automerge::ROOT, "device_mesh.role", ROLE_SERVER)
-            .unwrap();
-        pane.sync(&mut doc, &automerge::ROOT);
-
-        assert_eq!(pane.config.device_role, DeviceRole::Interactive);
-        assert_eq!(
-            RelayConfig::load(&path).unwrap().device_role,
-            DeviceRole::Interactive
-        );
-    }
-
-    #[test]
-    fn peer_health_is_a_compact_visual_state_with_detail_beside_it() {
-        assert_eq!(peer_health_badge("Online · Files ready"), "Online");
-        assert_eq!(peer_health_badge("Online · Syncing files"), "Syncing");
-        assert_eq!(peer_health_badge("Offline · Last seen 4 h ago"), "Offline");
-        assert_eq!(peer_health_badge("Checking…"), "Checking");
-    }
-
-    #[test]
-    fn home_server_removal_requires_review_and_can_be_cancelled() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut pane = DeviceMeshPane::with_path(&dir.path().join("relay.toml"));
-        pane.home_peers = vec![tilo_relay_protocol::HomePeerRegistration {
-            schema_version: tilo_relay_protocol::HomePeerRegistration::CURRENT_SCHEMA,
-            device_node_id: "11".repeat(32),
-            relay_service_node_id: "22".repeat(32),
-            relay_endpoint: None,
-            label: "Studio NAS".into(),
-            user_public_key: "33".repeat(32),
-            device_cert: None,
-            relay_workspace_ids: vec![7],
-        }];
-        let device = pane.home_peers[0].device_node_id.clone();
-        let mut doc = AutoCommit::new();
-        pane.sync(&mut doc, &automerge::ROOT);
-
-        doc.put(&automerge::ROOT, peer_key("remove", &device), true)
-            .unwrap();
-        pane.sync(&mut doc, &automerge::ROOT);
-        assert!(pane.remove_armed.contains(&device));
-        assert!(pane.load_status.contains("file-copy warning"));
-        assert!(pane.management_child.is_none());
-
-        doc.put(&automerge::ROOT, peer_key("cancel_remove", &device), true)
-            .unwrap();
-        pane.sync(&mut doc, &automerge::ROOT);
-        assert!(!pane.remove_armed.contains(&device));
-        assert!(pane.management_child.is_none());
-    }
-
-    #[test]
-    fn personal_device_decommission_is_armed_before_any_revocation() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut pane = DeviceMeshPane::with_path(&dir.path().join("relay.toml"));
-        let key = [42; 32];
-        pane.personal_devices = vec![crate::device_fleet::DeviceView {
-            label: "Old laptop".into(),
-            key,
-            fingerprint: "2A 2A 2A 2A 2A 2A".into(),
-            current: false,
-            revoked: false,
-            can_host: false,
-        }];
-        let mut doc = AutoCommit::new();
-        pane.sync(&mut doc, &automerge::ROOT);
-
-        doc.put(&automerge::ROOT, personal_device_key("revoke", &key), true)
-            .unwrap();
-        pane.sync(&mut doc, &automerge::ROOT);
-
-        assert!(pane.personal_remove_armed.contains(&key));
-        assert_eq!(
-            read_str(&doc, &automerge::ROOT, personal_device_key("reason", &key)).as_deref(),
-            Some("Retired")
-        );
-    }
-
-    #[test]
-    fn discovered_workspace_toggle_updates_the_real_binding_set() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("relay.toml");
-        let mut pane = DeviceMeshPane::with_path(&path);
-        pane.discovered_workspaces = vec![DiscoveredWorkspace {
-            id: 44,
-            name: "Studio".into(),
-        }];
-        pane.apply_command(&crate::actions::DeviceMeshOperation::SetWorkspace {
-            id: 44,
-            enabled: true,
-        });
-        assert!(
-            pane.config
-                .workspaces
-                .iter()
-                .any(|workspace| workspace.id == 44)
-        );
-        assert!(
-            RelayConfig::load(&path)
-                .unwrap()
-                .workspaces
-                .iter()
-                .any(|workspace| workspace.id == 44)
-        );
-    }
-
-    #[test]
-    fn active_config_apply_is_polled_without_blocking_and_coalesces_edits() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut pane = DeviceMeshPane::with_path(&dir.path().join("relay.toml"));
-        pane.config_path = PathBuf::from(DEFAULT_CONFIG);
-        let mut command = Command::new("sleep");
-        command.arg("2");
-        pane.apply_child = Some(
-            bounded_command::spawn_prepared(command, None, 64, Duration::from_secs(5)).unwrap(),
-        );
-
-        let started = Instant::now();
-        pane.persist();
-        pane.poll_background_tasks();
-
-        assert!(started.elapsed() < Duration::from_millis(250));
-        assert!(pane.apply_child.is_some());
-        assert!(pane.apply_queued);
-        pane.apply_child = None;
-    }
-
-    #[test]
-    fn pairing_process_transitions_to_success_and_allows_another_pairing() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut pane = DeviceMeshPane::with_path(&dir.path().join("relay.toml"));
-        // The child's own timeout bounds the wait; how quickly a loaded
-        // machine schedules `true` is not what this test is about.
-        let timeout = Duration::from_secs(30);
-        pane.pairing_child =
-            Some(bounded_command::spawn_prepared(Command::new("true"), None, 64, timeout).unwrap());
-        let deadline = Instant::now() + timeout;
-        while pane.pairing_child.is_some() && Instant::now() < deadline {
+            let started = Instant::now();
+            pane.persist();
             pane.poll_background_tasks();
-            std::thread::sleep(Duration::from_millis(5));
+
+            assert!(started.elapsed() < Duration::from_millis(250));
+            assert!(pane.apply_child.is_some());
+            assert!(pane.apply_queued);
+            pane.apply_child = None;
         }
-        assert!(pane.pairing_child.is_none());
-        assert_eq!(pane.load_status, "Home server paired");
     }
 
+    /// Serving roles, rebuild requests, always-available outcomes and replicated-edit immunity.
     #[test]
-    fn duplicate_pair_action_is_ignored_while_pairing_is_active() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut pane = DeviceMeshPane::with_path(&dir.path().join("relay.toml"));
-        let mut command = Command::new("sleep");
-        command.arg("2");
-        pane.pairing_child = Some(
-            bounded_command::spawn_prepared(command, None, 64, Duration::from_secs(5)).unwrap(),
-        );
-        pane.approve_enrollment(PairingTarget::HomePeer);
-        assert!(pane.pairing_child.is_some());
-        pane.pairing_child = None;
+    fn device_roles_and_availability_stay_local() {
+        // Case `advanced_services_only_appear_for_devices_that_can_serve`.
+        {
+            assert!(!shows_advanced_services(DeviceRole::Interactive));
+            assert!(shows_advanced_services(DeviceRole::Hybrid));
+            assert!(shows_advanced_services(DeviceRole::AlwaysOnServer));
+        }
+
+        // Case `changing_between_personal_and_serving_roles_requests_a_rebuild`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("relay.toml");
+            let config = RelayConfig {
+                device_role: DeviceRole::Interactive,
+                ..RelayConfig::default()
+            };
+            config.save(&path).unwrap();
+            let mut pane = DeviceMeshPane::with_path(&path);
+            let mut doc = AutoCommit::new();
+            pane.sync(&mut doc, &automerge::ROOT);
+            assert!(!pane.take_structure_dirty());
+
+            pane.apply_command(&crate::actions::DeviceMeshOperation::SetRole {
+                role: ROLE_ACTIVE.into(),
+            });
+
+            assert!(pane.take_structure_dirty());
+            assert_eq!(pane.config.device_role, DeviceRole::Hybrid);
+        }
+
+        // Case `always_available_is_one_outcome_that_enables_full_sync`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("relay.toml");
+            let mut config = RelayConfig {
+                device_role: DeviceRole::Interactive,
+                services: tilo_relay_protocol::ServiceCapabilities::default(),
+                ..RelayConfig::default()
+            };
+            config.workspaces.push(WorkspaceBinding {
+                id: 7,
+                pin: false,
+                replication: ReplicationIntent::OnDemand,
+                admitted_users: Vec::new(),
+            });
+            config.save(&path).unwrap();
+
+            let mut pane = DeviceMeshPane::with_path(&path);
+            let mut doc = AutoCommit::new();
+            pane.sync(&mut doc, &automerge::ROOT);
+            pane.apply_command(&crate::actions::DeviceMeshOperation::SetRole {
+                role: ROLE_SERVER.into(),
+            });
+
+            let saved = RelayConfig::load(&path).unwrap();
+            assert_eq!(saved.device_role, DeviceRole::AlwaysOnServer);
+            assert!(saved.services.workspace_replication);
+            assert!(saved.services.full_content_replication);
+            assert!(saved.services.inbound_relay);
+            assert!(saved.workspaces[0].pin);
+            assert_eq!(
+                saved.workspaces[0].replication,
+                ReplicationIntent::FullWorkspace
+            );
+        }
+
+        // Case `replicated_document_edits_cannot_change_local_device_role`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("relay.toml");
+            let config = RelayConfig {
+                device_role: DeviceRole::Interactive,
+                ..RelayConfig::default()
+            };
+            config.save(&path).unwrap();
+            let mut pane = DeviceMeshPane::with_path(&path);
+            let mut doc = AutoCommit::new();
+            pane.sync(&mut doc, &automerge::ROOT);
+
+            doc.put(&automerge::ROOT, "device_mesh.role", ROLE_SERVER)
+                .unwrap();
+            pane.sync(&mut doc, &automerge::ROOT);
+
+            assert_eq!(pane.config.device_role, DeviceRole::Interactive);
+            assert_eq!(
+                RelayConfig::load(&path).unwrap().device_role,
+                DeviceRole::Interactive
+            );
+        }
     }
 
+    /// Peer health, workspace bindings, fresh metrics and complete residency.
     #[test]
-    fn fresh_daemon_metrics_drive_online_status() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = RelayConfig {
-            state_root: dir.path().to_path_buf(),
-            device_role: DeviceRole::Hybrid,
-            ..RelayConfig::default()
-        };
-        let metrics = tilo_relay_protocol::metrics::MetricsSnapshot {
-            deltas_received: 42,
-            ..Default::default()
-        };
-        tilo_relay_protocol::metrics::save_metrics(&config.state_root, &metrics).unwrap();
-        let modified = std::fs::metadata(
-            config
-                .state_root
-                .join(tilo_relay_protocol::metrics::METRICS_FILE),
-        )
-        .unwrap()
-        .modified()
-        .unwrap();
+    #[expect(
+        clippy::too_many_lines,
+        reason = "cases merged from separate tests; each case stays self-contained"
+    )]
+    fn device_health_and_workspace_status_reflect_fresh_facts() {
+        // Case `peer_health_is_a_compact_visual_state_with_detail_beside_it`.
+        {
+            assert_eq!(peer_health_badge("Online · Files ready"), "Online");
+            assert_eq!(peer_health_badge("Online · Syncing files"), "Syncing");
+            assert_eq!(peer_health_badge("Offline · Last seen 4 h ago"), "Offline");
+            assert_eq!(peer_health_badge("Checking…"), "Checking");
+        }
 
-        assert_eq!(
-            RelayRuntimeStatus::read(&config, modified + Duration::from_secs(1)),
-            RelayRuntimeStatus::Online
-        );
-        assert_eq!(
-            RelayRuntimeStatus::read(
-                &config,
-                modified + STATUS_FRESHNESS + Duration::from_secs(1)
-            ),
-            RelayRuntimeStatus::Offline
-        );
-    }
+        // Case `discovered_workspace_toggle_updates_the_real_binding_set`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("relay.toml");
+            let mut pane = DeviceMeshPane::with_path(&path);
+            pane.discovered_workspaces = vec![DiscoveredWorkspace {
+                id: 44,
+                name: "Studio".into(),
+            }];
+            pane.apply_command(&crate::actions::DeviceMeshOperation::SetWorkspace {
+                id: 44,
+                enabled: true,
+            });
+            assert!(
+                pane.config
+                    .workspaces
+                    .iter()
+                    .any(|workspace| workspace.id == 44)
+            );
+            assert!(
+                RelayConfig::load(&path)
+                    .unwrap()
+                    .workspaces
+                    .iter()
+                    .any(|workspace| workspace.id == 44)
+            );
+        }
 
-    #[test]
-    fn always_on_status_requires_fresh_complete_file_residency() {
-        let dir = tempfile::tempdir().unwrap();
-        let proof = dir.path().join("full-replica.json");
-        let config = RelayConfig {
-            state_root: dir.path().to_path_buf(),
-            full_replica_status: proof.clone(),
-            device_role: DeviceRole::AlwaysOnServer,
-            services: tilo_relay_protocol::ServiceCapabilities::personal_server(),
-            ..RelayConfig::default()
-        };
-        tilo_relay_protocol::metrics::save_metrics(
-            &config.state_root,
-            &tilo_relay_protocol::metrics::MetricsSnapshot::default(),
-        )
-        .unwrap();
-        // Observe at the snapshot's own modification time, not the wall
-        // clock after the save: the atomic write stamps the file before its
-        // fsync, and a slow fsync would otherwise age the snapshot past
-        // STATUS_FRESHNESS before the first read.
-        let now = std::fs::metadata(
-            config
-                .state_root
-                .join(tilo_relay_protocol::metrics::METRICS_FILE),
-        )
-        .unwrap()
-        .modified()
-        .unwrap();
-        let now_ms = now
-            .duration_since(SystemTime::UNIX_EPOCH)
+        // Case `fresh_daemon_metrics_drive_online_status`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let config = RelayConfig {
+                state_root: dir.path().to_path_buf(),
+                device_role: DeviceRole::Hybrid,
+                ..RelayConfig::default()
+            };
+            let metrics = tilo_relay_protocol::metrics::MetricsSnapshot {
+                deltas_received: 42,
+                ..Default::default()
+            };
+            tilo_relay_protocol::metrics::save_metrics(&config.state_root, &metrics).unwrap();
+            let modified = std::fs::metadata(
+                config
+                    .state_root
+                    .join(tilo_relay_protocol::metrics::METRICS_FILE),
+            )
             .unwrap()
-            .as_millis();
-        std::fs::write(
+            .modified()
+            .unwrap();
+
+            assert_eq!(
+                RelayRuntimeStatus::read(&config, modified + Duration::from_secs(1)),
+                RelayRuntimeStatus::Online
+            );
+            assert_eq!(
+                RelayRuntimeStatus::read(
+                    &config,
+                    modified + STATUS_FRESHNESS + Duration::from_secs(1)
+                ),
+                RelayRuntimeStatus::Offline
+            );
+        }
+
+        // Case `always_on_status_requires_fresh_complete_file_residency`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let proof = dir.path().join("full-replica.json");
+            let config = RelayConfig {
+                state_root: dir.path().to_path_buf(),
+                full_replica_status: proof.clone(),
+                device_role: DeviceRole::AlwaysOnServer,
+                services: tilo_relay_protocol::ServiceCapabilities::personal_server(),
+                ..RelayConfig::default()
+            };
+            tilo_relay_protocol::metrics::save_metrics(
+                &config.state_root,
+                &tilo_relay_protocol::metrics::MetricsSnapshot::default(),
+            )
+            .unwrap();
+            // Observe at the snapshot's own modification time, not the wall
+            // clock after the save: the atomic write stamps the file before its
+            // fsync, and a slow fsync would otherwise age the snapshot past
+            // STATUS_FRESHNESS before the first read.
+            let now = std::fs::metadata(
+                config
+                    .state_root
+                    .join(tilo_relay_protocol::metrics::METRICS_FILE),
+            )
+            .unwrap()
+            .modified()
+            .unwrap();
+            let now_ms = now
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_millis();
+            std::fs::write(
             &proof,
             format!(
                 r#"{{"state":"ready","full_content_replication":true,"updated_at_ms":{now_ms}}}"#
             ),
         )
         .unwrap();
-        assert_eq!(
-            RelayRuntimeStatus::read(&config, now),
-            RelayRuntimeStatus::Ready
-        );
-        std::fs::write(
-            &proof,
-            r#"{"state":"syncing","full_content_replication":false,"updated_at_ms":0}"#,
-        )
-        .unwrap();
-        assert_eq!(
-            RelayRuntimeStatus::read(&config, now),
-            RelayRuntimeStatus::Syncing
-        );
+            assert_eq!(
+                RelayRuntimeStatus::read(&config, now),
+                RelayRuntimeStatus::Ready
+            );
+            std::fs::write(
+                &proof,
+                r#"{"state":"syncing","full_content_replication":false,"updated_at_ms":0}"#,
+            )
+            .unwrap();
+            assert_eq!(
+                RelayRuntimeStatus::read(&config, now),
+                RelayRuntimeStatus::Syncing
+            );
+        }
+    }
+
+    /// Reviewed removal, armed decommission and single-flight pairing.
+    #[test]
+    fn device_removal_and_pairing_are_armed_and_single_flight() {
+        // Case `home_server_removal_requires_review_and_can_be_cancelled`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let mut pane = DeviceMeshPane::with_path(&dir.path().join("relay.toml"));
+            pane.home_peers = vec![tilo_relay_protocol::HomePeerRegistration {
+                schema_version: tilo_relay_protocol::HomePeerRegistration::CURRENT_SCHEMA,
+                device_node_id: "11".repeat(32),
+                relay_service_node_id: "22".repeat(32),
+                relay_endpoint: None,
+                label: "Studio NAS".into(),
+                user_public_key: "33".repeat(32),
+                device_cert: None,
+                relay_workspace_ids: vec![7],
+            }];
+            let device = pane.home_peers[0].device_node_id.clone();
+            let mut doc = AutoCommit::new();
+            pane.sync(&mut doc, &automerge::ROOT);
+
+            doc.put(&automerge::ROOT, peer_key("remove", &device), true)
+                .unwrap();
+            pane.sync(&mut doc, &automerge::ROOT);
+            assert!(pane.remove_armed.contains(&device));
+            assert!(pane.load_status.contains("file-copy warning"));
+            assert!(pane.management_child.is_none());
+
+            doc.put(&automerge::ROOT, peer_key("cancel_remove", &device), true)
+                .unwrap();
+            pane.sync(&mut doc, &automerge::ROOT);
+            assert!(!pane.remove_armed.contains(&device));
+            assert!(pane.management_child.is_none());
+        }
+
+        // Case `personal_device_decommission_is_armed_before_any_revocation`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let mut pane = DeviceMeshPane::with_path(&dir.path().join("relay.toml"));
+            let key = [42; 32];
+            pane.personal_devices = vec![crate::device_fleet::DeviceView {
+                label: "Old laptop".into(),
+                key,
+                fingerprint: "2A 2A 2A 2A 2A 2A".into(),
+                current: false,
+                revoked: false,
+                can_host: false,
+            }];
+            let mut doc = AutoCommit::new();
+            pane.sync(&mut doc, &automerge::ROOT);
+
+            doc.put(&automerge::ROOT, personal_device_key("revoke", &key), true)
+                .unwrap();
+            pane.sync(&mut doc, &automerge::ROOT);
+
+            assert!(pane.personal_remove_armed.contains(&key));
+            assert_eq!(
+                read_str(&doc, &automerge::ROOT, personal_device_key("reason", &key)).as_deref(),
+                Some("Retired")
+            );
+        }
+
+        // Case `pairing_process_transitions_to_success_and_allows_another_pairing`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let mut pane = DeviceMeshPane::with_path(&dir.path().join("relay.toml"));
+            // The child's own timeout bounds the wait; how quickly a loaded
+            // machine schedules `true` is not what this test is about.
+            let timeout = Duration::from_secs(30);
+            pane.pairing_child = Some(
+                bounded_command::spawn_prepared(Command::new("true"), None, 64, timeout).unwrap(),
+            );
+            let deadline = Instant::now() + timeout;
+            while pane.pairing_child.is_some() && Instant::now() < deadline {
+                pane.poll_background_tasks();
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            assert!(pane.pairing_child.is_none());
+            assert_eq!(pane.load_status, "Home server paired");
+        }
+
+        // Case `duplicate_pair_action_is_ignored_while_pairing_is_active`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let mut pane = DeviceMeshPane::with_path(&dir.path().join("relay.toml"));
+            let mut command = Command::new("sleep");
+            command.arg("2");
+            pane.pairing_child = Some(
+                bounded_command::spawn_prepared(command, None, 64, Duration::from_secs(5)).unwrap(),
+            );
+            pane.approve_enrollment(PairingTarget::HomePeer);
+            assert!(pane.pairing_child.is_some());
+            pane.pairing_child = None;
+        }
     }
 }

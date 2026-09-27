@@ -682,8 +682,9 @@ mod tests {
     const A: &str = "photos.photo:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const B: &str = "photos.photo:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
-    fn recognition_is_opt_in_and_generic_vision_cannot_be_mistaken_for_faces() {
+    fn verified_local_recognition_is_opt_in_converges_and_survives_restart() {
         let mut people = PeopleController::new();
         assert_eq!(people.capability(), &FaceCapability::DisabledByOwner);
         assert!(!people.add_cluster(
@@ -730,10 +731,84 @@ mod tests {
             people.cluster("verified-output").unwrap().origin,
             ProposalOrigin::VerifiedLocalPipeline
         );
+
+        {
+            let mut people = PeopleController::new();
+            people.set_recognition_enabled(true);
+            assert!(people.set_verified_local_face_model("face-local", "r42"));
+            let batch = |id: &str, photos: Vec<String>| VerifiedFaceClusterBatch {
+                model_id: "face-local".to_owned(),
+                revision: "r42".to_owned(),
+                clusters: vec![VerifiedFaceCluster {
+                    id: id.to_owned(),
+                    photo_ids: photos,
+                }],
+            };
+            let c = "photos.photo:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+            // These are disjoint fresh slices, so their opaque model-local ids do
+            // not reconcile by themselves.
+            assert_eq!(
+                people.ingest_verified_face_clusters(batch("first", vec![A.to_owned()])),
+                1
+            );
+            assert_eq!(
+                people.ingest_verified_face_clusters(batch("later", vec![c.to_owned()])),
+                1
+            );
+            assert_eq!(people.all_clusters().count(), 2);
+            // The next fresh slice carries `A` only as a local representative
+            // anchor. Its returned grouping bridges the two private proposals.
+            assert_eq!(
+                people.ingest_verified_face_clusters(batch(
+                    "anchored-bridge",
+                    vec![A.to_owned(), c.to_owned()]
+                )),
+                1
+            );
+            assert_eq!(people.all_clusters().count(), 1);
+            let cluster = people.cluster("first").unwrap();
+            assert_eq!(cluster.visible_photo_ids().len(), 2);
+            assert_eq!(cluster.origin, ProposalOrigin::VerifiedLocalPipeline);
+            // The persisted review record has stable ids only, never model output.
+            assert!(
+                cluster
+                    .photos
+                    .iter()
+                    .all(|photo| photo.photo_id.starts_with("photos.photo:"))
+            );
+        }
+
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("people-review.json");
+            let mut people = PeopleController::load_from(Some(path.clone()));
+            people.set_recognition_enabled(true);
+            assert!(people.set_verified_local_face_model("face-model", "revision-7"));
+            assert!(people.add_cluster(
+                "local-cluster",
+                [A.to_owned()],
+                ProposalOrigin::VerifiedLocalPipeline,
+            ));
+            assert_eq!(
+                people.confirm_suggestion("local-cluster", "Sam"),
+                PeopleChange::Updated
+            );
+
+            let restored = PeopleController::load_from(Some(path));
+            assert!(restored.privacy().recognition_enabled);
+            assert_eq!(
+                restored.capability(),
+                &FaceCapability::NoVerifiedFaceModel,
+                "a signed model must be rediscovered rather than trusted from disk"
+            );
+            let cluster = restored.cluster("local-cluster").unwrap();
+            assert_eq!(cluster.display_name.as_deref(), Some("Sam"));
+            assert_eq!(cluster.visible_photo_ids(), [A]);
+        }
     }
 
     #[test]
-    fn approving_a_named_cluster_exports_only_label_and_photo_ids() {
+    fn only_approved_people_are_exported_as_labels_and_photo_ids() {
         let mut people = PeopleController::new();
         assert!(people.add_cluster(
             "manual",
@@ -751,126 +826,7 @@ mod tests {
                 photo_ids: vec![A.to_owned(), B.to_owned()],
             })
         );
-    }
 
-    #[test]
-    fn reject_hide_split_merge_and_delete_stay_local() {
-        let mut people = PeopleController::new();
-        assert!(people.add_cluster(
-            "one",
-            [A.to_owned(), B.to_owned()],
-            ProposalOrigin::ImportedOrManual,
-        ));
-        assert!(people.add_cluster("two", [B.to_owned()], ProposalOrigin::ImportedOrManual,));
-        assert_eq!(people.remove_photo("one", A), PeopleChange::Updated);
-        assert_eq!(people.merge_clusters("one", "two"), PeopleChange::Updated);
-        assert_eq!(people.set_hidden("one", true), PeopleChange::Updated);
-        assert!(people.visible_clusters().is_empty());
-        assert_eq!(people.reject_suggestion("one"), PeopleChange::Updated);
-        assert_eq!(people.restore_suggestion("one"), PeopleChange::Updated);
-        assert!(!people.cluster("one").unwrap().hidden);
-        assert!(!people.cluster("one").unwrap().rejected);
-        people.delete_all_local_biometric_data();
-        assert_eq!(people.all_clusters().count(), 0);
-        assert_eq!(people.capability(), &FaceCapability::DisabledByOwner);
-    }
-
-    #[test]
-    fn private_review_queue_survives_restart_without_persisting_model_identity() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("people-review.json");
-        let mut people = PeopleController::load_from(Some(path.clone()));
-        people.set_recognition_enabled(true);
-        assert!(people.set_verified_local_face_model("face-model", "revision-7"));
-        assert!(people.add_cluster(
-            "local-cluster",
-            [A.to_owned()],
-            ProposalOrigin::VerifiedLocalPipeline,
-        ));
-        assert_eq!(
-            people.confirm_suggestion("local-cluster", "Sam"),
-            PeopleChange::Updated
-        );
-
-        let restored = PeopleController::load_from(Some(path));
-        assert!(restored.privacy().recognition_enabled);
-        assert_eq!(
-            restored.capability(),
-            &FaceCapability::NoVerifiedFaceModel,
-            "a signed model must be rediscovered rather than trusted from disk"
-        );
-        let cluster = restored.cluster("local-cluster").unwrap();
-        assert_eq!(cluster.display_name.as_deref(), Some("Sam"));
-        assert_eq!(cluster.visible_photo_ids(), [A]);
-    }
-
-    #[test]
-    fn overlapping_batches_converge_into_one_private_suggestion_without_biometrics() {
-        let mut people = PeopleController::new();
-        people.set_recognition_enabled(true);
-        assert!(people.set_verified_local_face_model("face-local", "r42"));
-        let batch = |id: &str, photos: Vec<String>| VerifiedFaceClusterBatch {
-            model_id: "face-local".to_owned(),
-            revision: "r42".to_owned(),
-            clusters: vec![VerifiedFaceCluster {
-                id: id.to_owned(),
-                photo_ids: photos,
-            }],
-        };
-        let c = "photos.photo:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
-        // These are disjoint fresh slices, so their opaque model-local ids do
-        // not reconcile by themselves.
-        assert_eq!(
-            people.ingest_verified_face_clusters(batch("first", vec![A.to_owned()])),
-            1
-        );
-        assert_eq!(
-            people.ingest_verified_face_clusters(batch("later", vec![c.to_owned()])),
-            1
-        );
-        assert_eq!(people.all_clusters().count(), 2);
-        // The next fresh slice carries `A` only as a local representative
-        // anchor. Its returned grouping bridges the two private proposals.
-        assert_eq!(
-            people.ingest_verified_face_clusters(batch(
-                "anchored-bridge",
-                vec![A.to_owned(), c.to_owned()]
-            )),
-            1
-        );
-        assert_eq!(people.all_clusters().count(), 1);
-        let cluster = people.cluster("first").unwrap();
-        assert_eq!(cluster.visible_photo_ids().len(), 2);
-        assert_eq!(cluster.origin, ProposalOrigin::VerifiedLocalPipeline);
-        // The persisted review record has stable ids only, never model output.
-        assert!(
-            cluster
-                .photos
-                .iter()
-                .all(|photo| photo.photo_id.starts_with("photos.photo:"))
-        );
-    }
-
-    #[test]
-    fn splitting_and_removing_mistaken_local_members_is_private_and_reversible() {
-        let mut people = PeopleController::new();
-        assert!(people.add_cluster(
-            "mixed",
-            [A.to_owned(), B.to_owned()],
-            ProposalOrigin::ImportedOrManual
-        ));
-        assert_eq!(
-            people.split_cluster("mixed", "separate", [B.to_owned()]),
-            PeopleChange::Updated
-        );
-        assert_eq!(people.cluster("mixed").unwrap().visible_photo_ids(), [A]);
-        assert_eq!(people.cluster("separate").unwrap().visible_photo_ids(), [B]);
-        assert_eq!(people.remove_photo("separate", B), PeopleChange::Deleted);
-        assert_eq!(people.restore_suggestion("mixed"), PeopleChange::Unchanged);
-    }
-
-    #[test]
-    fn approved_directory_excludes_unconfirmed_local_proposals() {
         let mut library = PhotoLibrary::default();
         let mut photo = crate::model::LibraryPhoto::from_image(crate::model::OpenImage::from_path(
             "one.png", 20, 10,
@@ -891,5 +847,42 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn local_review_edits_stay_private_and_reversible() {
+        let mut people = PeopleController::new();
+        assert!(people.add_cluster(
+            "one",
+            [A.to_owned(), B.to_owned()],
+            ProposalOrigin::ImportedOrManual,
+        ));
+        assert!(people.add_cluster("two", [B.to_owned()], ProposalOrigin::ImportedOrManual,));
+        assert_eq!(people.remove_photo("one", A), PeopleChange::Updated);
+        assert_eq!(people.merge_clusters("one", "two"), PeopleChange::Updated);
+        assert_eq!(people.set_hidden("one", true), PeopleChange::Updated);
+        assert!(people.visible_clusters().is_empty());
+        assert_eq!(people.reject_suggestion("one"), PeopleChange::Updated);
+        assert_eq!(people.restore_suggestion("one"), PeopleChange::Updated);
+        assert!(!people.cluster("one").unwrap().hidden);
+        assert!(!people.cluster("one").unwrap().rejected);
+        people.delete_all_local_biometric_data();
+        assert_eq!(people.all_clusters().count(), 0);
+        assert_eq!(people.capability(), &FaceCapability::DisabledByOwner);
+
+        let mut people = PeopleController::new();
+        assert!(people.add_cluster(
+            "mixed",
+            [A.to_owned(), B.to_owned()],
+            ProposalOrigin::ImportedOrManual
+        ));
+        assert_eq!(
+            people.split_cluster("mixed", "separate", [B.to_owned()]),
+            PeopleChange::Updated
+        );
+        assert_eq!(people.cluster("mixed").unwrap().visible_photo_ids(), [A]);
+        assert_eq!(people.cluster("separate").unwrap().visible_photo_ids(), [B]);
+        assert_eq!(people.remove_photo("separate", B), PeopleChange::Deleted);
+        assert_eq!(people.restore_suggestion("mixed"), PeopleChange::Unchanged);
     }
 }

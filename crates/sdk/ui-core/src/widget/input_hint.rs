@@ -802,40 +802,45 @@ mod tests {
     use taffy::prelude::TaffyMaxContent;
 
     #[test]
-    fn retained_layout_grows_with_large_text() {
-        let mut hint = InputHint::keyboard(KeyboardBinding::new([], KeyLegend::Enter));
-        let mut taffy = TaffyTree::new();
-        let mut map = HashMap::new();
-        let theme = Theme::dark().with_text_scale(2.0);
-        hint.build_layout(&mut taffy, &theme, &mut map);
-        let mut text = TextRenderer::new();
-        let measured = hint.measure(
-            Size {
-                width: None,
-                height: None,
-            },
-            Size::MAX_CONTENT,
-            &mut text,
-        );
-        assert!(measured.height > crate::num::f32_of_f64(HEIGHT));
-        assert_eq!(hint.layout_theme.text_scale, 2.0);
-    }
+    fn input_hint_scales_layout_and_names_platform_legends() {
+        fn retained_layout_grows_with_large_text() {
+            let mut hint = InputHint::keyboard(KeyboardBinding::new([], KeyLegend::Enter));
+            let mut taffy = TaffyTree::new();
+            let mut map = HashMap::new();
+            let theme = Theme::dark().with_text_scale(2.0);
+            hint.build_layout(&mut taffy, &theme, &mut map);
+            let mut text = TextRenderer::new();
+            let measured = hint.measure(
+                Size {
+                    width: None,
+                    height: None,
+                },
+                Size::MAX_CONTENT,
+                &mut text,
+            );
+            assert!(measured.height > crate::num::f32_of_f64(HEIGHT));
+            assert_eq!(hint.layout_theme.text_scale, 2.0);
+        }
 
-    #[test]
-    fn hint_accessibility_uses_platform_and_controller_legends() {
-        let mut keyboard = InputHint::keyboard(KeyboardBinding::new(
-            [KeyboardModifier::Command, KeyboardModifier::Shift],
-            KeyLegend::Enter,
-        ));
-        keyboard.set_platform_conventions(PlatformConventions::new(Platform::MacOs));
-        assert_eq!(keyboard.accessible_label(), "⌘ + ⇧ + ↩");
+        fn hint_accessibility_uses_platform_and_controller_legends() {
+            let mut keyboard = InputHint::keyboard(KeyboardBinding::new(
+                [KeyboardModifier::Command, KeyboardModifier::Shift],
+                KeyLegend::Enter,
+            ));
+            keyboard.set_platform_conventions(PlatformConventions::new(Platform::MacOs));
+            assert_eq!(keyboard.accessible_label(), "⌘ + ⇧ + ↩");
 
-        let mut controller = InputHint::new(InputBinding::Controller(ControllerBinding::new([
-            ControllerButton::South,
-        ])));
-        controller.set_interaction_environment(
-            InteractionEnvironment::POINTER.with_controller(ControllerFamily::Nintendo),
-        );
-        assert_eq!(controller.accessible_label(), "B");
+            let mut controller =
+                InputHint::new(InputBinding::Controller(ControllerBinding::new([
+                    ControllerButton::South,
+                ])));
+            controller.set_interaction_environment(
+                InteractionEnvironment::POINTER.with_controller(ControllerFamily::Nintendo),
+            );
+            assert_eq!(controller.accessible_label(), "B");
+        }
+
+        retained_layout_grows_with_large_text();
+        hint_accessibility_uses_platform_and_controller_legends();
     }
 }

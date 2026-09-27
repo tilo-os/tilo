@@ -20,6 +20,7 @@ xdg-paths = { path = "../xdg-paths" }
 atomic-file = { path = "../../../crates/system/atomic-file" }
 # Directory watch behind `watch_settings`; only long-lived readers opt in.
 notify = { workspace = true, optional = true }
+workspace-hack = { version = "0.1" }
 
 [features]
 watch = ["dep:notify"]

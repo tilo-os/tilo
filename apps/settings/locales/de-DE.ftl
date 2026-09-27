@@ -1,0 +1,310 @@
+## AI pane
+ai-pane-title = KI
+ai-intro-title = Privat von Grund auf
+ai-intro-body = Die hier eingerichteten Modelle liefern nur Inferenz. Sie geben einem Agenten nie Zugriff auf einen Arbeitsbereich, eine App, eine Datei, eine Nachricht oder ein Gerät.
+ai-intro-credentials = Schlüssel und Anmeldungen
+ai-intro-credentials-value = Im Tilo-Tresor auf diesem Gerät verwahrt
+ai-intro-downloads = Downloads
+ai-intro-downloads-value = Nur nach Ihrer Bestätigung, fest verankert und geprüft
+ai-this-device = dieses Gerät
+ai-notice-title = Letzte Änderung
+ai-notice-accepted = Vom lokalen Modelldienst angenommen.
+# { $error } is the service's own explanation.
+ai-notice-failed = Das hat nicht geklappt: { $error }
+ai-notice-release-gone = Dieses Modell wird für dieses Gerät nicht mehr angeboten.
+ai-notice-signed-in = Mit Microsoft angemeldet. Für diesen Anbieter sind keine Schlüssel mehr nötig.
+ai-gib = { $value } GiB
+ai-gib-text = { $value } GiB
+
+## Presets
+ai-presets-title = Voreinstellungen
+ai-presets-body = Eine Voreinstellung wählt für jede Aufgabe ein Modell aus dem, was dieses Gerät ausführen kann, und den Anbietern, die Sie eingerichtet haben. Was Sie für eine Aufgabe oder einen Agenten selbst wählen, hat immer Vorrang.
+ai-preset-private = Privat
+ai-preset-private-description = Alles läuft auf diesem Gerät. Nichts wird an einen Anbieter gesendet.
+ai-preset-balanced = Ausgewogen
+ai-preset-balanced-description = Private Daten bleiben auf diesem Gerät. Andere Aufgaben laufen hier, wenn dieses Gerät eine starke Grafikkarte hat, sonst bei Ihrem Standardanbieter.
+ai-preset-best-quality = Beste Qualität
+ai-preset-best-quality-description = Aufgaben, die das Gerät verlassen dürfen, nutzen Ihren Standardanbieter mit hohem Denkaufwand. Private Daten bleiben weiterhin hier.
+ai-preset-use = Verwenden
+ai-preset-in-use = In Verwendung
+ai-preset-none = Keine Voreinstellung
+# { $task } is a task name, { $model } a model, { $provider } where it runs.
+ai-preset-outcome = { $task }: { $model } bei { $provider }
+ai-preset-outcome-missing = { $task }: { $reason }
+ai-action-use-preset = Voreinstellung { $preset } verwenden
+ai-action-preset-none = Keine Voreinstellung mehr verwenden
+
+## Tasks
+ai-tasks-title = Aufgaben
+ai-tasks-body = Jede Funktion fragt nach einer Aufgabe, nie nach einem Modell. Wählen Sie, welches Modell welche Aufgabe übernimmt; das Gateway hält jede Aufgabe an ihre Datenschutzregeln, was auch immer Sie wählen.
+ai-task-agent-planning = Agentenplanung
+ai-task-agent-planning-description = Ein Agent entscheidet, welche Aktionen er in Ihren Apps ausführt.
+ai-task-agent-transform = Textumwandlungen
+ai-task-agent-transform-description = Zusammenfassen, Herausziehen oder Einordnen des ausgewählten Dokumentinhalts, den ein Agent oder ein Kürzel übergibt.
+ai-task-photos-vision = Fotobeschreibungen
+ai-task-photos-vision-description = Bildunterschriften, Schlagwörter und der Text in Ihren Fotos, für die Suche in Fotos.
+ai-task-photos-faces = Gesichtergruppen
+ai-task-photos-faces-description = Ihre Fotos nach den Gesichtern darin gruppieren.
+ai-task-feedback-review = Feedback-Prüfung
+ai-task-feedback-review-description = Schlägt vor, was ausgeblendet werden soll und wie jeder Schritt heißt, bevor Sie eine Feedback-Aufnahme senden.
+ai-privacy-open = Jeder Anbieter
+ai-privacy-sensitive = Bleibt hier, außer Sie erlauben es
+ai-privacy-device-only = Nur dieses Gerät
+ai-status-ready = Bereit
+ai-status-attention = Einrichtung nötig
+# { $layer } says where the choice came from.
+ai-resolved = { $model } bei { $provider } · { $layer }
+ai-layer-agent = für diesen Agenten gewählt
+ai-layer-task = für diese Aufgabe gewählt
+ai-layer-preset = Voreinstellung { $preset }
+ai-layer-recommended = empfohlen
+ai-choose-label = Modell
+ai-choose-agent-label = Modell für diesen Agenten
+ai-choice-default = Empfehlung oder Voreinstellung
+ai-choice-follow-task = Wie bei der Aufgabe
+ai-choice-target = { $model } · { $provider }
+ai-choice-allowed-provider = Ein von Ihnen erlaubter Anbieter
+ai-allow-off-device-button = { $model } bei { $provider } erlauben…
+ai-set-up-button = { $model } einrichten…
+ai-action-choose-model = Das Modell für diese Aufgabe wählen
+ai-action-choose-agent-model = Das Modell für diesen Agenten wählen
+ai-action-allow-off-device = { $task } die Nutzung eines Anbieters erlauben
+ai-action-allow-off-device-description = Diese Aufgabe arbeitet mit privaten Daten. Wenn Sie einen Anbieter erlauben, werden diese Daten an ihn gesendet. Sie können die Aufgabe jederzeit wieder auf dieses Gerät holen.
+ai-action-fast-mode = Schnellmodus verwenden
+ai-action-reasoning-effort = Den Denkaufwand festlegen
+ai-action-set-up-for-task = { $model } für { $task } herunterladen
+ai-effort-default = Modellstandard
+ai-effort-minimal = Minimaler Aufwand
+ai-effort-low = Geringer Aufwand
+ai-effort-medium = Mittlerer Aufwand
+ai-effort-high = Hoher Aufwand
+ai-effort-xhigh = Sehr hoher Aufwand
+ai-effort-max = Maximaler Aufwand
+ai-feature-fast-mode = Schnellmodus
+ai-feature-reasoning = Denkaufwand
+ai-feature-tools = Werkzeugnutzung
+ai-capability-vision = Bilder
+ai-capability-face-recognition = Gesichtergruppen
+ai-capability-trace-review = Feedback-Prüfung
+ai-capability-text = Text
+ai-good-for = Geeignet für: { $list }
+ai-error-no-model = Dafür ist noch kein Modell eingerichtet.
+ai-error-no-local-model = Noch kann kein Modell auf diesem Gerät das.
+ai-error-off-device = Diese Aufgabe darf nur mit einem Modell auf diesem Gerät laufen.
+ai-error-provider-unavailable = Der gewählte Anbieter wurde entfernt oder ist ausgeschaltet.
+ai-error-model-unavailable = { $model } ist gerade nicht verfügbar.
+ai-error-unmet = Das gewählte Modell kann diese Aufgabe nicht erledigen.
+ai-error-unpinned = Das lokale Modell hat keine geprüfte Revision.
+ai-error-options = Das gewählte Modell unterstützt diese Optionen nicht.
+
+## Agents
+ai-agents-title = Agenten
+ai-agents-body = Geben Sie einem Agenten ein eigenes Modell. Er läuft weiterhin über Ihr Gateway und Ihre Schlüssel und braucht weiterhin die Berechtigungen seines Arbeitsbereichs.
+ai-agents-empty = Noch ist kein Agent Mitglied Ihrer Arbeitsbereiche.
+# { $agent } is the agent's name, { $task } a task name.
+ai-agent-task = { $agent } · { $task }
+ai-agent-pill = Agent
+
+## Providers
+ai-providers-title = Anbieter
+ai-providers-body = Anbieter folgen Ihnen auf Ihre anderen Geräte. Ihre Schlüssel bleiben im Tresor dieses Geräts, daher fragt ein anderes Gerät nach seinem eigenen. Ein Server, den Sie auf diesem Computer betreiben, etwa Ollama oder LM Studio, bleibt bei diesem Computer; Tilo schottet ihn nicht ab, deshalb behandeln private Aufgaben ihn wie einen Anbieter.
+ai-providers-empty = Noch keine Anbieter. Fügen Sie einen hinzu oder verwenden Sie nur Modelle auf diesem Gerät.
+ai-action-add-anthropic = Anthropic hinzufügen
+ai-action-add-openai = OpenAI-kompatiblen Anbieter hinzufügen
+ai-action-add-azure = Azure OpenAI hinzufügen
+ai-action-add-private = Einen Server in Ihrem Netzwerk hinzufügen
+ai-action-add-local-server = Einen Server auf diesem Computer hinzufügen
+ai-protocol-anthropic = Anthropic
+ai-protocol-openai = OpenAI-kompatibel
+ai-protocol-azure = Azure OpenAI
+ai-location-hosted = gehostet
+ai-location-device = dieses Gerät
+ai-location-private = Ihr Netzwerk
+ai-location-local-server = auf diesem Computer, nicht von Tilo abgeschottet
+# { $protocol } is the API dialect, { $location } where it runs.
+ai-provider-kind = { $protocol } · { $location }
+ai-provider-default = Standard
+ai-provider-name-placeholder = Name des Anbieters
+ai-provider-endpoint-placeholder = https://api.example.com/v1
+ai-provider-azure-endpoint-placeholder = https://your-resource.openai.azure.com/openai/v1
+ai-provider-save = Speichern
+ai-provider-credential = Anmeldung
+ai-provider-signed-in = Mit Microsoft angemeldet
+ai-provider-key-placeholder = API-Schlüssel, im Tilo-Tresor gespeichert
+ai-provider-sign-in-unavailable = Die Microsoft-Anmeldung ist in dieser Installation nicht eingerichtet. Ein API-Schlüssel funktioniert stattdessen.
+ai-provider-model-placeholder = Modell-ID
+ai-provider-deployment-placeholder = Name der Bereitstellung
+ai-provider-context-placeholder = Kontextfenster (Tokens)
+ai-provider-issue = Prüfen Sie diesen Anbieter: { $issue }
+ai-model-context = { $tokens } Tokens
+ai-model-context-unknown = Kontext unbekannt
+ai-action-enable-provider = Einschalten
+ai-action-disable-provider = Ausschalten
+ai-action-default-provider = Als Standard festlegen
+ai-action-remove-provider = Entfernen…
+ai-action-provider-details = Name und Endpunkt des Anbieters ändern
+ai-action-set-key = Schlüssel speichern…
+ai-action-remove-key = Schlüssel entfernen…
+ai-action-sign-in-microsoft = Mit Microsoft anmelden…
+ai-action-sign-out = Abmelden
+ai-action-add-model = Modell hinzufügen
+ai-action-add-deployment = Bereitstellung hinzufügen
+ai-action-remove-model = Entfernen
+ai-action-declare = Gibt { $feature } an
+ai-health-connected = Verbunden
+ai-health-needs-key = Schlüssel nötig
+ai-health-signed-out = Abgemeldet
+ai-health-signing-in = Anmeldung läuft…
+ai-health-refused = Schlüssel abgelehnt
+ai-health-failed = Fehler
+ai-health-unreachable = Nicht erreichbar
+ai-health-checking = Wird geprüft…
+ai-health-unknown = Noch nicht geprüft
+ai-health-disabled = Aus
+
+## This device
+ai-device-title = Dieses Gerät
+ai-device-unavailable = Der lokale Modelldienst ist nicht verfügbar, daher können Modelle auf diesem Gerät weder angezeigt noch eingerichtet werden. Anbieter funktionieren weiterhin.
+ai-device-unavailable-reason = Grund: { $reason }
+ai-device-memory = Arbeitsspeicher
+ai-device-accelerator = Grafik
+ai-device-accelerator-memory = Grafikspeicher
+ai-device-storage = Freier Speicherplatz
+ai-fit-excellent = Passt hervorragend
+ai-fit-good = Passt gut
+ai-fit-tight = Läuft, mit Einschränkungen
+ai-fit-restart = Neustart nötig
+ai-fit-unsupported = Nicht genug Speicher
+ai-restart-pill = Neustart
+# { $vendor } is the graphics card's maker.
+ai-restart-required = Starten Sie neu, um die Einrichtung Ihres { $vendor }-Grafiktreibers abzuschließen
+ai-restart-mismatch = Der installierte und der laufende Treiber haben unterschiedliche Versionen. Modelle warten auf die Karte, statt ohne sie langsam zu laufen.
+ai-restart-staged = Der Treiber ist für den nächsten Start bereit. Modelle warten auf die Karte, statt ohne sie langsam zu laufen.
+ai-accelerator-title = Grafiktreiber
+ai-accelerator-available = Bereit zur Einrichtung
+ai-accelerator-available-detail = Tilo hat einen signierten Treiber für diese Karte gefunden. Die Einrichtung bereitet das nächste Systemabbild vor; am laufenden System ändert sich nichts.
+ai-accelerator-queued = In der Warteschlange
+ai-accelerator-queued-detail = Sie können die Einstellungen verlassen, während Tilo den Treiber prüft und vorbereitet.
+ai-accelerator-staging = Wird vorbereitet
+ai-accelerator-staging-detail = Tilo erstellt das nächste Systemabbild. Diese Sitzung läuft normal weiter.
+ai-accelerator-restart = Neustart nötig
+ai-accelerator-restart-detail = Der Treiber ist für den nächsten Start bereit. Starten Sie bei Gelegenheit über das Ein/Aus-Menü neu.
+ai-accelerator-active = Aktiv
+ai-accelerator-active-detail = Der signierte Treiber ist aktiv, und Modelle auf diesem Gerät nutzen die Karte.
+ai-accelerator-error = Braucht Aufmerksamkeit
+ai-action-stage-accelerator = Den Grafiktreiber einrichten…
+ai-releases-title = Für dieses Gerät verfügbar
+ai-releases-none-fit = Derzeit passt kein signiertes Modell in den Arbeitsspeicher und Speicherplatz dieses Geräts.
+ai-releases-all-installed = Jedes Modell, das zu diesem Gerät passt, ist installiert.
+# { $speed } is how fast the model answers here.
+ai-download-terms = { $download } GiB Download, { $disk } GiB auf dem Datenträger · Lizenz { $license } ({ $url }) · Läuft auf diesem Gerät · { $speed }
+ai-speed-interactive = Antwortet hier schnell
+ai-speed-slow = Hier langsam, etwa { $words } Wörter pro Sekunde
+ai-speed-impractical = Zu langsam für dieses Gerät
+ai-action-download = { $model } herunterladen…
+ai-installed-title = Installiert
+ai-installed-empty = Es sind keine Modelle installiert. Jeder Download zeigt Größe und Lizenz, bevor etwas geladen wird.
+ai-phase-downloading = Wird heruntergeladen
+ai-phase-installing = Wird installiert
+ai-phase-running = Läuft
+ai-phase-ready = Angehalten
+ai-phase-error = Braucht Aufmerksamkeit
+ai-phase-downloading-detail = { $done } von { $total } GiB · Sie können diese Seite verlassen
+ai-phase-running-detail = Bedient Aufgaben über das Tilo-Gateway auf diesem Gerät.
+ai-phase-ready-detail = Installiert und geprüft. Starten Sie es, wenn Aufgaben es nutzen sollen; ein angehaltenes Modell belegt keinen Grafikspeicher.
+ai-progress-label = { $model } wird eingerichtet
+ai-local-vram = Belegter Grafikspeicher
+ai-local-storage = Auf dem Datenträger
+ai-local-license = Lizenz
+ai-action-start = Starten
+ai-action-stop = Anhalten
+ai-action-retry = Erneut versuchen
+ai-action-remove-local = Entfernen…
+
+# Displays pane: arrangement canvas
+display-arrangement-title = Anordnung
+display-arrangement-name = Bildschirmanordnung
+display-arrangement-description = Ziehen Sie einen Bildschirm neben einen anderen, um ihn dort zu platzieren. Das Positionsmenü jedes Bildschirms erledigt dasselbe per Tastatur.
+display-arrangement-empty = Keine Bildschirme zum Anordnen
+display-arrangement-item = Bildschirm { $number }: { $name }
+display-arrangement-item-primary = Bildschirm { $number }: { $name }, primär
+display-arrangement-item-position = { $width } × { $height } bei { $x }, { $y }
+display-arrangement-hint = Ziehen Sie die Bildschirme so, wie sie auf Ihrem Schreibtisch stehen. Änderungen werden erst übernommen, wenn Sie sie anwenden.
+display-identify = Identifizieren
+display-identify-row = Die Nummer jedes Bildschirms darauf anzeigen
+
+# Displays pane: layout tools trusted to change displays without asking
+display-tools-title = Bildschirmwerkzeuge
+display-tools-caption = Diese Programme ordnen Ihre Bildschirme neu an, ohne jede Änderung bestätigen zu lassen.
+display-tools-forget = Wieder nachfragen
+display-tools-forgotten = Bildschirmänderungen dieses Werkzeugs müssen wieder bestätigt werden.
+
+# Mouse & Keyboard pane: touchpad
+input-touchpad-title = Touchpad
+input-touchpad-enabled = Touchpad
+input-touchpad-enabled-description = Ausschalten, um das Touchpad zu ignorieren; die Touchpad-Taste tut dasselbe
+input-touchpad-disable-with-mouse = Touchpad deaktivieren, solange eine Maus angeschlossen ist
+input-touchpad-disable-with-mouse-description = Das Touchpad ist wieder aktiv, sobald die Maus getrennt wird
+input-touchpad-speed = Touchpad-Geschwindigkeit
+input-touchpad-natural-scroll = Natürliches Scrollen
+input-touchpad-natural-scroll-description = Der Inhalt folgt der Fingerbewegung
+input-tap-to-click = Tippen zum Klicken
+input-tap-to-click-description = Auf das Touchpad tippen, um zu klicken
+input-tap-drag = Tippen und Ziehen
+input-tap-drag-description = Nach einem Tippen halten und bewegen, um zu ziehen
+input-tap-drag-lock = Ziehsperre
+input-tap-drag-lock-description = Ein Ziehvorgang läuft nach dem Anheben des Fingers weiter, bis zum nächsten Tippen
+input-disable-while-typing = Beim Tippen deaktivieren
+input-disable-while-typing-description = Verhindert versehentliche Eingaben mit dem Handballen
+input-touchpad-gestures = Touchpad-Gesten
+input-touchpad-gestures-description = Navigation mit drei Fingern; Apps erhalten weiterhin die übrigen Gesten
+
+# Mouse & Keyboard pane: touchpad clicking and scrolling
+input-clicking-title = Klicken und Scrollen
+input-click-method = Sekundärklick
+input-click-method-default = Gerätestandard
+input-click-method-areas = Untere rechte Ecke
+input-click-method-clickfinger = Mit zwei Fingern drücken
+input-click-method-caption = Untere rechte Ecke: dort drücken für einen Rechtsklick. Mit zwei Fingern drücken: zwei Finger für einen Rechtsklick, drei für einen Mittelklick.
+input-scroll-method = Scrollen
+input-scroll-method-two-finger = Mit zwei Fingern
+input-scroll-method-edge = Am Rand entlang
+
+# Mouse & Keyboard pane: mouse
+input-mouse-title = Maus
+input-mouse-speed = Mausgeschwindigkeit
+input-mouse-natural-scroll = Natürliches Scrollen
+input-mouse-natural-scroll-description = Der Inhalt bewegt sich in Richtung des Mausrads
+
+# Mouse & Keyboard pane: every pointer
+input-pointer-title = Tasten und Beschleunigung
+input-left-handed = Linkshändig
+input-left-handed-description = Primäre und sekundäre Taste tauschen
+input-middle-emulation = Mittlere Taste emulieren
+input-middle-emulation-description = Links und rechts gleichzeitig drücken für einen Mittelklick
+input-acceleration = Beschleunigung
+input-scroll-speed = Scrollgeschwindigkeit
+input-scroll-speed-description = Weg pro Mausradraste oder Fingerbewegung
+
+# Mouse & Keyboard pane: drawing tablets
+input-tablet-whole-desktop = Gesamter Desktop
+input-tablet-map-to = Zuordnen zu
+input-tablet-keep-aspect = Seitenverhältnis beibehalten
+input-tablet-keep-aspect-description = Nur den Teil des Tabletts verwenden, der zur Form des Bildschirms passt, damit Striche nicht verzerrt werden
+input-tablet-left-handed = Linkshändige Ausrichtung
+input-tablet-left-handed-description = Das Tablett umdrehen, mit den Tasten auf der rechten Seite
+input-tablet-tip-feel = Druckgefühl der Spitze
+input-tablet-tip-feel-description = Weich zeichnet schon bei leichter Berührung kräftig; fest braucht mehr Druck
+input-tablet-lower-button = Untere Stifttaste
+input-tablet-upper-button = Obere Stifttaste
+input-pen-button-default = Standard
+input-pen-button-left = Linksklick
+input-pen-button-middle = Mittelklick
+input-pen-button-right = Rechtsklick
+input-pen-button-back = Zurück
+input-pen-button-forward = Vorwärts
+input-pen-button-disabled = Nichts tun
+input-pad-title = Tasten von { $name }
+input-pad-button = Taste { $number }
+input-pad-button-none = Nichts tun
+input-pad-no-buttons = Dieses Pad meldet keine Tasten

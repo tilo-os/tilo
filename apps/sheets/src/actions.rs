@@ -2417,410 +2417,513 @@ mod tests {
         }
     }
 
-    /// Ctrl+K on Sheets yields the workbook root exporting "New sheet" and a
-    /// `sheets.sheet:<idx>` child per sheet, each exporting rename / delete /
-    /// insert-row / insert-column. Drives the real resource-builder path.
+    /// Ctrl+K tree, bounded open snapshots, lazy/stale cell addresses, range resources and identity across moves.
     #[test]
-    fn ctrl_k_publishes_the_workbook_and_sheet_tree() {
-        let mut doc = seeded();
-        let ctx = ctx_from(&mut doc);
-        let resources = provide_resources(&ctx, &doc);
-        assert_eq!(resources.len(), 1, "one workbook root");
-        let wb = &resources[0];
-        assert_eq!(wb.kind, "sheets.workbook");
-        let wb_actions: Vec<&str> = wb.actions.iter().map(|a| a.id.as_str()).collect();
-        assert!(wb_actions.contains(&"new-sheet"), "{wb_actions:?}");
+    #[expect(
+        clippy::too_many_lines,
+        reason = "cases merged from separate tests; each case stays self-contained"
+    )]
+    fn workbook_tree_and_snapshots_stay_bounded_and_canonical() {
+        // Case `ctrl_k_publishes_the_workbook_and_sheet_tree`.
+        // Ctrl+K on Sheets yields the workbook root exporting "New sheet" and a
+        // `sheets.sheet:<idx>` child per sheet, each exporting rename / delete /
+        // insert-row / insert-column. Drives the real resource-builder path.
+        {
+            let mut doc = seeded();
+            let ctx = ctx_from(&mut doc);
+            let resources = provide_resources(&ctx, &doc);
+            assert_eq!(resources.len(), 1, "one workbook root");
+            let wb = &resources[0];
+            assert_eq!(wb.kind, "sheets.workbook");
+            let wb_actions: Vec<&str> = wb.actions.iter().map(|a| a.id.as_str()).collect();
+            assert!(wb_actions.contains(&"new-sheet"), "{wb_actions:?}");
 
-        assert_eq!(wb.children.len(), 2, "Budget + Sales");
-        let budget = &wb.children[0];
-        assert_eq!(budget.kind, "sheets.sheet");
-        assert_eq!(budget.label, "Budget");
-        let s_actions: Vec<&str> = budget.actions.iter().map(|a| a.id.as_str()).collect();
-        assert!(s_actions.contains(&"rename"), "{s_actions:?}");
-        assert!(s_actions.contains(&"delete"), "{s_actions:?}");
-        assert!(s_actions.contains(&"insert-row"), "{s_actions:?}");
-        assert!(s_actions.contains(&"insert-column"), "{s_actions:?}");
-    }
+            assert_eq!(wb.children.len(), 2, "Budget + Sales");
+            let budget = &wb.children[0];
+            assert_eq!(budget.kind, "sheets.sheet");
+            assert_eq!(budget.label, "Budget");
+            let s_actions: Vec<&str> = budget.actions.iter().map(|a| a.id.as_str()).collect();
+            assert!(s_actions.contains(&"rename"), "{s_actions:?}");
+            assert!(s_actions.contains(&"delete"), "{s_actions:?}");
+            assert!(s_actions.contains(&"insert-row"), "{s_actions:?}");
+            assert!(s_actions.contains(&"insert-column"), "{s_actions:?}");
+        }
 
-    #[test]
-    fn ten_thousand_cells_stay_out_of_the_open_snapshot() {
-        let ctx = SheetsResourceCtx {
-            sheet_names: vec!["Scale".into()],
-            searchable_sheets: vec![SearchableSheet {
-                id: "scale-id".into(),
-                name: "Scale".into(),
-                cells: (0..10_000)
-                    .map(|row| SearchableCell {
-                        col: 0,
-                        row,
-                        raw: row.to_string(),
-                        display: row.to_string(),
-                    })
-                    .collect(),
-            }],
-            palette_actions: Vec::new(),
-            selection: None,
-        };
-        let resources = provide_resources(&ctx, &AutoCommit::new());
-        assert!(resources[0].children[0].children.is_empty());
-        assert_eq!(
-            searchable_cell_resource("scale-id", &ctx.searchable_sheets[0].cells[9_999])
-                .id
-                .0,
-            "sheets.cell:scale-id:0:9999"
-        );
-    }
-
-    #[test]
-    fn omitted_cells_resolve_lazily_but_stale_or_out_of_range_addresses_refuse() {
-        use automerge::ROOT;
-        use ui::widget::Widget;
-
-        let mut app = crate::app::SheetsApp::new();
-        app.shots_mode();
-        let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &ROOT);
-        let sheet_id = SheetsDoc::sheet_resource_id(&doc, 0).expect("seeded sheet identity");
-        let id = cell_resource_id(&sheet_id, 10, 100_000);
-        let lazy = Widget::resource(&app, &doc, &id).expect("valid omitted cell resolves");
-        assert_eq!(lazy.id.0, id);
-        assert!(
-            tilo_actions::door::resolve(&[lazy], &open_cell_address(&sheet_id, 10, 100_000))
-                .is_some()
-        );
-        assert!(
-            Widget::resource(&app, &doc, &cell_resource_id(&sheet_id, MAX_COLUMN + 1, 0)).is_none()
-        );
-
-        dispatch(&mut doc, &delete_sheet_action(0, sheet_id));
-        app.sync(&mut doc, &ROOT);
-        assert!(
-            Widget::resource(&app, &doc, &id).is_none(),
-            "a stale sheet id has no authority"
-        );
-    }
-
-    #[test]
-    fn active_selection_is_a_range_resource_with_canonical_actions() {
-        let mut doc = seeded();
-        let mut ctx = ctx_from(&mut doc);
-        let action = immediate_spec(
-            "format-percent",
-            "Format as percent",
-            &set_formats_action(0, stable(&doc, 0), [((0, 0), CellFormat::Percent)]),
-        );
-        ctx.selection = Some(RangeResourceCtx {
-            sheet_id: String::new(),
-            label: "A1:B2".into(),
-            actions: vec![action.clone()],
-        });
-        ctx.selection.as_mut().expect("selection").sheet_id =
-            SheetsDoc::sheet_resource_id(&doc, 0).expect("stable sheet identity");
-
-        let resources = provide_resources(&ctx, &doc);
-        let range = &resources[0].children[0].children[0];
-        assert_eq!(range.kind, "sheets.range");
-        assert_eq!(
-            range.id.0,
-            format!("sheets.range:{}:A1:B2", ctx.selection.unwrap().sheet_id)
-        );
-        ui::testing::action_contract::assert_spec_encodes_as(
-            &range.actions[0],
-            None,
-            &ui::testing::action_contract::spec_encoding(&action, None),
-        );
-    }
-
-    /// A cell write through the action mutates the document.
-    #[test]
-    fn set_cell_action_writes_the_value_and_format() {
-        let mut doc = seeded();
-        let sheet_id = stable(&doc, 0);
-        dispatch(
-            &mut doc,
-            &set_cell_action(0, sheet_id, (0, 1), "=SUM(B1:B3)", Some(CellFormat::Number)),
-        );
-        assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (0, 1)), "=SUM(B1:B3)");
-        let snap = SheetsDoc::snapshot_sheet(&mut doc, 0, Currency::USD);
-        assert_eq!(snap.fmt.get(&(0, 1)).copied(), Some(CellFormat::Number));
-    }
-
-    #[test]
-    fn chart_editor_form_keeps_id_and_updates_title_kind_and_range() {
-        let action = edit_chart_form_action(
-            4,
-            "sheet-id",
-            "00000000-0000-4000-8000-000000000099",
-            "Revenue | line | D3:B1",
-        )
-        .expect("valid edit form");
-        assert_eq!(
-            action,
-            SheetsAction::PutChart {
-                sheet: 4,
-                sheet_id: "sheet-id".into(),
-                chart_id: "00000000-0000-4000-8000-000000000099".into(),
-                title: "Revenue".into(),
-                kind: "line".into(),
-                c0: 1,
-                r0: 0,
-                c1: 3,
-                r1: 2
-            }
-        );
-        assert!(edit_chart_form_action(0, "s", "id", "broken").is_none());
-    }
-
-    #[test]
-    fn stable_cell_target_survives_a_concurrent_tab_reorder() {
-        let mut doc = seeded();
-        let budget_id = stable(&doc, 0);
-        let action = set_cell_action(0, budget_id, (7, 7), "on the intended sheet", None);
-
-        // Another collaborator moved Budget after Sales before this envelope
-        // replayed. The old positional index now names Sales, but the durable
-        // id must still resolve Budget at its new index.
-        SheetsDoc::move_sheet(&mut doc, 0, 1);
-        dispatch(&mut doc, &action);
-
-        assert_eq!(
-            SheetsDoc::cell_raw(&mut doc, 1, (7, 7)),
-            "on the intended sheet"
-        );
-        assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (7, 7)), "");
-    }
-
-    #[test]
-    fn authored_new_sheet_identity_converges_across_independent_replays() {
-        let mut a = seeded();
-        let mut b = seeded();
-        let action = SheetsAction::AddSheet {
-            name: "Shared".into(),
-            new_sheet_id: "10000000-0000-4000-8000-000000000001".into(),
-        };
-        dispatch(&mut a, &action);
-        dispatch(&mut b, &action);
-        assert_eq!(
-            SheetsDoc::sheet_resource_id(&a, 2).as_deref(),
-            Some("10000000-0000-4000-8000-000000000001")
-        );
-        assert_eq!(
-            SheetsDoc::sheet_resource_id(&a, 2),
-            SheetsDoc::sheet_resource_id(&b, 2)
-        );
-    }
-
-    #[test]
-    fn new_sheet_identity_must_be_a_fresh_uuid() {
-        let mut doc = seeded();
-        let existing = "10000000-0000-4000-8000-000000000009".to_string();
-        dispatch(
-            &mut doc,
-            &SheetsAction::AddSheet {
-                name: "Existing".into(),
-                new_sheet_id: existing.clone(),
-            },
-        );
-        for new_sheet_id in ["not-a-uuid".to_string(), existing] {
-            let action = SheetsAction::AddSheet {
-                name: "Rejected".into(),
-                new_sheet_id,
+        // Case `ten_thousand_cells_stay_out_of_the_open_snapshot`.
+        {
+            let ctx = SheetsResourceCtx {
+                sheet_names: vec!["Scale".into()],
+                searchable_sheets: vec![SearchableSheet {
+                    id: "scale-id".into(),
+                    name: "Scale".into(),
+                    cells: (0..10_000)
+                        .map(|row| SearchableCell {
+                            col: 0,
+                            row,
+                            raw: row.to_string(),
+                            display: row.to_string(),
+                        })
+                        .collect(),
+                }],
+                palette_actions: Vec::new(),
+                selection: None,
             };
-            let before = doc.save();
-            let error = tilo_actions::apply_local(&mut doc, &action, encode(&action))
-                .expect_err("malformed or duplicate resource identity must be refused");
-            assert!(matches!(error, ActionError::Refused(_)));
-            assert_eq!(doc.save(), before);
+            let resources = provide_resources(&ctx, &AutoCommit::new());
+            assert!(resources[0].children[0].children.is_empty());
+            assert_eq!(
+                searchable_cell_resource("scale-id", &ctx.searchable_sheets[0].cells[9_999])
+                    .id
+                    .0,
+                "sheets.cell:scale-id:0:9999"
+            );
+        }
+
+        // Case `omitted_cells_resolve_lazily_but_stale_or_out_of_range_addresses_refuse`.
+        {
+            use automerge::ROOT;
+            use ui::widget::Widget;
+
+            let mut app = crate::app::SheetsApp::new();
+            app.shots_mode();
+            let mut doc = AutoCommit::new();
+            app.sync(&mut doc, &ROOT);
+            let sheet_id = SheetsDoc::sheet_resource_id(&doc, 0).expect("seeded sheet identity");
+            let id = cell_resource_id(&sheet_id, 10, 100_000);
+            let lazy = Widget::resource(&app, &doc, &id).expect("valid omitted cell resolves");
+            assert_eq!(lazy.id.0, id);
+            assert!(
+                tilo_actions::door::resolve(&[lazy], &open_cell_address(&sheet_id, 10, 100_000))
+                    .is_some()
+            );
+            assert!(
+                Widget::resource(&app, &doc, &cell_resource_id(&sheet_id, MAX_COLUMN + 1, 0))
+                    .is_none()
+            );
+
+            dispatch(&mut doc, &delete_sheet_action(0, sheet_id));
+            app.sync(&mut doc, &ROOT);
+            assert!(
+                Widget::resource(&app, &doc, &id).is_none(),
+                "a stale sheet id has no authority"
+            );
+        }
+
+        // Case `active_selection_is_a_range_resource_with_canonical_actions`.
+        {
+            let mut doc = seeded();
+            let mut ctx = ctx_from(&mut doc);
+            let action = immediate_spec(
+                "format-percent",
+                "Format as percent",
+                &set_formats_action(0, stable(&doc, 0), [((0, 0), CellFormat::Percent)]),
+            );
+            ctx.selection = Some(RangeResourceCtx {
+                sheet_id: String::new(),
+                label: "A1:B2".into(),
+                actions: vec![action.clone()],
+            });
+            ctx.selection.as_mut().expect("selection").sheet_id =
+                SheetsDoc::sheet_resource_id(&doc, 0).expect("stable sheet identity");
+
+            let resources = provide_resources(&ctx, &doc);
+            let range = &resources[0].children[0].children[0];
+            assert_eq!(range.kind, "sheets.range");
+            assert_eq!(
+                range.id.0,
+                format!("sheets.range:{}:A1:B2", ctx.selection.unwrap().sheet_id)
+            );
+            ui::testing::action_contract::assert_spec_encodes_as(
+                &range.actions[0],
+                None,
+                &ui::testing::action_contract::spec_encoding(&action, None),
+            );
+        }
+
+        // Case `document_context_and_palette_keep_sheet_identity_across_move`.
+        {
+            let mut doc = seeded();
+            let stable = SheetsDoc::sheet_resource_id(&doc, 0).expect("stable sheet identity");
+            let before = history_context_for_doc(
+                &doc,
+                &SheetsAction::SetCell {
+                    sheet: 0,
+                    sheet_id: stable.clone(),
+                    col: 1,
+                    row: 4,
+                    raw: "42".into(),
+                    fmt: None,
+                },
+            );
+            assert_eq!(
+                before.resource.expect("cell resource").id,
+                format!("sheets.cell:{stable}:1:4")
+            );
+
+            SheetsDoc::move_sheet(&mut doc, 0, 1);
+            let ctx = ctx_from(&mut doc);
+            let resources = provide_resources(&ctx, &doc);
+            let moved = resources[0]
+                .children
+                .iter()
+                .find(|resource| resource.label == "Budget")
+                .expect("moved sheet remains published");
+            assert_eq!(moved.id.0, format!("sheets.sheet:{stable}"));
         }
     }
 
+    /// Cell/chart/row actions write through, keep stable targets and remap formulas.
     #[test]
-    fn insert_and_duplicate_history_use_envelope_identities() {
-        let inserted = SheetsAction::InsertSheet {
-            at: 1,
-            before_sheet_id: Some("next".into()),
-            after_sheet_id: Some("previous".into()),
-            name: "Inserted".into(),
-            new_sheet_id: "10000000-0000-4000-8000-000000000002".into(),
-        };
-        assert_eq!(
-            history_context(&inserted).resource.unwrap().id,
-            "sheets.sheet:10000000-0000-4000-8000-000000000002"
-        );
-        let duplicate = SheetsAction::DuplicateSheet {
-            idx: 0,
-            sheet_id: "source-id".into(),
-            new_sheet_id: "10000000-0000-4000-8000-000000000003".into(),
-        };
-        assert_eq!(
-            history_context(&duplicate).resource.unwrap().id,
-            "sheets.sheet:10000000-0000-4000-8000-000000000003"
-        );
-        let doc = seeded();
-        assert_eq!(
-            history_context_for_doc(&doc, &duplicate)
-                .resource
-                .unwrap()
-                .id,
-            "sheets.sheet:10000000-0000-4000-8000-000000000003"
-        );
-    }
+    fn cell_and_chart_actions_write_values_and_keep_targets() {
+        // Case `set_cell_action_writes_the_value_and_format`.
+        // A cell write through the action mutates the document.
+        {
+            let mut doc = seeded();
+            let sheet_id = stable(&doc, 0);
+            dispatch(
+                &mut doc,
+                &set_cell_action(0, sheet_id, (0, 1), "=SUM(B1:B3)", Some(CellFormat::Number)),
+            );
+            assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (0, 1)), "=SUM(B1:B3)");
+            let snap = SheetsDoc::snapshot_sheet(&mut doc, 0, Currency::USD);
+            assert_eq!(snap.fmt.get(&(0, 1)).copied(), Some(CellFormat::Number));
+        }
 
-    /// Deleting a sheet through its action removes it; the last sheet is kept.
-    #[test]
-    fn delete_sheet_action_removes_a_sheet_but_keeps_the_last() {
-        let mut doc = seeded();
-        assert_eq!(SheetsDoc::sheet_count(&mut doc), 2);
-        let sheet_id = stable(&doc, 1);
-        dispatch(&mut doc, &delete_sheet_action(1, sheet_id));
-        assert_eq!(SheetsDoc::sheet_names(&mut doc), vec!["Budget"]);
-        // The last sheet cannot be deleted away.
-        let sheet_id = stable(&doc, 0);
-        dispatch(&mut doc, &delete_sheet_action(0, sheet_id));
-        assert_eq!(
-            SheetsDoc::sheet_count(&mut doc),
-            1,
-            "a workbook keeps one sheet"
-        );
-    }
+        // Case `chart_editor_form_keeps_id_and_updates_title_kind_and_range`.
+        {
+            let action = edit_chart_form_action(
+                4,
+                "sheet-id",
+                "00000000-0000-4000-8000-000000000099",
+                "Revenue | line | D3:B1",
+            )
+            .expect("valid edit form");
+            assert_eq!(
+                action,
+                SheetsAction::PutChart {
+                    sheet: 4,
+                    sheet_id: "sheet-id".into(),
+                    chart_id: "00000000-0000-4000-8000-000000000099".into(),
+                    title: "Revenue".into(),
+                    kind: "line".into(),
+                    c0: 1,
+                    r0: 0,
+                    c1: 3,
+                    r1: 2
+                }
+            );
+            assert!(edit_chart_form_action(0, "s", "id", "broken").is_none());
+        }
 
-    /// Inserting a row above the value cell shifts it down; delete shifts back.
-    #[test]
-    fn insert_and_delete_row_shift_cells() {
-        let mut doc = seeded();
-        let sheet_id = stable(&doc, 0);
-        // Budget!A1 = "Rent". Insert a row above row 1 (at == 0): it moves to A2.
-        dispatch(&mut doc, &insert_row_action(0, sheet_id.clone(), 0));
-        assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (0, 0)), "");
-        assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (0, 1)), "Rent");
-        // Delete row 1 again: it shifts back up to A1.
-        dispatch(&mut doc, &delete_row_action(0, sheet_id, 0));
-        assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (0, 0)), "Rent");
-    }
+        // Case `stable_cell_target_survives_a_concurrent_tab_reorder`.
+        {
+            let mut doc = seeded();
+            let budget_id = stable(&doc, 0);
+            let action = set_cell_action(0, budget_id, (7, 7), "on the intended sheet", None);
 
-    #[test]
-    fn hostile_batch_is_refused_without_a_partial_write() {
-        let mut doc = seeded();
-        let before = doc.save();
-        let action = SheetsAction::SetCells {
-            sheet: 0,
-            sheet_id: stable(&doc, 0),
-            cells: vec![
-                CellWrite {
-                    col: 0,
-                    row: 9,
-                    raw: "would be valid alone".into(),
-                    fmt: None,
-                },
-                CellWrite {
-                    col: MAX_COLUMN.saturating_add(1),
-                    row: 9,
-                    raw: "outside the grid".into(),
-                    fmt: None,
-                },
-            ],
-        };
-        let error = tilo_actions::apply_local(&mut doc, &action, encode(&action))
-            .expect_err("the full batch must be validated before any write");
-        assert!(matches!(error, ActionError::Refused(_)));
-        assert_eq!(
-            doc.save(),
-            before,
-            "refusal leaves the CRDT byte-for-byte unchanged"
-        );
-    }
+            // Another collaborator moved Budget after Sales before this envelope
+            // replayed. The old positional index now names Sales, but the durable
+            // id must still resolve Budget at its new index.
+            SheetsDoc::move_sheet(&mut doc, 0, 1);
+            dispatch(&mut doc, &action);
 
-    #[test]
-    fn hostile_import_refuses_before_creating_any_sheet() {
-        let mut doc = seeded();
-        let before = doc.save();
-        let action = SheetsAction::ImportSheets {
-            sheets: vec![
-                ImportedSheet {
-                    name: "Would exist".into(),
-                    sheet_id: Uuid::new_v4().to_string(),
-                    cells: vec![CellWrite {
-                        col: 0,
-                        row: 0,
-                        raw: "safe".into(),
-                        fmt: None,
-                    }],
-                },
-                ImportedSheet {
-                    name: "Bad later sheet".into(),
-                    sheet_id: Uuid::new_v4().to_string(),
-                    cells: vec![CellWrite {
-                        col: MAX_COLUMN + 1,
-                        row: 0,
-                        raw: "outside grid".into(),
-                        fmt: None,
-                    }],
-                },
-            ],
-        };
-        assert!(tilo_actions::apply_local(&mut doc, &action, encode(&action)).is_err());
-        assert_eq!(
-            doc.save(),
-            before,
-            "no prefix of an import can leak into the CRDT"
-        );
-    }
+            assert_eq!(
+                SheetsDoc::cell_raw(&mut doc, 1, (7, 7)),
+                "on the intended sheet"
+            );
+            assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (7, 7)), "");
+        }
 
-    #[test]
-    fn imported_workbook_has_an_exact_replay_cell_boundary() {
-        let doc = seeded();
-        let rows = u32::try_from(MAX_IMPORTED_CELLS).expect("bounded import cap fits u32");
-        let cells = (0..rows)
-            .map(|row| CellWrite {
-                col: 0,
-                row,
-                raw: "1".into(),
+        // Case `insert_and_delete_row_shift_cells`.
+        // Inserting a row above the value cell shifts it down; delete shifts back.
+        {
+            let mut doc = seeded();
+            let sheet_id = stable(&doc, 0);
+            // Budget!A1 = "Rent". Insert a row above row 1 (at == 0): it moves to A2.
+            dispatch(&mut doc, &insert_row_action(0, sheet_id.clone(), 0));
+            assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (0, 0)), "");
+            assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (0, 1)), "Rent");
+            // Delete row 1 again: it shifts back up to A1.
+            dispatch(&mut doc, &delete_row_action(0, sheet_id, 0));
+            assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (0, 0)), "Rent");
+        }
+
+        // Case `row_and_column_actions_remap_formula_relationships`.
+        {
+            let mut doc = seeded();
+            SheetsDoc::set_cell_raw(&mut doc, 0, (0, 1), "10");
+            SheetsDoc::set_cell_raw(&mut doc, 0, (1, 2), "=SUM($A$1:A2)");
+            let sheet_id = stable(&doc, 0);
+
+            dispatch(&mut doc, &insert_row_action(0, sheet_id.clone(), 0));
+            assert_eq!(
+                SheetsDoc::cell_raw(&mut doc, 0, (1, 3)),
+                "=SUM($A$2:A3)",
+                "both anchored and relative formula references follow the inserted row"
+            );
+
+            dispatch(&mut doc, &delete_column_action(0, sheet_id, 0));
+            assert_eq!(
+                SheetsDoc::cell_raw(&mut doc, 0, (0, 3)),
+                "=SUM(#REF!:#REF!)",
+                "a deleted referenced column is represented explicitly, never silently retargeted"
+            );
+        }
+
+        // Case `cell_action_history_has_coordinate_resource`.
+        {
+            let context = history_context(&SheetsAction::SetCell {
+                sheet: 2,
+                sheet_id: "history-sheet".into(),
+                col: 1,
+                row: 4,
+                raw: "42".into(),
                 fmt: None,
-            })
-            .collect();
-        let mut action = SheetsAction::ImportSheets {
-            sheets: vec![ImportedSheet {
-                name: "At the import limit".into(),
-                sheet_id: Uuid::new_v4().to_string(),
-                cells,
-            }],
-        };
-        assert!(validate_action(&doc, &action).is_ok());
-        let SheetsAction::ImportSheets { sheets } = &mut action else {
-            return;
-        };
-        sheets[0].cells.push(CellWrite {
-            col: 1,
-            row: 0,
-            raw: "2".into(),
-            fmt: None,
-        });
-        assert!(matches!(
-            validate_action(&doc, &action),
-            Err(ActionError::Refused(_))
-        ));
+            });
+            assert_eq!(context.action_label, "Edit cell");
+            let resource = context.resource.expect("cell resource");
+            assert_eq!(resource.id, "sheets.cell:history-sheet:1:4");
+            assert_eq!(resource.label, "B5");
+        }
     }
 
+    /// New/duplicate/delete sheet identities converge, must be fresh, and the last sheet is kept.
     #[test]
-    fn row_and_column_actions_remap_formula_relationships() {
-        let mut doc = seeded();
-        SheetsDoc::set_cell_raw(&mut doc, 0, (0, 1), "10");
-        SheetsDoc::set_cell_raw(&mut doc, 0, (1, 2), "=SUM($A$1:A2)");
-        let sheet_id = stable(&doc, 0);
+    fn new_sheet_identities_converge_and_are_fresh() {
+        // Case `authored_new_sheet_identity_converges_across_independent_replays`.
+        {
+            let mut a = seeded();
+            let mut b = seeded();
+            let action = SheetsAction::AddSheet {
+                name: "Shared".into(),
+                new_sheet_id: "10000000-0000-4000-8000-000000000001".into(),
+            };
+            dispatch(&mut a, &action);
+            dispatch(&mut b, &action);
+            assert_eq!(
+                SheetsDoc::sheet_resource_id(&a, 2).as_deref(),
+                Some("10000000-0000-4000-8000-000000000001")
+            );
+            assert_eq!(
+                SheetsDoc::sheet_resource_id(&a, 2),
+                SheetsDoc::sheet_resource_id(&b, 2)
+            );
+        }
 
-        dispatch(&mut doc, &insert_row_action(0, sheet_id.clone(), 0));
-        assert_eq!(
-            SheetsDoc::cell_raw(&mut doc, 0, (1, 3)),
-            "=SUM($A$2:A3)",
-            "both anchored and relative formula references follow the inserted row"
-        );
+        // Case `new_sheet_identity_must_be_a_fresh_uuid`.
+        {
+            let mut doc = seeded();
+            let existing = "10000000-0000-4000-8000-000000000009".to_string();
+            dispatch(
+                &mut doc,
+                &SheetsAction::AddSheet {
+                    name: "Existing".into(),
+                    new_sheet_id: existing.clone(),
+                },
+            );
+            for new_sheet_id in ["not-a-uuid".to_string(), existing] {
+                let action = SheetsAction::AddSheet {
+                    name: "Rejected".into(),
+                    new_sheet_id,
+                };
+                let before = doc.save();
+                let error = tilo_actions::apply_local(&mut doc, &action, encode(&action))
+                    .expect_err("malformed or duplicate resource identity must be refused");
+                assert!(matches!(error, ActionError::Refused(_)));
+                assert_eq!(doc.save(), before);
+            }
+        }
 
-        dispatch(&mut doc, &delete_column_action(0, sheet_id, 0));
-        assert_eq!(
-            SheetsDoc::cell_raw(&mut doc, 0, (0, 3)),
-            "=SUM(#REF!:#REF!)",
-            "a deleted referenced column is represented explicitly, never silently retargeted"
-        );
+        // Case `insert_and_duplicate_history_use_envelope_identities`.
+        {
+            let inserted = SheetsAction::InsertSheet {
+                at: 1,
+                before_sheet_id: Some("next".into()),
+                after_sheet_id: Some("previous".into()),
+                name: "Inserted".into(),
+                new_sheet_id: "10000000-0000-4000-8000-000000000002".into(),
+            };
+            assert_eq!(
+                history_context(&inserted).resource.unwrap().id,
+                "sheets.sheet:10000000-0000-4000-8000-000000000002"
+            );
+            let duplicate = SheetsAction::DuplicateSheet {
+                idx: 0,
+                sheet_id: "source-id".into(),
+                new_sheet_id: "10000000-0000-4000-8000-000000000003".into(),
+            };
+            assert_eq!(
+                history_context(&duplicate).resource.unwrap().id,
+                "sheets.sheet:10000000-0000-4000-8000-000000000003"
+            );
+            let doc = seeded();
+            assert_eq!(
+                history_context_for_doc(&doc, &duplicate)
+                    .resource
+                    .unwrap()
+                    .id,
+                "sheets.sheet:10000000-0000-4000-8000-000000000003"
+            );
+        }
+
+        // Case `delete_sheet_action_removes_a_sheet_but_keeps_the_last`.
+        // Deleting a sheet through its action removes it; the last sheet is kept.
+        {
+            let mut doc = seeded();
+            assert_eq!(SheetsDoc::sheet_count(&mut doc), 2);
+            let sheet_id = stable(&doc, 1);
+            dispatch(&mut doc, &delete_sheet_action(1, sheet_id));
+            assert_eq!(SheetsDoc::sheet_names(&mut doc), vec!["Budget"]);
+            // The last sheet cannot be deleted away.
+            let sheet_id = stable(&doc, 0);
+            dispatch(&mut doc, &delete_sheet_action(0, sheet_id));
+            assert_eq!(
+                SheetsDoc::sheet_count(&mut doc),
+                1,
+                "a workbook keeps one sheet"
+            );
+        }
+    }
+
+    /// Hostile batches/imports are refused before writing; imports replay exactly; interchange runs as typed jobs.
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "cases merged from separate tests; each case stays self-contained"
+    )]
+    fn hostile_batches_and_imports_are_refused_atomically() {
+        // Body of case `imported_workbook_has_an_exact_replay_cell_boundary` (a function so its early `return`/`?` stays local).
+        fn imported_workbook_has_an_exact_replay_cell_boundary() {
+            let doc = seeded();
+            let rows = u32::try_from(MAX_IMPORTED_CELLS).expect("bounded import cap fits u32");
+            let cells = (0..rows)
+                .map(|row| CellWrite {
+                    col: 0,
+                    row,
+                    raw: "1".into(),
+                    fmt: None,
+                })
+                .collect();
+            let mut action = SheetsAction::ImportSheets {
+                sheets: vec![ImportedSheet {
+                    name: "At the import limit".into(),
+                    sheet_id: Uuid::new_v4().to_string(),
+                    cells,
+                }],
+            };
+            assert!(validate_action(&doc, &action).is_ok());
+            let SheetsAction::ImportSheets { sheets } = &mut action else {
+                return;
+            };
+            sheets[0].cells.push(CellWrite {
+                col: 1,
+                row: 0,
+                raw: "2".into(),
+                fmt: None,
+            });
+            assert!(matches!(
+                validate_action(&doc, &action),
+                Err(ActionError::Refused(_))
+            ));
+        }
+
+        // Case `hostile_batch_is_refused_without_a_partial_write`.
+        {
+            let mut doc = seeded();
+            let before = doc.save();
+            let action = SheetsAction::SetCells {
+                sheet: 0,
+                sheet_id: stable(&doc, 0),
+                cells: vec![
+                    CellWrite {
+                        col: 0,
+                        row: 9,
+                        raw: "would be valid alone".into(),
+                        fmt: None,
+                    },
+                    CellWrite {
+                        col: MAX_COLUMN.saturating_add(1),
+                        row: 9,
+                        raw: "outside the grid".into(),
+                        fmt: None,
+                    },
+                ],
+            };
+            let error = tilo_actions::apply_local(&mut doc, &action, encode(&action))
+                .expect_err("the full batch must be validated before any write");
+            assert!(matches!(error, ActionError::Refused(_)));
+            assert_eq!(
+                doc.save(),
+                before,
+                "refusal leaves the CRDT byte-for-byte unchanged"
+            );
+        }
+
+        // Case `hostile_import_refuses_before_creating_any_sheet`.
+        {
+            let mut doc = seeded();
+            let before = doc.save();
+            let action = SheetsAction::ImportSheets {
+                sheets: vec![
+                    ImportedSheet {
+                        name: "Would exist".into(),
+                        sheet_id: Uuid::new_v4().to_string(),
+                        cells: vec![CellWrite {
+                            col: 0,
+                            row: 0,
+                            raw: "safe".into(),
+                            fmt: None,
+                        }],
+                    },
+                    ImportedSheet {
+                        name: "Bad later sheet".into(),
+                        sheet_id: Uuid::new_v4().to_string(),
+                        cells: vec![CellWrite {
+                            col: MAX_COLUMN + 1,
+                            row: 0,
+                            raw: "outside grid".into(),
+                            fmt: None,
+                        }],
+                    },
+                ],
+            };
+            assert!(tilo_actions::apply_local(&mut doc, &action, encode(&action)).is_err());
+            assert_eq!(
+                doc.save(),
+                before,
+                "no prefix of an import can leak into the CRDT"
+            );
+        }
+
+        // Case `imported_workbook_has_an_exact_replay_cell_boundary`.
+        imported_workbook_has_an_exact_replay_cell_boundary();
+
+        // Case `interchange_operations_are_typed_background_jobs`.
+        {
+            let mut doc = seeded();
+            let ctx = ctx_from(&mut doc);
+            let resources = provide_resources(&ctx, &doc);
+            for id in [
+                "import-csv",
+                "import-xlsx",
+                "import-ods",
+                "export-csv",
+                "export-xlsx",
+                "export-ods",
+            ] {
+                let action = resources[0]
+                    .actions
+                    .iter()
+                    .find(|action| action.id == id)
+                    .unwrap();
+                assert_eq!(action.params()[0].name.as_ref(), "path");
+                assert!(matches!(
+                    action.contract.execution,
+                    ExecutionMode::Background { .. }
+                ));
+                assert_eq!(action.contract.result, ResultSpec::Job);
+                assert!(action.contract.validate_declaration().is_empty());
+            }
+        }
     }
 
     /// Resources exactly as the app publishes them for `doc`.
@@ -2899,80 +3002,5 @@ mod tests {
                 encode(&insert_row_action(0, stable(doc, 0), 4))
             }),
         ],
-    }
-
-    #[test]
-    fn cell_action_history_has_coordinate_resource() {
-        let context = history_context(&SheetsAction::SetCell {
-            sheet: 2,
-            sheet_id: "history-sheet".into(),
-            col: 1,
-            row: 4,
-            raw: "42".into(),
-            fmt: None,
-        });
-        assert_eq!(context.action_label, "Edit cell");
-        let resource = context.resource.expect("cell resource");
-        assert_eq!(resource.id, "sheets.cell:history-sheet:1:4");
-        assert_eq!(resource.label, "B5");
-    }
-
-    #[test]
-    fn document_context_and_palette_keep_sheet_identity_across_move() {
-        let mut doc = seeded();
-        let stable = SheetsDoc::sheet_resource_id(&doc, 0).expect("stable sheet identity");
-        let before = history_context_for_doc(
-            &doc,
-            &SheetsAction::SetCell {
-                sheet: 0,
-                sheet_id: stable.clone(),
-                col: 1,
-                row: 4,
-                raw: "42".into(),
-                fmt: None,
-            },
-        );
-        assert_eq!(
-            before.resource.expect("cell resource").id,
-            format!("sheets.cell:{stable}:1:4")
-        );
-
-        SheetsDoc::move_sheet(&mut doc, 0, 1);
-        let ctx = ctx_from(&mut doc);
-        let resources = provide_resources(&ctx, &doc);
-        let moved = resources[0]
-            .children
-            .iter()
-            .find(|resource| resource.label == "Budget")
-            .expect("moved sheet remains published");
-        assert_eq!(moved.id.0, format!("sheets.sheet:{stable}"));
-    }
-
-    #[test]
-    fn interchange_operations_are_typed_background_jobs() {
-        let mut doc = seeded();
-        let ctx = ctx_from(&mut doc);
-        let resources = provide_resources(&ctx, &doc);
-        for id in [
-            "import-csv",
-            "import-xlsx",
-            "import-ods",
-            "export-csv",
-            "export-xlsx",
-            "export-ods",
-        ] {
-            let action = resources[0]
-                .actions
-                .iter()
-                .find(|action| action.id == id)
-                .unwrap();
-            assert_eq!(action.params()[0].name.as_ref(), "path");
-            assert!(matches!(
-                action.contract.execution,
-                ExecutionMode::Background { .. }
-            ));
-            assert_eq!(action.contract.result, ResultSpec::Job);
-            assert!(action.contract.validate_declaration().is_empty());
-        }
     }
 }

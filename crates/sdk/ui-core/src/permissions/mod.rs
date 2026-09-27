@@ -317,158 +317,160 @@ fn unix_now() -> Option<u64> {
 mod tests {
     use super::*;
 
-    /// The permissive context must be permissive *because of a
-    /// capability*, not a special case in the checker: drop the grant
-    /// and the same actor is denied.
     #[test]
-    fn permissive_is_a_capability_not_a_bypass() {
-        let ctx = PermissionContext::permissive();
-        assert!(ctx.check(&PermissionScope::path(
-            "/var/workspace/secret.png",
-            Verb::Read
-        )));
-        assert_eq!(ctx.capabilities().len(), 1);
-        assert_eq!(ctx.capabilities()[0].verb, Verb::Admin);
-        assert_eq!(ctx.capabilities()[0].scope, Scope::Workspace);
+    fn capabilities_grant_exactly_their_scope_while_live() {
+        // phase: permissive_is_a_capability_not_a_bypass
+        // The permissive context must be permissive *because of a
+        // capability*, not a special case in the checker: drop the grant
+        // and the same actor is denied.
+        {
+            let ctx = PermissionContext::permissive();
+            assert!(ctx.check(&PermissionScope::path(
+                "/var/workspace/secret.png",
+                Verb::Read
+            )));
+            assert_eq!(ctx.capabilities().len(), 1);
+            assert_eq!(ctx.capabilities()[0].verb, Verb::Admin);
+            assert_eq!(ctx.capabilities()[0].scope, Scope::Workspace);
 
-        // Same actor, no capability: a role confers no base authority
-        // over paths.
-        let stripped = PermissionContext::from_capabilities(
-            Actor::person(Some(Role::Owner), LOCAL_USER),
-            vec![],
-        );
-        assert!(!stripped.check(&PermissionScope::path(
-            "/var/workspace/secret.png",
-            Verb::Read
-        )));
-    }
+            // Same actor, no capability: a role confers no base authority
+            // over paths.
+            let stripped = PermissionContext::from_capabilities(
+                Actor::person(Some(Role::Owner), LOCAL_USER),
+                vec![],
+            );
+            assert!(!stripped.check(&PermissionScope::path(
+                "/var/workspace/secret.png",
+                Verb::Read
+            )));
+        }
+        // phase: action_grant_is_narrow_while_app_grant_covers_every_action
+        {
+            let actor = Actor::agent("scribe");
+            let narrow = PermissionContext::from_capabilities(
+                actor.clone(),
+                vec![CapOverride::grant(
+                    Subject::agent("scribe"),
+                    Scope::Action {
+                        app: "notes".into(),
+                        action: "note.open".into(),
+                    },
+                    Verb::Read,
+                )],
+            );
+            assert!(narrow.check(&PermissionScope::action("notes", "note.open", Verb::Read)));
+            assert!(!narrow.check(&PermissionScope::action("notes", "note.delete", Verb::Read)));
 
-    /// NEGATIVE: a Viewer may read an artifact but must not write it.
-    #[test]
-    fn viewer_is_denied_write_on_an_artifact() {
-        use collab_types::channel::ArtifactId;
-        use collab_types::role::ArtifactKind;
+            let broad = PermissionContext::from_capabilities(
+                actor,
+                vec![CapOverride::grant(
+                    Subject::agent("scribe"),
+                    Scope::App("notes".into()),
+                    Verb::Read,
+                )],
+            );
+            assert!(broad.check(&PermissionScope::action("notes", "note.delete", Verb::Read)));
+        }
+        // phase: lapsed_capability_no_longer_grants
+        // NEGATIVE: a capability that has lapsed is not a capability.
+        // Same context, same actor, same grant — only the clock differs.
+        {
+            let cap = CapOverride::grant(
+                Subject::person("u_guest"),
+                Scope::FsPath("/var/workspace/shared".into()),
+                Verb::Write,
+            )
+            .with_expiry(1_000);
+            let actor = Actor::person(Some(Role::Viewer), "u_guest");
+            let scope = PermissionScope::path("/var/workspace/shared/notes.md", Verb::Write);
 
-        let ctx = PermissionContext::from_capabilities(
-            Actor::person(Some(Role::Viewer), "u_guest"),
-            vec![],
-        );
-        let artifact = ResourceRef::Artifact {
-            app: Some("notes".into()),
-            kind: ArtifactKind::Note,
-            instance: ArtifactId::new(),
-        };
+            let live = PermissionContext::from_capabilities(actor.clone(), vec![cap.clone()])
+                .at_unix_time(999);
+            assert!(live.check(&scope), "before the deadline the grant holds");
 
-        let write = PermissionScope {
-            resource: artifact.clone(),
-            op: Verb::Write,
-        };
-        assert!(
-            !ctx.check(&write),
-            "a Viewer must not be able to write an artifact"
-        );
-        assert_eq!(
-            ctx.check_with_denied_feedback(&write),
-            Some(CapDecision::DeniedByRole),
-            "the denial must be attributed to the role, not to a restriction"
-        );
-
-        // …reading is exactly what a Viewer may do.
-        let read = PermissionScope {
-            resource: artifact,
-            op: Verb::Read,
-        };
-        assert!(ctx.check(&read), "a Viewer may read the same artifact");
-    }
-
-    /// NEGATIVE: a capability that has lapsed is not a capability.
-    /// Same context, same actor, same grant — only the clock differs.
-    #[test]
-    fn lapsed_capability_no_longer_grants() {
-        let cap = CapOverride::grant(
-            Subject::person("u_guest"),
-            Scope::FsPath("/var/workspace/shared".into()),
-            Verb::Write,
-        )
-        .with_expiry(1_000);
-        let actor = Actor::person(Some(Role::Viewer), "u_guest");
-        let scope = PermissionScope::path("/var/workspace/shared/notes.md", Verb::Write);
-
-        let live = PermissionContext::from_capabilities(actor.clone(), vec![cap.clone()])
-            .at_unix_time(999);
-        assert!(live.check(&scope), "before the deadline the grant holds");
-
-        let lapsed = PermissionContext::from_capabilities(actor, vec![cap]).at_unix_time(1_001);
-        assert!(
-            !lapsed.check(&scope),
-            "after the deadline the grant is gone"
-        );
-        assert_eq!(
-            lapsed.check_with_denied_feedback(&scope),
-            Some(CapDecision::DeniedByRole),
-            "an expired capability is invisible — the actor falls back to its role, which \
+            let lapsed = PermissionContext::from_capabilities(actor, vec![cap]).at_unix_time(1_001);
+            assert!(
+                !lapsed.check(&scope),
+                "after the deadline the grant is gone"
+            );
+            assert_eq!(
+                lapsed.check_with_denied_feedback(&scope),
+                Some(CapDecision::DeniedByRole),
+                "an expired capability is invisible — the actor falls back to its role, which \
              confers no authority over the filesystem"
-        );
-    }
-
-    /// A `Restrict` capability caps authority below the role baseline.
-    #[test]
-    fn restriction_denies_and_is_attributed_to_the_restriction() {
-        let ctx = PermissionContext::from_capabilities(
-            Actor::person(Some(Role::Editor), "u_editor"),
-            vec![CapOverride::restrict_role_in_app(
-                Role::Editor,
-                "terminal",
-                Verb::Comment,
-            )],
-        );
-        let scope = PermissionScope::app_kind(AppKind::Terminal, Verb::Write);
-        assert!(!ctx.check(&scope));
-        assert_eq!(
-            ctx.check_with_denied_feedback(&scope),
-            Some(CapDecision::DeniedByRestriction)
-        );
-    }
-
-    /// An actor with no role and no capability — an app, an agent, a
-    /// stranger — is denied everything. Fail-closed by construction.
-    #[test]
-    fn actor_without_role_or_capability_is_denied_everything() {
-        let ctx = PermissionContext::from_capabilities(Actor::app("dev.example.thing"), vec![]);
-        assert!(!ctx.check(&PermissionScope::workspace(Verb::Read)));
-        assert!(!ctx.check(&PermissionScope::app_kind(
-            AppKind::FileExplorer,
-            Verb::Read
-        )));
-        assert!(!ctx.check(&PermissionScope::path("/etc/shadow", Verb::Read)));
-        assert!(ctx.user().0.is_empty(), "an app is not a person");
+            );
+        }
     }
 
     #[test]
-    fn action_grant_is_narrow_while_app_grant_covers_every_action() {
-        let actor = Actor::agent("scribe");
-        let narrow = PermissionContext::from_capabilities(
-            actor.clone(),
-            vec![CapOverride::grant(
-                Subject::agent("scribe"),
-                Scope::Action {
-                    app: "notes".into(),
-                    action: "note.open".into(),
-                },
-                Verb::Read,
-            )],
-        );
-        assert!(narrow.check(&PermissionScope::action("notes", "note.open", Verb::Read)));
-        assert!(!narrow.check(&PermissionScope::action("notes", "note.delete", Verb::Read)));
+    fn denials_are_default_and_attributed() {
+        // phase: viewer_is_denied_write_on_an_artifact
+        // NEGATIVE: a Viewer may read an artifact but must not write it.
+        {
+            use collab_types::channel::ArtifactId;
+            use collab_types::role::ArtifactKind;
 
-        let broad = PermissionContext::from_capabilities(
-            actor,
-            vec![CapOverride::grant(
-                Subject::agent("scribe"),
-                Scope::App("notes".into()),
-                Verb::Read,
-            )],
-        );
-        assert!(broad.check(&PermissionScope::action("notes", "note.delete", Verb::Read)));
+            let ctx = PermissionContext::from_capabilities(
+                Actor::person(Some(Role::Viewer), "u_guest"),
+                vec![],
+            );
+            let artifact = ResourceRef::Artifact {
+                app: Some("notes".into()),
+                kind: ArtifactKind::Note,
+                instance: ArtifactId::new(),
+            };
+
+            let write = PermissionScope {
+                resource: artifact.clone(),
+                op: Verb::Write,
+            };
+            assert!(
+                !ctx.check(&write),
+                "a Viewer must not be able to write an artifact"
+            );
+            assert_eq!(
+                ctx.check_with_denied_feedback(&write),
+                Some(CapDecision::DeniedByRole),
+                "the denial must be attributed to the role, not to a restriction"
+            );
+
+            // …reading is exactly what a Viewer may do.
+            let read = PermissionScope {
+                resource: artifact,
+                op: Verb::Read,
+            };
+            assert!(ctx.check(&read), "a Viewer may read the same artifact");
+        }
+        // phase: restriction_denies_and_is_attributed_to_the_restriction
+        // A `Restrict` capability caps authority below the role baseline.
+        {
+            let ctx = PermissionContext::from_capabilities(
+                Actor::person(Some(Role::Editor), "u_editor"),
+                vec![CapOverride::restrict_role_in_app(
+                    Role::Editor,
+                    "terminal",
+                    Verb::Comment,
+                )],
+            );
+            let scope = PermissionScope::app_kind(AppKind::Terminal, Verb::Write);
+            assert!(!ctx.check(&scope));
+            assert_eq!(
+                ctx.check_with_denied_feedback(&scope),
+                Some(CapDecision::DeniedByRestriction)
+            );
+        }
+        // phase: actor_without_role_or_capability_is_denied_everything
+        // An actor with no role and no capability — an app, an agent, a
+        // stranger — is denied everything. Fail-closed by construction.
+        {
+            let ctx = PermissionContext::from_capabilities(Actor::app("dev.example.thing"), vec![]);
+            assert!(!ctx.check(&PermissionScope::workspace(Verb::Read)));
+            assert!(!ctx.check(&PermissionScope::app_kind(
+                AppKind::FileExplorer,
+                Verb::Read
+            )));
+            assert!(!ctx.check(&PermissionScope::path("/etc/shadow", Verb::Read)));
+            assert!(ctx.user().0.is_empty(), "an app is not a person");
+        }
     }
 }

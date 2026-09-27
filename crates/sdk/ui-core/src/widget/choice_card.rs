@@ -193,47 +193,51 @@ mod tests {
     use crate::a11y::Role;
 
     #[test]
-    fn semantics_and_hit_testing_share_the_card_bounds() {
-        let rect = Rect::new(10.0, 20.0, 310.0, 76.0);
-        let face = ChoiceCardFace::new(rect, Icon::Image, "Scan image", "Choose a screenshot");
-        assert!(face.hit_test(rect.center()));
-        assert!(!face.hit_test(Point::ZERO));
-        let node = face.accessibility("scan");
-        assert_eq!(node.role, Role::Button);
-        assert_eq!(node.name.as_deref(), Some("Scan image"));
-        assert_eq!(node.value.as_deref(), Some("Choose a screenshot"));
-        assert_eq!(node.action_target.as_deref(), Some("scan"));
-        assert_eq!(
-            node.bounds.map(crate::a11y::AccessBounds::to_rect),
-            Some(rect)
-        );
-    }
+    fn choice_card_bounds_drive_semantics_hits_and_elision() {
+        fn semantics_and_hit_testing_share_the_card_bounds() {
+            let rect = Rect::new(10.0, 20.0, 310.0, 76.0);
+            let face = ChoiceCardFace::new(rect, Icon::Image, "Scan image", "Choose a screenshot");
+            assert!(face.hit_test(rect.center()));
+            assert!(!face.hit_test(Point::ZERO));
+            let node = face.accessibility("scan");
+            assert_eq!(node.role, Role::Button);
+            assert_eq!(node.name.as_deref(), Some("Scan image"));
+            assert_eq!(node.value.as_deref(), Some("Choose a screenshot"));
+            assert_eq!(node.action_target.as_deref(), Some("scan"));
+            assert_eq!(
+                node.bounds.map(crate::a11y::AccessBounds::to_rect),
+                Some(rect)
+            );
+        }
 
-    #[test]
-    fn narrow_card_elides_copy_instead_of_wrapping_beyond_fixed_height() {
-        let rect = Rect::new(0.0, 0.0, 264.0, 56.0);
-        let face = ChoiceCardFace::new(
-            rect,
-            Icon::Image,
-            "Scan a QR image with an unusually long localized title",
-            "Read the code from a screenshot or photo with a long localized description",
-        );
-        let mut renderer = TextRenderer::new();
-        let mut scene = Scene::new();
-        face.paint(&mut scene, Affine::IDENTITY, &mut renderer, &Theme::dark());
-        assert!(!scene.encoding().draw_tags.is_empty());
+        fn narrow_card_elides_copy_instead_of_wrapping_beyond_fixed_height() {
+            let rect = Rect::new(0.0, 0.0, 264.0, 56.0);
+            let face = ChoiceCardFace::new(
+                rect,
+                Icon::Image,
+                "Scan a QR image with an unusually long localized title",
+                "Read the code from a screenshot or photo with a long localized description",
+            );
+            let mut renderer = TextRenderer::new();
+            let mut scene = Scene::new();
+            face.paint(&mut scene, Affine::IDENTITY, &mut renderer, &Theme::dark());
+            assert!(!scene.encoding().draw_tags.is_empty());
 
-        let available = px(rect.x1 - (rect.x0 + 46.0 + 14.0) - 36.0);
-        let title = renderer.elide_to_width_weighted(
-            face.title.as_ref(),
-            15.0,
-            available,
-            TextWeight::Semibold,
-        );
-        let description = renderer.elide_to_width(face.description.as_ref(), 12.0, available);
-        assert_ne!(title, face.title.as_ref());
-        assert_ne!(description, face.description.as_ref());
-        assert!(title.ends_with('…'));
-        assert!(description.ends_with('…'));
+            let available = px(rect.x1 - (rect.x0 + 46.0 + 14.0) - 36.0);
+            let title = renderer.elide_to_width_weighted(
+                face.title.as_ref(),
+                15.0,
+                available,
+                TextWeight::Semibold,
+            );
+            let description = renderer.elide_to_width(face.description.as_ref(), 12.0, available);
+            assert_ne!(title, face.title.as_ref());
+            assert_ne!(description, face.description.as_ref());
+            assert!(title.ends_with('…'));
+            assert!(description.ends_with('…'));
+        }
+
+        semantics_and_hit_testing_share_the_card_bounds();
+        narrow_card_elides_copy_instead_of_wrapping_beyond_fixed_height();
     }
 }

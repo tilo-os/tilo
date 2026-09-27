@@ -29,6 +29,7 @@ postcard = { workspace = true, features = ["alloc"] }
 thiserror.workspace = true
 # Frames are kept as lossless PNG keyframes.
 image = { workspace = true, features = ["png"] }
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 uuid.workspace = true

@@ -1078,159 +1078,161 @@ mod tests {
         );
     }
 
-    /// Caption, title and body stack on their measured line boxes with an
-    /// `s1` gap, so in the 64 px card a desktop notification uses every
-    /// painted glyph line lands inside the card.
     #[test]
-    fn three_line_text_block_stays_inside_the_card() {
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let mut scene = Scene::new();
-        let rect = Rect::new(0.0, 0.0, 360.0, 64.0);
-        paint_card(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            rect,
-            &ToastCard::new("Build finished", ToastKind::Success)
-                .caption("Terminal")
-                .body("3 warnings, 0 errors")
-                .closable(true),
-        );
-        let runs = &scene.encoding().resources.glyph_runs;
-        assert!(runs.len() >= 3, "caption, title and body all paint");
-        let mut tops: Vec<f64> = Vec::new();
-        for run in runs {
-            let top = f64::from(run.transform.translation[1]);
-            let (_, h) = tr.measure("Ag", run.font_size, None);
-            assert!(
-                top >= rect.y0 - 0.01 && top + f64::from(h) <= rect.y1 + 0.01,
-                "a glyph line at y={top} (h={h}) leaves the {rect:?} card",
-            );
-            tops.push(top);
-        }
-        tops.sort_by(f64::total_cmp);
-        tops.dedup_by(|a, b| (*a - *b).abs() < 0.5);
-        assert_eq!(tops.len(), 3, "three distinct baselines: {tops:?}");
-        for pair in tops.windows(2) {
-            assert!(
-                pair[1] - pair[0] >= f64::from(theme.tokens.typography.scale.xs),
-                "lines do not overlap: {tops:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn paint_card_returns_a_top_right_close_rect_when_closable() {
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let mut scene = Scene::new();
-        let rect = Rect::new(100.0, 40.0, 460.0, 104.0);
-        let hit = paint_card(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            rect,
-            &ToastCard::new("New mail", ToastKind::Info)
-                .body("secret subject")
-                .caption("Mailer")
-                .closable(true)
-                .actionable(true),
-        );
-        assert!(
-            hit.close_rect.area() > 0.0,
-            "closable card returns a close rect"
-        );
-        assert!(
-            hit.close_rect.x1 <= rect.x1 && hit.close_rect.x1 > rect.center().x,
-            "close rect hugs the card's right edge",
-        );
-        assert!(
-            hit.close_rect.y0 >= rect.y0 && hit.close_rect.y1 < rect.center().y,
-            "close rect sits at the top of the card",
-        );
-    }
-
-    #[test]
-    fn paint_card_actions_use_two_standard_non_overlapping_buttons() {
-        let mut scene = Scene::new();
-        let mut tr = TextRenderer::new();
-        let theme = Theme::dark();
-        let card_rect = Rect::new(20.0, 30.0, 374.0, 142.0);
-        let hit = paint_card(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            card_rect,
-            &ToastCard::new("No visible video", ToastKind::Warning)
-                .caption("Picture in Picture")
-                .actions(
-                    "Float page",
-                    crate::icons::Icon::PictureInPicture2,
-                    false,
-                    "Select area",
-                    crate::icons::Icon::MousePointer2,
-                    false,
-                ),
-        );
-        assert!(hit.secondary_action_rect.area() > 0.0);
-        assert!(hit.primary_action_rect.area() > 0.0);
-        assert!(hit.secondary_action_rect.x1 < hit.primary_action_rect.x0);
-        assert!(card_rect.contains(hit.secondary_action_rect.center()));
-        assert!(card_rect.contains(hit.primary_action_rect.center()));
-    }
-
-    #[test]
-    fn paint_card_emits_surface_fill_and_title_glyphs() {
-        use vello_encoding::DrawTag;
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let mut scene = Scene::new();
-        let rect = Rect::new(0.0, 0.0, 360.0, 64.0);
-        paint_card(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            rect,
-            &ToastCard::new("Build finished", ToastKind::Success),
-        );
-        let enc = scene.encoding();
-        let color_fills = enc
-            .draw_tags
-            .iter()
-            .filter(|t| **t == DrawTag::COLOR)
-            .count();
-        assert!(
-            color_fills >= 2,
-            "surface + accent stripe fills; got {color_fills}"
-        );
-        assert!(
-            !enc.resources.glyph_runs.is_empty(),
-            "the title must push a glyph run into the scene",
-        );
-    }
-
-    #[test]
-    fn fixed_height_card_collapses_multiline_localized_error_text() {
-        assert_eq!(
-            single_line_text("  App\nfailed:\u{00a0}profile\tmissing  "),
-            "App failed: profile missing"
-        );
-
-        let rect = Rect::new(0.0, 0.0, 360.0, 64.0);
-        // This is the shape emitted for a launcher failure: caption, title,
-        // and long body all share one fixed-height card. Exercise both the
-        // normal and accessibility-large text scales so a localized newline
-        // cannot introduce an extra baseline or push the close affordance
-        // outside the bounded card.
-        for theme in [Theme::dark(), Theme::dark().with_text_scale(1.5)] {
+    fn toast_card_paints_text_close_and_actions_inside_the_card() {
+        // Case `three_line_text_block_stays_inside_the_card`.
+        // Caption, title and body stack on their measured line boxes with an
+        // `s1` gap, so in the 64 px card a desktop notification uses every
+        // painted glyph line lands inside the card.
+        {
+            let theme = Theme::dark();
             let mut tr = TextRenderer::new();
             let mut scene = Scene::new();
+            let rect = Rect::new(0.0, 0.0, 360.0, 64.0);
+            paint_card(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                rect,
+                &ToastCard::new("Build finished", ToastKind::Success)
+                    .caption("Terminal")
+                    .body("3 warnings, 0 errors")
+                    .closable(true),
+            );
+            let runs = &scene.encoding().resources.glyph_runs;
+            assert!(runs.len() >= 3, "caption, title and body all paint");
+            let mut tops: Vec<f64> = Vec::new();
+            for run in runs {
+                let top = f64::from(run.transform.translation[1]);
+                let (_, h) = tr.measure("Ag", run.font_size, None);
+                assert!(
+                    top >= rect.y0 - 0.01 && top + f64::from(h) <= rect.y1 + 0.01,
+                    "a glyph line at y={top} (h={h}) leaves the {rect:?} card",
+                );
+                tops.push(top);
+            }
+            tops.sort_by(f64::total_cmp);
+            tops.dedup_by(|a, b| (*a - *b).abs() < 0.5);
+            assert_eq!(tops.len(), 3, "three distinct baselines: {tops:?}");
+            for pair in tops.windows(2) {
+                assert!(
+                    pair[1] - pair[0] >= f64::from(theme.tokens.typography.scale.xs),
+                    "lines do not overlap: {tops:?}"
+                );
+            }
+        }
+
+        // Case `paint_card_returns_a_top_right_close_rect_when_closable`.
+        {
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            let mut scene = Scene::new();
+            let rect = Rect::new(100.0, 40.0, 460.0, 104.0);
             let hit = paint_card(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                rect,
+                &ToastCard::new("New mail", ToastKind::Info)
+                    .body("secret subject")
+                    .caption("Mailer")
+                    .closable(true)
+                    .actionable(true),
+            );
+            assert!(
+                hit.close_rect.area() > 0.0,
+                "closable card returns a close rect"
+            );
+            assert!(
+                hit.close_rect.x1 <= rect.x1 && hit.close_rect.x1 > rect.center().x,
+                "close rect hugs the card's right edge",
+            );
+            assert!(
+                hit.close_rect.y0 >= rect.y0 && hit.close_rect.y1 < rect.center().y,
+                "close rect sits at the top of the card",
+            );
+        }
+
+        // Case `paint_card_actions_use_two_standard_non_overlapping_buttons`.
+        {
+            let mut scene = Scene::new();
+            let mut tr = TextRenderer::new();
+            let theme = Theme::dark();
+            let card_rect = Rect::new(20.0, 30.0, 374.0, 142.0);
+            let hit = paint_card(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                card_rect,
+                &ToastCard::new("No visible video", ToastKind::Warning)
+                    .caption("Picture in Picture")
+                    .actions(
+                        "Float page",
+                        crate::icons::Icon::PictureInPicture2,
+                        false,
+                        "Select area",
+                        crate::icons::Icon::MousePointer2,
+                        false,
+                    ),
+            );
+            assert!(hit.secondary_action_rect.area() > 0.0);
+            assert!(hit.primary_action_rect.area() > 0.0);
+            assert!(hit.secondary_action_rect.x1 < hit.primary_action_rect.x0);
+            assert!(card_rect.contains(hit.secondary_action_rect.center()));
+            assert!(card_rect.contains(hit.primary_action_rect.center()));
+        }
+
+        // Case `paint_card_emits_surface_fill_and_title_glyphs`.
+        {
+            use vello_encoding::DrawTag;
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            let mut scene = Scene::new();
+            let rect = Rect::new(0.0, 0.0, 360.0, 64.0);
+            paint_card(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                rect,
+                &ToastCard::new("Build finished", ToastKind::Success),
+            );
+            let enc = scene.encoding();
+            let color_fills = enc
+                .draw_tags
+                .iter()
+                .filter(|t| **t == DrawTag::COLOR)
+                .count();
+            assert!(
+                color_fills >= 2,
+                "surface + accent stripe fills; got {color_fills}"
+            );
+            assert!(
+                !enc.resources.glyph_runs.is_empty(),
+                "the title must push a glyph run into the scene",
+            );
+        }
+
+        // Case `fixed_height_card_collapses_multiline_localized_error_text`.
+        {
+            assert_eq!(
+                single_line_text("  App\nfailed:\u{00a0}profile\tmissing  "),
+                "App failed: profile missing"
+            );
+
+            let rect = Rect::new(0.0, 0.0, 360.0, 64.0);
+            // This is the shape emitted for a launcher failure: caption, title,
+            // and long body all share one fixed-height card. Exercise both the
+            // normal and accessibility-large text scales so a localized newline
+            // cannot introduce an extra baseline or push the close affordance
+            // outside the bounded card.
+            for theme in [Theme::dark(), Theme::dark().with_text_scale(1.5)] {
+                let mut tr = TextRenderer::new();
+                let mut scene = Scene::new();
+                let hit = paint_card(
                 &mut scene,
                 Affine::IDENTITY,
                 &mut tr,
@@ -1241,218 +1243,226 @@ mod tests {
                     .body("The app stopped\nbefore opening. This deliberately long localized recovery message must elide safely.")
                     .closable(true),
             );
-            assert_eq!(hit.card_rect, rect);
-            assert!(hit.close_rect.area() > 0.0);
+                assert_eq!(hit.card_rect, rect);
+                assert!(hit.close_rect.area() > 0.0);
+                assert!(
+                    !scene.encoding().resources.glyph_runs.is_empty(),
+                    "launcher failure text must render at text scale {}",
+                    theme.text_scale
+                );
+            }
+
+            // The painter's text inputs are normalized before elision; this
+            // assertion protects the helper contract independently of glyph
+            // backend details.
+            assert!(!single_line_text("Couldn't open\nNotes").contains('\n'));
+            assert!(!single_line_text("The app stopped\nbefore opening").contains('\n'));
+        }
+    }
+
+    #[test]
+    fn transient_cards_size_safely_anchor_and_fade() {
+        // Case `transient_cards_share_safe_sizing_but_keep_the_requested_anchor`.
+        {
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            let mut scene = Scene::new();
+            let area = Rect::new(10.0, 20.0, 510.0, 320.0);
+            let title =
+                "A deliberately long notification that cannot fit in the available app area";
+
+            let centered = paint_transient(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                area,
+                ToastAnchor::BottomCenter,
+                &ToastCard::new(title, ToastKind::Info),
+            );
+            let trailing = paint_transient(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                area,
+                ToastAnchor::BottomRight,
+                &ToastCard::new(title, ToastKind::Info),
+            );
+
+            assert!(centered.card_rect.width() > 320.0);
+            assert!(centered.card_rect.width() <= area.width() - 48.0);
+            assert_eq!(centered.card_rect.center().x, area.center().x);
+            assert_eq!(trailing.card_rect.x1, area.x1 - 24.0);
+            assert_eq!(centered.card_rect.y1, area.y1 - 24.0);
+        }
+
+        // Case `transient_card_honours_a_caller_inset_and_narrow_available_width`.
+        {
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            let mut scene = Scene::new();
+            // The caller has removed 92 px of bottom player chrome from its area.
+            // A narrow content column also cannot accommodate the normal minimum.
+            let area = Rect::new(40.0, 10.0, 190.0, 308.0);
+            let hit = paint_transient(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                area,
+                ToastAnchor::BottomCenter,
+                &ToastCard::new("This title must clip safely", ToastKind::Info),
+            );
+
+            assert_eq!(hit.card_rect.x0, area.x0 + 24.0);
+            assert_eq!(hit.card_rect.x1, area.x1 - 24.0);
+            assert_eq!(hit.card_rect.y1, area.y1 - 24.0);
+            assert!(hit.card_rect.y0 >= area.y0);
+        }
+
+        // Case `partial_alpha_keeps_transient_geometry_and_still_paints`.
+        {
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            let area = Rect::new(0.0, 0.0, 480.0, 320.0);
+            let mut full_scene = Scene::new();
+            let full = paint_transient(
+                &mut full_scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                area,
+                ToastAnchor::BottomCenter,
+                &ToastCard::new("Backup complete", ToastKind::Success),
+            );
+            let mut faded_scene = Scene::new();
+            let faded = paint_transient(
+                &mut faded_scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                area,
+                ToastAnchor::BottomCenter,
+                &ToastCard::new("Backup complete", ToastKind::Success).alpha(0.35),
+            );
+
+            assert_eq!(faded.card_rect, full.card_rect);
             assert!(
-                !scene.encoding().resources.glyph_runs.is_empty(),
-                "launcher failure text must render at text scale {}",
-                theme.text_scale
+                !faded_scene.encoding().draw_tags.is_empty(),
+                "a partially faded card remains visible"
             );
         }
 
-        // The painter's text inputs are normalized before elision; this
-        // assertion protects the helper contract independently of glyph
-        // backend details.
-        assert!(!single_line_text("Couldn't open\nNotes").contains('\n'));
-        assert!(!single_line_text("The app stopped\nbefore opening").contains('\n'));
+        // Case `paint_card_is_a_noop_when_fully_faded`.
+        {
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            let mut scene = Scene::new();
+            let rect = Rect::new(0.0, 0.0, 360.0, 64.0);
+            let hit = paint_card(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                rect,
+                &ToastCard::new("gone", ToastKind::Info)
+                    .alpha(0.0)
+                    .closable(true),
+            );
+            assert_eq!(
+                hit.close_rect,
+                Rect::ZERO,
+                "faded card exposes no close rect"
+            );
+            assert!(
+                scene.encoding().draw_tags.is_empty(),
+                "a fully-faded card emits no draw ops",
+            );
+        }
     }
 
     #[test]
-    fn transient_cards_share_safe_sizing_but_keep_the_requested_anchor() {
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let mut scene = Scene::new();
-        let area = Rect::new(10.0, 20.0, 510.0, 320.0);
-        let title = "A deliberately long notification that cannot fit in the available app area";
+    fn toast_interaction_dismisses_pauses_and_announces() {
+        // Case `click_dismisses_the_toast_under_the_cursor`.
+        {
+            let mut s = ToastStack::new();
+            s.push("first", ToastKind::Info);
+            s.push("second", ToastKind::Error);
+            lay_out(&mut s);
+            // Card 1 ("second") spans y ∈ [56, 104); centre ≈ (160, 80).
+            feed(
+                &mut s,
+                &WindowEvent::CursorMoved {
+                    device_id: device(),
+                    position: (160.0, 80.0).into(),
+                },
+            );
+            feed(
+                &mut s,
+                &WindowEvent::MouseInput {
+                    device_id: device(),
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                },
+            );
+            assert_eq!(s.len(), 1);
+            assert_eq!(s.iter().next().unwrap().text, "first");
+        }
 
-        let centered = paint_transient(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            area,
-            ToastAnchor::BottomCenter,
-            &ToastCard::new(title, ToastKind::Info),
-        );
-        let trailing = paint_transient(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            area,
-            ToastAnchor::BottomRight,
-            &ToastCard::new(title, ToastKind::Info),
-        );
+        // Case `accessibility_reports_assertive_live_region_with_latest_toast`.
+        {
+            use crate::a11y::{Politeness, Role};
+            // Empty stack: a named, assertive live region with no value yet.
+            let s = ToastStack::new();
+            let node = Widget::accessibility(&s).expect("toast stack is not presentational");
+            assert_eq!(node.role, Role::Group);
+            assert_eq!(node.name.as_deref(), Some("Notifications"));
+            assert_eq!(node.live, Some(Politeness::Assertive));
+            assert_eq!(node.value, None, "an empty stack has no current toast");
 
-        assert!(centered.card_rect.width() > 320.0);
-        assert!(centered.card_rect.width() <= area.width() - 48.0);
-        assert_eq!(centered.card_rect.center().x, area.center().x);
-        assert_eq!(trailing.card_rect.x1, area.x1 - 24.0);
-        assert_eq!(centered.card_rect.y1, area.y1 - 24.0);
-    }
+            // With a live toast the stack surfaces the most recent text as value,
+            // so the host's live-region scan announces it.
+            let mut s = ToastStack::new();
+            s.push("hello", ToastKind::Info);
+            s.push("world", ToastKind::Error);
+            let node = Widget::accessibility(&s).unwrap();
+            assert_eq!(
+                node.value.as_deref(),
+                Some("world"),
+                "value is the newest toast"
+            );
+            assert_eq!(node.live, Some(Politeness::Assertive));
+        }
 
-    #[test]
-    fn transient_card_honours_a_caller_inset_and_narrow_available_width() {
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let mut scene = Scene::new();
-        // The caller has removed 92 px of bottom player chrome from its area.
-        // A narrow content column also cannot accommodate the normal minimum.
-        let area = Rect::new(40.0, 10.0, 190.0, 308.0);
-        let hit = paint_transient(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            area,
-            ToastAnchor::BottomCenter,
-            &ToastCard::new("This title must clip safely", ToastKind::Info),
-        );
-
-        assert_eq!(hit.card_rect.x0, area.x0 + 24.0);
-        assert_eq!(hit.card_rect.x1, area.x1 - 24.0);
-        assert_eq!(hit.card_rect.y1, area.y1 - 24.0);
-        assert!(hit.card_rect.y0 >= area.y0);
-    }
-
-    #[test]
-    fn partial_alpha_keeps_transient_geometry_and_still_paints() {
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let area = Rect::new(0.0, 0.0, 480.0, 320.0);
-        let mut full_scene = Scene::new();
-        let full = paint_transient(
-            &mut full_scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            area,
-            ToastAnchor::BottomCenter,
-            &ToastCard::new("Backup complete", ToastKind::Success),
-        );
-        let mut faded_scene = Scene::new();
-        let faded = paint_transient(
-            &mut faded_scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            area,
-            ToastAnchor::BottomCenter,
-            &ToastCard::new("Backup complete", ToastKind::Success).alpha(0.35),
-        );
-
-        assert_eq!(faded.card_rect, full.card_rect);
-        assert!(
-            !faded_scene.encoding().draw_tags.is_empty(),
-            "a partially faded card remains visible"
-        );
-    }
-
-    #[test]
-    fn paint_card_is_a_noop_when_fully_faded() {
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let mut scene = Scene::new();
-        let rect = Rect::new(0.0, 0.0, 360.0, 64.0);
-        let hit = paint_card(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            rect,
-            &ToastCard::new("gone", ToastKind::Info)
-                .alpha(0.0)
-                .closable(true),
-        );
-        assert_eq!(
-            hit.close_rect,
-            Rect::ZERO,
-            "faded card exposes no close rect"
-        );
-        assert!(
-            scene.encoding().draw_tags.is_empty(),
-            "a fully-faded card emits no draw ops",
-        );
-    }
-
-    #[test]
-    fn click_dismisses_the_toast_under_the_cursor() {
-        let mut s = ToastStack::new();
-        s.push("first", ToastKind::Info);
-        s.push("second", ToastKind::Error);
-        lay_out(&mut s);
-        // Card 1 ("second") spans y ∈ [56, 104); centre ≈ (160, 80).
-        feed(
-            &mut s,
-            &WindowEvent::CursorMoved {
-                device_id: device(),
-                position: (160.0, 80.0).into(),
-            },
-        );
-        feed(
-            &mut s,
-            &WindowEvent::MouseInput {
-                device_id: device(),
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-            },
-        );
-        assert_eq!(s.len(), 1);
-        assert_eq!(s.iter().next().unwrap().text, "first");
-    }
-
-    #[test]
-    fn accessibility_reports_assertive_live_region_with_latest_toast() {
-        use crate::a11y::{Politeness, Role};
-        // Empty stack: a named, assertive live region with no value yet.
-        let s = ToastStack::new();
-        let node = Widget::accessibility(&s).expect("toast stack is not presentational");
-        assert_eq!(node.role, Role::Group);
-        assert_eq!(node.name.as_deref(), Some("Notifications"));
-        assert_eq!(node.live, Some(Politeness::Assertive));
-        assert_eq!(node.value, None, "an empty stack has no current toast");
-
-        // With a live toast the stack surfaces the most recent text as value,
-        // so the host's live-region scan announces it.
-        let mut s = ToastStack::new();
-        s.push("hello", ToastKind::Info);
-        s.push("world", ToastKind::Error);
-        let node = Widget::accessibility(&s).unwrap();
-        assert_eq!(
-            node.value.as_deref(),
-            Some("world"),
-            "value is the newest toast"
-        );
-        assert_eq!(node.live, Some(Politeness::Assertive));
-    }
-
-    #[test]
-    fn hover_pauses_expiry() {
-        let mut s = ToastStack::new().with_default_ttl(Duration::from_millis(100));
-        s.push("stay", ToastKind::Info);
-        lay_out(&mut s);
-        // Hover over the only card.
-        feed(
-            &mut s,
-            &WindowEvent::CursorMoved {
-                device_id: device(),
-                position: (160.0, 24.0).into(),
-            },
-        );
-        assert!(s.is_hovered());
-        // tick longer than the TTL — but hovered, so it must NOT expire.
-        s.tick(Duration::from_millis(500));
-        assert_eq!(s.len(), 1, "hovered toast does not expire");
-        // Move away → expiry resumes.
-        feed(
-            &mut s,
-            &WindowEvent::CursorMoved {
-                device_id: device(),
-                position: (900.0, 900.0).into(),
-            },
-        );
-        assert!(!s.is_hovered());
-        s.tick(Duration::from_millis(500));
-        assert_eq!(s.len(), 0, "expires once un-hovered");
+        // Case `hover_pauses_expiry`.
+        {
+            let mut s = ToastStack::new().with_default_ttl(Duration::from_millis(100));
+            s.push("stay", ToastKind::Info);
+            lay_out(&mut s);
+            // Hover over the only card.
+            feed(
+                &mut s,
+                &WindowEvent::CursorMoved {
+                    device_id: device(),
+                    position: (160.0, 24.0).into(),
+                },
+            );
+            assert!(s.is_hovered());
+            // tick longer than the TTL — but hovered, so it must NOT expire.
+            s.tick(Duration::from_millis(500));
+            assert_eq!(s.len(), 1, "hovered toast does not expire");
+            // Move away → expiry resumes.
+            feed(
+                &mut s,
+                &WindowEvent::CursorMoved {
+                    device_id: device(),
+                    position: (900.0, 900.0).into(),
+                },
+            );
+            assert!(!s.is_hovered());
+            s.tick(Duration::from_millis(500));
+            assert_eq!(s.len(), 0, "expires once un-hovered");
+        }
     }
 }

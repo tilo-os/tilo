@@ -249,118 +249,122 @@ mod tests {
     use super::*;
 
     #[test]
-    fn allow_all_grants_everything() {
-        let p = AllowAll;
-        for a in [
-            CallAction::Join,
-            CallAction::Leave,
-            CallAction::Speak,
-            CallAction::Camera,
-            CallAction::ShareScreen,
-        ] {
-            assert!(p.allows(a), "{a:?} should be allowed by AllowAll");
+    fn call_policy_helpers_allow_all_expand_small_rosters_and_map_pipewire_grants() {
+        // Phase: allow_all_grants_everything.
+        {
+            let p = AllowAll;
+            for a in [
+                CallAction::Join,
+                CallAction::Leave,
+                CallAction::Speak,
+                CallAction::Camera,
+                CallAction::ShareScreen,
+            ] {
+                assert!(p.allows(a), "{a:?} should be allowed by AllowAll");
+            }
+        }
+        // Phase: participant_list_auto_expands_only_for_small_calls.
+        {
+            assert!(CallState::auto_participants_expanded(3));
+            assert!(CallState::auto_participants_expanded(8));
+            assert!(!CallState::auto_participants_expanded(9));
+        }
+        // Phase: a_pipewire_grant_becomes_a_share_source.
+        {
+            let grant = ui::capture::ScreenCaptureGrant {
+                stream: ui::capture::CaptureStream::PipeWire { node_id: 9 },
+                size: Some((3840, 2160)),
+            };
+            assert_eq!(
+                ScreenSource::from_grant(&grant),
+                Some(ScreenSource {
+                    node: 9,
+                    width: ScreenSource::SHARE_WIDTH,
+                    height: ScreenSource::SHARE_HEIGHT,
+                })
+            );
         }
     }
 
     #[test]
-    fn deafen_implies_mute_and_unmute_undeafens() {
-        let mut c = CallState::default();
-        c.toggle_deafen();
-        assert!(c.deafened && c.muted, "deafen mutes");
-        c.toggle_mute(); // unmute
-        assert!(!c.muted && !c.deafened, "unmuting clears deafen");
+    fn join_leave_and_deafen_reset_audio_overlay_and_share_state() {
+        // Phase: deafen_implies_mute_and_unmute_undeafens.
+        {
+            let mut c = CallState::default();
+            c.toggle_deafen();
+            assert!(c.deafened && c.muted, "deafen mutes");
+            c.toggle_mute(); // unmute
+            assert!(!c.muted && !c.deafened, "unmuting clears deafen");
+        }
+        // Phase: join_and_leave_reset_overlay_layout.
+        {
+            let mut c = CallState {
+                expanded: true,
+                ..CallState::default()
+            };
+            c.leave();
+            assert!(!c.active && !c.expanded);
+            assert!(matches!(
+                c.placement.attachment(),
+                ui::floating_surface::Attachment::App { .. }
+            ));
+            c.join("c_warroom");
+            assert!(c.active);
+            assert_eq!(c.channel, "c_warroom");
+            assert!(matches!(
+                c.placement.attachment(),
+                ui::floating_surface::Attachment::App { .. }
+            ));
+        }
+        // Phase: join_and_leave_clear_the_screen_share_flag.
+        {
+            let mut c = CallState::default();
+            c.join("c_huddle");
+            c.sharing = true;
+            c.leave();
+            assert!(!c.sharing, "leaving a call stops the local screen share");
+            c.sharing = true;
+            c.join("c_other");
+            assert!(
+                !c.sharing,
+                "joining a fresh call starts with no screen share"
+            );
+        }
     }
 
     #[test]
-    fn participant_list_auto_expands_only_for_small_calls() {
-        assert!(CallState::auto_participants_expanded(3));
-        assert!(CallState::auto_participants_expanded(8));
-        assert!(!CallState::auto_participants_expanded(9));
-    }
-
-    #[test]
-    fn call_uses_shared_floating_handoff() {
-        let mut c = CallState::default();
-        let app = Rect::new(100.0, 80.0, 900.0, 700.0);
-        let desktop = Rect::new(0.0, 0.0, 1400.0, 900.0);
-        c.placement
-            .begin_drag(vello::kurbo::Point::new(700.0, 140.0), app, desktop);
-        assert_eq!(
+    fn call_hands_off_to_the_shared_floating_host_as_a_semantic_element() {
+        // Phase: call_uses_shared_floating_handoff.
+        {
+            let mut c = CallState::default();
+            let app = Rect::new(100.0, 80.0, 900.0, 700.0);
+            let desktop = Rect::new(0.0, 0.0, 1400.0, 900.0);
             c.placement
-                .update_drag(vello::kurbo::Point::new(950.0, 140.0), app, desktop),
-            ui::floating_surface::Handoff::Detached
-        );
-    }
-
-    #[test]
-    fn call_handoff_names_the_semantic_app_element() {
-        let mut c = CallState::default();
-        c.join("c_huddle");
-        let region = Rect::new(40.0, 28.0, 432.0, 288.0);
-        let request = c
-            .floating_request(region, Rect::new(48.0, 36.0, 424.0, 280.0))
-            .expect("an active call can be handed to the shared floating host");
-        assert_eq!(request.id, "chat-call:c_huddle");
-        assert_eq!(
-            request.source,
-            ui::floating_surface::FloatingSource::AppElement {
-                app_id: "so.tilo.chat".into(),
-                element_id: "active-call:c_huddle".into(),
-                region,
-            }
-        );
-    }
-
-    #[test]
-    fn join_and_leave_reset_overlay_layout() {
-        let mut c = CallState {
-            expanded: true,
-            ..CallState::default()
-        };
-        c.leave();
-        assert!(!c.active && !c.expanded);
-        assert!(matches!(
-            c.placement.attachment(),
-            ui::floating_surface::Attachment::App { .. }
-        ));
-        c.join("c_warroom");
-        assert!(c.active);
-        assert_eq!(c.channel, "c_warroom");
-        assert!(matches!(
-            c.placement.attachment(),
-            ui::floating_surface::Attachment::App { .. }
-        ));
-    }
-
-    #[test]
-    fn join_and_leave_clear_the_screen_share_flag() {
-        let mut c = CallState::default();
-        c.join("c_huddle");
-        c.sharing = true;
-        c.leave();
-        assert!(!c.sharing, "leaving a call stops the local screen share");
-        c.sharing = true;
-        c.join("c_other");
-        assert!(
-            !c.sharing,
-            "joining a fresh call starts with no screen share"
-        );
-    }
-
-    #[test]
-    fn a_pipewire_grant_becomes_a_share_source() {
-        let grant = ui::capture::ScreenCaptureGrant {
-            stream: ui::capture::CaptureStream::PipeWire { node_id: 9 },
-            size: Some((3840, 2160)),
-        };
-        assert_eq!(
-            ScreenSource::from_grant(&grant),
-            Some(ScreenSource {
-                node: 9,
-                width: ScreenSource::SHARE_WIDTH,
-                height: ScreenSource::SHARE_HEIGHT,
-            })
-        );
+                .begin_drag(vello::kurbo::Point::new(700.0, 140.0), app, desktop);
+            assert_eq!(
+                c.placement
+                    .update_drag(vello::kurbo::Point::new(950.0, 140.0), app, desktop),
+                ui::floating_surface::Handoff::Detached
+            );
+        }
+        // Phase: call_handoff_names_the_semantic_app_element.
+        {
+            let mut c = CallState::default();
+            c.join("c_huddle");
+            let region = Rect::new(40.0, 28.0, 432.0, 288.0);
+            let request = c
+                .floating_request(region, Rect::new(48.0, 36.0, 424.0, 280.0))
+                .expect("an active call can be handed to the shared floating host");
+            assert_eq!(request.id, "chat-call:c_huddle");
+            assert_eq!(
+                request.source,
+                ui::floating_surface::FloatingSource::AppElement {
+                    app_id: "so.tilo.chat".into(),
+                    element_id: "active-call:c_huddle".into(),
+                    region,
+                }
+            );
+        }
     }
 }
 
@@ -494,26 +498,28 @@ mod sound {
         use super::*;
 
         #[test]
-        fn cues_record_and_are_safe_without_audio() {
-            let mut e = SoundEngine::new();
-            assert!(e.last_cue().is_none());
-            assert!(!e.initialized, "constructor must not initialize GStreamer");
-            e.join();
-            assert!(e.initialized, "first cue owns lazy backend initialization");
-            assert_eq!(e.last_cue(), Some(Cue::Join));
-            e.leave();
-            assert_eq!(e.last_cue(), Some(Cue::Leave));
-            // The default test build has no audio sink — engine is not live,
-            // and calling the cues must never panic.
-            assert!(!e.is_live() || cfg!(feature = "live-media"));
-        }
-
-        #[test]
-        fn join_rises_leave_falls() {
-            let (j0, j1) = cue_tones(Cue::Join);
-            let (l0, l1) = cue_tones(Cue::Leave);
-            assert!(j1 > j0, "join cue rises");
-            assert!(l1 < l0, "leave cue falls");
+        fn cues_record_lazily_rise_on_join_and_fall_on_leave() {
+            // Phase: cues_record_and_are_safe_without_audio.
+            {
+                let mut e = SoundEngine::new();
+                assert!(e.last_cue().is_none());
+                assert!(!e.initialized, "constructor must not initialize GStreamer");
+                e.join();
+                assert!(e.initialized, "first cue owns lazy backend initialization");
+                assert_eq!(e.last_cue(), Some(Cue::Join));
+                e.leave();
+                assert_eq!(e.last_cue(), Some(Cue::Leave));
+                // The default test build has no audio sink — engine is not live,
+                // and calling the cues must never panic.
+                assert!(!e.is_live() || cfg!(feature = "live-media"));
+            }
+            // Phase: join_rises_leave_falls.
+            {
+                let (j0, j1) = cue_tones(Cue::Join);
+                let (l0, l1) = cue_tones(Cue::Leave);
+                assert!(j1 > j0, "join cue rises");
+                assert!(l1 < l0, "leave cue falls");
+            }
         }
     }
 }

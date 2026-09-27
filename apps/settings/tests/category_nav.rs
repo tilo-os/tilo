@@ -232,7 +232,7 @@ fn click_navigates_to(target: Category) {
     );
     assert!(
         app.take_structure_dirty(),
-        "the selection change must request a rebuild so the pane updates"
+        "the selection change to {target:?} must request a rebuild so the pane updates"
     );
 
     // Rebuild exactly as the host does on structure-dirty, then re-lay-out.
@@ -245,7 +245,7 @@ fn click_navigates_to(target: Category) {
     );
     assert!(
         !row_is_active(&app, Category::DEFAULT.label()),
-        "the previously-active default row must no longer be highlighted"
+        "the previously-active default row must no longer be highlighted after navigating to {target:?}"
     );
     assert_eq!(
         active_row_count(&app),
@@ -260,39 +260,69 @@ fn click_navigates_to(target: Category) {
     );
 }
 
-macro_rules! nav_test {
-    ($name:ident, $cat:expr) => {
-        #[test]
-        fn $name() {
-            click_navigates_to($cat);
-        }
-    };
+// Every category is reachable by a real sidebar click: the selection, the
+// rebuild request, the single active row and the content pane all follow
+// (formerly one generated test per category). Each app build is expensive, so
+// the categories are spread over a few tests that run in parallel; every case
+// still builds its own app.
+
+#[test]
+fn clicking_network_bluetooth_or_sound_navigates_to_its_pane() {
+    for category in [Category::Network, Category::Bluetooth, Category::Sound] {
+        click_navigates_to(category);
+    }
 }
 
-nav_test!(click_navigates_network, Category::Network);
-nav_test!(click_navigates_bluetooth, Category::Bluetooth);
-nav_test!(click_navigates_sound, Category::Sound);
-nav_test!(click_navigates_displays, Category::Displays);
-nav_test!(click_navigates_mouse_keyboard, Category::MouseKeyboard);
-nav_test!(click_navigates_appearance, Category::Appearance);
-nav_test!(click_navigates_accessibility, Category::Accessibility);
-nav_test!(click_navigates_notifications, Category::Notifications);
-nav_test!(click_navigates_power, Category::Power);
-nav_test!(
-    click_navigates_keyboard_shortcuts,
-    Category::KeyboardShortcuts
-);
-nav_test!(click_navigates_time_date, Category::TimeDate);
-nav_test!(click_navigates_users, Category::Users);
-nav_test!(click_navigates_printers, Category::Printers);
-nav_test!(
-    click_navigates_external_accounts,
-    Category::ExternalAccounts
-);
-nav_test!(click_navigates_region_formats, Category::RegionFormats);
-nav_test!(click_navigates_permissions, Category::Permissions);
-nav_test!(click_navigates_updates, Category::Updates);
-nav_test!(click_navigates_about, Category::About);
+#[test]
+fn clicking_displays_input_or_appearance_navigates_to_its_pane() {
+    for category in [
+        Category::Displays,
+        Category::MouseKeyboard,
+        Category::Appearance,
+    ] {
+        click_navigates_to(category);
+    }
+}
+
+#[test]
+fn clicking_accessibility_notifications_or_power_navigates_to_its_pane() {
+    for category in [
+        Category::Accessibility,
+        Category::Notifications,
+        Category::Power,
+    ] {
+        click_navigates_to(category);
+    }
+}
+
+#[test]
+fn clicking_shortcuts_time_or_users_navigates_to_its_pane() {
+    for category in [
+        Category::KeyboardShortcuts,
+        Category::TimeDate,
+        Category::Users,
+    ] {
+        click_navigates_to(category);
+    }
+}
+
+#[test]
+fn clicking_printers_accounts_or_region_navigates_to_its_pane() {
+    for category in [
+        Category::Printers,
+        Category::ExternalAccounts,
+        Category::RegionFormats,
+    ] {
+        click_navigates_to(category);
+    }
+}
+
+#[test]
+fn clicking_permissions_updates_or_about_navigates_to_its_pane() {
+    for category in [Category::Permissions, Category::Updates, Category::About] {
+        click_navigates_to(category);
+    }
+}
 
 /// A second click on a *different* category after a first proves repeated
 /// navigation keeps working (not just the first switch off the default).

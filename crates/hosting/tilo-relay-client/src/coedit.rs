@@ -531,7 +531,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn coedit_payload_round_trips_all_variants() {
+    fn coedit_wrappers_round_trip_and_reject_foreign_bytes() {
+        use automerge::transaction::Transactable;
+
+        // Every payload variant round-trips.
         let checkpoint = CoeditPayload::Checkpoint {
             channel: [3; 32],
             entry: [7; 32],
@@ -549,20 +552,16 @@ mod tests {
             entry: [5; 32],
             body: vec![2, 1],
         };
-
         for payload in [checkpoint, baseline, retained] {
             assert_eq!(
                 CoeditPayload::decode(&payload.encode().unwrap()),
                 Some(payload)
             );
         }
-    }
 
-    #[test]
-    fn attributed_presence_round_trips_author_and_body() {
-        // The author key must survive the wrapper so a remote cursor is
-        // drawn against the right collaborator — the host envelope
-        // carries no author of its own.
+        // The author key must survive the presence wrapper so a remote cursor
+        // is drawn against the right collaborator — the host envelope carries
+        // no author of its own.
         let wrapped = AttributedPresence {
             author: [7u8; 32],
             body: vec![10, 20, 30],
@@ -570,19 +569,13 @@ mod tests {
         let decoded = AttributedPresence::decode(&wrapped.encode().unwrap()).unwrap();
         assert_eq!(decoded.author, [7u8; 32]);
         assert_eq!(decoded.body, vec![10, 20, 30]);
-    }
 
-    #[test]
-    fn non_coedit_bytes_do_not_masquerade_as_coedit() {
-        use automerge::transaction::Transactable;
-
-        // Bodies that are not a CoeditPayload must not decode into a
-        // bogus variant — `recv` skips such frames rather than mis-apply
-        // them. Empty, an out-of-range enum tag, and a genuine Automerge
+        // Bodies that are not a CoeditPayload must not decode into a bogus
+        // variant — `recv` skips such frames rather than mis-apply them.
+        // Empty, an out-of-range enum tag, and a genuine Automerge
         // incremental delta all fail to decode.
         assert!(CoeditPayload::decode(&[]).is_none());
         assert!(CoeditPayload::decode(&[5, 0, 0]).is_none());
-
         let mut doc = automerge::AutoCommit::new();
         doc.put(automerge::ROOT, "k", "v").unwrap();
         let raw_delta = doc.save_incremental();

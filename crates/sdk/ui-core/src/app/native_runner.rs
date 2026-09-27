@@ -579,8 +579,11 @@ impl AppHandler {
 
     /// Reconcile the root's optional audience projection with a *separate*
     /// native toplevel. A missing monitor list, a one-output session, or an
-    /// invalid/self-target all leave this `None`; the root's normal fullscreen
-    /// intent then supplies the single-output fallback.
+    /// invalid target all leave this `None`; the root's normal fullscreen
+    /// intent then supplies the single-output fallback. The chosen output
+    /// may be the one the presenter window currently shows on: Tilo pairs
+    /// the `.audience` surface and moves the presenter view to the other
+    /// screen.
     fn sync_audience_presentation(
         &mut self,
         event_loop: &ActiveEventLoop,
@@ -602,12 +605,8 @@ impl AppHandler {
         let infos: Vec<crate::fullscreen::MonitorInfo> = monitors
             .iter()
             .enumerate()
-            .map(|(index, monitor)| crate::fullscreen::MonitorInfo {
-                index: u32::try_from(index).unwrap_or(u32::MAX),
-                width: monitor.size().width,
-                height: monitor.size().height,
-                primary: primary_monitor.as_ref() == Some(monitor),
-                scale: monitor.scale_factor(),
+            .map(|(index, monitor)| {
+                super::monitor_info(index, monitor, primary_monitor.as_ref() == Some(monitor))
             })
             .collect();
         let target = request.and_then(|request| {

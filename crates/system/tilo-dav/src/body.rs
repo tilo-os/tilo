@@ -42,6 +42,7 @@ pub mod props {
     pub const GETCONTENTLENGTH: PropName = PropName::dav("getcontentlength");
     pub const GETCONTENTTYPE: PropName = PropName::dav("getcontenttype");
     pub const GETETAG: PropName = PropName::dav("getetag");
+    pub const GETLASTMODIFIED: PropName = PropName::dav("getlastmodified");
     pub const RESOURCETYPE: PropName = PropName::dav("resourcetype");
     pub const SYNC_TOKEN: PropName = PropName::dav("sync-token");
     pub const CALENDAR_DATA: PropName = PropName::caldav("calendar-data");
@@ -176,54 +177,58 @@ mod tests {
     use crate::multistatus;
 
     #[test]
-    fn sync_collection_escapes_the_token_and_declares_used_namespaces() {
-        let body = sync_collection_body("a<&\"'>", &[props::GETETAG, props::CALENDAR_DATA]);
-        assert_eq!(
-            body,
-            "<?xml version=\"1.0\" encoding=\"utf-8\"?><D:sync-collection xmlns:D=\"DAV:\" \
-xmlns:C=\"urn:ietf:params:xml:ns:caldav\"><D:sync-token>a&lt;&amp;&quot;&apos;&gt;</D:sync-token>\
-<D:sync-level>1</D:sync-level><D:prop><D:getetag/><C:calendar-data/></D:prop></D:sync-collection>"
-        );
-    }
-
-    #[test]
-    fn calendar_query_lists_the_whole_calendar_by_default() {
-        let body = calendar_query_body(&[props::GETETAG, props::CALENDAR_DATA], None);
-        assert_eq!(
-            body,
-            "<?xml version=\"1.0\" encoding=\"utf-8\"?><C:calendar-query xmlns:D=\"DAV:\" \
-xmlns:C=\"urn:ietf:params:xml:ns:caldav\"><D:prop><D:getetag/><C:calendar-data/></D:prop>\
-<C:filter><C:comp-filter name=\"VCALENDAR\"/></C:filter></C:calendar-query>"
-        );
-        assert!(
-            calendar_query_body(&[props::GETETAG], Some("VTODO"))
-                .contains("<C:comp-filter name=\"VCALENDAR\"><C:comp-filter name=\"VTODO\"/>")
-        );
-    }
-
-    #[test]
-    fn multiget_and_propfind_bodies_are_well_formed_xml() {
-        let multiget = calendar_multiget_body(&[props::GETETAG], &["/cal/a&b.ics", "/cal/c.ics"]);
-        assert!(multiget.contains("<D:href>/cal/a&amp;b.ics</D:href>"));
-        let propfind = propfind_body(&[
-            props::RESOURCETYPE,
-            PropName {
-                namespace: "http://owncloud.org/ns",
-                name: "fileid",
-            },
-        ]);
-        assert!(
-            propfind.contains("xmlns:x1=\"http://owncloud.org/ns\""),
-            "{propfind}"
-        );
-        for body in [multiget, propfind] {
-            let options = roxmltree::ParsingOptions::default();
-            assert!(
-                roxmltree::Document::parse_with_options(&body, options).is_ok(),
-                "{body}"
+    fn request_bodies_are_well_formed_escaped_xml() {
+        // Phase `sync_collection_escapes_the_token_and_declares_used_namespaces`.
+        {
+            let body = sync_collection_body("a<&\"'>", &[props::GETETAG, props::CALENDAR_DATA]);
+            assert_eq!(
+                body,
+                "<?xml version=\"1.0\" encoding=\"utf-8\"?><D:sync-collection xmlns:D=\"DAV:\" \
+    xmlns:C=\"urn:ietf:params:xml:ns:caldav\"><D:sync-token>a&lt;&amp;&quot;&apos;&gt;</D:sync-token>\
+    <D:sync-level>1</D:sync-level><D:prop><D:getetag/><C:calendar-data/></D:prop></D:sync-collection>"
             );
         }
-        // The parser refuses request documents: they are not multistatus.
-        assert!(multistatus::parse(&propfind_body(&[]), &multistatus::Limits::default()).is_err());
+        // Phase `calendar_query_lists_the_whole_calendar_by_default`.
+        {
+            let body = calendar_query_body(&[props::GETETAG, props::CALENDAR_DATA], None);
+            assert_eq!(
+                body,
+                "<?xml version=\"1.0\" encoding=\"utf-8\"?><C:calendar-query xmlns:D=\"DAV:\" \
+    xmlns:C=\"urn:ietf:params:xml:ns:caldav\"><D:prop><D:getetag/><C:calendar-data/></D:prop>\
+    <C:filter><C:comp-filter name=\"VCALENDAR\"/></C:filter></C:calendar-query>"
+            );
+            assert!(
+                calendar_query_body(&[props::GETETAG], Some("VTODO"))
+                    .contains("<C:comp-filter name=\"VCALENDAR\"><C:comp-filter name=\"VTODO\"/>")
+            );
+        }
+        // Phase `multiget_and_propfind_bodies_are_well_formed_xml`.
+        {
+            let multiget =
+                calendar_multiget_body(&[props::GETETAG], &["/cal/a&b.ics", "/cal/c.ics"]);
+            assert!(multiget.contains("<D:href>/cal/a&amp;b.ics</D:href>"));
+            let propfind = propfind_body(&[
+                props::RESOURCETYPE,
+                PropName {
+                    namespace: "http://owncloud.org/ns",
+                    name: "fileid",
+                },
+            ]);
+            assert!(
+                propfind.contains("xmlns:x1=\"http://owncloud.org/ns\""),
+                "{propfind}"
+            );
+            for body in [multiget, propfind] {
+                let options = roxmltree::ParsingOptions::default();
+                assert!(
+                    roxmltree::Document::parse_with_options(&body, options).is_ok(),
+                    "{body}"
+                );
+            }
+            // The parser refuses request documents: they are not multistatus.
+            assert!(
+                multistatus::parse(&propfind_body(&[]), &multistatus::Limits::default()).is_err()
+            );
+        }
     }
 }

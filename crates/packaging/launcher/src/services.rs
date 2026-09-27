@@ -734,31 +734,208 @@ mod tests {
     }
 
     #[test]
-    fn identity_handoff_is_bound_to_launcher_app_and_workspace_context() {
-        use std::io::Read;
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn service_handoffs_bind_the_launch_context() {
+        // Phase `identity_handoff_is_bound_to_launcher_app_and_workspace_context`.
+        {
+            use std::io::Read;
 
-        let dir = tempfile::tempdir().expect("runtime");
-        let _env = runtime_dir_env(dir.path());
-        let root = ensure_services_root().expect("services root");
-        let path = root.join("identity.sock");
-        let listener = std::os::unix::net::UnixListener::bind(&path).expect("listen");
-        let reader = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("accept");
-            let mut bytes = Vec::new();
-            stream.read_to_end(&mut bytes).expect("handshake");
-            // Little-endian length of the 50-byte JSON handshake.
-            assert_eq!(bytes[..4], [50, 0, 0, 0]);
-            serde_json::from_slice::<serde_json::Value>(&bytes[4..]).expect("json")
-        });
-        let bind = resolve_identity_bind("so.tilo.notes", Some("room-7"), false)
-            .expect("resolve")
-            .expect("identity bind");
-        assert_eq!(bind.name, IDENTITY_SERVICE);
-        assert_eq!(bind.child_fd, 31);
-        drop(bind);
-        let handshake = reader.join().expect("reader");
-        assert_eq!(handshake["app_id"], "so.tilo.notes");
-        assert_eq!(handshake["workspace_id"], "room-7");
+            let dir = tempfile::tempdir().expect("runtime");
+            let _env = runtime_dir_env(dir.path());
+            let root = ensure_services_root().expect("services root");
+            let path = root.join("identity.sock");
+            let listener = std::os::unix::net::UnixListener::bind(&path).expect("listen");
+            let reader = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().expect("accept");
+                let mut bytes = Vec::new();
+                stream.read_to_end(&mut bytes).expect("handshake");
+                // Little-endian length of the 50-byte JSON handshake.
+                assert_eq!(bytes[..4], [50, 0, 0, 0]);
+                serde_json::from_slice::<serde_json::Value>(&bytes[4..]).expect("json")
+            });
+            let bind = resolve_identity_bind("so.tilo.notes", Some("room-7"), false)
+                .expect("resolve")
+                .expect("identity bind");
+            assert_eq!(bind.name, IDENTITY_SERVICE);
+            assert_eq!(bind.child_fd, 31);
+            drop(bind);
+            let handshake = reader.join().expect("reader");
+            assert_eq!(handshake["app_id"], "so.tilo.notes");
+            assert_eq!(handshake["workspace_id"], "room-7");
+        }
+        // Phase `handoff_wire_bytes_are_pinned`.
+        // Each service's handoff bytes. The services on the other end parse
+        // them independently, so the magic, prefix byte order and length must not
+        // drift. JSON key order is not pinned (`serde_json`'s `preserve_order` is
+        // feature-unified), only the value.
+        {
+            let fields = serde_json::json!({
+                "protocol": 1,
+                "app_id": "so.tilo.notes",
+                "workspace_id": "room-7",
+            });
+            let bytes = written(|stream| write_collab_handoff(stream, "so.tilo.notes", "room-7"));
+            assert_eq!(bytes[..8], *b"QCL1\x3f\0\0\0");
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&bytes[8..]).unwrap(),
+                fields
+            );
+
+            let bytes = written(|stream| write_compat_handoff(stream, "so.tilo.notes", "room-7"));
+            assert_eq!(bytes[..4], [63, 0, 0, 0]);
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&bytes[4..]).unwrap(),
+                fields
+            );
+
+            let gateway_app =
+                serde_json::json!({"protocol": 2, "principal": "app", "app_id": "so.tilo.notes"});
+            let bytes = written(|stream| write_model_gateway_handoff(stream, "so.tilo.notes"));
+            assert_eq!(bytes[..4], [57, 0, 0, 0]);
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&bytes[4..]).unwrap(),
+                gateway_app
+            );
+
+            let app_only = serde_json::json!({"protocol": 1, "app_id": "so.tilo.notes"});
+            let bytes = written(|stream| write_app_host_handoff(stream, "so.tilo.notes"));
+            assert_eq!(bytes[..8], *b"QAH1\0\0\0\x27");
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&bytes[8..]).unwrap(),
+                app_only
+            );
+        }
+        // Phase `blob_handoff_fixes_the_app_and_room_before_the_app_holds_the_descriptor`.
+        {
+            use std::io::Read;
+
+            let dir = tempfile::tempdir().expect("socket dir");
+            let path = dir.path().join("fs-blobs.sock");
+            let listener = std::os::unix::net::UnixListener::bind(&path).expect("listen");
+            let reader = std::thread::spawn(move || {
+                let mut frames = Vec::new();
+                for _ in 0..2 {
+                    let (mut stream, _) = listener.accept().expect("accept");
+                    let mut magic = [0_u8; 4];
+                    stream.read_exact(&mut magic).expect("magic");
+                    let mut len = [0_u8; 4];
+                    stream.read_exact(&mut len).expect("length");
+                    let mut bytes = vec![0_u8; u32::from_le_bytes(len) as usize];
+                    stream.read_exact(&mut bytes).expect("payload");
+                    frames.push((
+                        magic,
+                        serde_json::from_slice::<serde_json::Value>(&bytes).expect("json"),
+                    ));
+                }
+                frames
+            });
+            let room = resolve_blob_bind_at(&path, "so.tilo.notes", Some("room-7"), false)
+                .expect("resolve")
+                .expect("blob bind");
+            assert_eq!(room.name, BLOB_SERVICE);
+            assert_eq!(room.child_fd, BLOB_CHILD_FD);
+            let personal = resolve_blob_bind_at(&path, "so.tilo.notes", None, false)
+                .expect("resolve")
+                .expect("personal blob bind");
+            let frames = reader.join().expect("reader");
+            drop((room, personal));
+            assert_eq!(frames[0].0, BLOB_HANDOFF_MAGIC);
+            assert_eq!(
+                frames[0].1,
+                serde_json::json!({
+                    "protocol": 1,
+                    "principal": "app",
+                    "room": "room-7",
+                    "app_id": "so.tilo.notes",
+                })
+            );
+            assert_eq!(frames[1].1["room"], crate::appdir::PERSONAL_ROOM);
+
+            assert!(
+                resolve_blob_bind_at(
+                    &dir.path().join("absent.sock"),
+                    "so.tilo.notes",
+                    None,
+                    false
+                )
+                .expect("absent daemon degrades")
+                .is_none()
+            );
+            assert!(
+                resolve_blob_bind_at(&path, "so.tilo.notes", None, true)
+                    .expect("no services")
+                    .is_none()
+            );
+            assert!(
+                resolve_blob_bind_at(&path, "../escape", None, false)
+                    .expect("invalid app id degrades")
+                    .is_none()
+            );
+        }
+        // Phase `collab_handoff_is_framed_for_broker_authentication`.
+        {
+            use std::io::Read;
+
+            let dir = tempfile::tempdir().expect("runtime");
+            let _env = runtime_dir_env(dir.path());
+            let root = ensure_services_root().expect("services root");
+            let listener =
+                std::os::unix::net::UnixListener::bind(root.join("collab.sock")).expect("listen");
+            let reader = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().expect("accept");
+                let mut magic = [0_u8; COLLAB_LAUNCH_MAGIC.len()];
+                stream.read_exact(&mut magic).expect("magic");
+                let bytes = COLLAB_LAUNCH_FRAMING
+                    .read(&mut stream)
+                    .expect("handoff")
+                    .expect("frame");
+                (
+                    magic,
+                    serde_json::from_slice::<serde_json::Value>(&bytes).expect("json"),
+                )
+            });
+            let mut services = BTreeMap::new();
+            services.insert(COLLAB_SERVICE.to_string(), "required@1".to_string());
+            let resolved = resolve_service_binds_for_launch(
+                &services,
+                false,
+                ServiceLaunchContext {
+                    app_id: "so.tilo.notes",
+                    workspace_id: Some("room-7"),
+                },
+            )
+            .expect("resolve");
+            drop(resolved);
+            let (magic, handoff) = reader.join().expect("reader");
+            assert_eq!(magic, COLLAB_LAUNCH_MAGIC);
+            assert_eq!(handoff["protocol"], COLLAB_LAUNCH_PROTOCOL_VERSION);
+            assert_eq!(handoff["app_id"], "so.tilo.notes");
+            assert_eq!(handoff["workspace_id"], "room-7");
+        }
+        // Phase `shell_ui_connection_is_authenticated_before_child_handoff`.
+        {
+            use std::io::{BufRead, BufReader};
+
+            let dir = tempfile::tempdir().unwrap();
+            let _env = runtime_dir_env(dir.path());
+            let root = ensure_services_root().unwrap();
+            let listener =
+                std::os::unix::net::UnixListener::bind(root.join("shell-ui.sock")).unwrap();
+            let mut services = BTreeMap::new();
+            services.insert(SHELL_UI_SERVICE.to_string(), "optional@1".to_string());
+            let resolved = resolve_service_binds(&services, false).unwrap();
+            authenticate_shell_ui_bind(&resolved, "so.tilo.chat").unwrap();
+
+            let (stream, _) = listener.accept().unwrap();
+            let mut line = String::new();
+            BufReader::new(stream).read_line(&mut line).unwrap();
+            let handshake: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+            assert_eq!(handshake["protocol"], 1);
+            assert_eq!(handshake["app_id"], "so.tilo.chat");
+        }
     }
 
     fn written(write: impl FnOnce(&mut UnixStream) -> std::io::Result<()>) -> Vec<u8> {
@@ -771,248 +948,104 @@ mod tests {
         bytes
     }
 
-    /// Each service's handoff bytes. The services on the other end parse
-    /// them independently, so the magic, prefix byte order and length must not
-    /// drift. JSON key order is not pinned (`serde_json`'s `preserve_order` is
-    /// feature-unified), only the value.
     #[test]
-    fn handoff_wire_bytes_are_pinned() {
-        let fields = serde_json::json!({
-            "protocol": 1,
-            "app_id": "so.tilo.notes",
-            "workspace_id": "room-7",
-        });
-        let bytes = written(|stream| write_collab_handoff(stream, "so.tilo.notes", "room-7"));
-        assert_eq!(bytes[..8], *b"QCL1\x3f\0\0\0");
-        assert_eq!(
-            serde_json::from_slice::<serde_json::Value>(&bytes[8..]).unwrap(),
-            fields
-        );
+    fn service_requirements_resolve_or_fail_as_declared() {
+        // Phase `app_host_capability_is_not_self_grantable_by_third_party_packages`.
+        {
+            let mut services = BTreeMap::new();
+            services.insert(APP_HOST_SERVICE.to_string(), "required@1".to_string());
+            let error = resolve_service_binds_for_launch(
+                &services,
+                false,
+                ServiceLaunchContext {
+                    app_id: "org.example.untrusted",
+                    workspace_id: None,
+                },
+            )
+            .expect_err("third-party manifest must not grant package-manager authority");
+            assert!(matches!(error, ServiceError::AppHostUnauthorized));
+        }
+        // Phase `optional_service_whose_socket_refuses_is_skipped_not_fatal`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let _env = runtime_dir_env(dir.path());
+            let root = ensure_services_root().unwrap();
+            dead_socket(&root, "collab");
 
-        let bytes = written(|stream| write_compat_handoff(stream, "so.tilo.notes", "room-7"));
-        assert_eq!(bytes[..4], [63, 0, 0, 0]);
-        assert_eq!(
-            serde_json::from_slice::<serde_json::Value>(&bytes[4..]).unwrap(),
-            fields
-        );
+            let mut svcs = BTreeMap::new();
+            svcs.insert("collab".to_string(), "optional@1".to_string());
+            let out = resolve_service_binds(&svcs, false)
+                .expect("a stale optional socket must degrade, not fail the launch");
+            assert!(
+                out.is_empty(),
+                "nothing can be handed to the app for a service that does not answer"
+            );
+        }
+        // Phase `required_service_whose_socket_refuses_is_still_an_error`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let _env = runtime_dir_env(dir.path());
+            let root = ensure_services_root().unwrap();
+            dead_socket(&root, "collab");
 
-        let gateway_app =
-            serde_json::json!({"protocol": 2, "principal": "app", "app_id": "so.tilo.notes"});
-        let bytes = written(|stream| write_model_gateway_handoff(stream, "so.tilo.notes"));
-        assert_eq!(bytes[..4], [57, 0, 0, 0]);
-        assert_eq!(
-            serde_json::from_slice::<serde_json::Value>(&bytes[4..]).unwrap(),
-            gateway_app
-        );
+            let mut svcs = BTreeMap::new();
+            svcs.insert("collab".to_string(), "required@1".to_string());
+            let err = resolve_service_binds(&svcs, false)
+                .expect_err("a required service that does not answer must fail the launch");
+            assert!(
+                matches!(err, ServiceError::OpenFailed { .. }),
+                "got {err:?}"
+            );
+        }
+        // Phase `a_live_optional_socket_is_handed_over`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let _env = runtime_dir_env(dir.path());
+            let root = ensure_services_root().unwrap();
+            // Kept alive for the duration of the call, so `connect` succeeds.
+            let _listener =
+                std::os::unix::net::UnixListener::bind(root.join("test-lifecycle.sock")).unwrap();
 
-        let app_only = serde_json::json!({"protocol": 1, "app_id": "so.tilo.notes"});
-
-        let bytes = written(|stream| write_app_host_handoff(stream, "so.tilo.notes"));
-        assert_eq!(bytes[..8], *b"QAH1\0\0\0\x27");
-        assert_eq!(
-            serde_json::from_slice::<serde_json::Value>(&bytes[8..]).unwrap(),
-            app_only
-        );
-    }
-
-    #[test]
-    fn blob_handoff_fixes_the_app_and_room_before_the_app_holds_the_descriptor() {
-        use std::io::Read;
-
-        let dir = tempfile::tempdir().expect("socket dir");
-        let path = dir.path().join("fs-blobs.sock");
-        let listener = std::os::unix::net::UnixListener::bind(&path).expect("listen");
-        let reader = std::thread::spawn(move || {
-            let mut frames = Vec::new();
-            for _ in 0..2 {
-                let (mut stream, _) = listener.accept().expect("accept");
-                let mut magic = [0_u8; 4];
-                stream.read_exact(&mut magic).expect("magic");
-                let mut len = [0_u8; 4];
-                stream.read_exact(&mut len).expect("length");
-                let mut bytes = vec![0_u8; u32::from_le_bytes(len) as usize];
-                stream.read_exact(&mut bytes).expect("payload");
-                frames.push((
-                    magic,
-                    serde_json::from_slice::<serde_json::Value>(&bytes).expect("json"),
-                ));
+            let mut svcs = BTreeMap::new();
+            svcs.insert("test-lifecycle".to_string(), "optional@1".to_string());
+            let out = resolve_service_binds(&svcs, false).expect("a live socket resolves");
+            assert_eq!(out.len(), 1, "the one live service must be handed over");
+            assert_eq!(out[0].name, "test-lifecycle");
+            assert_eq!(
+                out[0].child_fd, 17,
+                "the app is told to read fd 17, so that is where it must land"
+            );
+        }
+        // Phase `no_services_flag_skips_required_silently`.
+        {
+            let mut svcs = BTreeMap::new();
+            svcs.insert("collab".to_string(), "required@1".to_string());
+            let out = resolve_service_binds(&svcs, true).expect("no-services path is infallible");
+            assert!(out.is_empty(), "required service must be skipped");
+        }
+        // Phase `malformed_requirement_is_an_error`.
+        {
+            let mut svcs = BTreeMap::new();
+            svcs.insert("collab".to_string(), "wrong-form".to_string());
+            let err = resolve_service_binds(&svcs, false).unwrap_err();
+            assert!(matches!(err, ServiceError::BadRequirement(_, _)));
+        }
+        // Phase `required_missing_returns_required_missing_error`.
+        {
+            let mut svcs = BTreeMap::new();
+            svcs.insert("collab".to_string(), "required@1".to_string());
+            // Point XDG_RUNTIME_DIR at a tempdir with nothing in it.
+            let dir = tempfile::tempdir().unwrap();
+            let _env = runtime_dir_env(dir.path());
+            let err = resolve_service_binds(&svcs, false).unwrap_err();
+            match err {
+                ServiceError::RequiredMissing { name, version, .. } => {
+                    assert_eq!(name, "collab");
+                    assert_eq!(version, 1);
+                }
+                other => panic!("expected RequiredMissing, got {other:?}"),
             }
-            frames
-        });
-        let room = resolve_blob_bind_at(&path, "so.tilo.notes", Some("room-7"), false)
-            .expect("resolve")
-            .expect("blob bind");
-        assert_eq!(room.name, BLOB_SERVICE);
-        assert_eq!(room.child_fd, BLOB_CHILD_FD);
-        let personal = resolve_blob_bind_at(&path, "so.tilo.notes", None, false)
-            .expect("resolve")
-            .expect("personal blob bind");
-        let frames = reader.join().expect("reader");
-        drop((room, personal));
-        assert_eq!(frames[0].0, BLOB_HANDOFF_MAGIC);
-        assert_eq!(
-            frames[0].1,
-            serde_json::json!({
-                "protocol": 1,
-                "principal": "app",
-                "room": "room-7",
-                "app_id": "so.tilo.notes",
-            })
-        );
-        assert_eq!(frames[1].1["room"], crate::appdir::PERSONAL_ROOM);
-
-        assert!(
-            resolve_blob_bind_at(
-                &dir.path().join("absent.sock"),
-                "so.tilo.notes",
-                None,
-                false
-            )
-            .expect("absent daemon degrades")
-            .is_none()
-        );
-        assert!(
-            resolve_blob_bind_at(&path, "so.tilo.notes", None, true)
-                .expect("no services")
-                .is_none()
-        );
-        assert!(
-            resolve_blob_bind_at(&path, "../escape", None, false)
-                .expect("invalid app id degrades")
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn collab_handoff_is_framed_for_broker_authentication() {
-        use std::io::Read;
-
-        let dir = tempfile::tempdir().expect("runtime");
-        let _env = runtime_dir_env(dir.path());
-        let root = ensure_services_root().expect("services root");
-        let listener =
-            std::os::unix::net::UnixListener::bind(root.join("collab.sock")).expect("listen");
-        let reader = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("accept");
-            let mut magic = [0_u8; COLLAB_LAUNCH_MAGIC.len()];
-            stream.read_exact(&mut magic).expect("magic");
-            let bytes = COLLAB_LAUNCH_FRAMING
-                .read(&mut stream)
-                .expect("handoff")
-                .expect("frame");
-            (
-                magic,
-                serde_json::from_slice::<serde_json::Value>(&bytes).expect("json"),
-            )
-        });
-        let mut services = BTreeMap::new();
-        services.insert(COLLAB_SERVICE.to_string(), "required@1".to_string());
-        let resolved = resolve_service_binds_for_launch(
-            &services,
-            false,
-            ServiceLaunchContext {
-                app_id: "so.tilo.notes",
-                workspace_id: Some("room-7"),
-            },
-        )
-        .expect("resolve");
-        drop(resolved);
-        let (magic, handoff) = reader.join().expect("reader");
-        assert_eq!(magic, COLLAB_LAUNCH_MAGIC);
-        assert_eq!(handoff["protocol"], COLLAB_LAUNCH_PROTOCOL_VERSION);
-        assert_eq!(handoff["app_id"], "so.tilo.notes");
-        assert_eq!(handoff["workspace_id"], "room-7");
-    }
-
-    #[test]
-    fn app_host_capability_is_not_self_grantable_by_third_party_packages() {
-        let mut services = BTreeMap::new();
-        services.insert(APP_HOST_SERVICE.to_string(), "required@1".to_string());
-        let error = resolve_service_binds_for_launch(
-            &services,
-            false,
-            ServiceLaunchContext {
-                app_id: "org.example.untrusted",
-                workspace_id: None,
-            },
-        )
-        .expect_err("third-party manifest must not grant package-manager authority");
-        assert!(matches!(error, ServiceError::AppHostUnauthorized));
-    }
-
-    #[test]
-    fn optional_service_whose_socket_refuses_is_skipped_not_fatal() {
-        let dir = tempfile::tempdir().unwrap();
-        let _env = runtime_dir_env(dir.path());
-        let root = ensure_services_root().unwrap();
-        dead_socket(&root, "collab");
-
-        let mut svcs = BTreeMap::new();
-        svcs.insert("collab".to_string(), "optional@1".to_string());
-        let out = resolve_service_binds(&svcs, false)
-            .expect("a stale optional socket must degrade, not fail the launch");
-        assert!(
-            out.is_empty(),
-            "nothing can be handed to the app for a service that does not answer"
-        );
-    }
-
-    #[test]
-    fn required_service_whose_socket_refuses_is_still_an_error() {
-        let dir = tempfile::tempdir().unwrap();
-        let _env = runtime_dir_env(dir.path());
-        let root = ensure_services_root().unwrap();
-        dead_socket(&root, "collab");
-
-        let mut svcs = BTreeMap::new();
-        svcs.insert("collab".to_string(), "required@1".to_string());
-        let err = resolve_service_binds(&svcs, false)
-            .expect_err("a required service that does not answer must fail the launch");
-        assert!(
-            matches!(err, ServiceError::OpenFailed { .. }),
-            "got {err:?}"
-        );
-    }
-
-    #[test]
-    fn a_live_optional_socket_is_handed_over() {
-        let dir = tempfile::tempdir().unwrap();
-        let _env = runtime_dir_env(dir.path());
-        let root = ensure_services_root().unwrap();
-        // Kept alive for the duration of the call, so `connect` succeeds.
-        let _listener =
-            std::os::unix::net::UnixListener::bind(root.join("test-lifecycle.sock")).unwrap();
-
-        let mut svcs = BTreeMap::new();
-        svcs.insert("test-lifecycle".to_string(), "optional@1".to_string());
-        let out = resolve_service_binds(&svcs, false).expect("a live socket resolves");
-        assert_eq!(out.len(), 1, "the one live service must be handed over");
-        assert_eq!(out[0].name, "test-lifecycle");
-        assert_eq!(
-            out[0].child_fd, 17,
-            "the app is told to read fd 17, so that is where it must land"
-        );
-    }
-
-    #[test]
-    fn shell_ui_connection_is_authenticated_before_child_handoff() {
-        use std::io::{BufRead, BufReader};
-
-        let dir = tempfile::tempdir().unwrap();
-        let _env = runtime_dir_env(dir.path());
-        let root = ensure_services_root().unwrap();
-        let listener = std::os::unix::net::UnixListener::bind(root.join("shell-ui.sock")).unwrap();
-        let mut services = BTreeMap::new();
-        services.insert(SHELL_UI_SERVICE.to_string(), "optional@1".to_string());
-        let resolved = resolve_service_binds(&services, false).unwrap();
-        authenticate_shell_ui_bind(&resolved, "so.tilo.chat").unwrap();
-
-        let (stream, _) = listener.accept().unwrap();
-        let mut line = String::new();
-        BufReader::new(stream).read_line(&mut line).unwrap();
-        let handshake: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
-        assert_eq!(handshake["protocol"], 1);
-        assert_eq!(handshake["app_id"], "so.tilo.chat");
+        }
     }
 
     /// What `/proc/self/fd/<n>` says a descriptor points at — `socket:[<inode>]`
@@ -1096,182 +1129,154 @@ mod tests {
         );
     }
 
-    /// Asserted from the *service's* side of the socket: "we called close"
-    /// isn't the claim, "the far end can tell" is. Taken as a raw fd,
-    /// nothing owned or closed this descriptor, so every caller held a live
-    /// connection nothing would ever release.
     #[test]
-    fn the_launchers_end_is_released_when_the_launch_is_over() {
-        use std::io::Read;
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn handed_over_descriptors_have_the_right_owners_and_lifetimes() {
+        // Phase `the_launchers_end_is_released_when_the_launch_is_over`.
+        // Asserted from the *service's* side of the socket: "we called close"
+        // isn't the claim, "the far end can tell" is. Taken as a raw fd,
+        // nothing owned or closed this descriptor, so every caller held a live
+        // connection nothing would ever release.
+        {
+            use std::io::Read;
 
-        let dir = tempfile::tempdir().unwrap();
-        let _env = runtime_dir_env(dir.path());
-        let root = ensure_services_root().unwrap();
-        let listener =
-            std::os::unix::net::UnixListener::bind(root.join("test-lifecycle.sock")).unwrap();
+            let dir = tempfile::tempdir().unwrap();
+            let _env = runtime_dir_env(dir.path());
+            let root = ensure_services_root().unwrap();
+            let listener =
+                std::os::unix::net::UnixListener::bind(root.join("test-lifecycle.sock")).unwrap();
 
-        let mut svcs = BTreeMap::new();
-        svcs.insert("test-lifecycle".to_string(), "optional@1".to_string());
-        let resolved = resolve_service_binds(&svcs, false).expect("a live socket resolves");
-        assert_eq!(
-            resolved.len(),
-            1,
-            "the one live service must be handed over"
-        );
+            let mut svcs = BTreeMap::new();
+            svcs.insert("test-lifecycle".to_string(), "optional@1".to_string());
+            let resolved = resolve_service_binds(&svcs, false).expect("a live socket resolves");
+            assert_eq!(
+                resolved.len(),
+                1,
+                "the one live service must be handed over"
+            );
 
-        let (mut served, _) = listener
-            .accept()
-            .expect("the launcher's connection has to arrive");
-        served
-            .set_read_timeout(Some(std::time::Duration::from_secs(2)))
-            .expect("a bounded wait, so a leak fails the test instead of hanging it");
+            let (mut served, _) = listener
+                .accept()
+                .expect("the launcher's connection has to arrive");
+            served
+                .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                .expect("a bounded wait, so a leak fails the test instead of hanging it");
 
-        // The launch is over: either bwrap was spawned and holds the `dup2`
-        // copy, or the spawn failed and there is no child at all.
-        drop(resolved);
+            // The launch is over: either bwrap was spawned and holds the `dup2`
+            // copy, or the spawn failed and there is no child at all.
+            drop(resolved);
 
-        let mut buf = [0u8; 1];
-        let n = served.read(&mut buf).unwrap_or_else(|e| {
-            panic!(
-                "the service never saw the launcher's end close ({e}), so it is \
-                 still holding a connection nothing will ever release"
-            )
-        });
-        assert_eq!(
-            n, 0,
-            "the read returned data on a connection nobody is on the other end of",
-        );
-    }
-
-    /// The other order, driven explicitly: a fix that released the
-    /// descriptor too early would close the app's connection at the moment
-    /// it was handed over, and a test only watching for EOF would call
-    /// that a pass.
-    #[test]
-    fn the_apps_copy_outlives_the_launchers() {
-        use std::io::Read;
-        use std::os::fd::FromRawFd;
-
-        let dir = tempfile::tempdir().unwrap();
-        let _env = runtime_dir_env(dir.path());
-        let root = ensure_services_root().unwrap();
-        let listener =
-            std::os::unix::net::UnixListener::bind(root.join("test-lifecycle.sock")).unwrap();
-
-        let mut svcs = BTreeMap::new();
-        svcs.insert("test-lifecycle".to_string(), "optional@1".to_string());
-        let resolved = resolve_service_binds(&svcs, false).expect("a live socket resolves");
-        let (mut served, _) = listener.accept().expect("the connection has to arrive");
-
-        // What `place_service_fds` makes on the other side of the fork:
-        // another descriptor on the same socket. It stands in for the app.
-        let app_copy = unsafe {
-            let raw = libc::dup(resolved[0].host_fd());
-            assert!(raw >= 0, "dup of the handed-over descriptor failed");
-            OwnedFd::from_raw_fd(raw)
-        };
-        drop(resolved);
-
-        served
-            .set_read_timeout(Some(std::time::Duration::from_millis(250)))
-            .unwrap();
-        let mut buf = [0u8; 1];
-        match served.read(&mut buf) {
-            Err(e)
-                if matches!(
-                    e.kind(),
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                ) => {}
-            Ok(0) => panic!(
-                "the app's connection was closed the moment the launcher let go \
-                 of its own copy, so the app is handed a descriptor to a socket \
-                 nobody is serving"
-            ),
-            other => panic!("unexpected read from a live connection: {other:?}"),
+            let mut buf = [0u8; 1];
+            let n = served.read(&mut buf).unwrap_or_else(|e| {
+                panic!(
+                    "the service never saw the launcher's end close ({e}), so it is \
+                     still holding a connection nothing will ever release"
+                )
+            });
+            assert_eq!(
+                n, 0,
+                "the read returned data on a connection nobody is on the other end of",
+            );
         }
+        // Phase `the_apps_copy_outlives_the_launchers`.
+        // The other order, driven explicitly: a fix that released the
+        // descriptor too early would close the app's connection at the moment
+        // it was handed over, and a test only watching for EOF would call
+        // that a pass.
+        {
+            use std::io::Read;
+            use std::os::fd::FromRawFd;
 
-        // Darwin refuses timeout changes after peer disconnect. Establish the
-        // same EOF deadline while the final peer descriptor is still alive.
-        served
-            .set_read_timeout(Some(std::time::Duration::from_secs(2)))
-            .unwrap();
-        drop(app_copy);
-        assert_eq!(
-            served.read(&mut buf).expect("the service must see the end"),
-            0,
-            "every copy is gone and the service still sees a live connection",
-        );
-    }
+            let dir = tempfile::tempdir().unwrap();
+            let _env = runtime_dir_env(dir.path());
+            let root = ensure_services_root().unwrap();
+            let listener =
+                std::os::unix::net::UnixListener::bind(root.join("test-lifecycle.sock")).unwrap();
 
-    /// The launcher's copy must not be inheritable — with CLOEXEC cleared,
-    /// every process started after the fork (D-Bus proxy, egress gate)
-    /// would hold a live connection to a session service opened on an
-    /// app's behalf.
-    #[test]
-    fn the_launchers_copy_is_not_inherited_by_the_next_child() {
-        let dir = tempfile::tempdir().unwrap();
-        let _env = runtime_dir_env(dir.path());
-        let root = ensure_services_root().unwrap();
-        let _listener =
-            std::os::unix::net::UnixListener::bind(root.join("test-lifecycle.sock")).unwrap();
+            let mut svcs = BTreeMap::new();
+            svcs.insert("test-lifecycle".to_string(), "optional@1".to_string());
+            let resolved = resolve_service_binds(&svcs, false).expect("a live socket resolves");
+            let (mut served, _) = listener.accept().expect("the connection has to arrive");
 
-        let mut svcs = BTreeMap::new();
-        svcs.insert("test-lifecycle".to_string(), "optional@1".to_string());
-        let resolved = resolve_service_binds(&svcs, false).expect("a live socket resolves");
-        let raw = resolved[0].host_fd();
+            // What `place_service_fds` makes on the other side of the fork:
+            // another descriptor on the same socket. It stands in for the app.
+            let app_copy = unsafe {
+                let raw = libc::dup(resolved[0].host_fd());
+                assert!(raw >= 0, "dup of the handed-over descriptor failed");
+                OwnedFd::from_raw_fd(raw)
+            };
+            drop(resolved);
 
-        let flags = unsafe { libc::fcntl(raw, libc::F_GETFD) };
-        assert!(flags != -1, "the handed-over descriptor is not open");
-        assert!(
-            flags & libc::FD_CLOEXEC != 0,
-            "the launcher's end is inheritable, so every process started after \
-             it gets a live copy of it",
-        );
-
-        // The property itself rather than the flag that decides it.
-        let seen = std::process::Command::new("/bin/sh")
-            .arg("-c")
-            .arg(format!("readlink /proc/self/fd/{raw} 2>/dev/null || true"))
-            .output()
-            .expect("spawning an unrelated child");
-        let seen = String::from_utf8_lossy(&seen.stdout);
-        assert!(
-            !seen.trim_start().starts_with("socket:"),
-            "an unrelated child inherited the service socket at fd {raw}: {seen:?}",
-        );
-        drop(resolved);
-    }
-
-    #[test]
-    fn no_services_flag_skips_required_silently() {
-        let mut svcs = BTreeMap::new();
-        svcs.insert("collab".to_string(), "required@1".to_string());
-        let out = resolve_service_binds(&svcs, true).expect("no-services path is infallible");
-        assert!(out.is_empty(), "required service must be skipped");
-    }
-
-    #[test]
-    fn malformed_requirement_is_an_error() {
-        let mut svcs = BTreeMap::new();
-        svcs.insert("collab".to_string(), "wrong-form".to_string());
-        let err = resolve_service_binds(&svcs, false).unwrap_err();
-        assert!(matches!(err, ServiceError::BadRequirement(_, _)));
-    }
-
-    #[test]
-    fn required_missing_returns_required_missing_error() {
-        let mut svcs = BTreeMap::new();
-        svcs.insert("collab".to_string(), "required@1".to_string());
-        // Point XDG_RUNTIME_DIR at a tempdir with nothing in it.
-        let dir = tempfile::tempdir().unwrap();
-        let _env = runtime_dir_env(dir.path());
-        let err = resolve_service_binds(&svcs, false).unwrap_err();
-        match err {
-            ServiceError::RequiredMissing { name, version, .. } => {
-                assert_eq!(name, "collab");
-                assert_eq!(version, 1);
+            served
+                .set_read_timeout(Some(std::time::Duration::from_millis(250)))
+                .unwrap();
+            let mut buf = [0u8; 1];
+            match served.read(&mut buf) {
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) => {}
+                Ok(0) => panic!(
+                    "the app's connection was closed the moment the launcher let go \
+                     of its own copy, so the app is handed a descriptor to a socket \
+                     nobody is serving"
+                ),
+                other => panic!("unexpected read from a live connection: {other:?}"),
             }
-            other => panic!("expected RequiredMissing, got {other:?}"),
+
+            // Darwin refuses timeout changes after peer disconnect. Establish the
+            // same EOF deadline while the final peer descriptor is still alive.
+            served
+                .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                .unwrap();
+            drop(app_copy);
+            assert_eq!(
+                served.read(&mut buf).expect("the service must see the end"),
+                0,
+                "every copy is gone and the service still sees a live connection",
+            );
+        }
+        // Phase `the_launchers_copy_is_not_inherited_by_the_next_child`.
+        // The launcher's copy must not be inheritable — with CLOEXEC cleared,
+        // every process started after the fork (D-Bus proxy, egress gate)
+        // would hold a live connection to a session service opened on an
+        // app's behalf.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let _env = runtime_dir_env(dir.path());
+            let root = ensure_services_root().unwrap();
+            let _listener =
+                std::os::unix::net::UnixListener::bind(root.join("test-lifecycle.sock")).unwrap();
+
+            let mut svcs = BTreeMap::new();
+            svcs.insert("test-lifecycle".to_string(), "optional@1".to_string());
+            let resolved = resolve_service_binds(&svcs, false).expect("a live socket resolves");
+            let raw = resolved[0].host_fd();
+
+            let flags = unsafe { libc::fcntl(raw, libc::F_GETFD) };
+            assert!(flags != -1, "the handed-over descriptor is not open");
+            assert!(
+                flags & libc::FD_CLOEXEC != 0,
+                "the launcher's end is inheritable, so every process started after \
+                 it gets a live copy of it",
+            );
+
+            // The property itself rather than the flag that decides it.
+            let seen = std::process::Command::new("/bin/sh")
+                .arg("-c")
+                .arg(format!("readlink /proc/self/fd/{raw} 2>/dev/null || true"))
+                .output()
+                .expect("spawning an unrelated child");
+            let seen = String::from_utf8_lossy(&seen.stdout);
+            assert!(
+                !seen.trim_start().starts_with("socket:"),
+                "an unrelated child inherited the service socket at fd {raw}: {seen:?}",
+            );
+            drop(resolved);
         }
     }
 }

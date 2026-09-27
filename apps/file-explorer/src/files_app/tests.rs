@@ -47,6 +47,18 @@ mod open_with_tests {
     }
 
     #[test]
+    fn files_are_classified_for_open_and_merge_by_extension() {
+        merge_is_never_offered_for_binary_or_unsupported_names();
+        document_extensions_are_recognised_as_documents();
+    }
+
+    fn merge_is_never_offered_for_binary_or_unsupported_names() {
+        assert!(merge_supported_path(std::path::Path::new("notes.txt")));
+        assert!(merge_supported_path(std::path::Path::new("draft.QDOC")));
+        assert!(!merge_supported_path(std::path::Path::new("photo.png")));
+        assert!(!merge_supported_path(std::path::Path::new("unknown")));
+    }
+
     fn document_extensions_are_recognised_as_documents() {
         for f in ["report.odt", "memo.docx", "notes.md", "readme.markdown"] {
             assert!(is_document(Path::new(f)), "{f}");
@@ -55,12 +67,20 @@ mod open_with_tests {
         assert!(!is_document(Path::new("main.rs")));
     }
 
+    /// Each phase installs (or clears) its own thread-local opener and clears it
+    /// again before the next phase.
+    #[test]
+    fn activation_hands_files_to_the_host_or_the_desktop_fallback() {
+        activating_a_file_hands_the_path_to_the_host();
+        a_refused_open_is_shown_to_the_user();
+        without_a_host_every_type_falls_back_to_the_desktop_handler();
+    }
+
     /// Every activated file goes to the host, whatever its type. The
     /// explorer must not sort files into "documents" and "everything
     /// else" — which app owns a `.pdf` or a `.png` is the desktop's
     /// answer, from what is installed, and a table here would be wrong
     /// the moment anybody installs anything.
-    #[test]
     fn activating_a_file_hands_the_path_to_the_host() {
         let asked: std::rc::Rc<std::cell::RefCell<Vec<PathBuf>>> = std::rc::Rc::default();
         let sink = asked.clone();
@@ -104,7 +124,6 @@ mod open_with_tests {
 
     /// A host that cannot open the file says why, and the explorer shows
     /// it. Activation is never silent.
-    #[test]
     fn a_refused_open_is_shown_to_the_user() {
         set_document_opener(|_| Err("no installed app opens .zzz files (thing.zzz)".into()));
         let mut w = FileExplorerWidget::new();
@@ -123,7 +142,6 @@ mod open_with_tests {
     /// With no host installed — the explorer run outside a Tilo session —
     /// activation still opens the file, via the desktop's own handler,
     /// rather than doing nothing.
-    #[test]
     fn without_a_host_every_type_falls_back_to_the_desktop_handler() {
         clear_document_opener();
         for f in [
@@ -143,8 +161,7 @@ mod open_with_tests {
         }
     }
 
-    #[test]
-    fn context_menu_opens_with_selection_aware_items() {
+    pub(super) fn context_menu_opens_with_selection_aware_items() {
         let mut w = FileExplorerWidget::new();
         w.entries = vec![file_entry("a.txt"), file_entry("b.txt")];
         w.selection.select_only(0);
@@ -174,8 +191,7 @@ mod open_with_tests {
         assert!(!labels.contains(&"Paste".to_string()));
     }
 
-    #[test]
-    fn empty_selection_menu_omits_item_actions() {
+    pub(super) fn empty_selection_menu_omits_item_actions() {
         let mut w = FileExplorerWidget::new();
         w.entries = vec![file_entry("a.txt")];
         // No selection.
@@ -191,8 +207,7 @@ mod open_with_tests {
         assert!(labels.contains(&"Open Terminal Here".to_string()));
     }
 
-    #[test]
-    fn copy_then_paste_menu_includes_paste() {
+    pub(super) fn copy_then_paste_menu_includes_paste() {
         let mut w = FileExplorerWidget::new();
         w.entries = vec![file_entry("a.txt")];
         w.selection.select_only(0);
@@ -653,7 +668,17 @@ mod command_path_tests {
     use crate::model::Entry;
     use std::path::PathBuf;
 
+    /// Wake scheduling, record-preserving metadata refresh and record-id search
+    /// reveal — each phase with its own fixture and scoped environment.
     #[test]
+    fn scheduled_refresh_and_record_search_preserve_the_view() {
+        opaque_hold_deadline_reaches_files_root_before_metadata_refresh();
+        #[cfg(unix)]
+        scheduled_metadata_refresh_preserves_record_selection_and_scroll();
+        #[cfg(unix)]
+        collaborative_search_activation_resolves_the_latest_path_by_record_id();
+    }
+
     fn opaque_hold_deadline_reaches_files_root_before_metadata_refresh() {
         let mut scroll = ui::widget::Scrollable::new_vertical();
         scroll.set_viewport_size(200.0, 300.0);
@@ -701,7 +726,17 @@ mod command_path_tests {
         }
     }
 
+    /// Sort, location bar, shortcut reference, zoom and hidden-file toggles, each
+    /// phase on a fresh widget.
     #[test]
+    fn view_commands_are_reachable_from_keyboard_and_command_paths() {
+        set_sort_command_selects_the_key_including_type();
+        command_l_opens_the_editable_location_bar_without_a_pointer();
+        shortcut_reference_is_a_keyboard_and_command_reachable_view();
+        zoom_commands_step_the_item_size_and_clamp();
+        toggle_hidden_reveals_and_hides_dotfiles();
+    }
+
     fn set_sort_command_selects_the_key_including_type() {
         let mut w = FileExplorerWidget::new();
         w.entries = vec![
@@ -723,7 +758,6 @@ mod command_path_tests {
         assert_eq!(w.entries_snapshot()[0].name, "a.txt");
     }
 
-    #[test]
     fn command_l_opens_the_editable_location_bar_without_a_pointer() {
         use winit::keyboard::{Key, KeyLocation, ModifiersState, NativeKeyCode, PhysicalKey};
 
@@ -745,7 +779,6 @@ mod command_path_tests {
         );
     }
 
-    #[test]
     fn shortcut_reference_is_a_keyboard_and_command_reachable_view() {
         use winit::keyboard::{Key, KeyLocation, NamedKey, NativeKeyCode, PhysicalKey};
         let mut widget = FileExplorerWidget::new();
@@ -776,7 +809,6 @@ mod command_path_tests {
         );
     }
 
-    #[test]
     #[cfg(unix)]
     fn trash_view_menu_offers_restore_and_empty_not_move_to_trash() {
         let Some(trash) = crate::fileops::trash_dir() else {
@@ -816,7 +848,20 @@ mod command_path_tests {
         );
     }
 
+    /// The folder resource's action catalogue, contracts, paging and ids, each
+    /// phase on a fresh widget and document.
     #[test]
+    fn folder_resource_exports_canonical_actions_handlers_and_ids() {
+        resource_catalogue_exposes_view_and_favourite_commands_through_the_action_door();
+        locally_verified_trash_undo_is_a_canonical_nonreplayable_folder_action();
+        paged_folder_root_preserves_the_canonical_folder_actions();
+        every_exported_local_file_handler_is_declared_for_the_broker();
+        exported_background_operations_have_valid_job_contracts();
+        resource_catalogue_is_bounded_but_an_exact_visible_entry_resolves_lazily();
+        template_resource_ids_are_stable_bounded_and_do_not_disclose_paths();
+        a_mounted_remote_account_opens_even_offline_but_not_when_disabled();
+    }
+
     fn resource_catalogue_exposes_view_and_favourite_commands_through_the_action_door() {
         let state_dir = tempfile::tempdir().unwrap();
         let home_dir = tempfile::tempdir().unwrap();
@@ -851,7 +896,6 @@ mod command_path_tests {
                 "folder resource must export {action}"
             );
         }
-        assert!(Widget::local_resource_operation_handlers(&w).contains(&"files.remote-dav"));
 
         for command in ["grid", "sort-size", "zoom-in", "shortcuts", "add-favorite"] {
             assert!(
@@ -886,7 +930,6 @@ mod command_path_tests {
         assert!(w.favorites().iter().any(|favorite| favorite.path == folder));
     }
 
-    #[test]
     fn locally_verified_trash_undo_is_a_canonical_nonreplayable_folder_action() {
         let state_dir = tempfile::tempdir().unwrap();
         let home_dir = tempfile::tempdir().unwrap();
@@ -934,7 +977,6 @@ mod command_path_tests {
         );
     }
 
-    #[test]
     fn large_text_view_menu_clamps_undo_inside_the_live_window() {
         let mut w = FileExplorerWidget::new();
         w.rect = vello::kurbo::Rect::new(0.0, 0.0, 1440.0, 900.0);
@@ -954,20 +996,49 @@ mod command_path_tests {
         );
     }
 
-    #[test]
-    fn remote_dav_allows_recovery_from_stale_offline_but_honours_disabled() {
+    fn remote_account(
+        health: crate::remote_accounts::RemoteAccountHealth,
+        mount: Option<PathBuf>,
+    ) -> crate::remote_accounts::RemoteAccount {
+        crate::remote_accounts::RemoteAccount {
+            id: accounts::AccountId::from("cloud"),
+            kind: crate::remote_accounts::RemoteAccountKind::Nextcloud,
+            label: "Cloud".into(),
+            host: "cloud.example".into(),
+            health,
+            mount,
+        }
+    }
+
+    fn a_mounted_remote_account_opens_even_offline_but_not_when_disabled() {
+        let home = tempfile::tempdir().unwrap();
+        let mount = home.path().join("Remote/Cloud");
+        std::fs::create_dir_all(&mount).unwrap();
+        let offline = remote_account(
+            crate::remote_accounts::RemoteAccountHealth::Offline,
+            Some(mount.clone()),
+        );
         assert_eq!(
-            remote_dav_availability(crate::remote_accounts::RemoteAccountHealth::Offline),
+            remote_folder_availability(&offline),
             Availability::Available,
-            "Offline is last observed status, so the next DAV attempt may discover recovery"
+            "cached files stay readable and writes queue while offline"
         );
         assert!(matches!(
-            remote_dav_availability(crate::remote_accounts::RemoteAccountHealth::Disabled),
+            remote_folder_availability(&remote_account(
+                crate::remote_accounts::RemoteAccountHealth::Disabled,
+                Some(mount),
+            )),
+            Availability::Unavailable { .. }
+        ));
+        assert!(matches!(
+            remote_folder_availability(&remote_account(
+                crate::remote_accounts::RemoteAccountHealth::Healthy,
+                Some(home.path().join("Remote/Missing")),
+            )),
             Availability::Unavailable { .. }
         ));
     }
 
-    #[test]
     fn template_resource_ids_are_stable_bounded_and_do_not_disclose_paths() {
         let first = "/home/alice/Templates/Plan.md";
         let second = "/home/alice/Templates/Notes.md";
@@ -980,7 +1051,18 @@ mod command_path_tests {
         assert!(!first_id.contains("Templates"));
     }
 
+    /// Entry-level resource actions carry opaque ids and refuse stale, replayed
+    /// or mistyped invocations — each phase on its own temp dir and widget.
     #[test]
+    fn entry_resource_actions_are_opaque_and_fail_closed() {
+        resource_open_refuses_a_deleted_or_replayed_entry_target();
+        local_resource_actions_carry_only_opaque_ids_not_host_paths();
+        entry_actions_fail_closed_when_the_operation_kind_is_replayed_as_view();
+        entry_resource_uses_a_wire_safe_id_and_renames_through_the_action_door();
+        projected_availability_controls_are_discoverable_and_use_the_entry_route();
+        nearby_receiver_actions_are_opaque_confirmed_and_current();
+    }
+
     fn projected_availability_controls_are_discoverable_and_use_the_entry_route() {
         let d = tempfile::tempdir().unwrap();
         let path = d.path().join("shared.txt");
@@ -1044,6 +1126,11 @@ mod command_path_tests {
     }
 
     #[test]
+    fn trash_and_archives_guard_destructive_actions() {
+        trash_actions_require_an_explicit_irrevocable_confirmation();
+        archives_browse_as_read_only_folders_and_extract_from_inside();
+    }
+
     fn trash_actions_require_an_explicit_irrevocable_confirmation() {
         let Some(trash) = crate::fileops::trash_dir() else {
             return;
@@ -1090,7 +1177,21 @@ mod command_path_tests {
         );
     }
 
+    /// Every context/overlay menu surface, each phase on a fresh widget.
     #[test]
+    fn context_menus_follow_selection_clipboard_location_and_templates() {
+        super::open_with_tests::context_menu_opens_with_selection_aware_items();
+        super::open_with_tests::empty_selection_menu_omits_item_actions();
+        super::open_with_tests::copy_then_paste_menu_includes_paste();
+        #[cfg(unix)]
+        trash_view_menu_offers_restore_and_empty_not_move_to_trash();
+        context_menu_exposes_the_sort_section_including_type();
+        context_select_targets_the_clicked_row_not_a_stale_selection();
+        context_menu_gates_new_file_on_templates_existing();
+        disappearing_templates_do_not_leave_an_empty_flyout();
+        large_text_view_menu_clamps_undo_inside_the_live_window();
+    }
+
     fn context_menu_exposes_the_sort_section_including_type() {
         let mut w = FileExplorerWidget::new();
         w.entries = vec![ent("a.txt", false, "text/plain")];
@@ -1114,7 +1215,18 @@ mod command_path_tests {
         }
     }
 
+    /// Listing, error copy/retry, history, double-click and scroll retention, each
+    /// phase on its own temp dir and widget.
     #[test]
+    fn navigation_listing_history_and_error_recovery() {
+        state_surface_copy_is_bounded_and_keeps_the_folder_context();
+        retry_refresh_recovers_from_error_once_the_dir_exists();
+        history_back_and_forward_traverse_visited_dirs();
+        double_click_click_command_navigates_into_a_directory();
+        a_populated_directory_lists_exactly_its_contents();
+        scroll_position_survives_a_structural_rebuild_but_resets_on_navigation();
+    }
+
     fn state_surface_copy_is_bounded_and_keeps_the_folder_context() {
         let mut w = FileExplorerWidget::new();
         w.current_path = PathBuf::from(format!(
@@ -1136,7 +1248,6 @@ mod command_path_tests {
         );
     }
 
-    #[test]
     fn retry_refresh_recovers_from_error_once_the_dir_exists() {
         let d = tempfile::tempdir().unwrap();
         let target = d.path().join("appears-later");
@@ -1155,7 +1266,21 @@ mod command_path_tests {
         );
     }
 
+    /// Rename (command, exported action and headless F2) plus the flows that drop
+    /// into rename — each phase on its own temp dir and widget.
     #[test]
+    fn rename_and_creation_flows_change_disk_names_locally() {
+        rename_flow_renames_the_selected_file_on_disk();
+        reseeding_the_rename_field_never_mutates_the_shared_document();
+        rename_commit_is_a_noop_for_blank_or_unchanged_names();
+        rename_cancel_leaves_the_file_untouched();
+        exported_rename_changes_case_without_overwriting_another_entry();
+        new_folder_creates_the_folder_and_opens_inline_rename();
+        external_new_folder_uses_the_typed_name_without_rename_ui();
+        new_from_template_creates_the_file_and_opens_rename();
+        super::headless_f2_renames_fixture_without_opening_a_file();
+    }
+
     fn rename_flow_renames_the_selected_file_on_disk() {
         let d = tempfile::tempdir().unwrap();
         std::fs::write(d.path().join("old.txt"), b"x").unwrap();
@@ -1181,7 +1306,6 @@ mod command_path_tests {
         assert!(!d.path().join("old.txt").exists());
     }
 
-    #[test]
     fn reseeding_the_rename_field_never_mutates_the_shared_document() {
         // An in-progress filename is device-local interaction state. Repeated
         // renames must not create an ever-growing CRDT history, leak a path to
@@ -1215,7 +1339,6 @@ mod command_path_tests {
         );
     }
 
-    #[test]
     fn rename_commit_is_a_noop_for_blank_or_unchanged_names() {
         let d = tempfile::tempdir().unwrap();
         std::fs::write(d.path().join("keep.txt"), b"x").unwrap();
@@ -1241,7 +1364,6 @@ mod command_path_tests {
         assert!(d.path().join("keep.txt").exists());
     }
 
-    #[test]
     fn rename_cancel_leaves_the_file_untouched() {
         let d = tempfile::tempdir().unwrap();
         std::fs::write(d.path().join("stay.txt"), b"x").unwrap();
@@ -1261,7 +1383,6 @@ mod command_path_tests {
         assert!(!d.path().join("other.txt").exists());
     }
 
-    #[test]
     fn new_folder_creates_the_folder_and_opens_inline_rename() {
         let d = tempfile::tempdir().unwrap();
         let mut w = FileExplorerWidget::new();
@@ -1275,7 +1396,6 @@ mod command_path_tests {
         assert_eq!(w.rename_buffer(), "New Folder");
     }
 
-    #[test]
     fn external_new_folder_uses_the_typed_name_without_rename_ui() {
         let d = tempfile::tempdir().unwrap();
         let mut w = FileExplorerWidget::new();
@@ -1296,7 +1416,6 @@ mod command_path_tests {
         assert!(!w.is_renaming());
     }
 
-    #[test]
     fn resource_open_refuses_a_deleted_or_replayed_entry_target() {
         let d = tempfile::tempdir().unwrap();
         let file = d.path().join("transient.txt");
@@ -1321,7 +1440,6 @@ mod command_path_tests {
         assert!(error.contains("no longer available"));
     }
 
-    #[test]
     fn local_resource_actions_carry_only_opaque_ids_not_host_paths() {
         let d = tempfile::tempdir().unwrap();
         let file = d.path().join("private-plan.txt");
@@ -1348,7 +1466,6 @@ mod command_path_tests {
         assert!(!String::from_utf8_lossy(&encoded.payload).contains("private-plan.txt"));
     }
 
-    #[test]
     fn resource_catalogue_is_bounded_but_an_exact_visible_entry_resolves_lazily() {
         let d = tempfile::tempdir().unwrap();
         let mut w = FileExplorerWidget::new();
@@ -1379,7 +1496,6 @@ mod command_path_tests {
         assert!(resolved.actions.iter().any(|action| action.id == "rename"));
     }
 
-    #[test]
     fn paged_folder_root_preserves_the_canonical_folder_actions() {
         let d = tempfile::tempdir().unwrap();
         let mut w = FileExplorerWidget::new();
@@ -1410,7 +1526,6 @@ mod command_path_tests {
         assert_eq!(ids(&resolved), ids(&eager));
     }
 
-    #[test]
     fn entry_actions_fail_closed_when_the_operation_kind_is_replayed_as_view() {
         let d = tempfile::tempdir().unwrap();
         let file = d.path().join("keep.txt");
@@ -1435,9 +1550,10 @@ mod command_path_tests {
         );
     }
 
-    #[test]
     fn every_exported_local_file_handler_is_declared_for_the_broker() {
-        let handlers = Widget::local_resource_operation_handlers(&FileExplorerWidget::new());
+        let handlers = Widget::local_resource_operation_handlers(
+            &FileExplorerWidget::with_persistence(None, None),
+        );
         for handler in [
             "files.refresh",
             "files.new-folder",
@@ -1450,13 +1566,11 @@ mod command_path_tests {
             "files.rename",
             "files.share-link",
             "files.remote-account",
-            "files.remote-dav",
         ] {
             assert!(handlers.contains(&handler), "missing handler {handler}");
         }
     }
 
-    #[test]
     fn exported_rename_changes_case_without_overwriting_another_entry() {
         use ui::tilo_actions::{ActionAddress, door};
         let directory = tempfile::tempdir().unwrap();
@@ -1516,7 +1630,6 @@ mod command_path_tests {
         }
     }
 
-    #[test]
     fn entry_resource_uses_a_wire_safe_id_and_renames_through_the_action_door() {
         use ui::tilo_actions::{ActionAddress, door};
 
@@ -1591,7 +1704,6 @@ mod command_path_tests {
         );
     }
 
-    #[test]
     fn exported_background_operations_have_valid_job_contracts() {
         let d = tempfile::tempdir().unwrap();
         std::fs::write(d.path().join("shared.txt"), b"x").unwrap();
@@ -1617,7 +1729,17 @@ mod command_path_tests {
         }
     }
 
+    /// Each transfer phase uses its own temp tree and widget.
     #[test]
+    fn clipboard_copy_cut_paste_moves_files_and_retries_failures() {
+        copy_then_paste_duplicates_the_file_into_the_current_dir();
+        cut_then_paste_moves_the_file_into_the_current_dir();
+        partial_cut_paste_retains_only_the_sources_that_need_retrying();
+        #[cfg(unix)]
+        exported_paste_preserves_dangling_destination_links();
+        exported_cut_paste_reports_destination_failure_and_keeps_retryable_source();
+    }
+
     fn copy_then_paste_duplicates_the_file_into_the_current_dir() {
         let d = tempfile::tempdir().unwrap();
         let src = d.path().join("src");
@@ -1641,7 +1763,6 @@ mod command_path_tests {
         assert!(src.join("a.txt").exists(), "original kept (copy, not move)");
     }
 
-    #[test]
     fn cut_then_paste_moves_the_file_into_the_current_dir() {
         let d = tempfile::tempdir().unwrap();
         let src = d.path().join("src");
@@ -1665,7 +1786,6 @@ mod command_path_tests {
         assert!(!src.join("m.txt").exists(), "original removed (move)");
     }
 
-    #[test]
     fn partial_cut_paste_retains_only_the_sources_that_need_retrying() {
         let d = tempfile::tempdir().unwrap();
         let src = d.path().join("src");
@@ -1724,7 +1844,6 @@ mod command_path_tests {
     }
 
     #[cfg(unix)]
-    #[test]
     fn exported_paste_preserves_dangling_destination_links() {
         for cut in [false, true] {
             let directory = tempfile::tempdir().unwrap();
@@ -1772,7 +1891,6 @@ mod command_path_tests {
         }
     }
 
-    #[test]
     fn exported_cut_paste_reports_destination_failure_and_keeps_retryable_source() {
         let directory = tempfile::tempdir().unwrap();
         let source = directory.path().join("report.txt");
@@ -1807,7 +1925,6 @@ mod command_path_tests {
         assert_eq!(std::fs::read_dir(&destination).unwrap().count(), 1);
     }
 
-    #[test]
     fn history_back_and_forward_traverse_visited_dirs() {
         let d = tempfile::tempdir().unwrap();
         let a = d.path().join("a");
@@ -1839,7 +1956,6 @@ mod command_path_tests {
         (w, cfg)
     }
 
-    #[test]
     fn nearby_receiver_actions_are_opaque_confirmed_and_current() {
         use ui::collaboration::{
             NearbyDestinationHandle, NearbyTransferDestination, NearbyTransferDirection,
@@ -1907,7 +2023,6 @@ mod command_path_tests {
         assert!(widget.nearby_send.take_requests().is_empty());
     }
 
-    #[test]
     fn double_click_click_command_navigates_into_a_directory() {
         // Drives the real pointer path: a `Click` command, then a second within
         // the double-click window → the app opens (navigates into) the folder.
@@ -1941,7 +2056,6 @@ mod command_path_tests {
         );
     }
 
-    #[test]
     fn zoom_commands_step_the_item_size_and_clamp() {
         let (mut w, _cfg) = hermetic();
         let base = w.zoom_level();
@@ -1961,7 +2075,14 @@ mod command_path_tests {
         );
     }
 
+    /// Each phase persists into its own throwaway config dir.
     #[test]
+    fn zoom_and_favourites_persist_and_follow_localized_user_dirs() {
+        zoom_level_persists_across_reconstruction();
+        favorite_commands_add_reorder_and_remove_and_persist();
+        favourites_follow_localized_xdg_user_dirs();
+    }
+
     fn zoom_level_persists_across_reconstruction() {
         let cfg = tempfile::tempdir().unwrap();
         {
@@ -1981,7 +2102,6 @@ mod command_path_tests {
         assert_eq!(w2.zoom_level(), 2, "zoom level survives a restart");
     }
 
-    #[test]
     fn favorite_commands_add_reorder_and_remove_and_persist() {
         let cfg = tempfile::tempdir().unwrap();
         let make = || {
@@ -2017,7 +2137,6 @@ mod command_path_tests {
         );
     }
 
-    #[test]
     fn favourites_follow_localized_xdg_user_dirs() {
         use crate::favorites::{FavKind, UserDirs};
         let cfg = tempfile::tempdir().unwrap();
@@ -2062,7 +2181,6 @@ mod command_path_tests {
         assert_eq!(docs.icon(), ui::icons::Icon::FileText);
     }
 
-    #[test]
     fn new_from_template_creates_the_file_and_opens_rename() {
         let d = tempfile::tempdir().unwrap();
         let tmpl = d.path().join("Doc.md");
@@ -2087,7 +2205,6 @@ mod command_path_tests {
         );
     }
 
-    #[test]
     fn toggle_hidden_reveals_and_hides_dotfiles() {
         let d = tempfile::tempdir().unwrap();
         std::fs::write(d.path().join(".secret"), b"x").unwrap();
@@ -2125,7 +2242,6 @@ mod command_path_tests {
     /// accessor, so the assertions are on the two conditions that gate
     /// it (a non-empty `entries`, no error) plus the item count the same
     /// view renders in its footer.
-    #[test]
     fn a_populated_directory_lists_exactly_its_contents() {
         let d = tempfile::tempdir().unwrap();
         let names = [
@@ -2169,7 +2285,6 @@ mod command_path_tests {
         );
     }
 
-    #[test]
     fn scroll_position_survives_a_structural_rebuild_but_resets_on_navigation() {
         // The real fix: selecting a row / re-sorting rebuilds the whole
         // composition (a fresh Scrollable), which used to snap the list back to
@@ -2217,7 +2332,6 @@ mod command_path_tests {
         );
     }
 
-    #[test]
     fn context_select_targets_the_clicked_row_not_a_stale_selection() {
         // Guards the dangerous bug: a right-click's menu must act on the row it
         // landed on, not whatever happened to be selected. `ContextSelect` is
@@ -2259,7 +2373,6 @@ mod command_path_tests {
         );
     }
 
-    #[test]
     fn context_menu_gates_new_file_on_templates_existing() {
         // The "New File ▸" entry appears iff the Templates dir has files, and
         // "New Folder" is always present. Templates are injected so the check is
@@ -2286,7 +2399,6 @@ mod command_path_tests {
         assert!(has_new_folder(&two));
     }
 
-    #[test]
     fn disappearing_templates_do_not_leave_an_empty_flyout() {
         let (mut w, _cfg) = hermetic();
         // A catalogue can be emptied after the parent menu opens. The flyout
@@ -2296,7 +2408,21 @@ mod command_path_tests {
         assert!(w.submenu_commands.is_empty());
     }
 
+    /// Keep-offline, free-space, policy and retry/details affordances, each phase
+    /// on its own temp files and widget.
     #[test]
+    fn availability_policy_commands_write_only_eligible_records() {
+        #[cfg(unix)]
+        collaborative_selection_offers_and_applies_keep_offline();
+        #[cfg(unix)]
+        free_local_space_is_offered_and_sent_only_for_eligible_local_files();
+        #[cfg(unix)]
+        mixed_selection_exposes_both_storage_policies_and_writes_only_eligible_records();
+        #[cfg(unix)]
+        inherited_pin_is_explained_but_not_offered_as_a_local_toggle();
+        failed_projected_file_offers_retry_and_availability_details();
+    }
+
     #[cfg(unix)]
     fn collaborative_selection_offers_and_applies_keep_offline() {
         let dir = tempfile::tempdir().unwrap();
@@ -2337,7 +2463,6 @@ mod command_path_tests {
         );
     }
 
-    #[test]
     #[cfg(unix)]
     fn free_local_space_is_offered_and_sent_only_for_eligible_local_files() {
         let dir = tempfile::tempdir().unwrap();
@@ -2408,7 +2533,6 @@ mod command_path_tests {
         );
     }
 
-    #[test]
     #[cfg(unix)]
     fn scheduled_metadata_refresh_preserves_record_selection_and_scroll() {
         let dir = tempfile::tempdir().unwrap();
@@ -2443,7 +2567,6 @@ mod command_path_tests {
         assert_eq!(widget.scroll_offset.get(), (0.0, 137.0));
     }
 
-    #[test]
     #[cfg(unix)]
     fn mixed_selection_exposes_both_storage_policies_and_writes_only_eligible_records() {
         let dir = tempfile::tempdir().unwrap();
@@ -2547,7 +2670,6 @@ mod command_path_tests {
         );
     }
 
-    #[test]
     #[cfg(unix)]
     fn inherited_pin_is_explained_but_not_offered_as_a_local_toggle() {
         let dir = tempfile::tempdir().unwrap();
@@ -2592,7 +2714,6 @@ mod command_path_tests {
         assert_eq!(xattr::get(&file, crate::model::PIN_XATTR).unwrap(), None);
     }
 
-    #[test]
     fn failed_projected_file_offers_retry_and_availability_details() {
         let mut entry = ent("offline.txt", false, "text/plain");
         entry.availability = crate::model::AvailabilityProjection::parse(
@@ -2635,7 +2756,23 @@ mod command_path_tests {
         );
     }
 
+    /// Sharing, version history and governed-identity surfaces, each phase with
+    /// its own fixture (the share round trip owns its socket and wake scope).
     #[test]
+    fn sharing_history_and_identity_surfaces_use_governed_identity() {
+        authority_sharing_and_history_open_real_detail_panels();
+        history_activity_intent_preserves_selected_version_and_signed_identity();
+        #[cfg(unix)]
+        named_recipient_menu_uses_identity_label_but_commands_the_root_key();
+        running_files_reloads_new_renamed_removed_and_expired_governed_devices();
+        #[cfg(unix)]
+        share_composer_authority_round_trip_never_blocks_the_ui_command();
+        named_share_status_distinguishes_pending_from_delivered();
+        previous_immutable_version_is_an_explicit_restore_command();
+        #[cfg(unix)]
+        owner_context_menu_revokes_each_exact_active_grant();
+    }
+
     fn authority_sharing_and_history_open_real_detail_panels() {
         let mut entry = ent("shared.txt", false, "text/plain");
         entry.record_id =
@@ -2736,7 +2873,6 @@ mod command_path_tests {
         assert!(w.collab_panel.is_none());
     }
 
-    #[test]
     fn history_activity_intent_preserves_selected_version_and_signed_identity() {
         let older = "a0d4e23f-c7cb-4ded-a427-b32cf9da9342";
         let current = "a0d4e23f-c7cb-4ded-a427-b32cf9da9344";
@@ -2788,7 +2924,6 @@ mod command_path_tests {
         clippy::too_many_lines,
         reason = "the end-to-end share flow must keep display identity and cryptographic command identity in one scenario"
     )]
-    #[test]
     #[cfg(unix)]
     fn named_recipient_menu_uses_identity_label_but_commands_the_root_key() {
         let dir = tempfile::tempdir().unwrap();
@@ -2902,7 +3037,6 @@ mod command_path_tests {
         );
     }
 
-    #[test]
     fn running_files_reloads_new_renamed_removed_and_expired_governed_devices() {
         fn projection(
             root: &ed25519_dalek::SigningKey,
@@ -2994,7 +3128,6 @@ mod command_path_tests {
         assert!(widget.trusted_humans.humans().is_empty());
     }
 
-    #[test]
     #[cfg(unix)]
     fn collaborative_search_activation_resolves_the_latest_path_by_record_id() {
         use ui::widget::Widget;
@@ -3073,7 +3206,6 @@ mod command_path_tests {
         assert_eq!(widget.entries[0].path, file);
     }
 
-    #[test]
     #[cfg(unix)]
     fn share_composer_authority_round_trip_never_blocks_the_ui_command() {
         use std::io::{Read, Write};
@@ -3159,7 +3291,6 @@ mod command_path_tests {
         );
     }
 
-    #[test]
     fn named_share_status_distinguishes_pending_from_delivered() {
         let pending = t_args(
             named_delivery_status_key(collab_types::NamedShareDeliveryStateV1::Pending),
@@ -3174,7 +3305,6 @@ mod command_path_tests {
         assert_ne!(pending, delivered);
     }
 
-    #[test]
     fn previous_immutable_version_is_an_explicit_restore_command() {
         let previous = "a0d4e23f-c7cb-4ded-a427-b32cf9da9342";
         let current = "a0d4e23f-c7cb-4ded-a427-b32cf9da9344";
@@ -3229,6 +3359,12 @@ mod command_path_tests {
     }
 
     #[test]
+    fn conflict_resolution_is_explicit_and_merge_preflight_gated() {
+        open_text_conflict_menu_requires_review_before_an_exact_merge();
+        merge_review_only_enables_apply_after_a_safe_daemon_preflight();
+        late_merge_preflight_cannot_repurpose_an_unrelated_confirmation_sheet();
+    }
+
     fn open_text_conflict_menu_requires_review_before_an_exact_merge() {
         let current = "a0d4e23f-c7cb-4ded-a427-b32cf9da9344";
         let other = "a0d4e23f-c7cb-4ded-a427-b32cf9da9342";
@@ -3312,7 +3448,6 @@ mod command_path_tests {
         }));
     }
 
-    #[test]
     fn merge_review_only_enables_apply_after_a_safe_daemon_preflight() {
         let conflict_id = uuid::Uuid::from_u128(42);
         let version_id = collab_types::FileVersionId(uuid::Uuid::from_u128(43));
@@ -3372,7 +3507,6 @@ mod command_path_tests {
         assert!(panel.summary.contains("Needs review"));
     }
 
-    #[test]
     fn late_merge_preflight_cannot_repurpose_an_unrelated_confirmation_sheet() {
         let stale_conflict = uuid::Uuid::from_u128(50);
         let current_conflict = uuid::Uuid::from_u128(51);
@@ -3407,7 +3541,6 @@ mod command_path_tests {
         assert!(matches!(panel.action, Some(CollabPanelAction::EmptyTrash)));
     }
 
-    #[test]
     #[cfg(unix)]
     fn owner_context_menu_revokes_each_exact_active_grant() {
         let root = tempfile::tempdir().unwrap();
@@ -3455,7 +3588,6 @@ mod command_path_tests {
         }));
     }
 
-    #[test]
     fn archives_browse_as_read_only_folders_and_extract_from_inside() {
         let temp = tempfile::tempdir().unwrap();
         let source = temp.path().join("source");
@@ -3762,7 +3894,19 @@ mod responsive_body_tests {
         None
     }
 
+    /// Wide/narrow body modes and the narrow places drawer, each phase on its
+    /// own temp dir and harness.
     #[test]
+    fn places_list_docks_wide_and_overlays_as_a_drawer_when_narrow() {
+        body_docks_wide_and_reflows_to_push_when_narrowed();
+        wide_docks_the_places_list_beside_the_files();
+        narrow_shows_the_files_not_the_places_list();
+        narrow_places_drawer_overlays_the_files_without_displacing_them();
+        narrow_places_drawer_scrim_is_a_modal_dismiss_backdrop_not_file_input();
+        narrow_navigation_dismisses_the_drawer_and_leaves_the_files_showing();
+        floating_status_bubble_reserves_a_noninteractive_bottom_lane();
+    }
+
     fn body_docks_wide_and_reflows_to_push_when_narrowed() {
         let mut h = H::new(None, 1200.0, 720.0);
         assert_eq!(
@@ -3783,7 +3927,16 @@ mod responsive_body_tests {
         assert_eq!(h.w.debug_body_mode(), ShellMode::Wide);
     }
 
+    /// Each phase lays out its own harness (or App) at its own size.
     #[test]
+    fn toolbar_adapts_to_width_and_its_menus_open_through_every_door() {
+        toolbar_reprioritizes_before_desktop_controls_can_overlap_on_phone_width();
+        toolbar_more_menu_tracks_its_trigger_and_flips_inside_the_viewport();
+        shared_toolbar_resource_action_opens_view_options();
+        accesskit_view_options_activation_updates_the_exported_menu_tree();
+        archive_extraction_stays_directly_reachable_on_phone_and_desktop();
+    }
+
     fn toolbar_reprioritizes_before_desktop_controls_can_overlap_on_phone_width() {
         let mut h = H::new(None, 390.0, 760.0);
         assert!(
@@ -3818,7 +3971,6 @@ mod responsive_body_tests {
         );
     }
 
-    #[test]
     fn toolbar_more_menu_tracks_its_trigger_and_flips_inside_the_viewport() {
         let mut h = H::new(None, 900.0, 720.0);
         h.w.open_view_menu();
@@ -3852,7 +4004,15 @@ mod responsive_body_tests {
         );
     }
 
+    /// Each phase drives real events into its own temp dir and harness.
     #[test]
+    fn keyboard_and_pointer_events_drive_rename_menus_and_retry() {
+        keyboard_context_menu_reaches_selection_actions_and_executes_them();
+        rename_is_edited_in_place_over_the_row();
+        typing_in_the_in_place_editor_renames_on_enter();
+        narrow_error_retry_uses_the_shared_button_and_recovers();
+    }
+
     fn narrow_error_retry_uses_the_shared_button_and_recovers() {
         let mut h = H::new(None, 390.0, 780.0);
         h.w.debug_show_error_state();
@@ -3888,7 +4048,6 @@ mod responsive_body_tests {
         );
     }
 
-    #[test]
     fn shared_toolbar_resource_action_opens_view_options() {
         let mut h = H::new(None, 1200.0, 720.0);
         assert!(
@@ -3914,7 +4073,6 @@ mod responsive_body_tests {
         );
     }
 
-    #[test]
     fn accesskit_view_options_activation_updates_the_exported_menu_tree() {
         // This is the same retained-control path used by the Unix AT-SPI
         // provider: find the visual button in an AccessKit update, dispatch
@@ -3949,7 +4107,6 @@ mod responsive_body_tests {
         );
     }
 
-    #[test]
     fn archive_extraction_stays_directly_reachable_on_phone_and_desktop() {
         let temp = tempfile::tempdir().unwrap();
         let source = temp.path().join("note.txt");
@@ -3986,7 +4143,6 @@ mod responsive_body_tests {
     /// underneath read "27 items". The places list had been declared a content
     /// overview, so the narrow layout promoted it to the full-screen page and
     /// pushed the file view off the window.
-    #[test]
     fn narrow_shows_the_files_not_the_places_list() {
         let dir = tempfile::tempdir().unwrap();
         for i in 0..5 {
@@ -4019,7 +4175,6 @@ mod responsive_body_tests {
         );
     }
 
-    #[test]
     fn floating_status_bubble_reserves_a_noninteractive_bottom_lane() {
         let dir = tempfile::tempdir().unwrap();
         for index in 0..40 {
@@ -4037,7 +4192,6 @@ mod responsive_body_tests {
         );
     }
 
-    #[test]
     fn keyboard_context_menu_reaches_selection_actions_and_executes_them() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("report.txt"), b"draft").unwrap();
@@ -4064,7 +4218,6 @@ mod responsive_body_tests {
 
     /// The drawer draws *over* the files rather than displacing them, and the
     /// files stay full-width behind it (HIG §1a).
-    #[test]
     fn narrow_places_drawer_overlays_the_files_without_displacing_them() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.txt"), b"x").unwrap();
@@ -4086,7 +4239,6 @@ mod responsive_body_tests {
         );
     }
 
-    #[test]
     fn narrow_places_drawer_scrim_is_a_modal_dismiss_backdrop_not_file_input() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("behind-the-drawer.txt"), b"x").unwrap();
@@ -4122,7 +4274,6 @@ mod responsive_body_tests {
 
     /// Picking a destination in the narrow drawer dismisses it, leaving the
     /// user on the files they navigated to.
-    #[test]
     fn narrow_navigation_dismisses_the_drawer_and_leaves_the_files_showing() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir(dir.path().join("sub")).unwrap();
@@ -4154,7 +4305,6 @@ mod responsive_body_tests {
     /// An inline rename is edited *in place* — a field placed over the row's
     /// name inside the file view — not in a bottom bar. The file view publishes
     /// the field rect during paint; it must sit within the file rows.
-    #[test]
     fn rename_is_edited_in_place_over_the_row() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("old.txt"), b"x").unwrap();
@@ -4201,7 +4351,6 @@ mod responsive_body_tests {
     /// Typing into the in-place editor and pressing Enter renames the file on
     /// disk — driving the real keystroke path through the app into the shared
     /// `TextInput` and its CRDT-backed field. F2 opens the editor.
-    #[test]
     fn typing_in_the_in_place_editor_renames_on_enter() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.txt"), b"x").unwrap();
@@ -4233,9 +4382,17 @@ mod responsive_body_tests {
         assert!(!dir.path().join("a.txt").exists(), "the old name is gone");
     }
 
+    /// Each phase builds its own harness and config dir.
+    #[test]
+    fn row_drags_and_sidebar_favourites_respond_to_real_pointer_events() {
+        dropping_a_folder_on_the_sidebar_pins_it();
+        releasing_a_pin_drag_off_the_sidebar_pins_nothing();
+        a_row_press_still_becomes_a_drag_after_the_view_is_rebuilt();
+        right_clicking_a_favourite_opens_its_menu();
+    }
+
     /// Dragging a folder out of the list and dropping it on the docked sidebar
     /// pins it to Favourites; a release off the sidebar pins nothing.
-    #[test]
     fn dropping_a_folder_on_the_sidebar_pins_it() {
         let cfg = tempfile::tempdir().unwrap();
         let w = FileExplorerWidget::with_persistence(
@@ -4266,7 +4423,6 @@ mod responsive_body_tests {
         );
     }
 
-    #[test]
     fn releasing_a_pin_drag_off_the_sidebar_pins_nothing() {
         let cfg = tempfile::tempdir().unwrap();
         let w = FileExplorerWidget::with_persistence(
@@ -4296,7 +4452,6 @@ mod responsive_body_tests {
     /// a move past the threshold: the drag must start anyway. This is the
     /// real mouse sequence; state parked only in the view was lost between
     /// press and move, and no drag ever began from a fresh click.
-    #[test]
     fn a_row_press_still_becomes_a_drag_after_the_view_is_rebuilt() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("photo.png"), b"png").unwrap();
@@ -4327,7 +4482,6 @@ mod responsive_body_tests {
     /// A right-click on a sidebar favourite opens *its* menu (Open + Remove from
     /// Favourites), not the file-view context menu. The pinned Home entry offers
     /// no Remove. Drives the real right-press path end to end.
-    #[test]
     fn right_clicking_a_favourite_opens_its_menu() {
         let cfg = tempfile::tempdir().unwrap();
         let w = FileExplorerWidget::with_persistence(
@@ -4376,7 +4530,6 @@ mod responsive_body_tests {
         );
     }
 
-    #[test]
     fn wide_docks_the_places_list_beside_the_files() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir(dir.path().join("sub")).unwrap();
@@ -4418,7 +4571,16 @@ mod accessibility_tests {
         (home, widget)
     }
 
+    /// Each phase starts from its own empty widget.
     #[test]
+    fn files_states_and_modal_sheets_publish_accessible_semantics() {
+        custom_empty_loading_and_error_states_are_live_semantics();
+        deterministic_shot_seams_cover_loading_and_actionable_error_states();
+        collaboration_sheet_is_a_focused_modal_semantic_subtree();
+        #[cfg(unix)]
+        destructive_eviction_requires_a_named_modal_action_before_writing_the_override();
+    }
+
     fn custom_empty_loading_and_error_states_are_live_semantics() {
         let (_home, mut widget) = empty_widget();
         let empty = Widget::accessibility(&widget).expect("Files has a live root");
@@ -4456,7 +4618,6 @@ mod accessibility_tests {
         assert_eq!(retry.action_target.as_deref(), Some("files-retry-folder"));
     }
 
-    #[test]
     fn deterministic_shot_seams_cover_loading_and_actionable_error_states() {
         let (_home, mut widget) = empty_widget();
         widget.debug_show_loading_state();
@@ -4474,7 +4635,6 @@ mod accessibility_tests {
         assert!(widget.entries().is_empty());
     }
 
-    #[test]
     fn collaboration_sheet_is_a_focused_modal_semantic_subtree() {
         let (_home, mut widget) = empty_widget();
         widget.show_collab_panel(CollabPanel {
@@ -4504,7 +4664,6 @@ mod accessibility_tests {
         assert_eq!(Widget::accessibility(&widget).unwrap().role, Role::Group);
     }
 
-    #[test]
     #[cfg(unix)]
     fn destructive_eviction_requires_a_named_modal_action_before_writing_the_override() {
         let dir = tempfile::tempdir().unwrap();
@@ -4661,6 +4820,66 @@ mod injected_startup_tests {
     }
 
     #[test]
+    fn a_remote_account_is_a_folder_with_a_health_badge() {
+        let home = tempfile::tempdir().unwrap();
+        let child = owned_child(home.path());
+        let mount = home.path().join("Remote/Cloud");
+        std::fs::create_dir_all(&mount).unwrap();
+        let mut inputs = startup(&child);
+        inputs
+            .remote_accounts
+            .push(crate::remote_accounts::RemoteAccount {
+                id: accounts::AccountId::from("cloud"),
+                kind: crate::remote_accounts::RemoteAccountKind::Nextcloud,
+                label: "Cloud".into(),
+                host: "cloud.example".into(),
+                health: crate::remote_accounts::RemoteAccountHealth::Offline,
+                mount: Some(mount.clone()),
+            });
+        let mut widget =
+            FileExplorerWidget::with_startup_inputs_and_services(inputs, absent_services());
+        let document = automerge::AutoCommit::new();
+        let resources = Widget::resources(&widget, &document);
+        let account = resources
+            .iter()
+            .flat_map(|r| r.children.iter())
+            .find(|r| r.kind == "files.remote-account")
+            .expect("the account is a resource");
+        let presentation = account.presentation.as_ref().expect("presentation");
+        assert_eq!(presentation.badge.as_deref(), Some("Offline"));
+        let open = account
+            .actions
+            .iter()
+            .find(|a| a.id == crate::search_provider::REMOTE_ACCOUNT_OPEN_ACTION)
+            .expect("an open action");
+        assert_eq!(open.contract.availability, Availability::Available);
+        assert!(
+            Widget::invoke_resource_operation(
+                &mut widget,
+                OperationKind::View,
+                "files.remote-account",
+                &serde_json::to_vec(&vec!["open", "cloud"]).unwrap(),
+                &document,
+                &automerge::ROOT,
+            )
+            .unwrap()
+        );
+        assert_eq!(
+            widget.current_path, mount,
+            "opening navigates into the folder"
+        );
+    }
+
+    /// Each phase owns its fixture directory and fixture-IO guards, dropped before
+    /// the next phase begins.
+    #[test]
+    fn injected_startup_uses_only_explicit_host_inputs_and_services() {
+        injected_startup_and_reload_keep_the_host_directory_and_catalogs();
+        injected_services_absence_never_builds_thumbnails_or_uses_global_opener();
+        injected_listing_and_refresh_use_only_explicit_workspace_roots();
+        fixture_io_guards_stop_before_following_io();
+    }
+
     fn injected_startup_and_reload_keep_the_host_directory_and_catalogs() {
         let parent = tempfile::tempdir().unwrap();
         let child = owned_child(parent.path());
@@ -4672,6 +4891,7 @@ mod injected_startup_tests {
             label: "Host fixture".to_string(),
             host: "fixture.invalid".to_string(),
             health: crate::remote_accounts::RemoteAccountHealth::Disabled,
+            mount: None,
         };
         let mut inputs = startup(&child);
         inputs.remote_accounts.push(account.clone());
@@ -4703,7 +4923,6 @@ mod injected_startup_tests {
         );
     }
 
-    #[test]
     fn injected_services_absence_never_builds_thumbnails_or_uses_global_opener() {
         let parent = tempfile::tempdir().unwrap();
         let child = owned_child(parent.path());
@@ -4734,7 +4953,6 @@ mod injected_startup_tests {
         assert_eq!(listings.observations(), vec![(child, false)]);
     }
 
-    #[test]
     fn injected_listing_and_refresh_use_only_explicit_workspace_roots() {
         let parent = tempfile::tempdir().unwrap();
         let child = owned_child(parent.path());
@@ -4763,7 +4981,6 @@ mod injected_startup_tests {
         assert_eq!(guard.attempts(), 0);
     }
 
-    #[test]
     fn fixture_io_guards_stop_before_following_io() {
         let parent = tempfile::tempdir().unwrap();
         let child = owned_child(parent.path());
@@ -4790,7 +5007,6 @@ mod injected_startup_tests {
     }
 }
 
-#[test]
 fn headless_f2_renames_fixture_without_opening_a_file() {
     struct RestoreOpener;
     impl Drop for RestoreOpener {

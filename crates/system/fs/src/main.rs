@@ -72,71 +72,71 @@ mod share_mount_tests {
     }
 
     #[test]
-    fn mount_share_accepts_stdin_without_putting_a_bearer_in_argv() {
-        let cli = Cli::try_parse_from([
-            "fs",
-            "mount-share",
-            "--mount-point",
-            "/var/workspace/shared",
-            "--link-stdin",
-            "--cache-dir",
-            "/var/cache/shared",
-        ])
-        .unwrap();
-        assert!(matches!(
-            cli.command,
-            Command::MountShare {
-                link: None,
-                link_stdin: true,
-                ..
-            }
-        ));
-    }
-
-    #[test]
-    fn stdin_share_link_is_trimmed_and_strictly_bounded() {
-        assert_eq!(
-            parse_share_uri_input(b"tilo-file://v2/example#secret\n".to_vec(), 64).unwrap(),
-            "tilo-file://v2/example#secret"
-        );
-        assert!(parse_share_uri_input(vec![b'x'; 65], 64).is_err());
-        assert!(parse_share_uri_input(b"\r\n".to_vec(), 64).is_err());
-        assert!(parse_share_uri_input(vec![0xff], 64).is_err());
-    }
-
-    #[test]
-    fn durable_replica_generation_is_written_before_readiness_can_use_it() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("namespace.bin");
-        let namespace = Arc::new(Mutex::new(Namespace::new("replica-checkpoint").unwrap()));
-        let written = persist_namespace_generation(&namespace, &path).unwrap();
-        assert_eq!(
-            written,
-            *blake3::hash(&std::fs::read(&path).unwrap()).as_bytes(),
-            "the reported generation must be the exact durable primary"
-        );
-        let mut reopened = load_namespace(&path, "replica-restart".into()).unwrap();
-        assert_eq!(
-            reopened.save(),
-            namespace.lock().unwrap().save(),
-            "a restart reopens the generation that was checkpointed"
-        );
-    }
-
-    #[test]
-    fn recipient_service_command_line_is_explicit_and_secret_free() {
-        let cli = Cli::try_parse_from([
-            "fs",
-            "recipient-service",
-            "--socket",
-            "/run/user/1000/tilo/services/tilo-fs.sock",
-            "--mounts-root",
-            "/home/alice/Shared",
-            "--cache-root",
-            "/home/alice/.cache/tilo/received-files",
-        ])
-        .unwrap();
-        assert!(matches!(cli.command, Command::RecipientService { .. }));
+    fn share_mounts_take_secret_free_bounded_input_and_durable_generations() {
+        // Phase `mount_share_accepts_stdin_without_putting_a_bearer_in_argv`.
+        {
+            let cli = Cli::try_parse_from([
+                "fs",
+                "mount-share",
+                "--mount-point",
+                "/var/workspace/shared",
+                "--link-stdin",
+                "--cache-dir",
+                "/var/cache/shared",
+            ])
+            .unwrap();
+            assert!(matches!(
+                cli.command,
+                Command::MountShare {
+                    link: None,
+                    link_stdin: true,
+                    ..
+                }
+            ));
+        }
+        // Phase `stdin_share_link_is_trimmed_and_strictly_bounded`.
+        {
+            assert_eq!(
+                parse_share_uri_input(b"tilo-file://v2/example#secret\n".to_vec(), 64).unwrap(),
+                "tilo-file://v2/example#secret"
+            );
+            assert!(parse_share_uri_input(vec![b'x'; 65], 64).is_err());
+            assert!(parse_share_uri_input(b"\r\n".to_vec(), 64).is_err());
+            assert!(parse_share_uri_input(vec![0xff], 64).is_err());
+        }
+        // Phase `durable_replica_generation_is_written_before_readiness_can_use_it`.
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("namespace.bin");
+            let namespace = Arc::new(Mutex::new(Namespace::new("replica-checkpoint").unwrap()));
+            let written = persist_namespace_generation(&namespace, &path).unwrap();
+            assert_eq!(
+                written,
+                *blake3::hash(&std::fs::read(&path).unwrap()).as_bytes(),
+                "the reported generation must be the exact durable primary"
+            );
+            let mut reopened = load_namespace(&path, "replica-restart".into()).unwrap();
+            assert_eq!(
+                reopened.save(),
+                namespace.lock().unwrap().save(),
+                "a restart reopens the generation that was checkpointed"
+            );
+        }
+        // Phase `recipient_service_command_line_is_explicit_and_secret_free`.
+        {
+            let cli = Cli::try_parse_from([
+                "fs",
+                "recipient-service",
+                "--socket",
+                "/run/user/1000/tilo/services/tilo-fs.sock",
+                "--mounts-root",
+                "/home/alice/Shared",
+                "--cache-root",
+                "/home/alice/.cache/tilo/received-files",
+            ])
+            .unwrap();
+            assert!(matches!(cli.command, Command::RecipientService { .. }));
+        }
     }
 
     #[cfg(unix)]
@@ -211,86 +211,87 @@ mod share_mount_tests {
     }
 
     #[test]
-    fn shared_snapshot_projects_one_exact_record_and_updates_it_in_place() {
-        let dir = tempfile::tempdir().unwrap();
-        let history = FileHistoryStore::open(dir.path().join("history.json")).unwrap();
-        let namespace = Arc::new(Mutex::new(Namespace::new("recipient").unwrap()));
-        let record_id = FileRecordId::new();
-        let first = snapshot(record_id);
+    fn shared_snapshots_project_exactly_one_record() {
+        // Phase `shared_snapshot_projects_one_exact_record_and_updates_it_in_place`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let history = FileHistoryStore::open(dir.path().join("history.json")).unwrap();
+            let namespace = Arc::new(Mutex::new(Namespace::new("recipient").unwrap()));
+            let record_id = FileRecordId::new();
+            let first = snapshot(record_id);
 
-        apply_shared_snapshot(&namespace, &history, &first).unwrap();
-        let mut guard = namespace.lock().unwrap();
-        validate_shared_namespace(&mut guard, record_id, false).unwrap();
-        let entries: Vec<_> = guard
-            .readdir(ROOT_INO)
-            .unwrap()
-            .into_iter()
-            .filter(|(_, _, name)| name != "." && name != "..")
-            .collect();
-        assert_eq!(entries.len(), 1);
-        let ino = entries[0].0;
-        assert_eq!(guard.record_id_for(ino), Some(record_id));
-        assert_eq!(guard.getattr(ino).unwrap().size, 123);
-        assert_eq!(
-            guard.thumb_hash(ino),
-            Some(iroh_blobs::Hash::from([0x44; 32]))
-        );
-        drop(guard);
-        assert_eq!(history.snapshot(record_id).unwrap().versions.len(), 2);
+            apply_shared_snapshot(&namespace, &history, &first).unwrap();
+            let mut guard = namespace.lock().unwrap();
+            validate_shared_namespace(&mut guard, record_id, false).unwrap();
+            let entries: Vec<_> = guard
+                .readdir(ROOT_INO)
+                .unwrap()
+                .into_iter()
+                .filter(|(_, _, name)| name != "." && name != "..")
+                .collect();
+            assert_eq!(entries.len(), 1);
+            let ino = entries[0].0;
+            assert_eq!(guard.record_id_for(ino), Some(record_id));
+            assert_eq!(guard.getattr(ino).unwrap().size, 123);
+            assert_eq!(
+                guard.thumb_hash(ino),
+                Some(iroh_blobs::Hash::from([0x44; 32]))
+            );
+            drop(guard);
+            assert_eq!(history.snapshot(record_id).unwrap().versions.len(), 2);
 
-        let mut second = first;
-        let metadata = second.metadata.as_mut().unwrap();
-        metadata.content_hash = Some(ContentHash([0x55; 32]));
-        metadata.byte_len = 456;
-        metadata.observed_at_ms = 43;
-        let prior = second.content_revision.unwrap().version_id;
-        let next = FileVersionId::new();
-        second
-            .versions
-            .push(version(record_id, next, vec![prior], 0x55));
-        second.content_revision = Some(collab_types::ContentRevisionV1 {
-            schema_version: collab_types::CONTENT_REVISION_VERSION,
-            record_id,
-            version_id: next,
-            content_hash: Some(ContentHash([0x55; 32])),
-            byte_len: 456,
-            metadata_hash: ContentHash([0x56; 32]),
-        });
-        apply_shared_snapshot(&namespace, &history, &second).unwrap();
-        let guard = namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        assert_eq!(guard.ino_for_record_id(record_id), Some(ino));
-        assert_eq!(guard.getattr(ino).unwrap().size, 456);
-        drop(guard);
-    }
+            let mut second = first;
+            let metadata = second.metadata.as_mut().unwrap();
+            metadata.content_hash = Some(ContentHash([0x55; 32]));
+            metadata.byte_len = 456;
+            metadata.observed_at_ms = 43;
+            let prior = second.content_revision.unwrap().version_id;
+            let next = FileVersionId::new();
+            second
+                .versions
+                .push(version(record_id, next, vec![prior], 0x55));
+            second.content_revision = Some(collab_types::ContentRevisionV1 {
+                schema_version: collab_types::CONTENT_REVISION_VERSION,
+                record_id,
+                version_id: next,
+                content_hash: Some(ContentHash([0x55; 32])),
+                byte_len: 456,
+                metadata_hash: ContentHash([0x56; 32]),
+            });
+            apply_shared_snapshot(&namespace, &history, &second).unwrap();
+            let guard = namespace
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            assert_eq!(guard.ino_for_record_id(record_id), Some(ino));
+            assert_eq!(guard.getattr(ino).unwrap().size, 456);
+            drop(guard);
+        }
+        // Phase `shared_snapshot_rejects_cross_record_metadata_and_history`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let history = FileHistoryStore::open(dir.path().join("history.json")).unwrap();
+            let namespace = Arc::new(Mutex::new(Namespace::new("recipient").unwrap()));
+            let record_id = FileRecordId::new();
+            let mut wrong_metadata = snapshot(record_id);
+            wrong_metadata.metadata.as_mut().unwrap().record_id = FileRecordId::new();
+            assert!(apply_shared_snapshot(&namespace, &history, &wrong_metadata).is_err());
 
-    #[test]
-    fn shared_snapshot_rejects_cross_record_metadata_and_history() {
-        let dir = tempfile::tempdir().unwrap();
-        let history = FileHistoryStore::open(dir.path().join("history.json")).unwrap();
-        let namespace = Arc::new(Mutex::new(Namespace::new("recipient").unwrap()));
-        let record_id = FileRecordId::new();
-        let mut wrong_metadata = snapshot(record_id);
-        wrong_metadata.metadata.as_mut().unwrap().record_id = FileRecordId::new();
-        assert!(apply_shared_snapshot(&namespace, &history, &wrong_metadata).is_err());
-
-        let mut wrong_history = snapshot(record_id);
-        wrong_history.versions[0].record_id = FileRecordId::new();
-        assert!(apply_shared_snapshot(&namespace, &history, &wrong_history).is_err());
-    }
-
-    #[test]
-    fn shared_namespace_refuses_any_extra_visible_node() {
-        let expected = FileRecordId::new();
-        let mut namespace = Namespace::new("recipient").unwrap();
-        namespace
-            .create_projected_file(ROOT_INO, "shared.txt", expected, None, 0, 0)
-            .unwrap();
-        namespace
-            .create_file(ROOT_INO, "unrelated.txt", None, 0, 0)
-            .unwrap();
-        assert!(validate_shared_namespace(&mut namespace, expected, false).is_err());
+            let mut wrong_history = snapshot(record_id);
+            wrong_history.versions[0].record_id = FileRecordId::new();
+            assert!(apply_shared_snapshot(&namespace, &history, &wrong_history).is_err());
+        }
+        // Phase `shared_namespace_refuses_any_extra_visible_node`.
+        {
+            let expected = FileRecordId::new();
+            let mut namespace = Namespace::new("recipient").unwrap();
+            namespace
+                .create_projected_file(ROOT_INO, "shared.txt", expected, None, 0, 0)
+                .unwrap();
+            namespace
+                .create_file(ROOT_INO, "unrelated.txt", None, 0, 0)
+                .unwrap();
+            assert!(validate_shared_namespace(&mut namespace, expected, false).is_err());
+        }
     }
 }
 
@@ -465,6 +466,32 @@ enum Command {
         #[arg(long)]
         fs_binary: Option<PathBuf>,
     },
+    /// Run the per-user cloud account service: one mount per enabled
+    /// cloud storage account under `--mounts-root` (`~/Remote`).
+    #[cfg(target_os = "linux")]
+    CloudService {
+        /// Where account folders appear.
+        #[arg(long)]
+        mounts_root: PathBuf,
+        /// Private per-account metadata, queues and content caches.
+        #[arg(long)]
+        state_root: PathBuf,
+        /// Settings' config root; defaults to `$XDG_CONFIG_HOME/tilo`.
+        #[arg(long)]
+        config_root: Option<PathBuf>,
+        /// Filesystem executable used for supervised `mount-cloud` children.
+        #[arg(long)]
+        fs_binary: Option<PathBuf>,
+    },
+    /// Serve one cloud account at `--mount-point`. The mount specification
+    /// and credential arrive on stdin from `cloud-service`, never in argv.
+    #[cfg(target_os = "linux")]
+    MountCloud {
+        #[arg(long)]
+        mount_point: PathBuf,
+        #[arg(long)]
+        state_dir: PathBuf,
+    },
     /// Keep a complete, authenticated workspace replica without mounting FUSE.
     Replica {
         /// A home-peer bundle exported by an existing workspace member.
@@ -536,6 +563,10 @@ fn main() -> Result<()> {
     tilo_rt::daemon("tilo-fs").run(run_command())?
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one dispatch over every subcommand the daemon offers"
+)]
 async fn run_command() -> Result<()> {
     let cli = Cli::parse();
     if let Some(path) = &cli.test_clock_file {
@@ -603,6 +634,51 @@ async fn run_command() -> Result<()> {
             cache_root,
             fs_binary,
         } => recipient_service(socket, mounts_root, cache_root, fs_binary).await,
+        #[cfg(target_os = "linux")]
+        Command::CloudService {
+            mounts_root,
+            state_root,
+            config_root,
+            fs_binary,
+        } => {
+            let executable = match fs_binary {
+                Some(path) => path,
+                None => std::env::current_exe()?,
+            };
+            tokio::task::spawn_blocking(move || {
+                fs::cloud::CloudService::new(
+                    fs::cloud::ServiceConfig {
+                        // Settings' credential helper, the only process that
+                        // opens the account vault, publishes fresh handoff
+                        // credentials.
+                        refresher: std::sync::Arc::new(accounts::CommandRefresher::new(
+                            config_root.clone(),
+                        )),
+                        config_root,
+                        mounts_root,
+                        state_root,
+                    },
+                    Box::new(fs::cloud::ProcessLauncher {
+                        executable,
+                        ready_timeout: std::time::Duration::from_secs(30),
+                    }),
+                )
+                .run()
+            })
+            .await??;
+            Ok(())
+        }
+        #[cfg(target_os = "linux")]
+        Command::MountCloud {
+            mount_point,
+            state_dir,
+        } => {
+            tokio::task::spawn_blocking(move || {
+                fs::cloud::service::run_mount(&mount_point, &state_dir)
+            })
+            .await??;
+            Ok(())
+        }
         Command::Replica { config } => replica(config).await,
         Command::ExportHomePeer {
             cache_dir,
@@ -3800,177 +3876,197 @@ mod tests {
     }
 
     #[test]
-    fn shipped_service_restarts_clean_ticket_rebinds() {
-        let unit = std::fs::read_to_string(os_file("os/usr/lib/systemd/system/fs.service"))
-            .expect("the shipped fs.service must exist");
-        assert!(
-            unit.lines().any(|line| line.trim() == "Restart=always"),
-            "a daemon-owned rebind must be restarted by the shipped service"
-        );
-        assert!(
-            service_exec_start()
-                .windows(2)
-                .any(|pair| { pair[0].ends_with("fs") && pair[1] == "serve" }),
-            "the shipped unit must enter the serve startup path that consumes persisted tickets"
-        );
-    }
-
-    #[test]
-    fn persisted_discovered_ticket_selects_remote_record_workspace() {
-        let temp = tempfile::tempdir().unwrap();
-        let owner = iroh_base::EndpointAddr::new(iroh::SecretKey::from_bytes(&[0x81; 32]).public());
-        let nas = iroh_base::EndpointAddr::new(iroh::SecretKey::from_bytes(&[0x82; 32]).public());
-        let ticket = Ticket {
-            node: owner,
-            workspace: [0x83; 32],
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn shipped_units_serve_with_a_seeded_enforced_capability_list() {
+        // Phase `shipped_service_restarts_clean_ticket_rebinds`.
+        {
+            let unit = std::fs::read_to_string(os_file("os/usr/lib/systemd/system/fs.service"))
+                .expect("the shipped fs.service must exist");
+            assert!(
+                unit.lines().any(|line| line.trim() == "Restart=always"),
+                "a daemon-owned rebind must be restarted by the shipped service"
+            );
+            assert!(
+                service_exec_start()
+                    .windows(2)
+                    .any(|pair| { pair[0].ends_with("fs") && pair[1] == "serve" }),
+                "the shipped unit must enter the serve startup path that consumes persisted tickets"
+            );
         }
-        .encode()
-        .unwrap();
-        let peers = vec![fs::workspace_authority::PersistedContentPeer {
-            endpoint: nas,
-            ticket: Some(ticket),
-            relay_service_id: None,
-        }];
-        atomic_file::write(
-            &fs::workspace_authority::content_peers_path(temp.path()),
-            &serde_json::to_vec(&peers).unwrap(),
-        )
-        .unwrap();
-        let selected = persisted_remote_workspace_ticket(Some(temp.path()))
-            .unwrap()
-            .expect("NAS ticket is retained for the next fs.service start");
-        assert_eq!(selected.workspace, [0x83; 32]);
-        assert_ne!(selected.node.id, peers[0].endpoint.id);
-    }
-
-    #[test]
-    fn service_command_line_parses() {
-        // The exact line fs.service runs, so a bad flag fails here, not on boot.
-        let argv = service_exec_start();
-        assert_eq!(
-            argv[0], "/usr/bin/fs",
-            "unexpected ExecStart binary: {argv:?}"
-        );
-        let cli = Cli::try_parse_from(std::iter::once("fs".to_string()).chain(argv[1..].to_vec()))
-            .expect("fs.service command line must parse");
-        match cli.command {
-            Command::Serve {
-                mount_point,
-                cache_dir,
-                seed,
-                ..
-            } => {
-                assert_eq!(mount_point, PathBuf::from("/var/workspace"));
-                assert_eq!(cache_dir, Some(PathBuf::from("/var/cache/quick-fs")));
-                assert!(seed.is_none());
+        // Phase `service_command_line_parses`.
+        {
+            // The exact line fs.service runs, so a bad flag fails here, not on boot.
+            let argv = service_exec_start();
+            assert_eq!(
+                argv[0], "/usr/bin/fs",
+                "unexpected ExecStart binary: {argv:?}"
+            );
+            let cli =
+                Cli::try_parse_from(std::iter::once("fs".to_string()).chain(argv[1..].to_vec()))
+                    .expect("fs.service command line must parse");
+            match cli.command {
+                Command::Serve {
+                    mount_point,
+                    cache_dir,
+                    seed,
+                    ..
+                } => {
+                    assert_eq!(mount_point, PathBuf::from("/var/workspace"));
+                    assert_eq!(cache_dir, Some(PathBuf::from("/var/cache/quick-fs")));
+                    assert!(seed.is_none());
+                }
+                _ => panic!("expected serve subcommand"),
             }
-            _ => panic!("expected serve subcommand"),
+        }
+        // Phase `the_shipped_service_enforces_a_capability_list`.
+        // An enforcement point shipped switched off is not an enforcement point, so the unit is asserted on directly.
+        {
+            let argv = service_exec_start();
+            let cli =
+                Cli::try_parse_from(std::iter::once("fs".to_string()).chain(argv[1..].to_vec()))
+                    .expect("fs.service command line must parse");
+            let Command::Serve { acl, .. } = cli.command else {
+                panic!("expected serve");
+            };
+            assert_eq!(
+                acl.acl.as_deref(),
+                Some(Path::new("/var/lib/tilo/fs-capabilities.json")),
+                "fs.service must pass --acl or the shipped mount enforces nothing"
+            );
+            assert!(
+                acl.acl_reload_secs > 0,
+                "the shipped mount must re-read its capability list; /var/workspace is mounted once \
+                 at boot, so a list read only at mount time can never carry a later grant"
+            );
+            assert_eq!(
+                acl.principals,
+                vec!["person:local".to_string()],
+                "the shipped list is written against a principal, because the mount's own identity \
+                 is the device key minted on first boot, which no shipped file could name in advance"
+            );
+        }
+        // Phase `tmpfiles_seeds_the_capability_list_the_service_names`.
+        // tmpfiles.d must place the file the unit names, or the mount is fail-closed-refused on every fresh boot.
+        {
+            let conf = std::fs::read_to_string(os_file("os/usr/lib/tmpfiles.d/tilo.conf"))
+                .expect("the shipped tmpfiles snippet must exist");
+            let seeding = conf
+                .lines()
+                .find(|l| l.starts_with("C ") && l.contains("/var/lib/tilo/fs-capabilities.json"))
+                .unwrap_or_else(|| {
+                    panic!("no tmpfiles line creates /var/lib/tilo/fs-capabilities.json:\n{conf}")
+                });
+            assert!(
+                seeding.contains("/usr/share/tilo/fs-capabilities.json"),
+                "the seed must come from the shipped default: {seeding}"
+            );
+
+            // ...and the image must contain the file tmpfiles copies from, or the seed does nothing and the mount is refused on every boot.
+            let containerfile = std::fs::read_to_string(os_file("os/Containerfile"))
+                .expect("the production Containerfile must exist");
+            assert!(
+                containerfile.lines().any(|l| l.starts_with("COPY ")
+                    && l.contains("/usr/share/tilo/fs-capabilities.json")),
+                "os/Containerfile must ship the default capability list that tmpfiles.d seeds from"
+            );
+        }
+        // Phase `the_shipped_default_list_grants_the_local_session_its_workspace`.
+        // ...and the seeded default must be a capability list this binary can parse, or the mount is refused on first boot.
+        {
+            use fs::Access;
+
+            let path = os_file("os/usr/share/tilo/fs-capabilities.json");
+            let identity: IdentityKey = [0x5A; 32]; // stands in for the per-start node key
+            let file = CapabilityFile::load(
+                &path,
+                identity,
+                vec![parse_principal("person:local").unwrap()],
+            )
+            .expect("the shipped default capability list must load");
+
+            let handle = file.handle();
+            assert!(
+                handle.permits(&identity, "/", Access::Read),
+                "the shipped default must let the local session read its own workspace"
+            );
+            assert!(
+                handle.permits(&identity, "/notes/today.md", Access::Write),
+                "the shipped default must let the local session write its own workspace"
+            );
+
+            // The grant is the principal's, not the mount's — a mount not presenting `person:local` gets nothing, which narrows a peer-joined mount.
+            let outsider = CapabilityFile::load(&path, identity, Vec::new())
+                .expect("loads")
+                .handle();
+            assert!(
+                !outsider.permits(&identity, "/notes/today.md", Access::Read),
+                "the shipped list must grant its named principal, not whoever mounts"
+            );
         }
     }
 
-    // An enforcement point shipped switched off is not an enforcement point, so the unit is asserted on directly.
     #[test]
-    fn the_shipped_service_enforces_a_capability_list() {
-        let argv = service_exec_start();
-        let cli = Cli::try_parse_from(std::iter::once("fs".to_string()).chain(argv[1..].to_vec()))
-            .expect("fs.service command line must parse");
-        let Command::Serve { acl, .. } = cli.command else {
-            panic!("expected serve");
-        };
-        assert_eq!(
-            acl.acl.as_deref(),
-            Some(Path::new("/var/lib/tilo/fs-capabilities.json")),
-            "fs.service must pass --acl or the shipped mount enforces nothing"
-        );
-        assert!(
-            acl.acl_reload_secs > 0,
-            "the shipped mount must re-read its capability list; /var/workspace is mounted once \
-             at boot, so a list read only at mount time can never carry a later grant"
-        );
-        assert_eq!(
-            acl.principals,
-            vec!["person:local".to_string()],
-            "the shipped list is written against a principal, because the mount's own identity \
-             is the device key minted on first boot, which no shipped file could name in advance"
-        );
-    }
-
-    // tmpfiles.d must place the file the unit names, or the mount is fail-closed-refused on every fresh boot.
-    #[test]
-    fn tmpfiles_seeds_the_capability_list_the_service_names() {
-        let conf = std::fs::read_to_string(os_file("os/usr/lib/tmpfiles.d/tilo.conf"))
-            .expect("the shipped tmpfiles snippet must exist");
-        let seeding = conf
-            .lines()
-            .find(|l| l.starts_with("C ") && l.contains("/var/lib/tilo/fs-capabilities.json"))
-            .unwrap_or_else(|| {
-                panic!("no tmpfiles line creates /var/lib/tilo/fs-capabilities.json:\n{conf}")
-            });
-        assert!(
-            seeding.contains("/usr/share/tilo/fs-capabilities.json"),
-            "the seed must come from the shipped default: {seeding}"
-        );
-
-        // ...and the image must contain the file tmpfiles copies from, or the seed does nothing and the mount is refused on every boot.
-        let containerfile = std::fs::read_to_string(os_file("os/Containerfile"))
-            .expect("the production Containerfile must exist");
-        assert!(
-            containerfile
-                .lines()
-                .any(|l| l.starts_with("COPY ")
-                    && l.contains("/usr/share/tilo/fs-capabilities.json")),
-            "os/Containerfile must ship the default capability list that tmpfiles.d seeds from"
-        );
-    }
-
-    // ...and the seeded default must be a capability list this binary can parse, or the mount is refused on first boot.
-    #[test]
-    fn the_shipped_default_list_grants_the_local_session_its_workspace() {
-        use fs::Access;
-
-        let path = os_file("os/usr/share/tilo/fs-capabilities.json");
-        let identity: IdentityKey = [0x5A; 32]; // stands in for the per-start node key
-        let file = CapabilityFile::load(
-            &path,
-            identity,
-            vec![parse_principal("person:local").unwrap()],
-        )
-        .expect("the shipped default capability list must load");
-
-        let handle = file.handle();
-        assert!(
-            handle.permits(&identity, "/", Access::Read),
-            "the shipped default must let the local session read its own workspace"
-        );
-        assert!(
-            handle.permits(&identity, "/notes/today.md", Access::Write),
-            "the shipped default must let the local session write its own workspace"
-        );
-
-        // The grant is the principal's, not the mount's — a mount not presenting `person:local` gets nothing, which narrows a peer-joined mount.
-        let outsider = CapabilityFile::load(&path, identity, Vec::new())
-            .expect("loads")
-            .handle();
-        assert!(
-            !outsider.permits(&identity, "/notes/today.md", Access::Read),
-            "the shipped list must grant its named principal, not whoever mounts"
-        );
-    }
-
-    #[test]
-    fn mount_command_line_parses() {
-        let cli = Cli::try_parse_from([
-            "fs",
-            "mount",
-            "--mount-point",
-            "/var/workspace",
-            "--ticket",
-            "deadbeef",
-            "--cache-dir",
-            "/var/cache/quick-fs",
-        ])
-        .expect("mount command line must parse");
-        assert!(matches!(cli.command, Command::Mount { .. }));
+    fn cli_parses_mount_lines_principals_and_persisted_tickets() {
+        // Phase `mount_command_line_parses`.
+        {
+            let cli = Cli::try_parse_from([
+                "fs",
+                "mount",
+                "--mount-point",
+                "/var/workspace",
+                "--ticket",
+                "deadbeef",
+                "--cache-dir",
+                "/var/cache/quick-fs",
+            ])
+            .expect("mount command line must parse");
+            assert!(matches!(cli.command, Command::Mount { .. }));
+        }
+        // Phase `principal_specs_parse_by_kind`.
+        {
+            assert_eq!(
+                parse_principal("room:team").unwrap(),
+                Principal::Room("team".into())
+            );
+            assert_eq!(
+                parse_principal("app:org.tilo.files").unwrap(),
+                Principal::App("org.tilo.files".into())
+            );
+            assert!(parse_principal("wizard:merlin").is_err());
+            assert!(parse_principal("noseparator").is_err());
+        }
+        // Phase `persisted_discovered_ticket_selects_remote_record_workspace`.
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let owner =
+                iroh_base::EndpointAddr::new(iroh::SecretKey::from_bytes(&[0x81; 32]).public());
+            let nas =
+                iroh_base::EndpointAddr::new(iroh::SecretKey::from_bytes(&[0x82; 32]).public());
+            let ticket = Ticket {
+                node: owner,
+                workspace: [0x83; 32],
+            }
+            .encode()
+            .unwrap();
+            let peers = vec![fs::workspace_authority::PersistedContentPeer {
+                endpoint: nas,
+                ticket: Some(ticket),
+                relay_service_id: None,
+            }];
+            atomic_file::write(
+                &fs::workspace_authority::content_peers_path(temp.path()),
+                &serde_json::to_vec(&peers).unwrap(),
+            )
+            .unwrap();
+            let selected = persisted_remote_workspace_ticket(Some(temp.path()))
+                .unwrap()
+                .expect("NAS ticket is retained for the next fs.service start");
+            assert_eq!(selected.workspace, [0x83; 32]);
+            assert_ne!(selected.node.id, peers[0].endpoint.id);
+        }
     }
 
     const NODE_KEY: IdentityKey = [0x77; 32];
@@ -3985,118 +4081,102 @@ mod tests {
         }
     }
 
-    // No `--acl` means Unix-veneer-only behaviour — the documented opt-out, and why fs.service still works unchanged.
     #[test]
-    fn without_the_acl_flag_no_capability_list_is_bound() {
-        let resolved = resolve_acl(&acl_args_from(&[]), NODE_KEY).expect("no ACL is not an error");
-        assert!(
-            resolved.is_none(),
-            "omitting --acl must leave the mount unbound, not bind an empty ACL"
-        );
-    }
+    fn acl_flags_bind_an_enforced_list_or_refuse_the_mount() {
+        // Phase `without_the_acl_flag_no_capability_list_is_bound`.
+        // No `--acl` means Unix-veneer-only behaviour — the documented opt-out, and why fs.service still works unchanged.
+        {
+            let resolved =
+                resolve_acl(&acl_args_from(&[]), NODE_KEY).expect("no ACL is not an error");
+            assert!(
+                resolved.is_none(),
+                "omitting --acl must leave the mount unbound, not bind an empty ACL"
+            );
+        }
+        // Phase `a_missing_capability_file_refuses_the_mount`.
+        // Asking for enforcement and not getting it must never be silent.
+        {
+            let args = acl_args_from(&["--acl", "/nonexistent/tilo-caps-does-not-exist.json"]);
+            let err = resolve_acl(&args, NODE_KEY)
+                .expect_err("a missing capability list must abort the mount, not fall back");
+            assert!(
+                format!("{err:#}").contains("could not be read"),
+                "expected a read failure, got: {err:#}"
+            );
+        }
+        // Phase `a_malformed_capability_file_refuses_the_mount`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("caps.json");
+            std::fs::write(&path, b"{ not json ]").unwrap();
+            let args = acl_args_from(&["--acl", path.to_str().unwrap()]);
+            let err = resolve_acl(&args, NODE_KEY)
+                .expect_err("a malformed capability list must abort the mount");
+            assert!(
+                format!("{err:#}").contains("JSON array of capabilities"),
+                "expected a parse failure, got: {err:#}"
+            );
+        }
+        // Phase `an_empty_capability_file_binds_a_denying_acl`.
+        // An empty capability list is a valid, total denial — not an error, and not a fallback to unenforced.
+        {
+            use fs::Access;
 
-    // Asking for enforcement and not getting it must never be silent.
-    #[test]
-    fn a_missing_capability_file_refuses_the_mount() {
-        let args = acl_args_from(&["--acl", "/nonexistent/tilo-caps-does-not-exist.json"]);
-        let err = resolve_acl(&args, NODE_KEY)
-            .expect_err("a missing capability list must abort the mount, not fall back");
-        assert!(
-            format!("{err:#}").contains("could not be read"),
-            "expected a read failure, got: {err:#}"
-        );
-    }
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("caps.json");
+            std::fs::write(&path, b"[]").unwrap();
+            let args = acl_args_from(&["--acl", path.to_str().unwrap()]);
+            let caps = resolve_acl(&args, NODE_KEY)
+                .expect("an empty list is valid")
+                .expect("--acl was given, so an ACL must be bound");
+            let (acl, identity) = (caps.handle(), caps.identity());
+            assert_eq!(identity, NODE_KEY, "identity defaults to this node's key");
+            assert!(!acl.permits(&identity, "/", Access::Read));
+            assert!(!acl.permits(&identity, "/anything", Access::Write));
+        }
+        // Phase `the_capability_file_round_trips_and_is_enforced`.
+        {
+            use collab_types::{CapOverride, Ed25519PublicKey, Effect, Scope, Subject, Verb};
+            use fs::Access;
 
-    #[test]
-    fn a_malformed_capability_file_refuses_the_mount() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("caps.json");
-        std::fs::write(&path, b"{ not json ]").unwrap();
-        let args = acl_args_from(&["--acl", path.to_str().unwrap()]);
-        let err = resolve_acl(&args, NODE_KEY)
-            .expect_err("a malformed capability list must abort the mount");
-        assert!(
-            format!("{err:#}").contains("JSON array of capabilities"),
-            "expected a parse failure, got: {err:#}"
-        );
-    }
+            let who = [0x0A; 32];
+            let caps = vec![CapOverride::new(
+                Subject::User(Ed25519PublicKey(who)),
+                Scope::FsPath("/w/docs".into()),
+                Effect::Grant,
+                Verb::Read,
+            )];
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("caps.json");
+            std::fs::write(&path, serde_json::to_vec(&caps).unwrap()).unwrap();
 
-    // An empty capability list is a valid, total denial — not an error, and not a fallback to unenforced.
-    #[test]
-    fn an_empty_capability_file_binds_a_denying_acl() {
-        use fs::Access;
-
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("caps.json");
-        std::fs::write(&path, b"[]").unwrap();
-        let args = acl_args_from(&["--acl", path.to_str().unwrap()]);
-        let caps = resolve_acl(&args, NODE_KEY)
-            .expect("an empty list is valid")
-            .expect("--acl was given, so an ACL must be bound");
-        let (acl, identity) = (caps.handle(), caps.identity());
-        assert_eq!(identity, NODE_KEY, "identity defaults to this node's key");
-        assert!(!acl.permits(&identity, "/", Access::Read));
-        assert!(!acl.permits(&identity, "/anything", Access::Write));
-    }
-
-    #[test]
-    fn the_capability_file_round_trips_and_is_enforced() {
-        use collab_types::{CapOverride, Ed25519PublicKey, Effect, Scope, Subject, Verb};
-        use fs::Access;
-
-        let who = [0x0A; 32];
-        let caps = vec![CapOverride::new(
-            Subject::User(Ed25519PublicKey(who)),
-            Scope::FsPath("/w/docs".into()),
-            Effect::Grant,
-            Verb::Read,
-        )];
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("caps.json");
-        std::fs::write(&path, serde_json::to_vec(&caps).unwrap()).unwrap();
-
-        let args = acl_args_from(&[
-            "--acl",
-            path.to_str().unwrap(),
-            "--identity",
-            &hex::encode(who),
-        ]);
-        let caps = resolve_acl(&args, NODE_KEY).unwrap().unwrap();
-        let (acl, identity) = (caps.handle(), caps.identity());
-        assert_eq!(identity, who, "--identity overrides the node key");
-        assert!(acl.permits(&who, "/w/docs/a.md", Access::Read));
-        assert!(!acl.permits(&who, "/w/docs/a.md", Access::Write));
-        assert!(!acl.permits(&who, "/w/other", Access::Read));
-    }
-
-    // `--identity` alone enforces nothing; accepting it silently would read as identity-scoped when it isn't.
-    #[test]
-    fn identity_without_a_capability_list_is_rejected() {
-        let args = acl_args_from(&["--identity", &hex::encode([0x0A; 32])]);
-        assert!(resolve_acl(&args, NODE_KEY).is_err());
-    }
-
-    #[test]
-    fn a_short_identity_is_rejected() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("caps.json");
-        std::fs::write(&path, b"[]").unwrap();
-        let args = acl_args_from(&["--acl", path.to_str().unwrap(), "--identity", "abcd"]);
-        let err = resolve_acl(&args, NODE_KEY).expect_err("a 2-byte identity is not a key");
-        assert!(format!("{err:#}").contains("32 bytes"), "got: {err:#}");
-    }
-
-    #[test]
-    fn principal_specs_parse_by_kind() {
-        assert_eq!(
-            parse_principal("room:team").unwrap(),
-            Principal::Room("team".into())
-        );
-        assert_eq!(
-            parse_principal("app:org.tilo.files").unwrap(),
-            Principal::App("org.tilo.files".into())
-        );
-        assert!(parse_principal("wizard:merlin").is_err());
-        assert!(parse_principal("noseparator").is_err());
+            let args = acl_args_from(&[
+                "--acl",
+                path.to_str().unwrap(),
+                "--identity",
+                &hex::encode(who),
+            ]);
+            let caps = resolve_acl(&args, NODE_KEY).unwrap().unwrap();
+            let (acl, identity) = (caps.handle(), caps.identity());
+            assert_eq!(identity, who, "--identity overrides the node key");
+            assert!(acl.permits(&who, "/w/docs/a.md", Access::Read));
+            assert!(!acl.permits(&who, "/w/docs/a.md", Access::Write));
+            assert!(!acl.permits(&who, "/w/other", Access::Read));
+        }
+        // Phase `identity_without_a_capability_list_is_rejected`.
+        // `--identity` alone enforces nothing; accepting it silently would read as identity-scoped when it isn't.
+        {
+            let args = acl_args_from(&["--identity", &hex::encode([0x0A; 32])]);
+            assert!(resolve_acl(&args, NODE_KEY).is_err());
+        }
+        // Phase `a_short_identity_is_rejected`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("caps.json");
+            std::fs::write(&path, b"[]").unwrap();
+            let args = acl_args_from(&["--acl", path.to_str().unwrap(), "--identity", "abcd"]);
+            let err = resolve_acl(&args, NODE_KEY).expect_err("a 2-byte identity is not a key");
+            assert!(format!("{err:#}").contains("32 bytes"), "got: {err:#}");
+        }
     }
 }

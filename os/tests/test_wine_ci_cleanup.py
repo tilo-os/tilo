@@ -50,24 +50,23 @@ sys.exit(0)
             self.assertNotEqual(result.returncode, 0)
             return calls, result
 
-    def test_existing_container_is_never_adopted_or_removed(self):
-        calls, result = self.run_case('container-collision')
-        self.assertIn('refusing existing container', result.stderr)
-        self.assertTrue(all(call[0] == 'inspect' for call in calls))
-
-    def test_existing_volume_is_never_adopted_or_removed(self):
-        calls, result = self.run_case('volume-collision')
-        self.assertIn('refusing existing volume', result.stderr)
-        self.assertTrue(all(call[0] == 'inspect' or call[:2] == ['volume', 'inspect']
-                            for call in calls))
-
-    def test_failed_container_creation_cleans_only_created_volumes(self):
-        calls, _ = self.run_case('create-fails')
-        created = [call[2] for call in calls if call[:2] == ['volume', 'create']]
-        removed = [call[2] for call in calls if call[:2] == ['volume', 'rm']]
-        self.assertEqual(len(created), 2)
-        self.assertEqual(created, removed)
-        self.assertFalse(any(call[0] in ('rm', 'cp') for call in calls))
+    def test_cleanup_never_adopts_existing_resources(self):
+        with self.subTest(phase="existing_container_is_never_adopted_or_removed"):
+            calls, result = self.run_case('container-collision')
+            self.assertIn('refusing existing container', result.stderr)
+            self.assertTrue(all(call[0] == 'inspect' for call in calls))
+        with self.subTest(phase="existing_volume_is_never_adopted_or_removed"):
+            calls, result = self.run_case('volume-collision')
+            self.assertIn('refusing existing volume', result.stderr)
+            self.assertTrue(all(call[0] == 'inspect' or call[:2] == ['volume', 'inspect']
+                                for call in calls))
+        with self.subTest(phase="failed_container_creation_cleans_only_created_volumes"):
+            calls, _ = self.run_case('create-fails')
+            created = [call[2] for call in calls if call[:2] == ['volume', 'create']]
+            removed = [call[2] for call in calls if call[:2] == ['volume', 'rm']]
+            self.assertEqual(len(created), 2)
+            self.assertEqual(created, removed)
+            self.assertFalse(any(call[0] in ('rm', 'cp') for call in calls))
 
 
 if __name__ == '__main__':

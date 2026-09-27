@@ -1865,30 +1865,258 @@ fn f64_to_f32(v: f64) -> f32 {
 mod tests {
     use super::*;
 
-    /// HIG §9.5: the invite card's rows and mini pills rest on the lift
-    /// floor with an edge derived from it; that edge must register on every
-    /// shipped palette, and the card's Panel border on its Panel ground.
     #[test]
-    fn invite_rows_and_panel_edge_register_on_every_palette() {
-        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
-            let ground = ui::chrome::shell::panel_ground(&theme);
-            let floor = theme.tokens.colors.lift(0.35);
-            for (what, edge, fill) in [
-                (
-                    "panel border",
-                    ui::chrome::shell::panel_border(&theme),
-                    ground,
-                ),
-                ("row card", ui::surface::edge_on(floor), floor),
-            ] {
-                let delta = ui::surface::edge_delta(edge, fill);
-                assert!(
-                    delta >= ui::tokens::colors::HAIRLINE_MIN_DELTA,
-                    "{}: the {what} must separate from its fill (Δ luminance {delta:.4})",
-                    theme.name
-                );
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn named_invites_bind_role_and_verified_identity_before_review() {
+        /// HIG §9.5: the invite card's rows and mini pills rest on the lift
+        /// floor with an edge derived from it; that edge must register on every
+        /// shipped palette, and the card's Panel border on its Panel ground.
+        fn invite_rows_and_panel_edge_register_on_every_palette() {
+            for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+                let ground = ui::chrome::shell::panel_ground(&theme);
+                let floor = theme.tokens.colors.lift(0.35);
+                for (what, edge, fill) in [
+                    (
+                        "panel border",
+                        ui::chrome::shell::panel_border(&theme),
+                        ground,
+                    ),
+                    ("row card", ui::surface::edge_on(floor), floor),
+                ] {
+                    let delta = ui::surface::edge_delta(edge, fill);
+                    assert!(
+                        delta >= ui::tokens::colors::HAIRLINE_MIN_DELTA,
+                        "{}: the {what} must separate from its fill (Δ luminance {delta:.4})",
+                        theme.name
+                    );
+                }
             }
         }
+
+        fn named_invite_refuses_blank_and_preserves_name_after_transport_failure() {
+            let mut overlay = PeerSyncOverlay::default();
+            overlay.prompt_invite();
+            let blank = overlay.handle_event(
+                &key(Key::Named(NamedKey::Enter)),
+                Modifiers::default(),
+                None,
+            );
+            assert!(blank.request.is_none());
+            assert_eq!(
+                overlay.state.status.as_deref(),
+                Some("Say who this invite is for")
+            );
+            overlay.handle_event(
+                &key(Key::Character("Ada".into())),
+                Modifiers::default(),
+                None,
+            );
+            let unbound = overlay.handle_event(
+                &key(Key::Named(NamedKey::Enter)),
+                Modifiers::default(),
+                None,
+            );
+            assert!(
+                unbound.request.is_none(),
+                "ordinary UI must not mint a bearer invite"
+            );
+            overlay.state.invite_recipient_key = Some([0x11; 32]);
+            let review = overlay.handle_event(
+                &key(Key::Named(NamedKey::Enter)),
+                Modifiers::default(),
+                None,
+            );
+            assert!(review.request.is_none(), "review must not mint a token");
+            assert!(overlay.state.invite_review_open);
+            let submit = overlay.handle_event(
+                &key(Key::Named(NamedKey::Enter)),
+                Modifiers::default(),
+                None,
+            );
+            assert_eq!(
+                submit.request,
+                Some(PeerSyncRequest::IssueInviteFor {
+                    name: "Ada".into(),
+                    role: crate::network::invite::InviteRole::Editor,
+                    recipient_user_public_key: [0x11; 32],
+                    workspace: None,
+                })
+            );
+            overlay.finish_request(
+                submit.request.as_ref().unwrap(),
+                Err("offline".into()),
+                submit.copy_result,
+            );
+            assert_eq!(overlay.state.invite_name.as_deref(), Some("Ada"));
+        }
+
+        /// An invite started from someone's card: bound to their verified key,
+        /// into the workspace and with the role the asker picked, after review.
+        fn an_invite_for_a_known_person_names_the_chosen_workspace() {
+            use crate::shell::state::WorkspaceId;
+            let mut overlay = PeerSyncOverlay::default();
+            overlay.prompt_invite_person(
+                RememberedInvitee {
+                    name: "Aria".into(),
+                    user_public_key: [0x33; 32],
+                    verification: "Verified in a room you share".into(),
+                },
+                vec![
+                    (WorkspaceId(5), "Design".into()),
+                    (WorkspaceId(6), "Ops".into()),
+                ],
+            );
+            assert_eq!(overlay.state.invite_workspace, Some(WorkspaceId(5)));
+            overlay.activate(Button::SelectWorkspace(1));
+            overlay.activate(Button::SelectRole(
+                crate::network::invite::InviteRole::Commenter,
+            ));
+            assert_eq!(overlay.state.invite_context.workspace_name, "Ops");
+            assert!(overlay.activate(Button::ReviewInvite).request.is_none());
+            assert_eq!(
+                overlay.activate(Button::CreateInvite).request,
+                Some(PeerSyncRequest::IssueInviteFor {
+                    name: "Aria".into(),
+                    role: crate::network::invite::InviteRole::Commenter,
+                    recipient_user_public_key: [0x33; 32],
+                    workspace: Some(WorkspaceId(6)),
+                })
+            );
+            overlay.prompt_invite();
+            assert!(
+                overlay.state.invite_workspaces.is_empty(),
+                "an ordinary invite has no choice"
+            );
+        }
+
+        fn explicit_role_choice_and_review_reach_the_recipient_bound_request() {
+            let mut overlay = PeerSyncOverlay::default();
+            overlay.prompt_invite();
+            overlay.handle_event(
+                &key(Key::Character("Lin".into())),
+                Modifiers::default(),
+                None,
+            );
+            overlay.state.invite_recipient_key = Some([0x22; 32]);
+            assert!(
+                overlay
+                    .activate(Button::SelectRole(
+                        crate::network::invite::InviteRole::Viewer
+                    ))
+                    .request
+                    .is_none()
+            );
+            let review = overlay.handle_event(
+                &key(Key::Named(NamedKey::Enter)),
+                Modifiers::default(),
+                None,
+            );
+            assert!(review.request.is_none());
+            assert!(overlay.snapshot().invite_review_open);
+            let submit = overlay.handle_event(
+                &key(Key::Named(NamedKey::Enter)),
+                Modifiers::default(),
+                None,
+            );
+            assert_eq!(
+                submit.request,
+                Some(PeerSyncRequest::IssueInviteFor {
+                    name: "Lin".into(),
+                    role: crate::network::invite::InviteRole::Viewer,
+                    recipient_user_public_key: [0x22; 32],
+                    workspace: None,
+                })
+            );
+        }
+
+        fn remembered_person_selects_their_verified_identity_before_review() {
+            let mut overlay = PeerSyncOverlay::default();
+            overlay.set_remembered_invitees(vec![RememberedInvitee {
+                name: "Ada Lovelace".into(),
+                user_public_key: [0x41; 32],
+                verification: "Verified yesterday".into(),
+            }]);
+            overlay.set_invite_context(InviteContext {
+                workspace_name: "Compiler club".into(),
+                inviter_name: "Quinn".into(),
+            });
+            overlay.prompt_invite();
+            overlay.activate(Button::SelectKnown(0));
+            assert_eq!(
+                overlay.snapshot().invite_name.as_deref(),
+                Some("Ada Lovelace")
+            );
+            assert_eq!(
+                overlay.snapshot().invite_recipient_path,
+                InviteRecipientPath::Known
+            );
+            let review = overlay.activate(Button::ReviewInvite);
+            assert!(review.request.is_none());
+            let snapshot = overlay.snapshot();
+            assert!(snapshot.invite_review_open);
+            assert_eq!(snapshot.invite_context.workspace_name, "Compiler club");
+            let mint = overlay.activate(Button::CreateInvite);
+            assert_eq!(
+                mint.request,
+                Some(PeerSyncRequest::IssueInviteFor {
+                    name: "Ada Lovelace".into(),
+                    role: crate::network::invite::InviteRole::Editor,
+                    recipient_user_public_key: [0x41; 32],
+                    workspace: None,
+                })
+            );
+        }
+
+        fn closing_the_sheet_keeps_host_supplied_verified_people_for_next_invite() {
+            let mut overlay = PeerSyncOverlay::default();
+            overlay.set_remembered_invitees(vec![RememberedInvitee {
+                name: "Mina".into(),
+                user_public_key: [0x52; 32],
+                verification: "Verified in person".into(),
+            }]);
+            overlay.prompt_invite();
+            overlay.dismiss();
+            overlay.prompt_invite();
+            overlay.activate(Button::SelectKnown(0));
+            assert_eq!(overlay.snapshot().invite_name.as_deref(), Some("Mina"));
+            assert_eq!(overlay.snapshot().invite_recipient_key, Some([0x52; 32]));
+        }
+
+        fn pending_invites_are_named_and_emit_exact_resend_and_cancel_requests() {
+            let mut overlay = PeerSyncOverlay::default();
+            overlay.prompt_invite();
+            let row = PendingInvitationSummary {
+                id: [7; 32],
+                name: "Ada".into(),
+                role: crate::network::invite::InviteRole::Commenter,
+                expiry_unix_seconds: u64::MAX,
+            };
+            overlay.finish_typed_request(
+                &PeerSyncRequest::ListPendingInvitations,
+                Ok(PeerSyncResponse::PendingInvitations(vec![row.clone()])),
+                false,
+            );
+            assert_eq!(overlay.snapshot().pending_invitations, vec![row]);
+            assert_eq!(
+                overlay.activate(Button::Resend([7; 32])).request,
+                Some(PeerSyncRequest::ResendInvitation([7; 32]))
+            );
+            assert_eq!(
+                overlay.activate(Button::CancelPending([7; 32])).request,
+                Some(PeerSyncRequest::CancelInvitation([7; 32]))
+            );
+        }
+
+        invite_rows_and_panel_edge_register_on_every_palette();
+        named_invite_refuses_blank_and_preserves_name_after_transport_failure();
+        an_invite_for_a_known_person_names_the_chosen_workspace();
+        explicit_role_choice_and_review_reach_the_recipient_bound_request();
+        remembered_person_selects_their_verified_identity_before_review();
+        closing_the_sheet_keeps_host_supplied_verified_people_for_next_invite();
+        pending_invites_are_named_and_emit_exact_resend_and_cancel_requests();
     }
 
     fn key(key: Key) -> WindowEvent {
@@ -1909,293 +2137,77 @@ mod tests {
     }
 
     #[test]
-    fn named_invite_refuses_blank_and_preserves_name_after_transport_failure() {
-        let mut overlay = PeerSyncOverlay::default();
-        overlay.prompt_invite();
-        let blank = overlay.handle_event(
-            &key(Key::Named(NamedKey::Enter)),
-            Modifiers::default(),
-            None,
-        );
-        assert!(blank.request.is_none());
-        assert_eq!(
-            overlay.state.status.as_deref(),
-            Some("Say who this invite is for")
-        );
-        overlay.handle_event(
-            &key(Key::Character("Ada".into())),
-            Modifiers::default(),
-            None,
-        );
-        let unbound = overlay.handle_event(
-            &key(Key::Named(NamedKey::Enter)),
-            Modifiers::default(),
-            None,
-        );
-        assert!(
-            unbound.request.is_none(),
-            "ordinary UI must not mint a bearer invite"
-        );
-        overlay.state.invite_recipient_key = Some([0x11; 32]);
-        let review = overlay.handle_event(
-            &key(Key::Named(NamedKey::Enter)),
-            Modifiers::default(),
-            None,
-        );
-        assert!(review.request.is_none(), "review must not mint a token");
-        assert!(overlay.state.invite_review_open);
-        let submit = overlay.handle_event(
-            &key(Key::Named(NamedKey::Enter)),
-            Modifiers::default(),
-            None,
-        );
-        assert_eq!(
-            submit.request,
-            Some(PeerSyncRequest::IssueInviteFor {
-                name: "Ada".into(),
-                role: crate::network::invite::InviteRole::Editor,
-                recipient_user_public_key: [0x11; 32],
-                workspace: None,
-            })
-        );
-        overlay.finish_request(
-            submit.request.as_ref().unwrap(),
-            Err("offline".into()),
-            submit.copy_result,
-        );
-        assert_eq!(overlay.state.invite_name.as_deref(), Some("Ada"));
-    }
-
-    /// An invite started from someone's card: bound to their verified key,
-    /// into the workspace and with the role the asker picked, after review.
-    #[test]
-    fn an_invite_for_a_known_person_names_the_chosen_workspace() {
-        use crate::shell::state::WorkspaceId;
-        let mut overlay = PeerSyncOverlay::default();
-        overlay.prompt_invite_person(
-            RememberedInvitee {
-                name: "Aria".into(),
-                user_public_key: [0x33; 32],
-                verification: "Verified in a room you share".into(),
-            },
-            vec![
-                (WorkspaceId(5), "Design".into()),
-                (WorkspaceId(6), "Ops".into()),
-            ],
-        );
-        assert_eq!(overlay.state.invite_workspace, Some(WorkspaceId(5)));
-        overlay.activate(Button::SelectWorkspace(1));
-        overlay.activate(Button::SelectRole(
-            crate::network::invite::InviteRole::Commenter,
-        ));
-        assert_eq!(overlay.state.invite_context.workspace_name, "Ops");
-        assert!(overlay.activate(Button::ReviewInvite).request.is_none());
-        assert_eq!(
-            overlay.activate(Button::CreateInvite).request,
-            Some(PeerSyncRequest::IssueInviteFor {
-                name: "Aria".into(),
-                role: crate::network::invite::InviteRole::Commenter,
-                recipient_user_public_key: [0x33; 32],
-                workspace: Some(WorkspaceId(6)),
-            })
-        );
-        overlay.prompt_invite();
-        assert!(
-            overlay.state.invite_workspaces.is_empty(),
-            "an ordinary invite has no choice"
-        );
-    }
-
-    #[test]
-    fn explicit_role_choice_and_review_reach_the_recipient_bound_request() {
-        let mut overlay = PeerSyncOverlay::default();
-        overlay.prompt_invite();
-        overlay.handle_event(
-            &key(Key::Character("Lin".into())),
-            Modifiers::default(),
-            None,
-        );
-        overlay.state.invite_recipient_key = Some([0x22; 32]);
-        assert!(
-            overlay
-                .activate(Button::SelectRole(
-                    crate::network::invite::InviteRole::Viewer
-                ))
-                .request
-                .is_none()
-        );
-        let review = overlay.handle_event(
-            &key(Key::Named(NamedKey::Enter)),
-            Modifiers::default(),
-            None,
-        );
-        assert!(review.request.is_none());
-        assert!(overlay.snapshot().invite_review_open);
-        let submit = overlay.handle_event(
-            &key(Key::Named(NamedKey::Enter)),
-            Modifiers::default(),
-            None,
-        );
-        assert_eq!(
-            submit.request,
-            Some(PeerSyncRequest::IssueInviteFor {
-                name: "Lin".into(),
-                role: crate::network::invite::InviteRole::Viewer,
-                recipient_user_public_key: [0x22; 32],
-                workspace: None,
-            })
-        );
-    }
-
-    #[test]
-    fn remembered_person_selects_their_verified_identity_before_review() {
-        let mut overlay = PeerSyncOverlay::default();
-        overlay.set_remembered_invitees(vec![RememberedInvitee {
-            name: "Ada Lovelace".into(),
-            user_public_key: [0x41; 32],
-            verification: "Verified yesterday".into(),
-        }]);
-        overlay.set_invite_context(InviteContext {
-            workspace_name: "Compiler club".into(),
-            inviter_name: "Quinn".into(),
-        });
-        overlay.prompt_invite();
-        overlay.activate(Button::SelectKnown(0));
-        assert_eq!(
-            overlay.snapshot().invite_name.as_deref(),
-            Some("Ada Lovelace")
-        );
-        assert_eq!(
-            overlay.snapshot().invite_recipient_path,
-            InviteRecipientPath::Known
-        );
-        let review = overlay.activate(Button::ReviewInvite);
-        assert!(review.request.is_none());
-        let snapshot = overlay.snapshot();
-        assert!(snapshot.invite_review_open);
-        assert_eq!(snapshot.invite_context.workspace_name, "Compiler club");
-        let mint = overlay.activate(Button::CreateInvite);
-        assert_eq!(
-            mint.request,
-            Some(PeerSyncRequest::IssueInviteFor {
-                name: "Ada Lovelace".into(),
-                role: crate::network::invite::InviteRole::Editor,
-                recipient_user_public_key: [0x41; 32],
-                workspace: None,
-            })
-        );
-    }
-
-    #[test]
-    fn closing_the_sheet_keeps_host_supplied_verified_people_for_next_invite() {
-        let mut overlay = PeerSyncOverlay::default();
-        overlay.set_remembered_invitees(vec![RememberedInvitee {
-            name: "Mina".into(),
-            user_public_key: [0x52; 32],
-            verification: "Verified in person".into(),
-        }]);
-        overlay.prompt_invite();
-        overlay.dismiss();
-        overlay.prompt_invite();
-        overlay.activate(Button::SelectKnown(0));
-        assert_eq!(overlay.snapshot().invite_name.as_deref(), Some("Mina"));
-        assert_eq!(overlay.snapshot().invite_recipient_key, Some([0x52; 32]));
-    }
-
-    #[test]
-    fn pending_invites_are_named_and_emit_exact_resend_and_cancel_requests() {
-        let mut overlay = PeerSyncOverlay::default();
-        overlay.prompt_invite();
-        let row = PendingInvitationSummary {
-            id: [7; 32],
-            name: "Ada".into(),
-            role: crate::network::invite::InviteRole::Commenter,
-            expiry_unix_seconds: u64::MAX,
-        };
-        overlay.finish_typed_request(
-            &PeerSyncRequest::ListPendingInvitations,
-            Ok(PeerSyncResponse::PendingInvitations(vec![row.clone()])),
-            false,
-        );
-        assert_eq!(overlay.snapshot().pending_invitations, vec![row]);
-        assert_eq!(
-            overlay.activate(Button::Resend([7; 32])).request,
-            Some(PeerSyncRequest::ResendInvitation([7; 32]))
-        );
-        assert_eq!(
-            overlay.activate(Button::CancelPending([7; 32])).request,
-            Some(PeerSyncRequest::CancelInvitation([7; 32]))
-        );
-    }
-
-    #[test]
-    fn connect_is_trimmed_and_only_closes_after_success() {
-        let mut overlay = PeerSyncOverlay::default();
-        overlay.prompt_connect();
-        overlay.handle_event(
-            &key(Key::Character(" token ".into())),
-            Modifiers::default(),
-            None,
-        );
-        let submit = overlay.handle_event(
-            &key(Key::Named(NamedKey::Enter)),
-            Modifiers::default(),
-            None,
-        );
-        assert_eq!(
-            submit.request,
-            Some(PeerSyncRequest::AcceptInvite("token".into()))
-        );
-        overlay.finish_request(
-            submit.request.as_ref().unwrap(),
-            Err("bad token".into()),
-            false,
-        );
-        assert!(overlay.state.connect_input.is_some());
-        overlay.finish_request(submit.request.as_ref().unwrap(), Ok("room-7".into()), false);
-        assert!(overlay.state.connect_input.is_none());
-    }
-
-    #[test]
-    fn fingerprint_is_stable_grouped_and_safe_for_short_ids() {
-        let a = "12D3KooWQr4Zc8gN3xkLpWv7bTqA9sYd2EfGh1JkLmNpQrStUvWx";
-        assert_eq!(peer_fingerprint(a), "QrSt UvWx");
-        assert_ne!(
-            peer_fingerprint(a),
-            peer_fingerprint("12D3KooWQr4Zc8gN3xkLpWv7bTqA9sYd2EfGh1JkLmNpQrStUvAb")
-        );
-        assert_eq!(peer_fingerprint("abc"), "abc");
-        assert_eq!(peer_fingerprint(""), "");
-    }
-
-    #[test]
-    fn recipient_identity_parser_accepts_only_an_exact_person_key() {
-        let key = [0x5a; 32];
-        assert_eq!(parse_recipient_identity(&hex::encode(key)), Some(key));
-        assert_eq!(
-            parse_recipient_identity(&format!("tilo-identity:{}", hex::encode(key))),
-            Some(key)
-        );
-        assert_eq!(parse_recipient_identity("5a"), None);
-        assert_eq!(parse_recipient_identity(&"g".repeat(64)), None);
-    }
-
-    #[test]
     #[serial_test::serial(clipboard)]
-    fn exporting_identity_copies_a_non_secret_card_without_closing_join() {
-        let mut overlay = PeerSyncOverlay::default();
-        overlay.prompt_connect();
-        let card = format!("tilo-identity:{}", hex::encode([0x2a; 32]));
-        overlay.finish_request(&PeerSyncRequest::ExportIdentity, Ok(card.clone()), false);
-        assert_eq!(ui::text_selection::clipboard_paste(), Some(card));
-        assert!(overlay.state.connect_input.is_some());
-    }
+    fn connect_and_identity_cards_are_trimmed_exact_and_non_secret() {
+        fn connect_is_trimmed_and_only_closes_after_success() {
+            let mut overlay = PeerSyncOverlay::default();
+            overlay.prompt_connect();
+            overlay.handle_event(
+                &key(Key::Character(" token ".into())),
+                Modifiers::default(),
+                None,
+            );
+            let submit = overlay.handle_event(
+                &key(Key::Named(NamedKey::Enter)),
+                Modifiers::default(),
+                None,
+            );
+            assert_eq!(
+                submit.request,
+                Some(PeerSyncRequest::AcceptInvite("token".into()))
+            );
+            overlay.finish_request(
+                submit.request.as_ref().unwrap(),
+                Err("bad token".into()),
+                false,
+            );
+            assert!(overlay.state.connect_input.is_some());
+            overlay.finish_request(submit.request.as_ref().unwrap(), Ok("room-7".into()), false);
+            assert!(overlay.state.connect_input.is_none());
+        }
 
-    #[test]
-    fn long_tokens_are_elided_without_changing_short_ones() {
-        let shown = elide_token(&"e".repeat(900));
-        assert!(shown.chars().count() < 20);
-        assert!(shown.contains('…'));
-        assert_eq!(elide_token("short-one"), "short-one");
+        fn fingerprint_is_stable_grouped_and_safe_for_short_ids() {
+            let a = "12D3KooWQr4Zc8gN3xkLpWv7bTqA9sYd2EfGh1JkLmNpQrStUvWx";
+            assert_eq!(peer_fingerprint(a), "QrSt UvWx");
+            assert_ne!(
+                peer_fingerprint(a),
+                peer_fingerprint("12D3KooWQr4Zc8gN3xkLpWv7bTqA9sYd2EfGh1JkLmNpQrStUvAb")
+            );
+            assert_eq!(peer_fingerprint("abc"), "abc");
+            assert_eq!(peer_fingerprint(""), "");
+        }
+
+        fn recipient_identity_parser_accepts_only_an_exact_person_key() {
+            let key = [0x5a; 32];
+            assert_eq!(parse_recipient_identity(&hex::encode(key)), Some(key));
+            assert_eq!(
+                parse_recipient_identity(&format!("tilo-identity:{}", hex::encode(key))),
+                Some(key)
+            );
+            assert_eq!(parse_recipient_identity("5a"), None);
+            assert_eq!(parse_recipient_identity(&"g".repeat(64)), None);
+        }
+
+        fn exporting_identity_copies_a_non_secret_card_without_closing_join() {
+            let mut overlay = PeerSyncOverlay::default();
+            overlay.prompt_connect();
+            let card = format!("tilo-identity:{}", hex::encode([0x2a; 32]));
+            overlay.finish_request(&PeerSyncRequest::ExportIdentity, Ok(card.clone()), false);
+            assert_eq!(ui::text_selection::clipboard_paste(), Some(card));
+            assert!(overlay.state.connect_input.is_some());
+        }
+
+        fn long_tokens_are_elided_without_changing_short_ones() {
+            let shown = elide_token(&"e".repeat(900));
+            assert!(shown.chars().count() < 20);
+            assert!(shown.contains('…'));
+            assert_eq!(elide_token("short-one"), "short-one");
+        }
+
+        connect_is_trimmed_and_only_closes_after_success();
+        fingerprint_is_stable_grouped_and_safe_for_short_ids();
+        recipient_identity_parser_accepts_only_an_exact_person_key();
+        exporting_identity_copies_a_non_secret_card_without_closing_join();
+        long_tokens_are_elided_without_changing_short_ones();
     }
 }

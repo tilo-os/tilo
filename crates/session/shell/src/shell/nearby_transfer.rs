@@ -1213,302 +1213,318 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn file_staging_is_immutable_and_private() {
-        let tmp = TempDir::new().unwrap();
-        let source = tmp.path().join("note.txt");
-        fs::write(&source, b"original").unwrap();
-        let mut store = NearbyTransferStore::open(tmp.path().join("spool"), 10).unwrap();
-        let entry = store.stage(&source, "peer".into(), 10).unwrap();
-        fs::write(&source, b"changed").unwrap();
-        assert_eq!(fs::read(store.object_path(entry.id)).unwrap(), b"original");
-        assert_eq!(
-            fs::metadata(tmp.path().join("spool/index.json"))
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o777,
-            0o600
-        );
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn nearby_staging_is_private_resumable_and_integrity_checked() {
+        fn file_staging_is_immutable_and_private() {
+            let tmp = TempDir::new().unwrap();
+            let source = tmp.path().join("note.txt");
+            fs::write(&source, b"original").unwrap();
+            let mut store = NearbyTransferStore::open(tmp.path().join("spool"), 10).unwrap();
+            let entry = store.stage(&source, "peer".into(), 10).unwrap();
+            fs::write(&source, b"changed").unwrap();
+            assert_eq!(fs::read(store.object_path(entry.id)).unwrap(), b"original");
+            assert_eq!(
+                fs::metadata(tmp.path().join("spool/index.json"))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
 
-    #[test]
-    fn reopen_truncates_crash_tail_and_reports_checkpoint_hash() {
-        let tmp = TempDir::new().unwrap();
-        let root = tmp.path().join("spool");
-        let mut store = NearbyTransferStore::open(root.clone(), 10).unwrap();
-        let id = [4; 16];
-        let checkpoint_len = usize::try_from(CHECKPOINT_BYTES).expect("checkpoint fits usize");
-        store
-            .begin_incoming(
-                id,
-                "peer".into(),
-                [5; 16],
-                "x.bin".into(),
-                TransferKind::File,
-                CHECKPOINT_BYTES + 9,
-                [8; 32],
-                10,
-            )
-            .unwrap();
-        store.append(id, 0, &vec![3; checkpoint_len]).unwrap();
-        fs::OpenOptions::new()
-            .append(true)
-            .open(store.partial_path(id))
-            .unwrap()
-            .write_all(b"tail")
-            .unwrap();
-        drop(store);
-        let mut reopened = NearbyTransferStore::open(root, 11).unwrap();
-        assert_eq!(
-            fs::metadata(reopened.partial_path(id)).unwrap().len(),
-            CHECKPOINT_BYTES
-        );
-        let (offset, hash) = reopened
-            .begin_incoming(
-                id,
-                "peer".into(),
-                [5; 16],
-                "x.bin".into(),
-                TransferKind::File,
-                CHECKPOINT_BYTES + 9,
-                [8; 32],
-                11,
-            )
-            .unwrap();
-        assert_eq!(offset, CHECKPOINT_BYTES);
-        assert_eq!(hash, *blake3::hash(&vec![3; checkpoint_len]).as_bytes());
-    }
-
-    #[test]
-    fn resume_rejects_manifest_mismatch_and_cancel_cleans_bytes() {
-        let tmp = TempDir::new().unwrap();
-        let mut store = NearbyTransferStore::open(tmp.path().join("spool"), 10).unwrap();
-        let id = [7; 16];
-        store
-            .begin_incoming(
-                id,
-                "peer".into(),
-                [6; 16],
-                "x".into(),
-                TransferKind::File,
-                2,
-                [1; 32],
-                10,
-            )
-            .unwrap();
-        assert!(
+        fn reopen_truncates_crash_tail_and_reports_checkpoint_hash() {
+            let tmp = TempDir::new().unwrap();
+            let root = tmp.path().join("spool");
+            let mut store = NearbyTransferStore::open(root.clone(), 10).unwrap();
+            let id = [4; 16];
+            let checkpoint_len = usize::try_from(CHECKPOINT_BYTES).expect("checkpoint fits usize");
             store
                 .begin_incoming(
                     id,
-                    "other".into(),
+                    "peer".into(),
+                    [5; 16],
+                    "x.bin".into(),
+                    TransferKind::File,
+                    CHECKPOINT_BYTES + 9,
+                    [8; 32],
+                    10,
+                )
+                .unwrap();
+            store.append(id, 0, &vec![3; checkpoint_len]).unwrap();
+            fs::OpenOptions::new()
+                .append(true)
+                .open(store.partial_path(id))
+                .unwrap()
+                .write_all(b"tail")
+                .unwrap();
+            drop(store);
+            let mut reopened = NearbyTransferStore::open(root, 11).unwrap();
+            assert_eq!(
+                fs::metadata(reopened.partial_path(id)).unwrap().len(),
+                CHECKPOINT_BYTES
+            );
+            let (offset, hash) = reopened
+                .begin_incoming(
+                    id,
+                    "peer".into(),
+                    [5; 16],
+                    "x.bin".into(),
+                    TransferKind::File,
+                    CHECKPOINT_BYTES + 9,
+                    [8; 32],
+                    11,
+                )
+                .unwrap();
+            assert_eq!(offset, CHECKPOINT_BYTES);
+            assert_eq!(hash, *blake3::hash(&vec![3; checkpoint_len]).as_bytes());
+        }
+
+        fn resume_rejects_manifest_mismatch_and_cancel_cleans_bytes() {
+            let tmp = TempDir::new().unwrap();
+            let mut store = NearbyTransferStore::open(tmp.path().join("spool"), 10).unwrap();
+            let id = [7; 16];
+            store
+                .begin_incoming(
+                    id,
+                    "peer".into(),
                     [6; 16],
                     "x".into(),
                     TransferKind::File,
                     2,
                     [1; 32],
-                    10
+                    10,
                 )
-                .is_err()
-        );
-        store.cancel_incoming(id).unwrap();
-        assert!(!store.partial_path(id).exists());
-        assert!(store.inbox().is_empty());
+                .unwrap();
+            assert!(
+                store
+                    .begin_incoming(
+                        id,
+                        "other".into(),
+                        [6; 16],
+                        "x".into(),
+                        TransferKind::File,
+                        2,
+                        [1; 32],
+                        10
+                    )
+                    .is_err()
+            );
+            store.cancel_incoming(id).unwrap();
+            assert!(!store.partial_path(id).exists());
+            assert!(store.inbox().is_empty());
+        }
+
+        fn integrity_failure_removes_untrusted_partial() {
+            let tmp = TempDir::new().unwrap();
+            let mut store = NearbyTransferStore::open(tmp.path().join("spool"), 10).unwrap();
+            let id = [8; 16];
+            store
+                .begin_incoming(
+                    id,
+                    "peer".into(),
+                    [3; 16],
+                    "x.bin".into(),
+                    TransferKind::File,
+                    3,
+                    [9; 32],
+                    10,
+                )
+                .unwrap();
+            store.append(id, 0, b"bad").unwrap();
+            assert!(store.finish(id, &tmp.path().join("downloads")).is_err());
+            assert!(!store.partial_path(id).exists());
+            assert!(store.inbox().is_empty());
+        }
+
+        fn reopen_expires_metadata_and_spooled_bytes() {
+            let tmp = TempDir::new().unwrap();
+            let source = tmp.path().join("old.bin");
+            fs::write(&source, b"old").unwrap();
+            let root = tmp.path().join("spool");
+            let mut store = NearbyTransferStore::open(root.clone(), 1).unwrap();
+            let entry = store.stage(&source, "peer".into(), 1).unwrap();
+            let object = store.object_path(entry.id);
+            assert!(object.exists());
+            drop(store);
+            let reopened = NearbyTransferStore::open(root, TRANSFER_LIFETIME_MS + 2).unwrap();
+            assert!(reopened.outbox().is_empty());
+            assert!(!object.exists());
+        }
+
+        fn quota_reserves_the_candidate_bytes_without_overflow() {
+            let tmp = TempDir::new().unwrap();
+            let mut store = NearbyTransferStore::open(tmp.path().join("spool"), 10).unwrap();
+            store.index.outbox.push(OutboxEntry {
+                id: [9; 16],
+                target: "peer".into(),
+                name: "huge".into(),
+                kind: TransferKind::File,
+                total_bytes: MAX_TOTAL_BYTES - 1,
+                content_hash: [0; 32],
+                created_unix_ms: 10,
+                expires_unix_ms: 20,
+            });
+            assert!(store.ensure_capacity(2).is_err());
+            assert!(store.ensure_capacity(u64::MAX).is_err());
+        }
+
+        file_staging_is_immutable_and_private();
+        reopen_truncates_crash_tail_and_reports_checkpoint_hash();
+        resume_rejects_manifest_mismatch_and_cancel_cleans_bytes();
+        integrity_failure_removes_untrusted_partial();
+        reopen_expires_metadata_and_spooled_bytes();
+        quota_reserves_the_candidate_bytes_without_overflow();
     }
 
     #[test]
-    fn folder_archive_is_deterministic_rejects_links_and_extracts_create_new() {
-        let tmp = TempDir::new().unwrap();
-        let source = tmp.path().join("folder");
-        fs::create_dir(&source).unwrap();
-        fs::write(source.join("a.txt"), b"a").unwrap();
-        let mut first = NearbyTransferStore::open(tmp.path().join("one"), 10).unwrap();
-        let mut second = NearbyTransferStore::open(tmp.path().join("two"), 10).unwrap();
-        let a = first.stage(&source, "peer".into(), 10).unwrap();
-        fs::write(source.join("a.txt"), b"a").unwrap();
-        let b = second.stage(&source, "peer".into(), 10).unwrap();
-        assert_eq!(a.content_hash, b.content_hash);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn nearby_files_and_folders_stay_anchored_and_never_overwrite_or_traverse() {
+        fn folder_archive_is_deterministic_rejects_links_and_extracts_create_new() {
+            let tmp = TempDir::new().unwrap();
+            let source = tmp.path().join("folder");
+            fs::create_dir(&source).unwrap();
+            fs::write(source.join("a.txt"), b"a").unwrap();
+            let mut first = NearbyTransferStore::open(tmp.path().join("one"), 10).unwrap();
+            let mut second = NearbyTransferStore::open(tmp.path().join("two"), 10).unwrap();
+            let a = first.stage(&source, "peer".into(), 10).unwrap();
+            fs::write(source.join("a.txt"), b"a").unwrap();
+            let b = second.stage(&source, "peer".into(), 10).unwrap();
+            assert_eq!(a.content_hash, b.content_hash);
 
-        std::os::unix::fs::symlink("a.txt", source.join("link")).unwrap();
-        assert!(first.stage(&source, "peer".into(), 10).is_err());
+            std::os::unix::fs::symlink("a.txt", source.join("link")).unwrap();
+            assert!(first.stage(&source, "peer".into(), 10).is_err());
 
-        let receive = NearbyTransferStore::open(tmp.path().join("receive"), 10).unwrap();
-        let downloads = tmp.path().join("downloads");
-        ensure_private_dir(&downloads).unwrap();
-        fs::create_dir(downloads.join("folder")).unwrap();
-        let installed =
-            extract_archive_create_new(&first.object_path(a.id), &downloads, "folder").unwrap();
-        assert_eq!(installed.file_name().unwrap(), "folder (1)");
-        assert_eq!(fs::read(installed.join("a.txt")).unwrap(), b"a");
-        drop(receive);
-    }
+            let receive = NearbyTransferStore::open(tmp.path().join("receive"), 10).unwrap();
+            let downloads = tmp.path().join("downloads");
+            ensure_private_dir(&downloads).unwrap();
+            fs::create_dir(downloads.join("folder")).unwrap();
+            let installed =
+                extract_archive_create_new(&first.object_path(a.id), &downloads, "folder").unwrap();
+            assert_eq!(installed.file_name().unwrap(), "folder (1)");
+            assert_eq!(fs::read(installed.join("a.txt")).unwrap(), b"a");
+            drop(receive);
+        }
 
-    #[test]
-    fn secure_source_is_anchored_across_intermediate_rename_and_symlink_swap() {
-        let tmp = TempDir::new().unwrap();
-        let grant = tmp.path().join("grant");
-        let folder = grant.join("folder");
-        fs::create_dir_all(&folder).unwrap();
-        fs::write(folder.join("report.txt"), b"original").unwrap();
+        fn secure_source_is_anchored_across_intermediate_rename_and_symlink_swap() {
+            let tmp = TempDir::new().unwrap();
+            let grant = tmp.path().join("grant");
+            let folder = grant.join("folder");
+            fs::create_dir_all(&folder).unwrap();
+            fs::write(folder.join("report.txt"), b"original").unwrap();
 
-        let source = SecureNearbySource::open_beneath(&grant, &folder).unwrap();
-        let moved = grant.join("moved");
-        fs::rename(&folder, &moved).unwrap();
-        std::os::unix::fs::symlink("/etc", &folder).unwrap();
+            let source = SecureNearbySource::open_beneath(&grant, &folder).unwrap();
+            let moved = grant.join("moved");
+            fs::rename(&folder, &moved).unwrap();
+            std::os::unix::fs::symlink("/etc", &folder).unwrap();
 
-        assert!(
-            SecureNearbySource::open_beneath(&grant, &folder.join("passwd")).is_err(),
-            "an intermediate symlink swap must not escape the grant"
-        );
-        let mut store = NearbyTransferStore::open(tmp.path().join("store"), 10).unwrap();
-        let staged = store
-            .stage_secure_with_id(source, "peer".into(), 10, [9; 16])
-            .expect("opened directory capability remains anchored after rename");
-        assert_eq!(staged.kind, TransferKind::FolderArchive);
-        assert!(store.object_path(staged.id).is_file());
-    }
+            assert!(
+                SecureNearbySource::open_beneath(&grant, &folder.join("passwd")).is_err(),
+                "an intermediate symlink swap must not escape the grant"
+            );
+            let mut store = NearbyTransferStore::open(tmp.path().join("store"), 10).unwrap();
+            let staged = store
+                .stage_secure_with_id(source, "peer".into(), 10, [9; 16])
+                .expect("opened directory capability remains anchored after rename");
+            assert_eq!(staged.kind, TransferKind::FolderArchive);
+            assert!(store.object_path(staged.id).is_file());
+        }
 
-    #[test]
-    fn secure_destination_survives_rename_and_never_overwrites() {
-        let tmp = TempDir::new().unwrap();
-        let destination = tmp.path().join("approved");
-        fs::create_dir(&destination).unwrap();
-        fs::write(destination.join("report.txt"), b"existing").unwrap();
-        let expected_destination = fs::canonicalize(&destination).unwrap();
-        let capability = SecureNearbyDestination::open_grant(&destination).unwrap();
-        let moved = tmp.path().join("moved");
-        fs::rename(&destination, &moved).unwrap();
-        std::os::unix::fs::symlink("/etc", &destination).unwrap();
+        fn secure_destination_survives_rename_and_never_overwrites() {
+            let tmp = TempDir::new().unwrap();
+            let destination = tmp.path().join("approved");
+            fs::create_dir(&destination).unwrap();
+            fs::write(destination.join("report.txt"), b"existing").unwrap();
+            let expected_destination = fs::canonicalize(&destination).unwrap();
+            let capability = SecureNearbyDestination::open_grant(&destination).unwrap();
+            let moved = tmp.path().join("moved");
+            fs::rename(&destination, &moved).unwrap();
+            std::os::unix::fs::symlink("/etc", &destination).unwrap();
 
-        let installed = capability
-            .install_inline("report.txt", b"received")
-            .unwrap();
-        assert_eq!(installed, expected_destination.join("report (1).txt"));
-        assert_eq!(fs::read(moved.join("report.txt")).unwrap(), b"existing");
-        assert_eq!(fs::read(moved.join("report (1).txt")).unwrap(), b"received");
-    }
+            let installed = capability
+                .install_inline("report.txt", b"received")
+                .unwrap();
+            assert_eq!(installed, expected_destination.join("report (1).txt"));
+            assert_eq!(fs::read(moved.join("report.txt")).unwrap(), b"existing");
+            assert_eq!(fs::read(moved.join("report (1).txt")).unwrap(), b"received");
+        }
 
-    #[test]
-    fn secure_folder_round_trip_stays_anchored_and_does_not_replace_an_existing_folder() {
-        let tmp = TempDir::new().unwrap();
-        let source_path = tmp.path().join("folder");
-        fs::create_dir_all(source_path.join("nested")).unwrap();
-        fs::write(source_path.join("nested/report.txt"), b"received").unwrap();
-        let source = SecureNearbySource::open_beneath(tmp.path(), &source_path).unwrap();
-        let mut sender = NearbyTransferStore::open(tmp.path().join("sender"), 10).unwrap();
-        let entry = sender
-            .stage_secure_with_id(source, "peer".into(), 10, [41; 16])
-            .unwrap();
-        let bytes = fs::read(sender.object_path(entry.id)).unwrap();
-        let approved = tmp.path().join("approved");
-        fs::create_dir_all(approved.join("folder")).unwrap();
-        fs::write(approved.join("folder/keep.txt"), b"keep").unwrap();
-        let expected_destination = fs::canonicalize(&approved).unwrap();
-        let destination = SecureNearbyDestination::open_grant(&approved).unwrap();
-        let moved = tmp.path().join("moved");
-        fs::rename(&approved, &moved).unwrap();
-        std::os::unix::fs::symlink(&source_path, &approved).unwrap();
-        let mut receiver = NearbyTransferStore::open(tmp.path().join("receiver"), 10).unwrap();
-        receiver
-            .begin_incoming(
-                entry.id,
-                "peer".into(),
-                [42; 16],
-                entry.name,
-                entry.kind,
-                entry.total_bytes,
-                entry.content_hash,
-                10,
-            )
-            .unwrap();
-        receiver.append(entry.id, 0, &bytes).unwrap();
-        let installed = receiver.finish_secure(entry.id, &destination).unwrap();
-        assert_eq!(installed, expected_destination.join("folder (1)"));
-        assert_eq!(fs::read(moved.join("folder/keep.txt")).unwrap(), b"keep");
-        assert_eq!(
-            fs::read(moved.join("folder (1)/nested/report.txt")).unwrap(),
-            b"received"
-        );
-        assert!(!source_path.join("folder (1)").exists());
-        assert!(!receiver.partial_path(entry.id).exists());
-    }
+        fn secure_folder_round_trip_stays_anchored_and_does_not_replace_an_existing_folder() {
+            let tmp = TempDir::new().unwrap();
+            let source_path = tmp.path().join("folder");
+            fs::create_dir_all(source_path.join("nested")).unwrap();
+            fs::write(source_path.join("nested/report.txt"), b"received").unwrap();
+            let source = SecureNearbySource::open_beneath(tmp.path(), &source_path).unwrap();
+            let mut sender = NearbyTransferStore::open(tmp.path().join("sender"), 10).unwrap();
+            let entry = sender
+                .stage_secure_with_id(source, "peer".into(), 10, [41; 16])
+                .unwrap();
+            let bytes = fs::read(sender.object_path(entry.id)).unwrap();
+            let approved = tmp.path().join("approved");
+            fs::create_dir_all(approved.join("folder")).unwrap();
+            fs::write(approved.join("folder/keep.txt"), b"keep").unwrap();
+            let expected_destination = fs::canonicalize(&approved).unwrap();
+            let destination = SecureNearbyDestination::open_grant(&approved).unwrap();
+            let moved = tmp.path().join("moved");
+            fs::rename(&approved, &moved).unwrap();
+            std::os::unix::fs::symlink(&source_path, &approved).unwrap();
+            let mut receiver = NearbyTransferStore::open(tmp.path().join("receiver"), 10).unwrap();
+            receiver
+                .begin_incoming(
+                    entry.id,
+                    "peer".into(),
+                    [42; 16],
+                    entry.name,
+                    entry.kind,
+                    entry.total_bytes,
+                    entry.content_hash,
+                    10,
+                )
+                .unwrap();
+            receiver.append(entry.id, 0, &bytes).unwrap();
+            let installed = receiver.finish_secure(entry.id, &destination).unwrap();
+            assert_eq!(installed, expected_destination.join("folder (1)"));
+            assert_eq!(fs::read(moved.join("folder/keep.txt")).unwrap(), b"keep");
+            assert_eq!(
+                fs::read(moved.join("folder (1)/nested/report.txt")).unwrap(),
+                b"received"
+            );
+            assert!(!source_path.join("folder (1)").exists());
+            assert!(!receiver.partial_path(entry.id).exists());
+        }
 
-    #[test]
-    fn extraction_rejects_parent_traversal() {
-        let tmp = TempDir::new().unwrap();
-        let archive_path = tmp.path().join("bad.tar");
-        let file = File::create(&archive_path).unwrap();
-        let mut builder = tar::Builder::new(file);
-        let mut header = tar::Header::new_gnu();
-        header.set_size(1);
-        header.set_mode(0o600);
-        header.set_cksum();
-        // The tar crate itself refuses unsafe names, so corrupt a valid name in-place.
-        builder.append_data(&mut header, "aa/x", &b"x"[..]).unwrap();
-        builder.finish().unwrap();
-        let mut bytes = fs::read(&archive_path).unwrap();
-        bytes[..4].copy_from_slice(b"../x");
-        fs::write(&archive_path, bytes).unwrap();
-        let root = tmp.path().join("out");
-        ensure_private_dir(&root).unwrap();
-        assert!(extract_archive_create_new(&archive_path, &root, "bad").is_err());
-        assert!(!tmp.path().join("x").exists());
-    }
+        fn extraction_rejects_parent_traversal() {
+            let tmp = TempDir::new().unwrap();
+            let archive_path = tmp.path().join("bad.tar");
+            let file = File::create(&archive_path).unwrap();
+            let mut builder = tar::Builder::new(file);
+            let mut header = tar::Header::new_gnu();
+            header.set_size(1);
+            header.set_mode(0o600);
+            header.set_cksum();
+            // The tar crate itself refuses unsafe names, so corrupt a valid name in-place.
+            builder.append_data(&mut header, "aa/x", &b"x"[..]).unwrap();
+            builder.finish().unwrap();
+            let mut bytes = fs::read(&archive_path).unwrap();
+            bytes[..4].copy_from_slice(b"../x");
+            fs::write(&archive_path, bytes).unwrap();
+            let root = tmp.path().join("out");
+            ensure_private_dir(&root).unwrap();
+            assert!(extract_archive_create_new(&archive_path, &root, "bad").is_err());
+            assert!(!tmp.path().join("x").exists());
+        }
 
-    #[test]
-    fn quota_reserves_the_candidate_bytes_without_overflow() {
-        let tmp = TempDir::new().unwrap();
-        let mut store = NearbyTransferStore::open(tmp.path().join("spool"), 10).unwrap();
-        store.index.outbox.push(OutboxEntry {
-            id: [9; 16],
-            target: "peer".into(),
-            name: "huge".into(),
-            kind: TransferKind::File,
-            total_bytes: MAX_TOTAL_BYTES - 1,
-            content_hash: [0; 32],
-            created_unix_ms: 10,
-            expires_unix_ms: 20,
-        });
-        assert!(store.ensure_capacity(2).is_err());
-        assert!(store.ensure_capacity(u64::MAX).is_err());
-    }
-
-    #[test]
-    fn integrity_failure_removes_untrusted_partial() {
-        let tmp = TempDir::new().unwrap();
-        let mut store = NearbyTransferStore::open(tmp.path().join("spool"), 10).unwrap();
-        let id = [8; 16];
-        store
-            .begin_incoming(
-                id,
-                "peer".into(),
-                [3; 16],
-                "x.bin".into(),
-                TransferKind::File,
-                3,
-                [9; 32],
-                10,
-            )
-            .unwrap();
-        store.append(id, 0, b"bad").unwrap();
-        assert!(store.finish(id, &tmp.path().join("downloads")).is_err());
-        assert!(!store.partial_path(id).exists());
-        assert!(store.inbox().is_empty());
-    }
-
-    #[test]
-    fn reopen_expires_metadata_and_spooled_bytes() {
-        let tmp = TempDir::new().unwrap();
-        let source = tmp.path().join("old.bin");
-        fs::write(&source, b"old").unwrap();
-        let root = tmp.path().join("spool");
-        let mut store = NearbyTransferStore::open(root.clone(), 1).unwrap();
-        let entry = store.stage(&source, "peer".into(), 1).unwrap();
-        let object = store.object_path(entry.id);
-        assert!(object.exists());
-        drop(store);
-        let reopened = NearbyTransferStore::open(root, TRANSFER_LIFETIME_MS + 2).unwrap();
-        assert!(reopened.outbox().is_empty());
-        assert!(!object.exists());
+        folder_archive_is_deterministic_rejects_links_and_extracts_create_new();
+        secure_source_is_anchored_across_intermediate_rename_and_symlink_swap();
+        secure_destination_survives_rename_and_never_overwrites();
+        secure_folder_round_trip_stays_anchored_and_does_not_replace_an_existing_folder();
+        extraction_rejects_parent_traversal();
     }
 }
 

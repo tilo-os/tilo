@@ -2457,192 +2457,287 @@ mod tests {
     }
 
     #[test]
-    fn one_x_metrics_reproduce_the_authored_bands() {
-        // The pre-paint rule set keeps every 1× band at its authored size.
-        let m = ComposeMetrics::default();
-        assert_eq!(m.title_h, TITLE_H);
-        assert_eq!(m.field_h, FIELD_H);
-        assert_eq!(m.toolbar_h, TOOLBAR_H);
-        assert_eq!(m.button_h, BUTTON_H);
-        assert_eq!(m.scale, 1.0);
-    }
-
-    #[test]
-    fn scaled_metrics_grow_the_header_rows_and_the_buttons_hold_their_labels() {
-        // 200% text: rows follow their measured lines instead of the fields
-        // and labels stacking over each other (the defect at 200% before).
-        let big = ComposeMetrics {
-            scale: 2.0,
-            title_h: 51.0,
-            label_h: 30.0,
-            field_h: 51.0,
-            toolbar_h: 62.0,
-            button_h: 50.0,
-            cc_bcc_w: 96.0,
-            attach_w: 130.0,
-            toggle_w: 140.0,
-            send_w: 128.0,
-            draft_w: 176.0,
-            discard_w: 150.0,
-            ..ComposeMetrics::default()
-        };
-        let mut w = ComposeWindow::new(ComposeFormat::Html);
-        w.open_blank();
-        w.metrics = big;
-        w.layout(Rect::new(0.0, 0.0, 1280.0, 900.0));
-        let to = hit_rect(&w, ComposeHit::FieldTo);
-        let subject = hit_rect(&w, ComposeHit::FieldSubject);
-        let send = hit_rect(&w, ComposeHit::Send);
-        let draft = hit_rect(&w, ComposeHit::SaveDraft);
-        let discard = hit_rect(&w, ComposeHit::Discard);
-        assert_eq!(to.height(), big.field_h);
-        assert!(
-            subject.y0 >= to.y1,
-            "the subject row starts under the To row"
-        );
-        assert_eq!(send.width(), big.send_w);
-        assert!(draft.x0 >= send.x1, "Save draft sits after Send");
-        assert!(discard.x0 >= draft.x1, "Discard sits after Save draft");
-        assert_eq!(send.height(), big.button_h);
-        // The default window followed the scale so a body remains.
-        let body = hit_rect(&w, ComposeHit::Body);
-        assert!(body.height() > 100.0, "body {body:?}");
-    }
-
-    #[test]
-    fn format_toggle_round_trips_content() {
-        let mut w = win();
-        w.set_focus(Field::Body);
-        w.editor.set_plain("Hello world");
-        w.toggle_format();
-        assert_eq!(w.format(), ComposeFormat::Text);
-        assert!(w.plain_body.value().contains("Hello world"));
-        w.toggle_format();
-        assert_eq!(w.format(), ComposeFormat::Html);
-    }
-
-    #[test]
-    fn draft_carries_html_in_html_mode() {
-        let mut w = win();
-        w.set_focus(Field::Body);
-        w.editor.set_plain("Body");
-        w.to.set_text("a@b.example");
-        let d = w.to_draft();
-        assert!(d.html_body.is_some());
-        assert!(d.html_body.unwrap().contains("Body"));
-        assert_eq!(d.to, "a@b.example");
-    }
-
-    #[test]
-    fn draft_is_plain_in_text_mode() {
-        let mut w = ComposeWindow::new(ComposeFormat::Text);
-        w.open_blank();
-        w.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
-        w.plain_body.set_text("Just text");
-        let d = w.to_draft();
-        assert!(d.html_body.is_none());
-        assert_eq!(d.body, "Just text");
-    }
-
-    /// The plain body is now a shared multiline `TextInput`: typing a newline
-    /// through the window's real keyboard path lands a genuinely multi-line
-    /// draft body — the thing a single-line field could not do.
-    #[test]
-    fn plain_body_accepts_a_multiline_draft_via_the_real_key_path() {
-        use winit::event::KeyEvent;
-        use winit::keyboard::{Key, NamedKey, SmolStr};
-
-        fn key(logical: Key, text: Option<&str>) -> WindowEvent {
-            let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-            ev.logical_key = logical;
-            ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-                winit::keyboard::NativeKeyCode::Unidentified,
-            );
-            ev.location = winit::keyboard::KeyLocation::Standard;
-            ev.state = ElementState::Pressed;
-            ev.repeat = false;
-            ev.text = text.map(SmolStr::new);
-            WindowEvent::KeyboardInput {
-                device_id: unsafe { std::mem::zeroed() },
-                event: ev,
-                is_synthetic: false,
-            }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn composer_metrics_reproduce_1x_and_grow_with_scale() {
+        // Phase `one_x_metrics_reproduce_the_authored_bands`.
+        {
+            // The pre-paint rule set keeps every 1× band at its authored size.
+            let m = ComposeMetrics::default();
+            assert_eq!(m.title_h, TITLE_H);
+            assert_eq!(m.field_h, FIELD_H);
+            assert_eq!(m.toolbar_h, TOOLBAR_H);
+            assert_eq!(m.button_h, BUTTON_H);
+            assert_eq!(m.scale, 1.0);
         }
 
-        let mut w = ComposeWindow::new(ComposeFormat::Text);
-        w.open_blank();
-        w.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
-        w.set_focus(Field::Body);
+        // Phase `scaled_metrics_grow_the_header_rows_and_the_buttons_hold_their_labels`.
+        {
+            // 200% text: rows follow their measured lines instead of the fields
+            // and labels stacking over each other (the defect at 200% before).
+            let big = ComposeMetrics {
+                scale: 2.0,
+                title_h: 51.0,
+                label_h: 30.0,
+                field_h: 51.0,
+                toolbar_h: 62.0,
+                button_h: 50.0,
+                cc_bcc_w: 96.0,
+                attach_w: 130.0,
+                toggle_w: 140.0,
+                send_w: 128.0,
+                draft_w: 176.0,
+                discard_w: 150.0,
+                ..ComposeMetrics::default()
+            };
+            let mut w = ComposeWindow::new(ComposeFormat::Html);
+            w.open_blank();
+            w.metrics = big;
+            w.layout(Rect::new(0.0, 0.0, 1280.0, 900.0));
+            let to = hit_rect(&w, ComposeHit::FieldTo);
+            let subject = hit_rect(&w, ComposeHit::FieldSubject);
+            let send = hit_rect(&w, ComposeHit::Send);
+            let draft = hit_rect(&w, ComposeHit::SaveDraft);
+            let discard = hit_rect(&w, ComposeHit::Discard);
+            assert_eq!(to.height(), big.field_h);
+            assert!(
+                subject.y0 >= to.y1,
+                "the subject row starts under the To row"
+            );
+            assert_eq!(send.width(), big.send_w);
+            assert!(draft.x0 >= send.x1, "Save draft sits after Send");
+            assert!(discard.x0 >= draft.x1, "Discard sits after Save draft");
+            assert_eq!(send.height(), big.button_h);
+            // The default window followed the scale so a body remains.
+            let body = hit_rect(&w, ComposeHit::Body);
+            assert!(body.height() > 100.0, "body {body:?}");
+        }
+    }
 
-        let m = winit::event::Modifiers::default();
-        let mut doc = automerge::AutoCommit::new();
-        let taffy: taffy::TaffyTree<()> = taffy::TaffyTree::new();
-        let node = taffy::NodeId::new(0);
-        let mut send = |ev: &WindowEvent| {
-            w.handle_event(
-                ev,
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn composer_formats_and_drafts_round_trip_content() {
+        // Phase `format_toggle_round_trips_content`.
+        {
+            let mut w = win();
+            w.set_focus(Field::Body);
+            w.editor.set_plain("Hello world");
+            w.toggle_format();
+            assert_eq!(w.format(), ComposeFormat::Text);
+            assert!(w.plain_body.value().contains("Hello world"));
+            w.toggle_format();
+            assert_eq!(w.format(), ComposeFormat::Html);
+        }
+
+        // Phase `draft_carries_html_in_html_mode`.
+        {
+            let mut w = win();
+            w.set_focus(Field::Body);
+            w.editor.set_plain("Body");
+            w.to.set_text("a@b.example");
+            let d = w.to_draft();
+            assert!(d.html_body.is_some());
+            assert!(d.html_body.unwrap().contains("Body"));
+            assert_eq!(d.to, "a@b.example");
+        }
+
+        // Phase `draft_is_plain_in_text_mode`.
+        {
+            let mut w = ComposeWindow::new(ComposeFormat::Text);
+            w.open_blank();
+            w.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
+            w.plain_body.set_text("Just text");
+            let d = w.to_draft();
+            assert!(d.html_body.is_none());
+            assert_eq!(d.body, "Just text");
+        }
+
+        // Phase `plain_body_accepts_a_multiline_draft_via_the_real_key_path`.
+        // The plain body is now a shared multiline `TextInput`: typing a newline
+        // through the window's real keyboard path lands a genuinely multi-line
+        // draft body — the thing a single-line field could not do.
+        {
+            use winit::event::KeyEvent;
+            use winit::keyboard::{Key, NamedKey, SmolStr};
+
+            fn key(logical: Key, text: Option<&str>) -> WindowEvent {
+                let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+                ev.logical_key = logical;
+                ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+                    winit::keyboard::NativeKeyCode::Unidentified,
+                );
+                ev.location = winit::keyboard::KeyLocation::Standard;
+                ev.state = ElementState::Pressed;
+                ev.repeat = false;
+                ev.text = text.map(SmolStr::new);
+                WindowEvent::KeyboardInput {
+                    device_id: unsafe { std::mem::zeroed() },
+                    event: ev,
+                    is_synthetic: false,
+                }
+            }
+
+            let mut w = ComposeWindow::new(ComposeFormat::Text);
+            w.open_blank();
+            w.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
+            w.set_focus(Field::Body);
+
+            let m = winit::event::Modifiers::default();
+            let mut doc = automerge::AutoCommit::new();
+            let taffy: taffy::TaffyTree<()> = taffy::TaffyTree::new();
+            let node = taffy::NodeId::new(0);
+            let mut send = |ev: &WindowEvent| {
+                w.handle_event(
+                    ev,
+                    &mut ComposeEventContext {
+                        scale_factor: 1.0,
+                        modifiers: m,
+                        state: &mut doc,
+                        path: &automerge::ROOT,
+                        node_id: node,
+                        taffy: &taffy,
+                    },
+                );
+            };
+            send(&key(Key::Character(SmolStr::new("H")), Some("H")));
+            send(&key(Key::Character(SmolStr::new("i")), Some("i")));
+            send(&key(Key::Named(NamedKey::Enter), None));
+            send(&key(Key::Character(SmolStr::new("t")), Some("t")));
+            send(&key(Key::Character(SmolStr::new("w")), Some("w")));
+            send(&key(Key::Character(SmolStr::new("o")), Some("o")));
+
+            assert_eq!(
+                w.to_draft().body,
+                "Hi\ntwo",
+                "Enter split the body across two lines"
+            );
+        }
+
+        // Phase `link_prompt_applies_the_typed_href_not_a_placeholder`.
+        {
+            let mut w = win();
+            w.set_focus(Field::Body);
+            w.open_prompt(PromptKind::Link);
+            // Seeded with a scheme the user edits — never a hardcoded final target.
+            assert_eq!(w.prompt.as_ref().unwrap().input.value(), "https://");
+            w.prompt
+                .as_mut()
+                .unwrap()
+                .input
+                .set_text("https://example.test/docs");
+            w.confirm_prompt();
+            let html = w.editor.to_html();
+            assert!(
+                html.contains("href=\"https://example.test/docs\""),
+                "got: {html}"
+            );
+            assert!(
+                !html.contains("href=\"https://\""),
+                "must not link the bare scheme"
+            );
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn composer_window_moves_resizes_docks_and_owns_its_input() {
+        // Phase `move_keeps_window_in_bounds`.
+        {
+            let mut w = win();
+            let before = w.window_rect();
+            // Drag the title far past the right edge; clamp must keep it reachable.
+            w.drag = Some(Drag::Move {
+                grab: Point::new(10.0, 10.0),
+            });
+            w.apply_drag(w.drag.unwrap(), Point::new(5000.0, 5000.0));
+            let r = w.window_rect();
+            assert!(r.x0 < 1280.0, "window stayed reachable horizontally");
+            assert!(r.y0 < 800.0, "window stayed reachable vertically");
+            assert_eq!(r.width(), before.width(), "move does not resize");
+        }
+
+        // Phase `resize_respects_minimum`.
+        {
+            let mut w = win();
+            let start = w.window_rect();
+            w.apply_drag(
+                Drag::Resize {
+                    edge: Edge::BottomRight,
+                    start,
+                    from: Point::new(start.x1, start.y1),
+                },
+                Point::new(start.x0, start.y0),
+            );
+            let r = w.window_rect();
+            assert!(r.width() >= MIN_W - 0.5);
+            assert!(r.height() >= MIN_H - 0.5);
+        }
+
+        // Phase `detach_toggles_dock_state`.
+        {
+            let mut w = win();
+            assert_eq!(w.dock(), DockState::Docked);
+            w.toggle_dock();
+            assert_eq!(w.dock(), DockState::Detached);
+        }
+
+        // Phase `attach_button_requests_the_root_portal_boundary`.
+        {
+            let mut w = win();
+            // The compose widget never accepts a typed path; its root owns the
+            // host portal and returns a descriptor-only staged attachment later.
+            let attach = hit_rect(&w, ComposeHit::Attach);
+            let (consumed, action) = press_at(&mut w, attach.center());
+            assert!(consumed);
+            assert_eq!(action, ComposeAction::RequestAttachment);
+            assert!(
+                w.attachments.is_empty(),
+                "no host path or fabricated attachment is staged"
+            );
+        }
+
+        // Phase `click_outside_window_is_consumed_not_passed_through`.
+        {
+            let mut w = win();
+            w.last_mouse = Point::new(5.0, 5.0); // outside the centred window
+            let modifiers = winit::event::Modifiers::default();
+            let mut doc = automerge::AutoCommit::new();
+            let taffy: taffy::TaffyTree<()> = taffy::TaffyTree::new();
+            let press = WindowEvent::MouseInput {
+                device_id: winit::event::DeviceId::dummy(),
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            };
+            let (consumed, action) = w.handle_event(
+                &press,
                 &mut ComposeEventContext {
                     scale_factor: 1.0,
-                    modifiers: m,
+                    modifiers,
                     state: &mut doc,
                     path: &automerge::ROOT,
-                    node_id: node,
+                    node_id: taffy::NodeId::new(0),
                     taffy: &taffy,
                 },
             );
-        };
-        send(&key(Key::Character(SmolStr::new("H")), Some("H")));
-        send(&key(Key::Character(SmolStr::new("i")), Some("i")));
-        send(&key(Key::Named(NamedKey::Enter), None));
-        send(&key(Key::Character(SmolStr::new("t")), Some("t")));
-        send(&key(Key::Character(SmolStr::new("w")), Some("w")));
-        send(&key(Key::Character(SmolStr::new("o")), Some("o")));
-
-        assert_eq!(
-            w.to_draft().body,
-            "Hi\ntwo",
-            "Enter split the body across two lines"
-        );
-    }
-
-    #[test]
-    fn move_keeps_window_in_bounds() {
-        let mut w = win();
-        let before = w.window_rect();
-        // Drag the title far past the right edge; clamp must keep it reachable.
-        w.drag = Some(Drag::Move {
-            grab: Point::new(10.0, 10.0),
-        });
-        w.apply_drag(w.drag.unwrap(), Point::new(5000.0, 5000.0));
-        let r = w.window_rect();
-        assert!(r.x0 < 1280.0, "window stayed reachable horizontally");
-        assert!(r.y0 < 800.0, "window stayed reachable vertically");
-        assert_eq!(r.width(), before.width(), "move does not resize");
-    }
-
-    #[test]
-    fn resize_respects_minimum() {
-        let mut w = win();
-        let start = w.window_rect();
-        w.apply_drag(
-            Drag::Resize {
-                edge: Edge::BottomRight,
-                start,
-                from: Point::new(start.x1, start.y1),
-            },
-            Point::new(start.x0, start.y0),
-        );
-        let r = w.window_rect();
-        assert!(r.width() >= MIN_W - 0.5);
-        assert!(r.height() >= MIN_H - 0.5);
-    }
-
-    #[test]
-    fn detach_toggles_dock_state() {
-        let mut w = win();
-        assert_eq!(w.dock(), DockState::Docked);
-        w.toggle_dock();
-        assert_eq!(w.dock(), DockState::Detached);
+            assert!(
+                consumed,
+                "clicks outside the modal window must be swallowed, not fall through"
+            );
+            assert_eq!(
+                action,
+                ComposeAction::None,
+                "outside click does not close (explicit Discard only)"
+            );
+            assert!(w.open, "window stays open");
+        }
     }
 
     fn press_at(w: &mut ComposeWindow, p: Point) -> (bool, ComposeAction) {
@@ -2689,79 +2784,5 @@ mod tests {
             .find(|(_, h)| *h == hit)
             .map(|(r, _)| *r)
             .expect("hit present")
-    }
-
-    #[test]
-    fn attach_button_requests_the_root_portal_boundary() {
-        let mut w = win();
-        // The compose widget never accepts a typed path; its root owns the
-        // host portal and returns a descriptor-only staged attachment later.
-        let attach = hit_rect(&w, ComposeHit::Attach);
-        let (consumed, action) = press_at(&mut w, attach.center());
-        assert!(consumed);
-        assert_eq!(action, ComposeAction::RequestAttachment);
-        assert!(
-            w.attachments.is_empty(),
-            "no host path or fabricated attachment is staged"
-        );
-    }
-
-    #[test]
-    fn link_prompt_applies_the_typed_href_not_a_placeholder() {
-        let mut w = win();
-        w.set_focus(Field::Body);
-        w.open_prompt(PromptKind::Link);
-        // Seeded with a scheme the user edits — never a hardcoded final target.
-        assert_eq!(w.prompt.as_ref().unwrap().input.value(), "https://");
-        w.prompt
-            .as_mut()
-            .unwrap()
-            .input
-            .set_text("https://example.test/docs");
-        w.confirm_prompt();
-        let html = w.editor.to_html();
-        assert!(
-            html.contains("href=\"https://example.test/docs\""),
-            "got: {html}"
-        );
-        assert!(
-            !html.contains("href=\"https://\""),
-            "must not link the bare scheme"
-        );
-    }
-
-    #[test]
-    fn click_outside_window_is_consumed_not_passed_through() {
-        let mut w = win();
-        w.last_mouse = Point::new(5.0, 5.0); // outside the centred window
-        let modifiers = winit::event::Modifiers::default();
-        let mut doc = automerge::AutoCommit::new();
-        let taffy: taffy::TaffyTree<()> = taffy::TaffyTree::new();
-        let press = WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        };
-        let (consumed, action) = w.handle_event(
-            &press,
-            &mut ComposeEventContext {
-                scale_factor: 1.0,
-                modifiers,
-                state: &mut doc,
-                path: &automerge::ROOT,
-                node_id: taffy::NodeId::new(0),
-                taffy: &taffy,
-            },
-        );
-        assert!(
-            consumed,
-            "clicks outside the modal window must be swallowed, not fall through"
-        );
-        assert_eq!(
-            action,
-            ComposeAction::None,
-            "outside click does not close (explicit Discard only)"
-        );
-        assert!(w.open, "window stays open");
     }
 }

@@ -1,4 +1,5 @@
 [package]
+autotests = false
 name = "agent"
 version = "0.1.0"
 edition = "2024"
@@ -45,6 +46,7 @@ agent-provider-config = { path = "../../crates/agent/provider-config" }
 tilo-model-gateway = { path = "../../crates/agent/model-gateway" }
 qdoc = { path = "../../crates/doc/qdoc" }
 tilo-content = { path = "../../crates/system/content" }
+tilo-resource = { path = "../../crates/sdk/tilo-resource" }
 automerge.workspace = true
 tilo-automerge.workspace = true
 serde_json.workspace = true
@@ -53,6 +55,7 @@ anyhow.workspace = true
 clap.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
@@ -63,6 +66,10 @@ collab-types = { path = "../../crates/collab/collab-types" }
 tilo-user-identity = { path = "../../crates/collab/tilo-user-identity" }
 runtime-identity = { path = "../../crates/runtime/runtime-identity" }
 ed25519-dalek.workspace = true
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
 
 [lints]
 workspace = true

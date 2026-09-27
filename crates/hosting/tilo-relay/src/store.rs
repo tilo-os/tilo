@@ -986,74 +986,88 @@ mod tests {
     use super::*;
 
     #[test]
-    fn open_creates_layout() {
-        let tmp = tempfile::tempdir().unwrap();
-        let store = WorkspaceStore::open(tmp.path(), 7, true).unwrap();
-        assert!(store.root().is_dir());
-        assert!(store.root().join("pending").is_dir());
-    }
+    fn store_persists_layout_snapshots_logs_and_per_peer_pending_queues() {
+        // Phase `open_creates_layout`.
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let store = WorkspaceStore::open(tmp.path(), 7, true).unwrap();
+            assert!(store.root().is_dir());
+            assert!(store.root().join("pending").is_dir());
+        }
+        // Phase `snapshot_round_trip`.
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let store = WorkspaceStore::open(tmp.path(), 7, true).unwrap();
+            assert!(store.load_snapshot().unwrap().is_none());
+            store.save_snapshot(b"HELLO").unwrap();
+            assert_eq!(store.load_snapshot().unwrap().unwrap(), b"HELLO");
+        }
+        // Phase `snapshot_ignored_when_unpinned`.
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+            store.save_snapshot(b"HELLO").unwrap();
+            assert!(store.load_snapshot().unwrap().is_none());
+        }
+        // Phase `log_append`.
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let store = WorkspaceStore::open(tmp.path(), 7, true).unwrap();
+            store
+                .append_log(&LogEntry {
+                    workspace_id: 7,
+                    received_at_ns: 1,
+                    author_device_hex: "aa".repeat(32),
+                    authored_at_ns: 0,
+                    delta_len: 42,
+                })
+                .unwrap();
+            let text = fs::read_to_string(store.root().join(LOG_FILE)).unwrap();
+            assert!(text.contains("\"workspace_id\":7"));
+        }
+        // Phase `pending_queue_orderly_drain`.
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+            let peer = [3u8; 32];
+            store.enqueue_pending(&peer, 100, b"one").unwrap();
+            store.enqueue_pending(&peer, 200, b"two").unwrap();
+            store.enqueue_pending(&peer, 300, b"three").unwrap();
+            assert_eq!(store.count_pending(&peer).unwrap(), 3);
+            let out = store.drain_pending(&peer).unwrap();
+            assert_eq!(out.len(), 3);
+            assert_eq!(out[0], b"one");
+            assert_eq!(out[1], b"two");
+            assert_eq!(out[2], b"three");
+            // Empty after drain.
+            assert_eq!(store.count_pending(&peer).unwrap(), 0);
+        }
+        // Phase `loading_pending_does_not_acknowledge_before_wire_delivery`.
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let store = WorkspaceStore::open(tmp.path(), 8, false).unwrap();
+            let peer = [4u8; 32];
+            store.enqueue_pending(&peer, 100, b"one").unwrap();
 
-    #[test]
-    fn snapshot_round_trip() {
-        let tmp = tempfile::tempdir().unwrap();
-        let store = WorkspaceStore::open(tmp.path(), 7, true).unwrap();
-        assert!(store.load_snapshot().unwrap().is_none());
-        store.save_snapshot(b"HELLO").unwrap();
-        assert_eq!(store.load_snapshot().unwrap().unwrap(), b"HELLO");
-    }
+            let loaded = store.load_pending(&peer).unwrap();
+            assert_eq!(loaded.len(), 1);
+            assert_eq!(loaded[0].bytes, b"one");
+            assert_eq!(store.count_pending(&peer).unwrap(), 1);
 
-    #[test]
-    fn snapshot_ignored_when_unpinned() {
-        let tmp = tempfile::tempdir().unwrap();
-        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
-        store.save_snapshot(b"HELLO").unwrap();
-        assert!(store.load_snapshot().unwrap().is_none());
-    }
-
-    #[test]
-    fn pending_queue_orderly_drain() {
-        let tmp = tempfile::tempdir().unwrap();
-        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
-        let peer = [3u8; 32];
-        store.enqueue_pending(&peer, 100, b"one").unwrap();
-        store.enqueue_pending(&peer, 200, b"two").unwrap();
-        store.enqueue_pending(&peer, 300, b"three").unwrap();
-        assert_eq!(store.count_pending(&peer).unwrap(), 3);
-        let out = store.drain_pending(&peer).unwrap();
-        assert_eq!(out.len(), 3);
-        assert_eq!(out[0], b"one");
-        assert_eq!(out[1], b"two");
-        assert_eq!(out[2], b"three");
-        // Empty after drain.
-        assert_eq!(store.count_pending(&peer).unwrap(), 0);
-    }
-
-    #[test]
-    fn loading_pending_does_not_acknowledge_before_wire_delivery() {
-        let tmp = tempfile::tempdir().unwrap();
-        let store = WorkspaceStore::open(tmp.path(), 8, false).unwrap();
-        let peer = [4u8; 32];
-        store.enqueue_pending(&peer, 100, b"one").unwrap();
-
-        let loaded = store.load_pending(&peer).unwrap();
-        assert_eq!(loaded.len(), 1);
-        assert_eq!(loaded[0].bytes, b"one");
-        assert_eq!(store.count_pending(&peer).unwrap(), 1);
-
-        std::fs::remove_file(&loaded[0].path).unwrap();
-        assert_eq!(store.count_pending(&peer).unwrap(), 0);
-    }
-
-    #[test]
-    fn pending_isolated_per_peer() {
-        let tmp = tempfile::tempdir().unwrap();
-        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
-        store.enqueue_pending(&[1u8; 32], 100, b"a").unwrap();
-        store.enqueue_pending(&[2u8; 32], 200, b"b").unwrap();
-        let out1 = store.drain_pending(&[1u8; 32]).unwrap();
-        assert_eq!(out1, vec![b"a".to_vec()]);
-        let out2 = store.drain_pending(&[2u8; 32]).unwrap();
-        assert_eq!(out2, vec![b"b".to_vec()]);
+            std::fs::remove_file(&loaded[0].path).unwrap();
+            assert_eq!(store.count_pending(&peer).unwrap(), 0);
+        }
+        // Phase `pending_isolated_per_peer`.
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+            store.enqueue_pending(&[1u8; 32], 100, b"a").unwrap();
+            store.enqueue_pending(&[2u8; 32], 200, b"b").unwrap();
+            let out1 = store.drain_pending(&[1u8; 32]).unwrap();
+            assert_eq!(out1, vec![b"a".to_vec()]);
+            let out2 = store.drain_pending(&[2u8; 32]).unwrap();
+            assert_eq!(out2, vec![b"b".to_vec()]);
+        }
     }
 
     #[test]
@@ -1192,64 +1206,64 @@ mod tests {
     }
 
     #[test]
-    fn iroh_secret_stable_across_calls() {
-        let tmp = tempfile::tempdir().unwrap();
-        let a = load_or_create_iroh_secret(tmp.path()).unwrap();
-        let b = load_or_create_iroh_secret(tmp.path()).unwrap();
-        assert_eq!(a, b);
-        assert_ne!(a, [0u8; 32]);
-    }
-
-    #[test]
-    fn iroh_secret_is_never_replaced() {
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("iroh-secret.bin");
-        std::fs::write(&path, [7u8; 32]).unwrap();
-        assert_eq!(load_or_create_iroh_secret(tmp.path()).unwrap(), [7u8; 32]);
-        // A malformed secret is an error, not a reason to mint a new identity.
-        std::fs::write(&path, b"short").unwrap();
-        assert!(load_or_create_iroh_secret(tmp.path()).is_err());
-        assert_eq!(std::fs::read(&path).unwrap(), b"short");
-    }
-
-    #[test]
-    fn unreadable_iroh_secret_is_never_replaced() {
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("iroh-secret.bin");
-        // A directory in the secret's place fails every read, whatever the
-        // caller's privileges (a mode-000 file is still readable by root).
-        std::fs::create_dir(&path).unwrap();
-        std::fs::write(path.join("marker"), b"kept").unwrap();
-        assert!(load_or_create_iroh_secret(tmp.path()).is_err());
-        assert!(path.is_dir(), "the unreadable secret must not be replaced");
-        assert_eq!(std::fs::read(path.join("marker")).unwrap(), b"kept");
-        assert_eq!(std::fs::read_dir(tmp.path()).unwrap().count(), 1);
-    }
-
-    #[test]
-    fn simultaneous_starts_share_one_iroh_secret() {
-        for _ in 0..8 {
+    fn iroh_secret_is_minted_once_and_never_replaced() {
+        // Phase `iroh_secret_stable_across_calls`.
+        {
             let tmp = tempfile::tempdir().unwrap();
-            let root = tmp.path().to_path_buf();
-            let gate = std::sync::Arc::new(std::sync::Barrier::new(4));
-            // Spawn every participant before joining: interleaving spawn/join
-            // would deadlock the barrier.
-            let mut workers = Vec::with_capacity(4);
-            for _ in 0..4 {
-                let root = root.clone();
-                let gate = std::sync::Arc::clone(&gate);
-                workers.push(std::thread::spawn(move || {
-                    gate.wait();
-                    load_or_create_iroh_secret(&root).unwrap()
-                }));
+            let a = load_or_create_iroh_secret(tmp.path()).unwrap();
+            let b = load_or_create_iroh_secret(tmp.path()).unwrap();
+            assert_eq!(a, b);
+            assert_ne!(a, [0u8; 32]);
+        }
+        // Phase `iroh_secret_is_never_replaced`.
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let path = tmp.path().join("iroh-secret.bin");
+            std::fs::write(&path, [7u8; 32]).unwrap();
+            assert_eq!(load_or_create_iroh_secret(tmp.path()).unwrap(), [7u8; 32]);
+            // A malformed secret is an error, not a reason to mint a new identity.
+            std::fs::write(&path, b"short").unwrap();
+            assert!(load_or_create_iroh_secret(tmp.path()).is_err());
+            assert_eq!(std::fs::read(&path).unwrap(), b"short");
+        }
+        // Phase `unreadable_iroh_secret_is_never_replaced`.
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let path = tmp.path().join("iroh-secret.bin");
+            // A directory in the secret's place fails every read, whatever the
+            // caller's privileges (a mode-000 file is still readable by root).
+            std::fs::create_dir(&path).unwrap();
+            std::fs::write(path.join("marker"), b"kept").unwrap();
+            assert!(load_or_create_iroh_secret(tmp.path()).is_err());
+            assert!(path.is_dir(), "the unreadable secret must not be replaced");
+            assert_eq!(std::fs::read(path.join("marker")).unwrap(), b"kept");
+            assert_eq!(std::fs::read_dir(tmp.path()).unwrap().count(), 1);
+        }
+        // Phase `simultaneous_starts_share_one_iroh_secret`.
+        {
+            for _ in 0..8 {
+                let tmp = tempfile::tempdir().unwrap();
+                let root = tmp.path().to_path_buf();
+                let gate = std::sync::Arc::new(std::sync::Barrier::new(4));
+                // Spawn every participant before joining: interleaving spawn/join
+                // would deadlock the barrier.
+                let mut workers = Vec::with_capacity(4);
+                for _ in 0..4 {
+                    let root = root.clone();
+                    let gate = std::sync::Arc::clone(&gate);
+                    workers.push(std::thread::spawn(move || {
+                        gate.wait();
+                        load_or_create_iroh_secret(&root).unwrap()
+                    }));
+                }
+                let secrets: Vec<_> = workers
+                    .into_iter()
+                    .map(|worker| worker.join().unwrap())
+                    .collect();
+                let persisted = std::fs::read(root.join("iroh-secret.bin")).unwrap();
+                assert!(secrets.iter().all(|secret| secret.as_slice() == persisted));
+                assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
             }
-            let secrets: Vec<_> = workers
-                .into_iter()
-                .map(|worker| worker.join().unwrap())
-                .collect();
-            let persisted = std::fs::read(root.join("iroh-secret.bin")).unwrap();
-            assert!(secrets.iter().all(|secret| secret.as_slice() == persisted));
-            assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
         }
     }
 
@@ -1264,22 +1278,5 @@ mod tests {
             .permissions()
             .mode();
         assert_eq!(mode & 0o777, 0o600);
-    }
-
-    #[test]
-    fn log_append() {
-        let tmp = tempfile::tempdir().unwrap();
-        let store = WorkspaceStore::open(tmp.path(), 7, true).unwrap();
-        store
-            .append_log(&LogEntry {
-                workspace_id: 7,
-                received_at_ns: 1,
-                author_device_hex: "aa".repeat(32),
-                authored_at_ns: 0,
-                delta_len: 42,
-            })
-            .unwrap();
-        let text = fs::read_to_string(store.root().join(LOG_FILE)).unwrap();
-        assert!(text.contains("\"workspace_id\":7"));
     }
 }

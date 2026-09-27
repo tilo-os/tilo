@@ -1345,56 +1345,172 @@ mod tests {
     }
 
     #[test]
-    fn complete_load_refuses_truncated_increment_without_accepting_or_rewriting_it() {
-        let tmp = tempfile::tempdir().unwrap();
-        let mut store = DocStore::open_in("dev.tilo.complete-load", tmp.path()).unwrap();
-        let mut doc = store.new_document();
-        doc.put(ROOT, "body", "first").unwrap();
-        let mut bytes = doc.save();
-        doc.put(ROOT, "body", "later version").unwrap();
-        let increment = doc.save_incremental();
-        assert!(increment.len() > 8);
-        bytes.extend_from_slice(&increment[..increment.len() - 3]);
-        fs::write(store.document_path(), &bytes).unwrap();
-        let before = store.persisted.clone();
-        assert!(
-            store.load_complete().is_err(),
-            "checked admission cannot accept a valid prefix with a truncated appended change"
-        );
-        assert_eq!(
-            store.persisted, before,
-            "refused content cannot become the admitted persisted frontier"
-        );
-        assert_eq!(fs::read(store.document_path()).unwrap(), bytes);
-        let legacy = store.load().unwrap().unwrap();
-        assert_eq!(
-            legacy.get(ROOT, "body").unwrap().unwrap().0.as_str(),
-            Some("first"),
-            "ordinary legacy recovery retains its prior partial-load behavior"
-        );
+    #[serial_test::serial]
+    fn legacy_package_migration_claims_grant_exactly_one_room() {
+        // Phase `legacy_package_migration_is_claimed_by_one_room_and_resume_is_stable`.
+        {
+            let tmp = scratch_home();
+            let package = "so.tilo.legacy-claim";
+            let legacy = DocStore::legacy_package_document_path(package).unwrap();
+            fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+            fs::write(&legacy, b"legacy source remains intact").unwrap();
+
+            assert!(DocStore::claim_legacy_package_migration(package, "room-a").unwrap());
+            assert!(
+                !DocStore::claim_legacy_package_migration(package, "room-b").unwrap(),
+                "a second room cannot import the same retained source"
+            );
+            assert!(
+                DocStore::claim_legacy_package_migration(package, "room-a").unwrap(),
+                "the original claimant can resume after an interrupted migration"
+            );
+            assert!(legacy.is_file(), "claims never remove the recovery source");
+            drop(tmp);
+        }
+        // Phase `concurrent_legacy_migration_claims_have_one_winner`.
+        {
+            let _tmp = scratch_home();
+            let package = "so.tilo.concurrent-claim";
+            fs::create_dir_all(cli::standalone_state_dir(package)).unwrap();
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+            let mut threads = Vec::new();
+            for room in ["room-a", "room-b"] {
+                let barrier = std::sync::Arc::clone(&barrier);
+                threads.push(std::thread::spawn(move || {
+                    barrier.wait();
+                    DocStore::claim_legacy_package_migration(package, room).unwrap()
+                }));
+            }
+            let wins = threads
+                .into_iter()
+                .map(|thread| thread.join().unwrap())
+                .filter(|won| *won)
+                .count();
+            assert_eq!(wins, 1, "atomic create gives one room the source");
+        }
+        // Phase `torn_legacy_claim_recovers_without_granting_two_rooms`.
+        {
+            let _tmp = scratch_home();
+            let package = "so.tilo.torn-claim";
+            let root = cli::standalone_state_dir(package);
+            fs::create_dir_all(&root).unwrap();
+            // Shape left by the old create-then-write implementation if it died
+            // between those syscalls.  It has no valid owner, so recovery uses a
+            // separate atomic claim rather than replacing this file in place.
+            fs::write(root.join(LEGACY_PACKAGE_ROOM_CLAIM), b"room-a").unwrap();
+            assert!(DocStore::claim_legacy_package_migration(package, "room-a").unwrap());
+            assert!(!DocStore::claim_legacy_package_migration(package, "room-b").unwrap());
+            assert!(DocStore::claim_legacy_package_migration(package, "room-a").unwrap());
+        }
     }
 
     #[test]
-    fn complete_load_accepts_full_history_and_distinguishes_missing_from_empty() {
-        let tmp = tempfile::tempdir().unwrap();
-        let mut store = DocStore::open_in("dev.tilo.complete-load", tmp.path()).unwrap();
-        assert!(store.load_complete().unwrap().is_none());
-        fs::write(store.document_path(), []).unwrap();
-        assert!(matches!(
-            store.load_complete(),
-            Err(StoreError::EmptyExistingDocument { .. })
-        ));
-        let mut doc = store.new_document();
-        doc.put(ROOT, "body", "first").unwrap();
-        let mut bytes = doc.save();
-        doc.put(ROOT, "body", "second").unwrap();
-        bytes.extend_from_slice(&doc.save_incremental());
-        let heads = doc.get_heads();
-        fs::write(store.document_path(), &bytes).unwrap();
-        let mut loaded = store.load_complete().unwrap().unwrap();
-        assert_eq!(loaded.get_heads(), heads);
-        assert_eq!(store.persisted, heads);
-        assert_eq!(fs::read(store.document_path()).unwrap(), bytes);
+    fn canonical_and_complete_loads_refuse_newer_invalid_or_truncated_documents() {
+        // Phase `canonical_schema_checks_all_live_values_without_mutation`.
+        {
+            assert_malformed_schemas_are_rejected();
+            assert_supported_schemas_are_nonmutating();
+            assert_schema_conflicts_are_checked();
+        }
+        // Phase `complete_load_refuses_truncated_increment_without_accepting_or_rewriting_it`.
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let mut store = DocStore::open_in("dev.tilo.complete-load", tmp.path()).unwrap();
+            let mut doc = store.new_document();
+            doc.put(ROOT, "body", "first").unwrap();
+            let mut bytes = doc.save();
+            doc.put(ROOT, "body", "later version").unwrap();
+            let increment = doc.save_incremental();
+            assert!(increment.len() > 8);
+            bytes.extend_from_slice(&increment[..increment.len() - 3]);
+            fs::write(store.document_path(), &bytes).unwrap();
+            let before = store.persisted.clone();
+            assert!(
+                store.load_complete().is_err(),
+                "checked admission cannot accept a valid prefix with a truncated appended change"
+            );
+            assert_eq!(
+                store.persisted, before,
+                "refused content cannot become the admitted persisted frontier"
+            );
+            assert_eq!(fs::read(store.document_path()).unwrap(), bytes);
+            let legacy = store.load().unwrap().unwrap();
+            assert_eq!(
+                legacy.get(ROOT, "body").unwrap().unwrap().0.as_str(),
+                Some("first"),
+                "ordinary legacy recovery retains its prior partial-load behavior"
+            );
+        }
+        // Phase `complete_load_accepts_full_history_and_distinguishes_missing_from_empty`.
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let mut store = DocStore::open_in("dev.tilo.complete-load", tmp.path()).unwrap();
+            assert!(store.load_complete().unwrap().is_none());
+            fs::write(store.document_path(), []).unwrap();
+            assert!(matches!(
+                store.load_complete(),
+                Err(StoreError::EmptyExistingDocument { .. })
+            ));
+            let mut doc = store.new_document();
+            doc.put(ROOT, "body", "first").unwrap();
+            let mut bytes = doc.save();
+            doc.put(ROOT, "body", "second").unwrap();
+            bytes.extend_from_slice(&doc.save_incremental());
+            let heads = doc.get_heads();
+            fs::write(store.document_path(), &bytes).unwrap();
+            let mut loaded = store.load_complete().unwrap().unwrap();
+            assert_eq!(loaded.get_heads(), heads);
+            assert_eq!(store.persisted, heads);
+            assert_eq!(fs::read(store.document_path()).unwrap(), bytes);
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn store_paths_follow_the_contained_package_id() {
+        // Phase `path_is_derived_from_the_package_id`.
+        {
+            let tmp = scratch_home();
+            let store = DocStore::open_for("so.tilo.ebook").unwrap();
+            assert_eq!(store.dir(), tmp.path().join("so.tilo.ebook"));
+            assert_eq!(
+                store.document_path(),
+                tmp.path().join("so.tilo.ebook").join(DOCUMENT_FILE)
+            );
+        }
+        // Phase `open_reads_the_launcher_package_id`.
+        {
+            let tmp = scratch_home();
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("TILO_PACKAGE_ID", "so.tilo.monitor");
+            let store = DocStore::open().unwrap();
+            assert_eq!(store.package_id(), "so.tilo.monitor");
+            assert_eq!(store.dir(), tmp.path().join("so.tilo.monitor"));
+        }
+        // Phase `package_id_cannot_escape_the_data_root`.
+        // The containment boundary: an app that lies about its own package id must
+        // not be able to address another app's directory or escape the data root.
+        {
+            let _tmp = scratch_home();
+            for bad in [
+                "../so.tilo.mail",
+                "../../etc",
+                "/etc/shadow",
+                "so.tilo.mail/../so.tilo.chat",
+                "a/b",
+                "..",
+                ".",
+                "",
+            ] {
+                let err = DocStore::open_for(bad)
+                    .err()
+                    .unwrap_or_else(|| panic!("package id {bad:?} must be rejected"));
+                assert!(
+                    matches!(err, StoreError::PackageId(..)),
+                    "package id {bad:?} rejected for the wrong reason: {err}"
+                );
+            }
+        }
     }
 
     fn with_partial_tail(doc: &mut AutoCommit) -> Vec<u8> {
@@ -1530,26 +1646,65 @@ mod tests {
     }
 
     #[test]
-    fn canonical_schema_checks_all_live_values_without_mutation() {
-        assert_malformed_schemas_are_rejected();
-        assert_supported_schemas_are_nonmutating();
-        assert_schema_conflicts_are_checked();
-    }
+    fn store_gates_locks_and_directories_fail_closed() {
+        // Phase `canonical_gate_blocks_legacy_before_actor_creation`.
+        {
+            let tmp = TempDir::new().unwrap();
+            // The exclusive owner holds this gate before touching actor or document.
+            let gate = DocStore::open_canonical_at("so.tilo.test", tmp.path()).unwrap();
+            let result = DocStore::open_in("so.tilo.test", tmp.path());
+            assert!(
+                result.is_err(),
+                "a legacy opener must respect the canonical gate"
+            );
+            assert!(!tmp.path().join(ACTOR_FILE).exists());
+            assert!(!tmp.path().join(DOCUMENT_FILE).exists());
+            drop(gate);
+            assert!(DocStore::open_in("so.tilo.test", tmp.path()).is_ok());
+        }
+        // Phase `writer_lock_is_exclusive_and_released_with_its_handle`.
+        {
+            let tmp = TempDir::new().unwrap();
+            let path = tmp.path().join("writer.lock");
+            let first = acquire_writer_lock(&path).expect("first writer lock");
+            assert!(
+                acquire_writer_lock(&path).is_none(),
+                "a second live handle must not acquire the writer lock"
+            );
+            drop(first);
+            assert!(
+                acquire_writer_lock(&path).is_some(),
+                "dropping the owner must release the writer lock"
+            );
+        }
+        // Phase `an_uncreatable_state_dir_is_still_an_error`.
+        // A state directory that genuinely cannot be created must still surface as
+        // an error — idempotent create must not paper over a real filesystem failure.
+        {
+            // A file where a parent directory needs to be fails ENOTDIR for any
+            // uid — unlike a read-only directory, which root would sail past.
+            let tmp = TempDir::new().unwrap();
+            let blocker = tmp.path().join("blocker");
+            fs::write(&blocker, b"not a directory").unwrap();
 
-    #[test]
-    fn canonical_gate_blocks_legacy_before_actor_creation() {
-        let tmp = TempDir::new().unwrap();
-        // The exclusive owner holds this gate before touching actor or document.
-        let gate = DocStore::open_canonical_at("so.tilo.test", tmp.path()).unwrap();
-        let result = DocStore::open_in("so.tilo.test", tmp.path());
-        assert!(
-            result.is_err(),
-            "a legacy opener must respect the canonical gate"
-        );
-        assert!(!tmp.path().join(ACTOR_FILE).exists());
-        assert!(!tmp.path().join(DOCUMENT_FILE).exists());
-        drop(gate);
-        assert!(DocStore::open_in("so.tilo.test", tmp.path()).is_ok());
+            let result = DocStore::shared(
+                Rc::new(FsStore::new(blocker.join("sub"))),
+                StorageKey::package("so.tilo.blocked"),
+            );
+
+            match result {
+                Err(StoreError::Io { .. }) => {}
+                Err(other) => {
+                    panic!(
+                        "expected an Io error from an uncreatable state directory, got {other:?}"
+                    )
+                }
+                Ok(_) => panic!(
+                    "an uncreatable state directory must surface as an error, not be \
+                     masked by the idempotent create"
+                ),
+            }
+        }
     }
 
     fn text_of(doc: &AutoCommit, key: &str) -> Option<String> {
@@ -1568,723 +1723,568 @@ mod tests {
 
     #[test]
     #[serial_test::serial]
-    fn path_is_derived_from_the_package_id() {
-        let tmp = scratch_home();
-        let store = DocStore::open_for("so.tilo.ebook").unwrap();
-        assert_eq!(store.dir(), tmp.path().join("so.tilo.ebook"));
-        assert_eq!(
-            store.document_path(),
-            tmp.path().join("so.tilo.ebook").join(DOCUMENT_FILE)
-        );
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn saves_and_appends_round_trip_and_survive_interruption() {
+        // Phase `round_trip_preserves_content`.
+        {
+            let _tmp = scratch_home();
+            let mut store = DocStore::open_for("so.tilo.roundtrip").unwrap();
+            assert!(store.load().unwrap().is_none(), "nothing saved yet");
 
-    #[test]
-    #[serial_test::serial]
-    fn open_reads_the_launcher_package_id() {
-        let tmp = scratch_home();
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("TILO_PACKAGE_ID", "so.tilo.monitor");
-        let store = DocStore::open().unwrap();
-        assert_eq!(store.package_id(), "so.tilo.monitor");
-        assert_eq!(store.dir(), tmp.path().join("so.tilo.monitor"));
-    }
+            let mut doc = store.new_document();
+            doc.put(&ROOT, "title", ScalarValue::Str("Moby Dick".into()))
+                .unwrap();
+            let notes = doc.put_object(&ROOT, "notes", ObjType::Text).unwrap();
+            doc.splice_text(&notes, 0, 0, "call me ishmael").unwrap();
+            store.save(&mut doc).unwrap();
+            drop((store, doc));
 
-    #[test]
-    #[serial_test::serial]
-    fn legacy_package_migration_is_claimed_by_one_room_and_resume_is_stable() {
-        let tmp = scratch_home();
-        let package = "so.tilo.legacy-claim";
-        let legacy = DocStore::legacy_package_document_path(package).unwrap();
-        fs::create_dir_all(legacy.parent().unwrap()).unwrap();
-        fs::write(&legacy, b"legacy source remains intact").unwrap();
-
-        assert!(DocStore::claim_legacy_package_migration(package, "room-a").unwrap());
-        assert!(
-            !DocStore::claim_legacy_package_migration(package, "room-b").unwrap(),
-            "a second room cannot import the same retained source"
-        );
-        assert!(
-            DocStore::claim_legacy_package_migration(package, "room-a").unwrap(),
-            "the original claimant can resume after an interrupted migration"
-        );
-        assert!(legacy.is_file(), "claims never remove the recovery source");
-        drop(tmp);
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn concurrent_legacy_migration_claims_have_one_winner() {
-        let _tmp = scratch_home();
-        let package = "so.tilo.concurrent-claim";
-        fs::create_dir_all(cli::standalone_state_dir(package)).unwrap();
-        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
-        let mut threads = Vec::new();
-        for room in ["room-a", "room-b"] {
-            let barrier = std::sync::Arc::clone(&barrier);
-            threads.push(std::thread::spawn(move || {
-                barrier.wait();
-                DocStore::claim_legacy_package_migration(package, room).unwrap()
-            }));
+            let mut reopened = DocStore::open_for("so.tilo.roundtrip").unwrap();
+            let loaded = reopened.load().unwrap().expect("document is on disk");
+            assert_eq!(text_of(&loaded, "title").as_deref(), Some("Moby Dick"));
+            let notes = loaded.get(&ROOT, "notes").unwrap().unwrap().1;
+            assert_eq!(loaded.text(&notes).unwrap(), "call me ishmael");
         }
-        let wins = threads
-            .into_iter()
-            .map(|thread| thread.join().unwrap())
-            .filter(|won| *won)
-            .count();
-        assert_eq!(wins, 1, "atomic create gives one room the source");
-    }
+        // Phase `round_trip_merges_with_a_replica_that_diverged_before_the_save`.
+        // The anti-`contacts` test: `apps/contacts` used to save by replaying its
+        // model into a brand-new `AutoCommit`, producing a file with no shared
+        // history with any peer, so merges duplicated records instead of
+        // converging. A document through this store must still merge cleanly with
+        // a replica that diverged before the save.
+        {
+            let _tmp = scratch_home();
+            let mut store = DocStore::open_for("so.tilo.merge").unwrap();
 
-    #[test]
-    #[serial_test::serial]
-    fn torn_legacy_claim_recovers_without_granting_two_rooms() {
-        let _tmp = scratch_home();
-        let package = "so.tilo.torn-claim";
-        let root = cli::standalone_state_dir(package);
-        fs::create_dir_all(&root).unwrap();
-        // Shape left by the old create-then-write implementation if it died
-        // between those syscalls.  It has no valid owner, so recovery uses a
-        // separate atomic claim rather than replacing this file in place.
-        fs::write(root.join(LEGACY_PACKAGE_ROOM_CLAIM), b"room-a").unwrap();
-        assert!(DocStore::claim_legacy_package_migration(package, "room-a").unwrap());
-        assert!(!DocStore::claim_legacy_package_migration(package, "room-b").unwrap());
-        assert!(DocStore::claim_legacy_package_migration(package, "room-a").unwrap());
-    }
+            let mut doc = store.new_document();
+            let list = doc.put_object(&ROOT, "contacts", ObjType::Map).unwrap();
+            doc.put(&list, "ada", ScalarValue::Str("Ada Lovelace".into()))
+                .unwrap();
+            let original_actor = doc.get_actor().clone();
 
-    /// The containment boundary: an app that lies about its own package id must
-    /// not be able to address another app's directory or escape the data root.
-    #[test]
-    #[serial_test::serial]
-    fn package_id_cannot_escape_the_data_root() {
-        let _tmp = scratch_home();
-        for bad in [
-            "../so.tilo.mail",
-            "../../etc",
-            "/etc/shadow",
-            "so.tilo.mail/../so.tilo.chat",
-            "a/b",
-            "..",
-            ".",
-            "",
-        ] {
-            let err = DocStore::open_for(bad)
-                .err()
-                .unwrap_or_else(|| panic!("package id {bad:?} must be rejected"));
+            let mut peer = doc.fork().with_actor(ActorId::random());
+            let peer_list = peer.get(&ROOT, "contacts").unwrap().unwrap().1;
+            peer.put(&peer_list, "grace", ScalarValue::Str("Grace Hopper".into()))
+                .unwrap();
+
+            doc.put(&list, "alan", ScalarValue::Str("Alan Turing".into()))
+                .unwrap();
+            store.save(&mut doc).unwrap();
+            drop((store, doc));
+
+            let mut reopened = DocStore::open_for("so.tilo.merge").unwrap();
+            let mut restored = reopened.load().unwrap().expect("saved document");
+
+            // Actor identity survives the restart: same automerge actor, not a fresh one per launch.
+            assert_eq!(
+                restored.get_actor(),
+                &original_actor,
+                "a reopened store must keep the document's actor identity"
+            );
+
+            restored
+                .merge_incoming(&mut peer)
+                .expect("merge with diverged peer");
+            let list = restored.get(&ROOT, "contacts").unwrap().unwrap().1;
+            assert_eq!(
+                str_at(&restored, &list, "ada").as_deref(),
+                Some("Ada Lovelace"),
+                "the shared ancestor is still there exactly once"
+            );
+            assert_eq!(
+                str_at(&restored, &list, "alan").as_deref(),
+                Some("Alan Turing"),
+                "the saved local edit survives the merge"
+            );
+            assert_eq!(
+                str_at(&restored, &list, "grace").as_deref(),
+                Some("Grace Hopper"),
+                "the peer's concurrent edit merges in"
+            );
+            // A rebuilt-from-scratch document would have made `contacts` a different
+            // object on each side, so the merge would leave two conflicting values.
+            // Exactly one is the proof it didn't.
+            assert_eq!(
+                restored.get_all(&ROOT, "contacts").unwrap().len(),
+                1,
+                "history was preserved, so both sides edited the same object"
+            );
+        }
+        // Phase `append_is_incremental_and_loads_back`.
+        {
+            let _tmp = scratch_home();
+            let mut store = DocStore::open_for("so.tilo.append").unwrap();
+            let mut doc = store.new_document();
+            let body = doc.put_object(&ROOT, "body", ObjType::Text).unwrap();
+            doc.splice_text(&body, 0, 0, "hello").unwrap();
+            store.save(&mut doc).unwrap();
+            let base = fs::metadata(store.document_path()).unwrap().len();
+
+            doc.splice_text(&body, 5, 0, " world").unwrap();
+            let appended = store.append(&mut doc).unwrap();
+            assert!(appended > 0, "a real edit must produce a delta");
+            let grown = fs::metadata(store.document_path()).unwrap().len();
+            assert_eq!(
+                grown,
+                base + appended as u64,
+                "append must extend the file, not rewrite it"
+            );
+
+            assert_eq!(store.append(&mut doc).unwrap(), 0);
+            drop((store, doc));
+
+            let mut reopened = DocStore::open_for("so.tilo.append").unwrap();
+            let loaded = reopened.load().unwrap().unwrap();
+            let body = loaded.get(&ROOT, "body").unwrap().unwrap().1;
+            assert_eq!(loaded.text(&body).unwrap(), "hello world");
+        }
+        // Phase `a_torn_append_loses_only_the_torn_change`.
+        // A crash during an append leaves a truncated trailing chunk; everything
+        // written before it must still load.
+        {
+            let _tmp = scratch_home();
+            let mut store = DocStore::open_for("so.tilo.torn").unwrap();
+            let mut doc = store.new_document();
+            let body = doc.put_object(&ROOT, "body", ObjType::Text).unwrap();
+            doc.splice_text(&body, 0, 0, "committed").unwrap();
+            store.save(&mut doc).unwrap();
+
+            doc.splice_text(&body, 9, 0, " and lost").unwrap();
+            store.append(&mut doc).unwrap();
+
+            // Simulate the interrupted write: chop the tail of the last chunk.
+            let bytes = fs::read(store.document_path()).unwrap();
+            fs::write(store.document_path(), &bytes[..bytes.len() - 3]).unwrap();
+            drop((store, doc));
+
+            let mut reopened = DocStore::open_for("so.tilo.torn").unwrap();
+            let loaded = reopened
+                .load()
+                .expect("a torn tail must not fail the load")
+                .expect("document still present");
+            let body = loaded.get(&ROOT, "body").unwrap().unwrap().1;
+            assert_eq!(
+                loaded.text(&body).unwrap(),
+                "committed",
+                "everything committed before the torn append survives"
+            );
+        }
+        // Phase `an_interrupted_full_save_leaves_the_previous_document_intact`.
+        // A full save is a temp-file rename, so an interrupted one can't be
+        // observed: the previous document is intact, and the partial bytes sit in
+        // a `.tmp` sibling `load` never looks at.
+        {
+            let _tmp = scratch_home();
+            let mut store = DocStore::open_for("so.tilo.atomic").unwrap();
+            let mut doc = store.new_document();
+            doc.put(&ROOT, "v", ScalarValue::Str("first".into()))
+                .unwrap();
+            store.save(&mut doc).unwrap();
+
+            // The write half of an interrupted save: temp file exists, rename never happened.
+            let tmp_path = store.document_path().with_extension("automerge.tmp");
+            fs::write(&tmp_path, b"\x85\x6f\x4a\x83truncated garbage").unwrap();
+            drop((store, doc));
+
+            let mut reopened = DocStore::open_for("so.tilo.atomic").unwrap();
+            let loaded = reopened.load().unwrap().expect("previous document");
+            assert_eq!(text_of(&loaded, "v").as_deref(), Some("first"));
+        }
+        // Phase `a_second_instance_gets_a_distinct_actor`.
+        {
+            let _tmp = scratch_home();
+            let first = DocStore::open_for("so.tilo.twice").unwrap();
+            assert!(first.is_exclusive_writer());
+            let second = DocStore::open_for("so.tilo.twice").unwrap();
             assert!(
-                matches!(err, StoreError::PackageId(..)),
-                "package id {bad:?} rejected for the wrong reason: {err}"
+                !second.is_exclusive_writer(),
+                "the second live store must not claim the writer lock"
+            );
+            assert_ne!(
+                first.actor(),
+                second.actor(),
+                "two live writers sharing an actor id would corrupt the change sequence"
             );
         }
     }
 
     #[test]
     #[serial_test::serial]
-    fn round_trip_preserves_content() {
-        let _tmp = scratch_home();
-        let mut store = DocStore::open_for("so.tilo.roundtrip").unwrap();
-        assert!(store.load().unwrap().is_none(), "nothing saved yet");
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn schema_versions_are_stamped_migrated_once_and_newer_documents_refused() {
+        // Phase `app_owned_schema_migration_is_durable_and_runs_once`.
+        fn app_owned_schema_migration_is_durable_and_runs_once() {
+            let _tmp = scratch_home();
+            let package = "so.tilo.schema-migration";
+            let mut old_store = DocStore::open_for(package).unwrap();
+            let mut old = old_store.new_document();
+            old.put(ROOT, "legacy", "value").unwrap();
+            old_store.save(&mut old).unwrap();
+            drop(old_store);
 
-        let mut doc = store.new_document();
-        doc.put(&ROOT, "title", ScalarValue::Str("Moby Dick".into()))
-            .unwrap();
-        let notes = doc.put_object(&ROOT, "notes", ObjType::Text).unwrap();
-        doc.splice_text(&notes, 0, 0, "call me ishmael").unwrap();
-        store.save(&mut doc).unwrap();
-        drop((store, doc));
+            let mut migrated_store = DocStore::open_for(package).unwrap().with_schema_version(2);
+            let migrated = migrated_store
+                .load_migrating(|doc, from, to| {
+                    assert_eq!((from, to), (1, 2));
+                    doc.put(ROOT, "migrated", true)
+                        .map_err(|error| error.to_string())?;
+                    Ok(())
+                })
+                .unwrap()
+                .unwrap();
+            assert_eq!(schema_version_of(&migrated), 2);
+            assert!(migrated.get(ROOT, "migrated").unwrap().is_some());
+            drop(migrated_store);
 
-        let mut reopened = DocStore::open_for("so.tilo.roundtrip").unwrap();
-        let loaded = reopened.load().unwrap().expect("document is on disk");
-        assert_eq!(text_of(&loaded, "title").as_deref(), Some("Moby Dick"));
-        let notes = loaded.get(&ROOT, "notes").unwrap().unwrap().1;
-        assert_eq!(loaded.text(&notes).unwrap(), "call me ishmael");
-    }
-
-    /// The anti-`contacts` test: `apps/contacts` used to save by replaying its
-    /// model into a brand-new `AutoCommit`, producing a file with no shared
-    /// history with any peer, so merges duplicated records instead of
-    /// converging. A document through this store must still merge cleanly with
-    /// a replica that diverged before the save.
-    #[test]
-    #[serial_test::serial]
-    fn round_trip_merges_with_a_replica_that_diverged_before_the_save() {
-        let _tmp = scratch_home();
-        let mut store = DocStore::open_for("so.tilo.merge").unwrap();
-
-        let mut doc = store.new_document();
-        let list = doc.put_object(&ROOT, "contacts", ObjType::Map).unwrap();
-        doc.put(&list, "ada", ScalarValue::Str("Ada Lovelace".into()))
-            .unwrap();
-        let original_actor = doc.get_actor().clone();
-
-        let mut peer = doc.fork().with_actor(ActorId::random());
-        let peer_list = peer.get(&ROOT, "contacts").unwrap().unwrap().1;
-        peer.put(&peer_list, "grace", ScalarValue::Str("Grace Hopper".into()))
-            .unwrap();
-
-        doc.put(&list, "alan", ScalarValue::Str("Alan Turing".into()))
-            .unwrap();
-        store.save(&mut doc).unwrap();
-        drop((store, doc));
-
-        let mut reopened = DocStore::open_for("so.tilo.merge").unwrap();
-        let mut restored = reopened.load().unwrap().expect("saved document");
-
-        // Actor identity survives the restart: same automerge actor, not a fresh one per launch.
-        assert_eq!(
-            restored.get_actor(),
-            &original_actor,
-            "a reopened store must keep the document's actor identity"
-        );
-
-        restored
-            .merge_incoming(&mut peer)
-            .expect("merge with diverged peer");
-        let list = restored.get(&ROOT, "contacts").unwrap().unwrap().1;
-        assert_eq!(
-            str_at(&restored, &list, "ada").as_deref(),
-            Some("Ada Lovelace"),
-            "the shared ancestor is still there exactly once"
-        );
-        assert_eq!(
-            str_at(&restored, &list, "alan").as_deref(),
-            Some("Alan Turing"),
-            "the saved local edit survives the merge"
-        );
-        assert_eq!(
-            str_at(&restored, &list, "grace").as_deref(),
-            Some("Grace Hopper"),
-            "the peer's concurrent edit merges in"
-        );
-        // A rebuilt-from-scratch document would have made `contacts` a different
-        // object on each side, so the merge would leave two conflicting values.
-        // Exactly one is the proof it didn't.
-        assert_eq!(
-            restored.get_all(&ROOT, "contacts").unwrap().len(),
-            1,
-            "history was preserved, so both sides edited the same object"
-        );
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn append_is_incremental_and_loads_back() {
-        let _tmp = scratch_home();
-        let mut store = DocStore::open_for("so.tilo.append").unwrap();
-        let mut doc = store.new_document();
-        let body = doc.put_object(&ROOT, "body", ObjType::Text).unwrap();
-        doc.splice_text(&body, 0, 0, "hello").unwrap();
-        store.save(&mut doc).unwrap();
-        let base = fs::metadata(store.document_path()).unwrap().len();
-
-        doc.splice_text(&body, 5, 0, " world").unwrap();
-        let appended = store.append(&mut doc).unwrap();
-        assert!(appended > 0, "a real edit must produce a delta");
-        let grown = fs::metadata(store.document_path()).unwrap().len();
-        assert_eq!(
-            grown,
-            base + appended as u64,
-            "append must extend the file, not rewrite it"
-        );
-
-        assert_eq!(store.append(&mut doc).unwrap(), 0);
-        drop((store, doc));
-
-        let mut reopened = DocStore::open_for("so.tilo.append").unwrap();
-        let loaded = reopened.load().unwrap().unwrap();
-        let body = loaded.get(&ROOT, "body").unwrap().unwrap().1;
-        assert_eq!(loaded.text(&body).unwrap(), "hello world");
-    }
-
-    /// A crash during an append leaves a truncated trailing chunk; everything
-    /// written before it must still load.
-    #[test]
-    #[serial_test::serial]
-    fn a_torn_append_loses_only_the_torn_change() {
-        let _tmp = scratch_home();
-        let mut store = DocStore::open_for("so.tilo.torn").unwrap();
-        let mut doc = store.new_document();
-        let body = doc.put_object(&ROOT, "body", ObjType::Text).unwrap();
-        doc.splice_text(&body, 0, 0, "committed").unwrap();
-        store.save(&mut doc).unwrap();
-
-        doc.splice_text(&body, 9, 0, " and lost").unwrap();
-        store.append(&mut doc).unwrap();
-
-        // Simulate the interrupted write: chop the tail of the last chunk.
-        let bytes = fs::read(store.document_path()).unwrap();
-        fs::write(store.document_path(), &bytes[..bytes.len() - 3]).unwrap();
-        drop((store, doc));
-
-        let mut reopened = DocStore::open_for("so.tilo.torn").unwrap();
-        let loaded = reopened
-            .load()
-            .expect("a torn tail must not fail the load")
-            .expect("document still present");
-        let body = loaded.get(&ROOT, "body").unwrap().unwrap().1;
-        assert_eq!(
-            loaded.text(&body).unwrap(),
-            "committed",
-            "everything committed before the torn append survives"
-        );
-    }
-
-    /// A full save is a temp-file rename, so an interrupted one can't be
-    /// observed: the previous document is intact, and the partial bytes sit in
-    /// a `.tmp` sibling `load` never looks at.
-    #[test]
-    #[serial_test::serial]
-    fn an_interrupted_full_save_leaves_the_previous_document_intact() {
-        let _tmp = scratch_home();
-        let mut store = DocStore::open_for("so.tilo.atomic").unwrap();
-        let mut doc = store.new_document();
-        doc.put(&ROOT, "v", ScalarValue::Str("first".into()))
-            .unwrap();
-        store.save(&mut doc).unwrap();
-
-        // The write half of an interrupted save: temp file exists, rename never happened.
-        let tmp_path = store.document_path().with_extension("automerge.tmp");
-        fs::write(&tmp_path, b"\x85\x6f\x4a\x83truncated garbage").unwrap();
-        drop((store, doc));
-
-        let mut reopened = DocStore::open_for("so.tilo.atomic").unwrap();
-        let loaded = reopened.load().unwrap().expect("previous document");
-        assert_eq!(text_of(&loaded, "v").as_deref(), Some("first"));
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn a_second_instance_gets_a_distinct_actor() {
-        let _tmp = scratch_home();
-        let first = DocStore::open_for("so.tilo.twice").unwrap();
-        assert!(first.is_exclusive_writer());
-        let second = DocStore::open_for("so.tilo.twice").unwrap();
-        assert!(
-            !second.is_exclusive_writer(),
-            "the second live store must not claim the writer lock"
-        );
-        assert_ne!(
-            first.actor(),
-            second.actor(),
-            "two live writers sharing an actor id would corrupt the change sequence"
-        );
-    }
-
-    #[test]
-    fn writer_lock_is_exclusive_and_released_with_its_handle() {
-        let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("writer.lock");
-        let first = acquire_writer_lock(&path).expect("first writer lock");
-        assert!(
-            acquire_writer_lock(&path).is_none(),
-            "a second live handle must not acquire the writer lock"
-        );
-        drop(first);
-        assert!(
-            acquire_writer_lock(&path).is_some(),
-            "dropping the owner must release the writer lock"
-        );
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn migration_merges_a_legacy_file_without_losing_new_state() {
-        let _tmp = scratch_home();
-        // State an old release left behind somewhere else.
-        let legacy_dir = TempDir::new().unwrap();
-        let legacy = legacy_dir.path().join("addressbook.automerge");
-        let mut old = AutoCommit::new();
-        old.put(&ROOT, "from_legacy", ScalarValue::Str("yes".into()))
-            .unwrap();
-        fs::write(&legacy, old.save()).unwrap();
-
-        // State the new store already has.
-        let mut store = DocStore::open_for("so.tilo.migrate").unwrap();
-        let mut doc = store.new_document();
-        doc.put(&ROOT, "from_new", ScalarValue::Str("yes".into()))
-            .unwrap();
-        store.save(&mut doc).unwrap();
-
-        assert!(store.migrate_from(&legacy).unwrap());
-        let mut reopened = DocStore::open_for("so.tilo.migrate").unwrap();
-        let loaded = reopened.load().unwrap().unwrap();
-        assert_eq!(text_of(&loaded, "from_legacy").as_deref(), Some("yes"));
-        assert_eq!(text_of(&loaded, "from_new").as_deref(), Some("yes"));
-
-        // Idempotent: a second run changes nothing and loses nothing.
-        assert!(store.migrate_from(&legacy).unwrap());
-        let mut again = DocStore::open_for("so.tilo.migrate").unwrap();
-        let loaded = again.load().unwrap().unwrap();
-        assert_eq!(text_of(&loaded, "from_legacy").as_deref(), Some("yes"));
-        assert_eq!(text_of(&loaded, "from_new").as_deref(), Some("yes"));
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn migration_of_a_missing_file_is_a_no_op() {
-        let _tmp = scratch_home();
-        let mut store = DocStore::open_for("so.tilo.nomigrate").unwrap();
-        assert!(!store.migrate_from(Path::new("/nonexistent/nope")).unwrap());
-    }
-
-    /// Every document this crate creates says which layout it is, from the
-    /// moment it exists, so a document created and never edited is still
-    /// distinguishable from one written before versioning.
-    #[test]
-    #[serial_test::serial]
-    fn a_new_document_carries_the_schema_version() {
-        let _tmp = scratch_home();
-        let mut store = DocStore::open_for("so.tilo.stamped").unwrap();
-        let mut doc = store.new_document();
-        assert_eq!(schema_version_of(&doc), SCHEMA_VERSION);
-        store.save(&mut doc).unwrap();
-
-        let mut reopened = DocStore::open_for("so.tilo.stamped").unwrap();
-        let loaded = reopened.load().unwrap().expect("saved document");
-        assert!(
-            loaded.get(ROOT, SCHEMA_VERSION_KEY).unwrap().is_some(),
-            "the version has to survive the round trip, not just live in memory"
-        );
-        assert_eq!(schema_version_of(&loaded), SCHEMA_VERSION);
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn app_owned_schema_migration_is_durable_and_runs_once() {
-        let _tmp = scratch_home();
-        let package = "so.tilo.schema-migration";
-        let mut old_store = DocStore::open_for(package).unwrap();
-        let mut old = old_store.new_document();
-        old.put(ROOT, "legacy", "value").unwrap();
-        old_store.save(&mut old).unwrap();
-        drop(old_store);
-
-        let mut migrated_store = DocStore::open_for(package).unwrap().with_schema_version(2);
-        let migrated = migrated_store
-            .load_migrating(|doc, from, to| {
-                assert_eq!((from, to), (1, 2));
-                doc.put(ROOT, "migrated", true)
-                    .map_err(|error| error.to_string())?;
-                Ok(())
-            })
-            .unwrap()
-            .unwrap();
-        assert_eq!(schema_version_of(&migrated), 2);
-        assert!(migrated.get(ROOT, "migrated").unwrap().is_some());
-        drop(migrated_store);
-
-        let mut reopened = DocStore::open_for(package).unwrap().with_schema_version(2);
-        let loaded = reopened
-            .load_migrating(|_, _, _| Err("migration ran twice".into()))
-            .unwrap()
-            .unwrap();
-        assert_eq!(schema_version_of(&loaded), 2);
-        assert!(loaded.get(ROOT, "legacy").unwrap().is_some());
-        assert!(loaded.get(ROOT, "migrated").unwrap().is_some());
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn app_owned_schema_refuses_a_newer_layout() {
-        let _tmp = scratch_home();
-        let package = "so.tilo.schema-refusal";
-        let mut newer = DocStore::open_for(package).unwrap().with_schema_version(3);
-        let mut doc = newer.new_document();
-        newer.save(&mut doc).unwrap();
-        drop(newer);
-
-        let mut older = DocStore::open_for(package).unwrap().with_schema_version(2);
-        assert!(matches!(
-            older.load(),
-            Err(StoreError::NewerSchema {
-                found: 3,
-                understood: 2,
-                ..
-            })
-        ));
-    }
-
-    /// A document from before versioning existed opens, and gains its version
-    /// on next write. Reading absence as "unknown" would refuse every existing
-    /// user's documents on the very upgrade meant to prevent that loss.
-    #[test]
-    #[serial_test::serial]
-    fn a_document_written_before_versioning_opens_and_is_stamped_on_save() {
-        let _tmp = scratch_home();
-        let mut store = DocStore::open_for("so.tilo.unversioned").unwrap();
-
-        // Written the way the crate used to: a bare AutoCommit, no stamp.
-        let mut old = AutoCommit::new();
-        old.put(&ROOT, "note", ScalarValue::Str("kept".into()))
-            .unwrap();
-        assert!(
-            old.get(ROOT, SCHEMA_VERSION_KEY).unwrap().is_none(),
-            "the fixture must actually be unversioned"
-        );
-        fs::create_dir_all(store.dir()).unwrap();
-        fs::write(store.document_path(), old.save()).unwrap();
-
-        let mut doc = store.load_or_new();
-        assert!(
-            store.refusal().is_none(),
-            "an unversioned document is not refused"
-        );
-        assert_eq!(
-            text_of(&doc, "note").as_deref(),
-            Some("kept"),
-            "its contents must load"
-        );
-        store.save(&mut doc).unwrap();
-
-        let mut reopened = DocStore::open_for("so.tilo.unversioned").unwrap();
-        let loaded = reopened.load().unwrap().unwrap();
-        assert!(
-            loaded.get(ROOT, SCHEMA_VERSION_KEY).unwrap().is_some(),
-            "saving must stamp a document that had no version, so a later build \
-             is not left guessing"
-        );
-        assert_eq!(text_of(&loaded, "note").as_deref(), Some("kept"));
-    }
-
-    /// The one this exists for: an older build meets a document a newer one
-    /// wrote. It must refuse and keep the bytes — writing over them is what
-    /// turns a survivable empty session into data loss.
-    #[test]
-    #[serial_test::serial]
-    fn a_newer_document_is_refused_and_never_written_over() {
-        let _tmp = scratch_home();
-        let mut store = DocStore::open_for("so.tilo.future").unwrap();
-
-        let mut future = AutoCommit::new();
-        future
-            .put(
-                &ROOT,
-                "irreplaceable",
-                ScalarValue::Str("please keep".into()),
-            )
-            .unwrap();
-        future
-            .put(&ROOT, SCHEMA_VERSION_KEY, u64::from(SCHEMA_VERSION) + 1)
-            .unwrap();
-        fs::create_dir_all(store.dir()).unwrap();
-        let on_disk = future.save();
-        fs::write(store.document_path(), &on_disk).unwrap();
-
-        // load() names the situation rather than calling it corruption.
-        match store.load() {
-            Err(StoreError::NewerSchema {
-                found, understood, ..
-            }) => {
-                assert_eq!(found, SCHEMA_VERSION + 1);
-                assert_eq!(understood, SCHEMA_VERSION);
-            }
-            other => panic!("expected NewerSchema, got {other:?}"),
+            let mut reopened = DocStore::open_for(package).unwrap().with_schema_version(2);
+            let loaded = reopened
+                .load_migrating(|_, _, _| Err("migration ran twice".into()))
+                .unwrap()
+                .unwrap();
+            assert_eq!(schema_version_of(&loaded), 2);
+            assert!(loaded.get(ROOT, "legacy").unwrap().is_some());
+            assert!(loaded.get(ROOT, "migrated").unwrap().is_some());
         }
+        // Phase `migration_merges_a_legacy_file_without_losing_new_state`.
+        {
+            let _tmp = scratch_home();
+            // State an old release left behind somewhere else.
+            let legacy_dir = TempDir::new().unwrap();
+            let legacy = legacy_dir.path().join("addressbook.automerge");
+            let mut old = AutoCommit::new();
+            old.put(&ROOT, "from_legacy", ScalarValue::Str("yes".into()))
+                .unwrap();
+            fs::write(&legacy, old.save()).unwrap();
 
-        // load_or_new comes up empty and records why.
-        let mut doc = store.load_or_new();
-        assert!(
-            text_of(&doc, "irreplaceable").is_none(),
-            "a refused document must not be loaded"
-        );
-        let reason = store
-            .refusal()
-            .expect("the refusal has to be visible, or nothing downstream can act on it");
-        assert!(
-            reason.contains(&(SCHEMA_VERSION + 1).to_string()),
-            "the reason must name the layout found, got: {reason}"
-        );
+            // State the new store already has.
+            let mut store = DocStore::open_for("so.tilo.migrate").unwrap();
+            let mut doc = store.new_document();
+            doc.put(&ROOT, "from_new", ScalarValue::Str("yes".into()))
+                .unwrap();
+            store.save(&mut doc).unwrap();
 
-        // And every write path refuses, so the bytes survive an app that carries on regardless.
-        doc.put(&ROOT, "scribble", ScalarValue::Str("no".into()))
-            .unwrap();
-        assert!(
-            matches!(store.save(&mut doc), Err(StoreError::NewerSchema { .. })),
-            "save over a refused document must fail, not succeed quietly"
-        );
-        assert!(
-            matches!(store.append(&mut doc), Err(StoreError::NewerSchema { .. })),
-            "append over a refused document must fail too — it writes to the \
-             same file"
-        );
-        assert_eq!(
-            fs::read(store.document_path()).unwrap(),
-            on_disk,
-            "the document on disk must be byte-for-byte what it was"
-        );
-    }
+            assert!(store.migrate_from(&legacy).unwrap());
+            let mut reopened = DocStore::open_for("so.tilo.migrate").unwrap();
+            let loaded = reopened.load().unwrap().unwrap();
+            assert_eq!(text_of(&loaded, "from_legacy").as_deref(), Some("yes"));
+            assert_eq!(text_of(&loaded, "from_new").as_deref(), Some("yes"));
 
-    /// If the directory create were not idempotent, the second open would fail
-    /// EEXIST and swallow into an in-memory fallback, silently losing state
-    /// after the first launch. Pre-creates the directory before the *first*
-    /// open too, since fresh-XDG CI never sees an existing one otherwise.
-    #[test]
-    #[serial_test::serial]
-    fn opening_twice_against_an_existing_dir_keeps_persistence_enabled() {
-        let _tmp = scratch_home();
-        let pkg = "so.tilo.persist-twice";
+            // Idempotent: a second run changes nothing and loses nothing.
+            assert!(store.migrate_from(&legacy).unwrap());
+            let mut again = DocStore::open_for("so.tilo.migrate").unwrap();
+            let loaded = again.load().unwrap().unwrap();
+            assert_eq!(text_of(&loaded, "from_legacy").as_deref(), Some("yes"));
+            assert_eq!(text_of(&loaded, "from_new").as_deref(), Some("yes"));
+        }
+        // Phase `migration_of_a_missing_file_is_a_no_op`.
+        {
+            let _tmp = scratch_home();
+            let mut store = DocStore::open_for("so.tilo.nomigrate").unwrap();
+            assert!(!store.migrate_from(Path::new("/nonexistent/nope")).unwrap());
+        }
+        // Phase `a_new_document_carries_the_schema_version`.
+        // Every document this crate creates says which layout it is, from the
+        // moment it exists, so a document created and never edited is still
+        // distinguishable from one written before versioning.
+        {
+            let _tmp = scratch_home();
+            let mut store = DocStore::open_for("so.tilo.stamped").unwrap();
+            let mut doc = store.new_document();
+            assert_eq!(schema_version_of(&doc), SCHEMA_VERSION);
+            store.save(&mut doc).unwrap();
 
-        let dir = cli::standalone_state_dir(pkg);
-        fs::create_dir_all(&dir).unwrap();
-        assert!(
-            dir.is_dir(),
-            "the state directory pre-exists for both opens"
-        );
+            let mut reopened = DocStore::open_for("so.tilo.stamped").unwrap();
+            let loaded = reopened.load().unwrap().expect("saved document");
+            assert!(
+                loaded.get(ROOT, SCHEMA_VERSION_KEY).unwrap().is_some(),
+                "the version has to survive the round trip, not just live in memory"
+            );
+            assert_eq!(schema_version_of(&loaded), SCHEMA_VERSION);
+        }
+        // Phase `app_owned_schema_migration_is_durable_and_runs_once` (defined above).
+        app_owned_schema_migration_is_durable_and_runs_once();
+        // Phase `app_owned_schema_refuses_a_newer_layout`.
+        {
+            let _tmp = scratch_home();
+            let package = "so.tilo.schema-refusal";
+            let mut newer = DocStore::open_for(package).unwrap().with_schema_version(3);
+            let mut doc = newer.new_document();
+            newer.save(&mut doc).unwrap();
+            drop(newer);
 
-        // `seed` runs on the freshly loaded document, exactly as
-        // `ui::persist::open` sequences it, so the later edit reads as a change.
-        let mut run1 =
-            DocStore::open_for(pkg).expect("first open must succeed when the dir exists");
-        let mut doc = run1.load_or_new();
-        assert!(run1.refusal().is_none(), "a fresh store is not refused");
-        let mut autosave1 = run1.writer();
-        assert!(autosave1.is_enabled(), "run 1 must persist, not fall back");
-        autosave1.seed(&mut doc);
-        doc.put(&ROOT, "note", ScalarValue::Str("survives".into()))
-            .unwrap();
-        autosave1.request(&mut doc);
-        autosave1.flush();
-        assert_eq!(autosave1.last_error(), None, "no write may have failed");
-        drop(autosave1);
+            let mut older = DocStore::open_for(package).unwrap().with_schema_version(2);
+            assert!(matches!(
+                older.load(),
+                Err(StoreError::NewerSchema {
+                    found: 3,
+                    understood: 2,
+                    ..
+                })
+            ));
+        }
+        // Phase `a_document_written_before_versioning_opens_and_is_stamped_on_save`.
+        // A document from before versioning existed opens, and gains its version
+        // on next write. Reading absence as "unknown" would refuse every existing
+        // user's documents on the very upgrade meant to prevent that loss.
+        {
+            let _tmp = scratch_home();
+            let mut store = DocStore::open_for("so.tilo.unversioned").unwrap();
 
-        let run2 = DocStore::open_for(pkg);
-        assert!(
-            run2.is_ok(),
-            "second open against the existing dir must succeed, got {:?}",
-            run2.err()
-        );
-        let mut run2 = run2.unwrap();
-        let mut doc2 = run2.load_or_new();
-        assert_eq!(
-            text_of(&doc2, "note").as_deref(),
-            Some("survives"),
-            "state written in run 1 must round-trip across the re-open"
-        );
-        let autosave2 = run2.writer();
-        assert!(
-            autosave2.is_enabled(),
-            "the SECOND run must persist too — this is the bug: a non-idempotent \
-             directory create disabled persistence for every launch after the first"
-        );
-        doc2.put(&ROOT, "note", ScalarValue::Str("again".into()))
-            .unwrap();
-        autosave2.flush();
-    }
+            // Written the way the crate used to: a bare AutoCommit, no stamp.
+            let mut old = AutoCommit::new();
+            old.put(&ROOT, "note", ScalarValue::Str("kept".into()))
+                .unwrap();
+            assert!(
+                old.get(ROOT, SCHEMA_VERSION_KEY).unwrap().is_none(),
+                "the fixture must actually be unversioned"
+            );
+            fs::create_dir_all(store.dir()).unwrap();
+            fs::write(store.document_path(), old.save()).unwrap();
 
-    /// An older layout's zero-byte file at the directory's path used to fail
-    /// `create_dir_all` with EEXIST on every launch; opening must recover and
-    /// come up enabled.
-    #[test]
-    #[serial_test::serial]
-    fn opening_when_the_state_path_is_a_stale_empty_file_recovers_persistence() {
-        let _tmp = scratch_home();
-        let pkg = "so.tilo.stale-empty";
-        let path = cli::standalone_state_dir(pkg);
+            let mut doc = store.load_or_new();
+            assert!(
+                store.refusal().is_none(),
+                "an unversioned document is not refused"
+            );
+            assert_eq!(
+                text_of(&doc, "note").as_deref(),
+                Some("kept"),
+                "its contents must load"
+            );
+            store.save(&mut doc).unwrap();
 
-        fs::write(&path, b"").unwrap();
-        assert!(path.is_file(), "the leftover is a file, not a directory");
+            let mut reopened = DocStore::open_for("so.tilo.unversioned").unwrap();
+            let loaded = reopened.load().unwrap().unwrap();
+            assert!(
+                loaded.get(ROOT, SCHEMA_VERSION_KEY).unwrap().is_some(),
+                "saving must stamp a document that had no version, so a later build \
+                 is not left guessing"
+            );
+            assert_eq!(text_of(&loaded, "note").as_deref(), Some("kept"));
+        }
+        // Phase `a_newer_document_is_refused_and_never_written_over`.
+        // The one this exists for: an older build meets a document a newer one
+        // wrote. It must refuse and keep the bytes — writing over them is what
+        // turns a survivable empty session into data loss.
+        {
+            let _tmp = scratch_home();
+            let mut store = DocStore::open_for("so.tilo.future").unwrap();
 
-        let mut run1 = DocStore::open_for(pkg).expect("open must recover from a stale file");
-        assert!(path.is_dir(), "the stale file must have become a directory");
-        let mut doc = run1.load_or_new();
-        let mut autosave1 = run1.writer();
-        assert!(
-            autosave1.is_enabled(),
-            "recovering from a stale file must enable persistence, not fall back"
-        );
-        autosave1.seed(&mut doc);
-        doc.put(&ROOT, "note", ScalarValue::Str("recovered".into()))
-            .unwrap();
-        autosave1.request(&mut doc);
-        autosave1.flush();
-        assert_eq!(autosave1.last_error(), None, "no write may have failed");
-        drop(autosave1);
+            let mut future = AutoCommit::new();
+            future
+                .put(
+                    &ROOT,
+                    "irreplaceable",
+                    ScalarValue::Str("please keep".into()),
+                )
+                .unwrap();
+            future
+                .put(&ROOT, SCHEMA_VERSION_KEY, u64::from(SCHEMA_VERSION) + 1)
+                .unwrap();
+            fs::create_dir_all(store.dir()).unwrap();
+            let on_disk = future.save();
+            fs::write(store.document_path(), &on_disk).unwrap();
 
-        let mut run2 = DocStore::open_for(pkg).expect("second open after recovery");
-        let doc2 = run2.load_or_new();
-        assert_eq!(
-            text_of(&doc2, "note").as_deref(),
-            Some("recovered"),
-            "state written after recovery must round-trip across the re-open"
-        );
-    }
-
-    /// A *non-empty* file at the state path might be an old-format document, so
-    /// recovery must not delete it: moved aside to a `.stale` sibling and, if a
-    /// real document, migrated in — persistence comes up enabled either way.
-    #[test]
-    #[serial_test::serial]
-    fn opening_when_the_state_path_is_a_nonempty_file_preserves_and_migrates_it() {
-        let _tmp = scratch_home();
-        let pkg = "so.tilo.stale-doc";
-        let path = cli::standalone_state_dir(pkg);
-
-        // The old layout wrote a real Automerge document straight to the path.
-        let mut old = AutoCommit::new();
-        old.put(&ROOT, "note", ScalarValue::Str("from-old-layout".into()))
-            .unwrap();
-        let original = old.save();
-        fs::write(&path, &original).unwrap();
-
-        let mut store = DocStore::open_for(pkg).expect("open must recover from a stale document");
-        assert!(
-            path.is_dir(),
-            "the stale document must have become a directory"
-        );
-
-        // The old bytes are preserved beside the directory, never deleted.
-        let aside = PathBuf::from({
-            let mut s = path.as_os_str().to_owned();
-            s.push(".stale");
-            s
-        });
-        assert!(
-            aside.exists(),
-            "the old document must be preserved at {}",
-            aside.display()
-        );
-        assert_eq!(
-            fs::read(&aside).unwrap(),
-            original,
-            "preserved bytes must be intact"
-        );
-
-        // And, being a genuine document, it migrated in and loads.
-        let doc = store.load_or_new();
-        assert_eq!(
-            text_of(&doc, "note").as_deref(),
-            Some("from-old-layout"),
-            "an old-format document must migrate into the recovered store"
-        );
-        let autosave = store.writer();
-        assert!(
-            autosave.is_enabled(),
-            "persistence must be enabled after migration"
-        );
-    }
-
-    /// A state directory that genuinely cannot be created must still surface as
-    /// an error — idempotent create must not paper over a real filesystem failure.
-    #[test]
-    fn an_uncreatable_state_dir_is_still_an_error() {
-        // A file where a parent directory needs to be fails ENOTDIR for any
-        // uid — unlike a read-only directory, which root would sail past.
-        let tmp = TempDir::new().unwrap();
-        let blocker = tmp.path().join("blocker");
-        fs::write(&blocker, b"not a directory").unwrap();
-
-        let result = DocStore::shared(
-            Rc::new(FsStore::new(blocker.join("sub"))),
-            StorageKey::package("so.tilo.blocked"),
-        );
-
-        match result {
-            Err(StoreError::Io { .. }) => {}
-            Err(other) => {
-                panic!("expected an Io error from an uncreatable state directory, got {other:?}")
+            // load() names the situation rather than calling it corruption.
+            match store.load() {
+                Err(StoreError::NewerSchema {
+                    found, understood, ..
+                }) => {
+                    assert_eq!(found, SCHEMA_VERSION + 1);
+                    assert_eq!(understood, SCHEMA_VERSION);
+                }
+                other => panic!("expected NewerSchema, got {other:?}"),
             }
-            Ok(_) => panic!(
-                "an uncreatable state directory must surface as an error, not be \
-                 masked by the idempotent create"
-            ),
+
+            // load_or_new comes up empty and records why.
+            let mut doc = store.load_or_new();
+            assert!(
+                text_of(&doc, "irreplaceable").is_none(),
+                "a refused document must not be loaded"
+            );
+            let reason = store
+                .refusal()
+                .expect("the refusal has to be visible, or nothing downstream can act on it");
+            assert!(
+                reason.contains(&(SCHEMA_VERSION + 1).to_string()),
+                "the reason must name the layout found, got: {reason}"
+            );
+
+            // And every write path refuses, so the bytes survive an app that carries on regardless.
+            doc.put(&ROOT, "scribble", ScalarValue::Str("no".into()))
+                .unwrap();
+            assert!(
+                matches!(store.save(&mut doc), Err(StoreError::NewerSchema { .. })),
+                "save over a refused document must fail, not succeed quietly"
+            );
+            assert!(
+                matches!(store.append(&mut doc), Err(StoreError::NewerSchema { .. })),
+                "append over a refused document must fail too — it writes to the \
+                 same file"
+            );
+            assert_eq!(
+                fs::read(store.document_path()).unwrap(),
+                on_disk,
+                "the document on disk must be byte-for-byte what it was"
+            );
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn opening_over_existing_or_stale_state_keeps_persistence() {
+        // Phase `opening_twice_against_an_existing_dir_keeps_persistence_enabled`.
+        // If the directory create were not idempotent, the second open would fail
+        // EEXIST and swallow into an in-memory fallback, silently losing state
+        // after the first launch. Pre-creates the directory before the *first*
+        // open too, since fresh-XDG CI never sees an existing one otherwise.
+        {
+            let _tmp = scratch_home();
+            let pkg = "so.tilo.persist-twice";
+
+            let dir = cli::standalone_state_dir(pkg);
+            fs::create_dir_all(&dir).unwrap();
+            assert!(
+                dir.is_dir(),
+                "the state directory pre-exists for both opens"
+            );
+
+            // `seed` runs on the freshly loaded document, exactly as
+            // `ui::persist::open` sequences it, so the later edit reads as a change.
+            let mut run1 =
+                DocStore::open_for(pkg).expect("first open must succeed when the dir exists");
+            let mut doc = run1.load_or_new();
+            assert!(run1.refusal().is_none(), "a fresh store is not refused");
+            let mut autosave1 = run1.writer();
+            assert!(autosave1.is_enabled(), "run 1 must persist, not fall back");
+            autosave1.seed(&mut doc);
+            doc.put(&ROOT, "note", ScalarValue::Str("survives".into()))
+                .unwrap();
+            autosave1.request(&mut doc);
+            autosave1.flush();
+            assert_eq!(autosave1.last_error(), None, "no write may have failed");
+            drop(autosave1);
+
+            let run2 = DocStore::open_for(pkg);
+            assert!(
+                run2.is_ok(),
+                "second open against the existing dir must succeed, got {:?}",
+                run2.err()
+            );
+            let mut run2 = run2.unwrap();
+            let mut doc2 = run2.load_or_new();
+            assert_eq!(
+                text_of(&doc2, "note").as_deref(),
+                Some("survives"),
+                "state written in run 1 must round-trip across the re-open"
+            );
+            let autosave2 = run2.writer();
+            assert!(
+                autosave2.is_enabled(),
+                "the SECOND run must persist too — this is the bug: a non-idempotent \
+                 directory create disabled persistence for every launch after the first"
+            );
+            doc2.put(&ROOT, "note", ScalarValue::Str("again".into()))
+                .unwrap();
+            autosave2.flush();
+        }
+        // Phase `opening_when_the_state_path_is_a_stale_empty_file_recovers_persistence`.
+        // An older layout's zero-byte file at the directory's path used to fail
+        // `create_dir_all` with EEXIST on every launch; opening must recover and
+        // come up enabled.
+        {
+            let _tmp = scratch_home();
+            let pkg = "so.tilo.stale-empty";
+            let path = cli::standalone_state_dir(pkg);
+
+            fs::write(&path, b"").unwrap();
+            assert!(path.is_file(), "the leftover is a file, not a directory");
+
+            let mut run1 = DocStore::open_for(pkg).expect("open must recover from a stale file");
+            assert!(path.is_dir(), "the stale file must have become a directory");
+            let mut doc = run1.load_or_new();
+            let mut autosave1 = run1.writer();
+            assert!(
+                autosave1.is_enabled(),
+                "recovering from a stale file must enable persistence, not fall back"
+            );
+            autosave1.seed(&mut doc);
+            doc.put(&ROOT, "note", ScalarValue::Str("recovered".into()))
+                .unwrap();
+            autosave1.request(&mut doc);
+            autosave1.flush();
+            assert_eq!(autosave1.last_error(), None, "no write may have failed");
+            drop(autosave1);
+
+            let mut run2 = DocStore::open_for(pkg).expect("second open after recovery");
+            let doc2 = run2.load_or_new();
+            assert_eq!(
+                text_of(&doc2, "note").as_deref(),
+                Some("recovered"),
+                "state written after recovery must round-trip across the re-open"
+            );
+        }
+        // Phase `opening_when_the_state_path_is_a_nonempty_file_preserves_and_migrates_it`.
+        // A *non-empty* file at the state path might be an old-format document, so
+        // recovery must not delete it: moved aside to a `.stale` sibling and, if a
+        // real document, migrated in — persistence comes up enabled either way.
+        {
+            let _tmp = scratch_home();
+            let pkg = "so.tilo.stale-doc";
+            let path = cli::standalone_state_dir(pkg);
+
+            // The old layout wrote a real Automerge document straight to the path.
+            let mut old = AutoCommit::new();
+            old.put(&ROOT, "note", ScalarValue::Str("from-old-layout".into()))
+                .unwrap();
+            let original = old.save();
+            fs::write(&path, &original).unwrap();
+
+            let mut store =
+                DocStore::open_for(pkg).expect("open must recover from a stale document");
+            assert!(
+                path.is_dir(),
+                "the stale document must have become a directory"
+            );
+
+            // The old bytes are preserved beside the directory, never deleted.
+            let aside = PathBuf::from({
+                let mut s = path.as_os_str().to_owned();
+                s.push(".stale");
+                s
+            });
+            assert!(
+                aside.exists(),
+                "the old document must be preserved at {}",
+                aside.display()
+            );
+            assert_eq!(
+                fs::read(&aside).unwrap(),
+                original,
+                "preserved bytes must be intact"
+            );
+
+            // And, being a genuine document, it migrated in and loads.
+            let doc = store.load_or_new();
+            assert_eq!(
+                text_of(&doc, "note").as_deref(),
+                Some("from-old-layout"),
+                "an old-format document must migrate into the recovered store"
+            );
+            let autosave = store.writer();
+            assert!(
+                autosave.is_enabled(),
+                "persistence must be enabled after migration"
+            );
         }
     }
 }

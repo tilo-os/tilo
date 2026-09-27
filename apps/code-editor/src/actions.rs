@@ -1744,6 +1744,14 @@ mod tests {
     }
 
     #[test]
+    fn published_resources_expose_typed_actions_nesting_and_bounded_snapshots() {
+        // Each phase builds its own resource context and document.
+        file_io_has_typed_paths_and_background_job_contracts();
+        ctrl_k_publishes_the_project_and_file_tree();
+        folder_resources_are_nested_and_never_leak_local_paths();
+        bounded_snapshot_preserves_real_ancestry_and_lazy_folder_children();
+    }
+
     fn file_io_has_typed_paths_and_background_job_contracts() {
         let ctx = CodeEditorResourceCtx {
             project_name: "demo".into(),
@@ -1815,9 +1823,17 @@ mod tests {
         format!("00000000-0000-4000-8000-{id:012x}")
     }
 
+    #[test]
+    fn create_and_text_edit_actions_write_seeds_once_and_carry_minimal_payloads() {
+        // Each phase builds its own document.
+        create_file_action_writes_the_seeded_text();
+        create_file_action_is_idempotent();
+        edit_text_is_unicode_safe_and_carries_only_changed_region();
+        large_buffer_edit_payload_is_bounded_to_the_changed_region();
+    }
+
     /// Creating a buffer through the action materialises its seeded text in the
     /// document.
-    #[test]
     fn create_file_action_writes_the_seeded_text() {
         let mut doc = AutoCommit::new();
         assert!(
@@ -1834,7 +1850,6 @@ mod tests {
     /// The action is idempotent: a second create with a different seed does not
     /// overwrite the existing buffer (so a duplicate/out-of-order replay is a
     /// no-op, not a wedge).
-    #[test]
     fn create_file_action_is_idempotent() {
         let mut doc = AutoCommit::new();
         dispatch(&mut doc, &test_file_action(1, "first"));
@@ -1845,7 +1860,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn edit_text_is_unicode_safe_and_carries_only_changed_region() {
         let action = text_edit_action("file".into(), "αβγδ", "αβXδ");
         let CodeEditorAction::EditText {
@@ -1867,7 +1881,6 @@ mod tests {
         assert_eq!(after_context, "δ");
     }
 
-    #[test]
     fn large_buffer_edit_payload_is_bounded_to_the_changed_region() {
         let base = format!("{}needle{}", "a".repeat(512 * 1024), "z".repeat(512 * 1024));
         let next = base.replacen("needle", "N", 1);
@@ -1890,6 +1903,13 @@ mod tests {
     }
 
     #[test]
+    fn stale_deleted_or_oversized_edits_are_refused() {
+        // Each phase builds its own document.
+        edit_refuses_to_grow_a_collaborative_buffer_past_the_text_limit();
+        text_edit_refuses_stale_or_deleted_target();
+        a_stale_same_field_action_is_refused();
+    }
+
     fn edit_refuses_to_grow_a_collaborative_buffer_past_the_text_limit() {
         let id = test_file_id(700);
         let mut doc = AutoCommit::new();
@@ -1907,6 +1927,13 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_actions_converge_on_cross_replay() {
+        // Each phase forks its own replicas from a fresh base.
+        disjoint_and_same_position_text_edits_converge_on_replay();
+        concurrent_disjoint_actions_replay_on_two_replicas_without_manual_retry();
+        concurrent_rename_and_move_derive_the_same_path_on_cross_replay();
+    }
+
     fn disjoint_and_same_position_text_edits_converge_on_replay() {
         let id = test_file_id(71);
         let mut base = AutoCommit::new();
@@ -1944,7 +1971,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn text_edit_refuses_stale_or_deleted_target() {
         let id = test_file_id(72);
         let mut doc = AutoCommit::new();
@@ -2146,7 +2172,6 @@ mod tests {
     /// Ctrl+K on Code yields the project root exporting "New file" and a
     /// `code_editor.file:<node>` child per open buffer. Drives the real
     /// resource-builder path.
-    #[test]
     fn ctrl_k_publishes_the_project_and_file_tree() {
         let ctx = CodeEditorResourceCtx {
             project_name: "demo".into(),
@@ -2209,7 +2234,6 @@ mod tests {
         assert_eq!(file_actions[1].params()[0].name, "path");
     }
 
-    #[test]
     fn concurrent_disjoint_actions_replay_on_two_replicas_without_manual_retry() {
         let create = test_file_action(88, "fn main() {}\n");
         let mut base = AutoCommit::new();
@@ -2241,7 +2265,6 @@ mod tests {
         assert_eq!(first_record, second_record);
     }
 
-    #[test]
     fn a_stale_same_field_action_is_refused() {
         let mut doc = AutoCommit::new();
         dispatch(&mut doc, &test_file_action(89, ""));
@@ -2261,7 +2284,6 @@ mod tests {
         assert!(stale.apply(&mut doc).is_err());
     }
 
-    #[test]
     fn concurrent_rename_and_move_derive_the_same_path_on_cross_replay() {
         let file = test_file_id(91);
         let folder = test_file_id(92);
@@ -2308,7 +2330,6 @@ mod tests {
         assert_eq!(first_record, second_record);
     }
 
-    #[test]
     fn folder_resources_are_nested_and_never_leak_local_paths() {
         let root = test_file_id(70);
         let src = test_file_id(71);
@@ -2406,7 +2427,6 @@ mod tests {
         }
     }
 
-    #[test]
     fn bounded_snapshot_preserves_real_ancestry_and_lazy_folder_children() {
         fn count(resource: &Resource) -> usize {
             1usize.saturating_add(resource.children.iter().map(count).sum::<usize>())

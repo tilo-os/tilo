@@ -48,48 +48,49 @@ mod tests {
     }
 
     #[test]
-    fn low_discharging_battery_requires_power() {
-        assert_eq!(
-            insufficient_battery_percent(
-                battery(MIN_INSTALL_BATTERY_PERCENT - 1, BatteryState::Discharging),
-                true,
-            ),
-            Some(MIN_INSTALL_BATTERY_PERCENT - 1)
-        );
-        assert_eq!(
-            insufficient_battery_percent(battery(0, BatteryState::Empty), true),
-            Some(0)
-        );
-    }
-
-    #[test]
-    fn threshold_or_connected_power_is_ready() {
-        assert_eq!(
-            insufficient_battery_percent(
-                battery(MIN_INSTALL_BATTERY_PERCENT, BatteryState::Discharging),
-                true,
-            ),
-            None
-        );
-        assert_eq!(
-            insufficient_battery_percent(battery(3, BatteryState::Charging), true),
-            None
-        );
-        assert_eq!(
-            insufficient_battery_percent(battery(3, BatteryState::Discharging), false),
-            None
-        );
-    }
-
-    #[test]
-    fn absent_or_ambiguous_hardware_does_not_block() {
-        assert_eq!(
-            insufficient_battery_percent(BatterySnapshot::absent(), true),
-            None
-        );
-        assert_eq!(
-            insufficient_battery_percent(battery(3, BatteryState::Unknown), true),
-            None
-        );
+    fn power_readiness_blocks_only_a_low_discharging_battery() {
+        // Phase `low_discharging_battery_requires_power`.
+        {
+            assert_eq!(
+                insufficient_battery_percent(
+                    battery(MIN_INSTALL_BATTERY_PERCENT - 1, BatteryState::Discharging),
+                    true,
+                ),
+                Some(MIN_INSTALL_BATTERY_PERCENT - 1)
+            );
+            assert_eq!(
+                insufficient_battery_percent(battery(0, BatteryState::Empty), true),
+                Some(0)
+            );
+        }
+        // Phase `threshold_or_connected_power_is_ready`.
+        {
+            assert_eq!(
+                insufficient_battery_percent(
+                    battery(MIN_INSTALL_BATTERY_PERCENT, BatteryState::Discharging),
+                    true,
+                ),
+                None
+            );
+            assert_eq!(
+                insufficient_battery_percent(battery(3, BatteryState::Charging), true),
+                None
+            );
+            assert_eq!(
+                insufficient_battery_percent(battery(3, BatteryState::Discharging), false),
+                None
+            );
+        }
+        // Phase `absent_or_ambiguous_hardware_does_not_block`.
+        {
+            assert_eq!(
+                insufficient_battery_percent(BatterySnapshot::absent(), true),
+                None
+            );
+            assert_eq!(
+                insufficient_battery_percent(battery(3, BatteryState::Unknown), true),
+                None
+            );
+        }
     }
 }

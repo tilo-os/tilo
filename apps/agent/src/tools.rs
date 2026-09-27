@@ -743,281 +743,295 @@ mod tests {
         }
     }
 
-    /// The listing separates what the room holds from what could still be
-    /// opened, using the real [`CONTRACTS`] rather than a hand-built one —
-    /// so this proves the wiring, not a fixture that agrees with itself.
     #[test]
-    fn the_application_listing_separates_what_is_open_from_what_could_be() {
-        let word_processor_open = Catalogue {
-            held: vec!["word-processor"],
-            offers: vec![Offer {
-                app: "chat".to_string(),
-                broker_peer_id: None,
-                descriptor: ActionDescriptor {
-                    address: surface::open_address("chat"),
-                    resource_kind: APPLICATION_KIND.to_string(),
-                    resource_label: "the conversation".to_string(),
-                    resource_sensitivity: tilo_actions::Sensitivity::Public,
-                    action_label: "open the conversation".to_string(),
-                    description: None,
-                    locus: ExecutionLocus::ServerPreferred,
-                    kind: tilo_actions::OperationKind::Effect,
-                    contract: tilo_actions::ActionContract::default(),
-                    params: Vec::new(),
-                    input: InputSpec::None,
-                    view: None,
-                },
-            }],
-            facts: vec![],
-        };
-        let mut revealed = Revealed::new();
-        let out = applications(&word_processor_open, &mut revealed);
-        assert!(
-            out.contains("the word processor (word-processor) — open"),
-            "{out}"
-        );
-        assert!(out.contains("the conversation (chat) — not open"), "{out}");
-        assert!(out.contains("chat.app#open"), "{out}");
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each case keeps its original fixture and assertions"
+    )]
+    fn discovery_answers_list_and_describe_only_what_the_room_offers() {
+        // Case `the_application_listing_separates_what_is_open_from_what_could_be`.
+        // The listing separates what the room holds from what could still be
+        // opened, using the real [`CONTRACTS`] rather than a hand-built one —
+        // so this proves the wiring, not a fixture that agrees with itself.
+        {
+            let word_processor_open = Catalogue {
+                held: vec!["word-processor"],
+                offers: vec![Offer {
+                    app: "chat".to_string(),
+                    broker_peer_id: None,
+                    descriptor: ActionDescriptor {
+                        address: surface::open_address("chat"),
+                        resource_kind: APPLICATION_KIND.to_string(),
+                        resource_label: "the conversation".to_string(),
+                        resource_sensitivity: tilo_actions::Sensitivity::Public,
+                        action_label: "open the conversation".to_string(),
+                        description: None,
+                        locus: ExecutionLocus::ServerPreferred,
+                        kind: tilo_actions::OperationKind::Effect,
+                        contract: tilo_actions::ActionContract::default(),
+                        params: Vec::new(),
+                        input: InputSpec::None,
+                        view: None,
+                    },
+                }],
+                facts: vec![],
+            };
+            let mut revealed = Revealed::new();
+            let out = applications(&word_processor_open, &mut revealed);
+            assert!(
+                out.contains("the word processor (word-processor) — open"),
+                "{out}"
+            );
+            assert!(out.contains("the conversation (chat) — not open"), "{out}");
+            assert!(out.contains("chat.app#open"), "{out}");
 
-        // An app named in `CONTRACTS` but granted no route to opening it is
-        // still listed, with no route — the shape a denied open takes.
-        let mut revealed = Revealed::new();
-        let bare = applications(&Catalogue::default(), &mut revealed);
-        assert!(
-            bare.contains("and there is no opening it from here"),
-            "{bare}"
-        );
-        assert!(!bare.contains(".app#open"), "{bare}");
-    }
+            // An app named in `CONTRACTS` but granted no route to opening it is
+            // still listed, with no route — the shape a denied open takes.
+            let mut revealed = Revealed::new();
+            let bare = applications(&Catalogue::default(), &mut revealed);
+            assert!(
+                bare.contains("and there is no opening it from here"),
+                "{bare}"
+            );
+            assert!(!bare.contains(".app#open"), "{bare}");
+        }
 
-    /// An operation is nameable exactly when a listing returned it.
-    ///
-    /// The property the whole restructure rests on: the model does not pick
-    /// from a list somebody guessed it would need, it picks from what it
-    /// asked for — and an id nothing showed it cannot be answered at all.
-    #[test]
-    fn only_what_a_listing_returned_can_be_planned() {
-        let mut revealed = Revealed::new();
-        assert!(!revealed.contains("files.entry:/home/q/harbour.png#rename"));
-        // The editorial changes and "none" are the agent's own and are there
-        // from the start; nothing an application exports is.
-        assert!(revealed.contains(plan::NOTHING_FITS));
+        // Case `a_kind_is_asked_about_across_the_room_and_not_within_one_app`.
+        // A kind crosses applications by construction: the filter is the
+        // resource's own kind tag, which is shared across the OS.
+        {
+            let mut revealed = Revealed::new();
+            let out = operations(
+                &json!({"kind": "word_processor.document"}),
+                &room(),
+                &mut revealed,
+            );
+            assert!(out.contains("insert-table"), "{out}");
+            assert!(!out.contains("harbour.png#rename"), "{out}");
+        }
 
-        let call = json!({
-            "steps": [{"operation": "files.entry:/home/q/harbour.png#rename", "arguments": {"value": "a.png"}}],
-            "why": "", "then": null
-        });
-        let refused = read_plan(&call, &revealed, STEPS).expect_err("nothing revealed it yet");
-        assert!(
-            refused.contains("no listing in this conversation returned"),
-            "{refused}"
-        );
+        // Case `a_cut_listing_says_how_to_reach_what_it_left_out`.
+        // A listing that is cut short says how to reach the rest, because the
+        // cap is on the reply and not on what may be named.
+        {
+            let mut room = room();
+            for i in 0..MOST_LISTED + 5 {
+                room.offers.push(offer(
+                    "files",
+                    &format!("files.entry:/home/q/f{i}.md"),
+                    "files.entry",
+                    "rename",
+                    "Rename",
+                    InputSpec::None,
+                ));
+            }
+            let mut revealed = Revealed::new();
+            let out = operations(&json!({}), &room, &mut revealed);
+            assert!(out.contains("more not listed"), "{out}");
+            assert!(out.contains("narrower"), "{out}");
+            // And the narrower question reaches what the wide one cut.
+            let narrowed = operations(
+                &json!({"resource": format!("files.entry:/home/q/f{}.md", MOST_LISTED + 4)}),
+                &room,
+                &mut revealed,
+            );
+            assert!(
+                narrowed.contains(&format!("f{}.md#rename", MOST_LISTED + 4)),
+                "{narrowed}"
+            );
+        }
 
-        let listed = operations(&json!({"kind": "files.entry"}), &room(), &mut revealed);
-        assert!(
-            listed.contains("files.entry:/home/q/harbour.png#rename"),
-            "{listed}"
-        );
-        let answer = read_plan(&call, &revealed, STEPS).expect("now it has been shown");
-        assert_eq!(
-            answer.arguments,
-            vec![serde_json::Map::from_iter([(
-                "value".into(),
-                Value::String("a.png".into())
-            )])]
-        );
-    }
+        // Case `describing_an_operation_carries_its_prompt_its_example_and_the_resources_own_facts`.
+        // The description carries the declared typed parameter and the fact the
+        // publishing resource states with no operation on it — neither of which
+        // a flat list reaches.
+        {
+            let out = describe(
+                &json!({"operation": "files.entry:/home/q/harbour.png#rename"}),
+                &room(),
+            );
+            assert!(out.contains("value: text (required)"), "{out}");
+            assert!(out.contains("512 x 320 pixels"), "{out}");
+        }
 
-    #[test]
-    fn one_published_operation_can_be_planned_repeatedly_with_distinct_arguments() {
-        let mut revealed = Revealed::new();
-        let _ = operations(&json!({"kind": "files.entry"}), &room(), &mut revealed);
-        let operation = "files.entry:/home/q/harbour.png#rename";
-        let call = json!({
-            "steps": [
-                {"operation": operation, "arguments": {"value": "first.png"}},
-                {"operation": operation, "arguments": {"value": "second.png"}}
-            ],
-            "why": "the same canonical operation applies to two requested values",
-            "then": null
-        });
-        let answer = read_plan(&call, &revealed, STEPS).expect("both uses were listed");
-        assert_eq!(answer.actions, vec![operation, operation]);
-        assert_ne!(answer.arguments.first(), answer.arguments.last());
-    }
+        // Case `an_operation_that_collects_content_is_not_asked_for_a_value`.
+        // An operation whose argument is content says so, and says not to write
+        // one — the one thing a caller must never invent.
+        {
+            let out = describe(
+                &json!({"operation": "word-processor.document#place-image"}),
+                &room(),
+            );
+            assert!(out.contains("content, not words"), "{out}");
+            assert!(out.contains("bound from the prior step"), "{out}");
+        }
 
-    /// A kind crosses applications by construction: the filter is the
-    /// resource's own kind tag, which is shared across the OS.
-    #[test]
-    fn a_kind_is_asked_about_across_the_room_and_not_within_one_app() {
-        let mut revealed = Revealed::new();
-        let out = operations(
-            &json!({"kind": "word_processor.document"}),
-            &room(),
-            &mut revealed,
-        );
-        assert!(out.contains("insert-table"), "{out}");
-        assert!(!out.contains("harbour.png#rename"), "{out}");
-    }
+        // Case `an_operation_that_is_not_offered_is_answered_as_though_it_did_not_exist`.
+        // An address that is not on offer and one that does not exist are
+        // answered the same way, so probing maps nothing.
+        //
+        // Not byte-identical — each reply names the id it was *asked* about —
+        // but same sentence, no mention of permission, and nothing that would
+        // let a caller tell "no such operation" from "not for you" apart.
+        {
+            let hidden_id = "word-processor.document#imaginary-crop";
+            let absent_id = "nothing.at#all";
+            let hidden = describe(&json!({"operation": hidden_id}), &room());
+            let absent = describe(&json!({"operation": absent_id}), &room());
 
-    /// The description carries the declared typed parameter and the fact the
-    /// publishing resource states with no operation on it — neither of which
-    /// a flat list reaches.
-    #[test]
-    fn describing_an_operation_carries_its_prompt_its_example_and_the_resources_own_facts() {
-        let out = describe(
-            &json!({"operation": "files.entry:/home/q/harbour.png#rename"}),
-            &room(),
-        );
-        assert!(out.contains("value: text (required)"), "{out}");
-        assert!(out.contains("512 x 320 pixels"), "{out}");
-    }
-
-    /// An operation whose argument is content says so, and says not to write
-    /// one — the one thing a caller must never invent.
-    #[test]
-    fn an_operation_that_collects_content_is_not_asked_for_a_value() {
-        let out = describe(
-            &json!({"operation": "word-processor.document#place-image"}),
-            &room(),
-        );
-        assert!(out.contains("content, not words"), "{out}");
-        assert!(out.contains("bound from the prior step"), "{out}");
-    }
-
-    /// An address that is not on offer and one that does not exist are
-    /// answered the same way, so probing maps nothing.
-    ///
-    /// Not byte-identical — each reply names the id it was *asked* about —
-    /// but same sentence, no mention of permission, and nothing that would
-    /// let a caller tell "no such operation" from "not for you" apart.
-    #[test]
-    fn an_operation_that_is_not_offered_is_answered_as_though_it_did_not_exist() {
-        let hidden_id = "word-processor.document#imaginary-crop";
-        let absent_id = "nothing.at#all";
-        let hidden = describe(&json!({"operation": hidden_id}), &room());
-        let absent = describe(&json!({"operation": absent_id}), &room());
-
-        assert_eq!(hidden, nothing_found(&format!("the operation {hidden_id}")));
-        assert_eq!(absent, nothing_found(&format!("the operation {absent_id}")));
-        assert_eq!(
-            hidden.replace(hidden_id, "<id>"),
-            absent.replace(absent_id, "<id>"),
-            "the two must be indistinguishable once each stops quoting the \
-             caller's own words back at it"
-        );
-        for reply in [&hidden, &absent] {
-            let lower = reply.to_lowercase();
-            for leak in [
-                "permission",
-                "denied",
-                "allowed",
-                "not for you",
-                "capabilit",
-            ] {
-                assert!(!lower.contains(leak), "{reply} leaks {leak:?}");
+            assert_eq!(hidden, nothing_found(&format!("the operation {hidden_id}")));
+            assert_eq!(absent, nothing_found(&format!("the operation {absent_id}")));
+            assert_eq!(
+                hidden.replace(hidden_id, "<id>"),
+                absent.replace(absent_id, "<id>"),
+                "the two must be indistinguishable once each stops quoting the \
+                 caller's own words back at it"
+            );
+            for reply in [&hidden, &absent] {
+                let lower = reply.to_lowercase();
+                for leak in [
+                    "permission",
+                    "denied",
+                    "allowed",
+                    "not for you",
+                    "capabilit",
+                ] {
+                    assert!(!lower.contains(leak), "{reply} leaks {leak:?}");
+                }
             }
         }
     }
 
-    /// A listing that is cut short says how to reach the rest, because the
-    /// cap is on the reply and not on what may be named.
     #[test]
-    fn a_cut_listing_says_how_to_reach_what_it_left_out() {
-        let mut room = room();
-        for i in 0..MOST_LISTED + 5 {
-            room.offers.push(offer(
-                "files",
-                &format!("files.entry:/home/q/f{i}.md"),
-                "files.entry",
-                "rename",
-                "Rename",
-                InputSpec::None,
-            ));
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each case keeps its original fixture and assertions"
+    )]
+    fn a_plan_is_read_only_from_revealed_operations_within_the_step_cap() {
+        // Case `only_what_a_listing_returned_can_be_planned`.
+        // An operation is nameable exactly when a listing returned it.
+        //
+        // The property the whole restructure rests on: the model does not pick
+        // from a list somebody guessed it would need, it picks from what it
+        // asked for — and an id nothing showed it cannot be answered at all.
+        {
+            let mut revealed = Revealed::new();
+            assert!(!revealed.contains("files.entry:/home/q/harbour.png#rename"));
+            // The editorial changes and "none" are the agent's own and are there
+            // from the start; nothing an application exports is.
+            assert!(revealed.contains(plan::NOTHING_FITS));
+
+            let call = json!({
+                "steps": [{"operation": "files.entry:/home/q/harbour.png#rename", "arguments": {"value": "a.png"}}],
+                "why": "", "then": null
+            });
+            let refused = read_plan(&call, &revealed, STEPS).expect_err("nothing revealed it yet");
+            assert!(
+                refused.contains("no listing in this conversation returned"),
+                "{refused}"
+            );
+
+            let listed = operations(&json!({"kind": "files.entry"}), &room(), &mut revealed);
+            assert!(
+                listed.contains("files.entry:/home/q/harbour.png#rename"),
+                "{listed}"
+            );
+            let answer = read_plan(&call, &revealed, STEPS).expect("now it has been shown");
+            assert_eq!(
+                answer.arguments,
+                vec![serde_json::Map::from_iter([(
+                    "value".into(),
+                    Value::String("a.png".into())
+                )])]
+            );
         }
-        let mut revealed = Revealed::new();
-        let out = operations(&json!({}), &room, &mut revealed);
-        assert!(out.contains("more not listed"), "{out}");
-        assert!(out.contains("narrower"), "{out}");
-        // And the narrower question reaches what the wide one cut.
-        let narrowed = operations(
-            &json!({"resource": format!("files.entry:/home/q/f{}.md", MOST_LISTED + 4)}),
-            &room,
-            &mut revealed,
-        );
-        assert!(
-            narrowed.contains(&format!("f{}.md#rename", MOST_LISTED + 4)),
-            "{narrowed}"
-        );
-    }
 
-    #[test]
-    fn a_plan_longer_than_a_sentence_is_refused_rather_than_truncated() {
-        let mut revealed = Revealed::new();
-        revealed.reveal("a#b");
-        let steps: Vec<Value> = (0..=STEPS)
-            .map(|_| json!({"operation": "a#b", "arguments": {}}))
-            .collect();
-        let err = read_plan(
-            &json!({"steps": steps, "why": "", "then": null}),
-            &revealed,
-            STEPS,
-        )
-        .expect_err("over the cap");
-        assert!(err.contains("more than the"), "{err}");
-    }
+        // Case `one_published_operation_can_be_planned_repeatedly_with_distinct_arguments`.
+        {
+            let mut revealed = Revealed::new();
+            let _ = operations(&json!({"kind": "files.entry"}), &room(), &mut revealed);
+            let operation = "files.entry:/home/q/harbour.png#rename";
+            let call = json!({
+                "steps": [
+                    {"operation": operation, "arguments": {"value": "first.png"}},
+                    {"operation": operation, "arguments": {"value": "second.png"}}
+                ],
+                "why": "the same canonical operation applies to two requested values",
+                "then": null
+            });
+            let answer = read_plan(&call, &revealed, STEPS).expect("both uses were listed");
+            assert_eq!(answer.actions, vec![operation, operation]);
+            assert_ne!(answer.arguments.first(), answer.arguments.last());
+        }
 
-    /// The half of a request the room cannot name yet survives the read, in
-    /// the words it was asked in.
-    #[test]
-    fn what_the_room_cannot_name_yet_is_carried_as_words() {
-        let mut revealed = Revealed::new();
-        revealed.reveal("chat.app#open");
-        let answer = read_plan(
-            &json!({
-                "steps": [{"operation": "chat.app#open", "arguments": {}}],
-                "why": "the conversation is not open",
-                "then": "post it there"
-            }),
-            &revealed,
-            STEPS,
-        )
-        .expect("read");
-        assert_eq!(answer.then.as_deref(), Some("post it there"));
-        // A blank is nothing, not a clause whose words are no words.
-        let blank = read_plan(
-            &json!({
-                "steps": [{"operation": "chat.app#open", "arguments": {}}],
-                "why": "", "then": "   "
-            }),
-            &revealed,
-            STEPS,
-        )
-        .expect("read");
-        assert_eq!(blank.then, None);
-    }
+        // Case `a_plan_longer_than_a_sentence_is_refused_rather_than_truncated`.
+        {
+            let mut revealed = Revealed::new();
+            revealed.reveal("a#b");
+            let steps: Vec<Value> = (0..=STEPS)
+                .map(|_| json!({"operation": "a#b", "arguments": {}}))
+                .collect();
+            let err = read_plan(
+                &json!({"steps": steps, "why": "", "then": null}),
+                &revealed,
+                STEPS,
+            )
+            .expect_err("over the cap");
+            assert!(err.contains("more than the"), "{err}");
+        }
 
-    /// An id no tool ever put in front of the model cannot be answered,
-    /// whatever it names — the property [`Revealed`] exists to hold.
-    #[test]
-    fn a_plan_naming_an_address_never_revealed_is_refused_not_attempted() {
-        let mut revealed = Revealed::new();
-        // Revealed by one call, so the check below is genuinely about the
-        // *other* address rather than an empty `Revealed` refusing anything.
-        revealed.reveal("word-processor.document#insert-table");
+        // Case `what_the_room_cannot_name_yet_is_carried_as_words`.
+        // The half of a request the room cannot name yet survives the read, in
+        // the words it was asked in.
+        {
+            let mut revealed = Revealed::new();
+            revealed.reveal("chat.app#open");
+            let answer = read_plan(
+                &json!({
+                    "steps": [{"operation": "chat.app#open", "arguments": {}}],
+                    "why": "the conversation is not open",
+                    "then": "post it there"
+                }),
+                &revealed,
+                STEPS,
+            )
+            .expect("read");
+            assert_eq!(answer.then.as_deref(), Some("post it there"));
+            // A blank is nothing, not a clause whose words are no words.
+            let blank = read_plan(
+                &json!({
+                    "steps": [{"operation": "chat.app#open", "arguments": {}}],
+                    "why": "", "then": "   "
+                }),
+                &revealed,
+                STEPS,
+            )
+            .expect("read");
+            assert_eq!(blank.then, None);
+        }
 
-        let call = json!({
-            "steps": [{"operation": "files.entry:/home/q/harbour.png#rename", "arguments": {"value": "a.png"}}],
-            "why": "", "then": null
-        });
-        let err = read_plan(&call, &revealed, STEPS).expect_err("never revealed");
-        assert!(
-            err.contains("no listing in this conversation returned"),
-            "{err}"
-        );
-        assert!(
-            err.contains("files.entry:/home/q/harbour.png#rename"),
-            "{err}"
-        );
+        // Case `a_plan_naming_an_address_never_revealed_is_refused_not_attempted`.
+        // An id no tool ever put in front of the model cannot be answered,
+        // whatever it names — the property [`Revealed`] exists to hold.
+        {
+            let mut revealed = Revealed::new();
+            // Revealed by one call, so the check below is genuinely about the
+            // *other* address rather than an empty `Revealed` refusing anything.
+            revealed.reveal("word-processor.document#insert-table");
+
+            let call = json!({
+                "steps": [{"operation": "files.entry:/home/q/harbour.png#rename", "arguments": {"value": "a.png"}}],
+                "why": "", "then": null
+            });
+            let err = read_plan(&call, &revealed, STEPS).expect_err("never revealed");
+            assert!(
+                err.contains("no listing in this conversation returned"),
+                "{err}"
+            );
+            assert!(
+                err.contains("files.entry:/home/q/harbour.png#rename"),
+                "{err}"
+            );
+        }
     }
 }

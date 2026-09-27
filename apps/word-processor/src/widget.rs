@@ -56,6 +56,7 @@ use crate::ruler::{Ruler, RulerColors, RulerEffect, RulerModel};
 use crate::style_color_picker::StyleColorPicker;
 use crate::style_menu::{StyleMenu, StyleMenuAction};
 use crate::template_picker::TemplatePicker;
+use crate::text_offsets::{byte_to_char, char_to_byte};
 use crate::unsaved_changes::{UnsavedChanges, UnsavedChoice};
 use crate::word_processor::{Caret, ClipBlock, WordProcessor};
 use crate::zoom_control::{MAX as ZOOM_MAX, MIN as ZOOM_MIN, STEP as ZOOM_STEP, ZoomControl};
@@ -847,19 +848,6 @@ fn fmt_num(v: f32) -> String {
     }
 }
 
-fn char_to_byte(text: &str, char_off: usize) -> usize {
-    text.char_indices()
-        .nth(char_off)
-        .map_or(text.len(), |(b, _)| b)
-}
-fn byte_to_char(text: &str, byte_off: usize) -> usize {
-    let b = byte_off.min(text.len());
-    // Iterator-based rather than `text[..b]`: `b` isn't guaranteed to land on
-    // a char boundary, and this counts every char that starts before it
-    // without ever slicing through one.
-    text.char_indices().take_while(|&(i, _)| i < b).count()
-}
-
 /// Per-visual-line `(line_top, line_height)` for a shaped layout (same coordinate
 /// space as `selection_rects`/`caret_geometry`). Used by intra-block pagination to
 /// find the line boundary at which a too-tall block splits across a page.
@@ -929,7 +917,73 @@ fn layout_line_tops(layout: &RichTextLayout, text: &str) -> Vec<(f64, f64)> {
 /// `apps/agent` reproduces from the outside (it has no window and no pointer,
 /// only a caret to publish), so the two sides must independently agree on the
 /// exact key shape.
-fn block_presence_key(block_id: &str) -> PresenceKey {
+/// A part of the document state last copied into the editor's views, kept
+/// by reference so an unchanged part is recognised without comparing it.
+struct Copied<T>(Option<std::rc::Rc<T>>);
+
+impl<T> Default for Copied<T> {
+    fn default() -> Self {
+        Self(None)
+    }
+}
+
+impl<T> Copied<T> {
+    /// Whether `current` is not the part last seen; remembers it.
+    fn see(&mut self, current: &std::rc::Rc<T>) -> bool {
+        if self
+            .0
+            .as_ref()
+            .is_some_and(|seen| std::rc::Rc::ptr_eq(seen, current))
+        {
+            return false;
+        }
+        self.0 = Some(std::rc::Rc::clone(current));
+        true
+    }
+}
+
+impl<T: Clone> Copied<T> {
+    /// A copy of `current` when it is not the part last copied.
+    fn take_if_new(&mut self, current: &std::rc::Rc<T>) -> Option<T> {
+        self.see(current).then(|| T::clone(current))
+    }
+}
+
+/// What the editor last copied out of the document state.
+#[derive(Default)]
+struct CopiedParts {
+    /// The shared paragraph behind each of `WordProcessorWidget::blocks`.
+    blocks: Vec<std::rc::Rc<BlockView>>,
+    header: Copied<Vec<BlockView>>,
+    footer: Copied<Vec<BlockView>>,
+    notes: Copied<Vec<NoteView>>,
+    comments: Copied<Vec<qdoc::CommentView>>,
+    changes: Copied<Vec<qdoc::ChangeView>>,
+    content: Copied<std::collections::BTreeSet<String>>,
+}
+
+/// The parts of the document state one refresh found changed.
+#[derive(Default)]
+struct PartsUpdate {
+    header: Option<Vec<BlockView>>,
+    footer: Option<Vec<BlockView>>,
+    notes: Option<Vec<NoteView>>,
+    /// The document's set of content addresses changed: fetch what is new.
+    content: bool,
+    review: Option<(Vec<qdoc::CommentView>, Vec<qdoc::ChangeView>)>,
+}
+
+/// The presence key of a paragraph. Hosted, it is the framework's resource
+/// key for the paragraph, the same on every collaborator's screen whatever
+/// their layout; standalone, the editor's own widget path.
+fn block_presence_key(hosted: bool, block_id: &str) -> PresenceKey {
+    if hosted {
+        return ui::framework::ResourceSelection::Item(block_id.to_owned())
+            .presence::<qdoc_rich_text::RichText>(
+                <crate::framework::WordProcessorApp as ui::framework::ResourceApp>::ID,
+            )
+            .0;
+    }
     PresenceKey::Widget {
         path: vec![
             PathSegment::Field("wp_block".to_string()),
@@ -1159,7 +1213,17 @@ pub struct WordProcessorWidget {
     saved_document: Option<serde_json::Value>,
     /// Framework-owned action dispatch: brackets the undo boundary and dispatches
     /// each action through the executor (so a test can prove parity with Ctrl+K).
-    actions: ui::ActionHost,
+    /// Where edits go: the framework's dispatcher when hosted, the local
+    /// action host when standalone.
+    actions: crate::framework::ActionSink,
+    /// Where the document is read from: the framework's live state when
+    /// hosted, the editor's own incremental reader when standalone.
+    source: crate::framework::StateSource,
+    /// What was last copied out of the state, to copy only what changed.
+    copied: CopiedParts,
+    /// Hosted, the operations the editor wrote directly (an import into the
+    /// document) rather than through an action, which the host must commit.
+    direct_writes: usize,
     pointer: Point,
     drag: DragSelect,
     path: Option<PathBuf>,
@@ -1177,7 +1241,7 @@ pub struct WordProcessorWidget {
     /// Canonical body order for a large document. This is intentionally ids
     /// only: offscreen rich text/marks/attrs stay in qdoc until its viewport
     /// window asks for them.
-    body_order: Vec<String>,
+    body_order: std::rc::Rc<qdoc_rich_text::BodyOrder>,
     /// Start offset into `body_order` represented by `blocks`.
     body_window_start: usize,
     /// Heads for which the body order and non-body snapshot data were loaded.
@@ -1401,7 +1465,10 @@ impl WordProcessorWidget {
             },
             save_status: DocumentSaveStatus::Clean,
             saved_document: None,
-            actions: ui::ActionHost::new(),
+            actions: crate::framework::ActionSink::default(),
+            source: crate::framework::StateSource::default(),
+            copied: CopiedParts::default(),
+            direct_writes: 0,
             pointer: Point::ZERO,
             drag: DragSelect::new(),
             path: None,
@@ -1411,7 +1478,7 @@ impl WordProcessorWidget {
             image_cache: std::collections::HashMap::new(),
             hover_tool: None,
             blocks: Vec::new(),
-            body_order: Vec::new(),
+            body_order: std::rc::Rc::default(),
             body_window_start: 0,
             materialized_heads: Vec::new(),
             block_views_have_preview: false,
@@ -1504,23 +1571,75 @@ impl WordProcessorWidget {
         }
     }
 
+    // ---- Framework hosting ---------------------------------------------------
+
+    /// Take part in the framework: read the document from its live state and
+    /// submit edits through its dispatcher.
+    pub(crate) fn attach_framework(
+        &mut self,
+        live: ui::framework::Live<qdoc_rich_text::RichText>,
+        dispatcher: ui::framework::Dispatcher<qdoc_rich_text::RichText>,
+    ) {
+        self.source = crate::framework::StateSource::Hosted(live);
+        self.actions.attach(dispatcher);
+    }
+
+    /// The framework presented a new document state: draw it.
+    pub(crate) fn mark_document_changed(&mut self) {
+        self.lifecycle.dirty = true;
+    }
+
+    /// Whether this participant may only view the document.
+    pub(crate) fn read_only(&self) -> bool {
+        self.actions.read_only()
+    }
+
+    /// Hosted, edits not made through an action (an import) are still open
+    /// when the event ends; ask the host to commit them.
+    fn note_direct_write(&mut self, state: &AutoCommit) {
+        if self.hosted() {
+            self.direct_writes = state.pending_ops();
+        }
+    }
+
+    /// The resource tree from the kept document state, once there is one.
+    pub(crate) fn listed_resources(
+        &self,
+        ctx: &crate::actions::WpResourceCtx,
+        doc: &AutoCommit,
+    ) -> Option<Vec<tilo_actions::Resource>> {
+        let hosted = self.hosted();
+        self.source
+            .with(|state| crate::actions::provide_resources_listed(ctx, doc, state, !hosted))
+    }
+
+    /// Whether replacing the document would lose edits not written to its
+    /// file. A hosted document is saved as it is edited, so never.
+    fn has_unsaved_changes(&self) -> bool {
+        !self.hosted() && self.save_status == DocumentSaveStatus::Modified
+    }
+
+    /// Hosted by the framework, the document is a durable record: no
+    /// crash-recovery copies, no separate file identity.
+    pub(crate) fn hosted(&self) -> bool {
+        self.source.hosted()
+    }
+
     // ---- Tilo action dispatch ------------------------------------------------
 
-    /// Dispatch one [`WordProcessorAction`](crate::actions::WordProcessorAction) —
+    /// Dispatch one [`RichTextAction`](crate::actions::RichTextAction) —
     /// the single CRDT-mutation path shared with the Ctrl+K palette — through the
     /// Tilo action executor. Document heads before the event's first action are
     /// stashed so the host records **one** undo boundary bracketing the whole event.
-    fn perform_action(
-        &mut self,
-        state: &mut AutoCommit,
-        action: &crate::actions::WordProcessorAction,
-    ) {
-        self.actions.dispatch_with_context(
-            state,
-            crate::actions::WORD_PROCESSOR_ACTION_TYPE,
-            action,
-            tilo_actions::ActionContext::for_action("org.tilo.Writer", "Writer", action),
-        );
+    fn perform_action(&mut self, state: &mut AutoCommit, action: &crate::actions::RichTextAction) {
+        let context = tilo_actions::ActionContext::for_action("org.tilo.Writer", "Writer", action);
+        if let Err(error) = self.actions.dispatch(state, action, context) {
+            if self.actions.read_only() {
+                self.toast = Some((t("toast-view-only"), ToastKind::Error));
+                self.lifecycle.dirty = true;
+            }
+            eprintln!("word-processor: edit refused: {error}");
+        }
     }
 
     /// Persist only the changed fields of named styles through stable typed
@@ -1665,24 +1784,57 @@ impl WordProcessorWidget {
         } else {
             "paragraph"
         };
-        let before: std::collections::HashSet<String> =
-            self.inner.ordered_blocks(state).into_iter().collect();
+        // The new paragraph follows the split one: in the body, read it off
+        // the kept paragraph order rather than listing the region twice.
+        let body = matches!(region, crate::actions::RegionKind::Body);
+        let before: std::collections::HashSet<String> = if body {
+            std::collections::HashSet::new()
+        } else {
+            self.inner.ordered_blocks(state).into_iter().collect()
+        };
+        // The kept order names the paragraph that follows, so the split is
+        // placed without the document listing its paragraphs.
+        let next = body
+            .then(|| {
+                self.source.with(|doc| {
+                    let order = doc.body();
+                    order
+                        .position(&caret.block)
+                        .and_then(|at| order.id_at(at.saturating_add(1)))
+                        .map(str::to_owned)
+                })
+            })
+            .flatten()
+            .flatten();
         self.perform_action(
             state,
-            &crate::actions::split_block_action(
+            &crate::actions::split_block_before_action(
                 region,
                 &caret.block,
                 caret.offset,
                 new_kind,
                 ordered,
+                next,
             ),
         );
-        if let Some(new_block) = self
-            .inner
-            .ordered_blocks(state)
-            .into_iter()
-            .find(|id| !before.contains(id))
-        {
+        let new_block = if body {
+            self.source.sync(state);
+            self.source
+                .with(|doc| {
+                    let order = doc.body();
+                    order
+                        .position(&caret.block)
+                        .and_then(|at| order.id_at(at.saturating_add(1)))
+                        .map(str::to_owned)
+                })
+                .flatten()
+        } else {
+            self.inner
+                .ordered_blocks(state)
+                .into_iter()
+                .find(|id| !before.contains(id))
+        };
+        if let Some(new_block) = new_block {
             self.inner.set_caret(Caret {
                 block: new_block,
                 offset: 0,
@@ -2205,7 +2357,7 @@ impl WordProcessorWidget {
         });
         if let Some(block) = next
             .or(before_table)
-            .or_else(|| self.body_order.first().cloned())
+            .or_else(|| self.body_order.id_at(0).map(str::to_owned))
         {
             self.inner.set_caret(Caret { block, offset: 0 });
         }
@@ -2582,7 +2734,7 @@ impl WordProcessorWidget {
                             Ok(())
                         }
                         Some(PortalPurpose::OpenDocument) => {
-                            if self.save_status == DocumentSaveStatus::Modified {
+                            if self.has_unsaved_changes() {
                                 self.stage_replacement(PendingReplacement::Open(path));
                                 return;
                             }
@@ -2884,7 +3036,7 @@ impl WordProcessorWidget {
             // l.y_top is screen-space (post-scroll); recover content space.
             let content_y = l.y_top + self.scroll_y;
             self.scroll_y = (content_y - 180.0).clamp(0.0, self.max_scroll);
-        } else if let Some(index) = self.body_order.iter().position(|id| id == bid) {
+        } else if let Some(index) = self.body_order.position(bid) {
             // Find can target an offscreen block that is intentionally absent
             // from the bounded render cache. Its stable canonical position gives
             // us a cheap initial scroll estimate; the next sync loads/shapes the
@@ -2981,50 +3133,87 @@ impl WordProcessorWidget {
     /// Materialize the body only when its CRDT heads change, or when scrolling
     /// moves a large document's bounded working set. qdoc's requested-block API
     /// preserves the canonical id order without doing a whole-region traversal.
-    fn refresh_blocks(&mut self, state: &AutoCommit) {
+    fn refresh_blocks(&mut self, state: &mut AutoCommit) {
         self.refresh_blocks_after_text_edit(state, None);
     }
 
-    /// A hint is issued only before a known single-block edit at the cached
-    /// revision. Metadata still refreshes; all uncertain changes use the full path.
-    fn refresh_blocks_after_text_edit(&mut self, state: &AutoCommit, text_block: Option<&str>) {
-        let Some(c) = self.inner.containers.as_ref() else {
+    /// Follow the document through the incrementally maintained state: a
+    /// change re-reads only the paragraphs it touched, and only the window
+    /// around the viewport is ever read. What changed is copied into the
+    /// views the layout draws from, paragraph by paragraph.
+    fn refresh_blocks_after_text_edit(
+        &mut self,
+        state: &mut AutoCommit,
+        _text_block: Option<&str>,
+    ) {
+        if self.inner.containers.is_none() {
             return;
-        };
-        // Rendering must not close a typing transaction. Pending edits have no
-        // committed head, so refresh while they exist and once after they leave
-        // (including rollback); the host alone chooses the commit boundary.
-        let heads = state.base_heads();
-        let pending_ops = state.pending_ops();
-        let changed =
-            self.materialized_heads != heads || self.materialized_pending_ops != pending_ops;
-        let (old_start, old_end) = self.body_window_bounds();
-        let replacement = if changed
-            && !self.block_views_have_preview
-            && self.body_window_start == old_start
-            && self.blocks.len() == old_end.saturating_sub(old_start)
-        {
-            text_block.and_then(|id| {
-                let index = self.blocks.iter().position(|block| block.id == id)?;
-                let block = qdoc::model::materialize_blocks(state, c, &[id.to_owned()])
-                    .into_iter()
-                    .next()?;
-                (block.id == id).then_some((index, block))
-            })
-        } else {
-            None
-        };
-        if changed && replacement.is_none() {
-            self.body_order = qdoc::model::blocks_in_order(state, c);
+        }
+        let moved = self.source.sync(state);
+        if let Some(body) = self.source.with(|s| std::rc::Rc::clone(s.body())) {
+            self.body_order = body;
         }
         let (start, end) = self.body_window_bounds();
         let window_changed =
             self.body_window_start != start || self.blocks.len() != end.saturating_sub(start);
-        if !changed && !window_changed {
+        if !moved && !window_changed && !self.block_views_have_preview {
             return;
         }
-
-        if changed {
+        self.source
+            .demand(state, ui::tilo_resource::Demand::range(start..end));
+        let preview = std::mem::take(&mut self.block_views_have_preview);
+        let copied = &mut self.copied;
+        let blocks = &mut self.blocks;
+        let mut parts = PartsUpdate::default();
+        self.source.with(|doc| {
+            // Paragraphs: keep a view whose paragraph is unchanged (same
+            // shared value), copy the rest.
+            let mut kept: HashMap<String, (std::rc::Rc<BlockView>, BlockView)> = if preview {
+                HashMap::new()
+            } else {
+                std::mem::take(&mut copied.blocks)
+                    .into_iter()
+                    .zip(std::mem::take(blocks))
+                    .map(|(source, view)| (view.id.clone(), (source, view)))
+                    .collect()
+            };
+            let mut sources = Vec::with_capacity(end.saturating_sub(start));
+            let mut views = Vec::with_capacity(end.saturating_sub(start));
+            for source in doc.blocks(start..end) {
+                let view = match kept.remove(&source.id) {
+                    Some((old, view)) if std::rc::Rc::ptr_eq(&old, source) => view,
+                    _ => BlockView::clone(source),
+                };
+                sources.push(std::rc::Rc::clone(source));
+                views.push(view);
+            }
+            copied.blocks = sources;
+            *blocks = views;
+            parts.header = copied.header.take_if_new(doc.header());
+            parts.footer = copied.footer.take_if_new(doc.footer());
+            parts.notes = copied.notes.take_if_new(doc.notes());
+            parts.content = copied.content.see(doc.content());
+            let comments = copied.comments.take_if_new(doc.comments());
+            let changes = copied.changes.take_if_new(doc.changes());
+            if comments.is_some() || changes.is_some() {
+                parts.review = Some((
+                    comments.unwrap_or_else(|| doc.comments().as_ref().clone()),
+                    changes.unwrap_or_else(|| doc.changes().as_ref().clone()),
+                ));
+            }
+        });
+        if let Some(header) = parts.header {
+            self.header = header;
+        }
+        if let Some(footer) = parts.footer {
+            self.footer = footer;
+        }
+        if let Some(notes) = parts.notes {
+            self.notes = notes;
+        }
+        if parts.content
+            && let Some(c) = self.inner.containers.as_ref()
+        {
             Self::refresh_images(
                 &mut self.blobs,
                 &mut self.image_cache,
@@ -3032,51 +3221,12 @@ impl WordProcessorWidget {
                 state,
                 c,
             );
-            self.header = qdoc::model::materialize_region(state, c, Region::Header);
-            self.footer = qdoc::model::materialize_region(state, c, Region::Footer);
-            self.notes = qdoc::model::materialize_notes(state, c);
-            self.review.replace(
-                qdoc::model::materialize_comments(state, c),
-                qdoc::model::materialize_changes(state, c),
-            );
         }
-        if let Some((index, block)) = replacement {
-            #[expect(
-                clippy::indexing_slicing,
-                reason = "index came from `self.blocks.iter().position` above and `self.blocks` is not resized in between"
-            )]
-            {
-                self.blocks[index] = block;
-            }
-        } else {
-            let ids = self.body_order.get(start..end).unwrap_or(&[]);
-            if !changed && !self.block_views_have_preview {
-                // Scrolling changes the retained window, not the document.
-                // Move overlapping views and read only newly entering blocks.
-                let mut retained: HashMap<String, BlockView> = std::mem::take(&mut self.blocks)
-                    .into_iter()
-                    .map(|block| (block.id.clone(), block))
-                    .collect();
-                let entering: Vec<String> = ids
-                    .iter()
-                    .filter(|id| !retained.contains_key(*id))
-                    .cloned()
-                    .collect();
-                retained.extend(
-                    qdoc::model::materialize_blocks(state, c, &entering)
-                        .into_iter()
-                        .map(|block| (block.id.clone(), block)),
-                );
-                self.blocks = ids.iter().filter_map(|id| retained.remove(id)).collect();
-            } else {
-                self.blocks = qdoc::model::materialize_blocks(state, c, ids);
-            }
-            self.block_views_have_preview = false;
+        if let Some((comments, changes)) = parts.review {
+            self.review.replace(comments, changes);
         }
-        if changed {
-            self.materialized_heads = heads;
-            self.materialized_pending_ops = pending_ops;
-        }
+        self.materialized_heads = state.base_heads();
+        self.materialized_pending_ops = state.pending_ops();
         self.body_window_start = start;
         // The spell cache deliberately follows the materialized render window:
         // no offscreen import can retain shaped/checker text indefinitely.
@@ -9246,7 +9396,7 @@ impl WordProcessorWidget {
         }
         match s.to_lowercase().as_str() {
             // Formatting shortcuts dispatch the same
-            // `WordProcessorAction` the toolbar + Ctrl+K palette
+            // `RichTextAction` the toolbar + Ctrl+K palette
             // do (one replayable source of truth).
             "b" => self.dispatch_toggle_mark(state, "strong"),
             "i" => self.dispatch_toggle_mark(state, "em"),
@@ -9355,6 +9505,10 @@ impl Widget for WordProcessorWidget {
     }
 
     fn unsaved_documents(&self, doc: &AutoCommit) -> Vec<ui::close_admission::UnsavedDocument> {
+        // A hosted document is saved as it is edited.
+        if self.hosted() {
+            return Vec::new();
+        }
         let current = serde_json::to_value(automerge::AutoSerde::from(doc)).ok();
         if current
             .as_ref()
@@ -9569,12 +9723,18 @@ impl Widget for WordProcessorWidget {
                 .ok()
                 .as_ref()
                 == self.saved_document.as_ref();
-        self.inner.bind(state, root);
+        // A participant who may only view (or History mode's past version)
+        // never writes the document, not even its first paragraph.
+        if self.read_only() {
+            self.inner.bind_view_only(state, root);
+        } else {
+            self.inner.bind(state, root);
+        }
         if pristine || unchanged_open {
             self.remember_saved_document(state);
         }
         if let Some((invocation, open_path)) = self.pending_resource_open.take() {
-            if self.save_status == DocumentSaveStatus::Modified {
+            if self.has_unsaved_changes() {
                 self.resource_file_invocation = Some(invocation);
                 self.stage_replacement(PendingReplacement::Open(open_path));
             } else {
@@ -9627,6 +9787,7 @@ impl Widget for WordProcessorWidget {
                 self.history.set_current_tick(index);
             }
         }
+        self.note_direct_write(state);
         self.lifecycle.dirty = true;
     }
 
@@ -10173,7 +10334,7 @@ impl Widget for WordProcessorWidget {
         if caret_block.is_empty() {
             return None;
         }
-        let key = block_presence_key(caret_block);
+        let key = block_presence_key(self.hosted(), caret_block);
         // A selection within the caret's block takes priority over the bare
         // caret. (v1 collab presence reports the caret-block portion of a
         // multi-block selection, mirroring how the caret block is what the
@@ -10389,6 +10550,12 @@ impl Widget for WordProcessorWidget {
         }
     }
     fn needs_commit(&self) -> bool {
+        // Hosted, edits are actions the framework bounds into undo steps
+        // itself (a commit request would close a word mid-typing); only a
+        // direct write — an import into the document — asks for one.
+        if self.hosted() {
+            return self.direct_writes > 0;
+        }
         self.lifecycle.needs_commit
     }
     fn take_commit_context(&mut self) -> Option<tilo_actions::ActionContext> {
@@ -10413,11 +10580,12 @@ impl Widget for WordProcessorWidget {
         })
     }
     fn on_commit(&mut self) {
+        self.direct_writes = 0;
         self.lifecycle.needs_commit = false;
         self.save_status = DocumentSaveStatus::Modified;
     }
     /// Hand the host the heads captured before an on-screen affordance dispatched
-    /// a [`WordProcessorAction`](crate::actions) through
+    /// a [`RichTextAction`](crate::actions) through
     /// `Self::perform_action`, so it records one undo boundary bracketing the
     /// affordance's change (the button-driven twin of the Ctrl+K palette).
     /// Rising-edge: cleared on read.
@@ -10699,24 +10867,11 @@ impl WordProcessorWidget {
     /// Selection endpoints in document order, computed from the block cache
     /// (so it works during `draw`, which has no `state`).
     fn selection_span_cached(&self) -> Option<(Caret, Caret)> {
-        let anchor = self.inner.selection_anchor.clone()?;
-        let caret = self.inner.caret.clone();
-        if anchor == caret {
-            return None;
-        }
-        match (
-            self.block_index_cached(&anchor.block),
-            self.block_index_cached(&caret.block),
-        ) {
-            (Some(pa), Some(pc)) => {
-                if (pa, anchor.offset) <= (pc, caret.offset) {
-                    Some((anchor, caret))
-                } else {
-                    Some((caret, anchor))
-                }
-            }
-            _ => None,
-        }
+        crate::word_processor::ordered_selection_span(
+            self.inner.selection_anchor.as_ref(),
+            &self.inner.caret,
+            |id| self.block_index_cached(id),
+        )
     }
 
     /// Per-block selected char ranges spanning the selection (cache-based).
@@ -10724,21 +10879,15 @@ impl WordProcessorWidget {
         let Some((start, end)) = self.selection_span_cached() else {
             return vec![];
         };
-        let (Some(si), Some(ei)) = (
-            self.block_index_cached(&start.block),
-            self.block_index_cached(&end.block),
-        ) else {
-            return vec![];
-        };
-        (si..=ei)
-            .filter_map(|i| {
+        crate::word_processor::selection_block_ranges(
+            &start,
+            &end,
+            |id| self.block_index_cached(id),
+            |i| {
                 let b = self.blocks.get(i)?;
-                let blen = b.text.chars().count();
-                let s = if i == si { start.offset } else { 0 };
-                let e = if i == ei { end.offset } else { blen };
-                Some((b.id.clone(), s, e))
-            })
-            .collect()
+                Some((b.id.clone(), b.text.chars().count()))
+            },
+        )
     }
 
     fn selection_bytes_for(&self, block_id: &str, text: &str) -> Option<(usize, usize)> {
@@ -10775,7 +10924,7 @@ impl WordProcessorWidget {
             let Some((_, layout)) = self.layout_cache.get(&l.id) else {
                 continue;
             };
-            let key = block_presence_key(&l.id);
+            let key = block_presence_key(self.hosted(), &l.id);
 
             // Remote selections (drawn under the text, like the local one).
             if let Some(list) = presence.selections.get(&key) {
@@ -10847,7 +10996,7 @@ impl WordProcessorWidget {
             let Some((_, layout)) = self.layout_cache.get(&l.id) else {
                 continue;
             };
-            let key = block_presence_key(&l.id);
+            let key = block_presence_key(self.hosted(), &l.id);
             for (user, range, alpha) in presence.typing_marks_for_key(&key, now) {
                 if range.start >= range.end {
                     continue;
@@ -10893,11 +11042,10 @@ impl WordProcessorWidget {
             return false;
         }
         sel.iter().all(|(bid, s, e)| {
-            self.blocks.iter().find(|b| &b.id == bid).is_some_and(|b| {
-                b.marks
-                    .iter()
-                    .any(|m| m.name == name && m.start <= *s && m.end >= *e)
-            })
+            self.blocks
+                .iter()
+                .find(|b| &b.id == bid)
+                .is_some_and(|b| text_runs::marks_cover_range(&b.marks, name, *s, *e))
         })
     }
 
@@ -10914,7 +11062,7 @@ impl WordProcessorWidget {
     fn apply_tool(&mut self, state: &mut AutoCommit, action: ToolAction) {
         match action {
             // Every document-mutating format dispatches its matching
-            // `WordProcessorAction` through the shared action path (the same
+            // `RichTextAction` through the shared action path (the same
             // EncodedAction the Ctrl+K palette dispatches), so it replays
             // byte-identically and lands as one undo boundary.
             ToolAction::Bold => self.dispatch_toggle_mark(state, "strong"),
@@ -11994,7 +12142,7 @@ impl WordProcessorWidget {
     }
 
     fn request_template(&mut self, state: &mut AutoCommit, template: crate::Template) {
-        if self.save_status == DocumentSaveStatus::Modified {
+        if self.has_unsaved_changes() {
             self.stage_replacement(PendingReplacement::Template(template));
         } else {
             self.apply_template(state, template);
@@ -12115,6 +12263,10 @@ impl WordProcessorWidget {
     /// Export one Markdown snapshot and hand it to the recovery component when
     /// the edit debounce reaches its threshold.
     fn note_edit_for_autosave(&mut self, state: &mut AutoCommit) {
+        // A hosted document is a durable record; there is nothing to recover.
+        if self.hosted() {
+            return;
+        }
         let inner = &self.inner;
         let document_path = self.path.clone();
         let blocks = &self.blocks;
@@ -12138,8 +12290,8 @@ impl WordProcessorWidget {
                     && blocks.len() == body_order.len()
                     && blocks
                         .iter()
-                        .zip(body_order)
-                        .all(|(block, id)| block.id == *id)
+                        .zip(body_order.all())
+                        .all(|(block, id)| block.id == id)
                 {
                     Some(qdoc_codecs::markdown::export_views(
                         &qdoc::model::doc_props(state, c),
@@ -12301,19 +12453,19 @@ impl WordProcessorWidget {
     fn dispatch_review_action(&mut self, action: ReviewAction, state: &mut AutoCommit) {
         let typed = match action {
             ReviewAction::AcceptChange(id) => {
-                crate::actions::WordProcessorAction::AcceptChanges { id: Some(id) }
+                crate::actions::RichTextAction::AcceptChanges { id: Some(id) }
             }
             ReviewAction::RejectChange(id) => {
-                crate::actions::WordProcessorAction::RejectChanges { id: Some(id) }
+                crate::actions::RichTextAction::RejectChanges { id: Some(id) }
             }
             ReviewAction::AcceptAllChanges => {
-                crate::actions::WordProcessorAction::AcceptChanges { id: None }
+                crate::actions::RichTextAction::AcceptChanges { id: None }
             }
             ReviewAction::RejectAllChanges => {
-                crate::actions::WordProcessorAction::RejectChanges { id: None }
+                crate::actions::RichTextAction::RejectChanges { id: None }
             }
             ReviewAction::ResolveComment(id) => {
-                crate::actions::WordProcessorAction::ResolveComment { id }
+                crate::actions::RichTextAction::ResolveComment { id }
             }
             ReviewAction::OpenCommentThread(id) => {
                 self.open_comment_thread(&id);

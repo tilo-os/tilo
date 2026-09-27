@@ -1293,26 +1293,6 @@ mod tests {
         })
     }
 
-    /// The handoff: a little-endian `u32` length, then JSON. The launcher
-    /// writes the app form, the desktop session the session form.
-    #[test]
-    fn handoff_bytes_are_pinned() {
-        assert_eq!(
-            read_principal(br#"{"protocol":2,"principal":"app","app_id":"so.tilo.agent"}"#),
-            Ok(Principal::App {
-                app_id: AGENT_APP.into()
-            })
-        );
-        assert_eq!(
-            read_principal(br#"{"protocol":2,"principal":"session"}"#),
-            Ok(Principal::Session)
-        );
-        assert_eq!(
-            Principal::Session.handoff().unwrap(),
-            br#"{"protocol":2,"principal":"session"}"#
-        );
-    }
-
     #[test]
     fn unknown_apps_and_malformed_handoffs_are_refused() {
         for body in [
@@ -1359,64 +1339,6 @@ mod tests {
         (ModelCapability::FaceRecognition, "face clustering"),
         (ModelCapability::TraceReview, "trace review"),
     ];
-
-    #[test]
-    fn local_verbs_run_only_on_the_pinned_supervised_runtime() {
-        let pinned = "a".repeat(40);
-        let supervised = |revision: Option<&str>| {
-            let mut profile = profile(
-                EndpointLocation::ThisDevice,
-                agent_provider_config::SUPERVISED_BASE_URL,
-                revision,
-            );
-            profile.id = agent_provider_config::LOCAL_PROFILE_ID.into();
-            profile.custody = EndpointCustody::Supervised {
-                socket: "/run/user/1000/tilo/models/m/api.sock".into(),
-            };
-            profile
-        };
-        for (capability, purpose) in VERBS {
-            let run = |profile| local_profile(profile, "m", capability, purpose);
-            assert!(run(supervised(Some(&pinned))).is_ok());
-            for refused in [
-                profile(
-                    EndpointLocation::Hosted,
-                    "https://models.example.test/v1",
-                    Some(&pinned),
-                ),
-                profile(
-                    EndpointLocation::PrivateNetwork,
-                    "http://192.168.1.20:8123/v1",
-                    Some(&pinned),
-                ),
-                // A typed-in loopback URL could forward what it is sent.
-                profile(
-                    EndpointLocation::ThisDevice,
-                    "http://127.0.0.1:8123/v1",
-                    Some(&pinned),
-                ),
-                profile(
-                    EndpointLocation::ThisDevice,
-                    "http://localhost.evil.test:8123/v1",
-                    Some(&pinned),
-                ),
-                supervised(Some("main")),
-                supervised(Some(&"A".repeat(40))),
-                supervised(None),
-            ] {
-                assert!(run(refused.clone()).is_err(), "{purpose}: {refused:?}");
-            }
-            let mut undeclared = supervised(Some(&pinned));
-            undeclared.models = vec![ModelDescriptor {
-                revision: Some(pinned.clone()),
-                ..ModelDescriptor::new("m")
-            }];
-            assert!(run(undeclared).is_err(), "{purpose} must be declared");
-            assert!(
-                local_profile(supervised(Some(&pinned)), "other", capability, purpose).is_err()
-            );
-        }
-    }
 
     fn handled(principal: &Principal, request: Request) -> Response {
         let runtime = tilo_rt::daemon("gateway-test").workers(1).build().unwrap();
@@ -1550,33 +1472,135 @@ mod tests {
         assert!(error.contains("fixed gateway operation"), "{error}");
     }
 
+    /// The handoff bytes are pinned; local vision input is closed and bounded; the local verbs run only
+    /// on the pinned, supervised runtime, never on a LAN, hosted or typed-in loopback endpoint; and the
+    /// vision and face prompts are fixed and never ask for identity.
     #[test]
-    fn local_vision_prompt_is_fixed_and_contains_no_identity_request() {
-        let body = local_vision_body("vision-model", &vision_image());
-        let encoded = body.to_string();
-        assert!(encoded.contains("device-local image indexing component"));
-        assert!(encoded.contains("Do not name people"));
-        assert!(!encoded.contains("ignore previous"));
-        assert_eq!(body["model"], "vision-model");
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each case keeps its original fixture and assertions"
+    )]
+    fn local_vision_is_pinned_bounded_local_and_never_asks_identity() {
+        // Phase: handoff_bytes_are_pinned.
+        // The handoff: a little-endian `u32` length, then JSON. The launcher
+        // writes the app form, the desktop session the session form.
+        {
+            assert_eq!(
+                read_principal(br#"{"protocol":2,"principal":"app","app_id":"so.tilo.agent"}"#),
+                Ok(Principal::App {
+                    app_id: AGENT_APP.into()
+                })
+            );
+            assert_eq!(
+                read_principal(br#"{"protocol":2,"principal":"session"}"#),
+                Ok(Principal::Session)
+            );
+            assert_eq!(
+                Principal::Session.handoff().unwrap(),
+                br#"{"protocol":2,"principal":"session"}"#
+            );
+        }
 
-    #[test]
-    fn local_face_input_is_bounded_and_prompt_never_requests_identity() {
-        let face = FaceImage {
-            photo_id: "photos.photo:one".into(),
-            media_type: "image/jpeg".into(),
-            data_base64: base64::engine::general_purpose::STANDARD.encode(b"preview"),
-            source_content_hash: "a".repeat(64),
-        };
-        assert!(validate_face_images(std::slice::from_ref(&face)).is_ok());
-        let mut duplicate = face.clone();
-        duplicate.photo_id = face.photo_id.clone();
-        assert!(validate_face_images(&[face.clone(), duplicate]).is_err());
-        let body = local_face_body("face-model", &[face]);
-        let encoded = body.to_string();
-        assert!(encoded.contains("face detection and clustering"));
-        assert!(encoded.contains("Never output a person's name"));
-        assert!(!encoded.contains("identify the person"));
+        // Phase: local_vision_input_is_closed_and_bounded.
+        {
+            assert!(validate_vision_image(&vision_image()).is_ok());
+            let mut foreign = vision_image();
+            foreign.media_type = "image/svg+xml".into();
+            assert!(validate_vision_image(&foreign).is_err());
+            let mut corrupt = vision_image();
+            corrupt.data_base64 = "not base64".into();
+            assert!(validate_vision_image(&corrupt).is_err());
+            let mut bad_hash = vision_image();
+            bad_hash.source_content_hash = "x".repeat(64);
+            assert!(validate_vision_image(&bad_hash).is_err());
+        }
+
+        // Phase: local_verbs_run_only_on_the_pinned_supervised_runtime.
+        {
+            let pinned = "a".repeat(40);
+            let supervised = |revision: Option<&str>| {
+                let mut profile = profile(
+                    EndpointLocation::ThisDevice,
+                    agent_provider_config::SUPERVISED_BASE_URL,
+                    revision,
+                );
+                profile.id = agent_provider_config::LOCAL_PROFILE_ID.into();
+                profile.custody = EndpointCustody::Supervised {
+                    socket: "/run/user/1000/tilo/models/m/api.sock".into(),
+                };
+                profile
+            };
+            for (capability, purpose) in VERBS {
+                let run = |profile| local_profile(profile, "m", capability, purpose);
+                assert!(run(supervised(Some(&pinned))).is_ok());
+                for refused in [
+                    profile(
+                        EndpointLocation::Hosted,
+                        "https://models.example.test/v1",
+                        Some(&pinned),
+                    ),
+                    profile(
+                        EndpointLocation::PrivateNetwork,
+                        "http://192.168.1.20:8123/v1",
+                        Some(&pinned),
+                    ),
+                    // A typed-in loopback URL could forward what it is sent.
+                    profile(
+                        EndpointLocation::ThisDevice,
+                        "http://127.0.0.1:8123/v1",
+                        Some(&pinned),
+                    ),
+                    profile(
+                        EndpointLocation::ThisDevice,
+                        "http://localhost.evil.test:8123/v1",
+                        Some(&pinned),
+                    ),
+                    supervised(Some("main")),
+                    supervised(Some(&"A".repeat(40))),
+                    supervised(None),
+                ] {
+                    assert!(run(refused.clone()).is_err(), "{purpose}: {refused:?}");
+                }
+                let mut undeclared = supervised(Some(&pinned));
+                undeclared.models = vec![ModelDescriptor {
+                    revision: Some(pinned.clone()),
+                    ..ModelDescriptor::new("m")
+                }];
+                assert!(run(undeclared).is_err(), "{purpose} must be declared");
+                assert!(
+                    local_profile(supervised(Some(&pinned)), "other", capability, purpose).is_err()
+                );
+            }
+        }
+
+        // Phase: local_vision_prompt_is_fixed_and_contains_no_identity_request.
+        {
+            let body = local_vision_body("vision-model", &vision_image());
+            let encoded = body.to_string();
+            assert!(encoded.contains("device-local image indexing component"));
+            assert!(encoded.contains("Do not name people"));
+            assert!(!encoded.contains("ignore previous"));
+            assert_eq!(body["model"], "vision-model");
+        }
+
+        // Phase: local_face_input_is_bounded_and_prompt_never_requests_identity.
+        {
+            let face = FaceImage {
+                photo_id: "photos.photo:one".into(),
+                media_type: "image/jpeg".into(),
+                data_base64: base64::engine::general_purpose::STANDARD.encode(b"preview"),
+                source_content_hash: "a".repeat(64),
+            };
+            assert!(validate_face_images(std::slice::from_ref(&face)).is_ok());
+            let mut duplicate = face.clone();
+            duplicate.photo_id = face.photo_id.clone();
+            assert!(validate_face_images(&[face.clone(), duplicate]).is_err());
+            let body = local_face_body("face-model", &[face]);
+            let encoded = body.to_string();
+            assert!(encoded.contains("face detection and clustering"));
+            assert!(encoded.contains("Never output a person's name"));
+            assert!(!encoded.contains("identify the person"));
+        }
     }
 
     fn ask(input: &str) -> TransformAsk {
@@ -1730,48 +1754,54 @@ mod tests {
         (result, fake.into_inner())
     }
 
+    /// Transient provider failures are retried at the gateway, settled ones are not, Retry-After and
+    /// transient statuses are classified on the HTTP side, and retries never consume room needed for an
+    /// answer.
     #[test]
-    fn transient_provider_failures_are_retried_at_the_gateway() {
-        let (result, fake) = run_retries(
-            Duration::from_secs(20),
-            &[Err((529, None)), Err((503, None)), Ok("answer")],
-        );
-        assert_eq!(result.as_deref(), Ok("answer"));
-        assert_eq!(fake.calls, 3);
-        assert_eq!(
-            fake.waits,
-            [Duration::from_millis(500), Duration::from_secs(1)]
-        );
-    }
-
-    #[test]
-    fn settled_provider_failures_are_not_retried() {
-        for status in [400, 401, 403, 404, 422] {
-            let (result, fake) = run_retries(Duration::from_secs(20), &[Err((status, None))]);
-            assert!(result.unwrap_err().contains(&status.to_string()));
-            assert_eq!(fake.calls, 1, "HTTP {status}");
-            assert!(fake.waits.is_empty(), "HTTP {status}");
+    fn the_gateway_retries_only_transient_failures_within_the_answer_budget() {
+        // Phase: transient_provider_failures_are_retried_at_the_gateway.
+        {
+            let (result, fake) = run_retries(
+                Duration::from_secs(20),
+                &[Err((529, None)), Err((503, None)), Ok("answer")],
+            );
+            assert_eq!(result.as_deref(), Ok("answer"));
+            assert_eq!(fake.calls, 3);
+            assert_eq!(
+                fake.waits,
+                [Duration::from_millis(500), Duration::from_secs(1)]
+            );
         }
-    }
 
-    #[test]
-    fn retry_after_and_transient_statuses_are_classified_on_the_http_side() {
-        for status in [408, 429, 500, 502, 503, 504, 529] {
-            assert_eq!(again_after(status, None), Again::Soon(None));
+        // Phase: settled_provider_failures_are_not_retried.
+        {
+            for status in [400, 401, 403, 404, 422] {
+                let (result, fake) = run_retries(Duration::from_secs(20), &[Err((status, None))]);
+                assert!(result.unwrap_err().contains(&status.to_string()));
+                assert_eq!(fake.calls, 1, "HTTP {status}");
+                assert!(fake.waits.is_empty(), "HTTP {status}");
+            }
         }
-        assert_eq!(
-            again_after(429, Some("0.25")),
-            Again::Soon(Some(Duration::from_millis(250)))
-        );
-        assert_eq!(again_after(401, Some("1")), Again::Never);
-    }
 
-    #[test]
-    fn retries_never_consume_room_needed_for_an_answer() {
-        let (result, fake) = run_retries(Duration::from_secs(3), &[Err((529, Some("1")))]);
-        assert!(result.is_err());
-        assert_eq!(fake.calls, 1);
-        assert!(fake.waits.is_empty());
+        // Phase: retry_after_and_transient_statuses_are_classified_on_the_http_side.
+        {
+            for status in [408, 429, 500, 502, 503, 504, 529] {
+                assert_eq!(again_after(status, None), Again::Soon(None));
+            }
+            assert_eq!(
+                again_after(429, Some("0.25")),
+                Again::Soon(Some(Duration::from_millis(250)))
+            );
+            assert_eq!(again_after(401, Some("1")), Again::Never);
+        }
+
+        // Phase: retries_never_consume_room_needed_for_an_answer.
+        {
+            let (result, fake) = run_retries(Duration::from_secs(3), &[Err((529, Some("1")))]);
+            assert!(result.is_err());
+            assert_eq!(fake.calls, 1);
+            assert!(fake.waits.is_empty());
+        }
     }
 
     #[test]

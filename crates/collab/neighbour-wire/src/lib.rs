@@ -720,7 +720,15 @@ mod tests {
         ]
     }
 
+    /// Every message round-trips over the production codec and every variant encodes to its
+    /// pinned bytes.
+    /// Runs each phase below in order; every phase builds its own fixture.
     #[test]
+    fn every_message_round_trips_and_encodes_to_its_pinned_bytes() {
+        every_message_round_trips_over_the_production_codec();
+        every_variant_encodes_to_its_pinned_bytes();
+    }
+
     fn every_message_round_trips_over_the_production_codec() {
         for (case, message) in fixtures() {
             let bytes = postcard::to_allocvec(&message)
@@ -964,7 +972,6 @@ mod tests {
         ),
     ];
 
-    #[test]
     fn every_variant_encodes_to_its_pinned_bytes() {
         let fixtures = fixtures();
         let covered: std::collections::BTreeSet<_> = fixtures

@@ -33,6 +33,7 @@ postcard = { workspace = true, features = ["alloc"] }
 serde_json.workspace = true
 base64.workspace = true
 uuid.workspace = true
+workspace-hack = { version = "0.1" }
 
 [lints]
 workspace = true

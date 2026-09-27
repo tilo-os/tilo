@@ -2028,194 +2028,331 @@ mod tests {
         r
     }
 
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
-    fn canonical_actions_accept_every_editor_block_kind_and_reject_invalid_table_modes() {
-        use automerge::ReadDoc;
-        use ui::widget::BlockKind;
-        let mut doc = AutoCommit::new();
-        crate::notebook::initialize_empty(&mut doc).unwrap();
-        let mut workspace = Workspace::new();
-        let page = workspace.create_page(None);
-        let action = upsert_page_action(workspace.get(page).unwrap());
-        tilo_actions::apply_local(&mut doc, &action, encode(&action)).unwrap();
-        let kinds = [
-            BlockKind::Paragraph,
-            BlockKind::Quote,
-            BlockKind::Heading(1),
-            BlockKind::Heading(2),
-            BlockKind::Heading(3),
-            BlockKind::Bullet { indent: 5 },
-            BlockKind::Numbered { indent: 5 },
-            BlockKind::Checklist {
-                indent: 5,
-                done: false,
-            },
-            BlockKind::Checklist {
-                indent: 5,
-                done: true,
-            },
-            BlockKind::CodeBlock {
-                lang: Some("rust".into()),
-            },
-            BlockKind::Table { visual: false },
-            BlockKind::Table { visual: true },
-            BlockKind::Divider,
-        ];
-        let mut after = None;
-        let ops = kinds
-            .iter()
-            .map(|kind| {
-                let id = Uuid::new_v4().to_string();
-                let op = BlockEditOp::Insert {
-                    block_id: id.clone(),
-                    after: after.clone(),
-                    kind: crate::markdown::block_kind_wire(kind),
-                    text: "Preserved content".into(),
-                };
-                after = Some(id);
-                op
-            })
-            .collect();
-        let action = apply_block_ops_action(page, ops);
-        let mut peer = doc.clone();
-        let applied = tilo_actions::dispatch(
-            &mut doc,
-            &action,
-            encode(&action),
-            &mut LocalTransport::new(),
-        )
-        .unwrap();
-        tilo_actions::replay(&mut peer, applied.envelope(), &registry()).unwrap();
-        assert_eq!(doc.get_heads(), peer.get_heads());
-        crate::notebook::validate(&doc).unwrap();
-        let list = NotesDoc::page_blocks_list(&doc, page).unwrap();
-        assert_eq!(doc.length(&list), kinds.len());
-        for (index, kind) in kinds.iter().enumerate() {
-            assert_eq!(
-                NotesDoc::block_kind(&doc, &list, index),
-                crate::markdown::block_kind_wire(kind)
-            );
+    fn canonical_page_actions_validate_blocks_roll_back_and_run_file_jobs() {
+        eprintln!(
+            "phase canonical_actions_accept_every_editor_block_kind_and_reject_invalid_table_modes"
+        );
+        {
+            use automerge::ReadDoc;
+            use ui::widget::BlockKind;
+            let mut doc = AutoCommit::new();
+            crate::notebook::initialize_empty(&mut doc).unwrap();
+            let mut workspace = Workspace::new();
+            let page = workspace.create_page(None);
+            let action = upsert_page_action(workspace.get(page).unwrap());
+            tilo_actions::apply_local(&mut doc, &action, encode(&action)).unwrap();
+            let kinds = [
+                BlockKind::Paragraph,
+                BlockKind::Quote,
+                BlockKind::Heading(1),
+                BlockKind::Heading(2),
+                BlockKind::Heading(3),
+                BlockKind::Bullet { indent: 5 },
+                BlockKind::Numbered { indent: 5 },
+                BlockKind::Checklist {
+                    indent: 5,
+                    done: false,
+                },
+                BlockKind::Checklist {
+                    indent: 5,
+                    done: true,
+                },
+                BlockKind::CodeBlock {
+                    lang: Some("rust".into()),
+                },
+                BlockKind::Table { visual: false },
+                BlockKind::Table { visual: true },
+                BlockKind::Divider,
+            ];
+            let mut after = None;
+            let ops = kinds
+                .iter()
+                .map(|kind| {
+                    let id = Uuid::new_v4().to_string();
+                    let op = BlockEditOp::Insert {
+                        block_id: id.clone(),
+                        after: after.clone(),
+                        kind: crate::markdown::block_kind_wire(kind),
+                        text: "Preserved content".into(),
+                    };
+                    after = Some(id);
+                    op
+                })
+                .collect();
+            let action = apply_block_ops_action(page, ops);
+            let mut peer = doc.clone();
+            let applied = tilo_actions::dispatch(
+                &mut doc,
+                &action,
+                encode(&action),
+                &mut LocalTransport::new(),
+            )
+            .unwrap();
+            tilo_actions::replay(&mut peer, applied.envelope(), &registry()).unwrap();
+            assert_eq!(doc.get_heads(), peer.get_heads());
+            crate::notebook::validate(&doc).unwrap();
+            let list = NotesDoc::page_blocks_list(&doc, page).unwrap();
+            assert_eq!(doc.length(&list), kinds.len());
+            for (index, kind) in kinds.iter().enumerate() {
+                assert_eq!(
+                    NotesDoc::block_kind(&doc, &list, index),
+                    crate::markdown::block_kind_wire(kind)
+                );
+            }
+            for kind in ["table", "table:2", "table:true", "table:01", "table:1:0"] {
+                let before = doc.get_heads();
+                let action = apply_block_ops_action(
+                    page,
+                    vec![BlockEditOp::SetKind {
+                        block_id: after.clone().unwrap(),
+                        kind: kind.into(),
+                    }],
+                );
+                assert!(
+                    tilo_actions::apply_local(&mut doc, &action, encode(&action)).is_err(),
+                    "invalid kind accepted: {kind}"
+                );
+                assert_eq!(doc.get_heads(), before);
+            }
         }
-        for kind in ["table", "table:2", "table:true", "table:01", "table:1:0"] {
+
+        eprintln!("phase import_page_dispatch_rolls_back_invalid_body_and_replays_complete_page");
+        {
+            let mut workspace = Workspace::default();
+            let page = workspace.create_page(None);
+            let meta = PageData::from_meta(workspace.get(page).unwrap());
+            let mut doc = AutoCommit::new();
             let before = doc.get_heads();
-            let action = apply_block_ops_action(
-                page,
-                vec![BlockEditOp::SetKind {
-                    block_id: after.clone().unwrap(),
-                    kind: kind.into(),
+            let invalid = NotesAction::ImportPage {
+                page: meta.clone(),
+                ops: vec![BlockEditOp::Delete {
+                    block_id: "missing-block".into(),
                 }],
-            );
+                marks: vec![],
+                assets: vec![],
+            };
             assert!(
-                tilo_actions::apply_local(&mut doc, &action, encode(&action)).is_err(),
-                "invalid kind accepted: {kind}"
+                tilo_actions::dispatch(
+                    &mut doc,
+                    &invalid,
+                    encode(&invalid),
+                    &mut LocalTransport::new()
+                )
+                .is_err()
             );
             assert_eq!(doc.get_heads(), before);
+            assert!(
+                NotesDoc::list_pages(&doc).is_empty(),
+                "failed body must not leave phantom metadata"
+            );
+            let mut peer = doc.clone();
+            let (ops, marks) =
+                crate::MainPanel::seed_block_ops_with_marks("# Import\n\n**Rich content**", |_| {
+                    None
+                });
+            let valid = NotesAction::ImportPage {
+                page: meta,
+                ops,
+                marks,
+                assets: vec![],
+            };
+            let applied = tilo_actions::dispatch(
+                &mut doc,
+                &valid,
+                encode(&valid),
+                &mut LocalTransport::new(),
+            )
+            .unwrap();
+            tilo_actions::replay(&mut peer, applied.envelope(), &registry()).unwrap();
+            assert_eq!(doc.get_heads(), peer.get_heads());
+            assert_eq!(NotesDoc::page_block_snapshots(&doc, page).len(), 2);
+            assert!(!NotesDoc::page_block_marks(&doc, page).is_empty());
+        }
+
+        eprintln!("phase markdown_file_actions_are_portal_mediated_background_jobs");
+        {
+            let import = file_operation("import-markdown", "Import Markdown", None);
+            assert!(import.params().is_empty());
+            assert!(matches!(
+                import.contract.execution,
+                ExecutionMode::Background { cancellable: false }
+            ));
+            assert_eq!(import.contract.result, ResultSpec::Job);
+
+            let export = file_operation(
+                "export-markdown",
+                "Export Markdown",
+                Some(Uuid::from_u128(42)),
+            );
+            assert!(export.params().is_empty());
+            assert_eq!(export.contract.risk, tilo_actions::RiskLevel::Destructive);
         }
     }
 
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
-    fn import_page_dispatch_rolls_back_invalid_body_and_replays_complete_page() {
-        let mut workspace = Workspace::default();
-        let page = workspace.create_page(None);
-        let meta = PageData::from_meta(workspace.get(page).unwrap());
-        let mut doc = AutoCommit::new();
-        let before = doc.get_heads();
-        let invalid = NotesAction::ImportPage {
-            page: meta.clone(),
-            ops: vec![BlockEditOp::Delete {
-                block_id: "missing-block".into(),
-            }],
-            marks: vec![],
-            assets: vec![],
-        };
-        assert!(
-            tilo_actions::dispatch(
-                &mut doc,
-                &invalid,
-                encode(&invalid),
-                &mut LocalTransport::new()
-            )
-            .is_err()
-        );
-        assert_eq!(doc.get_heads(), before);
-        assert!(
-            NotesDoc::list_pages(&doc).is_empty(),
-            "failed body must not leave phantom metadata"
-        );
-        let mut peer = doc.clone();
-        let (ops, marks) =
-            crate::MainPanel::seed_block_ops_with_marks("# Import\n\n**Rich content**", |_| None);
-        let valid = NotesAction::ImportPage {
-            page: meta,
-            ops,
-            marks,
-            assets: vec![],
-        };
-        let applied =
-            tilo_actions::dispatch(&mut doc, &valid, encode(&valid), &mut LocalTransport::new())
-                .unwrap();
-        tilo_actions::replay(&mut peer, applied.envelope(), &registry()).unwrap();
-        assert_eq!(doc.get_heads(), peer.get_heads());
-        assert_eq!(NotesDoc::page_block_snapshots(&doc, page).len(), 2);
-        assert!(!NotesDoc::page_block_marks(&doc, page).is_empty());
-    }
+    fn links_keep_safe_uris_backlinks_and_stable_targets_through_actions() {
+        eprintln!("phase external_link_marks_keep_their_safe_uri_through_the_action_wire");
+        {
+            let span = MarkSpan::new(
+                0..5,
+                Mark::ExternalLink("https://example.test/notes".into()),
+            );
+            let wire = InlineMarkSpan::from_ui(&span);
+            assert_eq!(wire.to_ui(), Some(span));
 
-    #[test]
-    fn markdown_file_actions_are_portal_mediated_background_jobs() {
-        let import = file_operation("import-markdown", "Import Markdown", None);
-        assert!(import.params().is_empty());
-        assert!(matches!(
-            import.contract.execution,
-            ExecutionMode::Background { cancellable: false }
-        ));
-        assert_eq!(import.contract.result, ResultSpec::Job);
-
-        let export = file_operation(
-            "export-markdown",
-            "Export Markdown",
-            Some(Uuid::from_u128(42)),
-        );
-        assert!(export.params().is_empty());
-        assert_eq!(export.contract.risk, tilo_actions::RiskLevel::Destructive);
-    }
-
-    #[test]
-    fn canonical_links_publish_block_addressed_backlink_resources() {
-        let (mut doc, _projects, source, target, _inbox) = seeded();
-        let block_id = Uuid::new_v4().to_string();
-        let insert = apply_block_ops_action(
-            source,
-            vec![BlockEditOp::Insert {
-                block_id: block_id.clone(),
-                after: None,
-                kind: "paragraph".into(),
-                text: "See the launch plan for context".into(),
-            }],
-        );
-        tilo_actions::apply_local(&mut doc, &insert, encode(&insert)).unwrap();
-        let marks = set_block_marks_action(
-            source,
-            block_id.clone(),
-            vec![InlineMarkSpan {
-                start: 8,
-                end: 19,
-                mark: InlineMark::Link {
-                    page: target.to_string(),
+            let unsafe_wire = InlineMarkSpan {
+                start: 0,
+                end: 5,
+                mark: InlineMark::ExternalLink {
+                    url: "javascript:alert(1)".into(),
                 },
-            }],
-        );
-        tilo_actions::apply_local(&mut doc, &marks, encode(&marks)).unwrap();
+            };
+            assert_eq!(unsafe_wire.to_ui(), None);
+        }
 
-        let backlinks = canonical_backlinks(&doc, &NotesDoc::list_pages(&doc), target);
-        assert_eq!(backlinks.len(), 1);
-        assert_eq!(backlinks[0].source, source);
-        assert_eq!(backlinks[0].block_id, block_id);
-        assert_eq!(backlinks[0].excerpt, "See the launch plan for context");
-        let resource = backlink_collection_resource(&doc, &NotesDoc::list_pages(&doc), target)
-            .expect("linked target publishes a collection");
-        assert_eq!(resource.id.as_str(), backlinks_resource_id(target));
-        assert_eq!(resource.children.len(), 1);
-        assert_eq!(resource.children[0].actions[0].id, "open");
+        eprintln!("phase block_resources_publish_external_links_as_typed_portal_operations");
+        {
+            let mut resource = Resource::new("notes.block:test", "notes.block", "Guide");
+            decorate_external_link_actions(
+                &mut resource,
+                "Read guide",
+                &[InlineMarkSpan {
+                    start: 5,
+                    end: 10,
+                    mark: InlineMark::ExternalLink {
+                        url: "https://example.test/guide".into(),
+                    },
+                }],
+            );
+            let action = resource.actions.first().expect("external link action");
+            assert_eq!(action.kind, OperationKind::Effect);
+            assert_eq!(action.label, "Open link: guide");
+            let encoded = spec_encoding_of(action);
+            assert_eq!(
+                decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
+                Some(NotesOperation::OpenExternalLink {
+                    url: "https://example.test/guide".into()
+                })
+            );
+        }
+
+        eprintln!("phase canonical_links_publish_block_addressed_backlink_resources");
+        {
+            let (mut doc, _projects, source, target, _inbox) = seeded();
+            let block_id = Uuid::new_v4().to_string();
+            let insert = apply_block_ops_action(
+                source,
+                vec![BlockEditOp::Insert {
+                    block_id: block_id.clone(),
+                    after: None,
+                    kind: "paragraph".into(),
+                    text: "See the launch plan for context".into(),
+                }],
+            );
+            tilo_actions::apply_local(&mut doc, &insert, encode(&insert)).unwrap();
+            let marks = set_block_marks_action(
+                source,
+                block_id.clone(),
+                vec![InlineMarkSpan {
+                    start: 8,
+                    end: 19,
+                    mark: InlineMark::Link {
+                        page: target.to_string(),
+                    },
+                }],
+            );
+            tilo_actions::apply_local(&mut doc, &marks, encode(&marks)).unwrap();
+
+            let backlinks = canonical_backlinks(&doc, &NotesDoc::list_pages(&doc), target);
+            assert_eq!(backlinks.len(), 1);
+            assert_eq!(backlinks[0].source, source);
+            assert_eq!(backlinks[0].block_id, block_id);
+            assert_eq!(backlinks[0].excerpt, "See the launch plan for context");
+            let resource = backlink_collection_resource(&doc, &NotesDoc::list_pages(&doc), target)
+                .expect("linked target publishes a collection");
+            assert_eq!(resource.id.as_str(), backlinks_resource_id(target));
+            assert_eq!(resource.children.len(), 1);
+            assert_eq!(resource.children[0].actions[0].id, "open");
+        }
+
+        eprintln!("phase renaming_a_page_updates_link_and_embed_labels_without_changing_targets");
+        {
+            let mut doc = AutoCommit::new();
+            let source = Uuid::from_u128(1);
+            let target = Uuid::from_u128(2);
+            for (id, title, order) in [(source, "Source", 0), (target, "Old title", 1)] {
+                NotesDoc::upsert_page_meta(
+                    &mut doc,
+                    &PageMeta {
+                        id,
+                        title: title.into(),
+                        parent: None,
+                        order,
+                    },
+                );
+            }
+            let block = Uuid::from_u128(3).to_string();
+            NotesDoc::apply_block_ops(
+                &mut doc,
+                source,
+                &[BlockEditOp::Insert {
+                    block_id: block.clone(),
+                    after: None,
+                    kind: "paragraph".into(),
+                    text: "Old title + Old title".into(),
+                }],
+            )
+            .unwrap();
+            NotesDoc::set_block_marks(
+                &mut doc,
+                source,
+                &block,
+                &[
+                    InlineMarkSpan {
+                        start: 0,
+                        end: 9,
+                        mark: InlineMark::Link {
+                            page: target.to_string(),
+                        },
+                    },
+                    InlineMarkSpan {
+                        start: 12,
+                        end: 21,
+                        mark: InlineMark::Transclusion {
+                            page: target.to_string(),
+                        },
+                    },
+                ],
+            )
+            .unwrap();
+
+            rename_page_action(
+                &PageMeta {
+                    id: target,
+                    title: "Old title".into(),
+                    parent: None,
+                    order: 1,
+                },
+                "New",
+            )
+            .apply(&mut doc)
+            .unwrap();
+
+            assert_eq!(
+                NotesDoc::page_block_snapshots(&doc, source)[0].1,
+                "New + New"
+            );
+            let marks = &NotesDoc::page_block_marks(&doc, source)[0].1;
+            assert!(
+                matches!(marks[0].mark, InlineMark::Link { ref page } if page == &target.to_string())
+            );
+            assert!(
+                matches!(marks[1].mark, InlineMark::Transclusion { ref page } if page == &target.to_string())
+            );
+        }
     }
 
     fn prompted_encode(spec: &ActionSpec, arg: &str) -> EncodedAction {
@@ -2377,932 +2514,836 @@ mod tests {
         }
     }
 
-    /// Ctrl+K on Notes yields the nested tree: the notebook with a "New note"
-    /// action, a `notes.page` child per root page exporting rename / delete /
-    /// new-child, and grandchildren nested underneath. Drives the real
-    /// resource-builder path.
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
-    fn ctrl_k_publishes_the_nested_page_tree() {
-        let (doc, _projects, _a, _b, _inbox) = seeded();
-        let resources = provide_resources(&ctx_from(&doc), &doc);
-        assert_eq!(resources.len(), 2, "notebook + stable tags root");
-        let notebook = &resources[0];
-        assert_eq!(notebook.kind, "notes.notebook");
-        let nb_actions: Vec<&str> = notebook.actions.iter().map(|a| a.id.as_str()).collect();
-        assert!(nb_actions.contains(&"new-page"), "{nb_actions:?}");
-        assert!(nb_actions.contains(&"daily-note"), "{nb_actions:?}");
+    fn page_resources_publish_the_tree_view_copy_link_and_valid_moves() {
+        // Ctrl+K on Notes yields the nested tree: the notebook with a "New note"
+        // action, a `notes.page` child per root page exporting rename / delete /
+        // new-child, and grandchildren nested underneath. Drives the real
+        // resource-builder path.
+        eprintln!("phase ctrl_k_publishes_the_nested_page_tree");
+        {
+            let (doc, _projects, _a, _b, _inbox) = seeded();
+            let resources = provide_resources(&ctx_from(&doc), &doc);
+            assert_eq!(resources.len(), 2, "notebook + stable tags root");
+            let notebook = &resources[0];
+            assert_eq!(notebook.kind, "notes.notebook");
+            let nb_actions: Vec<&str> = notebook.actions.iter().map(|a| a.id.as_str()).collect();
+            assert!(nb_actions.contains(&"new-page"), "{nb_actions:?}");
+            assert!(nb_actions.contains(&"daily-note"), "{nb_actions:?}");
 
-        // Two root pages, in order.
-        assert_eq!(notebook.children.len(), 2, "Projects + Inbox");
-        let projects = notebook
-            .children
-            .iter()
-            .find(|r| r.label == "Projects")
-            .expect("a Projects note resource");
-        assert_eq!(projects.kind, "notes.page");
-        let p_actions: Vec<&str> = projects.actions.iter().map(|a| a.id.as_str()).collect();
-        assert!(p_actions.contains(&"rename"), "{p_actions:?}");
-        assert!(p_actions.contains(&"delete"), "{p_actions:?}");
-        assert!(p_actions.contains(&"new-child"), "{p_actions:?}");
-
-        // Its two children nest underneath, in order.
-        assert_eq!(
-            projects.children.len(),
-            2,
-            "Launch + Notes nest under Projects"
-        );
-        assert_eq!(projects.children[0].label, "Launch");
-        assert_eq!(projects.children[1].label, "Notes");
-    }
-
-    #[test]
-    fn page_resource_publishes_the_localized_editor_view() {
-        std::thread::spawn(|| {
-            ui::i18n::I18nManager::install(
-                "en-US",
-                "en-US",
-                &[("en-US", include_str!("../locales/en-US.ftl"))],
-            )
-            .unwrap();
-            let (doc, projects, _a, _b, _inbox) = seeded();
-            let resource = provide_resources(&ctx_from(&doc), &doc)[0]
+            // Two root pages, in order.
+            assert_eq!(notebook.children.len(), 2, "Projects + Inbox");
+            let projects = notebook
                 .children
                 .iter()
-                .find(|resource| resource.id.as_str() == page_resource_id(projects))
-                .cloned()
-                .expect("Projects page resource");
-            let [view] = resource.views.as_slice() else {
-                panic!("one explicit page view expected")
-            };
-            assert_eq!(view.id, PAGE_EDITOR_VIEW_ID);
-            assert_eq!(view.label, "Editor");
-            assert_eq!(view.open_action, "open");
-            assert!(view.primary);
-            assert!(view.mount.is_none());
-            assert!(view.validate(&resource).is_empty());
-        })
-        .join()
-        .unwrap();
-    }
+                .find(|r| r.label == "Projects")
+                .expect("a Projects note resource");
+            assert_eq!(projects.kind, "notes.page");
+            let p_actions: Vec<&str> = projects.actions.iter().map(|a| a.id.as_str()).collect();
+            assert!(p_actions.contains(&"rename"), "{p_actions:?}");
+            assert!(p_actions.contains(&"delete"), "{p_actions:?}");
+            assert!(p_actions.contains(&"new-child"), "{p_actions:?}");
 
-    #[test]
-    fn block_resource_exports_the_same_stable_reveal_address_as_search() {
-        let (doc, projects, _a, _b, _inbox) = seeded();
-        let mut ctx = ctx_from(&doc);
-        ctx.blocks.insert(
-            projects,
-            vec![
-                NoteBlockResource {
-                    id: "obj-a".into(),
-                    text: "Project overview".into(),
-                },
-                NoteBlockResource {
-                    id: "obj-b".into(),
-                    text: "Budget decisions".into(),
-                },
-            ],
-        );
-        let resources = provide_resources(&ctx, &doc);
-        assert!(
-            tilo_actions::door::resolve(&resources, &open_block_address(projects, "obj-b"))
-                .is_none()
-        );
-        let block = block_resource(projects, &ctx.blocks[&projects][1])
-            .expect("second block resource resolves lazily");
-        let open = block
-            .actions
-            .iter()
-            .find(|action| action.id == "open")
-            .expect("block reveal action");
-        assert_eq!(open.kind, OperationKind::View);
-        assert_eq!(
-            open_block_address(projects, "obj-b"),
-            ActionAddress::new(&block.id.0, &open.id)
-        );
-        let encoded = spec_encoding_of(open);
-        assert_eq!(
-            decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
-            Some(NotesOperation::OpenPage {
-                page: projects,
-                block_id: Some("obj-b".into())
+            // Its two children nest underneath, in order.
+            assert_eq!(
+                projects.children.len(),
+                2,
+                "Launch + Notes nest under Projects"
+            );
+            assert_eq!(projects.children[0].label, "Launch");
+            assert_eq!(projects.children[1].label, "Notes");
+        }
+
+        eprintln!("phase page_resource_publishes_the_localized_editor_view");
+        {
+            std::thread::spawn(|| {
+                ui::i18n::I18nManager::install(
+                    "en-US",
+                    "en-US",
+                    &[("en-US", include_str!("../locales/en-US.ftl"))],
+                )
+                .unwrap();
+                let (doc, projects, _a, _b, _inbox) = seeded();
+                let resource = provide_resources(&ctx_from(&doc), &doc)[0]
+                    .children
+                    .iter()
+                    .find(|resource| resource.id.as_str() == page_resource_id(projects))
+                    .cloned()
+                    .expect("Projects page resource");
+                let [view] = resource.views.as_slice() else {
+                    panic!("one explicit page view expected")
+                };
+                assert_eq!(view.id, PAGE_EDITOR_VIEW_ID);
+                assert_eq!(view.label, "Editor");
+                assert_eq!(view.open_action, "open");
+                assert!(view.primary);
+                assert!(view.mount.is_none());
+                assert!(view.validate(&resource).is_empty());
             })
-        );
-    }
+            .join()
+            .unwrap();
+        }
 
-    #[test]
-    fn page_resource_exposes_a_stable_copy_link_operation() {
-        let projects = Uuid::from_u128(0x1111);
-        let meta = PageMeta {
-            id: projects,
-            title: "Projects".into(),
-            parent: None,
-            order: 0,
-        };
-        let mut doc = AutoCommit::new();
-        crate::notebook::initialize_empty(&mut doc).unwrap();
-        NotesDoc::upsert_page_meta(&mut doc, &meta);
-        let resource = page_resource(&meta, std::slice::from_ref(&meta), &doc);
-        let copy = resource
-            .actions
-            .iter()
-            .find(|action| action.id == "copy-link")
-            .expect("note publishes copy-link");
-        assert_eq!(copy.kind, OperationKind::Effect);
-        let encoded = spec_encoding_of(copy);
-        assert_eq!(
-            decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
-            Some(NotesOperation::CopyPageLink { page: projects })
-        );
-        let duplicate = resource
-            .actions
-            .iter()
-            .find(|action| action.id == "duplicate")
-            .expect("canonical note publishes duplicate");
-        let encoded = spec_encoding_of(duplicate);
-        let NotesAction::DuplicateSubtree { source, pages } =
-            serde_json::from_slice(&encoded.payload).unwrap()
-        else {
-            panic!("duplicate resource encoded the wrong action");
-        };
-        assert_eq!(source, projects.to_string());
-        assert!(!pages.is_empty());
-        let insert_image = resource
-            .actions
-            .iter()
-            .find(|action| action.id == "insert-image")
-            .expect("note publishes image insertion");
-        let encoded = spec_encoding_of(insert_image);
-        assert_eq!(
-            decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
-            Some(NotesOperation::InsertImage { page: projects })
-        );
-    }
-
-    #[test]
-    fn page_resources_expose_only_valid_canonical_hierarchy_moves() {
-        let (_legacy, projects, a, b, inbox) = seeded();
-        let pages = vec![
-            PageMeta {
+        eprintln!("phase page_resource_exposes_a_stable_copy_link_operation");
+        {
+            let projects = Uuid::from_u128(0x1111);
+            let meta = PageMeta {
                 id: projects,
                 title: "Projects".into(),
                 parent: None,
                 order: 0,
-            },
-            PageMeta {
-                id: a,
-                title: "A".into(),
-                parent: Some(projects),
-                order: 0,
-            },
-            PageMeta {
-                id: b,
-                title: "B".into(),
-                parent: Some(projects),
-                order: 1,
-            },
-            PageMeta {
-                id: inbox,
-                title: "Inbox".into(),
-                parent: None,
-                order: 1,
-            },
-        ];
-        let mut doc = AutoCommit::new();
-        crate::notebook::initialize_empty(&mut doc).unwrap();
-        for page in &pages {
-            NotesDoc::upsert_page_meta(&mut doc, page);
+            };
+            let mut doc = AutoCommit::new();
+            crate::notebook::initialize_empty(&mut doc).unwrap();
+            NotesDoc::upsert_page_meta(&mut doc, &meta);
+            let resource = page_resource(&meta, std::slice::from_ref(&meta), &doc);
+            let copy = resource
+                .actions
+                .iter()
+                .find(|action| action.id == "copy-link")
+                .expect("note publishes copy-link");
+            assert_eq!(copy.kind, OperationKind::Effect);
+            let encoded = spec_encoding_of(copy);
+            assert_eq!(
+                decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
+                Some(NotesOperation::CopyPageLink { page: projects })
+            );
+            let duplicate = resource
+                .actions
+                .iter()
+                .find(|action| action.id == "duplicate")
+                .expect("canonical note publishes duplicate");
+            let encoded = spec_encoding_of(duplicate);
+            let NotesAction::DuplicateSubtree { source, pages } =
+                serde_json::from_slice(&encoded.payload).unwrap()
+            else {
+                panic!("duplicate resource encoded the wrong action");
+            };
+            assert_eq!(source, projects.to_string());
+            assert!(!pages.is_empty());
+            let insert_image = resource
+                .actions
+                .iter()
+                .find(|action| action.id == "insert-image")
+                .expect("note publishes image insertion");
+            let encoded = spec_encoding_of(insert_image);
+            assert_eq!(
+                decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
+                Some(NotesOperation::InsertImage { page: projects })
+            );
         }
 
-        let resource = page_resource(&pages[2], &pages, &doc);
-        let ids = resource
-            .actions
-            .iter()
-            .map(|action| action.id.as_str())
-            .collect::<Vec<_>>();
-        assert!(ids.contains(&"move-up"));
-        assert!(!ids.contains(&"move-down"), "last sibling cannot move down");
-        assert!(ids.contains(&"indent"));
-        assert!(ids.contains(&"outdent"));
+        eprintln!("phase page_resources_expose_only_valid_canonical_hierarchy_moves");
+        {
+            let (_legacy, projects, a, b, inbox) = seeded();
+            let pages = vec![
+                PageMeta {
+                    id: projects,
+                    title: "Projects".into(),
+                    parent: None,
+                    order: 0,
+                },
+                PageMeta {
+                    id: a,
+                    title: "A".into(),
+                    parent: Some(projects),
+                    order: 0,
+                },
+                PageMeta {
+                    id: b,
+                    title: "B".into(),
+                    parent: Some(projects),
+                    order: 1,
+                },
+                PageMeta {
+                    id: inbox,
+                    title: "Inbox".into(),
+                    parent: None,
+                    order: 1,
+                },
+            ];
+            let mut doc = AutoCommit::new();
+            crate::notebook::initialize_empty(&mut doc).unwrap();
+            for page in &pages {
+                NotesDoc::upsert_page_meta(&mut doc, page);
+            }
 
-        let action = resource
-            .actions
-            .iter()
-            .find(|action| action.id == "move-up")
-            .map(spec_encoding_of)
-            .unwrap();
-        tilo_actions::apply_local(
-            &mut doc,
-            &serde_json::from_slice::<NotesAction>(&action.payload).unwrap(),
-            action,
-        )
-        .unwrap();
-        let updated = NotesDoc::list_pages(&doc);
-        assert_eq!(updated.iter().find(|page| page.id == b).unwrap().order, 0);
-        assert_eq!(updated.iter().find(|page| page.id == a).unwrap().order, 1);
-        let moved = updated.iter().find(|page| page.id == b).unwrap();
-        let refreshed = page_resource(moved, &updated, &doc);
-        assert!(
-            !refreshed
+            let resource = page_resource(&pages[2], &pages, &doc);
+            let ids = resource
                 .actions
                 .iter()
-                .any(|action| action.id == "move-up")
-        );
-        assert!(
-            refreshed
-                .actions
-                .iter()
-                .any(|action| action.id == "move-down")
-        );
-        assert!(
-            refreshed
-                .actions
-                .iter()
-                .any(|action| action.id == "duplicate")
-        );
+                .map(|action| action.id.as_str())
+                .collect::<Vec<_>>();
+            assert!(ids.contains(&"move-up"));
+            assert!(!ids.contains(&"move-down"), "last sibling cannot move down");
+            assert!(ids.contains(&"indent"));
+            assert!(ids.contains(&"outdent"));
 
-        // Sharing validation is confined to one immutable publication. A new
-        // refresh must refuse malformed data rather than reuse a past snapshot.
-        doc.put(automerge::ROOT, "notes_schema_version", 999_u64)
-            .unwrap();
-        let invalid = page_resource(moved, &updated, &doc);
-        assert!(!invalid.actions.iter().any(|action| {
-            matches!(
-                action.id.as_str(),
-                "duplicate" | "move-up" | "move-down" | "indent" | "outdent"
+            let action = resource
+                .actions
+                .iter()
+                .find(|action| action.id == "move-up")
+                .map(spec_encoding_of)
+                .unwrap();
+            tilo_actions::apply_local(
+                &mut doc,
+                &serde_json::from_slice::<NotesAction>(&action.payload).unwrap(),
+                action,
             )
-        }));
-    }
-
-    #[test]
-    fn ten_thousand_blocks_stay_out_of_the_open_snapshot() {
-        let (doc, projects, _a, _b, _inbox) = seeded();
-        let mut ctx = ctx_from(&doc);
-        ctx.blocks.insert(
-            projects,
-            (0..10_000)
-                .map(|id| NoteBlockResource {
-                    id: format!("block-{id}"),
-                    text: format!("Block {id}"),
-                })
-                .collect(),
-        );
-        let resources = provide_resources(&ctx, &doc);
-        assert!(
-            tilo_actions::door::resolve(&resources, &open_block_address(projects, "block-9999"))
-                .is_none()
-        );
-        assert!(block_resource(projects, &ctx.blocks[&projects][9_999]).is_some());
-    }
-
-    #[test]
-    fn wide_and_deep_page_resources_are_bounded_but_lazily_resolvable() {
-        let mut pages = Vec::new();
-        let root = Uuid::new_v4();
-        pages.push(PageMeta {
-            id: root,
-            title: "root".into(),
-            parent: None,
-            order: 0,
-        });
-        let mut parent = root;
-        for depth in 0..(RESOURCE_PAGE_SNAPSHOT_DEPTH + 4) {
-            let id = Uuid::new_v4();
-            pages.push(PageMeta {
-                id,
-                title: format!("deep-{depth}"),
-                parent: Some(parent),
-                order: 0,
-            });
-            parent = id;
-        }
-        for order in 0..(RESOURCE_PAGE_SNAPSHOT_LIMIT + 40) {
-            pages.push(PageMeta {
-                id: Uuid::new_v4(),
-                title: format!("wide-{order}"),
-                parent: None,
-                order: (order + 1) as u32,
-            });
-        }
-        let ctx = NotesResourceCtx {
-            pages: pages.clone(),
-            blocks: HashMap::new(),
-            tags: Vec::new(),
-            tag_assignments: Vec::new(),
-            can_go_back: false,
-            can_go_forward: false,
-        };
-        let resources = provide_resources(&ctx, &AutoCommit::new());
-        assert!(
-            resource_count(&resources[0]) <= RESOURCE_PAGE_SNAPSHOT_LIMIT + 1,
-            "notebook context must remain bounded"
-        );
-        let late = pages.last().expect("late note");
-        let lazy = page_resource(late, &pages, &AutoCommit::new());
-        assert_eq!(lazy.id.as_str(), page_resource_id(late.id));
-        assert!(
-            lazy.actions.iter().any(|action| action.id == "open"),
-            "an omitted note remains addressable by its stable id"
-        );
-    }
-
-    #[test]
-    fn large_tag_vocabularies_and_memberships_have_bounded_snapshots() {
-        let page = Uuid::new_v4();
-        let pages = vec![PageMeta {
-            id: page,
-            title: "Reference".into(),
-            parent: None,
-            order: 0,
-        }];
-        let tags = (0..(RESOURCE_TAG_SNAPSHOT_LIMIT + 40))
-            .map(|index| TagMeta {
-                id: Uuid::new_v4(),
-                name: format!("tag-{index}"),
-            })
-            .collect::<Vec<_>>();
-        let late = tags.last().expect("late tag").clone();
-        let ctx = NotesResourceCtx {
-            pages,
-            blocks: HashMap::new(),
-            tags,
-            tag_assignments: vec![(page, late.id); RESOURCE_TAG_PAGE_SNAPSHOT_LIMIT + 40],
-            can_go_back: false,
-            can_go_forward: false,
-        };
-
-        let resources = provide_resources(&ctx, &AutoCommit::new());
-        assert_eq!(
-            resources[1].children.len(),
-            RESOURCE_TAG_SNAPSHOT_LIMIT,
-            "the open Tags resource must have a fixed materialization ceiling"
-        );
-        let page_resource = &resources[0].children[0];
-        assert!(
-            page_resource.actions.len() <= RESOURCE_PAGE_TAG_ACTION_LIMIT + 12,
-            "per-note tag actions must not grow with the whole vocabulary"
-        );
-
-        let late_resource = tag_resource(&late, &ctx);
-        assert_eq!(late_resource.id.as_str(), tag_resource_id(late.id));
-        assert!(late_resource.children.len() <= RESOURCE_TAG_PAGE_SNAPSHOT_LIMIT);
-        assert!(
-            late_resource
-                .actions
-                .iter()
-                .any(|action| action.id == "assign-page"),
-            "an omitted tag remains operable by stable id"
-        );
-        assert!(
-            late_resource
-                .actions
-                .iter()
-                .any(|action| action.id == "unassign-page"),
-            "absolute membership removal remains available too"
-        );
-    }
-
-    #[test]
-    fn stable_block_resource_ids_refuse_malformed_or_empty_targets() {
-        let page = Uuid::new_v4();
-        assert_eq!(
-            parse_block_resource_id(&block_resource_id(page, "block-1")),
-            Some((page, "block-1"))
-        );
-        assert!(parse_block_resource_id("notes.block:not-a-uuid:block").is_none());
-        assert!(parse_block_resource_id(&format!("notes.block:{page}:")).is_none());
-    }
-
-    /// Deleting a page through its action removes the page *and* its whole
-    /// subtree, and re-densifies the surviving root siblings.
-    #[test]
-    fn delete_page_removes_the_subtree_and_renumbers() {
-        let (mut doc, projects, _a, _b, inbox) = seeded();
-        assert_eq!(NotesDoc::list_pages(&doc).len(), 4);
-
-        let action = delete_page_action(projects);
-        let encoded = encode(&action);
-        let decoded = registry().decode(&encoded).unwrap();
-        let mut tx = LocalTransport::new();
-        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-
-        let left = NotesDoc::list_pages(&doc);
-        assert_eq!(
-            left.len(),
-            1,
-            "only Inbox survives (Projects + 2 children gone)"
-        );
-        assert_eq!(left[0].id, inbox);
-        // Inbox was order 1; as the sole surviving root it re-densifies to 0.
-        assert_eq!(left[0].order, 0, "surviving root sibling renumbers to 0");
-    }
-
-    /// The new-child prompt builds an `UpsertPage` under the right parent at
-    /// the right order; its freshly minted id rules out a byte comparison.
-    #[test]
-    fn new_child_prompt_upserts_under_its_parent() {
-        let (doc, projects, _a, _b, _inbox) = seeded();
-        let resources = provide_resources(&ctx_from(&doc), &doc);
-        let page = resources[0]
-            .children
-            .iter()
-            .find(|r| r.label == "Projects")
             .unwrap();
+            let updated = NotesDoc::list_pages(&doc);
+            assert_eq!(updated.iter().find(|page| page.id == b).unwrap().order, 0);
+            assert_eq!(updated.iter().find(|page| page.id == a).unwrap().order, 1);
+            let moved = updated.iter().find(|page| page.id == b).unwrap();
+            let refreshed = page_resource(moved, &updated, &doc);
+            assert!(
+                !refreshed
+                    .actions
+                    .iter()
+                    .any(|action| action.id == "move-up")
+            );
+            assert!(
+                refreshed
+                    .actions
+                    .iter()
+                    .any(|action| action.id == "move-down")
+            );
+            assert!(
+                refreshed
+                    .actions
+                    .iter()
+                    .any(|action| action.id == "duplicate")
+            );
 
-        // New-child spec builds an UpsertPage under the right parent at the right
-        // order (the minted id differs each call, so compare the stable fields).
-        let new_child_spec = page.actions.iter().find(|a| a.id == "new-child").unwrap();
-        let encoded = prompted_encode(new_child_spec, "Child");
-        let decoded: NotesAction =
-            serde_json::from_slice(&encoded.payload).expect("payload decodes to NotesAction");
-        match decoded {
-            NotesAction::UpsertPage(d) => {
-                assert_eq!(
-                    d.parent,
-                    projects.to_string(),
-                    "child parented under Projects"
-                );
-                assert_eq!(d.title, "Child");
-                assert_eq!(d.order, 2, "appended after the two existing children");
-            }
-            NotesAction::UpdatePageTree { .. } => {
-                panic!("new-child built the wrong action: UpdatePageTree")
-            }
-            NotesAction::DuplicateSubtree { .. } => {
-                panic!("new-child built the wrong action: DuplicateSubtree")
-            }
-            NotesAction::ImportPage { .. } => {
-                panic!("new-child built the wrong action: ImportPage")
-            }
-            NotesAction::DeletePage { id } => {
-                panic!("new-child built the wrong action: DeletePage {{ id: {id:?} }}")
-            }
-            NotesAction::ApplyBlockOps { .. } => {
-                panic!("new-child built the wrong action: ApplyBlockOps")
-            }
-            NotesAction::AddImageAsset { .. } => {
-                panic!("new-child built the wrong action: AddImageAsset")
-            }
-            NotesAction::SetBlockMarks { .. } => {
-                panic!("new-child built the wrong action: SetBlockMarks")
-            }
-            NotesAction::UpsertTag(_) => panic!("new-child built the wrong action: UpsertTag"),
-            NotesAction::DeleteTag { .. } => panic!("new-child built the wrong action: DeleteTag"),
-            NotesAction::SetTagAssignment { .. } => {
-                panic!("new-child built the wrong action: SetTagAssignment")
-            }
-            NotesAction::CreateAndAssignTag { .. } => {
-                panic!("new-child built the wrong action: CreateAndAssignTag")
-            }
-            NotesAction::MoveAssetsToContentStore { .. } => {
-                panic!("new-child built the wrong action: MoveAssetsToContentStore")
-            }
+            // Sharing validation is confined to one immutable publication. A new
+            // refresh must refuse malformed data rather than reuse a past snapshot.
+            doc.put(automerge::ROOT, "notes_schema_version", 999_u64)
+                .unwrap();
+            let invalid = page_resource(moved, &updated, &doc);
+            assert!(!invalid.actions.iter().any(|action| {
+                matches!(
+                    action.id.as_str(),
+                    "duplicate" | "move-up" | "move-down" | "indent" | "outdent"
+                )
+            }));
         }
     }
 
-    /// The retained accessibility tree surfaces the notebook's pages as stable
-    /// nodes, and a page node's exposed `delete` affordance is the byte-identical
-    /// `EncodedAction` the on-screen page control dispatches.
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
-    fn a11y_tree_surfaces_page_delete_as_the_affordance_action() {
-        let (doc, projects, _a, _b, _inbox) = seeded();
-        let resources = provide_resources(&ctx_from(&doc), &doc);
+    fn block_actions_edit_reorder_and_replay_unicode_against_live_targets() {
+        eprintln!("phase block_actions_replay_unicode_splices_and_refuse_stale_targets");
+        {
+            let (seeded_doc, projects, _a, _b, _inbox) = seeded();
+            let mut first = seeded_doc;
+            first.commit();
+            let mut second = AutoCommit::load(&first.save()).unwrap();
+            let block = Uuid::new_v4().to_string();
+            let insert = apply_block_ops_action(
+                projects,
+                vec![BlockEditOp::Insert {
+                    block_id: block.clone(),
+                    after: None,
+                    kind: "paragraph".into(),
+                    text: "hé".into(),
+                }],
+            );
+            let envelope = tilo_actions::apply_local(&mut first, &insert, encode(&insert)).unwrap();
+            tilo_actions::replay(&mut second, &envelope, &registry()).unwrap();
 
-        // An inert root; the operable nodes come from the published resources.
-        // `HashMap::new()`'s type is inferred from `refresh`'s signature.
-        let root = ui::widget::Column::new();
-        let node_map = std::collections::HashMap::new();
-        let mut tree = ui::SemanticTree::new();
+            let splice = apply_block_ops_action(
+                projects,
+                vec![BlockEditOp::TextSplice {
+                    block_id: block.clone(),
+                    // Byte positions from the editor are converted to Automerge's
+                    // scalar indexes by NotesDoc, so this replaces one `é`.
+                    start: 1,
+                    end: 3,
+                    text: "x".into(),
+                }],
+            );
+            let envelope = tilo_actions::apply_local(&mut first, &splice, encode(&splice)).unwrap();
+            tilo_actions::replay(&mut second, &envelope, &registry()).unwrap();
+            assert_eq!(
+                first.get_heads(),
+                second.get_heads(),
+                "rich text replay converges"
+            );
+            assert_eq!(NotesDoc::page_block_snapshots(&second, projects)[0].1, "hx");
 
-        // First refresh populates the tree; a second, unchanged refresh is a
-        // no-op with identical node identity (retained, not rebuilt each frame).
-        let d1 = tree.refresh(&root, &node_map, None, &resources);
-        assert!(!d1.added.is_empty(), "the first refresh populates the tree");
-        let notebook = tree
-            .node(&ui::SemanticId("r:notes.notebook".into()))
-            .expect("notebook node present");
-        assert_eq!(notebook.name.as_deref(), Some("Notes"));
-        assert!(
-            notebook.action("new-page").is_some(),
-            "the notebook affords new-note"
-        );
-        let ids1: Vec<ui::SemanticId> = tree.iter().map(|n| n.id.clone()).collect();
-
-        let d2 = tree.refresh(&root, &node_map, None, &resources);
-        assert!(d2.is_empty(), "an unchanged frame yields no delta: {d2:?}");
-        let ids2: Vec<ui::SemanticId> = tree.iter().map(|n| n.id.clone()).collect();
-        assert_eq!(ids1, ids2, "node identity survives across frames");
-
-        // The Projects page node exposes rename (prompted) + delete (immediate);
-        // the delete affordance carries the on-screen control's exact action.
-        let page = tree
-            .node(&ui::SemanticId(format!("r:notes.page:{projects}")))
-            .expect("projects note node");
-        assert!(page.action("rename").is_some(), "note affords rename");
-        let exposed = match &page.action("delete").expect("delete affordance").kind {
-            ui::SemanticActionKind::App(enc) => enc.clone(),
-            other => panic!("expected an app action, got {other:?}"),
-        };
-        assert_eq!(
-            exposed,
-            encode(&delete_page_action(projects)),
-            "the a11y affordance and the on-screen builder are one action"
-        );
-
-        // Invoking the exposed action mutates the doc exactly as the on-screen
-        // control does: two identical docs, deleted through each path, compared.
-        let dispatch_encoded = |doc: &mut AutoCommit, enc: EncodedAction| {
-            let decoded = registry().decode(&enc).unwrap();
-            let mut tx = LocalTransport::new();
-            tilo_actions::dispatch(doc, decoded.as_ref(), enc, &mut tx).unwrap();
-        };
-        let (mut via_a11y, ..) = seeded();
-        let (mut via_affordance, ..) = seeded();
-        dispatch_encoded(&mut via_a11y, exposed);
-        dispatch_encoded(&mut via_affordance, encode(&delete_page_action(projects)));
-
-        let a: Vec<_> = NotesDoc::list_pages(&via_a11y)
-            .iter()
-            .map(|p| p.id)
-            .collect();
-        let b: Vec<_> = NotesDoc::list_pages(&via_affordance)
-            .iter()
-            .map(|p| p.id)
-            .collect();
-        assert_eq!(
-            a, b,
-            "invoking the a11y affordance deletes the same note + subtree"
-        );
-        assert_eq!(
-            NotesDoc::list_pages(&via_a11y).len(),
-            1,
-            "only Inbox survives"
-        );
-    }
-
-    #[test]
-    fn page_action_history_is_addressable() {
-        let context = history_context(&NotesAction::UpsertPage(PageData {
-            id: "page-7".into(),
-            title: "Launch brief".into(),
-            parent: String::new(),
-            order: 0,
-        }));
-        assert_eq!(context.action_label, "Update note");
-        let resource = context.resource.expect("note resource");
-        assert_eq!(resource.id, "notes.page:page-7");
-        assert_eq!(resource.label, "Launch brief");
-    }
-
-    #[test]
-    fn block_actions_replay_unicode_splices_and_refuse_stale_targets() {
-        let (seeded_doc, projects, _a, _b, _inbox) = seeded();
-        let mut first = seeded_doc;
-        first.commit();
-        let mut second = AutoCommit::load(&first.save()).unwrap();
-        let block = Uuid::new_v4().to_string();
-        let insert = apply_block_ops_action(
-            projects,
-            vec![BlockEditOp::Insert {
-                block_id: block.clone(),
-                after: None,
-                kind: "paragraph".into(),
-                text: "hé".into(),
-            }],
-        );
-        let envelope = tilo_actions::apply_local(&mut first, &insert, encode(&insert)).unwrap();
-        tilo_actions::replay(&mut second, &envelope, &registry()).unwrap();
-
-        let splice = apply_block_ops_action(
-            projects,
-            vec![BlockEditOp::TextSplice {
-                block_id: block.clone(),
-                // Byte positions from the editor are converted to Automerge's
-                // scalar indexes by NotesDoc, so this replaces one `é`.
-                start: 1,
-                end: 3,
-                text: "x".into(),
-            }],
-        );
-        let envelope = tilo_actions::apply_local(&mut first, &splice, encode(&splice)).unwrap();
-        tilo_actions::replay(&mut second, &envelope, &registry()).unwrap();
-        assert_eq!(
-            first.get_heads(),
-            second.get_heads(),
-            "rich text replay converges"
-        );
-        assert_eq!(NotesDoc::page_block_snapshots(&second, projects)[0].1, "hx");
-
-        let before = second.save();
-        let stale = apply_block_ops_action(
-            projects,
-            vec![BlockEditOp::TextSplice {
-                block_id: block,
-                start: 99,
-                end: 99,
-                text: "!".into(),
-            }],
-        );
-        let error = tilo_actions::apply_local(&mut second, &stale, encode(&stale))
-            .expect_err("a stale byte range must refuse, never clamp");
-        assert!(matches!(error, ActionError::Refused(_)));
-        assert_eq!(second.save(), before, "refusal leaves no partial mutation");
-    }
-
-    #[test]
-    fn block_resource_exposes_the_canonical_edit_action() {
-        let (mut doc, projects, _a, _b, _inbox) = seeded();
-        let block = Uuid::new_v4().to_string();
-        let action = apply_block_ops_action(
-            projects,
-            vec![BlockEditOp::Insert {
-                block_id: block.clone(),
-                after: None,
-                kind: "paragraph".into(),
-                text: "Original".into(),
-            }],
-        );
-        tilo_actions::apply_local(&mut doc, &action, encode(&action)).unwrap();
-        let resource = block_resource(
-            projects,
-            &NoteBlockResource {
-                id: block.clone(),
-                text: "Original".into(),
-            },
-        )
-        .expect("non-empty block is a resource");
-        let edit = resource
-            .actions
-            .iter()
-            .find(|action| action.id == "replace-text")
-            .expect("agent-editable block action");
-        let encoded = prompted_encode(edit, "Rewritten");
-        let decoded: NotesAction = serde_json::from_slice(&encoded.payload).unwrap();
-        assert_eq!(
-            decoded,
-            apply_block_ops_action(
+            let before = second.save();
+            let stale = apply_block_ops_action(
                 projects,
                 vec![BlockEditOp::TextSplice {
                     block_id: block,
-                    start: 0,
-                    end: "Original".len(),
-                    text: "Rewritten".into(),
+                    start: 99,
+                    end: 99,
+                    text: "!".into(),
                 }],
-            ),
-        );
-    }
+            );
+            let error = tilo_actions::apply_local(&mut second, &stale, encode(&stale))
+                .expect_err("a stale byte range must refuse, never clamp");
+            assert!(matches!(error, ActionError::Refused(_)));
+            assert_eq!(second.save(), before, "refusal leaves no partial mutation");
+        }
 
-    #[test]
-    fn block_resources_expose_only_valid_reorder_actions_and_delete() {
-        let page = Uuid::new_v4();
-        let blocks = ["a", "b", "c"].map(|id| NoteBlockResource {
-            id: id.into(),
-            text: format!("Block {id}"),
-        });
-        let first = block_resource_in_page(page, &blocks[0], &blocks).unwrap();
-        let middle = block_resource_in_page(page, &blocks[1], &blocks).unwrap();
-        let last = block_resource_in_page(page, &blocks[2], &blocks).unwrap();
-        let ids = |resource: &Resource| {
-            resource
+        eprintln!("phase block_resource_exposes_the_canonical_edit_action");
+        {
+            let (mut doc, projects, _a, _b, _inbox) = seeded();
+            let block = Uuid::new_v4().to_string();
+            let action = apply_block_ops_action(
+                projects,
+                vec![BlockEditOp::Insert {
+                    block_id: block.clone(),
+                    after: None,
+                    kind: "paragraph".into(),
+                    text: "Original".into(),
+                }],
+            );
+            tilo_actions::apply_local(&mut doc, &action, encode(&action)).unwrap();
+            let resource = block_resource(
+                projects,
+                &NoteBlockResource {
+                    id: block.clone(),
+                    text: "Original".into(),
+                },
+            )
+            .expect("non-empty block is a resource");
+            let edit = resource
                 .actions
                 .iter()
-                .map(|action| action.id.clone())
-                .collect::<HashSet<_>>()
-        };
-        assert!(!ids(&first).contains("move-up"));
-        assert!(ids(&first).contains("move-down"));
-        assert!(ids(&middle).contains("move-up"));
-        assert!(ids(&middle).contains("move-down"));
-        assert!(ids(&last).contains("move-up"));
-        assert!(!ids(&last).contains("move-down"));
-        assert!(ids(&middle).contains("delete"));
-
-        let move_up = middle
-            .actions
-            .iter()
-            .find(|action| action.id == "move-up")
-            .map(spec_encoding_of)
-            .unwrap();
-        assert_eq!(
-            serde_json::from_slice::<NotesAction>(&move_up.payload).unwrap(),
-            apply_block_ops_action(
-                page,
-                vec![BlockEditOp::Move {
-                    block_id: "b".into(),
-                    after: None,
-                }]
-            )
-        );
-    }
-
-    #[test]
-    fn external_link_marks_keep_their_safe_uri_through_the_action_wire() {
-        let span = MarkSpan::new(
-            0..5,
-            Mark::ExternalLink("https://example.test/notes".into()),
-        );
-        let wire = InlineMarkSpan::from_ui(&span);
-        assert_eq!(wire.to_ui(), Some(span));
-
-        let unsafe_wire = InlineMarkSpan {
-            start: 0,
-            end: 5,
-            mark: InlineMark::ExternalLink {
-                url: "javascript:alert(1)".into(),
-            },
-        };
-        assert_eq!(unsafe_wire.to_ui(), None);
-    }
-
-    #[test]
-    fn block_resources_publish_external_links_as_typed_portal_operations() {
-        let mut resource = Resource::new("notes.block:test", "notes.block", "Guide");
-        decorate_external_link_actions(
-            &mut resource,
-            "Read guide",
-            &[InlineMarkSpan {
-                start: 5,
-                end: 10,
-                mark: InlineMark::ExternalLink {
-                    url: "https://example.test/guide".into(),
-                },
-            }],
-        );
-        let action = resource.actions.first().expect("external link action");
-        assert_eq!(action.kind, OperationKind::Effect);
-        assert_eq!(action.label, "Open link: guide");
-        let encoded = spec_encoding_of(action);
-        assert_eq!(
-            decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
-            Some(NotesOperation::OpenExternalLink {
-                url: "https://example.test/guide".into()
-            })
-        );
-    }
-
-    #[test]
-    fn tag_actions_replay_byte_identically_and_delete_tombstones_edges() {
-        let (seeded_doc, projects, _a, _b, _inbox) = seeded();
-        let mut first = seeded_doc;
-        first.commit();
-        let mut second = AutoCommit::load(&first.save()).unwrap();
-        let tag = Uuid::from_u128(0x5555);
-        for action in [
-            new_tag_action(tag, "Release"),
-            set_tag_assignment_action(projects, tag, true),
-        ] {
-            let envelope = tilo_actions::apply_local(&mut first, &action, encode(&action)).unwrap();
-            tilo_actions::replay(&mut second, &envelope, &registry()).unwrap();
-        }
-        assert_eq!(
-            first.get_heads(),
-            second.get_heads(),
-            "keyed tag graph replays exactly"
-        );
-        assert_eq!(
-            NotesDoc::list_tag_assignments(&second),
-            vec![(projects, tag)]
-        );
-
-        let remove = delete_tag_action(tag);
-        let envelope = tilo_actions::apply_local(&mut first, &remove, encode(&remove)).unwrap();
-        tilo_actions::replay(&mut second, &envelope, &registry()).unwrap();
-        assert_eq!(
-            first.get_heads(),
-            second.get_heads(),
-            "tag tombstone replays exactly"
-        );
-        assert!(NotesDoc::list_tags(&second).is_empty());
-        assert!(
-            NotesDoc::list_tag_assignments(&second).is_empty(),
-            "edge tombstones were removed too"
-        );
-    }
-
-    #[test]
-    fn tags_publish_stable_browseable_resources() {
-        let (mut doc, projects, _a, _b, _inbox) = seeded();
-        let tag = Uuid::from_u128(0x6666);
-        NotesDoc::upsert_tag(
-            &mut doc,
-            &TagMeta {
-                id: tag,
-                name: "Research".into(),
-            },
-        );
-        NotesDoc::set_tag_assignment(&mut doc, projects, tag, true);
-        let resources = provide_resources(&ctx_from(&doc), &doc);
-        let tags = resources
-            .iter()
-            .find(|resource| resource.id.as_str() == "notes.tags")
-            .expect("tags root");
-        let resource = tags
-            .children
-            .iter()
-            .find(|resource| resource.id.as_str() == tag_resource_id(tag))
-            .expect("stable tag resource");
-        assert!(resource.actions.iter().any(|action| action.id == "open"));
-        assert!(resource.actions.iter().any(|action| action.id == "rename"));
-        assert!(resource.actions.iter().any(|action| action.id == "delete"));
-        assert_eq!(
-            resource.children[0].id.as_str(),
-            tag_page_resource_id(tag, projects),
-            "the membership row has its own address, distinct from the note's"
-        );
-
-        let page = resources[0]
-            .children
-            .iter()
-            .find(|resource| resource.id.as_str() == page_resource_id(projects))
-            .expect("tagged note resource");
-        assert!(
-            page.actions
-                .iter()
-                .any(|action| action.id == format!("unassign-tag:{tag}"))
-        );
-        let create = page
-            .actions
-            .iter()
-            .find(|action| action.id == "new-and-assign-tag")
-            .expect("normal create-and-assign workflow");
-        assert!(matches!(
-            serde_json::from_slice::<NotesAction>(&prompted_encode(create, "Planning").payload),
-            Ok(NotesAction::CreateAndAssignTag { page, tag: TagData { name, .. } }) if page == projects.to_string() && name == "Planning"
-        ));
-    }
-
-    #[test]
-    fn renaming_a_page_updates_link_and_embed_labels_without_changing_targets() {
-        let mut doc = AutoCommit::new();
-        let source = Uuid::from_u128(1);
-        let target = Uuid::from_u128(2);
-        for (id, title, order) in [(source, "Source", 0), (target, "Old title", 1)] {
-            NotesDoc::upsert_page_meta(
-                &mut doc,
-                &PageMeta {
-                    id,
-                    title: title.into(),
-                    parent: None,
-                    order,
-                },
+                .find(|action| action.id == "replace-text")
+                .expect("agent-editable block action");
+            let encoded = prompted_encode(edit, "Rewritten");
+            let decoded: NotesAction = serde_json::from_slice(&encoded.payload).unwrap();
+            assert_eq!(
+                decoded,
+                apply_block_ops_action(
+                    projects,
+                    vec![BlockEditOp::TextSplice {
+                        block_id: block,
+                        start: 0,
+                        end: "Original".len(),
+                        text: "Rewritten".into(),
+                    }],
+                ),
             );
         }
-        let block = Uuid::from_u128(3).to_string();
-        NotesDoc::apply_block_ops(
-            &mut doc,
-            source,
-            &[BlockEditOp::Insert {
-                block_id: block.clone(),
-                after: None,
-                kind: "paragraph".into(),
-                text: "Old title + Old title".into(),
-            }],
-        )
-        .unwrap();
-        NotesDoc::set_block_marks(
-            &mut doc,
-            source,
-            &block,
-            &[
-                InlineMarkSpan {
-                    start: 0,
-                    end: 9,
-                    mark: InlineMark::Link {
-                        page: target.to_string(),
-                    },
-                },
-                InlineMarkSpan {
-                    start: 12,
-                    end: 21,
-                    mark: InlineMark::Transclusion {
-                        page: target.to_string(),
-                    },
-                },
-            ],
-        )
-        .unwrap();
 
-        rename_page_action(
-            &PageMeta {
-                id: target,
-                title: "Old title".into(),
+        eprintln!("phase block_resources_expose_only_valid_reorder_actions_and_delete");
+        {
+            let page = Uuid::new_v4();
+            let blocks = ["a", "b", "c"].map(|id| NoteBlockResource {
+                id: id.into(),
+                text: format!("Block {id}"),
+            });
+            let first = block_resource_in_page(page, &blocks[0], &blocks).unwrap();
+            let middle = block_resource_in_page(page, &blocks[1], &blocks).unwrap();
+            let last = block_resource_in_page(page, &blocks[2], &blocks).unwrap();
+            let ids = |resource: &Resource| {
+                resource
+                    .actions
+                    .iter()
+                    .map(|action| action.id.clone())
+                    .collect::<HashSet<_>>()
+            };
+            assert!(!ids(&first).contains("move-up"));
+            assert!(ids(&first).contains("move-down"));
+            assert!(ids(&middle).contains("move-up"));
+            assert!(ids(&middle).contains("move-down"));
+            assert!(ids(&last).contains("move-up"));
+            assert!(!ids(&last).contains("move-down"));
+            assert!(ids(&middle).contains("delete"));
+
+            let move_up = middle
+                .actions
+                .iter()
+                .find(|action| action.id == "move-up")
+                .map(spec_encoding_of)
+                .unwrap();
+            assert_eq!(
+                serde_json::from_slice::<NotesAction>(&move_up.payload).unwrap(),
+                apply_block_ops_action(
+                    page,
+                    vec![BlockEditOp::Move {
+                        block_id: "b".into(),
+                        after: None,
+                    }]
+                )
+            );
+        }
+
+        eprintln!("phase block_resource_exports_the_same_stable_reveal_address_as_search");
+        {
+            let (doc, projects, _a, _b, _inbox) = seeded();
+            let mut ctx = ctx_from(&doc);
+            ctx.blocks.insert(
+                projects,
+                vec![
+                    NoteBlockResource {
+                        id: "obj-a".into(),
+                        text: "Project overview".into(),
+                    },
+                    NoteBlockResource {
+                        id: "obj-b".into(),
+                        text: "Budget decisions".into(),
+                    },
+                ],
+            );
+            let resources = provide_resources(&ctx, &doc);
+            assert!(
+                tilo_actions::door::resolve(&resources, &open_block_address(projects, "obj-b"))
+                    .is_none()
+            );
+            let block = block_resource(projects, &ctx.blocks[&projects][1])
+                .expect("second block resource resolves lazily");
+            let open = block
+                .actions
+                .iter()
+                .find(|action| action.id == "open")
+                .expect("block reveal action");
+            assert_eq!(open.kind, OperationKind::View);
+            assert_eq!(
+                open_block_address(projects, "obj-b"),
+                ActionAddress::new(&block.id.0, &open.id)
+            );
+            let encoded = spec_encoding_of(open);
+            assert_eq!(
+                decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
+                Some(NotesOperation::OpenPage {
+                    page: projects,
+                    block_id: Some("obj-b".into())
+                })
+            );
+        }
+    }
+
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
+    #[test]
+    fn resource_snapshots_stay_bounded_but_lazily_resolvable() {
+        eprintln!("phase ten_thousand_blocks_stay_out_of_the_open_snapshot");
+        {
+            let (doc, projects, _a, _b, _inbox) = seeded();
+            let mut ctx = ctx_from(&doc);
+            ctx.blocks.insert(
+                projects,
+                (0..10_000)
+                    .map(|id| NoteBlockResource {
+                        id: format!("block-{id}"),
+                        text: format!("Block {id}"),
+                    })
+                    .collect(),
+            );
+            let resources = provide_resources(&ctx, &doc);
+            assert!(
+                tilo_actions::door::resolve(
+                    &resources,
+                    &open_block_address(projects, "block-9999")
+                )
+                .is_none()
+            );
+            assert!(block_resource(projects, &ctx.blocks[&projects][9_999]).is_some());
+        }
+
+        eprintln!("phase wide_and_deep_page_resources_are_bounded_but_lazily_resolvable");
+        {
+            let mut pages = Vec::new();
+            let root = Uuid::new_v4();
+            pages.push(PageMeta {
+                id: root,
+                title: "root".into(),
                 parent: None,
-                order: 1,
-            },
-            "New",
-        )
-        .apply(&mut doc)
-        .unwrap();
+                order: 0,
+            });
+            let mut parent = root;
+            for depth in 0..(RESOURCE_PAGE_SNAPSHOT_DEPTH + 4) {
+                let id = Uuid::new_v4();
+                pages.push(PageMeta {
+                    id,
+                    title: format!("deep-{depth}"),
+                    parent: Some(parent),
+                    order: 0,
+                });
+                parent = id;
+            }
+            for order in 0..(RESOURCE_PAGE_SNAPSHOT_LIMIT + 40) {
+                pages.push(PageMeta {
+                    id: Uuid::new_v4(),
+                    title: format!("wide-{order}"),
+                    parent: None,
+                    order: (order + 1) as u32,
+                });
+            }
+            let ctx = NotesResourceCtx {
+                pages: pages.clone(),
+                blocks: HashMap::new(),
+                tags: Vec::new(),
+                tag_assignments: Vec::new(),
+                can_go_back: false,
+                can_go_forward: false,
+            };
+            let resources = provide_resources(&ctx, &AutoCommit::new());
+            assert!(
+                resource_count(&resources[0]) <= RESOURCE_PAGE_SNAPSHOT_LIMIT + 1,
+                "notebook context must remain bounded"
+            );
+            let late = pages.last().expect("late note");
+            let lazy = page_resource(late, &pages, &AutoCommit::new());
+            assert_eq!(lazy.id.as_str(), page_resource_id(late.id));
+            assert!(
+                lazy.actions.iter().any(|action| action.id == "open"),
+                "an omitted note remains addressable by its stable id"
+            );
+        }
 
-        assert_eq!(
-            NotesDoc::page_block_snapshots(&doc, source)[0].1,
-            "New + New"
-        );
-        let marks = &NotesDoc::page_block_marks(&doc, source)[0].1;
-        assert!(
-            matches!(marks[0].mark, InlineMark::Link { ref page } if page == &target.to_string())
-        );
-        assert!(
-            matches!(marks[1].mark, InlineMark::Transclusion { ref page } if page == &target.to_string())
-        );
+        eprintln!("phase large_tag_vocabularies_and_memberships_have_bounded_snapshots");
+        {
+            let page = Uuid::new_v4();
+            let pages = vec![PageMeta {
+                id: page,
+                title: "Reference".into(),
+                parent: None,
+                order: 0,
+            }];
+            let tags = (0..(RESOURCE_TAG_SNAPSHOT_LIMIT + 40))
+                .map(|index| TagMeta {
+                    id: Uuid::new_v4(),
+                    name: format!("tag-{index}"),
+                })
+                .collect::<Vec<_>>();
+            let late = tags.last().expect("late tag").clone();
+            let ctx = NotesResourceCtx {
+                pages,
+                blocks: HashMap::new(),
+                tags,
+                tag_assignments: vec![(page, late.id); RESOURCE_TAG_PAGE_SNAPSHOT_LIMIT + 40],
+                can_go_back: false,
+                can_go_forward: false,
+            };
+
+            let resources = provide_resources(&ctx, &AutoCommit::new());
+            assert_eq!(
+                resources[1].children.len(),
+                RESOURCE_TAG_SNAPSHOT_LIMIT,
+                "the open Tags resource must have a fixed materialization ceiling"
+            );
+            let page_resource = &resources[0].children[0];
+            assert!(
+                page_resource.actions.len() <= RESOURCE_PAGE_TAG_ACTION_LIMIT + 12,
+                "per-note tag actions must not grow with the whole vocabulary"
+            );
+
+            let late_resource = tag_resource(&late, &ctx);
+            assert_eq!(late_resource.id.as_str(), tag_resource_id(late.id));
+            assert!(late_resource.children.len() <= RESOURCE_TAG_PAGE_SNAPSHOT_LIMIT);
+            assert!(
+                late_resource
+                    .actions
+                    .iter()
+                    .any(|action| action.id == "assign-page"),
+                "an omitted tag remains operable by stable id"
+            );
+            assert!(
+                late_resource
+                    .actions
+                    .iter()
+                    .any(|action| action.id == "unassign-page"),
+                "absolute membership removal remains available too"
+            );
+        }
+
+        eprintln!("phase stable_block_resource_ids_refuse_malformed_or_empty_targets");
+        {
+            let page = Uuid::new_v4();
+            assert_eq!(
+                parse_block_resource_id(&block_resource_id(page, "block-1")),
+                Some((page, "block-1"))
+            );
+            assert!(parse_block_resource_id("notes.block:not-a-uuid:block").is_none());
+            assert!(parse_block_resource_id(&format!("notes.block:{page}:")).is_none());
+        }
+    }
+
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
+    #[test]
+    fn page_hierarchy_actions_delete_create_and_record_addressable_history() {
+        // Deleting a page through its action removes the page *and* its whole
+        // subtree, and re-densifies the surviving root siblings.
+        eprintln!("phase delete_page_removes_the_subtree_and_renumbers");
+        {
+            let (mut doc, projects, _a, _b, inbox) = seeded();
+            assert_eq!(NotesDoc::list_pages(&doc).len(), 4);
+
+            let action = delete_page_action(projects);
+            let encoded = encode(&action);
+            let decoded = registry().decode(&encoded).unwrap();
+            let mut tx = LocalTransport::new();
+            tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+
+            let left = NotesDoc::list_pages(&doc);
+            assert_eq!(
+                left.len(),
+                1,
+                "only Inbox survives (Projects + 2 children gone)"
+            );
+            assert_eq!(left[0].id, inbox);
+            // Inbox was order 1; as the sole surviving root it re-densifies to 0.
+            assert_eq!(left[0].order, 0, "surviving root sibling renumbers to 0");
+        }
+
+        // The new-child prompt builds an `UpsertPage` under the right parent at
+        // the right order; its freshly minted id rules out a byte comparison.
+        eprintln!("phase new_child_prompt_upserts_under_its_parent");
+        {
+            let (doc, projects, _a, _b, _inbox) = seeded();
+            let resources = provide_resources(&ctx_from(&doc), &doc);
+            let page = resources[0]
+                .children
+                .iter()
+                .find(|r| r.label == "Projects")
+                .unwrap();
+
+            // New-child spec builds an UpsertPage under the right parent at the right
+            // order (the minted id differs each call, so compare the stable fields).
+            let new_child_spec = page.actions.iter().find(|a| a.id == "new-child").unwrap();
+            let encoded = prompted_encode(new_child_spec, "Child");
+            let decoded: NotesAction =
+                serde_json::from_slice(&encoded.payload).expect("payload decodes to NotesAction");
+            match decoded {
+                NotesAction::UpsertPage(d) => {
+                    assert_eq!(
+                        d.parent,
+                        projects.to_string(),
+                        "child parented under Projects"
+                    );
+                    assert_eq!(d.title, "Child");
+                    assert_eq!(d.order, 2, "appended after the two existing children");
+                }
+                NotesAction::UpdatePageTree { .. } => {
+                    panic!("new-child built the wrong action: UpdatePageTree")
+                }
+                NotesAction::DuplicateSubtree { .. } => {
+                    panic!("new-child built the wrong action: DuplicateSubtree")
+                }
+                NotesAction::ImportPage { .. } => {
+                    panic!("new-child built the wrong action: ImportPage")
+                }
+                NotesAction::DeletePage { id } => {
+                    panic!("new-child built the wrong action: DeletePage {{ id: {id:?} }}")
+                }
+                NotesAction::ApplyBlockOps { .. } => {
+                    panic!("new-child built the wrong action: ApplyBlockOps")
+                }
+                NotesAction::AddImageAsset { .. } => {
+                    panic!("new-child built the wrong action: AddImageAsset")
+                }
+                NotesAction::SetBlockMarks { .. } => {
+                    panic!("new-child built the wrong action: SetBlockMarks")
+                }
+                NotesAction::UpsertTag(_) => panic!("new-child built the wrong action: UpsertTag"),
+                NotesAction::DeleteTag { .. } => {
+                    panic!("new-child built the wrong action: DeleteTag")
+                }
+                NotesAction::SetTagAssignment { .. } => {
+                    panic!("new-child built the wrong action: SetTagAssignment")
+                }
+                NotesAction::CreateAndAssignTag { .. } => {
+                    panic!("new-child built the wrong action: CreateAndAssignTag")
+                }
+                NotesAction::MoveAssetsToContentStore { .. } => {
+                    panic!("new-child built the wrong action: MoveAssetsToContentStore")
+                }
+            }
+        }
+
+        // The retained accessibility tree surfaces the notebook's pages as stable
+        // nodes, and a page node's exposed `delete` affordance is the byte-identical
+        // `EncodedAction` the on-screen page control dispatches.
+        eprintln!("phase a11y_tree_surfaces_page_delete_as_the_affordance_action");
+        {
+            let (doc, projects, _a, _b, _inbox) = seeded();
+            let resources = provide_resources(&ctx_from(&doc), &doc);
+
+            // An inert root; the operable nodes come from the published resources.
+            // `HashMap::new()`'s type is inferred from `refresh`'s signature.
+            let root = ui::widget::Column::new();
+            let node_map = std::collections::HashMap::new();
+            let mut tree = ui::SemanticTree::new();
+
+            // First refresh populates the tree; a second, unchanged refresh is a
+            // no-op with identical node identity (retained, not rebuilt each frame).
+            let d1 = tree.refresh(&root, &node_map, None, &resources);
+            assert!(!d1.added.is_empty(), "the first refresh populates the tree");
+            let notebook = tree
+                .node(&ui::SemanticId("r:notes.notebook".into()))
+                .expect("notebook node present");
+            assert_eq!(notebook.name.as_deref(), Some("Notes"));
+            assert!(
+                notebook.action("new-page").is_some(),
+                "the notebook affords new-note"
+            );
+            let ids1: Vec<ui::SemanticId> = tree.iter().map(|n| n.id.clone()).collect();
+
+            let d2 = tree.refresh(&root, &node_map, None, &resources);
+            assert!(d2.is_empty(), "an unchanged frame yields no delta: {d2:?}");
+            let ids2: Vec<ui::SemanticId> = tree.iter().map(|n| n.id.clone()).collect();
+            assert_eq!(ids1, ids2, "node identity survives across frames");
+
+            // The Projects page node exposes rename (prompted) + delete (immediate);
+            // the delete affordance carries the on-screen control's exact action.
+            let page = tree
+                .node(&ui::SemanticId(format!("r:notes.page:{projects}")))
+                .expect("projects note node");
+            assert!(page.action("rename").is_some(), "note affords rename");
+            let exposed = match &page.action("delete").expect("delete affordance").kind {
+                ui::SemanticActionKind::App(enc) => enc.clone(),
+                other => panic!("expected an app action, got {other:?}"),
+            };
+            assert_eq!(
+                exposed,
+                encode(&delete_page_action(projects)),
+                "the a11y affordance and the on-screen builder are one action"
+            );
+
+            // Invoking the exposed action mutates the doc exactly as the on-screen
+            // control does: two identical docs, deleted through each path, compared.
+            let dispatch_encoded = |doc: &mut AutoCommit, enc: EncodedAction| {
+                let decoded = registry().decode(&enc).unwrap();
+                let mut tx = LocalTransport::new();
+                tilo_actions::dispatch(doc, decoded.as_ref(), enc, &mut tx).unwrap();
+            };
+            let (mut via_a11y, ..) = seeded();
+            let (mut via_affordance, ..) = seeded();
+            dispatch_encoded(&mut via_a11y, exposed);
+            dispatch_encoded(&mut via_affordance, encode(&delete_page_action(projects)));
+
+            let a: Vec<_> = NotesDoc::list_pages(&via_a11y)
+                .iter()
+                .map(|p| p.id)
+                .collect();
+            let b: Vec<_> = NotesDoc::list_pages(&via_affordance)
+                .iter()
+                .map(|p| p.id)
+                .collect();
+            assert_eq!(
+                a, b,
+                "invoking the a11y affordance deletes the same note + subtree"
+            );
+            assert_eq!(
+                NotesDoc::list_pages(&via_a11y).len(),
+                1,
+                "only Inbox survives"
+            );
+        }
+
+        eprintln!("phase page_action_history_is_addressable");
+        {
+            let context = history_context(&NotesAction::UpsertPage(PageData {
+                id: "page-7".into(),
+                title: "Launch brief".into(),
+                parent: String::new(),
+                order: 0,
+            }));
+            assert_eq!(context.action_label, "Update note");
+            let resource = context.resource.expect("note resource");
+            assert_eq!(resource.id, "notes.page:page-7");
+            assert_eq!(resource.label, "Launch brief");
+        }
+    }
+
+    #[test]
+    fn tag_actions_replay_identically_and_publish_browseable_resources() {
+        eprintln!("phase tag_actions_replay_byte_identically_and_delete_tombstones_edges");
+        {
+            let (seeded_doc, projects, _a, _b, _inbox) = seeded();
+            let mut first = seeded_doc;
+            first.commit();
+            let mut second = AutoCommit::load(&first.save()).unwrap();
+            let tag = Uuid::from_u128(0x5555);
+            for action in [
+                new_tag_action(tag, "Release"),
+                set_tag_assignment_action(projects, tag, true),
+            ] {
+                let envelope =
+                    tilo_actions::apply_local(&mut first, &action, encode(&action)).unwrap();
+                tilo_actions::replay(&mut second, &envelope, &registry()).unwrap();
+            }
+            assert_eq!(
+                first.get_heads(),
+                second.get_heads(),
+                "keyed tag graph replays exactly"
+            );
+            assert_eq!(
+                NotesDoc::list_tag_assignments(&second),
+                vec![(projects, tag)]
+            );
+
+            let remove = delete_tag_action(tag);
+            let envelope = tilo_actions::apply_local(&mut first, &remove, encode(&remove)).unwrap();
+            tilo_actions::replay(&mut second, &envelope, &registry()).unwrap();
+            assert_eq!(
+                first.get_heads(),
+                second.get_heads(),
+                "tag tombstone replays exactly"
+            );
+            assert!(NotesDoc::list_tags(&second).is_empty());
+            assert!(
+                NotesDoc::list_tag_assignments(&second).is_empty(),
+                "edge tombstones were removed too"
+            );
+        }
+
+        eprintln!("phase tags_publish_stable_browseable_resources");
+        {
+            let (mut doc, projects, _a, _b, _inbox) = seeded();
+            let tag = Uuid::from_u128(0x6666);
+            NotesDoc::upsert_tag(
+                &mut doc,
+                &TagMeta {
+                    id: tag,
+                    name: "Research".into(),
+                },
+            );
+            NotesDoc::set_tag_assignment(&mut doc, projects, tag, true);
+            let resources = provide_resources(&ctx_from(&doc), &doc);
+            let tags = resources
+                .iter()
+                .find(|resource| resource.id.as_str() == "notes.tags")
+                .expect("tags root");
+            let resource = tags
+                .children
+                .iter()
+                .find(|resource| resource.id.as_str() == tag_resource_id(tag))
+                .expect("stable tag resource");
+            assert!(resource.actions.iter().any(|action| action.id == "open"));
+            assert!(resource.actions.iter().any(|action| action.id == "rename"));
+            assert!(resource.actions.iter().any(|action| action.id == "delete"));
+            assert_eq!(
+                resource.children[0].id.as_str(),
+                tag_page_resource_id(tag, projects),
+                "the membership row has its own address, distinct from the note's"
+            );
+
+            let page = resources[0]
+                .children
+                .iter()
+                .find(|resource| resource.id.as_str() == page_resource_id(projects))
+                .expect("tagged note resource");
+            assert!(
+                page.actions
+                    .iter()
+                    .any(|action| action.id == format!("unassign-tag:{tag}"))
+            );
+            let create = page
+                .actions
+                .iter()
+                .find(|action| action.id == "new-and-assign-tag")
+                .expect("normal create-and-assign workflow");
+            assert!(matches!(
+                serde_json::from_slice::<NotesAction>(&prompted_encode(create, "Planning").payload),
+                Ok(NotesAction::CreateAndAssignTag { page, tag: TagData { name, .. } }) if page == projects.to_string() && name == "Planning"
+            ));
+        }
     }
 }

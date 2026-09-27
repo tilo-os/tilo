@@ -1374,101 +1374,105 @@ mod tests {
     }
 
     #[test]
-    fn unavailable_provider_rejects_arbitrary_handles() {
-        let error = UnavailableMlsVault
-            .checkout(MlsVaultHandle::from_issued_bytes([99; 32]))
-            .err()
-            .unwrap();
-        assert!(matches!(error, MlsAuthorityError::VaultUnavailable(_)));
-    }
-
-    #[test]
-    fn production_receipt_store_is_durable_route_bound_and_tamper_evident() {
-        let dir = tempfile::tempdir().unwrap();
-        let provider = SecretServiceMlsVault {
-            root: dir.path().to_path_buf(),
-            master_key: Zeroizing::new([6; 32]),
-            registry: Mutex::new(SecretServiceRegistry::default()),
-        };
-        let joining_member = MemberKey::generate(b"joining-device").unwrap();
-        let package = joining_member.fresh_key_package().unwrap();
-        let expected_package = channel_crypto::encode_key_package(&package).unwrap();
-        let package_handle = provider.register_key_package(package).unwrap();
-        let restarted_registry: SecretServiceRegistry =
-            postcard::from_bytes(&std::fs::read(dir.path().join("registry.postcard")).unwrap())
+    fn mls_receipts_are_durable_route_bound_and_unknown_handles_rejected() {
+        fn unavailable_provider_rejects_arbitrary_handles() {
+            let error = UnavailableMlsVault
+                .checkout(MlsVaultHandle::from_issued_bytes([99; 32]))
+                .err()
                 .unwrap();
-        let restarted_provider = SecretServiceMlsVault {
-            root: dir.path().to_path_buf(),
-            master_key: Zeroizing::new([6; 32]),
-            registry: Mutex::new(restarted_registry),
-        };
-        assert_eq!(
-            channel_crypto::encode_key_package(
-                &restarted_provider.key_package(package_handle).unwrap()
-            )
-            .unwrap(),
-            expected_package
-        );
-        let channel = ChannelId::new();
-        let (snapshot_signer, snapshot_author) = generate_keypair();
-        let mut encrypted = collab_types::SignedOp::new_unsigned_with_encryption(
-            vec![1, 2, 3],
-            collab_types::ArtifactId::new(),
-            snapshot_author,
-            collab_types::AttestationId::default(),
-            collab_types::OpClass::Compaction,
-            std::time::SystemTime::UNIX_EPOCH,
-            1,
-            collab_types::EncryptionMetadata::mls_application(0, channel),
-        );
-        assert!(provider.mint_snapshot_receipt(channel, &encrypted).is_err());
-        collab_types::sign_op(&mut encrypted, &snapshot_signer).unwrap();
-        assert!(
-            provider
-                .mint_snapshot_receipt(ChannelId::new(), &encrypted)
-                .is_err()
-        );
-        let receipt = provider.mint_snapshot_receipt(channel, &encrypted).unwrap();
-        let digest = provider.snapshot_digest(receipt, channel).unwrap();
-        assert_eq!(provider.latest_snapshot_receipt(channel), Some(receipt));
-        assert!(provider.snapshot_digest(receipt, ChannelId::new()).is_err());
+            assert!(matches!(error, MlsAuthorityError::VaultUnavailable(_)));
+        }
 
-        let plaintext = collab_types::SignedOp::new_unsigned(
-            vec![1],
-            encrypted.artifact,
-            encrypted.author,
-            encrypted.attestation_id,
-            collab_types::OpClass::Compaction,
-            std::time::SystemTime::UNIX_EPOCH,
-            2,
-        );
-        assert!(provider.mint_snapshot_receipt(channel, &plaintext).is_err());
+        fn production_receipt_store_is_durable_route_bound_and_tamper_evident() {
+            let dir = tempfile::tempdir().unwrap();
+            let provider = SecretServiceMlsVault {
+                root: dir.path().to_path_buf(),
+                master_key: Zeroizing::new([6; 32]),
+                registry: Mutex::new(SecretServiceRegistry::default()),
+            };
+            let joining_member = MemberKey::generate(b"joining-device").unwrap();
+            let package = joining_member.fresh_key_package().unwrap();
+            let expected_package = channel_crypto::encode_key_package(&package).unwrap();
+            let package_handle = provider.register_key_package(package).unwrap();
+            let restarted_registry: SecretServiceRegistry =
+                postcard::from_bytes(&std::fs::read(dir.path().join("registry.postcard")).unwrap())
+                    .unwrap();
+            let restarted_provider = SecretServiceMlsVault {
+                root: dir.path().to_path_buf(),
+                master_key: Zeroizing::new([6; 32]),
+                registry: Mutex::new(restarted_registry),
+            };
+            assert_eq!(
+                channel_crypto::encode_key_package(
+                    &restarted_provider.key_package(package_handle).unwrap()
+                )
+                .unwrap(),
+                expected_package
+            );
+            let channel = ChannelId::new();
+            let (snapshot_signer, snapshot_author) = generate_keypair();
+            let mut encrypted = collab_types::SignedOp::new_unsigned_with_encryption(
+                vec![1, 2, 3],
+                collab_types::ArtifactId::new(),
+                snapshot_author,
+                collab_types::AttestationId::default(),
+                collab_types::OpClass::Compaction,
+                std::time::SystemTime::UNIX_EPOCH,
+                1,
+                collab_types::EncryptionMetadata::mls_application(0, channel),
+            );
+            assert!(provider.mint_snapshot_receipt(channel, &encrypted).is_err());
+            collab_types::sign_op(&mut encrypted, &snapshot_signer).unwrap();
+            assert!(
+                provider
+                    .mint_snapshot_receipt(ChannelId::new(), &encrypted)
+                    .is_err()
+            );
+            let receipt = provider.mint_snapshot_receipt(channel, &encrypted).unwrap();
+            let digest = provider.snapshot_digest(receipt, channel).unwrap();
+            assert_eq!(provider.latest_snapshot_receipt(channel), Some(receipt));
+            assert!(provider.snapshot_digest(receipt, ChannelId::new()).is_err());
 
-        let mut wrong_class = collab_types::SignedOp::new_unsigned_with_encryption(
-            vec![1],
-            encrypted.artifact,
-            encrypted.author,
-            encrypted.attestation_id,
-            collab_types::OpClass::EditMeta,
-            std::time::SystemTime::UNIX_EPOCH,
-            3,
-            collab_types::EncryptionMetadata::mls_application(0, channel),
-        );
-        collab_types::sign_op(&mut wrong_class, &snapshot_signer).unwrap();
-        assert!(
-            provider
-                .mint_snapshot_receipt(channel, &wrong_class)
-                .is_err()
-        );
+            let plaintext = collab_types::SignedOp::new_unsigned(
+                vec![1],
+                encrypted.artifact,
+                encrypted.author,
+                encrypted.attestation_id,
+                collab_types::OpClass::Compaction,
+                std::time::SystemTime::UNIX_EPOCH,
+                2,
+            );
+            assert!(provider.mint_snapshot_receipt(channel, &plaintext).is_err());
 
-        let snapshot_path = {
-            let registry = provider.registry.lock().unwrap();
-            dir.path().join(&registry.snapshots[&receipt].envelope_file)
-        };
-        let mut bytes = std::fs::read(&snapshot_path).unwrap();
-        bytes.push(0);
-        std::fs::write(snapshot_path, bytes).unwrap();
-        assert!(provider.snapshot_digest(receipt, channel).is_err());
-        assert_ne!(digest, [0; 32]);
+            let mut wrong_class = collab_types::SignedOp::new_unsigned_with_encryption(
+                vec![1],
+                encrypted.artifact,
+                encrypted.author,
+                encrypted.attestation_id,
+                collab_types::OpClass::EditMeta,
+                std::time::SystemTime::UNIX_EPOCH,
+                3,
+                collab_types::EncryptionMetadata::mls_application(0, channel),
+            );
+            collab_types::sign_op(&mut wrong_class, &snapshot_signer).unwrap();
+            assert!(
+                provider
+                    .mint_snapshot_receipt(channel, &wrong_class)
+                    .is_err()
+            );
+
+            let snapshot_path = {
+                let registry = provider.registry.lock().unwrap();
+                dir.path().join(&registry.snapshots[&receipt].envelope_file)
+            };
+            let mut bytes = std::fs::read(&snapshot_path).unwrap();
+            bytes.push(0);
+            std::fs::write(snapshot_path, bytes).unwrap();
+            assert!(provider.snapshot_digest(receipt, channel).is_err());
+            assert_ne!(digest, [0; 32]);
+        }
+
+        unavailable_provider_rejects_arbitrary_handles();
+        production_receipt_store_is_durable_route_bound_and_tamper_evident();
     }
 }

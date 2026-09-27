@@ -297,23 +297,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn stub_reports_the_explicitly_omitted_capability() {
-        let mut t = StubTransport;
-        assert!(!t.is_available());
-        let unavailable =
-            || SyncError::Unavailable("this build does not include Grayjay device sync".into());
-        assert_eq!(t.pair("blob"), Err(unavailable()));
-        assert_eq!(
-            t.push(&PeerId("k".into()), &SyncState::default()),
-            Err(unavailable())
-        );
-        assert_eq!(t.pull(&PeerId("k".into())), Err(unavailable()));
-    }
-
-    #[test]
-    fn default_transport_is_the_stub() {
-        let t = default_transport();
-        assert!(!t.is_available());
+    fn default_sync_transport_is_the_explicit_stub() {
+        // Case `stub_reports_the_explicitly_omitted_capability`.
+        {
+            let mut t = StubTransport;
+            assert!(!t.is_available());
+            let unavailable =
+                || SyncError::Unavailable("this build does not include Grayjay device sync".into());
+            assert_eq!(t.pair("blob"), Err(unavailable()));
+            assert_eq!(
+                t.push(&PeerId("k".into()), &SyncState::default()),
+                Err(unavailable())
+            );
+            assert_eq!(t.pull(&PeerId("k".into())), Err(unavailable()));
+        }
+        // Case `default_transport_is_the_stub`.
+        {
+            let t = default_transport();
+            assert!(!t.is_available());
+        }
     }
 
     #[test]

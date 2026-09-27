@@ -12,7 +12,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use qdoc::snapshot::{AttrVal, BlockView, DocSnapshot};
-use word_processor::actions::{self as wp, WordProcessorAction};
+use word_processor::actions::{self as wp, RichTextAction};
 
 use crate::surface::{self, NoMatch, Offer};
 
@@ -551,9 +551,10 @@ pub const NOTHING_FITS: &str = "none";
 
 /// One thing the agent can do, and the exported actions it does it with.
 ///
-/// `actions` names [`WordProcessorAction`] variants. Nothing here is taken on
+/// `actions` names [`RichTextAction`] variants. Nothing here is taken on
 /// trust: [`dispatched`] builds those very actions with the word processor's
-/// own builders, and `the_catalogue_only_offers_actions_the_app_exports`
+/// own builders, and
+/// `instructions_come_only_from_exported_catalogue_ids_or_text_addressed_to_the_agent`
 /// checks the names against what the app's encoder puts on the wire. A
 /// renamed or withdrawn action breaks the build or the test, never a run.
 pub struct Capability {
@@ -571,7 +572,7 @@ pub const CATALOGUE: &[Capability] = &[
     Capability {
         id: "table",
         summary: "Turn the run of bullets immediately above the instruction into a table.",
-        actions: &["InsertTable", "SpliceText", "RemoveBlocks"],
+        actions: &["InsertFilledTable", "RemoveBlocks"],
     },
     Capability {
         id: "caption",
@@ -589,12 +590,11 @@ pub const CATALOGUE: &[Capability] = &[
 /// The actions a capability dispatches, built with the word processor's own
 /// builders — the same calls [`crate::session`] makes to carry the work out.
 /// The arguments are placeholders; only the shape of the action matters.
-pub fn dispatched(id: &str) -> Vec<WordProcessorAction> {
+pub fn dispatched(id: &str) -> Vec<RichTextAction> {
     let block = || "block".to_string();
     match id {
         "table" => vec![
-            wp::insert_table_action("block", 1, 1),
-            wp::splice_text_action(wp::RegionKind::Body, "block", 0, 0, ""),
+            wp::insert_filled_table_action("block", vec![vec![String::new()]]),
             wp::remove_blocks_action(vec![block()]),
         ],
         "caption" => vec![
@@ -618,7 +618,7 @@ pub fn dispatched(id: &str) -> Vec<WordProcessorAction> {
 /// The name the word processor's own encoder gives an action: the key of the
 /// envelope `encode` puts on the wire. Reading it back from the app rather
 /// than writing it down here is what makes the catalogue's claims checkable.
-pub fn exported_name(action: &WordProcessorAction) -> Option<String> {
+pub fn exported_name(action: &RichTextAction) -> Option<String> {
     let encoded = wp::encode(action);
     match serde_json::from_slice::<serde_json::Value>(&encoded.payload).ok()? {
         serde_json::Value::Object(map) => map.keys().next().cloned(),
@@ -728,39 +728,6 @@ pub fn table_cells(lines: &[&str]) -> Vec<Vec<String>> {
     rows
 }
 
-/// The cells of the table `table_id`, ordered row-major, as block ids.
-pub fn cells_of(blocks: &[Block], table_id: &str) -> Vec<(i64, i64, String)> {
-    let mut cells: Vec<(i64, i64, String)> = blocks
-        .iter()
-        .filter(|b| b.kind == "cell")
-        .filter(|b| matches!(b.attrs.get("table"), Some(AttrVal::Str(t)) if t == table_id))
-        .map(|b| {
-            let n = |k: &str| match b.attrs.get(k) {
-                Some(AttrVal::Int(v)) => *v,
-                _ => 0,
-            };
-            (n("row"), n("col"), b.id.clone())
-        })
-        .collect();
-    cells.sort();
-    cells
-}
-
-/// Every table id present in `blocks`.
-pub fn table_ids(blocks: &[Block]) -> Vec<String> {
-    let mut ids: Vec<String> = blocks
-        .iter()
-        .filter(|b| b.kind == "cell")
-        .filter_map(|b| match b.attrs.get("table") {
-            Some(AttrVal::Str(t)) => Some(t.clone()),
-            _ => None,
-        })
-        .collect();
-    ids.sort();
-    ids.dedup();
-    ids
-}
-
 /// The first image block, if any.
 pub fn first_image(blocks: &[Block]) -> Option<usize> {
     blocks.iter().position(|b| b.kind == "image")
@@ -860,207 +827,190 @@ mod tests {
     }
 
     #[test]
-    fn a_structural_pass_finds_the_title_and_the_section_labels() {
-        let blocks = vec![
-            para("t", "Quarterly review"),
-            para("s1", "Revenue"),
-            para(
-                "p1",
-                "We closed the quarter ahead of plan, with most of the gain late.",
-            ),
-            para("s2", "Risks"),
-            para(
-                "p2",
-                "Two suppliers remain single-sourced and that has not moved.",
-            ),
-            para("ins", "Claude: make this a proper document"),
-        ];
-        let found = structure(&blocks, 5);
-        assert_eq!(found.title.as_deref(), Some("t"));
-        assert_eq!(found.sections, vec!["s1".to_string(), "s2".to_string()]);
+    fn a_structural_pass_finds_the_title_and_section_labels_and_nothing_else() {
+        // Case `a_structural_pass_finds_the_title_and_the_section_labels`.
+        {
+            let blocks = vec![
+                para("t", "Quarterly review"),
+                para("s1", "Revenue"),
+                para(
+                    "p1",
+                    "We closed the quarter ahead of plan, with most of the gain late.",
+                ),
+                para("s2", "Risks"),
+                para(
+                    "p2",
+                    "Two suppliers remain single-sourced and that has not moved.",
+                ),
+                para("ins", "Claude: make this a proper document"),
+            ];
+            let found = structure(&blocks, 5);
+            assert_eq!(found.title.as_deref(), Some("t"));
+            assert_eq!(found.sections, vec!["s1".to_string(), "s2".to_string()]);
+        }
+
+        // Case `a_structural_pass_leaves_prose_and_bare_short_lines_alone`.
+        {
+            // A run of short lines with no prose under them is a list, not a
+            // stack of headings — promoting them all is the ugly failure.
+            let blocks = vec![
+                para("t", "Shopping"),
+                para("a", "Apples"),
+                para("b", "Pears"),
+                para("c", "Plums"),
+                para("ins", "Claude: make this a proper document"),
+            ];
+            let found = structure(&blocks, 4);
+            assert_eq!(found.title.as_deref(), Some("t"));
+            assert!(found.sections.is_empty(), "{:?}", found.sections);
+
+            // A sentence is never a label, however it is followed.
+            assert!(!looks_like_a_label("We closed the quarter ahead of plan."));
+            assert!(!looks_like_a_label(
+                "A line long enough to be prose even without a full stop at its end"
+            ));
+            assert!(looks_like_a_label("Revenue"));
+            assert!(looks_like_a_label("Open questions"));
+        }
+
+        // Case `a_structural_pass_on_an_empty_draft_asks_for_nothing`.
+        {
+            let blocks = vec![para("ins", "Claude: make this a proper document")];
+            assert_eq!(structure(&blocks, 0), Structure::default());
+        }
     }
 
     #[test]
-    fn a_structural_pass_leaves_prose_and_bare_short_lines_alone() {
-        // A run of short lines with no prose under them is a list, not a
-        // stack of headings — promoting them all is the ugly failure.
-        let blocks = vec![
-            para("t", "Shopping"),
-            para("a", "Apples"),
-            para("b", "Pears"),
-            para("c", "Plums"),
-            para("ins", "Claude: make this a proper document"),
-        ];
-        let found = structure(&blocks, 4);
-        assert_eq!(found.title.as_deref(), Some("t"));
-        assert!(found.sections.is_empty(), "{:?}", found.sections);
-
-        // A sentence is never a label, however it is followed.
-        assert!(!looks_like_a_label("We closed the quarter ahead of plan."));
-        assert!(!looks_like_a_label(
-            "A line long enough to be prose even without a full stop at its end"
-        ));
-        assert!(looks_like_a_label("Revenue"));
-        assert!(looks_like_a_label("Open questions"));
-    }
-
-    #[test]
-    fn a_structural_pass_on_an_empty_draft_asks_for_nothing() {
-        let blocks = vec![para("ins", "Claude: make this a proper document")];
-        assert_eq!(structure(&blocks, 0), Structure::default());
-    }
-
-    #[test]
-    fn the_catalogue_only_offers_actions_the_app_exports() {
-        // The names the model is shown are not a list kept by hand here:
-        // each one must be what the word processor's own encoder calls the
-        // action its own builder produced. Rename or withdraw an action and
-        // this fails rather than the agent offering something imaginary.
-        let exported = exported_actions();
-        assert!(!exported.is_empty(), "the app exports nothing");
-        for cap in CATALOGUE {
-            let built: BTreeSet<String> = dispatched(cap.id)
-                .iter()
-                .filter_map(exported_name)
-                .collect();
-            assert!(
-                !built.is_empty(),
-                "{} dispatches nothing the app can encode",
-                cap.id
-            );
-            let advertised: BTreeSet<String> = cap
-                .actions
-                .iter()
-                .map(std::string::ToString::to_string)
-                .collect();
-            assert_eq!(
-                advertised, built,
-                "{} advertises {:?} but dispatches {:?}",
-                cap.id, advertised, built
-            );
-            for name in &advertised {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each case keeps its original fixture and assertions"
+    )]
+    fn instructions_come_only_from_exported_catalogue_ids_or_text_addressed_to_the_agent() {
+        // Case `the_catalogue_only_offers_actions_the_app_exports`.
+        {
+            // The names the model is shown are not a list kept by hand here:
+            // each one must be what the word processor's own encoder calls the
+            // action its own builder produced. Rename or withdraw an action and
+            // this fails rather than the agent offering something imaginary.
+            let exported = exported_actions();
+            assert!(!exported.is_empty(), "the app exports nothing");
+            for cap in CATALOGUE {
+                let built: BTreeSet<String> = dispatched(cap.id)
+                    .iter()
+                    .filter_map(exported_name)
+                    .collect();
                 assert!(
-                    exported.contains(name),
-                    "{} offers {name}, which the app does not export",
+                    !built.is_empty(),
+                    "{} dispatches nothing the app can encode",
+                    cap.id
+                );
+                let advertised: BTreeSet<String> = cap
+                    .actions
+                    .iter()
+                    .map(std::string::ToString::to_string)
+                    .collect();
+                assert_eq!(
+                    advertised, built,
+                    "{} advertises {:?} but dispatches {:?}",
+                    cap.id, advertised, built
+                );
+                for name in &advertised {
+                    assert!(
+                        exported.contains(name),
+                        "{} offers {name}, which the app does not export",
+                        cap.id
+                    );
+                }
+            }
+        }
+
+        // Case `every_catalogue_id_maps_to_an_instruction_and_nothing_else_does`.
+        {
+            for cap in CATALOGUE {
+                assert!(
+                    Instruction::from_id(cap.id, "asked").is_some(),
+                    "{} is offered but maps to no instruction",
                     cap.id
                 );
             }
+            assert_eq!(
+                Instruction::from_id(NOTHING_FITS, "juggle"),
+                Some(Instruction::Unknown("juggle".into()))
+            );
+            assert_eq!(Instruction::from_id("InsertTable", "x"), None);
+            assert_eq!(Instruction::from_id("wander off", "x"), None);
         }
-    }
 
-    #[test]
-    fn every_catalogue_id_maps_to_an_instruction_and_nothing_else_does() {
-        for cap in CATALOGUE {
-            assert!(
-                Instruction::from_id(cap.id, "asked").is_some(),
-                "{} is offered but maps to no instruction",
-                cap.id
+        // Case `who_was_addressed_is_read_from_the_document_not_decided`.
+        {
+            assert_eq!(
+                Instruction::addressed("Scribe: turn the bullets into a table", "Scribe"),
+                Some("turn the bullets into a table".to_string())
+            );
+            // Nothing written in a document makes the agent answer to another
+            // name, or to a sentence that merely mentions it.
+            assert_eq!(Instruction::addressed("Dear Scribe: table", "Scribe"), None);
+            assert_eq!(Instruction::addressed("Scribe: table", "Ada"), None);
+            assert_eq!(
+                Instruction::addressed("Scribe:", "Scribe"),
+                Some(String::new())
             );
         }
-        assert_eq!(
-            Instruction::from_id(NOTHING_FITS, "juggle"),
-            Some(Instruction::Unknown("juggle".into()))
-        );
-        assert_eq!(Instruction::from_id("InsertTable", "x"), None);
-        assert_eq!(Instruction::from_id("wander off", "x"), None);
+
+        // Case `instructions_are_addressed_by_name_case_insensitively`.
+        {
+            assert_eq!(
+                Instruction::parse("scribe: turn the bullets into a table", "Scribe"),
+                Some(Instruction::Table)
+            );
+            assert_eq!(
+                Instruction::parse("Scribe: caption the image please", "Scribe"),
+                Some(Instruction::Caption)
+            );
+            assert_eq!(
+                Instruction::parse("SCRIBE: give this a title", "Scribe"),
+                Some(Instruction::Heading)
+            );
+            assert_eq!(
+                Instruction::parse("Scribe: juggle", "Scribe"),
+                Some(Instruction::Unknown("juggle".into()))
+            );
+            assert_eq!(Instruction::parse("Dear Scribe: table", "Scribe"), None);
+            assert_eq!(Instruction::parse("Scribe: table", "Ada"), None);
+        }
     }
 
     #[test]
-    fn who_was_addressed_is_read_from_the_document_not_decided() {
-        assert_eq!(
-            Instruction::addressed("Scribe: turn the bullets into a table", "Scribe"),
-            Some("turn the bullets into a table".to_string())
-        );
-        // Nothing written in a document makes the agent answer to another
-        // name, or to a sentence that merely mentions it.
-        assert_eq!(Instruction::addressed("Dear Scribe: table", "Scribe"), None);
-        assert_eq!(Instruction::addressed("Scribe: table", "Ada"), None);
-        assert_eq!(
-            Instruction::addressed("Scribe:", "Scribe"),
-            Some(String::new())
-        );
-    }
+    fn a_table_is_built_from_the_bullets_above_and_its_cells_are_read_in_row_major_order() {
+        // Case `the_bullets_above_the_instruction_are_the_run_it_means`.
+        {
+            let blocks = vec![
+                para("h", "Shopping"),
+                bullet("a", "Apples - 3"),
+                bullet("b", "Pears - 5"),
+                para("blank", ""),
+                para("ins", "Scribe: table"),
+                bullet("later", "not this one"),
+            ];
+            let (at, ins) = find_instruction(&blocks, "Scribe").unwrap();
+            assert_eq!((at, ins), (4, Instruction::Table));
+            assert_eq!(bullets_above(&blocks, at), vec![1, 2]);
+            assert!(bullets_above(&blocks, 0).is_empty());
+        }
 
-    #[test]
-    fn instructions_are_addressed_by_name_case_insensitively() {
-        assert_eq!(
-            Instruction::parse("scribe: turn the bullets into a table", "Scribe"),
-            Some(Instruction::Table)
-        );
-        assert_eq!(
-            Instruction::parse("Scribe: caption the image please", "Scribe"),
-            Some(Instruction::Caption)
-        );
-        assert_eq!(
-            Instruction::parse("SCRIBE: give this a title", "Scribe"),
-            Some(Instruction::Heading)
-        );
-        assert_eq!(
-            Instruction::parse("Scribe: juggle", "Scribe"),
-            Some(Instruction::Unknown("juggle".into()))
-        );
-        assert_eq!(Instruction::parse("Dear Scribe: table", "Scribe"), None);
-        assert_eq!(Instruction::parse("Scribe: table", "Ada"), None);
-    }
-
-    #[test]
-    fn the_bullets_above_the_instruction_are_the_run_it_means() {
-        let blocks = vec![
-            para("h", "Shopping"),
-            bullet("a", "Apples - 3"),
-            bullet("b", "Pears - 5"),
-            para("blank", ""),
-            para("ins", "Scribe: table"),
-            bullet("later", "not this one"),
-        ];
-        let (at, ins) = find_instruction(&blocks, "Scribe").unwrap();
-        assert_eq!((at, ins), (4, Instruction::Table));
-        assert_eq!(bullets_above(&blocks, at), vec![1, 2]);
-        assert!(bullets_above(&blocks, 0).is_empty());
-    }
-
-    #[test]
-    fn cells_split_on_the_first_separator_the_line_uses() {
-        assert_eq!(split_cells("Apples - 3"), vec!["Apples", "3"]);
-        assert_eq!(
-            split_cells("Venue: The Hall, room 2"),
-            vec!["Venue", "The Hall, room 2"]
-        );
-        assert_eq!(split_cells("Just one"), vec!["Just one"]);
-        assert_eq!(
-            table_cells(&["a - 1 - x", "b - 2"]),
-            vec![vec!["a", "1", "x"], vec!["b", "2", ""]]
-        );
-    }
-
-    #[test]
-    fn cells_are_found_by_table_id_in_row_major_order() {
-        let mut c1 = BTreeMap::new();
-        c1.insert("table".into(), AttrVal::Str("t1".into()));
-        c1.insert("row".into(), AttrVal::Int(1));
-        c1.insert("col".into(), AttrVal::Int(0));
-        let mut c0 = c1.clone();
-        c0.insert("row".into(), AttrVal::Int(0));
-        let blocks = vec![
-            Block {
-                id: "x".into(),
-                kind: "cell".into(),
-                text: String::new(),
-                attrs: c1,
-            },
-            Block {
-                id: "y".into(),
-                kind: "cell".into(),
-                text: String::new(),
-                attrs: c0,
-            },
-        ];
-        assert_eq!(table_ids(&blocks), vec!["t1".to_string()]);
-        let cells = cells_of(&blocks, "t1");
-        assert_eq!(
-            cells.iter().map(|c| c.2.as_str()).collect::<Vec<_>>(),
-            vec!["y", "x"]
-        );
+        // Case `cells_split_on_the_first_separator_the_line_uses`.
+        {
+            assert_eq!(split_cells("Apples - 3"), vec!["Apples", "3"]);
+            assert_eq!(
+                split_cells("Venue: The Hall, room 2"),
+                vec!["Venue", "The Hall, room 2"]
+            );
+            assert_eq!(split_cells("Just one"), vec!["Just one"]);
+            assert_eq!(
+                table_cells(&["a - 1 - x", "b - 2"]),
+                vec![vec!["a", "1", "x"], vec!["b", "2", ""]]
+            );
+        }
     }
 
     // -- Instruction::Perform, and the floor that reaches it -------------
@@ -1152,577 +1102,599 @@ mod tests {
         )
     }
 
-    /// Nothing the agent writes into a document names an address: it is an
-    /// internal identifier, and a refusal reciting one reads as a broken
-    /// machine to the person the document belongs to.
     #[test]
-    fn a_refusal_names_operations_in_words_and_never_an_address() {
-        let offers = surveyed();
-        assert!(!offers.is_empty(), "nothing to refuse against");
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each case keeps its original fixture and assertions"
+    )]
+    fn an_instruction_resolves_only_to_a_surveyed_bound_and_confirmed_operation() {
+        // Case `a_refusal_names_operations_in_words_and_never_an_address`.
+        // Nothing the agent writes into a document names an address: it is an
+        // internal identifier, and a refusal reciting one reads as a broken
+        // machine to the person the document belongs to.
+        {
+            let offers = surveyed();
+            assert!(!offers.is_empty(), "nothing to refuse against");
 
-        let mut written = vec![unmatched("juggle three plates", &NoMatch::Nothing)];
-        for asked in ["align it", "juggle three plates"] {
-            if let Instruction::Unknown(why) = Instruction::from_floor(asked, &offers) {
-                written.push(why);
+            let mut written = vec![unmatched("juggle three plates", &NoMatch::Nothing)];
+            for asked in ["align it", "juggle three plates"] {
+                if let Instruction::Unknown(why) = Instruction::from_floor(asked, &offers) {
+                    written.push(why);
+                }
             }
+            for text in &written {
+                assert!(
+                    !text.contains(surface::ADDRESS_SEP),
+                    "an address reached prose a person reads: {text:?}"
+                );
+            }
+
+            let ambiguous = unmatched(
+                "align it",
+                &NoMatch::Ambiguous(vec!["Align left".into(), "Align centre".into()]),
+            );
+            assert!(ambiguous.contains("align left"), "{ambiguous}");
+            assert!(ambiguous.contains("align centre"), "{ambiguous}");
         }
-        for text in &written {
+
+        // Case `the_floor_needs_a_clear_winner_and_says_so_when_there_is_none`.
+        {
+            let offers = surveyed();
+
+            // "centre" and "notes" together land on exactly one offer: the
+            // heading's own alignment, not the document's.
+            let one = Instruction::from_floor("centre the Notes", &offers);
+            let Instruction::Perform {
+                id,
+                arguments,
+                confirmation,
+            } = &one
+            else {
+                panic!("a single clear match must resolve to an address, got {one:?}");
+            };
+            assert!(arguments.is_empty());
+            assert_eq!(confirmation, &ConfirmationEvidence::None);
             assert!(
-                !text.contains(surface::ADDRESS_SEP),
-                "an address reached prose a person reads: {text:?}"
+                surface::find(&offers, id).is_some_and(|o| o
+                    .descriptor
+                    .action_label
+                    .to_lowercase()
+                    .contains("centre")),
+                "the floor chose {id}"
+            );
+
+            // "align" alone fits every alignment action equally.
+            let many = Instruction::from_floor("align it", &offers);
+            let Instruction::Unknown(why) = &many else {
+                panic!("an ambiguous instruction must not resolve, got {many:?}");
+            };
+            assert!(
+                why.contains("Which one?"),
+                "ambiguity must be reported as ambiguity: {why}"
+            );
+            assert!(
+                why.contains("align"),
+                "and it must name the alternatives, in the app's own words: {why}"
+            );
+            assert!(
+                !why.contains(surface::ADDRESS_SEP),
+                "in words, never as addresses: {why}"
+            );
+
+            assert!(matches!(
+                Instruction::from_floor("juggle three plates", &offers),
+                Instruction::Unknown(_)
+            ));
+
+            // The fixed vocabulary still wins outright, unaffected by the
+            // surveyed surface.
+            assert_eq!(
+                Instruction::from_floor("turn the bullets into a table", &offers),
+                Instruction::Table
             );
         }
 
-        let ambiguous = unmatched(
-            "align it",
-            &NoMatch::Ambiguous(vec!["Align left".into(), "Align centre".into()]),
-        );
-        assert!(ambiguous.contains("align left"), "{ambiguous}");
-        assert!(ambiguous.contains("align centre"), "{ambiguous}");
-    }
+        // Case `an_answer_is_checked_against_the_survey_and_not_against_a_list`.
+        // The gate answers an address the room really exports, and refuses one
+        // it does not — including an address that was valid against some
+        // other survey.
+        {
+            let offers = surveyed();
+            assert!(
+                !offers.is_empty(),
+                "the survey found nothing to check against"
+            );
 
-    #[test]
-    fn the_floor_needs_a_clear_winner_and_says_so_when_there_is_none() {
-        let offers = surveyed();
+            for offer in &offers {
+                let supplied = match &offer.descriptor.contract.confirmation {
+                    tilo_actions::ConfirmationPolicy::None => serde_json::Map::new(),
+                    tilo_actions::ConfirmationPolicy::Confirm => serde_json::Map::from_iter([(
+                        "confirm".into(),
+                        serde_json::Value::Bool(true),
+                    )]),
+                    tilo_actions::ConfirmationPolicy::Phrase { phrase } => {
+                        serde_json::Map::from_iter([(
+                            "confirmation_phrase".into(),
+                            serde_json::Value::String(phrase.clone()),
+                        )])
+                    }
+                };
+                let confirmation = match &offer.descriptor.contract.confirmation {
+                    tilo_actions::ConfirmationPolicy::None => ConfirmationEvidence::None,
+                    tilo_actions::ConfirmationPolicy::Confirm => ConfirmationEvidence::Confirm,
+                    tilo_actions::ConfirmationPolicy::Phrase { phrase } => {
+                        ConfirmationEvidence::Phrase(phrase.clone())
+                    }
+                };
+                let answered =
+                    Instruction::from_answer(&offer.id(), "asked", Some(&supplied), &offers);
+                assert_eq!(
+                    answered,
+                    Ok(Instruction::Perform {
+                        id: offer.id(),
+                        arguments: serde_json::Map::new(),
+                        confirmation,
+                    }),
+                    "{} is offered but the gate would not dispatch it",
+                    offer.id()
+                );
+            }
 
-        // "centre" and "notes" together land on exactly one offer: the
-        // heading's own alignment, not the document's.
-        let one = Instruction::from_floor("centre the Notes", &offers);
-        let Instruction::Perform {
-            id,
-            arguments,
-            confirmation,
-        } = &one
-        else {
-            panic!("a single clear match must resolve to an address, got {one:?}");
-        };
-        assert!(arguments.is_empty());
-        assert_eq!(confirmation, &ConfirmationEvidence::None);
-        assert!(
-            surface::find(&offers, id).is_some_and(|o| o
-                .descriptor
-                .action_label
-                .to_lowercase()
-                .contains("centre")),
-            "the floor chose {id}"
-        );
+            let stale = "word-processor.section:gone-block#align-left";
+            assert_eq!(
+                Instruction::from_answer(stale, "asked", None, &offers),
+                Err(Refused::NotExported(stale.to_string())),
+                "an address the survey does not carry must not be dispatched"
+            );
+            assert_eq!(
+                Instruction::from_answer(NOTHING_FITS, "juggle", None, &offers),
+                Ok(Instruction::Unknown("juggle".into()))
+            );
+            assert_eq!(
+                Instruction::from_answer("table", "asked", None, &offers),
+                Ok(Instruction::Table),
+                "a catalogue id still resolves the way it always did"
+            );
+        }
 
-        // "align" alone fits every alignment action equally.
-        let many = Instruction::from_floor("align it", &offers);
-        let Instruction::Unknown(why) = &many else {
-            panic!("an ambiguous instruction must not resolve, got {many:?}");
-        };
-        assert!(
-            why.contains("Which one?"),
-            "ambiguity must be reported as ambiguity: {why}"
-        );
-        assert!(
-            why.contains("align"),
-            "and it must name the alternatives, in the app's own words: {why}"
-        );
-        assert!(
-            !why.contains(surface::ADDRESS_SEP),
-            "in words, never as addresses: {why}"
-        );
-
-        assert!(matches!(
-            Instruction::from_floor("juggle three plates", &offers),
-            Instruction::Unknown(_)
-        ));
-
-        // The fixed vocabulary still wins outright, unaffected by the
-        // surveyed surface.
-        assert_eq!(
-            Instruction::from_floor("turn the bullets into a table", &offers),
-            Instruction::Table
-        );
-    }
-
-    /// The gate answers an address the room really exports, and refuses one
-    /// it does not — including an address that was valid against some
-    /// other survey.
-    #[test]
-    fn an_answer_is_checked_against_the_survey_and_not_against_a_list() {
-        let offers = surveyed();
-        assert!(
-            !offers.is_empty(),
-            "the survey found nothing to check against"
-        );
-
-        for offer in &offers {
-            let supplied = match &offer.descriptor.contract.confirmation {
-                tilo_actions::ConfirmationPolicy::None => serde_json::Map::new(),
-                tilo_actions::ConfirmationPolicy::Confirm => {
-                    serde_json::Map::from_iter([("confirm".into(), serde_json::Value::Bool(true))])
-                }
-                tilo_actions::ConfirmationPolicy::Phrase { phrase } => {
-                    serde_json::Map::from_iter([(
-                        "confirmation_phrase".into(),
-                        serde_json::Value::String(phrase.clone()),
-                    )])
-                }
-            };
-            let confirmation = match &offer.descriptor.contract.confirmation {
-                tilo_actions::ConfirmationPolicy::None => ConfirmationEvidence::None,
-                tilo_actions::ConfirmationPolicy::Confirm => ConfirmationEvidence::Confirm,
-                tilo_actions::ConfirmationPolicy::Phrase { phrase } => {
-                    ConfirmationEvidence::Phrase(phrase.clone())
-                }
-            };
-            let answered = Instruction::from_answer(&offer.id(), "asked", Some(&supplied), &offers);
+        // Case `an_operation_that_collects_content_is_not_asked_for_words`.
+        // An operation that collects a content hash is never refused for
+        // having quoted none: there is nothing anybody could quote.
+        {
+            let offers = vec![offer(
+                "word-processor",
+                "word-processor.section:b7",
+                "place-image",
+                "Place image below",
+                Some(tilo_actions::Collects::Content),
+            )];
+            let answered = Instruction::from_answer(
+                "word-processor.section:b7#place-image",
+                "place image below b7",
+                None,
+                &offers,
+            );
             assert_eq!(
                 answered,
                 Ok(Instruction::Perform {
-                    id: offer.id(),
+                    id: "word-processor.section:b7#place-image".into(),
                     arguments: serde_json::Map::new(),
-                    confirmation,
-                }),
-                "{} is offered but the gate would not dispatch it",
-                offer.id()
+                    confirmation: ConfirmationEvidence::None,
+                })
             );
         }
 
-        let stale = "word-processor.section:gone-block#align-left";
-        assert_eq!(
-            Instruction::from_answer(stale, "asked", None, &offers),
-            Err(Refused::NotExported(stale.to_string())),
-            "an address the survey does not carry must not be dispatched"
-        );
-        assert_eq!(
-            Instruction::from_answer(NOTHING_FITS, "juggle", None, &offers),
-            Ok(Instruction::Unknown("juggle".into()))
-        );
-        assert_eq!(
-            Instruction::from_answer("table", "asked", None, &offers),
-            Ok(Instruction::Table),
-            "a catalogue id still resolves the way it always did"
-        );
-    }
+        // Case `text_collecting_operations_need_a_literal_or_are_refused`.
+        // An operation that collects text needs words from somewhere honest —
+        // the answer itself, or a literal quoted in the instruction — and is
+        // refused rather than performed with a blank when it gets neither.
+        {
+            let offers = vec![offer(
+                "files",
+                "files.entry:/a",
+                "rename",
+                "Rename",
+                Some(tilo_actions::Collects::Words),
+            )];
+            assert!(
+                matches!(
+                    Instruction::from_answer("files.entry:/a#rename", "rename it", None, &offers),
+                    Err(Refused::Unusable(_))
+                ),
+                "no literal anywhere must be refused, not performed with a blank"
+            );
+            assert_eq!(
+                Instruction::from_answer(
+                    "files.entry:/a#rename",
+                    r#"rename it to "b.md""#,
+                    None,
+                    &offers
+                ),
+                Ok(Instruction::Perform {
+                    id: "files.entry:/a#rename".into(),
+                    arguments: serde_json::Map::from_iter([(
+                        "value".into(),
+                        serde_json::Value::String("b.md".into())
+                    )]),
+                    confirmation: ConfirmationEvidence::None,
+                }),
+                "a literal quoted in the instruction is used"
+            );
+            assert_eq!(
+                Instruction::from_answer(
+                    "files.entry:/a#rename",
+                    "rename it",
+                    Some(&serde_json::Map::from_iter([(
+                        "value".into(),
+                        serde_json::Value::String("c.md".into())
+                    )])),
+                    &offers,
+                ),
+                Ok(Instruction::Perform {
+                    id: "files.entry:/a#rename".into(),
+                    arguments: serde_json::Map::from_iter([(
+                        "value".into(),
+                        serde_json::Value::String("c.md".into())
+                    )]),
+                    confirmation: ConfirmationEvidence::None,
+                }),
+                "a literal the answer itself supplied is used even with no quote in the instruction"
+            );
+        }
 
-    /// An operation that collects a content hash is never refused for
-    /// having quoted none: there is nothing anybody could quote.
-    #[test]
-    fn an_operation_that_collects_content_is_not_asked_for_words() {
-        let offers = vec![offer(
-            "word-processor",
-            "word-processor.section:b7",
-            "place-image",
-            "Place image below",
-            Some(tilo_actions::Collects::Content),
-        )];
-        let answered = Instruction::from_answer(
-            "word-processor.section:b7#place-image",
-            "place image below b7",
-            None,
-            &offers,
-        );
-        assert_eq!(
-            answered,
-            Ok(Instruction::Perform {
-                id: "word-processor.section:b7#place-image".into(),
-                arguments: serde_json::Map::new(),
-                confirmation: ConfirmationEvidence::None,
-            })
-        );
-    }
+        // Case `structured_answers_preserve_types_and_are_bound_before_dispatch`.
+        {
+            let mut rich = offer("sheets", "sheets.range:r1", "fill", "Fill range", None);
+            rich.descriptor.params = vec![
+                tilo_actions::ActionParam::required(
+                    "count",
+                    tilo_actions::ParamType::Integer,
+                    "Rows to fill",
+                ),
+                tilo_actions::ActionParam::required(
+                    "enabled",
+                    tilo_actions::ParamType::Boolean,
+                    "Whether formulas are enabled",
+                ),
+            ];
+            let offers = vec![rich];
+            let valid = serde_json::Map::from_iter([
+                ("count".into(), serde_json::json!(3)),
+                ("enabled".into(), serde_json::json!(true)),
+            ]);
+            let instruction =
+                Instruction::from_answer("sheets.range:r1#fill", "fill it", Some(&valid), &offers)
+                    .expect("the descriptor accepts its typed object");
+            assert_eq!(
+                instruction,
+                Instruction::Perform {
+                    id: "sheets.range:r1#fill".into(),
+                    arguments: valid,
+                    confirmation: ConfirmationEvidence::None,
+                }
+            );
 
-    /// An operation that collects text needs words from somewhere honest —
-    /// the answer itself, or a literal quoted in the instruction — and is
-    /// refused rather than performed with a blank when it gets neither.
-    #[test]
-    fn text_collecting_operations_need_a_literal_or_are_refused() {
-        let offers = vec![offer(
-            "files",
-            "files.entry:/a",
-            "rename",
-            "Rename",
-            Some(tilo_actions::Collects::Words),
-        )];
-        assert!(
-            matches!(
-                Instruction::from_answer("files.entry:/a#rename", "rename it", None, &offers),
-                Err(Refused::Unusable(_))
-            ),
-            "no literal anywhere must be refused, not performed with a blank"
-        );
-        assert_eq!(
-            Instruction::from_answer(
-                "files.entry:/a#rename",
-                r#"rename it to "b.md""#,
-                None,
-                &offers
-            ),
-            Ok(Instruction::Perform {
-                id: "files.entry:/a#rename".into(),
-                arguments: serde_json::Map::from_iter([(
-                    "value".into(),
-                    serde_json::Value::String("b.md".into())
-                )]),
-                confirmation: ConfirmationEvidence::None,
-            }),
-            "a literal quoted in the instruction is used"
-        );
-        assert_eq!(
-            Instruction::from_answer(
-                "files.entry:/a#rename",
-                "rename it",
-                Some(&serde_json::Map::from_iter([(
-                    "value".into(),
-                    serde_json::Value::String("c.md".into())
-                )])),
-                &offers,
-            ),
-            Ok(Instruction::Perform {
-                id: "files.entry:/a#rename".into(),
-                arguments: serde_json::Map::from_iter([(
-                    "value".into(),
-                    serde_json::Value::String("c.md".into())
-                )]),
-                confirmation: ConfirmationEvidence::None,
-            }),
-            "a literal the answer itself supplied is used even with no quote in the instruction"
-        );
-    }
-
-    #[test]
-    fn structured_answers_preserve_types_and_are_bound_before_dispatch() {
-        let mut rich = offer("sheets", "sheets.range:r1", "fill", "Fill range", None);
-        rich.descriptor.params = vec![
-            tilo_actions::ActionParam::required(
-                "count",
-                tilo_actions::ParamType::Integer,
-                "Rows to fill",
-            ),
-            tilo_actions::ActionParam::required(
-                "enabled",
-                tilo_actions::ParamType::Boolean,
-                "Whether formulas are enabled",
-            ),
-        ];
-        let offers = vec![rich];
-        let valid = serde_json::Map::from_iter([
-            ("count".into(), serde_json::json!(3)),
-            ("enabled".into(), serde_json::json!(true)),
-        ]);
-        let instruction =
-            Instruction::from_answer("sheets.range:r1#fill", "fill it", Some(&valid), &offers)
-                .expect("the descriptor accepts its typed object");
-        assert_eq!(
-            instruction,
-            Instruction::Perform {
-                id: "sheets.range:r1#fill".into(),
-                arguments: valid,
-                confirmation: ConfirmationEvidence::None,
-            }
-        );
-
-        let wrong = serde_json::Map::from_iter([
-            ("count".into(), serde_json::json!("3")),
-            ("enabled".into(), serde_json::json!(true)),
-        ]);
-        assert!(matches!(
-            Instruction::from_answer("sheets.range:r1#fill", "fill it", Some(&wrong), &offers,),
-            Err(Refused::Unusable(_))
-        ));
-    }
-
-    #[test]
-    fn consequential_actions_require_and_strip_explicit_confirmation_metadata() {
-        let mut destructive = offer(
-            "files",
-            "files.entry:/important",
-            "delete",
-            "Delete file",
-            None,
-        );
-        destructive.descriptor.contract.confirmation = tilo_actions::ConfirmationPolicy::Confirm;
-        destructive.descriptor.params = vec![tilo_actions::ActionParam::required(
-            "recursive",
-            tilo_actions::ParamType::Boolean,
-            "Delete descendants",
-        )];
-        let offers = vec![destructive];
-
-        for arguments in [
-            serde_json::json!({"recursive": true}),
-            serde_json::json!({"recursive": true, "confirm": false}),
-            serde_json::json!({"recursive": true, "confirm": "true"}),
-        ] {
+            let wrong = serde_json::Map::from_iter([
+                ("count".into(), serde_json::json!("3")),
+                ("enabled".into(), serde_json::json!(true)),
+            ]);
             assert!(matches!(
+                Instruction::from_answer("sheets.range:r1#fill", "fill it", Some(&wrong), &offers,),
+                Err(Refused::Unusable(_))
+            ));
+        }
+
+        // Case `consequential_actions_require_and_strip_explicit_confirmation_metadata`.
+        {
+            let mut destructive = offer(
+                "files",
+                "files.entry:/important",
+                "delete",
+                "Delete file",
+                None,
+            );
+            destructive.descriptor.contract.confirmation =
+                tilo_actions::ConfirmationPolicy::Confirm;
+            destructive.descriptor.params = vec![tilo_actions::ActionParam::required(
+                "recursive",
+                tilo_actions::ParamType::Boolean,
+                "Delete descendants",
+            )];
+            let offers = vec![destructive];
+
+            for arguments in [
+                serde_json::json!({"recursive": true}),
+                serde_json::json!({"recursive": true, "confirm": false}),
+                serde_json::json!({"recursive": true, "confirm": "true"}),
+            ] {
+                assert!(matches!(
+                    Instruction::from_answer(
+                        "files.entry:/important#delete",
+                        "delete it",
+                        arguments.as_object(),
+                        &offers,
+                    ),
+                    Err(Refused::Unusable(_))
+                ));
+            }
+
+            let confirmed = serde_json::json!({"recursive": true, "confirm": true});
+            assert_eq!(
                 Instruction::from_answer(
                     "files.entry:/important#delete",
                     "delete it",
-                    arguments.as_object(),
+                    confirmed.as_object(),
                     &offers,
                 ),
-                Err(Refused::Unusable(_))
-            ));
+                Ok(Instruction::Perform {
+                    id: "files.entry:/important#delete".into(),
+                    arguments: serde_json::Map::from_iter([(
+                        "recursive".into(),
+                        serde_json::Value::Bool(true),
+                    )]),
+                    confirmation: ConfirmationEvidence::Confirm,
+                })
+            );
         }
 
-        let confirmed = serde_json::json!({"recursive": true, "confirm": true});
-        assert_eq!(
-            Instruction::from_answer(
-                "files.entry:/important#delete",
-                "delete it",
-                confirmed.as_object(),
-                &offers,
-            ),
-            Ok(Instruction::Perform {
-                id: "files.entry:/important#delete".into(),
-                arguments: serde_json::Map::from_iter([(
-                    "recursive".into(),
-                    serde_json::Value::Bool(true),
-                )]),
-                confirmation: ConfirmationEvidence::Confirm,
-            })
-        );
-    }
+        // Case `phrase_confirmation_must_match_exactly_before_an_instruction_can_dispatch`.
+        {
+            let phrase = "delete all archived messages";
+            let mut destructive =
+                offer("chat", "chat.archive:2025", "purge", "Purge archive", None);
+            destructive.descriptor.contract.confirmation =
+                tilo_actions::ConfirmationPolicy::Phrase {
+                    phrase: phrase.into(),
+                };
+            let offers = vec![destructive];
 
-    #[test]
-    fn phrase_confirmation_must_match_exactly_before_an_instruction_can_dispatch() {
-        let phrase = "delete all archived messages";
-        let mut destructive = offer("chat", "chat.archive:2025", "purge", "Purge archive", None);
-        destructive.descriptor.contract.confirmation = tilo_actions::ConfirmationPolicy::Phrase {
-            phrase: phrase.into(),
-        };
-        let offers = vec![destructive];
+            for supplied in [
+                serde_json::json!({}),
+                serde_json::json!({"confirmation_phrase": "Delete all archived messages"}),
+                serde_json::json!({"confirmation_phrase": "delete all archived messages "}),
+            ] {
+                assert!(matches!(
+                    Instruction::from_answer(
+                        "chat.archive:2025#purge",
+                        "purge it",
+                        supplied.as_object(),
+                        &offers,
+                    ),
+                    Err(Refused::Unusable(_))
+                ));
+            }
 
-        for supplied in [
-            serde_json::json!({}),
-            serde_json::json!({"confirmation_phrase": "Delete all archived messages"}),
-            serde_json::json!({"confirmation_phrase": "delete all archived messages "}),
-        ] {
-            assert!(matches!(
+            let exact = serde_json::json!({"confirmation_phrase": phrase});
+            assert_eq!(
                 Instruction::from_answer(
                     "chat.archive:2025#purge",
                     "purge it",
-                    supplied.as_object(),
+                    exact.as_object(),
                     &offers,
                 ),
-                Err(Refused::Unusable(_))
-            ));
+                Ok(Instruction::Perform {
+                    id: "chat.archive:2025#purge".into(),
+                    arguments: serde_json::Map::new(),
+                    confirmation: ConfirmationEvidence::Phrase(phrase.into()),
+                })
+            );
         }
-
-        let exact = serde_json::json!({"confirmation_phrase": phrase});
-        assert_eq!(
-            Instruction::from_answer(
-                "chat.archive:2025#purge",
-                "purge it",
-                exact.as_object(),
-                &offers,
-            ),
-            Ok(Instruction::Perform {
-                id: "chat.archive:2025#purge".into(),
-                arguments: serde_json::Map::new(),
-                confirmation: ConfirmationEvidence::Phrase(phrase.into()),
-            })
-        );
     }
 
     // -- Sequences: Plan, Step, clauses -----------------------------------
 
     #[test]
-    fn clauses_split_on_ordering_words_outside_quotes() {
-        assert_eq!(
-            clauses("give this a title and caption the image"),
-            vec![
-                "give this a title".to_string(),
-                "caption the image".to_string()
-            ]
-        );
-        assert_eq!(
-            clauses("give this a title, then caption the image"),
-            vec![
-                "give this a title".to_string(),
-                "caption the image".to_string()
-            ]
-        );
-        // "and then" is one join, not "and" followed by a clause starting
-        // "then" — the longest match has to win.
-        assert_eq!(
-            clauses("caption the image and then give this a title"),
-            vec![
-                "caption the image".to_string(),
-                "give this a title".to_string()
-            ]
-        );
-        // A quoted literal that itself contains a join is never split.
-        assert_eq!(
-            clauses(r#"rename it to "sound and vision.md""#),
-            vec![r#"rename it to "sound and vision.md""#.to_string()]
-        );
-        // A single request with no ordering word is one clause.
-        assert_eq!(
-            clauses("caption the image"),
-            vec!["caption the image".to_string()]
-        );
+    fn a_request_is_split_into_a_sequence_only_at_joins_whose_clauses_resolve() {
+        // Case `clauses_split_on_ordering_words_outside_quotes`.
+        {
+            assert_eq!(
+                clauses("give this a title and caption the image"),
+                vec![
+                    "give this a title".to_string(),
+                    "caption the image".to_string()
+                ]
+            );
+            assert_eq!(
+                clauses("give this a title, then caption the image"),
+                vec![
+                    "give this a title".to_string(),
+                    "caption the image".to_string()
+                ]
+            );
+            // "and then" is one join, not "and" followed by a clause starting
+            // "then" — the longest match has to win.
+            assert_eq!(
+                clauses("caption the image and then give this a title"),
+                vec![
+                    "caption the image".to_string(),
+                    "give this a title".to_string()
+                ]
+            );
+            // A quoted literal that itself contains a join is never split.
+            assert_eq!(
+                clauses(r#"rename it to "sound and vision.md""#),
+                vec![r#"rename it to "sound and vision.md""#.to_string()]
+            );
+            // A single request with no ordering word is one clause.
+            assert_eq!(
+                clauses("caption the image"),
+                vec!["caption the image".to_string()]
+            );
+        }
+
+        // Case `a_plan_reads_a_request_written_as_several_things_as_a_sequence`.
+        {
+            let plan = Plan::from_floor("give this a title, then caption the image", &[]);
+            assert!(plan.is_sequence(), "{plan:?}");
+            assert_eq!(plan.len(), 2);
+            assert_eq!(plan.steps[0].instruction, Instruction::Heading);
+            assert_eq!(plan.steps[1].instruction, Instruction::Caption);
+            assert_eq!(plan.unanswered(), None);
+        }
+
+        // Case `a_single_request_with_a_join_inside_it_is_not_split`.
+        {
+            // "align left and right" resolves no clause on its own — the floor
+            // reads it whole, exactly as a request with no join in it at all.
+            let plan = Plan::from_floor("align left and right", &[]);
+            assert!(!plan.is_sequence(), "{plan:?}");
+            assert_eq!(plan.len(), 1);
+        }
+
+        // Case `a_plan_collapses_a_request_that_only_repeats_one_operation`.
+        {
+            let plan = Plan::from_floor("give this a heading and give it a heading again", &[]);
+            assert!(!plan.is_sequence(), "{plan:?}");
+            assert_eq!(plan.steps[0].instruction, Instruction::Heading);
+        }
+
+        // Case `a_plan_falls_back_to_the_whole_request_when_nothing_in_it_resolves`.
+        {
+            // Both clauses come back unanswered, so the join was a word in one
+            // sentence rather than a seam between two requests — and the
+            // fallback reads the *whole* text, not just the first clause.
+            let whole = "juggle three plates and then take a bow";
+            let plan = Plan::from_floor(whole, &[]);
+            assert_eq!(plan.len(), 1, "{plan:?}");
+            assert_eq!(
+                plan.steps[0].instruction,
+                Instruction::Unknown(whole.to_string())
+            );
+        }
     }
 
     #[test]
-    fn a_plan_reads_a_request_written_as_several_things_as_a_sequence() {
-        let plan = Plan::from_floor("give this a title, then caption the image", &[]);
-        assert!(plan.is_sequence(), "{plan:?}");
-        assert_eq!(plan.len(), 2);
-        assert_eq!(plan.steps[0].instruction, Instruction::Heading);
-        assert_eq!(plan.steps[1].instruction, Instruction::Caption);
-        assert_eq!(plan.unanswered(), None);
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each case keeps its original fixture and assertions"
+    )]
+    fn steps_read_carrying_and_opening_off_declarations_and_only_an_earlier_open_excuses_a_gap() {
+        // Case `carries_is_read_off_the_operations_own_declaration_never_guessed`.
+        {
+            let content = offer(
+                "photos",
+                "photos.picture:1",
+                "crop",
+                "Crop",
+                Some(tilo_actions::Collects::Content),
+            );
+            let words = offer(
+                "files",
+                "files.entry:/a",
+                "rename",
+                "Rename",
+                Some(tilo_actions::Collects::Words),
+            );
+            let none = offer(
+                "word-processor",
+                "word-processor.section:b",
+                "align-left",
+                "Align left",
+                None,
+            );
+            let offers = vec![content.clone(), words.clone(), none.clone()];
 
-    #[test]
-    fn a_single_request_with_a_join_inside_it_is_not_split() {
-        // "align left and right" resolves no clause on its own — the floor
-        // reads it whole, exactly as a request with no join in it at all.
-        let plan = Plan::from_floor("align left and right", &[]);
-        assert!(!plan.is_sequence(), "{plan:?}");
-        assert_eq!(plan.len(), 1);
-    }
-
-    #[test]
-    fn a_plan_collapses_a_request_that_only_repeats_one_operation() {
-        let plan = Plan::from_floor("give this a heading and give it a heading again", &[]);
-        assert!(!plan.is_sequence(), "{plan:?}");
-        assert_eq!(plan.steps[0].instruction, Instruction::Heading);
-    }
-
-    #[test]
-    fn a_plan_falls_back_to_the_whole_request_when_nothing_in_it_resolves() {
-        // Both clauses come back unanswered, so the join was a word in one
-        // sentence rather than a seam between two requests — and the
-        // fallback reads the *whole* text, not just the first clause.
-        let whole = "juggle three plates and then take a bow";
-        let plan = Plan::from_floor(whole, &[]);
-        assert_eq!(plan.len(), 1, "{plan:?}");
-        assert_eq!(
-            plan.steps[0].instruction,
-            Instruction::Unknown(whole.to_string())
-        );
-    }
-
-    #[test]
-    fn carries_is_read_off_the_operations_own_declaration_never_guessed() {
-        let content = offer(
-            "photos",
-            "photos.picture:1",
-            "crop",
-            "Crop",
-            Some(tilo_actions::Collects::Content),
-        );
-        let words = offer(
-            "files",
-            "files.entry:/a",
-            "rename",
-            "Rename",
-            Some(tilo_actions::Collects::Words),
-        );
-        let none = offer(
-            "word-processor",
-            "word-processor.section:b",
-            "align-left",
-            "Align left",
-            None,
-        );
-        let offers = vec![content.clone(), words.clone(), none.clone()];
-
-        let perform = |o: &Offer| Instruction::Perform {
-            id: o.id(),
-            arguments: serde_json::Map::new(),
-            confirmation: ConfirmationEvidence::None,
-        };
-        assert!(
-            Step::bound(perform(&content), &offers).carries,
-            "an operation that collects content must be carried into"
-        );
-        assert!(
-            !Step::bound(perform(&words), &offers).carries,
-            "an operation that collects words is never carried into — it is quoted, not carried"
-        );
-        assert!(!Step::bound(perform(&none), &offers).carries);
-
-        // Never true for anything but Perform, whatever the survey holds.
-        assert!(!Step::bound(Instruction::Table, &offers).carries);
-    }
-
-    #[test]
-    fn opens_an_application_is_true_only_for_the_open_address() {
-        let open = offer(
-            "photos",
-            "photos.app",
-            "open",
-            "Open the photo editor",
-            None,
-        );
-        let ordinary = offer("photos", "photos.picture:1", "crop", "Crop", None);
-        assert!(
-            Step::own(Instruction::Perform {
-                id: open.id(),
+            let perform = |o: &Offer| Instruction::Perform {
+                id: o.id(),
                 arguments: serde_json::Map::new(),
                 confirmation: ConfirmationEvidence::None,
-            })
-            .opens_an_application()
-        );
-        assert!(
-            !Step::own(Instruction::Perform {
-                id: ordinary.id(),
-                arguments: serde_json::Map::new(),
-                confirmation: ConfirmationEvidence::None,
-            })
-            .opens_an_application()
-        );
-        assert!(!Step::own(Instruction::Table).opens_an_application());
-    }
+            };
+            assert!(
+                Step::bound(perform(&content), &offers).carries,
+                "an operation that collects content must be carried into"
+            );
+            assert!(
+                !Step::bound(perform(&words), &offers).carries,
+                "an operation that collects words is never carried into — it is quoted, not carried"
+            );
+            assert!(!Step::bound(perform(&none), &offers).carries);
 
-    #[test]
-    fn unanswered_refuses_a_sequence_with_no_open_ahead_of_the_gap() {
-        let plan = Plan {
-            steps: vec![
-                Step::own(Instruction::Table),
-                Step::own(Instruction::Unknown("juggle three plates".into())),
-            ],
-        };
-        assert_eq!(plan.unanswered(), Some("juggle three plates"));
-    }
+            // Never true for anything but Perform, whatever the survey holds.
+            assert!(!Step::bound(Instruction::Table, &offers).carries);
+        }
 
-    /// A step naming what only an earlier open would create is not fatal —
-    /// but only once that open has actually run first.
-    #[test]
-    fn an_open_excuses_a_clause_it_makes_answerable_but_only_once_it_comes_first() {
-        let open = offer(
-            "photos",
-            "photos.app",
-            "open",
-            "Open the photo editor",
-            None,
-        );
-        let excused = Plan {
-            steps: vec![
+        // Case `opens_an_application_is_true_only_for_the_open_address`.
+        {
+            let open = offer(
+                "photos",
+                "photos.app",
+                "open",
+                "Open the photo editor",
+                None,
+            );
+            let ordinary = offer("photos", "photos.picture:1", "crop", "Crop", None);
+            assert!(
                 Step::own(Instruction::Perform {
                     id: open.id(),
                     arguments: serde_json::Map::new(),
                     confirmation: ConfirmationEvidence::None,
-                }),
-                Step::own(Instruction::Unknown("crop it square".into())),
-            ],
-        };
-        assert_eq!(
-            excused.unanswered(),
-            None,
-            "a clause an earlier open would make answerable is not fatal up front"
-        );
-
-        let too_early = Plan {
-            steps: vec![
-                Step::own(Instruction::Unknown("crop it square".into())),
-                Step::own(Instruction::Perform {
-                    id: open.id(),
+                })
+                .opens_an_application()
+            );
+            assert!(
+                !Step::own(Instruction::Perform {
+                    id: ordinary.id(),
                     arguments: serde_json::Map::new(),
                     confirmation: ConfirmationEvidence::None,
-                }),
-            ],
-        };
-        assert_eq!(
-            too_early.unanswered(),
-            Some("crop it square"),
-            "nothing has opened anything yet, so this gap is still fatal"
-        );
+                })
+                .opens_an_application()
+            );
+            assert!(!Step::own(Instruction::Table).opens_an_application());
+        }
+
+        // Case `unanswered_refuses_a_sequence_with_no_open_ahead_of_the_gap`.
+        {
+            let plan = Plan {
+                steps: vec![
+                    Step::own(Instruction::Table),
+                    Step::own(Instruction::Unknown("juggle three plates".into())),
+                ],
+            };
+            assert_eq!(plan.unanswered(), Some("juggle three plates"));
+        }
+
+        // Case `an_open_excuses_a_clause_it_makes_answerable_but_only_once_it_comes_first`.
+        // A step naming what only an earlier open would create is not fatal —
+        // but only once that open has actually run first.
+        {
+            let open = offer(
+                "photos",
+                "photos.app",
+                "open",
+                "Open the photo editor",
+                None,
+            );
+            let excused = Plan {
+                steps: vec![
+                    Step::own(Instruction::Perform {
+                        id: open.id(),
+                        arguments: serde_json::Map::new(),
+                        confirmation: ConfirmationEvidence::None,
+                    }),
+                    Step::own(Instruction::Unknown("crop it square".into())),
+                ],
+            };
+            assert_eq!(
+                excused.unanswered(),
+                None,
+                "a clause an earlier open would make answerable is not fatal up front"
+            );
+
+            let too_early = Plan {
+                steps: vec![
+                    Step::own(Instruction::Unknown("crop it square".into())),
+                    Step::own(Instruction::Perform {
+                        id: open.id(),
+                        arguments: serde_json::Map::new(),
+                        confirmation: ConfirmationEvidence::None,
+                    }),
+                ],
+            };
+            assert_eq!(
+                too_early.unanswered(),
+                Some("crop it square"),
+                "nothing has opened anything yet, so this gap is still fatal"
+            );
+        }
     }
 }

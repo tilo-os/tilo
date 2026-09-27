@@ -177,115 +177,111 @@ mod tests {
     }
 
     #[test]
-    fn state_code_mapping() {
-        assert_eq!(BatteryState::from_upower(1), BatteryState::Charging);
-        assert_eq!(BatteryState::from_upower(2), BatteryState::Discharging);
-        assert_eq!(BatteryState::from_upower(4), BatteryState::Full);
-        assert_eq!(BatteryState::from_upower(99), BatteryState::Unknown);
-        assert!(BatteryState::Discharging.is_discharging());
-        assert!(!BatteryState::Charging.is_discharging());
-        assert!(!BatteryState::Full.is_discharging());
-    }
-
-    #[test]
-    fn healthy_charge_emits_nothing() {
-        let mut m = BatteryMonitor::new();
-        assert!(
-            m.evaluate(&snap(80, BatteryState::Discharging), &policy())
-                .is_empty()
-        );
-        assert!(!m.is_warning());
-    }
-
-    #[test]
-    fn low_warns_once_then_stays_quiet() {
-        let mut m = BatteryMonitor::new();
-        let p = policy();
-        assert_eq!(
-            m.evaluate(&snap(15, BatteryState::Discharging), &p),
-            vec![BatteryEvent::Low(15)]
-        );
-        // Draining further but still above critical: no repeat warning.
-        assert!(
-            m.evaluate(&snap(12, BatteryState::Discharging), &p)
-                .is_empty()
-        );
-        assert!(
-            m.evaluate(&snap(8, BatteryState::Discharging), &p)
-                .is_empty()
-        );
-        assert!(m.is_warning());
-    }
-
-    #[test]
-    fn critical_emits_once_and_suppresses_low() {
-        let mut m = BatteryMonitor::new();
-        let p = policy();
-        // Straight to critical without a prior Low: emit Critical only.
-        assert_eq!(
-            m.evaluate(&snap(4, BatteryState::Discharging), &p),
-            vec![BatteryEvent::Critical(4)]
-        );
-        // Further drain: silent (already latched).
-        assert!(
-            m.evaluate(&snap(2, BatteryState::Discharging), &p)
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn low_then_critical_are_two_distinct_shots() {
-        let mut m = BatteryMonitor::new();
-        let p = policy();
-        assert_eq!(
-            m.evaluate(&snap(14, BatteryState::Discharging), &p),
-            vec![BatteryEvent::Low(14)]
-        );
-        assert_eq!(
-            m.evaluate(&snap(5, BatteryState::Discharging), &p),
-            vec![BatteryEvent::Critical(5)]
-        );
-        assert!(
-            m.evaluate(&snap(3, BatteryState::Discharging), &p)
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn plugging_in_rearms_and_recovers() {
-        let mut m = BatteryMonitor::new();
-        let p = policy();
-        let _ = m.evaluate(&snap(10, BatteryState::Discharging), &p); // Low
-        assert!(m.is_warning());
-        // Plug in: one Recovered, latches cleared.
-        assert_eq!(
-            m.evaluate(&snap(10, BatteryState::Charging), &p),
-            vec![BatteryEvent::Recovered]
-        );
-        assert!(!m.is_warning());
-        // A second charging reading is silent (already recovered).
-        assert!(m.evaluate(&snap(11, BatteryState::Charging), &p).is_empty());
-        // Unplug and drain again: warns afresh.
-        assert_eq!(
-            m.evaluate(&snap(12, BatteryState::Discharging), &p),
-            vec![BatteryEvent::Low(12)]
-        );
-    }
-
-    #[test]
-    fn absent_battery_never_warns() {
-        let mut m = BatteryMonitor::new();
-        let p = policy();
-        assert!(m.evaluate(&BatterySnapshot::absent(), &p).is_empty());
-        assert!(!m.is_warning());
-    }
-
-    #[test]
-    fn critical_action_gate() {
-        let mut p = policy();
-        p.critical_action = PowerAction::Suspend;
-        assert!(critical_leads_to_suspend(&p));
-        p.critical_action = PowerAction::Ignore;
-        assert!(!critical_leads_to_suspend(&p));
+    fn battery_warnings_fire_once_per_threshold_and_rearm_on_power() {
+        // Phase `state_code_mapping`.
+        {
+            assert_eq!(BatteryState::from_upower(1), BatteryState::Charging);
+            assert_eq!(BatteryState::from_upower(2), BatteryState::Discharging);
+            assert_eq!(BatteryState::from_upower(4), BatteryState::Full);
+            assert_eq!(BatteryState::from_upower(99), BatteryState::Unknown);
+            assert!(BatteryState::Discharging.is_discharging());
+            assert!(!BatteryState::Charging.is_discharging());
+            assert!(!BatteryState::Full.is_discharging());
+        }
+        // Phase `healthy_charge_emits_nothing`.
+        {
+            let mut m = BatteryMonitor::new();
+            assert!(
+                m.evaluate(&snap(80, BatteryState::Discharging), &policy())
+                    .is_empty()
+            );
+            assert!(!m.is_warning());
+        }
+        // Phase `low_warns_once_then_stays_quiet`.
+        {
+            let mut m = BatteryMonitor::new();
+            let p = policy();
+            assert_eq!(
+                m.evaluate(&snap(15, BatteryState::Discharging), &p),
+                vec![BatteryEvent::Low(15)]
+            );
+            // Draining further but still above critical: no repeat warning.
+            assert!(
+                m.evaluate(&snap(12, BatteryState::Discharging), &p)
+                    .is_empty()
+            );
+            assert!(
+                m.evaluate(&snap(8, BatteryState::Discharging), &p)
+                    .is_empty()
+            );
+            assert!(m.is_warning());
+        }
+        // Phase `critical_emits_once_and_suppresses_low`.
+        {
+            let mut m = BatteryMonitor::new();
+            let p = policy();
+            // Straight to critical without a prior Low: emit Critical only.
+            assert_eq!(
+                m.evaluate(&snap(4, BatteryState::Discharging), &p),
+                vec![BatteryEvent::Critical(4)]
+            );
+            // Further drain: silent (already latched).
+            assert!(
+                m.evaluate(&snap(2, BatteryState::Discharging), &p)
+                    .is_empty()
+            );
+        }
+        // Phase `low_then_critical_are_two_distinct_shots`.
+        {
+            let mut m = BatteryMonitor::new();
+            let p = policy();
+            assert_eq!(
+                m.evaluate(&snap(14, BatteryState::Discharging), &p),
+                vec![BatteryEvent::Low(14)]
+            );
+            assert_eq!(
+                m.evaluate(&snap(5, BatteryState::Discharging), &p),
+                vec![BatteryEvent::Critical(5)]
+            );
+            assert!(
+                m.evaluate(&snap(3, BatteryState::Discharging), &p)
+                    .is_empty()
+            );
+        }
+        // Phase `plugging_in_rearms_and_recovers`.
+        {
+            let mut m = BatteryMonitor::new();
+            let p = policy();
+            let _ = m.evaluate(&snap(10, BatteryState::Discharging), &p); // Low
+            assert!(m.is_warning());
+            // Plug in: one Recovered, latches cleared.
+            assert_eq!(
+                m.evaluate(&snap(10, BatteryState::Charging), &p),
+                vec![BatteryEvent::Recovered]
+            );
+            assert!(!m.is_warning());
+            // A second charging reading is silent (already recovered).
+            assert!(m.evaluate(&snap(11, BatteryState::Charging), &p).is_empty());
+            // Unplug and drain again: warns afresh.
+            assert_eq!(
+                m.evaluate(&snap(12, BatteryState::Discharging), &p),
+                vec![BatteryEvent::Low(12)]
+            );
+        }
+        // Phase `absent_battery_never_warns`.
+        {
+            let mut m = BatteryMonitor::new();
+            let p = policy();
+            assert!(m.evaluate(&BatterySnapshot::absent(), &p).is_empty());
+            assert!(!m.is_warning());
+        }
+        // Phase `critical_action_gate`.
+        {
+            let mut p = policy();
+            p.critical_action = PowerAction::Suspend;
+            assert!(critical_leads_to_suspend(&p));
+            p.critical_action = PowerAction::Ignore;
+            assert!(!critical_leads_to_suspend(&p));
+        }
     }
 }

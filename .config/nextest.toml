@@ -22,6 +22,12 @@ final-status-level = "flaky"
 path = "junit.xml"
 
 # Process-isolated compositor, GPU, and collaboration tests need shared limits.
+#
+# Nextest starts tests in order and a test that needs every thread waits for
+# all running tests to finish, idling the rest of the pool. Tests that take the
+# whole pool therefore have the highest priority: they run back to back while
+# the pool is still empty. The two-wide compositor group and the longest tests
+# follow, so a run ends on short tests.
 [test-groups]
 compositor = { max-threads = 2 }
 gpu-golden = { max-threads = 1 }
@@ -41,49 +47,59 @@ test-group = "gpu-golden"
 [[profile.default.overrides]]
 filter = 'binary(it) and (test(clipboard_e2e::) or test(interaction_test::) or test(wayland_test::))'
 test-group = "compositor"
+priority = 90
 
 [[profile.ci.overrides]]
 filter = 'binary(it) and (test(clipboard_e2e::) or test(interaction_test::) or test(wayland_test::))'
 test-group = "compositor"
+priority = 90
 
-# Collaboration binaries share bounded socket resources.
+# Collaboration suites (modules of the agent `it` binary) share bounded socket resources.
 [[profile.default.overrides]]
-filter = 'package(agent) and (binary(presence_semantics) or binary(relay_roundtrip) or binary(discovered_operations) or binary(concurrent_edit))'
+filter = 'package(agent) and binary(it) and (test(presence_semantics::) or test(relay_roundtrip::) or test(discovered_operations::) or test(concurrent_edit::))'
 test-group = "agent-collaboration"
 threads-required = "num-cpus"
+priority = 100
 
 [[profile.ci.overrides]]
-filter = 'package(agent) and (binary(presence_semantics) or binary(relay_roundtrip) or binary(discovered_operations) or binary(concurrent_edit))'
+filter = 'package(agent) and binary(it) and (test(presence_semantics::) or test(relay_roundtrip::) or test(discovered_operations::) or test(concurrent_edit::))'
 test-group = "agent-collaboration"
 threads-required = "num-cpus"
+priority = 100
 
 # This real-time codec test needs an uncontended CPU budget.
 [[profile.default.overrides]]
 filter = 'package(shell) and binary(it) and test(flatpak_share_e2e::session_delivers_30_frames_in_3_seconds_at_bounded_latency)'
 threads-required = "num-cpus"
+priority = 100
 
 [[profile.ci.overrides]]
 filter = 'package(shell) and binary(it) and test(flatpak_share_e2e::session_delivers_30_frames_in_3_seconds_at_bounded_latency)'
 threads-required = "num-cpus"
+priority = 100
 
 # Native-4K renderer tests need an uncontended CPU budget.
 [[profile.default.overrides]]
 filter = 'package(shell) and (test(shell::frame::retained_tests::native_4k_legacy_and_segmented_shell_frames_match_through_quick_settings_cycle) or test(shell::frame::retained_tests::native_4k_retained_quick_settings_damage_covers_large_shadow_and_matches_dense) or test(shell::frame::retained_tests::workspace_root_rebuild_forces_dense_boundary_and_keeps_live_topbar_pixels) or test(native_4k_framebuilder_actions_match_current_staging_for_one_and_two_targets) or test(native_4k_retained_pixels_match_dense_oracle_for_benchmark_actions))'
 threads-required = "num-cpus"
+priority = 100
 
 [[profile.ci.overrides]]
 filter = 'package(shell) and (test(shell::frame::retained_tests::native_4k_legacy_and_segmented_shell_frames_match_through_quick_settings_cycle) or test(shell::frame::retained_tests::native_4k_retained_quick_settings_damage_covers_large_shadow_and_matches_dense) or test(shell::frame::retained_tests::workspace_root_rebuild_forces_dense_boundary_and_keeps_live_topbar_pixels) or test(native_4k_framebuilder_actions_match_current_staging_for_one_and_two_targets) or test(native_4k_retained_pixels_match_dense_oracle_for_benchmark_actions))'
 threads-required = "num-cpus"
+priority = 100
 
 # Shared GPU targets use real devices and deterministic completion fault seams. Keep their
 # adapter/copy/overflow oracles exclusive of other tests in normal and CI selections.
 [[profile.default.overrides]]
 filter = 'package(shell) and test(shell::render::paint::tests::gpu_target_)'
 threads-required = "num-cpus"
+priority = 100
 
 [[profile.ci.overrides]]
 filter = 'package(shell) and test(shell::render::paint::tests::gpu_target_)'
 threads-required = "num-cpus"
+priority = 100
 
 # These render complete application/compositor frames and are intentionally
 # expensive. Running them beside the rest of a 10k-test shard saturates the
@@ -91,10 +107,12 @@ threads-required = "num-cpus"
 [[profile.default.overrides]]
 filter = '(package(notes) and binary(it) and (test(screenshot_critique::) or test(capture_runtime::))) or (package(shell) and binary(it) and test(foreign_surface_compositing::))'
 threads-required = "num-cpus"
+priority = 100
 
 [[profile.ci.overrides]]
 filter = '(package(notes) and binary(it) and (test(screenshot_critique::) or test(capture_runtime::))) or (package(shell) and binary(it) and test(foreign_surface_compositing::))'
 threads-required = "num-cpus"
+priority = 100
 
 # Nearby enrollment binds the fixed LAN pairing port and answers broadcast
 # solicitations, so two approvals in parallel processes would cross-talk.
@@ -117,3 +135,12 @@ test-group = "imager-durable-disk"
 [[profile.ci.overrides]]
 filter = 'package(imager) and (test(/^setup::import_view::tests::/) or test(/^setup::desktop_continuation::tests::/) or test(/^setup::migration_worker::tests::/) or test(/^setup::internal_cache::/) or test(/^setup::internal_download::/) or test(/^setup::internal_download_flow::/))'
 test-group = "imager-durable-disk"
+
+# The longest tests (15-80 s each in CI) start right after the pool-wide ones.
+[[profile.default.overrides]]
+filter = '(package(fs) and (test(=fs::durability_tests::more_fsyncs_than_the_version_bound_lose_nothing) or test(=history::tests::the_log_folds_into_the_snapshot_after_its_bound) or test(/^fs::checked_restore::tests::/) or binary(collab_release_matrix))) or (package(shell) and (test(=shell::collab_history::tests::history_outlives_the_memory_window_and_a_restart) or binary(shots))) or (package(media) and test(/^real::/)) or (package(imager) and test(/^setup::staging::fake::tests::/)) or (package(notes) and binary(it) and test(/^canonical_import::/)) or (package(scratchpad) and binary(native_proof)) or (package(tilo-rollback) and binary(mechanism)) or (package(tilo-automerge) and binary(patch_log_memory)) or (package(tilo-relay) and (binary(held_memory) or test(/^daemon::tests::/))) or (package(tilo-ui) and (binary(held-memory) or test(/^incremental_render_regressions::/) or test(/^app::large_document_tests::/) or test(/^app::semantic_tree_app_tests::/) or test(/^presence::render::tests::/))) or (package(video-editor) and (test(/^export::tests::/) or test(/^shot::tests::/))) or (package(app-state) and test(/^fs_store::tests::/))'
+priority = 50
+
+[[profile.ci.overrides]]
+filter = '(package(fs) and (test(=fs::durability_tests::more_fsyncs_than_the_version_bound_lose_nothing) or test(=history::tests::the_log_folds_into_the_snapshot_after_its_bound) or test(/^fs::checked_restore::tests::/) or binary(collab_release_matrix))) or (package(shell) and (test(=shell::collab_history::tests::history_outlives_the_memory_window_and_a_restart) or binary(shots))) or (package(media) and test(/^real::/)) or (package(imager) and test(/^setup::staging::fake::tests::/)) or (package(notes) and binary(it) and test(/^canonical_import::/)) or (package(scratchpad) and binary(native_proof)) or (package(tilo-rollback) and binary(mechanism)) or (package(tilo-automerge) and binary(patch_log_memory)) or (package(tilo-relay) and (binary(held_memory) or test(/^daemon::tests::/))) or (package(tilo-ui) and (binary(held-memory) or test(/^incremental_render_regressions::/) or test(/^app::large_document_tests::/) or test(/^app::semantic_tree_app_tests::/) or test(/^presence::render::tests::/))) or (package(video-editor) and (test(/^export::tests::/) or test(/^shot::tests::/))) or (package(app-state) and test(/^fs_store::tests::/))'
+priority = 50

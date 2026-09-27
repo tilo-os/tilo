@@ -1298,735 +1298,756 @@ mod tests {
     }
 
     #[test]
-    fn starts_closed_and_reads_value_on_sync() {
-        let mut dd = Dropdown::new(opts(), "tz");
-        assert!(!dd.is_open());
-        let (mut doc, root) = doc_with_tz("Asia/Tokyo");
-        dd.sync(&mut doc, &root);
-        assert_eq!(dd.selected(), "Asia/Tokyo");
-    }
-
-    #[test]
-    fn down_opens_when_closed_and_focused() {
-        let mut dd = Dropdown::new(opts(), "tz");
-        let (mut doc, root) = doc_with_tz("UTC");
-        dd.sync(&mut doc, &root);
-        dd.set_focus(true);
-        assert!(feed_key(
-            &mut dd,
-            &key(Key::Named(NamedKey::ArrowDown), None),
-            &mut doc,
-            &root
-        ));
-        assert!(dd.is_open());
-        // Highlight lands on the currently-selected option.
-        assert_eq!(dd.highlight_index(), 0);
-    }
-
-    #[test]
-    fn arrows_move_highlight_while_open() {
-        let mut dd = Dropdown::new(opts(), "tz");
-        let (mut doc, root) = doc_with_tz("UTC");
-        dd.sync(&mut doc, &root);
-        dd.set_focus(true);
-        dd.do_open();
-        feed_key(
-            &mut dd,
-            &key(Key::Named(NamedKey::ArrowDown), None),
-            &mut doc,
-            &root,
-        );
-        feed_key(
-            &mut dd,
-            &key(Key::Named(NamedKey::ArrowDown), None),
-            &mut doc,
-            &root,
-        );
-        assert_eq!(dd.highlight_index(), 2);
-        feed_key(
-            &mut dd,
-            &key(Key::Named(NamedKey::ArrowUp), None),
-            &mut doc,
-            &root,
-        );
-        assert_eq!(dd.highlight_index(), 1);
-    }
-
-    #[test]
-    fn enter_selects_writes_value_and_closes() {
-        let mut dd = Dropdown::new(opts(), "tz");
-        let (mut doc, root) = doc_with_tz("UTC");
-        dd.sync(&mut doc, &root);
-        dd.set_focus(true);
-        dd.do_open();
-        // Move to "America/New_York" (index 2) and select it.
-        feed_key(
-            &mut dd,
-            &key(Key::Named(NamedKey::ArrowDown), None),
-            &mut doc,
-            &root,
-        );
-        feed_key(
-            &mut dd,
-            &key(Key::Named(NamedKey::ArrowDown), None),
-            &mut doc,
-            &root,
-        );
-        assert!(feed_key(
-            &mut dd,
-            &key(Key::Named(NamedKey::Enter), None),
-            &mut doc,
-            &root
-        ));
-        assert!(!dd.is_open(), "selecting closes the list");
-        assert_eq!(dd.selected(), "America/New_York");
-        // The value landed in the CRDT Text object the host reads.
-        assert_eq!(
-            Dropdown::read_value(&doc, &root, "tz").as_deref(),
-            Some("America/New_York")
-        );
-    }
-
-    #[test]
-    fn escape_closes_without_changing_value() {
-        let mut dd = Dropdown::new(opts(), "tz");
-        let (mut doc, root) = doc_with_tz("UTC");
-        dd.sync(&mut doc, &root);
-        dd.set_focus(true);
-        dd.do_open();
-        feed_key(
-            &mut dd,
-            &key(Key::Named(NamedKey::ArrowDown), None),
-            &mut doc,
-            &root,
-        );
-        assert!(feed_key(
-            &mut dd,
-            &key(Key::Named(NamedKey::Escape), None),
-            &mut doc,
-            &root
-        ));
-        assert!(!dd.is_open());
-        assert_eq!(dd.selected(), "UTC", "Esc must not change the value");
-        assert_eq!(
-            Dropdown::read_value(&doc, &root, "tz").as_deref(),
-            Some("UTC")
-        );
-    }
-
-    #[test]
-    fn typing_filters_options_case_insensitively() {
-        let mut dd = Dropdown::new(opts(), "tz");
-        let (mut doc, root) = doc_with_tz("UTC");
-        dd.sync(&mut doc, &root);
-        dd.set_focus(true);
-        dd.do_open();
-        assert_eq!(dd.visible_count(), 4);
-        // "ame" matches only "America/New_York".
-        feed_key(
-            &mut dd,
-            &key(Key::Character("a".into()), Some("a")),
-            &mut doc,
-            &root,
-        );
-        feed_key(
-            &mut dd,
-            &key(Key::Character("m".into()), Some("m")),
-            &mut doc,
-            &root,
-        );
-        feed_key(
-            &mut dd,
-            &key(Key::Character("e".into()), Some("e")),
-            &mut doc,
-            &root,
-        );
-        assert_eq!(dd.filter_query(), "ame");
-        assert_eq!(dd.visible_count(), 1);
-        // Enter selects the sole filtered match.
-        feed_key(
-            &mut dd,
-            &key(Key::Named(NamedKey::Enter), None),
-            &mut doc,
-            &root,
-        );
-        assert_eq!(dd.selected(), "America/New_York");
-    }
-
-    #[test]
-    fn space_is_part_of_an_open_combobox_query() {
-        let mut dd = Dropdown::new(vec!["New York".into(), "New Delhi".into()], "city");
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        dd.set_focus(true);
-        dd.do_open();
-        for (key_value, text) in [
-            (Key::Character("N".into()), Some("N")),
-            (Key::Character("e".into()), Some("e")),
-            (Key::Character("w".into()), Some("w")),
-            (Key::Named(NamedKey::Space), None),
-            (Key::Character("Y".into()), Some("Y")),
-        ] {
-            feed_key(&mut dd, &key(key_value, text), &mut doc, &root);
+    fn dropdown_keyboard_opens_navigates_selects_and_escapes() {
+        fn starts_closed_and_reads_value_on_sync() {
+            let mut dd = Dropdown::new(opts(), "tz");
+            assert!(!dd.is_open());
+            let (mut doc, root) = doc_with_tz("Asia/Tokyo");
+            dd.sync(&mut doc, &root);
+            assert_eq!(dd.selected(), "Asia/Tokyo");
         }
-        assert_eq!(dd.filter_query(), "New Y");
-        assert_eq!(dd.visible_count(), 1);
-    }
 
-    #[test]
-    fn backspace_edits_the_filter() {
-        let mut dd = Dropdown::new(opts(), "tz");
-        let (mut doc, root) = doc_with_tz("UTC");
-        dd.sync(&mut doc, &root);
-        dd.set_focus(true);
-        dd.do_open();
-        feed_key(
-            &mut dd,
-            &key(Key::Character("a".into()), Some("a")),
-            &mut doc,
-            &root,
-        );
-        feed_key(
-            &mut dd,
-            &key(Key::Character("z".into()), Some("z")),
-            &mut doc,
-            &root,
-        );
-        assert_eq!(dd.visible_count(), 0); // "az" matches nothing
-        feed_key(
-            &mut dd,
-            &key(Key::Named(NamedKey::Backspace), None),
-            &mut doc,
-            &root,
-        );
-        assert_eq!(dd.filter_query(), "a");
-        // "a" matches Amsterdam, America, Asia.
-        assert_eq!(dd.visible_count(), 3);
-    }
-
-    #[test]
-    fn backspace_deletes_one_extended_grapheme_from_the_filter() {
-        let mut dd = Dropdown::new(opts(), "tz");
-        let (mut doc, root) = doc_with_tz("UTC");
-        dd.sync(&mut doc, &root);
-        dd.set_focus(true);
-        dd.do_open();
-        let cluster = "👩🏽‍💻";
-        feed_key(
-            &mut dd,
-            &key(Key::Character(cluster.into()), Some(cluster)),
-            &mut doc,
-            &root,
-        );
-        assert_eq!(dd.filter_query(), cluster);
-        feed_key(
-            &mut dd,
-            &key(Key::Named(NamedKey::Backspace), None),
-            &mut doc,
-            &root,
-        );
-        assert_eq!(dd.filter_query(), "");
-        assert_eq!(dd.filter_selection, Selection::collapsed(0));
-    }
-
-    #[test]
-    fn typing_replaces_the_selected_filter_range() {
-        let mut dd = Dropdown::new(opts(), "tz");
-        let (mut doc, root) = doc_with_tz("UTC");
-        dd.sync(&mut doc, &root);
-        dd.set_focus(true);
-        dd.do_open();
-        dd.filter = "Europe".into();
-        dd.filter_selection = Selection {
-            anchor: 0,
-            cursor: dd.filter.len(),
-        };
-        feed_key(
-            &mut dd,
-            &key(Key::Character("亜".into()), Some("亜")),
-            &mut doc,
-            &root,
-        );
-        assert_eq!(dd.filter_query(), "亜");
-        assert_eq!(dd.filter_selection, Selection::collapsed("亜".len()));
-    }
-
-    #[test]
-    fn ime_preedit_is_visible_but_filters_only_after_commit() {
-        let mut dd = Dropdown::new(vec!["東京".into(), "London".into()], "city");
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        dd.apply_layout_external(Rect::new(10.0, 10.0, 260.0, 50.0));
-        dd.set_focus(true);
-        dd.do_open();
-
-        assert!(feed_key(
-            &mut dd,
-            &WindowEvent::Ime(winit::event::Ime::Preedit(
-                "東京".into(),
-                Some(("東".len(), "東".len())),
-            )),
-            &mut doc,
-            &root,
-        ));
-        assert_eq!(dd.filter_query(), "");
-        assert_eq!(dd.visible_count(), 2);
-        assert_eq!(
-            Widget::accessibility(&dd).unwrap().value,
-            None,
-            "preedit must stay out of the accessibility value"
-        );
-
-        let mut scene = Scene::new();
-        let mut renderer = TextRenderer::new();
-        Widget::draw(
-            &mut dd,
-            &mut scene,
-            Affine::IDENTITY,
-            &mut renderer,
-            &Theme::dark(),
-            &PresenceCtx::empty(),
-        );
-        let candidate = Widget::ime_cursor_rect(&dd).expect("open combobox publishes its caret");
-        assert!(dd.get_rect().contains(candidate.center()));
-
-        assert!(feed_key(
-            &mut dd,
-            &WindowEvent::Ime(winit::event::Ime::Commit("東京".into())),
-            &mut doc,
-            &root,
-        ));
-        assert_eq!(dd.filter_query(), "東京");
-        assert_eq!(dd.visible_count(), 1);
-        assert_eq!(
-            Widget::accessibility(&dd).unwrap().value.as_deref(),
-            Some("東京")
-        );
-    }
-
-    #[test]
-    fn losing_focus_closes_the_list() {
-        let mut dd = Dropdown::new(opts(), "tz");
-        let (mut doc, root) = doc_with_tz("UTC");
-        dd.sync(&mut doc, &root);
-        dd.set_focus(true);
-        dd.do_open();
-        assert!(dd.is_open());
-        dd.set_focus(false);
-        assert!(!dd.is_open(), "Tab-away dismisses the dropdown");
-    }
-
-    #[test]
-    fn open_dropdown_captures_pointer() {
-        let mut dd = Dropdown::new(opts(), "tz");
-        assert!(!dd.wants_pointer_capture());
-        dd.do_open();
-        assert!(dd.wants_pointer_capture());
-    }
-
-    /// The dropdown is the fluid item in a row (F2-16): laid beside fixed
-    /// controls in a row too narrow for its `percent(100%)`, it gives the
-    /// room back, so its siblings keep their size and the trailing one is
-    /// still on screen instead of being pushed to zero width past the edge.
-    #[test]
-    fn dropdown_in_a_row_yields_width_to_fixed_siblings() {
-        use crate::widget::{Button, Row};
-        let mut row = Row::new()
-            .no_wrap()
-            .push(Box::new(Button::new("left", "Left", None)))
-            .push(Box::new(Dropdown::new(opts(), "tz")))
-            .push(Box::new(Button::new("right", "Right", None)));
-        let theme = Theme::dark();
-        let mut taffy = TaffyTree::<()>::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let node = row.build_layout(&mut taffy, &theme, &mut node_map);
-        taffy
-            .compute_layout(
-                node,
-                Size {
-                    width: taffy::AvailableSpace::Definite(600.0),
-                    height: taffy::AvailableSpace::Definite(80.0),
-                },
-            )
-            .unwrap();
-        row.apply_layout(&taffy, node, Point::ZERO);
-        let rects: Vec<Rect> = row.children().iter().map(|c| c.get_rect()).collect();
-        assert_eq!(rects.len(), 3);
-        let (left, dd, right) = (rects[0], rects[1], rects[2]);
-        assert!(
-            (left.width() - right.width()).abs() < 0.5 && left.width() > 0.0,
-            "the fixed buttons keep their size: {left:?} / {right:?}"
-        );
-        assert!(
-            dd.width() >= PAD_X + CHEVRON_W - 0.5,
-            "the dropdown keeps at least its chevron slot: {dd:?}"
-        );
-        assert!(
-            right.x1 <= 600.0 + 0.5,
-            "the trailing button stays inside the 600 px row: {right:?}"
-        );
-        assert!(
-            left.x1 <= dd.x0 + 0.5 && dd.x1 <= right.x0 + 0.5,
-            "row order without overlap: {left:?} {dd:?} {right:?}"
-        );
-        assert!(
-            (dd.height() - f64::from(theme.tokens.metrics.bar_height)).abs() < 0.5,
-            "the control is one bar tall: {dd:?}"
-        );
-    }
-
-    /// Hover is a repaint, not consumed input (the rule `Button` documents):
-    /// the move that changes it is left for siblings, and leaving the window
-    /// clears it because no `CursorMoved` will follow.
-    #[test]
-    fn hover_changes_do_not_consume_the_move_and_cursor_left_clears_hover() {
-        let mut dd = Dropdown::new(opts(), "tz");
-        dd.rect = Rect::new(0.0, 0.0, 200.0, 40.0);
-        let (mut doc, root) = doc_with_tz("UTC");
-        let enter = WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: winit::dpi::PhysicalPosition::new(20.0, 20.0),
-        };
-        assert!(
-            !feed_key(&mut dd, &enter, &mut doc, &root),
-            "a hover change must not mark the move handled"
-        );
-        assert!(dd.is_hovered, "the pointer is over the control");
-        let leave = WindowEvent::CursorLeft {
-            device_id: unsafe { std::mem::zeroed() },
-        };
-        feed_key(&mut dd, &leave, &mut doc, &root);
-        assert!(!dd.is_hovered, "CursorLeft clears the resting hover");
-    }
-
-    /// The open list flips above the control when opening below would leave
-    /// the host viewport and there is room above; hit-testing shares the
-    /// rect, so the flipped list is clickable where it is painted. The
-    /// viewport arrives either through the presence context at paint or
-    /// from the host via `set_viewport`; both routes are exercised.
-    #[test]
-    fn open_list_flips_above_when_it_would_leave_the_viewport() {
-        let mut dd = Dropdown::new(opts(), "tz");
-        dd.rect = Rect::new(0.0, 700.0, 200.0, 740.0);
-        let n = opts().len();
-        let below = dd.list_rect(n);
-        assert!(
-            below.y0 >= dd.rect.y1,
-            "without a viewport the list opens below"
-        );
-        // Route 1: the paint pass sees the App's pushed window viewport.
-        let presence = PresenceCtx::default();
-        presence
-            .viewport
-            .set(Some(Rect::new(0.0, 0.0, 800.0, 760.0)));
-        let mut scene = Scene::new();
-        dd.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut TextRenderer::new(),
-            &Theme::dark(),
-            &presence,
-        );
-        assert_eq!(dd.viewport, Some(Rect::new(0.0, 0.0, 800.0, 760.0)));
-        // Route 2: a host inside a Row/Column hands it over explicitly.
-        let mut hosted =
-            Dropdown::new(opts(), "tz").with_viewport(Rect::new(0.0, 0.0, 800.0, 760.0));
-        hosted.rect = dd.rect;
-        assert_eq!(hosted.list_rect(n), dd.list_rect(n));
-        let flipped = dd.list_rect(n);
-        assert!(
-            flipped.y1 <= dd.rect.y0,
-            "the list opens above the control: {flipped:?} vs {:?}",
-            dd.rect
-        );
-        assert!(flipped.y0 >= 0.0, "and stays inside the viewport");
-        assert!((flipped.height() - below.height()).abs() < 1e-6);
-        assert_eq!(
-            dd.row_at(Point::new(10.0, flipped.y0 + ITEM_HEIGHT / 2.0), flipped, n),
-            Some(0),
-            "the first row is hit where it is painted"
-        );
-        // No room above either: stay below rather than run off the top.
-        dd.set_viewport(Rect::new(0.0, 690.0, 800.0, 760.0));
-        assert!((dd.list_rect(n).y0 - below.y0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn commit_creates_text_object_when_absent() {
-        // No `tz` key seeded: commit must create the Text object.
-        let mut dd = Dropdown::new(opts(), "tz");
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        dd.commit_value("Europe/Amsterdam", &mut doc, &root);
-        assert_eq!(
-            Dropdown::read_value(&doc, &root, "tz").as_deref(),
-            Some("Europe/Amsterdam")
-        );
-    }
-
-    #[test]
-    fn repeated_selection_splices_the_diff_not_the_whole_value() {
-        // Committing by deleting the old value and reinserting the new one
-        // leaves a tombstone per character per selection, so a settings pane
-        // toggled back and forth bloats its document without bound.
-        let long: Vec<String> = (0..4)
-            .map(|i| format!("Europe/Amsterdam/very/long/option/label/number/{i}"))
-            .collect();
-        let mut dd = Dropdown::new(long.clone(), "tz");
-        let (mut doc, root) = doc_with_tz(&long[0]);
-        dd.sync(&mut doc, &root);
-        let baseline = doc.save().len();
-
-        // Alternate between two options that share a 46-char prefix.
-        for i in 0..60 {
-            dd.commit_value(&long[i % 2], &mut doc, &root);
+        fn down_opens_when_closed_and_focused() {
+            let mut dd = Dropdown::new(opts(), "tz");
+            let (mut doc, root) = doc_with_tz("UTC");
+            dd.sync(&mut doc, &root);
+            dd.set_focus(true);
+            assert!(feed_key(
+                &mut dd,
+                &key(Key::Named(NamedKey::ArrowDown), None),
+                &mut doc,
+                &root
+            ));
+            assert!(dd.is_open());
+            // Highlight lands on the currently-selected option.
+            assert_eq!(dd.highlight_index(), 0);
         }
-        let grown = doc.save().len() - baseline;
 
-        assert_eq!(
-            Dropdown::read_value(&doc, &root, "tz").as_deref(),
-            Some(long[1].as_str()),
-            "the last committed option must be what the document holds"
-        );
-        assert!(
-            grown < 8 * long[0].len(),
-            "60 selections grew the document by {grown} bytes for a {}-char label \
+        fn arrows_move_highlight_while_open() {
+            let mut dd = Dropdown::new(opts(), "tz");
+            let (mut doc, root) = doc_with_tz("UTC");
+            dd.sync(&mut doc, &root);
+            dd.set_focus(true);
+            dd.do_open();
+            feed_key(
+                &mut dd,
+                &key(Key::Named(NamedKey::ArrowDown), None),
+                &mut doc,
+                &root,
+            );
+            feed_key(
+                &mut dd,
+                &key(Key::Named(NamedKey::ArrowDown), None),
+                &mut doc,
+                &root,
+            );
+            assert_eq!(dd.highlight_index(), 2);
+            feed_key(
+                &mut dd,
+                &key(Key::Named(NamedKey::ArrowUp), None),
+                &mut doc,
+                &root,
+            );
+            assert_eq!(dd.highlight_index(), 1);
+        }
+
+        fn enter_selects_writes_value_and_closes() {
+            let mut dd = Dropdown::new(opts(), "tz");
+            let (mut doc, root) = doc_with_tz("UTC");
+            dd.sync(&mut doc, &root);
+            dd.set_focus(true);
+            dd.do_open();
+            // Move to "America/New_York" (index 2) and select it.
+            feed_key(
+                &mut dd,
+                &key(Key::Named(NamedKey::ArrowDown), None),
+                &mut doc,
+                &root,
+            );
+            feed_key(
+                &mut dd,
+                &key(Key::Named(NamedKey::ArrowDown), None),
+                &mut doc,
+                &root,
+            );
+            assert!(feed_key(
+                &mut dd,
+                &key(Key::Named(NamedKey::Enter), None),
+                &mut doc,
+                &root
+            ));
+            assert!(!dd.is_open(), "selecting closes the list");
+            assert_eq!(dd.selected(), "America/New_York");
+            // The value landed in the CRDT Text object the host reads.
+            assert_eq!(
+                Dropdown::read_value(&doc, &root, "tz").as_deref(),
+                Some("America/New_York")
+            );
+        }
+
+        fn escape_closes_without_changing_value() {
+            let mut dd = Dropdown::new(opts(), "tz");
+            let (mut doc, root) = doc_with_tz("UTC");
+            dd.sync(&mut doc, &root);
+            dd.set_focus(true);
+            dd.do_open();
+            feed_key(
+                &mut dd,
+                &key(Key::Named(NamedKey::ArrowDown), None),
+                &mut doc,
+                &root,
+            );
+            assert!(feed_key(
+                &mut dd,
+                &key(Key::Named(NamedKey::Escape), None),
+                &mut doc,
+                &root
+            ));
+            assert!(!dd.is_open());
+            assert_eq!(dd.selected(), "UTC", "Esc must not change the value");
+            assert_eq!(
+                Dropdown::read_value(&doc, &root, "tz").as_deref(),
+                Some("UTC")
+            );
+        }
+
+        fn open_builder_aligns_highlight_to_selection_on_sync() {
+            let mut dd = Dropdown::new(opts(), "tz").open();
+            let (mut doc, root) = doc_with_tz("Asia/Tokyo");
+            dd.sync(&mut doc, &root);
+            assert!(dd.is_open());
+            assert_eq!(
+                dd.highlight_index(),
+                3,
+                "highlight tracks the selected option"
+            );
+        }
+
+        starts_closed_and_reads_value_on_sync();
+        down_opens_when_closed_and_focused();
+        arrows_move_highlight_while_open();
+        enter_selects_writes_value_and_closes();
+        escape_closes_without_changing_value();
+        open_builder_aligns_highlight_to_selection_on_sync();
+    }
+
+    #[test]
+    fn combobox_filter_editing_handles_case_spaces_graphemes_and_ime() {
+        fn typing_filters_options_case_insensitively() {
+            let mut dd = Dropdown::new(opts(), "tz");
+            let (mut doc, root) = doc_with_tz("UTC");
+            dd.sync(&mut doc, &root);
+            dd.set_focus(true);
+            dd.do_open();
+            assert_eq!(dd.visible_count(), 4);
+            // "ame" matches only "America/New_York".
+            feed_key(
+                &mut dd,
+                &key(Key::Character("a".into()), Some("a")),
+                &mut doc,
+                &root,
+            );
+            feed_key(
+                &mut dd,
+                &key(Key::Character("m".into()), Some("m")),
+                &mut doc,
+                &root,
+            );
+            feed_key(
+                &mut dd,
+                &key(Key::Character("e".into()), Some("e")),
+                &mut doc,
+                &root,
+            );
+            assert_eq!(dd.filter_query(), "ame");
+            assert_eq!(dd.visible_count(), 1);
+            // Enter selects the sole filtered match.
+            feed_key(
+                &mut dd,
+                &key(Key::Named(NamedKey::Enter), None),
+                &mut doc,
+                &root,
+            );
+            assert_eq!(dd.selected(), "America/New_York");
+        }
+
+        fn space_is_part_of_an_open_combobox_query() {
+            let mut dd = Dropdown::new(vec!["New York".into(), "New Delhi".into()], "city");
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            dd.set_focus(true);
+            dd.do_open();
+            for (key_value, text) in [
+                (Key::Character("N".into()), Some("N")),
+                (Key::Character("e".into()), Some("e")),
+                (Key::Character("w".into()), Some("w")),
+                (Key::Named(NamedKey::Space), None),
+                (Key::Character("Y".into()), Some("Y")),
+            ] {
+                feed_key(&mut dd, &key(key_value, text), &mut doc, &root);
+            }
+            assert_eq!(dd.filter_query(), "New Y");
+            assert_eq!(dd.visible_count(), 1);
+        }
+
+        fn backspace_edits_the_filter() {
+            let mut dd = Dropdown::new(opts(), "tz");
+            let (mut doc, root) = doc_with_tz("UTC");
+            dd.sync(&mut doc, &root);
+            dd.set_focus(true);
+            dd.do_open();
+            feed_key(
+                &mut dd,
+                &key(Key::Character("a".into()), Some("a")),
+                &mut doc,
+                &root,
+            );
+            feed_key(
+                &mut dd,
+                &key(Key::Character("z".into()), Some("z")),
+                &mut doc,
+                &root,
+            );
+            assert_eq!(dd.visible_count(), 0); // "az" matches nothing
+            feed_key(
+                &mut dd,
+                &key(Key::Named(NamedKey::Backspace), None),
+                &mut doc,
+                &root,
+            );
+            assert_eq!(dd.filter_query(), "a");
+            // "a" matches Amsterdam, America, Asia.
+            assert_eq!(dd.visible_count(), 3);
+        }
+
+        fn backspace_deletes_one_extended_grapheme_from_the_filter() {
+            let mut dd = Dropdown::new(opts(), "tz");
+            let (mut doc, root) = doc_with_tz("UTC");
+            dd.sync(&mut doc, &root);
+            dd.set_focus(true);
+            dd.do_open();
+            let cluster = "👩🏽‍💻";
+            feed_key(
+                &mut dd,
+                &key(Key::Character(cluster.into()), Some(cluster)),
+                &mut doc,
+                &root,
+            );
+            assert_eq!(dd.filter_query(), cluster);
+            feed_key(
+                &mut dd,
+                &key(Key::Named(NamedKey::Backspace), None),
+                &mut doc,
+                &root,
+            );
+            assert_eq!(dd.filter_query(), "");
+            assert_eq!(dd.filter_selection, Selection::collapsed(0));
+        }
+
+        fn typing_replaces_the_selected_filter_range() {
+            let mut dd = Dropdown::new(opts(), "tz");
+            let (mut doc, root) = doc_with_tz("UTC");
+            dd.sync(&mut doc, &root);
+            dd.set_focus(true);
+            dd.do_open();
+            dd.filter = "Europe".into();
+            dd.filter_selection = Selection {
+                anchor: 0,
+                cursor: dd.filter.len(),
+            };
+            feed_key(
+                &mut dd,
+                &key(Key::Character("亜".into()), Some("亜")),
+                &mut doc,
+                &root,
+            );
+            assert_eq!(dd.filter_query(), "亜");
+            assert_eq!(dd.filter_selection, Selection::collapsed("亜".len()));
+        }
+
+        fn ime_preedit_is_visible_but_filters_only_after_commit() {
+            let mut dd = Dropdown::new(vec!["東京".into(), "London".into()], "city");
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            dd.apply_layout_external(Rect::new(10.0, 10.0, 260.0, 50.0));
+            dd.set_focus(true);
+            dd.do_open();
+
+            assert!(feed_key(
+                &mut dd,
+                &WindowEvent::Ime(winit::event::Ime::Preedit(
+                    "東京".into(),
+                    Some(("東".len(), "東".len())),
+                )),
+                &mut doc,
+                &root,
+            ));
+            assert_eq!(dd.filter_query(), "");
+            assert_eq!(dd.visible_count(), 2);
+            assert_eq!(
+                Widget::accessibility(&dd).unwrap().value,
+                None,
+                "preedit must stay out of the accessibility value"
+            );
+
+            let mut scene = Scene::new();
+            let mut renderer = TextRenderer::new();
+            Widget::draw(
+                &mut dd,
+                &mut scene,
+                Affine::IDENTITY,
+                &mut renderer,
+                &Theme::dark(),
+                &PresenceCtx::empty(),
+            );
+            let candidate =
+                Widget::ime_cursor_rect(&dd).expect("open combobox publishes its caret");
+            assert!(dd.get_rect().contains(candidate.center()));
+
+            assert!(feed_key(
+                &mut dd,
+                &WindowEvent::Ime(winit::event::Ime::Commit("東京".into())),
+                &mut doc,
+                &root,
+            ));
+            assert_eq!(dd.filter_query(), "東京");
+            assert_eq!(dd.visible_count(), 1);
+            assert_eq!(
+                Widget::accessibility(&dd).unwrap().value.as_deref(),
+                Some("東京")
+            );
+        }
+
+        typing_filters_options_case_insensitively();
+        space_is_part_of_an_open_combobox_query();
+        backspace_edits_the_filter();
+        backspace_deletes_one_extended_grapheme_from_the_filter();
+        typing_replaces_the_selected_filter_range();
+        ime_preedit_is_visible_but_filters_only_after_commit();
+    }
+
+    #[test]
+    fn open_list_pointer_capture_focus_and_placement() {
+        fn losing_focus_closes_the_list() {
+            let mut dd = Dropdown::new(opts(), "tz");
+            let (mut doc, root) = doc_with_tz("UTC");
+            dd.sync(&mut doc, &root);
+            dd.set_focus(true);
+            dd.do_open();
+            assert!(dd.is_open());
+            dd.set_focus(false);
+            assert!(!dd.is_open(), "Tab-away dismisses the dropdown");
+        }
+
+        fn open_dropdown_captures_pointer() {
+            let mut dd = Dropdown::new(opts(), "tz");
+            assert!(!dd.wants_pointer_capture());
+            dd.do_open();
+            assert!(dd.wants_pointer_capture());
+        }
+
+        /// Hover is a repaint, not consumed input (the rule `Button` documents):
+        /// the move that changes it is left for siblings, and leaving the window
+        /// clears it because no `CursorMoved` will follow.
+        fn hover_changes_do_not_consume_the_move_and_cursor_left_clears_hover() {
+            let mut dd = Dropdown::new(opts(), "tz");
+            dd.rect = Rect::new(0.0, 0.0, 200.0, 40.0);
+            let (mut doc, root) = doc_with_tz("UTC");
+            let enter = WindowEvent::CursorMoved {
+                device_id: unsafe { std::mem::zeroed() },
+                position: winit::dpi::PhysicalPosition::new(20.0, 20.0),
+            };
+            assert!(
+                !feed_key(&mut dd, &enter, &mut doc, &root),
+                "a hover change must not mark the move handled"
+            );
+            assert!(dd.is_hovered, "the pointer is over the control");
+            let leave = WindowEvent::CursorLeft {
+                device_id: unsafe { std::mem::zeroed() },
+            };
+            feed_key(&mut dd, &leave, &mut doc, &root);
+            assert!(!dd.is_hovered, "CursorLeft clears the resting hover");
+        }
+
+        /// The open list flips above the control when opening below would leave
+        /// the host viewport and there is room above; hit-testing shares the
+        /// rect, so the flipped list is clickable where it is painted. The
+        /// viewport arrives either through the presence context at paint or
+        /// from the host via `set_viewport`; both routes are exercised.
+        fn open_list_flips_above_when_it_would_leave_the_viewport() {
+            let mut dd = Dropdown::new(opts(), "tz");
+            dd.rect = Rect::new(0.0, 700.0, 200.0, 740.0);
+            let n = opts().len();
+            let below = dd.list_rect(n);
+            assert!(
+                below.y0 >= dd.rect.y1,
+                "without a viewport the list opens below"
+            );
+            // Route 1: the paint pass sees the App's pushed window viewport.
+            let presence = PresenceCtx::default();
+            presence
+                .viewport
+                .set(Some(Rect::new(0.0, 0.0, 800.0, 760.0)));
+            let mut scene = Scene::new();
+            dd.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut TextRenderer::new(),
+                &Theme::dark(),
+                &presence,
+            );
+            assert_eq!(dd.viewport, Some(Rect::new(0.0, 0.0, 800.0, 760.0)));
+            // Route 2: a host inside a Row/Column hands it over explicitly.
+            let mut hosted =
+                Dropdown::new(opts(), "tz").with_viewport(Rect::new(0.0, 0.0, 800.0, 760.0));
+            hosted.rect = dd.rect;
+            assert_eq!(hosted.list_rect(n), dd.list_rect(n));
+            let flipped = dd.list_rect(n);
+            assert!(
+                flipped.y1 <= dd.rect.y0,
+                "the list opens above the control: {flipped:?} vs {:?}",
+                dd.rect
+            );
+            assert!(flipped.y0 >= 0.0, "and stays inside the viewport");
+            assert!((flipped.height() - below.height()).abs() < 1e-6);
+            assert_eq!(
+                dd.row_at(Point::new(10.0, flipped.y0 + ITEM_HEIGHT / 2.0), flipped, n),
+                Some(0),
+                "the first row is hit where it is painted"
+            );
+            // No room above either: stay below rather than run off the top.
+            dd.set_viewport(Rect::new(0.0, 690.0, 800.0, 760.0));
+            assert!((dd.list_rect(n).y0 - below.y0).abs() < 1e-6);
+        }
+
+        /// The dropdown is the fluid item in a row (F2-16): laid beside fixed
+        /// controls in a row too narrow for its `percent(100%)`, it gives the
+        /// room back, so its siblings keep their size and the trailing one is
+        /// still on screen instead of being pushed to zero width past the edge.
+        fn dropdown_in_a_row_yields_width_to_fixed_siblings() {
+            use crate::widget::{Button, Row};
+            let mut row = Row::new()
+                .no_wrap()
+                .push(Box::new(Button::new("left", "Left", None)))
+                .push(Box::new(Dropdown::new(opts(), "tz")))
+                .push(Box::new(Button::new("right", "Right", None)));
+            let theme = Theme::dark();
+            let mut taffy = TaffyTree::<()>::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let node = row.build_layout(&mut taffy, &theme, &mut node_map);
+            taffy
+                .compute_layout(
+                    node,
+                    Size {
+                        width: taffy::AvailableSpace::Definite(600.0),
+                        height: taffy::AvailableSpace::Definite(80.0),
+                    },
+                )
+                .unwrap();
+            row.apply_layout(&taffy, node, Point::ZERO);
+            let rects: Vec<Rect> = row.children().iter().map(|c| c.get_rect()).collect();
+            assert_eq!(rects.len(), 3);
+            let (left, dd, right) = (rects[0], rects[1], rects[2]);
+            assert!(
+                (left.width() - right.width()).abs() < 0.5 && left.width() > 0.0,
+                "the fixed buttons keep their size: {left:?} / {right:?}"
+            );
+            assert!(
+                dd.width() >= PAD_X + CHEVRON_W - 0.5,
+                "the dropdown keeps at least its chevron slot: {dd:?}"
+            );
+            assert!(
+                right.x1 <= 600.0 + 0.5,
+                "the trailing button stays inside the 600 px row: {right:?}"
+            );
+            assert!(
+                left.x1 <= dd.x0 + 0.5 && dd.x1 <= right.x0 + 0.5,
+                "row order without overlap: {left:?} {dd:?} {right:?}"
+            );
+            assert!(
+                (dd.height() - f64::from(theme.tokens.metrics.bar_height)).abs() < 0.5,
+                "the control is one bar tall: {dd:?}"
+            );
+        }
+
+        fn external_overlay_height_hugs_short_lists_and_caps_long_ones() {
+            let short = Dropdown::new(opts(), "tz");
+            assert_eq!(
+                short.open_overlay_height(),
+                CONTROL_HEIGHT + LIST_GAP + 4.0 * ITEM_HEIGHT
+            );
+
+            let long = Dropdown::new((0..100).map(|index| index.to_string()).collect(), "value");
+            assert_eq!(
+                long.open_overlay_height(),
+                CONTROL_HEIGHT + LIST_GAP + MAX_LIST_HEIGHT
+            );
+        }
+
+        losing_focus_closes_the_list();
+        open_dropdown_captures_pointer();
+        hover_changes_do_not_consume_the_move_and_cursor_left_clears_hover();
+        open_list_flips_above_when_it_would_leave_the_viewport();
+        dropdown_in_a_row_yields_width_to_fixed_siblings();
+        external_overlay_height_hugs_short_lists_and_caps_long_ones();
+    }
+
+    #[test]
+    fn commit_writes_minimal_crdt_diffs_and_binds_state() {
+        fn commit_creates_text_object_when_absent() {
+            // No `tz` key seeded: commit must create the Text object.
+            let mut dd = Dropdown::new(opts(), "tz");
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            dd.commit_value("Europe/Amsterdam", &mut doc, &root);
+            assert_eq!(
+                Dropdown::read_value(&doc, &root, "tz").as_deref(),
+                Some("Europe/Amsterdam")
+            );
+        }
+
+        fn repeated_selection_splices_the_diff_not_the_whole_value() {
+            // Committing by deleting the old value and reinserting the new one
+            // leaves a tombstone per character per selection, so a settings pane
+            // toggled back and forth bloats its document without bound.
+            let long: Vec<String> = (0..4)
+                .map(|i| format!("Europe/Amsterdam/very/long/option/label/number/{i}"))
+                .collect();
+            let mut dd = Dropdown::new(long.clone(), "tz");
+            let (mut doc, root) = doc_with_tz(&long[0]);
+            dd.sync(&mut doc, &root);
+            let baseline = doc.save().len();
+
+            // Alternate between two options that share a 46-char prefix.
+            for i in 0..60 {
+                dd.commit_value(&long[i % 2], &mut doc, &root);
+            }
+            let grown = doc.save().len() - baseline;
+
+            assert_eq!(
+                Dropdown::read_value(&doc, &root, "tz").as_deref(),
+                Some(long[1].as_str()),
+                "the last committed option must be what the document holds"
+            );
+            assert!(
+                grown < 8 * long[0].len(),
+                "60 selections grew the document by {grown} bytes for a {}-char label \
              — commit_value is rewriting the whole value",
-            long[0].len()
-        );
-    }
-
-    #[test]
-    fn recommitting_the_current_value_is_free() {
-        let mut dd = Dropdown::new(opts(), "tz");
-        let (mut doc, root) = doc_with_tz("Asia/Tokyo");
-        dd.sync(&mut doc, &root);
-        let before = doc.save().len();
-
-        for _ in 0..25 {
-            dd.commit_value("Asia/Tokyo", &mut doc, &root);
+                long[0].len()
+            );
         }
 
-        assert_eq!(
-            Dropdown::read_value(&doc, &root, "tz").as_deref(),
-            Some("Asia/Tokyo")
-        );
-        assert_eq!(
-            doc.save().len(),
-            before,
-            "re-selecting the already-selected option must not grow the document"
-        );
+        fn recommitting_the_current_value_is_free() {
+            let mut dd = Dropdown::new(opts(), "tz");
+            let (mut doc, root) = doc_with_tz("Asia/Tokyo");
+            dd.sync(&mut doc, &root);
+            let before = doc.save().len();
+
+            for _ in 0..25 {
+                dd.commit_value("Asia/Tokyo", &mut doc, &root);
+            }
+
+            assert_eq!(
+                Dropdown::read_value(&doc, &root, "tz").as_deref(),
+                Some("Asia/Tokyo")
+            );
+            assert_eq!(
+                doc.save().len(),
+                before,
+                "re-selecting the already-selected option must not grow the document"
+            );
+        }
+
+        fn local_state_binding_is_two_way_across_dropdowns() {
+            let state = crate::LocalState::new(String::from("UTC"));
+            let changes = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            let captured = std::rc::Rc::clone(&changes);
+            let mut first = Dropdown::from_state(opts(), &state)
+                .on_change(move |value| captured.borrow_mut().push(value.to_owned()));
+            let mut second = Dropdown::from_state(opts(), &state);
+            let mut document = AutoCommit::new();
+
+            state.set(String::from("Asia/Tokyo"));
+            Widget::sync(&mut first, &mut document, &automerge::ROOT);
+            Widget::sync(&mut second, &mut document, &automerge::ROOT);
+            assert_eq!(first.selected(), "Asia/Tokyo");
+            assert_eq!(second.selected(), "Asia/Tokyo");
+            assert!(changes.borrow().is_empty(), "model sync is not user intent");
+
+            assert!(Widget::perform_action(
+                &mut first,
+                &crate::a11y::Action::SetValue(String::from("Europe/Amsterdam")),
+                &mut document,
+                &automerge::ROOT,
+            ));
+            assert_eq!(state.get(), "Europe/Amsterdam");
+            assert_eq!(&*changes.borrow(), &["Europe/Amsterdam"]);
+            Widget::sync(&mut second, &mut document, &automerge::ROOT);
+            assert_eq!(second.selected(), "Europe/Amsterdam");
+
+            second.set_selected("America/New_York");
+            assert_eq!(state.get(), "America/New_York");
+            Widget::sync(&mut first, &mut document, &automerge::ROOT);
+            assert_eq!(first.selected(), "America/New_York");
+            assert_eq!(&*changes.borrow(), &["Europe/Amsterdam"]);
+        }
+
+        commit_creates_text_object_when_absent();
+        repeated_selection_splices_the_diff_not_the_whole_value();
+        recommitting_the_current_value_is_free();
+        local_state_binding_is_two_way_across_dropdowns();
     }
 
     #[test]
-    fn local_state_binding_is_two_way_across_dropdowns() {
-        let state = crate::LocalState::new(String::from("UTC"));
-        let changes = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-        let captured = std::rc::Rc::clone(&changes);
-        let mut first = Dropdown::from_state(opts(), &state)
-            .on_change(move |value| captured.borrow_mut().push(value.to_owned()));
-        let mut second = Dropdown::from_state(opts(), &state);
-        let mut document = AutoCommit::new();
+    fn dropdown_accessibility_semantics_and_disabled_state() {
+        fn semantic_actions_expand_collapse_and_reject_unknown_values() {
+            use crate::a11y::Action;
 
-        state.set(String::from("Asia/Tokyo"));
-        Widget::sync(&mut first, &mut document, &automerge::ROOT);
-        Widget::sync(&mut second, &mut document, &automerge::ROOT);
-        assert_eq!(first.selected(), "Asia/Tokyo");
-        assert_eq!(second.selected(), "Asia/Tokyo");
-        assert!(changes.borrow().is_empty(), "model sync is not user intent");
+            let mut dropdown = Dropdown::new(opts(), "tz");
+            let (mut document, root) = doc_with_tz("UTC");
+            Widget::sync(&mut dropdown, &mut document, &root);
 
-        assert!(Widget::perform_action(
-            &mut first,
-            &crate::a11y::Action::SetValue(String::from("Europe/Amsterdam")),
-            &mut document,
-            &automerge::ROOT,
-        ));
-        assert_eq!(state.get(), "Europe/Amsterdam");
-        assert_eq!(&*changes.borrow(), &["Europe/Amsterdam"]);
-        Widget::sync(&mut second, &mut document, &automerge::ROOT);
-        assert_eq!(second.selected(), "Europe/Amsterdam");
+            assert!(Widget::perform_action(
+                &mut dropdown,
+                &Action::Expand,
+                &mut document,
+                &root,
+            ));
+            assert!(dropdown.is_open());
+            assert!(Widget::perform_action(
+                &mut dropdown,
+                &Action::Collapse,
+                &mut document,
+                &root,
+            ));
+            assert!(!dropdown.is_open());
+            assert!(!Widget::perform_action(
+                &mut dropdown,
+                &Action::SetValue(String::from("not an option")),
+                &mut document,
+                &root,
+            ));
+            assert_eq!(dropdown.selected(), "UTC");
+            assert_eq!(
+                Dropdown::read_value(&document, &root, "tz").as_deref(),
+                Some("UTC")
+            );
+        }
 
-        second.set_selected("America/New_York");
-        assert_eq!(state.get(), "America/New_York");
-        Widget::sync(&mut first, &mut document, &automerge::ROOT);
-        assert_eq!(first.selected(), "America/New_York");
-        assert_eq!(&*changes.borrow(), &["Europe/Amsterdam"]);
-    }
+        fn with_enabled_false_is_reported_by_is_enabled() {
+            let dd = Dropdown::new(opts(), "tz").with_enabled(false);
+            assert!(!Widget::is_enabled(&dd));
+            assert!(
+                Widget::is_enabled(&Dropdown::new(opts(), "tz")),
+                "default is enabled"
+            );
+        }
 
-    #[test]
-    fn semantic_actions_expand_collapse_and_reject_unknown_values() {
-        use crate::a11y::Action;
+        fn disabled_dropdown_does_not_open() {
+            let mut dd = Dropdown::new(opts(), "tz").with_enabled(false);
+            let (mut doc, root) = doc_with_tz("UTC");
+            dd.sync(&mut doc, &root);
+            dd.set_focus(true);
+            let handled = feed_key(
+                &mut dd,
+                &key(Key::Named(NamedKey::ArrowDown), None),
+                &mut doc,
+                &root,
+            );
+            assert!(!dd.is_open(), "disabled dropdown must not open");
+            assert!(!handled, "disabled dropdown must not swallow input");
+            assert_eq!(
+                dd.selected(),
+                "UTC",
+                "disabled dropdown must not change the value"
+            );
+        }
 
-        let mut dropdown = Dropdown::new(opts(), "tz");
-        let (mut document, root) = doc_with_tz("UTC");
-        Widget::sync(&mut dropdown, &mut document, &root);
+        fn accessibility_reports_combobox_role_value_and_collapsed() {
+            use crate::a11y::Role;
+            let mut dd = Dropdown::new(opts(), "tz");
+            let (mut doc, root) = doc_with_tz("Asia/Tokyo");
+            dd.sync(&mut doc, &root);
+            let node = Widget::accessibility(&dd).expect("dropdown is not presentational");
+            assert_eq!(node.role, Role::ComboBox);
+            assert_eq!(node.name.as_deref(), Some("Asia/Tokyo"));
+            assert_eq!(node.value.as_deref(), Some("Asia/Tokyo"));
+            assert_eq!(
+                node.state.expanded,
+                Some(false),
+                "closed dropdown is collapsed"
+            );
+            assert!(node.state.focusable);
+            assert!(!node.state.disabled);
+        }
 
-        assert!(Widget::perform_action(
-            &mut dropdown,
-            &Action::Expand,
-            &mut document,
-            &root,
-        ));
-        assert!(dropdown.is_open());
-        assert!(Widget::perform_action(
-            &mut dropdown,
-            &Action::Collapse,
-            &mut document,
-            &root,
-        ));
-        assert!(!dropdown.is_open());
-        assert!(!Widget::perform_action(
-            &mut dropdown,
-            &Action::SetValue(String::from("not an option")),
-            &mut document,
-            &root,
-        ));
-        assert_eq!(dropdown.selected(), "UTC");
-        assert_eq!(
-            Dropdown::read_value(&document, &root, "tz").as_deref(),
-            Some("UTC")
-        );
-    }
+        fn accessibility_unselected_uses_placeholder_name_and_no_value() {
+            use crate::a11y::Role;
+            let dd = Dropdown::new(opts(), "tz").with_placeholder("Pick a zone");
+            let node = Widget::accessibility(&dd).unwrap();
+            assert_eq!(node.role, Role::ComboBox);
+            assert_eq!(
+                node.name.as_deref(),
+                Some("Pick a zone"),
+                "placeholder is the name when unset"
+            );
+            assert_eq!(node.value, None, "no value until something is selected");
+        }
 
-    #[test]
-    fn open_builder_aligns_highlight_to_selection_on_sync() {
-        let mut dd = Dropdown::new(opts(), "tz").open();
-        let (mut doc, root) = doc_with_tz("Asia/Tokyo");
-        dd.sync(&mut doc, &root);
-        assert!(dd.is_open());
-        assert_eq!(
-            dd.highlight_index(),
-            3,
-            "highlight tracks the selected option"
-        );
-    }
+        fn accessibility_reflects_open_and_disabled() {
+            let mut dd = Dropdown::new(opts(), "tz");
+            let (mut doc, root) = doc_with_tz("UTC");
+            dd.sync(&mut doc, &root);
+            dd.set_focus(true);
+            dd.do_open();
+            let node = Widget::accessibility(&dd).unwrap();
+            assert_eq!(node.state.expanded, Some(true), "open dropdown is expanded");
+            assert!(node.state.focused);
 
-    #[test]
-    fn with_enabled_false_is_reported_by_is_enabled() {
-        let dd = Dropdown::new(opts(), "tz").with_enabled(false);
-        assert!(!Widget::is_enabled(&dd));
-        assert!(
-            Widget::is_enabled(&Dropdown::new(opts(), "tz")),
-            "default is enabled"
-        );
-    }
+            let dd2 = Dropdown::new(opts(), "tz").with_enabled(false);
+            let node2 = Widget::accessibility(&dd2).unwrap();
+            assert!(node2.state.disabled);
+        }
 
-    #[test]
-    fn disabled_dropdown_does_not_open() {
-        let mut dd = Dropdown::new(opts(), "tz").with_enabled(false);
-        let (mut doc, root) = doc_with_tz("UTC");
-        dd.sync(&mut doc, &root);
-        dd.set_focus(true);
-        let handled = feed_key(
-            &mut dd,
-            &key(Key::Named(NamedKey::ArrowDown), None),
-            &mut doc,
-            &root,
-        );
-        assert!(!dd.is_open(), "disabled dropdown must not open");
-        assert!(!handled, "disabled dropdown must not swallow input");
-        assert_eq!(
-            dd.selected(),
-            "UTC",
-            "disabled dropdown must not change the value"
-        );
-    }
+        fn action_binding_owns_accessibility_selection() {
+            let mut dropdown = Dropdown::new(opts(), "legacy")
+                .on_change(|_| panic!("legacy callback must be suppressed"))
+                .on_action(crate::widget::test_string_action_binding());
+            let mut doc = AutoCommit::new();
+            Widget::refresh_control_action_availability(
+                &mut dropdown,
+                &std::collections::HashSet::new(),
+            );
+            assert!(!Widget::is_enabled(&dropdown));
+            Widget::refresh_control_action_availability(
+                &mut dropdown,
+                &std::collections::HashSet::from([tilo_actions::ActionAddress::new(
+                    "test:control",
+                    "set",
+                )]),
+            );
+            assert!(Widget::is_enabled(&dropdown));
+            assert!(Widget::perform_action(
+                &mut dropdown,
+                &crate::a11y::Action::SetValue("Asia/Tokyo".into()),
+                &mut doc,
+                &automerge::ROOT
+            ));
+            assert!(doc.get(&automerge::ROOT, "legacy").unwrap().is_none());
+            assert_eq!(
+                Widget::take_control_invocation(&mut dropdown)
+                    .unwrap()
+                    .arguments["value"],
+                "Asia/Tokyo"
+            );
+        }
 
-    #[test]
-    fn accessibility_reports_combobox_role_value_and_collapsed() {
-        use crate::a11y::Role;
-        let mut dd = Dropdown::new(opts(), "tz");
-        let (mut doc, root) = doc_with_tz("Asia/Tokyo");
-        dd.sync(&mut doc, &root);
-        let node = Widget::accessibility(&dd).expect("dropdown is not presentational");
-        assert_eq!(node.role, Role::ComboBox);
-        assert_eq!(node.name.as_deref(), Some("Asia/Tokyo"));
-        assert_eq!(node.value.as_deref(), Some("Asia/Tokyo"));
-        assert_eq!(
-            node.state.expanded,
-            Some(false),
-            "closed dropdown is collapsed"
-        );
-        assert!(node.state.focusable);
-        assert!(!node.state.disabled);
-    }
-
-    #[test]
-    fn accessibility_unselected_uses_placeholder_name_and_no_value() {
-        use crate::a11y::Role;
-        let dd = Dropdown::new(opts(), "tz").with_placeholder("Pick a zone");
-        let node = Widget::accessibility(&dd).unwrap();
-        assert_eq!(node.role, Role::ComboBox);
-        assert_eq!(
-            node.name.as_deref(),
-            Some("Pick a zone"),
-            "placeholder is the name when unset"
-        );
-        assert_eq!(node.value, None, "no value until something is selected");
-    }
-
-    #[test]
-    fn accessibility_reflects_open_and_disabled() {
-        let mut dd = Dropdown::new(opts(), "tz");
-        let (mut doc, root) = doc_with_tz("UTC");
-        dd.sync(&mut doc, &root);
-        dd.set_focus(true);
-        dd.do_open();
-        let node = Widget::accessibility(&dd).unwrap();
-        assert_eq!(node.state.expanded, Some(true), "open dropdown is expanded");
-        assert!(node.state.focused);
-
-        let dd2 = Dropdown::new(opts(), "tz").with_enabled(false);
-        let node2 = Widget::accessibility(&dd2).unwrap();
-        assert!(node2.state.disabled);
-    }
-
-    #[test]
-    fn external_overlay_height_hugs_short_lists_and_caps_long_ones() {
-        let short = Dropdown::new(opts(), "tz");
-        assert_eq!(
-            short.open_overlay_height(),
-            CONTROL_HEIGHT + LIST_GAP + 4.0 * ITEM_HEIGHT
-        );
-
-        let long = Dropdown::new((0..100).map(|index| index.to_string()).collect(), "value");
-        assert_eq!(
-            long.open_overlay_height(),
-            CONTROL_HEIGHT + LIST_GAP + MAX_LIST_HEIGHT
-        );
-    }
-
-    #[test]
-    fn action_binding_owns_accessibility_selection() {
-        let mut dropdown = Dropdown::new(opts(), "legacy")
-            .on_change(|_| panic!("legacy callback must be suppressed"))
-            .on_action(crate::widget::test_string_action_binding());
-        let mut doc = AutoCommit::new();
-        Widget::refresh_control_action_availability(
-            &mut dropdown,
-            &std::collections::HashSet::new(),
-        );
-        assert!(!Widget::is_enabled(&dropdown));
-        Widget::refresh_control_action_availability(
-            &mut dropdown,
-            &std::collections::HashSet::from([tilo_actions::ActionAddress::new(
-                "test:control",
-                "set",
-            )]),
-        );
-        assert!(Widget::is_enabled(&dropdown));
-        assert!(Widget::perform_action(
-            &mut dropdown,
-            &crate::a11y::Action::SetValue("Asia/Tokyo".into()),
-            &mut doc,
-            &automerge::ROOT
-        ));
-        assert!(doc.get(&automerge::ROOT, "legacy").unwrap().is_none());
-        assert_eq!(
-            Widget::take_control_invocation(&mut dropdown)
-                .unwrap()
-                .arguments["value"],
-            "Asia/Tokyo"
-        );
+        semantic_actions_expand_collapse_and_reject_unknown_values();
+        with_enabled_false_is_reported_by_is_enabled();
+        disabled_dropdown_does_not_open();
+        accessibility_reports_combobox_role_value_and_collapsed();
+        accessibility_unselected_uses_placeholder_name_and_no_value();
+        accessibility_reflects_open_and_disabled();
+        action_binding_owns_accessibility_selection();
     }
 }

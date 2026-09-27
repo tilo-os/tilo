@@ -844,43 +844,66 @@ fn is_safe_endpoint(endpoint: &str, location: EndpointLocation) -> bool {
 mod tests {
     use super::*;
 
+    /// The device runtime is OpenAI-compatible and plainly local, hosted profiles hold only a vault
+    /// reference, a hosted HTTP endpoint is rejected but loopback HTTP is not, and a bad default is
+    /// not active.
     #[test]
-    fn local_runtime_profile_is_openai_compatible_and_plainly_local() {
-        let profile =
-            ProviderProfile::local_runtime(Some("/run/user/1000/tilo/models/a/api.sock".into()));
-        assert_eq!(profile.protocol, ProviderProtocol::OpenAiCompatible);
-        assert_eq!(profile.location, EndpointLocation::ThisDevice);
-        assert!(profile.is_device_local());
-        assert!(profile.credential.is_none());
-    }
-
-    #[test]
-    fn hosted_profiles_hold_only_a_vault_reference() {
-        for protocol in ProviderProtocol::ALL {
-            let profile = ProviderProfile::hosted(*protocol);
-            let json = serde_json::to_string(&profile).unwrap();
-            assert!(json.contains("tilo.secret-service"));
-            assert!(json.contains("agent-provider/"));
-            assert!(!json.contains("sk-ant-"));
-        }
-    }
-
-    #[test]
-    fn hosted_http_endpoint_is_rejected_but_loopback_http_is_not() {
-        let mut profile = ProviderProfile::hosted(ProviderProtocol::Anthropic);
-        profile.endpoint = "http://api.example.test".into();
-        let config = ProviderConfig {
-            profiles: vec![profile],
-            ..ProviderConfig::default()
-        };
-        assert!(!config.validation_errors().is_empty());
-        let local = ProviderConfig {
-            profiles: vec![ProviderProfile::local_runtime(Some(
+    fn provider_profiles_are_plainly_local_or_vault_backed_https() {
+        // Phase: local_runtime_profile_is_openai_compatible_and_plainly_local.
+        {
+            let profile = ProviderProfile::local_runtime(Some(
                 "/run/user/1000/tilo/models/a/api.sock".into(),
-            ))],
-            ..ProviderConfig::default()
-        };
-        assert!(local.validation_errors().is_empty());
+            ));
+            assert_eq!(profile.protocol, ProviderProtocol::OpenAiCompatible);
+            assert_eq!(profile.location, EndpointLocation::ThisDevice);
+            assert!(profile.is_device_local());
+            assert!(profile.credential.is_none());
+        }
+
+        // Phase: hosted_profiles_hold_only_a_vault_reference.
+        {
+            for protocol in ProviderProtocol::ALL {
+                let profile = ProviderProfile::hosted(*protocol);
+                let json = serde_json::to_string(&profile).unwrap();
+                assert!(json.contains("tilo.secret-service"));
+                assert!(json.contains("agent-provider/"));
+                assert!(!json.contains("sk-ant-"));
+            }
+        }
+
+        // Phase: hosted_http_endpoint_is_rejected_but_loopback_http_is_not.
+        {
+            let mut profile = ProviderProfile::hosted(ProviderProtocol::Anthropic);
+            profile.endpoint = "http://api.example.test".into();
+            let config = ProviderConfig {
+                profiles: vec![profile],
+                ..ProviderConfig::default()
+            };
+            assert!(!config.validation_errors().is_empty());
+            let local = ProviderConfig {
+                profiles: vec![ProviderProfile::local_runtime(Some(
+                    "/run/user/1000/tilo/models/a/api.sock".into(),
+                ))],
+                ..ProviderConfig::default()
+            };
+            assert!(local.validation_errors().is_empty());
+        }
+
+        // Phase: bad_default_is_not_active.
+        {
+            let profile = ProviderProfile::hosted(ProviderProtocol::Anthropic);
+            let config = ProviderConfig {
+                default_profile: Some("gone".into()),
+                profiles: vec![profile],
+            };
+            assert!(config.active_profile().is_none());
+            assert!(
+                config
+                    .validation_errors()
+                    .iter()
+                    .any(|issue| issue.profile_id == "default")
+            );
+        }
     }
 
     #[test]
@@ -981,22 +1004,6 @@ mod tests {
         .save_at(&path)
         .unwrap();
         assert!(LocalRuntime::load_at(&path).profile.is_none());
-    }
-
-    #[test]
-    fn bad_default_is_not_active() {
-        let profile = ProviderProfile::hosted(ProviderProtocol::Anthropic);
-        let config = ProviderConfig {
-            default_profile: Some("gone".into()),
-            profiles: vec![profile],
-        };
-        assert!(config.active_profile().is_none());
-        assert!(
-            config
-                .validation_errors()
-                .iter()
-                .any(|issue| issue.profile_id == "default")
-        );
     }
 
     #[test]

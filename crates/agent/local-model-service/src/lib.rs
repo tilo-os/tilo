@@ -1143,261 +1143,286 @@ mod tests {
         }
     }
 
+    /// A content-addressed fetch resumes and promotes atomically, and a verified fetch publishes each
+    /// confirmed byte count.
     #[test]
-    fn vllm_serves_the_catalog_id_on_a_socket_within_the_signed_context_and_memory_share() {
-        let mut release = model(b"weights");
-        release.id = "qwen/qwen3-4b-awq".into();
-        release.context_window = 8192;
-        let args = runtime_args(RuntimeEngine::Vllm, &release, "/models/model");
-        let after = |flag: &str| {
-            args.iter()
-                .position(|arg| arg == flag)
-                .and_then(|index| args.get(index + 1))
-                .map(String::as_str)
-        };
-        assert_eq!(args.get(1).map(String::as_str), Some("/models/model"));
-        assert_eq!(after("--served-model-name"), Some("qwen/qwen3-4b-awq"));
-        assert_eq!(after("--max-model-len"), Some("8192"));
-        assert_eq!(after("--uds"), Some("/run/tilo-model/api.sock"));
-        assert!(!args.iter().any(|arg| arg == "--host" || arg == "--port"));
-        assert_eq!(after("--gpu-memory-utilization"), None);
-        release.accelerator_memory_percent = Some(70);
-        let args = runtime_args(RuntimeEngine::Vllm, &release, "/models/model");
-        assert!(
-            args.windows(2)
-                .any(|pair| pair == ["--gpu-memory-utilization", "0.70"])
-        );
+    fn model_fetches_resume_and_publish_only_verified_bytes() {
+        // Phase: content_addressed_fetch_resumes_and_promotes_atomically.
+        {
+            let bytes = b"a local model";
+            let dir = tempfile::tempdir().unwrap();
+            let item = artifact(bytes);
+            let partial = dir
+                .path()
+                .join("partial")
+                .join(format!("{}.part", item.sha256));
+            fs::create_dir_all(partial.parent().unwrap()).unwrap();
+            fs::write(&partial, &bytes[..3]).unwrap();
+            let mut service =
+                LocalModelService::open(dir.path(), serving(bytes), Supervisor::default()).unwrap();
+            let object = service.fetch_verified(&item).unwrap();
+            assert_eq!(fs::read(object).unwrap(), bytes);
+            assert_eq!(service.transport.starts[0].1, 3);
+            assert!(!partial.exists());
+        }
+
+        // Phase: verified_fetch_publishes_each_confirmed_byte_count.
+        {
+            let bytes = b"chunked";
+            let dir = tempfile::tempdir().unwrap();
+            let item = artifact(bytes);
+            let mut service =
+                LocalModelService::open(dir.path(), serving(bytes), Supervisor::default()).unwrap();
+            let mut progress = Vec::new();
+            service
+                .fetch_verified_with_progress(&item, &mut |event| progress.push(event))
+                .unwrap();
+            assert_eq!(
+                progress,
+                vec![
+                    TransferEvent::Received(0),
+                    TransferEvent::Received(2),
+                    TransferEvent::Received(bytes.len() as u64),
+                    TransferEvent::Verifying,
+                ]
+            );
+        }
     }
 
+    /// A snapshot is fetched file by file and assembled from verified objects; a tampered file never
+    /// becomes part of it; a snapshot without weights or beyond its signed size is refused.
     #[test]
-    fn content_addressed_fetch_resumes_and_promotes_atomically() {
-        let bytes = b"a local model";
-        let dir = tempfile::tempdir().unwrap();
-        let item = artifact(bytes);
-        let partial = dir
-            .path()
-            .join("partial")
-            .join(format!("{}.part", item.sha256));
-        fs::create_dir_all(partial.parent().unwrap()).unwrap();
-        fs::write(&partial, &bytes[..3]).unwrap();
-        let mut service =
-            LocalModelService::open(dir.path(), serving(bytes), Supervisor::default()).unwrap();
-        let object = service.fetch_verified(&item).unwrap();
-        assert_eq!(fs::read(object).unwrap(), bytes);
-        assert_eq!(service.transport.starts[0].1, 3);
-        assert!(!partial.exists());
-    }
-
-    #[test]
-    fn verified_fetch_publishes_each_confirmed_byte_count() {
-        let bytes = b"chunked";
-        let dir = tempfile::tempdir().unwrap();
-        let item = artifact(bytes);
-        let mut service =
-            LocalModelService::open(dir.path(), serving(bytes), Supervisor::default()).unwrap();
-        let mut progress = Vec::new();
-        service
-            .fetch_verified_with_progress(&item, &mut |event| progress.push(event))
-            .unwrap();
-        assert_eq!(
-            progress,
-            vec![
-                TransferEvent::Received(0),
-                TransferEvent::Received(2),
-                TransferEvent::Received(bytes.len() as u64),
-                TransferEvent::Verifying,
-            ]
-        );
-    }
-
-    #[test]
-    fn a_snapshot_is_fetched_file_by_file_and_assembled_from_verified_objects() {
-        let (release, objects) = snapshot(&[
-            ("config.json", b"{}"),
-            ("tokenizer.json", b"{\"t\":1}"),
-            ("weights/model-00001-of-00001.safetensors", b"weights"),
-        ]);
-        let dir = tempfile::tempdir().unwrap();
-        let mut service =
-            LocalModelService::open(dir.path(), objects, Supervisor::default()).unwrap();
-        service
-            .install_with_runtime_progress(&runtime(), &release)
-            .unwrap();
-        assert_eq!(service.supervisor.pulled.len(), 1);
-        assert!(service.supervisor.pulled[0].contains("@sha256:"));
-        let materialized = service.model_path(&release).unwrap();
-        assert!(materialized.is_dir());
-        assert_eq!(fs::read(materialized.join("config.json")).unwrap(), b"{}");
-        assert_eq!(
-            fs::read(materialized.join("weights/model-00001-of-00001.safetensors")).unwrap(),
-            b"weights"
-        );
-        let requested: Vec<&str> = service
-            .transport
-            .starts
-            .iter()
-            .map(|(url, _)| url.as_str())
-            .collect();
-        assert_eq!(requested.len(), 3);
-        assert!(
-            requested
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each case keeps its original fixture and assertions"
+    )]
+    fn model_snapshots_extract_only_within_their_signed_shape() {
+        // Phase: a_snapshot_is_fetched_file_by_file_and_assembled_from_verified_objects.
+        {
+            let (release, objects) = snapshot(&[
+                ("config.json", b"{}"),
+                ("tokenizer.json", b"{\"t\":1}"),
+                ("weights/model-00001-of-00001.safetensors", b"weights"),
+            ]);
+            let dir = tempfile::tempdir().unwrap();
+            let mut service =
+                LocalModelService::open(dir.path(), objects, Supervisor::default()).unwrap();
+            service
+                .install_with_runtime_progress(&runtime(), &release)
+                .unwrap();
+            assert_eq!(service.supervisor.pulled.len(), 1);
+            assert!(service.supervisor.pulled[0].contains("@sha256:"));
+            let materialized = service.model_path(&release).unwrap();
+            assert!(materialized.is_dir());
+            assert_eq!(fs::read(materialized.join("config.json")).unwrap(), b"{}");
+            assert_eq!(
+                fs::read(materialized.join("weights/model-00001-of-00001.safetensors")).unwrap(),
+                b"weights"
+            );
+            let requested: Vec<&str> = service
+                .transport
+                .starts
                 .iter()
-                .all(|url| url.starts_with("https://huggingface.co/"))
-        );
-        assert_eq!(
-            service.state.models["tiny"].status,
-            LocalModelStatus::Installed
-        );
-    }
+                .map(|(url, _)| url.as_str())
+                .collect();
+            assert_eq!(requested.len(), 3);
+            assert!(
+                requested
+                    .iter()
+                    .all(|url| url.starts_with("https://huggingface.co/"))
+            );
+            assert_eq!(
+                service.state.models["tiny"].status,
+                LocalModelStatus::Installed
+            );
+        }
 
-    #[test]
-    fn a_tampered_file_never_becomes_part_of_a_snapshot() {
-        let (release, mut objects) = snapshot(&[
-            ("config.json", b"{}"),
-            ("tokenizer.json", b"{}"),
-            ("model.safetensors", b"weights"),
-        ]);
-        for bytes in objects.bytes.values_mut() {
-            if bytes == b"weights" {
-                *bytes = b"tampered".to_vec();
+        // Phase: a_tampered_file_never_becomes_part_of_a_snapshot.
+        {
+            let (release, mut objects) = snapshot(&[
+                ("config.json", b"{}"),
+                ("tokenizer.json", b"{}"),
+                ("model.safetensors", b"weights"),
+            ]);
+            for bytes in objects.bytes.values_mut() {
+                if bytes == b"weights" {
+                    *bytes = b"tampered".to_vec();
+                }
             }
+            let dir = tempfile::tempdir().unwrap();
+            let mut service =
+                LocalModelService::open(dir.path(), objects, Supervisor::default()).unwrap();
+            assert!(service.install_model(&release).is_err());
+            assert!(!service.model_path(&release).unwrap().exists());
         }
-        let dir = tempfile::tempdir().unwrap();
-        let mut service =
-            LocalModelService::open(dir.path(), objects, Supervisor::default()).unwrap();
-        assert!(service.install_model(&release).is_err());
-        assert!(!service.model_path(&release).unwrap().exists());
+
+        // Phase: a_snapshot_without_weights_or_beyond_its_signed_size_is_refused.
+        {
+            let (release, objects) = snapshot(&[("config.json", b"{}"), ("tokenizer.json", b"{}")]);
+            let dir = tempfile::tempdir().unwrap();
+            let mut service =
+                LocalModelService::open(dir.path(), objects, Supervisor::default()).unwrap();
+            assert!(matches!(
+                service.install_model(&release),
+                Err(ServiceError::InvalidSnapshotLayout)
+            ));
+            assert!(!service.model_path(&release).unwrap().exists());
+
+            let (mut release, objects) = snapshot(&[
+                ("config.json", b"{}"),
+                ("tokenizer.json", b"{}"),
+                ("model.safetensors", b"weights"),
+            ]);
+            release.installed_size_bytes = 4;
+            let dir = tempfile::tempdir().unwrap();
+            let mut service =
+                LocalModelService::open(dir.path(), objects, Supervisor::default()).unwrap();
+            assert!(matches!(
+                service.install_model(&release),
+                Err(ServiceError::SnapshotTooLarge)
+            ));
+        }
     }
 
+    /// Acceptance is pinned to the exact model release, removal stops the service and keeps objects
+    /// another model holds, a runtime image must name its signed manifest, and vLLM serves the
+    /// catalog id only through its socket within the signed context and memory share.
     #[test]
-    fn a_snapshot_without_weights_or_beyond_its_signed_size_is_refused() {
-        let (release, objects) = snapshot(&[("config.json", b"{}"), ("tokenizer.json", b"{}")]);
-        let dir = tempfile::tempdir().unwrap();
-        let mut service =
-            LocalModelService::open(dir.path(), objects, Supervisor::default()).unwrap();
-        assert!(matches!(
-            service.install_model(&release),
-            Err(ServiceError::InvalidSnapshotLayout)
-        ));
-        assert!(!service.model_path(&release).unwrap().exists());
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each case keeps its original fixture and assertions"
+    )]
+    fn the_installed_model_is_pinned_supervised_and_launched_by_digest() {
+        // Phase: acceptance_is_pinned_to_the_exact_model_release.
+        {
+            let bytes = b"licensed";
+            let dir = tempfile::tempdir().unwrap();
+            let mut licensed = model(bytes);
+            licensed.requires_acceptance = true;
+            let mut service =
+                LocalModelService::open(dir.path(), serving(bytes), Supervisor::default()).unwrap();
+            assert!(matches!(
+                service.queue_install(&licensed),
+                Err(ServiceError::LicenseNotAccepted(_))
+            ));
+            service.record_license_acceptance(&licensed).unwrap();
+            service.queue_install(&licensed).unwrap();
+            licensed.version = "2".into();
+            assert!(matches!(
+                service.queue_install(&licensed),
+                Err(ServiceError::LicenseNotAccepted(_))
+            ));
+        }
 
-        let (mut release, objects) = snapshot(&[
-            ("config.json", b"{}"),
-            ("tokenizer.json", b"{}"),
-            ("model.safetensors", b"weights"),
-        ]);
-        release.installed_size_bytes = 4;
-        let dir = tempfile::tempdir().unwrap();
-        let mut service =
-            LocalModelService::open(dir.path(), objects, Supervisor::default()).unwrap();
-        assert!(matches!(
-            service.install_model(&release),
-            Err(ServiceError::SnapshotTooLarge)
-        ));
-    }
-
-    #[test]
-    fn a_started_model_is_reached_only_through_its_socket() {
-        let (release, objects) = snapshot(&[
-            ("config.json", b"{}"),
-            ("tokenizer.json", b"{}"),
-            ("model.safetensors", b"weights"),
-        ]);
-        let dir = tempfile::tempdir().unwrap();
-        let mut service =
-            LocalModelService::open(dir.path(), objects, Supervisor::default()).unwrap();
-        service.install_model(&release).unwrap();
-        let sockets = dir.path().join("run");
-        let endpoint = service.start(&runtime(), &release, &sockets).unwrap();
-        assert_eq!(endpoint.socket, sockets.join(SOCKET_NAME));
-        let command = service.supervisor.command.clone().unwrap();
-        assert_eq!(command.socket_dir, sockets);
-        assert!(command.runtime_image.contains("@sha256:"));
-        assert!(matches!(
-            service.start(&runtime(), &release, Path::new("relative")),
-            Err(ServiceError::InvalidEndpoint)
-        ));
-    }
-
-    #[test]
-    fn a_runtime_whose_image_names_another_manifest_is_refused() {
-        let mut runtime = runtime();
-        runtime.release.oci_image = format!("docker.io/vllm/vllm-openai@sha256:{}", "d".repeat(64));
-        assert!(matches!(
-            runtime.validate(),
-            Err(ServiceError::RuntimeNotAccepted)
-        ));
-    }
-
-    #[test]
-    fn acceptance_is_pinned_to_the_exact_model_release() {
-        let bytes = b"licensed";
-        let dir = tempfile::tempdir().unwrap();
-        let mut licensed = model(bytes);
-        licensed.requires_acceptance = true;
-        let mut service =
-            LocalModelService::open(dir.path(), serving(bytes), Supervisor::default()).unwrap();
-        assert!(matches!(
-            service.queue_install(&licensed),
-            Err(ServiceError::LicenseNotAccepted(_))
-        ));
-        service.record_license_acceptance(&licensed).unwrap();
-        service.queue_install(&licensed).unwrap();
-        licensed.version = "2".into();
-        assert!(matches!(
-            service.queue_install(&licensed),
-            Err(ServiceError::LicenseNotAccepted(_))
-        ));
-    }
-
-    #[test]
-    fn remove_stops_the_service_and_keeps_objects_another_model_holds() {
-        let (release, objects) = snapshot(&[
-            ("config.json", b"{}"),
-            ("tokenizer.json", b"{\"tok\":1}"),
-            ("model.safetensors", b"weights"),
-        ]);
-        let mut sibling = release.clone();
-        sibling.id = "sibling".into();
-        if let ModelArtifact::HfSnapshot { files } = &mut sibling.artifact {
-            files.retain(|file| file.path != "tokenizer.json");
-            files.push(SnapshotFile {
-                path: "tokenizer_config.json".into(),
-                artifact: files[0].artifact.clone(),
+        // Phase: remove_stops_the_service_and_keeps_objects_another_model_holds.
+        {
+            let (release, objects) = snapshot(&[
+                ("config.json", b"{}"),
+                ("tokenizer.json", b"{\"tok\":1}"),
+                ("model.safetensors", b"weights"),
+            ]);
+            let mut sibling = release.clone();
+            sibling.id = "sibling".into();
+            if let ModelArtifact::HfSnapshot { files } = &mut sibling.artifact {
+                files.retain(|file| file.path != "tokenizer.json");
+                files.push(SnapshotFile {
+                    path: "tokenizer_config.json".into(),
+                    artifact: files[0].artifact.clone(),
+                });
+            }
+            let dir = tempfile::tempdir().unwrap();
+            let mut service =
+                LocalModelService::open(dir.path(), objects, Supervisor::default()).unwrap();
+            service.install_model(&release).unwrap();
+            service.install_model(&sibling).unwrap();
+            service.state.models.get_mut("tiny").unwrap().process = Some(ProcessHandle {
+                id: "active".into(),
             });
+            service.remove("tiny").unwrap();
+            assert_eq!(service.supervisor.stopped, ["active"]);
+            assert!(!service.model_path(&release).unwrap().exists());
+            assert!(service.model_path(&sibling).unwrap().is_dir());
+            let ModelArtifact::HfSnapshot { files } = &release.artifact else {
+                panic!("snapshot fixture");
+            };
+            let object = |path: &str| {
+                let file = files.iter().find(|file| file.path == path).unwrap();
+                service.object_path(&file.artifact.sha256).unwrap()
+            };
+            assert!(
+                object("model.safetensors").exists(),
+                "still held by the sibling"
+            );
+            assert!(
+                !object("tokenizer.json").exists(),
+                "held by the removed model only"
+            );
+            let reopened =
+                LocalModelService::open(dir.path(), serving(b""), Supervisor::default()).unwrap();
+            assert_eq!(
+                reopened.state.models.keys().collect::<Vec<_>>(),
+                ["sibling"]
+            );
         }
-        let dir = tempfile::tempdir().unwrap();
-        let mut service =
-            LocalModelService::open(dir.path(), objects, Supervisor::default()).unwrap();
-        service.install_model(&release).unwrap();
-        service.install_model(&sibling).unwrap();
-        service.state.models.get_mut("tiny").unwrap().process = Some(ProcessHandle {
-            id: "active".into(),
-        });
-        service.remove("tiny").unwrap();
-        assert_eq!(service.supervisor.stopped, ["active"]);
-        assert!(!service.model_path(&release).unwrap().exists());
-        assert!(service.model_path(&sibling).unwrap().is_dir());
-        let ModelArtifact::HfSnapshot { files } = &release.artifact else {
-            panic!("snapshot fixture");
-        };
-        let object = |path: &str| {
-            let file = files.iter().find(|file| file.path == path).unwrap();
-            service.object_path(&file.artifact.sha256).unwrap()
-        };
-        assert!(
-            object("model.safetensors").exists(),
-            "still held by the sibling"
-        );
-        assert!(
-            !object("tokenizer.json").exists(),
-            "held by the removed model only"
-        );
-        let reopened =
-            LocalModelService::open(dir.path(), serving(b""), Supervisor::default()).unwrap();
-        assert_eq!(
-            reopened.state.models.keys().collect::<Vec<_>>(),
-            ["sibling"]
-        );
+
+        // Phase: a_runtime_whose_image_names_another_manifest_is_refused.
+        {
+            let mut runtime = runtime();
+            runtime.release.oci_image =
+                format!("docker.io/vllm/vllm-openai@sha256:{}", "d".repeat(64));
+            assert!(matches!(
+                runtime.validate(),
+                Err(ServiceError::RuntimeNotAccepted)
+            ));
+        }
+
+        // Phase: a_started_model_is_reached_only_through_its_socket.
+        {
+            let (release, objects) = snapshot(&[
+                ("config.json", b"{}"),
+                ("tokenizer.json", b"{}"),
+                ("model.safetensors", b"weights"),
+            ]);
+            let dir = tempfile::tempdir().unwrap();
+            let mut service =
+                LocalModelService::open(dir.path(), objects, Supervisor::default()).unwrap();
+            service.install_model(&release).unwrap();
+            let sockets = dir.path().join("run");
+            let endpoint = service.start(&runtime(), &release, &sockets).unwrap();
+            assert_eq!(endpoint.socket, sockets.join(SOCKET_NAME));
+            let command = service.supervisor.command.clone().unwrap();
+            assert_eq!(command.socket_dir, sockets);
+            assert!(command.runtime_image.contains("@sha256:"));
+            assert!(matches!(
+                service.start(&runtime(), &release, Path::new("relative")),
+                Err(ServiceError::InvalidEndpoint)
+            ));
+        }
+
+        // Phase: vllm_serves_the_catalog_id_on_a_socket_within_the_signed_context_and_memory_share.
+        {
+            let mut release = model(b"weights");
+            release.id = "qwen/qwen3-4b-awq".into();
+            release.context_window = 8192;
+            let args = runtime_args(RuntimeEngine::Vllm, &release, "/models/model");
+            let after = |flag: &str| {
+                args.iter()
+                    .position(|arg| arg == flag)
+                    .and_then(|index| args.get(index + 1))
+                    .map(String::as_str)
+            };
+            assert_eq!(args.get(1).map(String::as_str), Some("/models/model"));
+            assert_eq!(after("--served-model-name"), Some("qwen/qwen3-4b-awq"));
+            assert_eq!(after("--max-model-len"), Some("8192"));
+            assert_eq!(after("--uds"), Some("/run/tilo-model/api.sock"));
+            assert!(!args.iter().any(|arg| arg == "--host" || arg == "--port"));
+            assert_eq!(after("--gpu-memory-utilization"), None);
+            release.accelerator_memory_percent = Some(70);
+            let args = runtime_args(RuntimeEngine::Vllm, &release, "/models/model");
+            assert!(
+                args.windows(2)
+                    .any(|pair| pair == ["--gpu-memory-utilization", "0.70"])
+            );
+        }
     }
 }

@@ -582,23 +582,137 @@ impl RunHooks for DoorHooks {
         Pending::ready(None)
     }
 
-    fn settle(&self, _invocation: InvocationId) -> Pending<()> {
-        let (completer, answer) = pending();
-        match tokio::runtime::Handle::try_current() {
-            Ok(runtime) => {
-                runtime.spawn(async move {
-                    tokio::time::sleep(SETTLE_INTERVAL).await;
-                    completer.complete(());
-                });
-            }
-            Err(_) => {
-                std::thread::spawn(move || {
-                    std::thread::sleep(SETTLE_INTERVAL);
-                    completer.complete(());
-                });
-            }
+    fn settle(&self, invocation: InvocationId) -> Pending<()> {
+        settle_later(invocation)
+    }
+}
+
+/// Resolve after [`SETTLE_INTERVAL`], so a running step is observed again.
+fn settle_later(_invocation: InvocationId) -> Pending<()> {
+    let (completer, answer) = pending();
+    match tokio::runtime::Handle::try_current() {
+        Ok(runtime) => {
+            runtime.spawn(async move {
+                tokio::time::sleep(SETTLE_INTERVAL).await;
+                completer.complete(());
+            });
         }
-        answer
+        Err(_) => {
+            std::thread::spawn(move || {
+                std::thread::sleep(SETTLE_INTERVAL);
+                completer.complete(());
+            });
+        }
+    }
+    answer
+}
+
+/// A step of an interactive run waiting for the person who started it.
+pub enum StepPrompt {
+    /// An action that needs confirmation before it runs.
+    Confirm(Box<ConfirmationRequest>),
+    /// An [`Ask`](tilo_automation::StepKind::Ask) step's question.
+    Ask(AskRequest),
+}
+
+/// The person's answer to a [`StepPrompt`].
+#[derive(Clone, Debug, PartialEq)]
+pub enum StepAnswer {
+    Confirmed(Confirmation),
+    Answered(Value),
+    /// Cancelled: the run stops at this step and nothing after it runs.
+    Declined,
+}
+
+/// One prompt, with the run's shortcut and the way back into the run.
+pub struct PromptedStep {
+    /// The name of the shortcut asking.
+    pub shortcut: String,
+    pub prompt: StepPrompt,
+    answer: tilo_actions::remote::Completer<StepAnswer>,
+}
+
+impl PromptedStep {
+    /// Answer the prompt; the run continues (or stops, when declined).
+    pub fn answer(self, answer: StepAnswer) {
+        self.answer.complete(answer);
+    }
+}
+
+impl std::fmt::Debug for PromptedStep {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PromptedStep")
+            .field("shortcut", &self.shortcut)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Prompts interactive runs are waiting on, in the order they asked, until
+/// the compositor shows them.
+#[derive(Clone, Default)]
+pub struct StepPrompts {
+    waiting: std::sync::Arc<Mutex<VecDeque<PromptedStep>>>,
+}
+
+impl StepPrompts {
+    fn push(&self, prompt: PromptedStep) {
+        if let Ok(mut waiting) = self.waiting.lock() {
+            waiting.push_back(prompt);
+        }
+    }
+
+    /// The oldest prompt nobody has taken yet.
+    pub fn take_next(&self) -> Option<PromptedStep> {
+        self.waiting.lock().ok()?.pop_front()
+    }
+}
+
+/// [`RunHooks`] for a run the person is present at: every confirmation and
+/// question waits in [`StepPrompts`] until the compositor's sheet answers.
+pub struct SheetHooks {
+    prompts: StepPrompts,
+    shortcut: String,
+}
+
+impl SheetHooks {
+    #[must_use]
+    pub fn new(prompts: StepPrompts, shortcut: impl Into<String>) -> Self {
+        Self {
+            prompts,
+            shortcut: shortcut.into(),
+        }
+    }
+
+    fn ask_person(&self, prompt: StepPrompt) -> Pending<StepAnswer> {
+        let (answer, pending) = pending();
+        self.prompts.push(PromptedStep {
+            shortcut: self.shortcut.clone(),
+            prompt,
+            answer,
+        });
+        pending
+    }
+}
+
+impl RunHooks for SheetHooks {
+    fn confirm(&self, request: ConfirmationRequest) -> Pending<Option<Confirmation>> {
+        self.ask_person(StepPrompt::Confirm(Box::new(request)))
+            .map(|answer| match answer {
+                StepAnswer::Confirmed(confirmation) => Some(confirmation),
+                StepAnswer::Answered(_) | StepAnswer::Declined => None,
+            })
+    }
+
+    fn ask(&self, request: AskRequest) -> Pending<Option<Value>> {
+        self.ask_person(StepPrompt::Ask(request))
+            .map(|answer| match answer {
+                StepAnswer::Answered(value) => Some(value),
+                StepAnswer::Confirmed(_) | StepAnswer::Declined => None,
+            })
+    }
+
+    fn settle(&self, invocation: InvocationId) -> Pending<()> {
+        settle_later(invocation)
     }
 }
 
@@ -683,14 +797,14 @@ pub fn document_share(run: RunId, record: &str, doc: &mut AutoCommit) -> Option<
     let mut last = None;
     let mut app = String::new();
     let mut labels: Vec<String> = Vec::new();
-    for version in qdoc::history::versions(doc) {
+    for version in tilo_resource::history::versions(doc) {
         let Some(context) = made_by_run(version.message.as_deref(), run) else {
             continue;
         };
         if first.is_none() {
-            first = Some((version.time_ms, version.change_hash.clone()));
+            first = Some((version.time_ms, version.hash.to_string()));
         }
-        last = Some(version.change_hash.clone());
+        last = Some(version.hash.to_string());
         if let Some(owner) = &context.app
             && app.is_empty()
         {

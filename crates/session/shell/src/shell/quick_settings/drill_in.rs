@@ -411,7 +411,7 @@ impl DrillInList {
                 .ghost()
                 .icon(ui::icons::Icon::ChevronLeft)
                 .hovered(cursor.is_some_and(|point| self.back.contains(point)))
-                .accessible_name("Back"),
+                .accessible_name(&crate::shell::i18n::t("qs-back")),
         );
         let size = type_size(text, theme.tokens.typography.scale.sm);
         let (width, height) = text.measure_weighted(title, size, None, TextWeight::Semibold);
@@ -532,161 +532,169 @@ mod tests {
     use super::*;
     use ui::a11y::relative_luminance;
 
-    /// HIG §9.3: a control that gives its idle state a floor must keep every
-    /// state on one ordered ramp, or the hovered row can end up quieter
-    /// than the idle one on a palette whose `lift` falls back to a derived
-    /// step. `lift` moves from `surfaces.base`, so the order is measured
-    /// from there: hover must travel further along the ramp than the floor.
     #[test]
-    fn row_floor_stays_below_the_hover_tier() {
-        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
-            let origin = relative_luminance(theme.tokens.colors.surfaces.base);
-            let idle = relative_luminance(control_fill(&theme, false));
-            let hover = relative_luminance(control_fill(&theme, true));
-            assert!(
-                (hover - origin).abs() > (idle - origin).abs(),
-                "{}: hover ({hover:.4}) must move further from base ({origin:.4}) than idle ({idle:.4})",
-                theme.name
-            );
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn drill_in_rows_keep_token_tiers_glyphs_and_panel_rhythm() {
+        /// HIG §9.3: a control that gives its idle state a floor must keep every
+        /// state on one ordered ramp, or the hovered row can end up quieter
+        /// than the idle one on a palette whose `lift` falls back to a derived
+        /// step. `lift` moves from `surfaces.base`, so the order is measured
+        /// from there: hover must travel further along the ramp than the floor.
+        fn row_floor_stays_below_the_hover_tier() {
+            for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+                let origin = relative_luminance(theme.tokens.colors.surfaces.base);
+                let idle = relative_luminance(control_fill(&theme, false));
+                let hover = relative_luminance(control_fill(&theme, true));
+                assert!(
+                    (hover - origin).abs() > (idle - origin).abs(),
+                    "{}: hover ({hover:.4}) must move further from base ({origin:.4}) than idle ({idle:.4})",
+                    theme.name
+                );
+            }
         }
-    }
 
-    /// HIG §9.5 rest edges: on every preset a Control on the panel is
-    /// visible at rest — its derived edge registers against its own fill,
-    /// and fill or edge (whichever the eye meets first at the boundary)
-    /// steps away from the Panel ground it sits on.
-    #[test]
-    fn control_surface_registers_on_the_panel_ground_on_every_preset() {
-        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
-            let panel = ui::chrome::panel_ground(&theme);
-            let fill = control_fill(&theme, false);
-            let edge = ui::surface::edge_on(fill);
-            let min = ui::tokens::colors::HAIRLINE_MIN_DELTA;
-            assert!(
-                ui::surface::edge_delta(edge, fill) >= min,
-                "{}: the rest edge must register on the control's own fill",
-                theme.name
-            );
-            let step = (relative_luminance(fill) - relative_luminance(panel)).abs();
-            let edge_on_panel = ui::surface::edge_delta(edge, panel);
-            assert!(
-                step >= min || edge_on_panel >= min,
-                "{}: fill step {step:.4} and edge-on-panel {edge_on_panel:.4} are both under {min}",
-                theme.name
-            );
+        /// HIG §9.5 rest edges: on every preset a Control on the panel is
+        /// visible at rest — its derived edge registers against its own fill,
+        /// and fill or edge (whichever the eye meets first at the boundary)
+        /// steps away from the Panel ground it sits on.
+        fn control_surface_registers_on_the_panel_ground_on_every_preset() {
+            for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+                let panel = ui::chrome::panel_ground(&theme);
+                let fill = control_fill(&theme, false);
+                let edge = ui::surface::edge_on(fill);
+                let min = ui::tokens::colors::HAIRLINE_MIN_DELTA;
+                assert!(
+                    ui::surface::edge_delta(edge, fill) >= min,
+                    "{}: the rest edge must register on the control's own fill",
+                    theme.name
+                );
+                let step = (relative_luminance(fill) - relative_luminance(panel)).abs();
+                let edge_on_panel = ui::surface::edge_delta(edge, panel);
+                assert!(
+                    step >= min || edge_on_panel >= min,
+                    "{}: fill step {step:.4} and edge-on-panel {edge_on_panel:.4} are both under {min}",
+                    theme.name
+                );
+            }
         }
-    }
 
-    /// The glyph box a pane paints into is the standard `icon_md` glyph on
-    /// the `s3` inset, centred on the row — not a 20 in a 12 that happens to
-    /// match those tokens today.
-    #[test]
-    fn discovery_row_glyph_is_the_token_glyph_centred_on_the_row() {
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        let mut scene = Scene::new();
-        let row = Rect::new(100.0, 200.0, 420.0, 244.0);
-        let glyph = DrillInList::draw_discovery_row(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            &theme,
-            row,
-            0,
-            None,
-            0.0,
-            "Coffee shop",
-        );
-        assert_eq!(glyph.width(), f64::from(theme.tokens.metrics.icon_md));
-        assert_eq!(glyph.x0, row.x0 + f64::from(theme.tokens.spacing.s3));
-        assert!((glyph.center().y - row.center().y).abs() < 1e-9);
-    }
-
-    #[test]
-    fn discovery_label_width_honours_pane_reserve_and_status_floor() {
-        let row = Rect::new(100.0, 200.0, 500.0, 244.0);
-        let glyph = leading_glyph(row, CONTROL_INSET, GLYPH);
-        let status_floor = 2.0 * GLYPH + CONTROL_INSET + RELATED_GAP;
-
-        assert_eq!(
-            discovery_label_width(row, glyph, 0.0),
-            discovery_label_width(row, glyph, status_floor)
-        );
-        assert_eq!(
-            discovery_label_width(row, glyph, status_floor + 32.0),
-            discovery_label_width(row, glyph, status_floor) - 32.0
-        );
-    }
-
-    /// One rhythm (HIG §7b): rows are the Control height on the panel
-    /// padding, one related step apart, and the trailing slots never reach
-    /// into each other or the row's inset.
-    #[test]
-    fn list_rows_keep_the_panel_rhythm_and_trailing_slots_do_not_touch() {
-        let panel = Rect::new(100.0, 50.0, 500.0, 500.0);
-        let mut list = DrillInList::default();
-        list.layout(panel, 3);
-        let rows = list.rows();
-        assert_eq!(rows[0].x0, panel.x0 + PANEL_PAD);
-        assert_eq!(rows[0].x1, panel.x1 - PANEL_PAD);
-        assert_eq!(rows[0].y0, panel.y0 + LIST_TOP);
-        assert_eq!(
-            rows[0].height(),
-            f64::from(ui::tokens::Metrics::BASE.panel_row_height)
-        );
-        assert_eq!(
-            rows[1].y0 - rows[0].y1,
-            f64::from(ui::tokens::Spacing::BASE.s2)
-        );
-        assert!(DrillInList::back_rect(panel).y1 + RELATED_GAP <= rows[0].y0);
-        let row = rows[0];
-        let glyph = leading_glyph(row, CONTROL_INSET, GLYPH);
-        let status = trailing_status_glyph(row, CONTROL_INSET, GLYPH);
-        let dot = trailing_dot_center(row, CONTROL_INSET);
-        assert!(glyph.x1 + CONTROL_INSET < status.x0);
-        assert!(status.x1 + RELATED_GAP <= dot.x - STATUS_DOT / 2.0);
-        assert_eq!(dot.x + STATUS_DOT / 2.0, row.x1 - CONTROL_INSET);
-        assert_eq!(
-            DrillInList::list_height(LIST_TOP, 3),
-            rows[2].y1 - panel.y0 + PANEL_PAD
-        );
-    }
-
-    /// The rhythm is compile-time (`Spacing::BASE` / `Metrics::BASE`, HIG
-    /// §7b) because hit-testing and the preferred height are resolved with
-    /// no theme in hand and must agree with paint to the pixel. That is only
-    /// honest while the values equal what a preset theme resolves at 1×;
-    /// this pins it, so a token change cannot silently split the two.
-    #[test]
-    fn compile_time_rhythm_equals_the_preset_tokens_at_one_x() {
-        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
-            let spacing = &theme.tokens.spacing;
-            let metrics = &theme.tokens.metrics;
-            assert_eq!(PANEL_PAD, f64::from(spacing.s4), "{}", theme.name);
-            assert_eq!(SECTION_GAP, f64::from(spacing.s4), "{}", theme.name);
-            assert_eq!(SIBLING_GAP, f64::from(spacing.s3), "{}", theme.name);
-            assert_eq!(RELATED_GAP, f64::from(spacing.s2), "{}", theme.name);
-            assert_eq!(CONTROL_PAD, f64::from(spacing.s2), "{}", theme.name);
-            assert_eq!(CONTROL_INSET, f64::from(spacing.s3), "{}", theme.name);
-            assert_eq!(
-                ROW_HEIGHT,
-                f64::from(metrics.panel_row_height),
-                "{}",
-                theme.name
+        /// The glyph box a pane paints into is the standard `icon_md` glyph on
+        /// the `s3` inset, centred on the row — not a 20 in a 12 that happens to
+        /// match those tokens today.
+        fn discovery_row_glyph_is_the_token_glyph_centred_on_the_row() {
+            let theme = Theme::dark();
+            let mut text = TextRenderer::new();
+            let mut scene = Scene::new();
+            let row = Rect::new(100.0, 200.0, 420.0, 244.0);
+            let glyph = DrillInList::draw_discovery_row(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut text,
+                &theme,
+                row,
+                0,
+                None,
+                0.0,
+                "Coffee shop",
             );
-            assert_eq!(GLYPH, f64::from(metrics.icon_md), "{}", theme.name);
+            assert_eq!(glyph.width(), f64::from(theme.tokens.metrics.icon_md));
+            assert_eq!(glyph.x0, row.x0 + f64::from(theme.tokens.spacing.s3));
+            assert!((glyph.center().y - row.center().y).abs() < 1e-9);
+        }
+
+        fn discovery_label_width_honours_pane_reserve_and_status_floor() {
+            let row = Rect::new(100.0, 200.0, 500.0, 244.0);
+            let glyph = leading_glyph(row, CONTROL_INSET, GLYPH);
+            let status_floor = 2.0 * GLYPH + CONTROL_INSET + RELATED_GAP;
+
             assert_eq!(
-                TARGET,
-                f64::from(metrics.min_pointer_target),
-                "{}",
-                theme.name
+                discovery_label_width(row, glyph, 0.0),
+                discovery_label_width(row, glyph, status_floor)
             );
             assert_eq!(
-                TOGGLE_W,
-                2.0 * TOGGLE_H - f64::from(spacing.s1),
-                "{}",
-                theme.name
+                discovery_label_width(row, glyph, status_floor + 32.0),
+                discovery_label_width(row, glyph, status_floor) - 32.0
             );
         }
+
+        /// One rhythm (HIG §7b): rows are the Control height on the panel
+        /// padding, one related step apart, and the trailing slots never reach
+        /// into each other or the row's inset.
+        fn list_rows_keep_the_panel_rhythm_and_trailing_slots_do_not_touch() {
+            let panel = Rect::new(100.0, 50.0, 500.0, 500.0);
+            let mut list = DrillInList::default();
+            list.layout(panel, 3);
+            let rows = list.rows();
+            assert_eq!(rows[0].x0, panel.x0 + PANEL_PAD);
+            assert_eq!(rows[0].x1, panel.x1 - PANEL_PAD);
+            assert_eq!(rows[0].y0, panel.y0 + LIST_TOP);
+            assert_eq!(
+                rows[0].height(),
+                f64::from(ui::tokens::Metrics::BASE.panel_row_height)
+            );
+            assert_eq!(
+                rows[1].y0 - rows[0].y1,
+                f64::from(ui::tokens::Spacing::BASE.s2)
+            );
+            assert!(DrillInList::back_rect(panel).y1 + RELATED_GAP <= rows[0].y0);
+            let row = rows[0];
+            let glyph = leading_glyph(row, CONTROL_INSET, GLYPH);
+            let status = trailing_status_glyph(row, CONTROL_INSET, GLYPH);
+            let dot = trailing_dot_center(row, CONTROL_INSET);
+            assert!(glyph.x1 + CONTROL_INSET < status.x0);
+            assert!(status.x1 + RELATED_GAP <= dot.x - STATUS_DOT / 2.0);
+            assert_eq!(dot.x + STATUS_DOT / 2.0, row.x1 - CONTROL_INSET);
+            assert_eq!(
+                DrillInList::list_height(LIST_TOP, 3),
+                rows[2].y1 - panel.y0 + PANEL_PAD
+            );
+        }
+
+        /// The rhythm is compile-time (`Spacing::BASE` / `Metrics::BASE`, HIG
+        /// §7b) because hit-testing and the preferred height are resolved with
+        /// no theme in hand and must agree with paint to the pixel. That is only
+        /// honest while the values equal what a preset theme resolves at 1×;
+        /// this pins it, so a token change cannot silently split the two.
+        fn compile_time_rhythm_equals_the_preset_tokens_at_one_x() {
+            for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+                let spacing = &theme.tokens.spacing;
+                let metrics = &theme.tokens.metrics;
+                assert_eq!(PANEL_PAD, f64::from(spacing.s4), "{}", theme.name);
+                assert_eq!(SECTION_GAP, f64::from(spacing.s4), "{}", theme.name);
+                assert_eq!(SIBLING_GAP, f64::from(spacing.s3), "{}", theme.name);
+                assert_eq!(RELATED_GAP, f64::from(spacing.s2), "{}", theme.name);
+                assert_eq!(CONTROL_PAD, f64::from(spacing.s2), "{}", theme.name);
+                assert_eq!(CONTROL_INSET, f64::from(spacing.s3), "{}", theme.name);
+                assert_eq!(
+                    ROW_HEIGHT,
+                    f64::from(metrics.panel_row_height),
+                    "{}",
+                    theme.name
+                );
+                assert_eq!(GLYPH, f64::from(metrics.icon_md), "{}", theme.name);
+                assert_eq!(
+                    TARGET,
+                    f64::from(metrics.min_pointer_target),
+                    "{}",
+                    theme.name
+                );
+                assert_eq!(
+                    TOGGLE_W,
+                    2.0 * TOGGLE_H - f64::from(spacing.s1),
+                    "{}",
+                    theme.name
+                );
+            }
+        }
+
+        row_floor_stays_below_the_hover_tier();
+        control_surface_registers_on_the_panel_ground_on_every_preset();
+        discovery_row_glyph_is_the_token_glyph_centred_on_the_row();
+        discovery_label_width_honours_pane_reserve_and_status_floor();
+        list_rows_keep_the_panel_rhythm_and_trailing_slots_do_not_touch();
+        compile_time_rhythm_equals_the_preset_tokens_at_one_x();
     }
 }

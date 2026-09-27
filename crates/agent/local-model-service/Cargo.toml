@@ -32,6 +32,7 @@ clap.workspace = true
 ed25519-dalek.workspace = true
 libc.workspace = true
 zeroize.workspace = true
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -25,6 +25,7 @@ use ui::widget::Widget;
 use ui::widget::toast::{ToastCard, ToastKind};
 
 use crate::shell::chrome_state::Chrome;
+use crate::shell::i18n::{t, t_args};
 
 /// Severity tier for a notification, controlling the leading-dot colour.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -244,7 +245,13 @@ impl Notification {
         }
         let projection = remote.projection;
         let body_redacted = projection.body_redacted;
-        let source_caption = format!("{} · From {}", projection.app_name, remote.source_label);
+        let source_caption = t_args(
+            "notification-source-caption",
+            &[
+                ("app", projection.app_name.as_str().into()),
+                ("device", remote.source_label.as_str().into()),
+            ],
+        );
         Some(Self {
             id: next_id(),
             title: projection.title,
@@ -438,8 +445,7 @@ pub const MAX_HISTORY: usize = 50;
 pub fn lock_suppressed_label(count: usize) -> String {
     match count {
         0 => String::new(),
-        1 => "1 notification".to_string(),
-        n => format!("{n} notifications"),
+        n => t_args("notification-lock-count", &[("count", n.into())]),
     }
 }
 
@@ -623,7 +629,10 @@ impl NotificationStack {
     ) -> Rect {
         let body_size = ctx.theme.tokens.typography.scale.xs;
         let label = if history_count > 0 {
-            format!("{status} · {history_count} held")
+            t_args(
+                "notification-dnd-held",
+                &[("status", status.into()), ("count", history_count.into())],
+            )
         } else {
             status.to_string()
         };
@@ -963,25 +972,33 @@ impl Widget for NotificationStack {
             }
             return Some(
                 AccessNode::new(Role::Group)
-                    .with_name("Notifications")
+                    .with_name(t("notification-stack-a11y"))
                     .with_live(Politeness::Polite)
                     .with_value(lock_suppressed_label(n)),
             );
         }
-        let latest = ch.notifications().last().map(|t| {
-            if t.body.is_empty() {
+        let latest = ch.notifications().last();
+        let text = latest.map_or_else(String::new, |t| {
+            let body = if t.show_preview { t.body.as_str() } else { "" };
+            if body.is_empty() {
                 t.title.clone()
             } else {
-                format!("{}. {}", t.title, t.body)
+                format!("{}. {body}", t.title)
             }
         });
-        let mut node = AccessNode::new(Role::Group)
-            .with_name("Notifications")
-            .with_live(Politeness::Assertive);
-        if let Some(v) = latest {
-            node = node.with_value(v);
-        }
-        Some(node)
+        // Ordinary arrivals wait their turn; only an error cuts in. An empty
+        // stack publishes an empty value so its clearing is silent.
+        let politeness = if latest.is_some_and(|t| t.severity == NotificationSeverity::Error) {
+            Politeness::Assertive
+        } else {
+            Politeness::Polite
+        };
+        Some(
+            AccessNode::new(Role::Group)
+                .with_name(t("notification-stack-a11y"))
+                .with_live(politeness)
+                .with_value(text),
+        )
     }
 }
 
@@ -1020,280 +1037,316 @@ mod tests {
     }
 
     #[test]
-    fn push_appends_to_chrome_queue() {
-        let chrome = new_chrome();
-        chrome.borrow_mut().push_notification("Hello", "World");
-        let ch = chrome.borrow();
-        assert_eq!(ch.notifications().len(), 1);
-        assert_eq!(ch.notifications()[0].title, "Hello");
-        assert_eq!(ch.notifications()[0].body, "World");
-        assert_eq!(ch.notifications()[0].severity, NotificationSeverity::Info);
-    }
-
-    /// Review fixtures: the ux-bench cannot raise a notification on macOS,
-    /// so the stack is photographed from its paint path — a live column
-    /// with an error toast, the Do-Not-Disturb pill over held items, and the
-    /// locked-session card — at 1× and 200 % text, dark and light.
-    #[test]
-    #[expect(
-        clippy::many_single_char_names,
-        reason = "viewport size and sampled colour channels read best as w/h and r/g/b/e"
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
-    fn notification_stack_review_fixtures_are_written() {
-        let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../target/ui-review/s2-r2/notifications");
-        let (w, h) = (640_u32, 400_u32);
-        let viewport = Rect::new(0.0, 0.0, f64::from(w), f64::from(h));
-        let mut renderer = crate::shell::osd::review_offscreen::OffscreenRenderer::new(w, h);
-        let variants = [
-            ("dark-1x", Theme::dark(), 1.0_f32),
-            ("dark-2x", Theme::dark().with_text_scale(2.0), 2.0),
-            ("light-1x", Theme::light(), 1.0),
-        ];
-        for (name, mut theme, scale) in variants {
-            // A still cannot show the entry slide; photograph the rest state.
-            theme.reduce_motion = true;
-            for state in ["live", "dnd", "locked"] {
-                let chrome = new_chrome();
-                {
-                    let mut ch = chrome.borrow_mut();
-                    match state {
-                        "dnd" => {
-                            ch.set_dnd(true);
-                            ch.push_notification("Held", "while quiet");
-                            ch.push_notification("Also held", "for later");
-                        }
-                        "locked" => {
-                            ch.push_notification("Private", "never shown while locked");
-                            ch.push_notification("Second", "count only");
-                            ch.set_session_locked(true);
-                        }
-                        _ => {
-                            ch.push_notification("Saved", "Report.pdf is in Documents");
-                            ch.push_notification_full(
-                                Notification::new("Backup failed", "The drive is not connected")
-                                    .with_severity(NotificationSeverity::Error),
-                            );
-                        }
-                    }
-                }
-                let mut stack = NotificationStack::new(chrome);
-                stack.set_viewport(viewport);
-                let mut tr = TextRenderer::new();
-                tr.set_text_scale(scale);
-                let mut scene = Scene::new();
-                Widget::draw(
-                    &mut stack,
-                    &mut scene,
-                    Affine::IDENTITY,
-                    &mut tr,
-                    &theme,
-                    &PresenceCtx::default(),
-                );
-                assert_eq!(
-                    tr.text_scale(),
-                    scale,
-                    "the pass restores the renderer's scale"
-                );
-                let ground = theme.tokens.colors.surfaces.base;
-                let path = out.join(format!("{name}-{state}.png"));
-                renderer.render_png(&scene, ground, &path);
-                assert!(
-                    path.is_file(),
-                    "notification fixture missing: {}",
-                    path.display()
-                );
-                // The rendered pixels, not just the file: the first surface
-                // in the column (pill, locked card or toast card) is the
-                // Panel ground at its plain bottom-right interior — the
-                // toolkit toast and the two shell cards share one material.
-                let first = Widget::get_rect(&stack);
-                let first_h = if state == "live" {
-                    TOAST_HEIGHT
-                } else {
-                    first.height()
-                };
-                let probe = Point::new(first.x1 - 12.0, first.y0 + first_h - 8.0);
-                #[allow(
-                    clippy::cast_possible_truncation,
-                    clippy::cast_sign_loss,
-                    reason = "probe points are inside a positive viewport"
-                )]
-                let (r, g, b, _) = crate::shell::osd::review_offscreen::OffscreenRenderer::sample(
-                    &renderer.render_resilient(&scene, ground),
-                    w,
-                    probe.x as u32,
-                    probe.y as u32,
-                );
-                let e = ui::chrome::panel_ground(&theme).to_rgba8();
-                assert!(
-                    r.abs_diff(e.r) <= 2 && g.abs_diff(e.g) <= 2 && b.abs_diff(e.b) <= 2,
-                    "{name}-{state}: surface interior ({r},{g},{b}) is the panel ground ({},{},{})",
-                    e.r,
-                    e.g,
-                    e.b
-                );
+    fn toast_queue_pushes_caps_dismisses_and_expires() {
+        fn push_appends_to_chrome_queue() {
+            let chrome = new_chrome();
+            chrome.borrow_mut().push_notification("Hello", "World");
+            let ch = chrome.borrow();
+            assert_eq!(ch.notifications().len(), 1);
+            assert_eq!(ch.notifications()[0].title, "Hello");
+            assert_eq!(ch.notifications()[0].body, "World");
+            assert_eq!(ch.notifications()[0].severity, NotificationSeverity::Info);
+        }
+
+        fn cap_enforces_fifo_drop_at_max() {
+            let chrome = new_chrome();
+            for i in 0..(MAX_NOTIFICATIONS + 3) {
+                chrome.borrow_mut().push_notification(format!("n{i}"), "");
             }
+            assert_eq!(chrome.borrow().notifications().len(), MAX_NOTIFICATIONS);
+            let first_title = chrome.borrow().notifications()[0].title.clone();
+            assert_eq!(first_title, "n3");
         }
-    }
 
-    #[test]
-    fn compact_viewport_keeps_notification_inside_both_edges() {
-        let chrome = new_chrome();
-        let mut stack = NotificationStack::new(chrome);
-        stack.set_viewport(Rect::new(0.0, 0.0, 320.0, 480.0));
-        let width = stack.toast_width();
-        let x0 = stack.viewport.x1 - EDGE_INSET - width;
-        assert_eq!(width, 272.0);
-        assert_eq!(x0, EDGE_INSET);
-    }
-
-    #[test]
-    fn live_notification_requests_entry_frames_and_a_future_exit_wake() {
-        let chrome = new_chrome();
-        chrome.borrow_mut().push_notification("Saved", "Ready");
-        let stack = NotificationStack::new(chrome);
-        assert!(Widget::needs_animation_frame(&stack));
-        assert!(Widget::next_wake_deadline(&stack).is_some());
-    }
-
-    #[test]
-    fn reduced_motion_notification_is_settled_and_only_wakes_for_expiry() {
-        let chrome = new_chrome();
-        chrome.borrow_mut().push_notification("Saved", "Ready");
-        let mut stack = NotificationStack::new(chrome);
-        stack.reduce_motion = true;
-        assert!(!Widget::needs_animation_frame(&stack));
-        assert!(Widget::next_wake_deadline(&stack).is_some());
-        let n = stack.chrome.borrow().notifications()[0].clone();
-        assert_eq!(
-            NotificationStack::animation_state(&n, Instant::now(), true, 272.0),
-            (1.0, 0.0)
-        );
-    }
-
-    #[test]
-    fn accessibility_exposes_a_named_live_region_with_latest_notification() {
-        use ui::a11y::{Politeness, Role};
-        let chrome = new_chrome();
-        let stack = NotificationStack::new(chrome.clone());
-        let node = Widget::accessibility(&stack).expect("the stack is a live region");
-        assert_eq!(node.role, Role::Group);
-        assert_eq!(node.name.as_deref(), Some("Notifications"));
-        assert_eq!(node.live, Some(Politeness::Assertive));
-        assert!(node.value.is_none(), "an empty stack announces nothing");
-        chrome
-            .borrow_mut()
-            .push_notification("New mail", "secret subject");
-        let node = Widget::accessibility(&stack).unwrap();
-        assert_eq!(node.value.as_deref(), Some("New mail. secret subject"));
-        // Locked: no title/body/app reaches the a11y tree.
-        chrome.borrow_mut().set_session_locked(true);
-        let node = Widget::accessibility(&stack).unwrap();
-        assert_eq!(node.value.as_deref(), Some("1 notification"));
-        assert_eq!(node.live, Some(Politeness::Polite));
-    }
-
-    #[test]
-    fn expiry_drops_old_notifications_in_update_lifecycle() {
-        let chrome = new_chrome();
-        let id = chrome.borrow_mut().push_notification_full(
-            Notification::new("Quick", "fades fast").with_dismiss_after(Duration::from_millis(50)),
-        );
-        assert_eq!(chrome.borrow().notifications().len(), 1);
-        let future = Instant::now() + Duration::from_millis(200);
-        let dropped = chrome.borrow_mut().update_notification_lifecycle(future);
-        assert_eq!(dropped, 1);
-        assert!(chrome.borrow().notifications().is_empty());
-        // Re-dismissing a dropped id is a no-op, not a panic.
-        chrome.borrow_mut().dismiss_notification(id);
-    }
-
-    #[test]
-    fn dismiss_removes_by_id() {
-        let chrome = new_chrome();
-        let id_a = chrome.borrow_mut().push_notification("A", "");
-        let _id_b = chrome.borrow_mut().push_notification("B", "");
-        let id_c = chrome.borrow_mut().push_notification("C", "");
-        assert_eq!(chrome.borrow().notifications().len(), 3);
-        chrome.borrow_mut().dismiss_notification(id_a);
-        assert_eq!(chrome.borrow().notifications().len(), 2);
-        let titles: Vec<_> = chrome
-            .borrow()
-            .notifications()
-            .iter()
-            .map(|n| n.title.clone())
-            .collect();
-        assert_eq!(titles, vec!["B".to_string(), "C".to_string()]);
-        chrome.borrow_mut().dismiss_notification(id_c);
-        assert_eq!(chrome.borrow().notifications().len(), 1);
-        assert_eq!(chrome.borrow().notifications()[0].title, "B");
-    }
-
-    #[test]
-    fn clicking_a_painted_close_rect_dismisses_only_that_notification() {
-        let chrome = new_chrome();
-        let first = chrome.borrow_mut().push_notification("First", "");
-        let second = chrome.borrow_mut().push_notification("Second", "");
-        let mut stack = NotificationStack::new(chrome.clone());
-        // The renderer records this exact geometry after painting. Seeding it
-        // here keeps the routing test independent of a GPU while exercising
-        // the same production hit-test path used by the overlay host.
-        stack.hit_rects.push((
-            first,
-            Rect::new(100.0, 100.0, 460.0, 164.0),
-            Rect::new(430.0, 106.0, 452.0, 128.0),
-        ));
-        stack.hit_rects.push((
-            second,
-            Rect::new(100.0, 172.0, 460.0, 236.0),
-            Rect::new(430.0, 178.0, 452.0, 200.0),
-        ));
-        assert!(stack.notify_click_at(Point::new(441.0, 189.0)));
-        let remaining: Vec<_> = chrome
-            .borrow()
-            .notifications()
-            .iter()
-            .map(|notification| notification.title.clone())
-            .collect();
-        assert_eq!(remaining, vec!["First".to_string()]);
-        stack.hit_rects.clear();
-        assert!(!stack.notify_click_at(Point::new(441.0, 189.0)));
-    }
-
-    #[test]
-    fn cap_enforces_fifo_drop_at_max() {
-        let chrome = new_chrome();
-        for i in 0..(MAX_NOTIFICATIONS + 3) {
-            chrome.borrow_mut().push_notification(format!("n{i}"), "");
-        }
-        assert_eq!(chrome.borrow().notifications().len(), MAX_NOTIFICATIONS);
-        let first_title = chrome.borrow().notifications()[0].title.clone();
-        assert_eq!(first_title, "n3");
-    }
-
-    #[test]
-    fn switch_workspace_does_not_push_a_notification() {
-        // `bootstrap_demo` gives ≥2 workspaces so a switch is meaningful;
-        // `default()` builds an empty tree that can't exercise it.
-        let chrome = ChromeState::new(WorkspaceTree::bootstrap_demo());
-        chrome.borrow_mut().notifications.clear();
-        let switched = chrome.borrow_mut().switch_workspace(1);
-        assert!(switched, "expected a workspace switch");
-        assert!(
-            chrome.borrow().notifications().is_empty(),
-            "a workspace switch must not raise a banner, got {:?}",
-            chrome
+        fn dismiss_removes_by_id() {
+            let chrome = new_chrome();
+            let id_a = chrome.borrow_mut().push_notification("A", "");
+            let _id_b = chrome.borrow_mut().push_notification("B", "");
+            let id_c = chrome.borrow_mut().push_notification("C", "");
+            assert_eq!(chrome.borrow().notifications().len(), 3);
+            chrome.borrow_mut().dismiss_notification(id_a);
+            assert_eq!(chrome.borrow().notifications().len(), 2);
+            let titles: Vec<_> = chrome
                 .borrow()
                 .notifications()
                 .iter()
                 .map(|n| n.title.clone())
-                .collect::<Vec<_>>()
-        );
-        assert!(
-            chrome.borrow().notification_history().is_empty(),
-            "a workspace switch must not be recorded in history"
-        );
+                .collect();
+            assert_eq!(titles, vec!["B".to_string(), "C".to_string()]);
+            chrome.borrow_mut().dismiss_notification(id_c);
+            assert_eq!(chrome.borrow().notifications().len(), 1);
+            assert_eq!(chrome.borrow().notifications()[0].title, "B");
+        }
+
+        fn expiry_drops_old_notifications_in_update_lifecycle() {
+            let chrome = new_chrome();
+            let id = chrome.borrow_mut().push_notification_full(
+                Notification::new("Quick", "fades fast")
+                    .with_dismiss_after(Duration::from_millis(50)),
+            );
+            assert_eq!(chrome.borrow().notifications().len(), 1);
+            let future = Instant::now() + Duration::from_millis(200);
+            let dropped = chrome.borrow_mut().update_notification_lifecycle(future);
+            assert_eq!(dropped, 1);
+            assert!(chrome.borrow().notifications().is_empty());
+            // Re-dismissing a dropped id is a no-op, not a panic.
+            chrome.borrow_mut().dismiss_notification(id);
+        }
+
+        fn switch_workspace_does_not_push_a_notification() {
+            // `bootstrap_demo` gives ≥2 workspaces so a switch is meaningful;
+            // `default()` builds an empty tree that can't exercise it.
+            let chrome = ChromeState::new(WorkspaceTree::bootstrap_demo());
+            chrome.borrow_mut().notifications.clear();
+            let switched = chrome.borrow_mut().switch_workspace(1);
+            assert!(switched, "expected a workspace switch");
+            assert!(
+                chrome.borrow().notifications().is_empty(),
+                "a workspace switch must not raise a banner, got {:?}",
+                chrome
+                    .borrow()
+                    .notifications()
+                    .iter()
+                    .map(|n| n.title.clone())
+                    .collect::<Vec<_>>()
+            );
+            assert!(
+                chrome.borrow().notification_history().is_empty(),
+                "a workspace switch must not be recorded in history"
+            );
+        }
+
+        fn clicking_a_painted_close_rect_dismisses_only_that_notification() {
+            let chrome = new_chrome();
+            let first = chrome.borrow_mut().push_notification("First", "");
+            let second = chrome.borrow_mut().push_notification("Second", "");
+            let mut stack = NotificationStack::new(chrome.clone());
+            // The renderer records this exact geometry after painting. Seeding it
+            // here keeps the routing test independent of a GPU while exercising
+            // the same production hit-test path used by the overlay host.
+            stack.hit_rects.push((
+                first,
+                Rect::new(100.0, 100.0, 460.0, 164.0),
+                Rect::new(430.0, 106.0, 452.0, 128.0),
+            ));
+            stack.hit_rects.push((
+                second,
+                Rect::new(100.0, 172.0, 460.0, 236.0),
+                Rect::new(430.0, 178.0, 452.0, 200.0),
+            ));
+            assert!(stack.notify_click_at(Point::new(441.0, 189.0)));
+            let remaining: Vec<_> = chrome
+                .borrow()
+                .notifications()
+                .iter()
+                .map(|notification| notification.title.clone())
+                .collect();
+            assert_eq!(remaining, vec!["First".to_string()]);
+            stack.hit_rects.clear();
+            assert!(!stack.notify_click_at(Point::new(441.0, 189.0)));
+        }
+
+        push_appends_to_chrome_queue();
+        cap_enforces_fifo_drop_at_max();
+        dismiss_removes_by_id();
+        expiry_drops_old_notifications_in_update_lifecycle();
+        switch_workspace_does_not_push_a_notification();
+        clicking_a_painted_close_rect_dismisses_only_that_notification();
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn toast_stack_layout_motion_and_accessibility() {
+        /// Review fixtures: the ux-bench cannot raise a notification on macOS,
+        /// so the stack is photographed from its paint path — a live column
+        /// with an error toast, the Do-Not-Disturb pill over held items, and the
+        /// locked-session card — at 1× and 200 % text, dark and light.
+        #[expect(
+            clippy::many_single_char_names,
+            reason = "viewport size and sampled colour channels read best as w/h and r/g/b/e"
+        )]
+        fn notification_stack_review_fixtures_are_written() {
+            let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../target/ui-review/s2-r2/notifications");
+            let (w, h) = (640_u32, 400_u32);
+            let viewport = Rect::new(0.0, 0.0, f64::from(w), f64::from(h));
+            let mut renderer = crate::shell::osd::review_offscreen::OffscreenRenderer::new(w, h);
+            let variants = [
+                ("dark-1x", Theme::dark(), 1.0_f32),
+                ("dark-2x", Theme::dark().with_text_scale(2.0), 2.0),
+                ("light-1x", Theme::light(), 1.0),
+            ];
+            for (name, mut theme, scale) in variants {
+                // A still cannot show the entry slide; photograph the rest state.
+                theme.reduce_motion = true;
+                for state in ["live", "dnd", "locked"] {
+                    let chrome = new_chrome();
+                    {
+                        let mut ch = chrome.borrow_mut();
+                        match state {
+                            "dnd" => {
+                                ch.set_dnd(true);
+                                ch.push_notification("Held", "while quiet");
+                                ch.push_notification("Also held", "for later");
+                            }
+                            "locked" => {
+                                ch.push_notification("Private", "never shown while locked");
+                                ch.push_notification("Second", "count only");
+                                ch.set_session_locked(true);
+                            }
+                            _ => {
+                                ch.push_notification("Saved", "Report.pdf is in Documents");
+                                ch.push_notification_full(
+                                    Notification::new(
+                                        "Backup failed",
+                                        "The drive is not connected",
+                                    )
+                                    .with_severity(NotificationSeverity::Error),
+                                );
+                            }
+                        }
+                    }
+                    let mut stack = NotificationStack::new(chrome);
+                    stack.set_viewport(viewport);
+                    let mut tr = TextRenderer::new();
+                    tr.set_text_scale(scale);
+                    let mut scene = Scene::new();
+                    Widget::draw(
+                        &mut stack,
+                        &mut scene,
+                        Affine::IDENTITY,
+                        &mut tr,
+                        &theme,
+                        &PresenceCtx::default(),
+                    );
+                    assert_eq!(
+                        tr.text_scale(),
+                        scale,
+                        "the pass restores the renderer's scale"
+                    );
+                    let ground = theme.tokens.colors.surfaces.base;
+                    let path = out.join(format!("{name}-{state}.png"));
+                    renderer.render_png(&scene, ground, &path);
+                    assert!(
+                        path.is_file(),
+                        "notification fixture missing: {}",
+                        path.display()
+                    );
+                    // The rendered pixels, not just the file: the first surface
+                    // in the column (pill, locked card or toast card) is the
+                    // Panel ground at its plain bottom-right interior — the
+                    // toolkit toast and the two shell cards share one material.
+                    let first = Widget::get_rect(&stack);
+                    let first_h = if state == "live" {
+                        TOAST_HEIGHT
+                    } else {
+                        first.height()
+                    };
+                    let probe = Point::new(first.x1 - 12.0, first.y0 + first_h - 8.0);
+                    #[allow(
+                        clippy::cast_possible_truncation,
+                        clippy::cast_sign_loss,
+                        reason = "probe points are inside a positive viewport"
+                    )]
+                    let (r, g, b, _) =
+                        crate::shell::osd::review_offscreen::OffscreenRenderer::sample(
+                            &renderer.render_resilient(&scene, ground),
+                            w,
+                            probe.x as u32,
+                            probe.y as u32,
+                        );
+                    let e = ui::chrome::panel_ground(&theme).to_rgba8();
+                    assert!(
+                        r.abs_diff(e.r) <= 2 && g.abs_diff(e.g) <= 2 && b.abs_diff(e.b) <= 2,
+                        "{name}-{state}: surface interior ({r},{g},{b}) is the panel ground ({},{},{})",
+                        e.r,
+                        e.g,
+                        e.b
+                    );
+                }
+            }
+        }
+
+        fn compact_viewport_keeps_notification_inside_both_edges() {
+            let chrome = new_chrome();
+            let mut stack = NotificationStack::new(chrome);
+            stack.set_viewport(Rect::new(0.0, 0.0, 320.0, 480.0));
+            let width = stack.toast_width();
+            let x0 = stack.viewport.x1 - EDGE_INSET - width;
+            assert_eq!(width, 272.0);
+            assert_eq!(x0, EDGE_INSET);
+        }
+
+        fn live_notification_requests_entry_frames_and_a_future_exit_wake() {
+            let chrome = new_chrome();
+            chrome.borrow_mut().push_notification("Saved", "Ready");
+            let stack = NotificationStack::new(chrome);
+            assert!(Widget::needs_animation_frame(&stack));
+            assert!(Widget::next_wake_deadline(&stack).is_some());
+        }
+
+        fn reduced_motion_notification_is_settled_and_only_wakes_for_expiry() {
+            let chrome = new_chrome();
+            chrome.borrow_mut().push_notification("Saved", "Ready");
+            let mut stack = NotificationStack::new(chrome);
+            stack.reduce_motion = true;
+            assert!(!Widget::needs_animation_frame(&stack));
+            assert!(Widget::next_wake_deadline(&stack).is_some());
+            let n = stack.chrome.borrow().notifications()[0].clone();
+            assert_eq!(
+                NotificationStack::animation_state(&n, Instant::now(), true, 272.0),
+                (1.0, 0.0)
+            );
+        }
+
+        fn accessibility_exposes_a_named_live_region_with_latest_notification() {
+            use ui::a11y::{Politeness, Role};
+            let chrome = new_chrome();
+            let stack = NotificationStack::new(chrome.clone());
+            let node = Widget::accessibility(&stack).expect("the stack is a live region");
+            assert_eq!(node.role, Role::Group);
+            assert_eq!(node.name.as_deref(), Some("Notifications"));
+            assert_eq!(node.live, Some(Politeness::Polite));
+            assert_eq!(
+                node.value.as_deref(),
+                Some(""),
+                "an empty stack announces nothing"
+            );
+            chrome
+                .borrow_mut()
+                .push_notification("New mail", "secret subject");
+            let node = Widget::accessibility(&stack).unwrap();
+            assert_eq!(node.value.as_deref(), Some("New mail. secret subject"));
+            assert_eq!(
+                node.live,
+                Some(Politeness::Polite),
+                "an ordinary arrival waits its turn"
+            );
+            chrome
+                .borrow_mut()
+                .push_error_notification("Backup failed", "");
+            let node = Widget::accessibility(&stack).unwrap();
+            assert_eq!(node.value.as_deref(), Some("Backup failed"));
+            assert_eq!(node.live, Some(Politeness::Assertive), "an error cuts in");
+            // Locked: no title/body/app reaches the a11y tree.
+            chrome.borrow_mut().set_session_locked(true);
+            let node = Widget::accessibility(&stack).unwrap();
+            assert_eq!(node.value.as_deref(), Some("2 notifications"));
+            assert_eq!(node.live, Some(Politeness::Polite));
+        }
+
+        notification_stack_review_fixtures_are_written();
+        compact_viewport_keeps_notification_inside_both_edges();
+        live_notification_requests_entry_frames_and_a_future_exit_wake();
+        reduced_motion_notification_is_settled_and_only_wakes_for_expiry();
+        accessibility_exposes_a_named_live_region_with_latest_notification();
     }
 
     // ---------- D-Bus bridge wiring ----------
@@ -1319,36 +1372,72 @@ mod tests {
     }
 
     #[test]
-    fn from_incoming_maps_fields_and_urgency() {
-        let n = Notification::from_incoming(incoming(3, 2, -1));
-        assert_eq!(n.title, "New mail");
-        assert_eq!(n.body, "secret subject");
-        assert_eq!(n.dbus_id, Some(3));
-        assert_eq!(n.app_name.as_deref(), Some("org.mail"));
-        assert_eq!(n.source_workspace, Some(9));
-        // Critical urgency → Error severity + persistent dwell.
-        assert_eq!(n.severity, NotificationSeverity::Error);
-        assert_eq!(n.dismiss_after, PERSISTENT_DISMISS);
-        assert_eq!(n.default_action_key().as_deref(), Some("default"));
-    }
+    fn dbus_notifications_map_fields_and_replace_by_id() {
+        fn from_incoming_maps_fields_and_urgency() {
+            let n = Notification::from_incoming(incoming(3, 2, -1));
+            assert_eq!(n.title, "New mail");
+            assert_eq!(n.body, "secret subject");
+            assert_eq!(n.dbus_id, Some(3));
+            assert_eq!(n.app_name.as_deref(), Some("org.mail"));
+            assert_eq!(n.source_workspace, Some(9));
+            // Critical urgency → Error severity + persistent dwell.
+            assert_eq!(n.severity, NotificationSeverity::Error);
+            assert_eq!(n.dismiss_after, PERSISTENT_DISMISS);
+            assert_eq!(n.default_action_key().as_deref(), Some("default"));
+        }
 
-    #[test]
-    fn from_incoming_expire_timeout_mapping() {
-        // -1 = server default.
-        assert_eq!(
-            Notification::from_incoming(incoming(1, 1, -1)).dismiss_after,
-            DEFAULT_DISMISS_AFTER
-        );
-        // 0 = never expire (modelled as PERSISTENT_DISMISS).
-        assert_eq!(
-            Notification::from_incoming(incoming(1, 1, 0)).dismiss_after,
-            PERSISTENT_DISMISS
-        );
-        // >0 = milliseconds.
-        assert_eq!(
-            Notification::from_incoming(incoming(1, 1, 2500)).dismiss_after,
-            Duration::from_millis(2500)
-        );
+        fn from_incoming_expire_timeout_mapping() {
+            // -1 = server default.
+            assert_eq!(
+                Notification::from_incoming(incoming(1, 1, -1)).dismiss_after,
+                DEFAULT_DISMISS_AFTER
+            );
+            // 0 = never expire (modelled as PERSISTENT_DISMISS).
+            assert_eq!(
+                Notification::from_incoming(incoming(1, 1, 0)).dismiss_after,
+                PERSISTENT_DISMISS
+            );
+            // >0 = milliseconds.
+            assert_eq!(
+                Notification::from_incoming(incoming(1, 1, 2500)).dismiss_after,
+                Duration::from_millis(2500)
+            );
+        }
+
+        fn pump_dbus_notifications_creates_attributed_toast() {
+            let chrome = new_chrome();
+            let bridge = NotificationBridge::new();
+            chrome.borrow_mut().set_notification_bridge(bridge.clone());
+            bridge.push_incoming(incoming(11, 1, 5000));
+            chrome.borrow_mut().pump_dbus_notifications();
+            let ch = chrome.borrow();
+            assert_eq!(ch.notifications().len(), 1);
+            let toast = &ch.notifications()[0];
+            assert_eq!(toast.dbus_id, Some(11));
+            assert_eq!(toast.source_workspace, Some(9));
+            assert_eq!(toast.app_name.as_deref(), Some("org.mail"));
+        }
+
+        fn replaces_id_supersedes_existing_toast_via_pump() {
+            let chrome = new_chrome();
+            let bridge = NotificationBridge::new();
+            chrome.borrow_mut().set_notification_bridge(bridge.clone());
+            bridge.push_incoming(incoming(5, 1, 5000));
+            chrome.borrow_mut().pump_dbus_notifications();
+            // Same dbus_id replaces, not appends.
+            let mut second = incoming(5, 1, 5000);
+            second.summary = "Updated".into();
+            bridge.push_incoming(second);
+            chrome.borrow_mut().pump_dbus_notifications();
+            let ch = chrome.borrow();
+            assert_eq!(ch.notifications().len(), 1, "replaces_id must supersede");
+            assert_eq!(ch.notifications()[0].title, "Updated");
+        }
+
+        from_incoming_maps_fields_and_urgency();
+        from_incoming_expire_timeout_mapping();
+        pump_dbus_notifications_creates_attributed_toast();
+        replaces_id_supersedes_existing_toast_via_pump();
     }
 
     fn remote_notification(
@@ -1382,241 +1471,255 @@ mod tests {
     }
 
     #[test]
-    fn remote_projection_becomes_attributed_non_dbus_toast() {
-        let notification = Notification::from_remote_continuity(
-            remote_notification("phone", 1, "New mail", false),
-            2_000,
-        )
-        .unwrap();
-        assert_eq!(notification.title, "New mail");
-        assert_eq!(notification.body, "Secret preview");
-        assert_eq!(
-            notification.app_name.as_deref(),
-            Some("Mail · From Quinten's phone")
-        );
-        assert_eq!(notification.dbus_id, None);
-        assert_eq!(notification.source_workspace, None);
-        assert_eq!(notification.actions, vec![("reply".into(), "Reply".into())]);
-        assert_eq!(notification.dismiss_after, Duration::from_secs(10));
-        assert!(!notification.show_on_lock_screen);
-        assert_eq!(
-            notification
-                .remote_route
-                .as_ref()
-                .map(|route| route.source_device.as_str()),
-            Some("phone")
-        );
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn remote_projections_are_attributed_redacted_and_never_outlive_expiry() {
+        fn remote_projection_becomes_attributed_non_dbus_toast() {
+            let notification = Notification::from_remote_continuity(
+                remote_notification("phone", 1, "New mail", false),
+                2_000,
+            )
+            .unwrap();
+            assert_eq!(notification.title, "New mail");
+            assert_eq!(notification.body, "Secret preview");
+            assert_eq!(
+                notification.app_name.as_deref(),
+                Some("Mail · From Quinten's phone")
+            );
+            assert_eq!(notification.dbus_id, None);
+            assert_eq!(notification.source_workspace, None);
+            assert_eq!(notification.actions, vec![("reply".into(), "Reply".into())]);
+            assert_eq!(notification.dismiss_after, Duration::from_secs(10));
+            assert!(!notification.show_on_lock_screen);
+            assert_eq!(
+                notification
+                    .remote_route
+                    .as_ref()
+                    .map(|route| route.source_device.as_str()),
+                Some("phone")
+            );
+        }
 
-    #[test]
-    fn remote_redaction_cannot_be_reintroduced_by_ui_adapter() {
-        let notification = Notification::from_remote_continuity(
-            remote_notification("phone", 2, "Private", true),
-            2_000,
-        )
-        .unwrap();
-        assert!(notification.body.is_empty());
-        assert!(!notification.show_preview);
-    }
+        fn remote_redaction_cannot_be_reintroduced_by_ui_adapter() {
+            let notification = Notification::from_remote_continuity(
+                remote_notification("phone", 2, "Private", true),
+                2_000,
+            )
+            .unwrap();
+            assert!(notification.body.is_empty());
+            assert!(!notification.show_preview);
+        }
 
-    #[test]
-    fn remote_replacement_preserves_ui_identity_but_not_across_sources() {
-        let mut notification = Notification::from_remote_continuity(
-            remote_notification("phone", 3, "First", false),
-            2_000,
-        )
-        .unwrap();
-        let ui_id = notification.id;
-        assert!(
-            notification.replace_remote_continuity(
+        fn remote_replacement_preserves_ui_identity_but_not_across_sources() {
+            let mut notification = Notification::from_remote_continuity(
+                remote_notification("phone", 3, "First", false),
+                2_000,
+            )
+            .unwrap();
+            let ui_id = notification.id;
+            assert!(notification.replace_remote_continuity(
                 remote_notification("phone", 3, "Updated", false),
                 2_001,
-            )
-        );
-        assert_eq!(notification.id, ui_id);
-        assert_eq!(notification.title, "Updated");
-        assert!(
-            !notification.replace_remote_continuity(
+            ));
+            assert_eq!(notification.id, ui_id);
+            assert_eq!(notification.title, "Updated");
+            assert!(!notification.replace_remote_continuity(
                 remote_notification("tablet", 3, "Spoofed", false),
                 2_002,
+            ));
+            assert_eq!(notification.title, "Updated");
+        }
+
+        fn expired_remote_projection_is_not_adapted() {
+            assert!(
+                Notification::from_remote_continuity(
+                    remote_notification("phone", 5, "Stale", false),
+                    12_000,
+                )
+                .is_none()
+            );
+        }
+
+        fn remote_inbox_replaces_in_place_and_never_reprojects() {
+            let chrome = new_chrome();
+            let bridge = NotificationBridge::new();
+            chrome.borrow_mut().set_notification_bridge(bridge.clone());
+            let first = live_remote_projection(6, "First");
+            let mut replacement = first.clone();
+            replacement.title = "Updated".into();
+            let now = u64::try_from(chrono::Utc::now().timestamp_millis()).unwrap_or(0);
+            assert!(bridge.receive_continuity_projection("phone", "Phone", first, now));
+            assert!(bridge.receive_continuity_projection("phone", "Phone", replacement, now));
+            chrome.borrow_mut().pump_dbus_notifications();
+            let state = chrome.borrow();
+            assert_eq!(state.notifications().len(), 1);
+            assert_eq!(state.notifications()[0].title, "Updated");
+            drop(state);
+            assert!(bridge.drain_continuity_outbound().is_empty());
+        }
+
+        fn expired_remote_projection_leaves_no_toast_or_persisted_state() {
+            let chrome = new_chrome();
+            let bridge = NotificationBridge::new();
+            chrome.borrow_mut().set_notification_bridge(bridge.clone());
+            let now = u64::try_from(chrono::Utc::now().timestamp_millis()).unwrap_or(0);
+            let mut projection = live_remote_projection(8, "Brief");
+            projection.expires_unix_ms = now.saturating_add(10);
+            let id = projection.id;
+            assert!(bridge.receive_continuity_projection("phone", "Phone", projection, now));
+            chrome.borrow_mut().pump_dbus_notifications();
+            assert_eq!(chrome.borrow().notifications().len(), 1);
+            bridge.expire_remote_continuity(now.saturating_add(11));
+            chrome.borrow_mut().pump_dbus_notifications();
+            assert!(chrome.borrow().notifications().is_empty());
+            assert!(chrome.borrow().notification_history().is_empty());
+            assert!(!bridge.retire_remote_continuity("phone", id));
+        }
+
+        remote_projection_becomes_attributed_non_dbus_toast();
+        remote_redaction_cannot_be_reintroduced_by_ui_adapter();
+        remote_replacement_preserves_ui_identity_but_not_across_sources();
+        expired_remote_projection_is_not_adapted();
+        remote_inbox_replaces_in_place_and_never_reprojects();
+        expired_remote_projection_leaves_no_toast_or_persisted_state();
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
+    fn remote_notification_actions_route_to_their_exact_origin() {
+        fn remote_actions_return_exact_origin_commands_without_local_dbus_route() {
+            let notification = Notification::from_remote_continuity(
+                remote_notification("phone", 4, "Action", false),
+                2_000,
             )
-        );
-        assert_eq!(notification.title, "Updated");
-    }
+            .unwrap();
+            assert!(notification.dbus_id.is_none());
+            assert!(notification.remote_action_command("archive").is_none());
+            let action = notification.remote_action_command("reply").unwrap();
+            assert_eq!(action.target_device, "phone");
+            assert_eq!(
+                action.command,
+                crate::notifications::ContinuityNotificationCommand::Invoke {
+                    action_key: "reply".into(),
+                }
+            );
+            let dismiss = notification.remote_dismiss_command().unwrap();
+            assert_eq!(dismiss.target_device, "phone");
+            assert_eq!(
+                dismiss.command,
+                crate::notifications::ContinuityNotificationCommand::Dismiss
+            );
+        }
 
-    #[test]
-    fn remote_actions_return_exact_origin_commands_without_local_dbus_route() {
-        let notification = Notification::from_remote_continuity(
-            remote_notification("phone", 4, "Action", false),
-            2_000,
-        )
-        .unwrap();
-        assert!(notification.dbus_id.is_none());
-        assert!(notification.remote_action_command("archive").is_none());
-        let action = notification.remote_action_command("reply").unwrap();
-        assert_eq!(action.target_device, "phone");
-        assert_eq!(
-            action.command,
-            crate::notifications::ContinuityNotificationCommand::Invoke {
-                action_key: "reply".into(),
-            }
-        );
-        let dismiss = notification.remote_dismiss_command().unwrap();
-        assert_eq!(dismiss.target_device, "phone");
-        assert_eq!(
-            dismiss.command,
-            crate::notifications::ContinuityNotificationCommand::Dismiss
-        );
-    }
+        fn remote_activation_routes_command_and_origin_retire_removes_history() {
+            let chrome = new_chrome();
+            let bridge = NotificationBridge::new();
+            chrome.borrow_mut().set_notification_bridge(bridge.clone());
+            let projection = live_remote_projection(7, "Action");
+            let remote_id = projection.id;
+            let now = u64::try_from(chrono::Utc::now().timestamp_millis()).unwrap_or(0);
+            assert!(bridge.receive_continuity_projection("phone", "Phone", projection, now));
+            chrome.borrow_mut().pump_dbus_notifications();
+            let ui_id = chrome.borrow().notifications()[0].id;
+            assert!(chrome.borrow_mut().activate_notification(ui_id));
+            let commands = bridge.drain_continuity_command_egress();
+            assert_eq!(commands.len(), 1);
+            assert_eq!(commands[0].target_device, "phone");
+            assert_eq!(
+                commands[0].command,
+                crate::notifications::ContinuityNotificationCommand::Invoke {
+                    action_key: "reply".into(),
+                }
+            );
+            assert_eq!(chrome.borrow().notification_history().len(), 1);
+            chrome.borrow_mut().pump_dbus_notifications();
+            assert!(chrome.borrow().notification_history().is_empty());
+            assert!(!bridge.retire_remote_continuity("phone", remote_id));
+            assert!(bridge.drain_action_events().is_empty());
+            assert!(bridge.drain_closed_events().is_empty());
+        }
 
-    #[test]
-    fn expired_remote_projection_is_not_adapted() {
-        assert!(
-            Notification::from_remote_continuity(
-                remote_notification("phone", 5, "Stale", false),
-                12_000,
-            )
-            .is_none()
-        );
-    }
+        fn a_retained_mirrored_notification_routes_its_action_back_to_its_device() {
+            let chrome = new_chrome();
+            let bridge = NotificationBridge::new();
+            chrome.borrow_mut().set_notification_bridge(bridge.clone());
+            let projection = live_remote_projection(8, "Reply later");
+            let now = u64::try_from(chrono::Utc::now().timestamp_millis()).unwrap_or(0);
+            assert!(bridge.receive_continuity_projection("phone", "Phone", projection, now));
+            chrome.borrow_mut().pump_dbus_notifications();
+            let ui_id = chrome.borrow().notifications()[0].id;
+            // The banner times out locally; the origin still holds it.
+            let later = Instant::now() + Duration::from_secs(120);
+            chrome.borrow_mut().update_notification_lifecycle(later);
+            assert!(bridge.drain_continuity_command_egress().is_empty());
+            assert_eq!(chrome.borrow().notification_history()[0].id, ui_id);
 
-    #[test]
-    fn pump_dbus_notifications_creates_attributed_toast() {
-        let chrome = new_chrome();
-        let bridge = NotificationBridge::new();
-        chrome.borrow_mut().set_notification_bridge(bridge.clone());
-        bridge.push_incoming(incoming(11, 1, 5000));
-        chrome.borrow_mut().pump_dbus_notifications();
-        let ch = chrome.borrow();
-        assert_eq!(ch.notifications().len(), 1);
-        let toast = &ch.notifications()[0];
-        assert_eq!(toast.dbus_id, Some(11));
-        assert_eq!(toast.source_workspace, Some(9));
-        assert_eq!(toast.app_name.as_deref(), Some("org.mail"));
-    }
+            let outcome = chrome.borrow_mut().activate_history_notification(ui_id);
+            assert_eq!(
+                outcome,
+                crate::shell::notification_history::HistoryActivation::Invoked
+            );
+            let commands = bridge.drain_continuity_command_egress();
+            assert_eq!(commands.len(), 1);
+            assert_eq!(commands[0].target_device, "phone");
+            assert_eq!(
+                commands[0].command,
+                crate::notifications::ContinuityNotificationCommand::Invoke {
+                    action_key: "reply".into(),
+                }
+            );
+            assert!(
+                bridge.drain_action_events().is_empty(),
+                "no local D-Bus route"
+            );
+            assert!(chrome.borrow().notification_history().is_empty());
+        }
 
-    #[test]
-    fn only_verified_apps_project_and_preview_policy_redacts() {
-        let chrome = new_chrome();
-        let bridge = NotificationBridge::new();
-        chrome.borrow_mut().set_notification_bridge(bridge.clone());
+        fn origin_remote_command_invokes_live_app_closes_toast_and_retires_siblings() {
+            let chrome = new_chrome();
+            let bridge = NotificationBridge::new();
+            chrome.borrow_mut().set_notification_bridge(bridge.clone());
+            bridge.push_incoming(incoming(92, 1, 5_000));
+            chrome.borrow_mut().pump_dbus_notifications();
+            let events = bridge.drain_continuity_outbound();
+            let crate::notifications::ContinuityOutboundEvent::Project(projection) = &events[0]
+            else {
+                panic!("expected local projection");
+            };
+            let projection_id = projection.id;
+            let now = u64::try_from(chrono::Utc::now().timestamp_millis()).unwrap_or(0);
+            assert!(bridge.apply_continuity_command(
+                projection_id,
+                &crate::notifications::ContinuityNotificationCommand::Invoke {
+                    action_key: "default".into(),
+                },
+                now,
+            ));
+            chrome.borrow_mut().pump_dbus_notifications();
+            assert!(chrome.borrow().notifications().is_empty());
+            assert_eq!(chrome.borrow().notification_history().len(), 1);
+            assert_eq!(bridge.drain_action_events(), vec![(92, "default".into())]);
+            assert_eq!(
+                bridge.drain_closed_events(),
+                vec![(92, CloseReason::Dismissed)]
+            );
+            assert_eq!(
+                bridge.drain_continuity_outbound(),
+                vec![crate::notifications::ContinuityOutboundEvent::Retire(
+                    projection_id
+                )]
+            );
+        }
 
-        let mut unverified = incoming(90, 1, 5_000);
-        unverified.caller = None;
-        bridge.push_incoming(unverified);
-        chrome.borrow_mut().pump_dbus_notifications();
-        assert!(bridge.drain_continuity_outbound().is_empty());
-
-        let policy = settings_store::notification_policy::NotificationPolicy {
-            show_previews: false,
-            ..Default::default()
-        };
-        chrome
-            .borrow_mut()
-            .set_notification_policy_for_tests(policy);
-        bridge.push_incoming(incoming(91, 1, 5_000));
-        chrome.borrow_mut().pump_dbus_notifications();
-        let events = bridge.drain_continuity_outbound();
-        let crate::notifications::ContinuityOutboundEvent::Project(projection) = &events[0] else {
-            panic!("verified app should project");
-        };
-        assert!(projection.body_redacted);
-        assert!(projection.body.is_empty());
-    }
-
-    fn live_remote_projection(
-        token: u8,
-        title: &str,
-    ) -> crate::notifications::ContinuityNotificationProjection {
-        let now = u64::try_from(chrono::Utc::now().timestamp_millis()).unwrap_or(0);
-        let mut remote = remote_notification("phone", token, title, false).projection;
-        remote.expires_unix_ms = now.saturating_add(60_000);
-        remote
-    }
-
-    #[test]
-    fn remote_inbox_replaces_in_place_and_never_reprojects() {
-        let chrome = new_chrome();
-        let bridge = NotificationBridge::new();
-        chrome.borrow_mut().set_notification_bridge(bridge.clone());
-        let first = live_remote_projection(6, "First");
-        let mut replacement = first.clone();
-        replacement.title = "Updated".into();
-        let now = u64::try_from(chrono::Utc::now().timestamp_millis()).unwrap_or(0);
-        assert!(bridge.receive_continuity_projection("phone", "Phone", first, now));
-        assert!(bridge.receive_continuity_projection("phone", "Phone", replacement, now));
-        chrome.borrow_mut().pump_dbus_notifications();
-        let state = chrome.borrow();
-        assert_eq!(state.notifications().len(), 1);
-        assert_eq!(state.notifications()[0].title, "Updated");
-        drop(state);
-        assert!(bridge.drain_continuity_outbound().is_empty());
-    }
-
-    #[test]
-    fn remote_activation_routes_command_and_origin_retire_removes_history() {
-        let chrome = new_chrome();
-        let bridge = NotificationBridge::new();
-        chrome.borrow_mut().set_notification_bridge(bridge.clone());
-        let projection = live_remote_projection(7, "Action");
-        let remote_id = projection.id;
-        let now = u64::try_from(chrono::Utc::now().timestamp_millis()).unwrap_or(0);
-        assert!(bridge.receive_continuity_projection("phone", "Phone", projection, now));
-        chrome.borrow_mut().pump_dbus_notifications();
-        let ui_id = chrome.borrow().notifications()[0].id;
-        assert!(chrome.borrow_mut().activate_notification(ui_id));
-        let commands = bridge.drain_continuity_command_egress();
-        assert_eq!(commands.len(), 1);
-        assert_eq!(commands[0].target_device, "phone");
-        assert_eq!(
-            commands[0].command,
-            crate::notifications::ContinuityNotificationCommand::Invoke {
-                action_key: "reply".into(),
-            }
-        );
-        assert_eq!(chrome.borrow().notification_history().len(), 1);
-        chrome.borrow_mut().pump_dbus_notifications();
-        assert!(chrome.borrow().notification_history().is_empty());
-        assert!(!bridge.retire_remote_continuity("phone", remote_id));
-        assert!(bridge.drain_action_events().is_empty());
-        assert!(bridge.drain_closed_events().is_empty());
-    }
-
-    #[test]
-    fn a_retained_mirrored_notification_routes_its_action_back_to_its_device() {
-        let chrome = new_chrome();
-        let bridge = NotificationBridge::new();
-        chrome.borrow_mut().set_notification_bridge(bridge.clone());
-        let projection = live_remote_projection(8, "Reply later");
-        let now = u64::try_from(chrono::Utc::now().timestamp_millis()).unwrap_or(0);
-        assert!(bridge.receive_continuity_projection("phone", "Phone", projection, now));
-        chrome.borrow_mut().pump_dbus_notifications();
-        let ui_id = chrome.borrow().notifications()[0].id;
-        // The banner times out locally; the origin still holds it.
-        let later = Instant::now() + Duration::from_secs(120);
-        chrome.borrow_mut().update_notification_lifecycle(later);
-        assert!(bridge.drain_continuity_command_egress().is_empty());
-        assert_eq!(chrome.borrow().notification_history()[0].id, ui_id);
-
-        let outcome = chrome.borrow_mut().activate_history_notification(ui_id);
-        assert_eq!(
-            outcome,
-            crate::shell::notification_history::HistoryActivation::Invoked
-        );
-        let commands = bridge.drain_continuity_command_egress();
-        assert_eq!(commands.len(), 1);
-        assert_eq!(commands[0].target_device, "phone");
-        assert_eq!(
-            commands[0].command,
-            crate::notifications::ContinuityNotificationCommand::Invoke {
-                action_key: "reply".into(),
-            }
-        );
-        assert!(
-            bridge.drain_action_events().is_empty(),
-            "no local D-Bus route"
-        );
-        assert!(chrome.borrow().notification_history().is_empty());
+        remote_actions_return_exact_origin_commands_without_local_dbus_route();
+        remote_activation_routes_command_and_origin_retire_removes_history();
+        a_retained_mirrored_notification_routes_its_action_back_to_its_device();
+        origin_remote_command_invokes_live_app_closes_toast_and_retires_siblings();
     }
 
     #[test]
@@ -1644,487 +1747,475 @@ mod tests {
     }
 
     #[test]
-    fn origin_remote_command_invokes_live_app_closes_toast_and_retires_siblings() {
-        let chrome = new_chrome();
-        let bridge = NotificationBridge::new();
-        chrome.borrow_mut().set_notification_bridge(bridge.clone());
-        bridge.push_incoming(incoming(92, 1, 5_000));
-        chrome.borrow_mut().pump_dbus_notifications();
-        let events = bridge.drain_continuity_outbound();
-        let crate::notifications::ContinuityOutboundEvent::Project(projection) = &events[0] else {
-            panic!("expected local projection");
-        };
-        let projection_id = projection.id;
-        let now = u64::try_from(chrono::Utc::now().timestamp_millis()).unwrap_or(0);
-        assert!(bridge.apply_continuity_command(
-            projection_id,
-            &crate::notifications::ContinuityNotificationCommand::Invoke {
-                action_key: "default".into(),
-            },
-            now,
-        ));
-        chrome.borrow_mut().pump_dbus_notifications();
-        assert!(chrome.borrow().notifications().is_empty());
-        assert_eq!(chrome.borrow().notification_history().len(), 1);
-        assert_eq!(bridge.drain_action_events(), vec![(92, "default".into())]);
-        assert_eq!(
-            bridge.drain_closed_events(),
-            vec![(92, CloseReason::Dismissed)]
-        );
-        assert_eq!(
-            bridge.drain_continuity_outbound(),
-            vec![crate::notifications::ContinuityOutboundEvent::Retire(
-                projection_id
-            )]
-        );
-    }
+    fn only_verified_senders_project_badges_and_follow_their_settings() {
+        fn only_verified_apps_project_and_preview_policy_redacts() {
+            let chrome = new_chrome();
+            let bridge = NotificationBridge::new();
+            chrome.borrow_mut().set_notification_bridge(bridge.clone());
 
-    #[test]
-    fn expired_remote_projection_leaves_no_toast_or_persisted_state() {
-        let chrome = new_chrome();
-        let bridge = NotificationBridge::new();
-        chrome.borrow_mut().set_notification_bridge(bridge.clone());
-        let now = u64::try_from(chrono::Utc::now().timestamp_millis()).unwrap_or(0);
-        let mut projection = live_remote_projection(8, "Brief");
-        projection.expires_unix_ms = now.saturating_add(10);
-        let id = projection.id;
-        assert!(bridge.receive_continuity_projection("phone", "Phone", projection, now));
-        chrome.borrow_mut().pump_dbus_notifications();
-        assert_eq!(chrome.borrow().notifications().len(), 1);
-        bridge.expire_remote_continuity(now.saturating_add(11));
-        chrome.borrow_mut().pump_dbus_notifications();
-        assert!(chrome.borrow().notifications().is_empty());
-        assert!(chrome.borrow().notification_history().is_empty());
-        assert!(!bridge.retire_remote_continuity("phone", id));
-    }
+            let mut unverified = incoming(90, 1, 5_000);
+            unverified.caller = None;
+            bridge.push_incoming(unverified);
+            chrome.borrow_mut().pump_dbus_notifications();
+            assert!(bridge.drain_continuity_outbound().is_empty());
 
-    #[test]
-    fn only_verified_senders_can_update_shell_badges() {
-        let chrome = new_chrome();
-        let bridge = NotificationBridge::new();
-        chrome.borrow_mut().set_notification_bridge(bridge.clone());
-
-        let mut unverified = incoming(21, 1, 5000);
-        unverified.caller = None;
-        unverified.badge_count = Some(88);
-        bridge.push_incoming(unverified);
-        chrome.borrow_mut().pump_dbus_notifications();
-        assert_eq!(chrome.borrow().notification_badge_total(), 0);
-
-        let mut verified = incoming(22, 1, 5000);
-        verified.badge_count = Some(12);
-        bridge.push_incoming(verified);
-        chrome.borrow_mut().pump_dbus_notifications();
-        assert_eq!(chrome.borrow().notification_badge_for("org.mail"), 12);
-        assert_eq!(chrome.borrow().notification_badge_total(), 12);
-    }
-
-    #[test]
-    fn verified_foreign_identity_obeys_its_settings_rule() {
-        let chrome = new_chrome();
-        let bridge = NotificationBridge::new();
-        chrome.borrow_mut().set_notification_bridge(bridge.clone());
-        let mut policy = settings_store::notification_policy::NotificationPolicy::default();
-        policy.per_app.insert(
-            "org.example.Chat".into(),
-            settings_store::notification_policy::AppNotificationRule {
-                banners: Some(false),
+            let policy = settings_store::notification_policy::NotificationPolicy {
+                show_previews: false,
                 ..Default::default()
-            },
-        );
-        chrome
-            .borrow_mut()
-            .set_notification_policy_for_tests(policy);
+            };
+            chrome
+                .borrow_mut()
+                .set_notification_policy_for_tests(policy);
+            bridge.push_incoming(incoming(91, 1, 5_000));
+            chrome.borrow_mut().pump_dbus_notifications();
+            let events = bridge.drain_continuity_outbound();
+            let crate::notifications::ContinuityOutboundEvent::Project(projection) = &events[0]
+            else {
+                panic!("verified app should project");
+            };
+            assert!(projection.body_redacted);
+            assert!(projection.body.is_empty());
+        }
 
-        let mut foreign = incoming(23, 1, 5000);
-        // This is the identity the notification service derived from a
-        // Flatpak sender's PID + cgroup, not its Notify.app_name string.
-        foreign.app_name = "Pretend Settings".into();
-        foreign.caller = Some(PortalCaller::new(
-            WorkspaceId::default(),
-            "org.example.Chat",
-        ));
-        bridge.push_incoming(foreign);
-        chrome.borrow_mut().pump_dbus_notifications();
+        fn only_verified_senders_can_update_shell_badges() {
+            let chrome = new_chrome();
+            let bridge = NotificationBridge::new();
+            chrome.borrow_mut().set_notification_bridge(bridge.clone());
 
-        assert!(chrome.borrow().notifications().is_empty());
-        assert_eq!(chrome.borrow().notification_history().len(), 1);
-        assert_eq!(
-            chrome.borrow().notification_history()[0].app_id.as_deref(),
-            Some("org.example.Chat")
-        );
+            let mut unverified = incoming(21, 1, 5000);
+            unverified.caller = None;
+            unverified.badge_count = Some(88);
+            bridge.push_incoming(unverified);
+            chrome.borrow_mut().pump_dbus_notifications();
+            assert_eq!(chrome.borrow().notification_badge_total(), 0);
+
+            let mut verified = incoming(22, 1, 5000);
+            verified.badge_count = Some(12);
+            bridge.push_incoming(verified);
+            chrome.borrow_mut().pump_dbus_notifications();
+            assert_eq!(chrome.borrow().notification_badge_for("org.mail"), 12);
+            assert_eq!(chrome.borrow().notification_badge_total(), 12);
+        }
+
+        fn verified_foreign_identity_obeys_its_settings_rule() {
+            let chrome = new_chrome();
+            let bridge = NotificationBridge::new();
+            chrome.borrow_mut().set_notification_bridge(bridge.clone());
+            let mut policy = settings_store::notification_policy::NotificationPolicy::default();
+            policy.per_app.insert(
+                "org.example.Chat".into(),
+                settings_store::notification_policy::AppNotificationRule {
+                    banners: Some(false),
+                    ..Default::default()
+                },
+            );
+            chrome
+                .borrow_mut()
+                .set_notification_policy_for_tests(policy);
+
+            let mut foreign = incoming(23, 1, 5000);
+            // This is the identity the notification service derived from a
+            // Flatpak sender's PID + cgroup, not its Notify.app_name string.
+            foreign.app_name = "Pretend Settings".into();
+            foreign.caller = Some(PortalCaller::new(
+                WorkspaceId::default(),
+                "org.example.Chat",
+            ));
+            bridge.push_incoming(foreign);
+            chrome.borrow_mut().pump_dbus_notifications();
+
+            assert!(chrome.borrow().notifications().is_empty());
+            assert_eq!(chrome.borrow().notification_history().len(), 1);
+            assert_eq!(
+                chrome.borrow().notification_history()[0].app_id.as_deref(),
+                Some("org.example.Chat")
+            );
+        }
+
+        only_verified_apps_project_and_preview_policy_redacts();
+        only_verified_senders_can_update_shell_badges();
+        verified_foreign_identity_obeys_its_settings_rule();
+    }
+
+    fn live_remote_projection(
+        token: u8,
+        title: &str,
+    ) -> crate::notifications::ContinuityNotificationProjection {
+        let now = u64::try_from(chrono::Utc::now().timestamp_millis()).unwrap_or(0);
+        let mut remote = remote_notification("phone", token, title, false).projection;
+        remote.expires_unix_ms = now.saturating_add(60_000);
+        remote
     }
 
     #[test]
-    fn replaces_id_supersedes_existing_toast_via_pump() {
-        let chrome = new_chrome();
-        let bridge = NotificationBridge::new();
-        chrome.borrow_mut().set_notification_bridge(bridge.clone());
-        bridge.push_incoming(incoming(5, 1, 5000));
-        chrome.borrow_mut().pump_dbus_notifications();
-        // Same dbus_id replaces, not appends.
-        let mut second = incoming(5, 1, 5000);
-        second.summary = "Updated".into();
-        bridge.push_incoming(second);
-        chrome.borrow_mut().pump_dbus_notifications();
-        let ch = chrome.borrow();
-        assert_eq!(ch.notifications().len(), 1, "replaces_id must supersede");
-        assert_eq!(ch.notifications()[0].title, "Updated");
+    fn dbus_toasts_emit_closed_signals_and_internal_ones_never_do() {
+        fn expire_emits_notification_closed_event() {
+            let chrome = new_chrome();
+            let bridge = NotificationBridge::new();
+            chrome.borrow_mut().set_notification_bridge(bridge.clone());
+            chrome.borrow_mut().push_notification_full(
+                Notification::from_incoming(incoming(21, 1, 5000))
+                    .with_dismiss_after(Duration::from_millis(10)),
+            );
+            let future = Instant::now() + Duration::from_millis(200);
+            chrome.borrow_mut().update_notification_lifecycle(future);
+            assert_eq!(
+                bridge.drain_closed_events(),
+                vec![(21, CloseReason::Expired)],
+                "an expired D-Bus toast must emit NotificationClosed(reason=Expired)"
+            );
+        }
+
+        fn dismiss_emits_closed_event() {
+            let chrome = new_chrome();
+            let bridge = NotificationBridge::new();
+            chrome.borrow_mut().set_notification_bridge(bridge.clone());
+            let id = chrome
+                .borrow_mut()
+                .push_notification_full(Notification::from_incoming(incoming(31, 1, 5000)));
+            chrome.borrow_mut().dismiss_notification(id);
+            assert_eq!(
+                bridge.drain_closed_events(),
+                vec![(31, CloseReason::Dismissed)]
+            );
+        }
+
+        fn activate_invokes_default_action_then_closes() {
+            let chrome = new_chrome();
+            let bridge = NotificationBridge::new();
+            chrome.borrow_mut().set_notification_bridge(bridge.clone());
+            let id = chrome
+                .borrow_mut()
+                .push_notification_full(Notification::from_incoming(incoming(41, 1, 5000)));
+            assert!(chrome.borrow_mut().activate_notification(id));
+            assert!(chrome.borrow().notifications().is_empty());
+            assert_eq!(
+                bridge.drain_action_events(),
+                vec![(41, "default".to_string())]
+            );
+            assert_eq!(
+                bridge.drain_closed_events(),
+                vec![(41, CloseReason::Dismissed)]
+            );
+        }
+
+        fn close_request_pump_removes_and_emits_closed() {
+            let chrome = new_chrome();
+            let bridge = NotificationBridge::new();
+            chrome.borrow_mut().set_notification_bridge(bridge.clone());
+            bridge.push_incoming(incoming(51, 1, 5000));
+            chrome.borrow_mut().pump_dbus_notifications();
+            assert_eq!(chrome.borrow().notifications().len(), 1);
+            bridge.request_close(51);
+            chrome.borrow_mut().pump_dbus_notifications();
+            assert!(chrome.borrow().notifications().is_empty());
+            assert_eq!(
+                bridge.drain_closed_events(),
+                vec![(51, CloseReason::Closed)]
+            );
+        }
+
+        fn internal_notifications_never_emit_dbus_signals() {
+            let chrome = new_chrome();
+            let bridge = NotificationBridge::new();
+            chrome.borrow_mut().set_notification_bridge(bridge.clone());
+            let id = chrome.borrow_mut().push_notification("internal", "");
+            chrome.borrow_mut().dismiss_notification(id);
+            assert!(bridge.drain_closed_events().is_empty());
+        }
+
+        expire_emits_notification_closed_event();
+        dismiss_emits_closed_event();
+        activate_invokes_default_action_then_closes();
+        close_request_pump_removes_and_emits_closed();
+        internal_notifications_never_emit_dbus_signals();
     }
 
     #[test]
-    fn expire_emits_notification_closed_event() {
-        let chrome = new_chrome();
-        let bridge = NotificationBridge::new();
-        chrome.borrow_mut().set_notification_bridge(bridge.clone());
-        chrome.borrow_mut().push_notification_full(
-            Notification::from_incoming(incoming(21, 1, 5000))
-                .with_dismiss_after(Duration::from_millis(10)),
-        );
-        let future = Instant::now() + Duration::from_millis(200);
-        chrome.borrow_mut().update_notification_lifecycle(future);
-        assert_eq!(
-            bridge.drain_closed_events(),
-            vec![(21, CloseReason::Expired)],
-            "an expired D-Bus toast must emit NotificationClosed(reason=Expired)"
-        );
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
+    fn do_not_disturb_suppresses_toasts_but_keeps_attributed_history() {
+        fn session_lock_suppression_label() {
+            let chrome = new_chrome();
+            chrome.borrow_mut().push_notification("a", "b");
+            chrome.borrow_mut().push_notification("c", "d");
+            chrome.borrow_mut().set_session_locked(true);
+            assert!(chrome.borrow().session_locked());
+            assert_eq!(
+                lock_suppressed_label(chrome.borrow().notification_count()),
+                "2 notifications"
+            );
+        }
 
-    #[test]
-    fn dismiss_emits_closed_event() {
-        let chrome = new_chrome();
-        let bridge = NotificationBridge::new();
-        chrome.borrow_mut().set_notification_bridge(bridge.clone());
-        let id = chrome
-            .borrow_mut()
-            .push_notification_full(Notification::from_incoming(incoming(31, 1, 5000)));
-        chrome.borrow_mut().dismiss_notification(id);
-        assert_eq!(
-            bridge.drain_closed_events(),
-            vec![(31, CloseReason::Dismissed)]
-        );
-    }
+        fn dnd_suppresses_active_but_keeps_history() {
+            let chrome = new_chrome();
+            chrome.borrow_mut().set_dnd(true);
+            assert!(chrome.borrow().dnd());
+            let id = chrome.borrow_mut().push_notification("Held", "while DND");
+            let ch = chrome.borrow();
+            assert!(
+                ch.notifications().is_empty(),
+                "DND must keep the active banner stack empty"
+            );
+            assert_eq!(ch.notification_history().len(), 1);
+            assert_eq!(ch.notification_history()[0].title, "Held");
+            assert_eq!(ch.notification_history()[0].id, id);
+        }
 
-    #[test]
-    fn activate_invokes_default_action_then_closes() {
-        let chrome = new_chrome();
-        let bridge = NotificationBridge::new();
-        chrome.borrow_mut().set_notification_bridge(bridge.clone());
-        let id = chrome
-            .borrow_mut()
-            .push_notification_full(Notification::from_incoming(incoming(41, 1, 5000)));
-        assert!(chrome.borrow_mut().activate_notification(id));
-        assert!(chrome.borrow().notifications().is_empty());
-        assert_eq!(
-            bridge.drain_action_events(),
-            vec![(41, "default".to_string())]
-        );
-        assert_eq!(
-            bridge.drain_closed_events(),
-            vec![(41, CloseReason::Dismissed)]
-        );
-    }
+        fn dnd_suppressed_dbus_notification_preserves_attribution_in_history() {
+            let chrome = new_chrome();
+            let bridge = NotificationBridge::new();
+            chrome.borrow_mut().set_notification_bridge(bridge.clone());
+            chrome.borrow_mut().set_notification_policy_for_tests(
+                settings_store::notification_policy::NotificationPolicy {
+                    do_not_disturb: true,
+                    ..settings_store::notification_policy::NotificationPolicy::default()
+                },
+            );
+            bridge.push_incoming(incoming(77, 1, 5000));
+            chrome.borrow_mut().pump_dbus_notifications();
+            let ch = chrome.borrow();
+            assert!(ch.notifications().is_empty(), "DND suppresses the banner");
+            assert_eq!(ch.notification_history().len(), 1);
+            let h = &ch.notification_history()[0];
+            assert_eq!(h.dbus_id, Some(77));
+            assert_eq!(h.app_name.as_deref(), Some("org.mail"));
+            assert_eq!(h.source_workspace, Some(9));
+        }
 
-    #[test]
-    fn close_request_pump_removes_and_emits_closed() {
-        let chrome = new_chrome();
-        let bridge = NotificationBridge::new();
-        chrome.borrow_mut().set_notification_bridge(bridge.clone());
-        bridge.push_incoming(incoming(51, 1, 5000));
-        chrome.borrow_mut().pump_dbus_notifications();
-        assert_eq!(chrome.borrow().notifications().len(), 1);
-        bridge.request_close(51);
-        chrome.borrow_mut().pump_dbus_notifications();
-        assert!(chrome.borrow().notifications().is_empty());
-        assert_eq!(
-            bridge.drain_closed_events(),
-            vec![(51, CloseReason::Closed)]
-        );
-    }
+        fn toggle_dnd_flips_state_and_bumps_revision() {
+            let chrome = new_chrome();
+            let r0 = chrome.borrow().revision;
+            assert!(!chrome.borrow().dnd());
+            assert!(chrome.borrow_mut().toggle_dnd());
+            assert!(chrome.borrow().dnd());
+            assert!(chrome.borrow().revision > r0, "toggle must bump revision");
+            assert!(!chrome.borrow_mut().toggle_dnd());
+            assert!(!chrome.borrow().dnd());
+        }
 
-    #[test]
-    fn internal_notifications_never_emit_dbus_signals() {
-        let chrome = new_chrome();
-        let bridge = NotificationBridge::new();
-        chrome.borrow_mut().set_notification_bridge(bridge.clone());
-        let id = chrome.borrow_mut().push_notification("internal", "");
-        chrome.borrow_mut().dismiss_notification(id);
-        assert!(bridge.drain_closed_events().is_empty());
-    }
+        fn set_dnd_is_idempotent() {
+            let chrome = new_chrome();
+            let r0 = chrome.borrow().revision;
+            chrome.borrow_mut().set_dnd(false);
+            assert_eq!(
+                chrome.borrow().revision,
+                r0,
+                "a no-op set must not bump the revision"
+            );
+            chrome.borrow_mut().set_dnd(true);
+            assert!(chrome.borrow().revision > r0);
+        }
 
-    #[test]
-    fn session_lock_suppression_label() {
-        let chrome = new_chrome();
-        chrome.borrow_mut().push_notification("a", "b");
-        chrome.borrow_mut().push_notification("c", "d");
-        chrome.borrow_mut().set_session_locked(true);
-        assert!(chrome.borrow().session_locked());
-        assert_eq!(
-            lock_suppressed_label(chrome.borrow().notification_count()),
-            "2 notifications"
-        );
+        fn dnd_is_the_persisted_policy_and_the_tile_mirrors_it() {
+            let chrome = new_chrome();
+            chrome.borrow_mut().set_dnd(true);
+            {
+                let ch = chrome.borrow();
+                assert!(ch.dnd());
+                assert!(ch.quick_settings.do_not_disturb);
+                assert_eq!(
+                    ch.quiet_status(12 * 60, 0).as_deref(),
+                    Some("Do Not Disturb")
+                );
+            }
+            // Personal Settings writes the same policy; the shell adopts it.
+            chrome.borrow_mut().set_notification_policy_for_tests(
+                settings_store::notification_policy::NotificationPolicy::default(),
+            );
+            let ch = chrome.borrow();
+            assert!(!ch.dnd());
+            assert!(!ch.quick_settings.do_not_disturb);
+            assert_eq!(ch.quiet_status(12 * 60, 0), None);
+        }
+
+        fn a_focus_schedule_names_when_it_ends() {
+            let chrome = new_chrome();
+            chrome.borrow_mut().set_notification_policy_for_tests(
+                settings_store::notification_policy::NotificationPolicy {
+                    focus: settings_store::notification_policy::FocusSchedule {
+                        enabled: true,
+                        start_minute: 22 * 60,
+                        end_minute: 7 * 60 + 30,
+                        ..settings_store::notification_policy::FocusSchedule::default()
+                    },
+                    ..settings_store::notification_policy::NotificationPolicy::default()
+                },
+            );
+            let ch = chrome.borrow();
+            assert_eq!(
+                ch.quiet_status(23 * 60, 2).as_deref(),
+                Some("Focus until 07:30")
+            );
+            assert_eq!(ch.quiet_status(12 * 60, 2), None);
+        }
+
+        fn presenting_holds_banners_without_changing_the_persisted_switch() {
+            let chrome = new_chrome();
+            chrome.borrow_mut().set_presenting(true);
+            chrome
+                .borrow_mut()
+                .push_notification("Private", "not for the room");
+            {
+                let ch = chrome.borrow();
+                assert!(!ch.dnd(), "presenting never rewrites the person's choice");
+                assert!(ch.notifications().is_empty());
+                assert_eq!(ch.notification_history().len(), 1);
+                assert_eq!(
+                    ch.quiet_status(12 * 60, 0).as_deref(),
+                    Some("Do Not Disturb while presenting")
+                );
+            }
+            chrome.borrow_mut().set_presenting(false);
+            chrome.borrow_mut().push_notification("Back", "shown again");
+            assert_eq!(chrome.borrow().notifications().len(), 1);
+        }
+
+        fn sharing_a_surface_holds_banners() {
+            let chrome = new_chrome();
+            chrome.borrow_mut().set_active_exposures(vec![
+                crate::shell::chrome_state::ActiveExposure {
+                    peer: 7,
+                    surface: 3,
+                    can_control: false,
+                },
+            ]);
+            chrome
+                .borrow_mut()
+                .push_notification("Private", "not for peers");
+            let ch = chrome.borrow();
+            assert!(ch.notifications().is_empty());
+            assert_eq!(
+                ch.quiet_status(12 * 60, 0).as_deref(),
+                Some("Do Not Disturb while sharing")
+            );
+        }
+
+        fn leaving_dnd_does_not_replay_held_notifications() {
+            let chrome = new_chrome();
+            chrome.borrow_mut().set_dnd(true);
+            chrome.borrow_mut().push_notification("held", "");
+            chrome.borrow_mut().set_dnd(false);
+            assert!(
+                chrome.borrow().notifications().is_empty(),
+                "held notifications are not replayed as banners"
+            );
+            assert_eq!(chrome.borrow().notification_history().len(), 1);
+            // A fresh post now shows again.
+            chrome.borrow_mut().push_notification("live", "");
+            assert_eq!(chrome.borrow().notifications().len(), 1);
+        }
+
+        session_lock_suppression_label();
+        dnd_suppresses_active_but_keeps_history();
+        dnd_suppressed_dbus_notification_preserves_attribution_in_history();
+        toggle_dnd_flips_state_and_bumps_revision();
+        set_dnd_is_idempotent();
+        dnd_is_the_persisted_policy_and_the_tile_mirrors_it();
+        a_focus_schedule_names_when_it_ends();
+        presenting_holds_banners_without_changing_the_persisted_switch();
+        sharing_a_surface_holds_banners();
+        leaving_dnd_does_not_replay_held_notifications();
     }
 
     // ---------- Do-Not-Disturb + history ----------
 
     #[test]
-    fn dnd_suppresses_active_but_keeps_history() {
-        let chrome = new_chrome();
-        chrome.borrow_mut().set_dnd(true);
-        assert!(chrome.borrow().dnd());
-        let id = chrome.borrow_mut().push_notification("Held", "while DND");
-        let ch = chrome.borrow();
-        assert!(
-            ch.notifications().is_empty(),
-            "DND must keep the active banner stack empty"
-        );
-        assert_eq!(ch.notification_history().len(), 1);
-        assert_eq!(ch.notification_history()[0].title, "Held");
-        assert_eq!(ch.notification_history()[0].id, id);
-    }
-
-    #[test]
-    fn dnd_suppressed_dbus_notification_preserves_attribution_in_history() {
-        let chrome = new_chrome();
-        let bridge = NotificationBridge::new();
-        chrome.borrow_mut().set_notification_bridge(bridge.clone());
-        chrome.borrow_mut().set_notification_policy_for_tests(
-            settings_store::notification_policy::NotificationPolicy {
-                do_not_disturb: true,
-                ..settings_store::notification_policy::NotificationPolicy::default()
-            },
-        );
-        bridge.push_incoming(incoming(77, 1, 5000));
-        chrome.borrow_mut().pump_dbus_notifications();
-        let ch = chrome.borrow();
-        assert!(ch.notifications().is_empty(), "DND suppresses the banner");
-        assert_eq!(ch.notification_history().len(), 1);
-        let h = &ch.notification_history()[0];
-        assert_eq!(h.dbus_id, Some(77));
-        assert_eq!(h.app_name.as_deref(), Some("org.mail"));
-        assert_eq!(h.source_workspace, Some(9));
-    }
-
-    #[test]
-    fn active_notification_moves_to_history_on_dismiss() {
-        let chrome = new_chrome();
-        let id = chrome
-            .borrow_mut()
-            .push_notification("Shown", "then dismissed");
-        assert_eq!(chrome.borrow().notifications().len(), 1);
-        assert_eq!(chrome.borrow().notification_history().len(), 0);
-        chrome.borrow_mut().dismiss_notification(id);
-        assert!(chrome.borrow().notifications().is_empty());
-        assert_eq!(chrome.borrow().notification_history().len(), 1);
-        assert_eq!(chrome.borrow().notification_history()[0].title, "Shown");
-    }
-
-    #[test]
-    fn expiry_moves_notification_to_history() {
-        let chrome = new_chrome();
-        chrome.borrow_mut().push_notification_full(
-            Notification::new("Quick", "fades").with_dismiss_after(Duration::from_millis(10)),
-        );
-        assert_eq!(chrome.borrow().notification_history().len(), 0);
-        let future = Instant::now() + Duration::from_millis(200);
-        let dropped = chrome.borrow_mut().update_notification_lifecycle(future);
-        assert_eq!(dropped, 1);
-        assert!(chrome.borrow().notifications().is_empty());
-        assert_eq!(
-            chrome.borrow().notification_history().len(),
-            1,
-            "an expired toast must be retained in history"
-        );
-    }
-
-    #[test]
-    fn close_by_dbus_id_moves_to_history() {
-        let chrome = new_chrome();
-        let bridge = NotificationBridge::new();
-        chrome.borrow_mut().set_notification_bridge(bridge.clone());
-        bridge.push_incoming(incoming(88, 1, 5000));
-        chrome.borrow_mut().pump_dbus_notifications();
-        assert_eq!(chrome.borrow().notifications().len(), 1);
-        assert_eq!(chrome.borrow().notification_history().len(), 0);
-        bridge.request_close(88);
-        chrome.borrow_mut().pump_dbus_notifications();
-        assert!(chrome.borrow().notifications().is_empty());
-        assert_eq!(chrome.borrow().notification_history().len(), 1);
-        assert_eq!(chrome.borrow().notification_history()[0].dbus_id, Some(88));
-    }
-
-    #[test]
-    fn cap_eviction_retires_oldest_to_history() {
-        let chrome = new_chrome();
-        for i in 0..(MAX_NOTIFICATIONS + 3) {
-            chrome.borrow_mut().push_notification(format!("n{i}"), "");
-        }
-        assert_eq!(chrome.borrow().notifications().len(), MAX_NOTIFICATIONS);
-        // The 3 evicted from the front are in history, oldest-first.
-        let ch = chrome.borrow();
-        assert_eq!(ch.notification_history().len(), 3);
-        let titles: Vec<_> = ch
-            .notification_history()
-            .iter()
-            .map(|n| n.title.clone())
-            .collect();
-        assert_eq!(titles, vec!["n0", "n1", "n2"]);
-    }
-
-    #[test]
-    fn history_is_bounded_to_max() {
-        let chrome = new_chrome();
-        for i in 0..(MAX_HISTORY + 10) {
-            let id = chrome.borrow_mut().push_notification(format!("h{i}"), "");
+    fn retired_notifications_move_to_a_bounded_clearable_history() {
+        fn active_notification_moves_to_history_on_dismiss() {
+            let chrome = new_chrome();
+            let id = chrome
+                .borrow_mut()
+                .push_notification("Shown", "then dismissed");
+            assert_eq!(chrome.borrow().notifications().len(), 1);
+            assert_eq!(chrome.borrow().notification_history().len(), 0);
             chrome.borrow_mut().dismiss_notification(id);
+            assert!(chrome.borrow().notifications().is_empty());
+            assert_eq!(chrome.borrow().notification_history().len(), 1);
+            assert_eq!(chrome.borrow().notification_history()[0].title, "Shown");
         }
-        let ch = chrome.borrow();
-        assert_eq!(ch.notification_history().len(), MAX_HISTORY);
-        let last = ch.notification_history().last().unwrap().title.clone();
-        assert_eq!(last, format!("h{}", MAX_HISTORY + 10 - 1));
-        assert!(
-            ch.notification_history().iter().all(|n| n.title != "h0"),
-            "the oldest entry must have been evicted"
-        );
-    }
 
-    #[test]
-    fn clear_history_empties_the_log() {
-        let chrome = new_chrome();
-        let id = chrome.borrow_mut().push_notification("x", "y");
-        chrome.borrow_mut().dismiss_notification(id);
-        assert_eq!(chrome.borrow().notification_history().len(), 1);
-        chrome.borrow_mut().clear_notification_history();
-        assert_eq!(chrome.borrow().notification_history().len(), 0);
-    }
-
-    #[test]
-    fn toggle_dnd_flips_state_and_bumps_revision() {
-        let chrome = new_chrome();
-        let r0 = chrome.borrow().revision;
-        assert!(!chrome.borrow().dnd());
-        assert!(chrome.borrow_mut().toggle_dnd());
-        assert!(chrome.borrow().dnd());
-        assert!(chrome.borrow().revision > r0, "toggle must bump revision");
-        assert!(!chrome.borrow_mut().toggle_dnd());
-        assert!(!chrome.borrow().dnd());
-    }
-
-    #[test]
-    fn set_dnd_is_idempotent() {
-        let chrome = new_chrome();
-        let r0 = chrome.borrow().revision;
-        chrome.borrow_mut().set_dnd(false);
-        assert_eq!(
-            chrome.borrow().revision,
-            r0,
-            "a no-op set must not bump the revision"
-        );
-        chrome.borrow_mut().set_dnd(true);
-        assert!(chrome.borrow().revision > r0);
-    }
-
-    #[test]
-    fn dnd_is_the_persisted_policy_and_the_tile_mirrors_it() {
-        let chrome = new_chrome();
-        chrome.borrow_mut().set_dnd(true);
-        {
-            let ch = chrome.borrow();
-            assert!(ch.dnd());
-            assert!(ch.quick_settings.do_not_disturb);
+        fn expiry_moves_notification_to_history() {
+            let chrome = new_chrome();
+            chrome.borrow_mut().push_notification_full(
+                Notification::new("Quick", "fades").with_dismiss_after(Duration::from_millis(10)),
+            );
+            assert_eq!(chrome.borrow().notification_history().len(), 0);
+            let future = Instant::now() + Duration::from_millis(200);
+            let dropped = chrome.borrow_mut().update_notification_lifecycle(future);
+            assert_eq!(dropped, 1);
+            assert!(chrome.borrow().notifications().is_empty());
             assert_eq!(
-                ch.quiet_status(12 * 60, 0).as_deref(),
-                Some("Do Not Disturb")
+                chrome.borrow().notification_history().len(),
+                1,
+                "an expired toast must be retained in history"
             );
         }
-        // Personal Settings writes the same policy; the shell adopts it.
-        chrome.borrow_mut().set_notification_policy_for_tests(
-            settings_store::notification_policy::NotificationPolicy::default(),
-        );
-        let ch = chrome.borrow();
-        assert!(!ch.dnd());
-        assert!(!ch.quick_settings.do_not_disturb);
-        assert_eq!(ch.quiet_status(12 * 60, 0), None);
-    }
 
-    #[test]
-    fn a_focus_schedule_names_when_it_ends() {
-        let chrome = new_chrome();
-        chrome.borrow_mut().set_notification_policy_for_tests(
-            settings_store::notification_policy::NotificationPolicy {
-                focus: settings_store::notification_policy::FocusSchedule {
-                    enabled: true,
-                    start_minute: 22 * 60,
-                    end_minute: 7 * 60 + 30,
-                    ..settings_store::notification_policy::FocusSchedule::default()
-                },
-                ..settings_store::notification_policy::NotificationPolicy::default()
-            },
-        );
-        let ch = chrome.borrow();
-        assert_eq!(
-            ch.quiet_status(23 * 60, 2).as_deref(),
-            Some("Focus until 07:30")
-        );
-        assert_eq!(ch.quiet_status(12 * 60, 2), None);
-    }
+        fn close_by_dbus_id_moves_to_history() {
+            let chrome = new_chrome();
+            let bridge = NotificationBridge::new();
+            chrome.borrow_mut().set_notification_bridge(bridge.clone());
+            bridge.push_incoming(incoming(88, 1, 5000));
+            chrome.borrow_mut().pump_dbus_notifications();
+            assert_eq!(chrome.borrow().notifications().len(), 1);
+            assert_eq!(chrome.borrow().notification_history().len(), 0);
+            bridge.request_close(88);
+            chrome.borrow_mut().pump_dbus_notifications();
+            assert!(chrome.borrow().notifications().is_empty());
+            assert_eq!(chrome.borrow().notification_history().len(), 1);
+            assert_eq!(chrome.borrow().notification_history()[0].dbus_id, Some(88));
+        }
 
-    #[test]
-    fn presenting_holds_banners_without_changing_the_persisted_switch() {
-        let chrome = new_chrome();
-        chrome.borrow_mut().set_presenting(true);
-        chrome
-            .borrow_mut()
-            .push_notification("Private", "not for the room");
-        {
+        fn cap_eviction_retires_oldest_to_history() {
+            let chrome = new_chrome();
+            for i in 0..(MAX_NOTIFICATIONS + 3) {
+                chrome.borrow_mut().push_notification(format!("n{i}"), "");
+            }
+            assert_eq!(chrome.borrow().notifications().len(), MAX_NOTIFICATIONS);
+            // The 3 evicted from the front are in history, oldest-first.
             let ch = chrome.borrow();
-            assert!(!ch.dnd(), "presenting never rewrites the person's choice");
-            assert!(ch.notifications().is_empty());
-            assert_eq!(ch.notification_history().len(), 1);
-            assert_eq!(
-                ch.quiet_status(12 * 60, 0).as_deref(),
-                Some("Do Not Disturb while presenting")
+            assert_eq!(ch.notification_history().len(), 3);
+            let titles: Vec<_> = ch
+                .notification_history()
+                .iter()
+                .map(|n| n.title.clone())
+                .collect();
+            assert_eq!(titles, vec!["n0", "n1", "n2"]);
+        }
+
+        fn history_is_bounded_to_max() {
+            let chrome = new_chrome();
+            for i in 0..(MAX_HISTORY + 10) {
+                let id = chrome.borrow_mut().push_notification(format!("h{i}"), "");
+                chrome.borrow_mut().dismiss_notification(id);
+            }
+            let ch = chrome.borrow();
+            assert_eq!(ch.notification_history().len(), MAX_HISTORY);
+            let last = ch.notification_history().last().unwrap().title.clone();
+            assert_eq!(last, format!("h{}", MAX_HISTORY + 10 - 1));
+            assert!(
+                ch.notification_history().iter().all(|n| n.title != "h0"),
+                "the oldest entry must have been evicted"
             );
         }
-        chrome.borrow_mut().set_presenting(false);
-        chrome.borrow_mut().push_notification("Back", "shown again");
-        assert_eq!(chrome.borrow().notifications().len(), 1);
-    }
 
-    #[test]
-    fn sharing_a_surface_holds_banners() {
-        let chrome = new_chrome();
-        chrome.borrow_mut().set_active_exposures(vec![
-            crate::shell::chrome_state::ActiveExposure {
-                peer: 7,
-                surface: 3,
-                can_control: false,
-            },
-        ]);
-        chrome
-            .borrow_mut()
-            .push_notification("Private", "not for peers");
-        let ch = chrome.borrow();
-        assert!(ch.notifications().is_empty());
-        assert_eq!(
-            ch.quiet_status(12 * 60, 0).as_deref(),
-            Some("Do Not Disturb while sharing")
-        );
-    }
+        fn clear_history_empties_the_log() {
+            let chrome = new_chrome();
+            let id = chrome.borrow_mut().push_notification("x", "y");
+            chrome.borrow_mut().dismiss_notification(id);
+            assert_eq!(chrome.borrow().notification_history().len(), 1);
+            chrome.borrow_mut().clear_notification_history();
+            assert_eq!(chrome.borrow().notification_history().len(), 0);
+        }
 
-    #[test]
-    fn leaving_dnd_does_not_replay_held_notifications() {
-        let chrome = new_chrome();
-        chrome.borrow_mut().set_dnd(true);
-        chrome.borrow_mut().push_notification("held", "");
-        chrome.borrow_mut().set_dnd(false);
-        assert!(
-            chrome.borrow().notifications().is_empty(),
-            "held notifications are not replayed as banners"
-        );
-        assert_eq!(chrome.borrow().notification_history().len(), 1);
-        // A fresh post now shows again.
-        chrome.borrow_mut().push_notification("live", "");
-        assert_eq!(chrome.borrow().notifications().len(), 1);
+        active_notification_moves_to_history_on_dismiss();
+        expiry_moves_notification_to_history();
+        close_by_dbus_id_moves_to_history();
+        cap_eviction_retires_oldest_to_history();
+        history_is_bounded_to_max();
+        clear_history_empties_the_log();
     }
 }

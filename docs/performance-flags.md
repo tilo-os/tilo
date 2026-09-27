@@ -156,7 +156,7 @@ Sources: [warmup.rs](../crates/sdk/ui-core/src/warmup.rs), [shell startup](../cr
 
 ## UI dashboard benchmark
 
-Build `cargo build -p ui --release --example ui-perf --locked`, then invoke
+Build `cargo build -p ui-examples --release --example ui-perf --locked`, then invoke
 `target/release/examples/ui-perf dashboard_perf_bench`. All controls here are
 harness-only; none sets a production frame-rate limit.
 
@@ -201,7 +201,7 @@ Always check that the expected gate actually printed a result: a misspelled
 budget or an invalid value in an ignore-on-error parser is not a passing gate.
 A 16,667 µs p99 gate is a useful 60 Hz screen, not proof that every frame met
 its deadline. The million-event frozen test measures **zero redraws**, not a
-million rendered frames. Source: [dashboard harness](../crates/sdk/ui-core/examples/dashboard_perf_bench.rs).
+million rendered frames. Source: [dashboard harness](../crates/dev/ui-examples/examples/dashboard_perf_bench.rs).
 
 ### Other UI performance scenarios
 
@@ -216,9 +216,9 @@ results are not interchangeable with native-4K dashboard redraws:
 | `ui-shots perf_hud_shot` / `PERF_HUD_FRAMES` | `90` usize frames; invalid falls back. Feeds real CPU pass timings into a HUD screenshot at 1280×800, not an acceptance run. |
 | `PERF_HUD_OUT` | `/tmp/perf_hud/hud.png`; PNG output path for the HUD fixture, which creates parent directories and writes the image. Use a dedicated path to avoid replacing an existing image. |
 
-Sources: [perf_scenario.rs](../crates/sdk/ui-core/examples/perf_scenario.rs),
-[widget_perf_bench.rs](../crates/sdk/ui-core/examples/widget_perf_bench.rs),
-[perf_hud_shot.rs](../crates/sdk/ui-core/examples/perf_hud_shot.rs).
+Sources: [perf_scenario.rs](../crates/dev/ui-examples/examples/perf_scenario.rs),
+[widget_perf_bench.rs](../crates/dev/ui-examples/examples/widget_perf_bench.rs),
+[perf_hud_shot.rs](../crates/dev/ui-examples/examples/perf_hud_shot.rs).
 
 ## Shell redraw and cold-scene harnesses
 

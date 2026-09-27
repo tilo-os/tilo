@@ -749,145 +749,152 @@ mod tests {
     }
 
     #[test]
-    fn the_offer_is_exactly_what_the_app_exports() {
-        let body = request_body(
-            "turn the bullets into a table",
-            &[block("list_item", "a - 1")],
-        );
-        let schema = &body["output_config"]["format"]["schema"];
-        let ids: Vec<&str> = schema["properties"]["action"]["enum"]
-            .as_array()
-            .expect("an enum of ids")
-            .iter()
-            .map(|v| v.as_str().expect("a string id"))
-            .collect();
-        // Every catalogue id, plus the refusal, and nothing else: the model
-        // is not given room to name an action the app does not export.
-        let mut expected: Vec<&str> = plan::CATALOGUE.iter().map(|c| c.id).collect();
-        expected.push(plan::NOTHING_FITS);
-        assert_eq!(ids, expected);
-        assert_eq!(schema["additionalProperties"], serde_json::json!(false));
-        assert_eq!(body["model"], serde_json::json!(MODEL));
+    fn choosing_offers_the_model_exactly_the_catalogue_or_decides_by_keyword_when_off() {
+        // Case `the_offer_is_exactly_what_the_app_exports`.
+        {
+            let body = request_body(
+                "turn the bullets into a table",
+                &[block("list_item", "a - 1")],
+            );
+            let schema = &body["output_config"]["format"]["schema"];
+            let ids: Vec<&str> = schema["properties"]["action"]["enum"]
+                .as_array()
+                .expect("an enum of ids")
+                .iter()
+                .map(|v| v.as_str().expect("a string id"))
+                .collect();
+            // Every catalogue id, plus the refusal, and nothing else: the model
+            // is not given room to name an action the app does not export.
+            let mut expected: Vec<&str> = plan::CATALOGUE.iter().map(|c| c.id).collect();
+            expected.push(plan::NOTHING_FITS);
+            assert_eq!(ids, expected);
+            assert_eq!(schema["additionalProperties"], serde_json::json!(false));
+            assert_eq!(body["model"], serde_json::json!(MODEL));
 
-        // The document and the instruction both reach the model, and so do
-        // the exported action names behind each entry.
-        let turn = body["messages"][0]["content"]
-            .as_str()
-            .expect("a user turn");
-        assert!(turn.contains("turn the bullets into a table"), "{turn}");
-        assert!(turn.contains("list_item: a - 1"), "{turn}");
-        assert!(turn.contains("InsertTable"), "{turn}");
+            // The document and the instruction both reach the model, and so do
+            // the exported action names behind each entry.
+            let turn = body["messages"][0]["content"]
+                .as_str()
+                .expect("a user turn");
+            assert!(turn.contains("turn the bullets into a table"), "{turn}");
+            assert!(turn.contains("list_item: a - 1"), "{turn}");
+            assert!(turn.contains("InsertFilledTable"), "{turn}");
+        }
+
+        // Case `openai_compatible_profile_uses_its_model_and_chat_envelope`.
+        {
+            let selection = ModelRoute {
+                task: PLANNING_TASK.into(),
+                profile_id: agent_provider_config::LOCAL_PROFILE_ID.into(),
+                profile_label: "This device".into(),
+                protocol: agent_provider_config::ProviderProtocol::OpenAiCompatible,
+                location: agent_provider_config::EndpointLocation::ThisDevice,
+                model: agent_provider_config::ModelDescriptor::new("local-qwen"),
+                options: agent_provider_config::ModelOptions::default(),
+                layer: agent_provider_config::assign::Layer::Task,
+            };
+            let body = request_body_for(&selection, "make a title", &[]);
+            assert_eq!(body["model"], "local-qwen");
+            assert!(body.get("messages").is_some());
+        }
+
+        // Case `switched_off_decides_by_keyword_and_says_so`.
+        {
+            let c = Chooser::new(false, Duration::from_secs(1));
+            assert!(!c.is_live());
+            let d = c.choose("turn the bullets into a table", &[]);
+            assert_eq!(d.instruction, Instruction::Table);
+            assert_eq!(d.route, Route::Keywords(Fallback::Disabled));
+            assert!(!d.route.is_live());
+            assert_eq!(d.route.label(), "keywords");
+        }
     }
 
     #[test]
-    fn an_answer_is_read_out_of_a_messages_response() {
-        let body = serde_json::json!({
-            "stop_reason": "end_turn",
-            "content": [{"type": "text", "text": "{\"action\":\"table\",\"why\":\"bullets above it\"}"}]
-        })
-        .to_string();
-        assert_eq!(
-            parse_answer(&body).unwrap(),
-            Answer {
-                action: "table".into(),
-                why: "bullets above it".into()
-            }
-        );
-    }
-
-    #[test]
-    fn a_refusal_is_not_mistaken_for_an_answer() {
-        let body = serde_json::json!({
-            "stop_reason": "refusal",
-            "stop_details": {"type": "refusal", "category": "cyber"},
-            "content": []
-        })
-        .to_string();
-        assert!(parse_answer(&body).is_err());
-    }
-
-    #[test]
-    fn a_malformed_response_is_an_error_not_a_guess() {
-        assert!(parse_answer("not json").is_err());
-        assert!(parse_answer(&serde_json::json!({"content": []}).to_string()).is_err());
-        let no_action =
-            serde_json::json!({"content": [{"type": "text", "text": "{\"why\":\"x\"}"}]})
-                .to_string();
-        assert!(parse_answer(&no_action).is_err());
-    }
-
-    #[test]
-    fn an_action_the_app_does_not_export_is_refused_not_dispatched() {
-        // Whatever a model answers, only a catalogue id becomes an
-        // instruction. Everything else is `None` and the caller falls back.
-        assert_eq!(
-            Instruction::from_id("table", "make a table"),
-            Some(Instruction::Table)
-        );
-        for hostile in [
-            "ReplaceBody",
-            "RemoveBlocks",
-            "delete everything",
-            "table; drop",
-            "TABLE",
-            "",
-        ] {
+    fn a_model_answer_is_untrusted_parsed_strictly_and_only_a_catalogue_id_becomes_an_instruction()
+    {
+        // Case `an_answer_is_read_out_of_a_messages_response`.
+        {
+            let body = serde_json::json!({
+                "stop_reason": "end_turn",
+                "content": [{"type": "text", "text": "{\"action\":\"table\",\"why\":\"bullets above it\"}"}]
+            })
+            .to_string();
             assert_eq!(
-                Instruction::from_id(hostile, "whatever"),
-                None,
-                "{hostile:?} must not become an instruction"
+                parse_answer(&body).unwrap(),
+                Answer {
+                    action: "table".into(),
+                    why: "bullets above it".into()
+                }
             );
         }
-        // Refusing is a real answer, and lands on the path that says so in
-        // the document.
-        assert_eq!(
-            Instruction::from_id(plan::NOTHING_FITS, "juggle"),
-            Some(Instruction::Unknown("juggle".into()))
-        );
-    }
 
-    #[test]
-    fn switched_off_decides_by_keyword_and_says_so() {
-        let c = Chooser::new(false, Duration::from_secs(1));
-        assert!(!c.is_live());
-        let d = c.choose("turn the bullets into a table", &[]);
-        assert_eq!(d.instruction, Instruction::Table);
-        assert_eq!(d.route, Route::Keywords(Fallback::Disabled));
-        assert!(!d.route.is_live());
-        assert_eq!(d.route.label(), "keywords");
-    }
+        // Case `openai_compatible_response_uses_the_same_untrusted_answer_shape`.
+        {
+            let body = serde_json::json!({
+                "choices": [{"message": {"content": r#"{"action":"none","why":"not supported"}"#}}]
+            })
+            .to_string();
+            assert_eq!(
+                parse_answer_for(
+                    agent_provider_config::ProviderProtocol::OpenAiCompatible,
+                    &body
+                )
+                .unwrap()
+                .action,
+                "none"
+            );
+        }
 
-    #[test]
-    fn openai_compatible_profile_uses_its_model_and_chat_envelope() {
-        let selection = ModelRoute {
-            task: PLANNING_TASK.into(),
-            profile_id: agent_provider_config::LOCAL_PROFILE_ID.into(),
-            profile_label: "This device".into(),
-            protocol: agent_provider_config::ProviderProtocol::OpenAiCompatible,
-            location: agent_provider_config::EndpointLocation::ThisDevice,
-            model: agent_provider_config::ModelDescriptor::new("local-qwen"),
-            options: agent_provider_config::ModelOptions::default(),
-            layer: agent_provider_config::assign::Layer::Task,
-        };
-        let body = request_body_for(&selection, "make a title", &[]);
-        assert_eq!(body["model"], "local-qwen");
-        assert!(body.get("messages").is_some());
-    }
+        // Case `a_refusal_is_not_mistaken_for_an_answer`.
+        {
+            let body = serde_json::json!({
+                "stop_reason": "refusal",
+                "stop_details": {"type": "refusal", "category": "cyber"},
+                "content": []
+            })
+            .to_string();
+            assert!(parse_answer(&body).is_err());
+        }
 
-    #[test]
-    fn openai_compatible_response_uses_the_same_untrusted_answer_shape() {
-        let body = serde_json::json!({
-            "choices": [{"message": {"content": r#"{"action":"none","why":"not supported"}"#}}]
-        })
-        .to_string();
-        assert_eq!(
-            parse_answer_for(
-                agent_provider_config::ProviderProtocol::OpenAiCompatible,
-                &body
-            )
-            .unwrap()
-            .action,
-            "none"
-        );
+        // Case `a_malformed_response_is_an_error_not_a_guess`.
+        {
+            assert!(parse_answer("not json").is_err());
+            assert!(parse_answer(&serde_json::json!({"content": []}).to_string()).is_err());
+            let no_action =
+                serde_json::json!({"content": [{"type": "text", "text": "{\"why\":\"x\"}"}]})
+                    .to_string();
+            assert!(parse_answer(&no_action).is_err());
+        }
+
+        // Case `an_action_the_app_does_not_export_is_refused_not_dispatched`.
+        {
+            // Whatever a model answers, only a catalogue id becomes an
+            // instruction. Everything else is `None` and the caller falls back.
+            assert_eq!(
+                Instruction::from_id("table", "make a table"),
+                Some(Instruction::Table)
+            );
+            for hostile in [
+                "ReplaceBody",
+                "RemoveBlocks",
+                "delete everything",
+                "table; drop",
+                "TABLE",
+                "",
+            ] {
+                assert_eq!(
+                    Instruction::from_id(hostile, "whatever"),
+                    None,
+                    "{hostile:?} must not become an instruction"
+                );
+            }
+            // Refusing is a real answer, and lands on the path that says so in
+            // the document.
+            assert_eq!(
+                Instruction::from_id(plan::NOTHING_FITS, "juggle"),
+                Some(Instruction::Unknown("juggle".into()))
+            );
+        }
     }
 }

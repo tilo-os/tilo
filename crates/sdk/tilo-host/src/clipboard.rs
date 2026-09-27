@@ -172,30 +172,33 @@ mod tests {
         }
     }
 
-    /// The two targets must not alias. This is the property that made the
-    /// terminal's middle-click paste return the Ctrl+C text instead of the
-    /// drag-selected one.
     #[test]
-    fn backend_targets_are_independent() {
-        let b = RecordingBackend::default();
-        b.set_text(ClipboardTarget::Clipboard, "copied");
-        b.set_text(ClipboardTarget::Primary, "selected");
-        assert_eq!(
-            b.text(ClipboardTarget::Clipboard).as_deref(),
-            Some("copied")
-        );
-        assert_eq!(
-            b.text(ClipboardTarget::Primary).as_deref(),
-            Some("selected")
-        );
-    }
+    fn clipboard_backends_keep_targets_independent_and_refuse_unsupported_images() {
+        // Case `backend_targets_are_independent`:
+        // The two targets must not alias. This is the property that made the
+        // terminal's middle-click paste return the Ctrl+C text instead of the
+        // drag-selected one.
+        {
+            let b = RecordingBackend::default();
+            b.set_text(ClipboardTarget::Clipboard, "copied");
+            b.set_text(ClipboardTarget::Primary, "selected");
+            assert_eq!(
+                b.text(ClipboardTarget::Clipboard).as_deref(),
+                Some("copied")
+            );
+            assert_eq!(
+                b.text(ClipboardTarget::Primary).as_deref(),
+                Some("selected")
+            );
+        }
 
-    /// A backend that carries only text must say so rather than pretending an
-    /// image was copied — the PDF reader checks the return value to decide
-    /// whether to tell the user the copy worked.
-    #[test]
-    fn text_only_backend_refuses_images() {
-        let b = RecordingBackend::default();
-        assert!(!b.set_image(2, 2, &[0u8; 16]));
+        // Case `text_only_backend_refuses_images`:
+        // A backend that carries only text must say so rather than pretending an
+        // image was copied — the PDF reader checks the return value to decide
+        // whether to tell the user the copy worked.
+        {
+            let b = RecordingBackend::default();
+            assert!(!b.set_image(2, 2, &[0u8; 16]));
+        }
     }
 }

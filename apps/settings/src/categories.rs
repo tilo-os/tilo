@@ -599,17 +599,35 @@ impl Category {
 mod tests {
     use super::*;
 
+    /// Every category is unique, fully described, keyworded and sits in exactly
+    /// one listed section; slugs are unique too.
     #[test]
-    fn all_categories_are_unique() {
-        let mut seen = std::collections::HashSet::new();
+    fn category_catalogue_is_complete_unique_and_partitioned() {
+        let mut categories = std::collections::HashSet::new();
+        let mut slugs = std::collections::HashSet::new();
         for c in Category::ALL {
-            assert!(seen.insert(*c), "duplicate category {c:?}");
+            assert!(categories.insert(*c), "duplicate category {c:?}");
+            assert!(!c.label().is_empty(), "{c:?} missing label");
+            assert!(!c.subtitle().is_empty(), "{c:?} missing subtitle");
+            assert!(!c.slug().is_empty(), "{c:?} missing slug");
+            let _ = c.icon();
+            assert!(slugs.insert(c.slug()), "duplicate slug {}", c.slug());
+            assert!(
+                Section::ALL.contains(&c.section()),
+                "{c:?} section not in Section::ALL"
+            );
+            assert!(!c.keywords().is_empty(), "{c:?} must carry search keywords");
         }
-        assert_eq!(seen.len(), Category::ALL.len());
-    }
+        assert_eq!(categories.len(), Category::ALL.len());
 
-    #[test]
-    fn device_privacy_category_does_not_claim_workspace_authority() {
+        // Every category appears exactly once when we walk section by section.
+        let count: usize = Section::ALL
+            .iter()
+            .map(|s| Category::in_section(*s).count())
+            .sum();
+        assert_eq!(count, Category::ALL.len());
+
+        // The device privacy destination does not claim workspace authority.
         assert_eq!(
             Category::Permissions.label(),
             "Device Privacy & Security",
@@ -622,99 +640,66 @@ mod tests {
     }
 
     #[test]
-    fn every_category_has_label_subtitle_slug_and_icon() {
-        for c in Category::ALL {
-            assert!(!c.label().is_empty(), "{c:?} missing label");
-            assert!(!c.subtitle().is_empty(), "{c:?} missing subtitle");
-            assert!(!c.slug().is_empty(), "{c:?} missing slug");
-            let _ = c.icon();
-        }
-    }
-
-    #[test]
-    fn slugs_are_unique() {
-        let mut seen = std::collections::HashSet::new();
-        for c in Category::ALL {
-            assert!(seen.insert(c.slug()), "duplicate slug {}", c.slug());
-        }
-    }
-
-    #[test]
-    fn every_category_belongs_to_a_listed_section() {
-        for c in Category::ALL {
-            assert!(
-                Section::ALL.contains(&c.section()),
-                "{c:?} section not in Section::ALL"
-            );
-        }
-    }
-
-    #[test]
-    fn sections_partition_all_categories() {
-        // Every category appears exactly once when we walk section by section.
-        let mut count = 0;
-        for s in Section::ALL {
-            count += Category::in_section(*s).count();
-        }
-        assert_eq!(count, Category::ALL.len());
-    }
-
-    #[test]
-    fn empty_or_whitespace_query_matches_everything() {
+    fn category_queries_match_label_subtitle_and_keyword() {
         for c in Category::ALL {
             assert!(c.matches(""), "{c:?} should match an empty query");
             assert!(c.matches("   "), "{c:?} should match a whitespace query");
         }
-    }
-
-    #[test]
-    fn matches_by_label_subtitle_and_keyword() {
-        // Label substring.
-        assert!(Category::Network.matches("net"));
-        // Case-insensitive.
-        assert!(Category::Bluetooth.matches("BLUE"));
-        // Subtitle substring ("Pair and manage Bluetooth devices").
-        assert!(Category::Bluetooth.matches("pair"));
-        // Keyword-only terms land on the owning pane.
-        assert!(
-            Category::Displays.matches("night light"),
-            "night light → Displays"
-        );
-        assert!(Category::Network.matches("vpn"), "vpn → Network");
-        assert!(Category::Power.matches("battery"), "battery → Power");
-        assert!(
-            Category::Appearance.matches("dark mode"),
-            "dark mode → Appearance"
-        );
-        assert!(
-            Category::ExternalAccounts.matches("imap"),
-            "imap → External Accounts"
-        );
-        assert!(
-            Category::KeyboardShortcuts.matches("hotkeys"),
-            "hotkeys → Keyboard Shortcuts"
-        );
-        assert!(
-            Category::DeviceMesh.matches("file transfer"),
-            "file transfer → Devices & Sync"
-        );
-        assert!(
-            Category::DeviceMesh.matches("typed gamepad"),
-            "typed gamepad → Devices & Sync"
-        );
-    }
-
-    #[test]
-    fn non_matching_query_is_rejected() {
-        assert!(!Category::Network.matches("battery"));
-        assert!(!Category::About.matches("wifi"));
-        assert!(!Category::Sound.matches("zzzznope"));
-    }
-
-    #[test]
-    fn every_category_has_nonempty_keywords() {
-        for c in Category::ALL {
-            assert!(!c.keywords().is_empty(), "{c:?} must carry search keywords");
+        // (category, query, should match, why)
+        let cases = [
+            (Category::Network, "net", true, "label substring"),
+            (Category::Bluetooth, "BLUE", true, "case-insensitive"),
+            // Subtitle "Pair and manage Bluetooth devices".
+            (Category::Bluetooth, "pair", true, "subtitle substring"),
+            // Keyword-only terms land on the owning pane.
+            (
+                Category::Displays,
+                "night light",
+                true,
+                "night light → Displays",
+            ),
+            (Category::Network, "vpn", true, "vpn → Network"),
+            (Category::Power, "battery", true, "battery → Power"),
+            (
+                Category::Appearance,
+                "dark mode",
+                true,
+                "dark mode → Appearance",
+            ),
+            (
+                Category::ExternalAccounts,
+                "imap",
+                true,
+                "imap → External Accounts",
+            ),
+            (
+                Category::KeyboardShortcuts,
+                "hotkeys",
+                true,
+                "hotkeys → Keyboard Shortcuts",
+            ),
+            (
+                Category::DeviceMesh,
+                "file transfer",
+                true,
+                "file transfer → Devices & Sync",
+            ),
+            (
+                Category::DeviceMesh,
+                "typed gamepad",
+                true,
+                "typed gamepad → Devices & Sync",
+            ),
+            (Category::Network, "battery", false, "non-matching keyword"),
+            (Category::About, "wifi", false, "non-matching keyword"),
+            (Category::Sound, "zzzznope", false, "nonsense query"),
+        ];
+        for (category, query, want, why) in cases {
+            assert_eq!(
+                category.matches(query),
+                want,
+                "{category:?} matches {query:?}: {why}"
+            );
         }
     }
 }

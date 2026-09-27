@@ -959,99 +959,103 @@ mod tests {
         }
     }
 
+    /// Login-user parsing, two-stage removal, identity switching/protection and passwords kept out of the document.
     #[test]
-    fn parses_real_login_users() {
-        let admins = admins_from_group("wheel:x:10:ada\n");
-        let users = read_passwd_users(
-            "root:x:0:0:root:/root:/bin/bash\nada:x:1000:1000:Ada Lovelace:/home/ada:/bin/bash\n",
-            Some("ada"),
-            &admins,
-        );
-        assert_eq!(users.len(), 1);
-        assert!(users[0].admin && users[0].current);
-        assert_eq!(users[0].uid, 1000);
-    }
+    fn user_accounts_parse_and_mutate_through_narrow_backends() {
+        // Case `parses_real_login_users`.
+        {
+            let admins = admins_from_group("wheel:x:10:ada\n");
+            let users = read_passwd_users(
+                "root:x:0:0:root:/root:/bin/bash\nada:x:1000:1000:Ada Lovelace:/home/ada:/bin/bash\n",
+                Some("ada"),
+                &admins,
+            );
+            assert_eq!(users.len(), 1);
+            assert!(users[0].admin && users[0].current);
+            assert_eq!(users[0].uid, 1000);
+        }
 
-    #[test]
-    fn removal_is_two_stage_and_never_targets_current_user() {
-        let users = Arc::new(RecordingAdmin::default());
-        let ids = Arc::new(RecordingIds::default());
-        let mut pane = UsersPane::with_data(
-            vec![user("ada", true), user("bob", false)],
-            vec![identity("personal", true)],
-            users.clone(),
-            ids,
-        );
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        doc.put(&root, "settings.users.remove.bob", true).unwrap();
-        pane.sync(&mut doc, &root);
-        assert!(users.0.lock().unwrap().is_empty());
-        doc.put(&root, "settings.users.confirm_remove.bob", true)
+        // Case `removal_is_two_stage_and_never_targets_current_user`.
+        {
+            let users = Arc::new(RecordingAdmin::default());
+            let ids = Arc::new(RecordingIds::default());
+            let mut pane = UsersPane::with_data(
+                vec![user("ada", true), user("bob", false)],
+                vec![identity("personal", true)],
+                users.clone(),
+                ids,
+            );
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            doc.put(&root, "settings.users.remove.bob", true).unwrap();
+            pane.sync(&mut doc, &root);
+            assert!(users.0.lock().unwrap().is_empty());
+            doc.put(&root, "settings.users.confirm_remove.bob", true)
+                .unwrap();
+            pane.sync(&mut doc, &root);
+            assert_eq!(users.0.lock().unwrap().as_slice(), ["delete:bob:true"]);
+        }
+
+        // Case `identity_switch_uses_narrow_backend`.
+        {
+            let users = Arc::new(RecordingAdmin::default());
+            let ids = Arc::new(RecordingIds::default());
+            let mut pane = UsersPane::with_data(
+                vec![user("ada", true)],
+                vec![identity("personal", true), identity("work", false)],
+                users,
+                ids.clone(),
+            );
+            let mut doc = AutoCommit::new();
+            doc.put(
+                &automerge::ROOT,
+                "settings.users.identity.activate.work",
+                true,
+            )
             .unwrap();
-        pane.sync(&mut doc, &root);
-        assert_eq!(users.0.lock().unwrap().as_slice(), ["delete:bob:true"]);
-    }
+            pane.sync(&mut doc, &automerge::ROOT);
+            assert_eq!(ids.0.lock().unwrap().as_slice(), ["activate:work"]);
+        }
 
-    #[test]
-    fn identity_switch_uses_narrow_backend() {
-        let users = Arc::new(RecordingAdmin::default());
-        let ids = Arc::new(RecordingIds::default());
-        let mut pane = UsersPane::with_data(
-            vec![user("ada", true)],
-            vec![identity("personal", true), identity("work", false)],
-            users,
-            ids.clone(),
-        );
-        let mut doc = AutoCommit::new();
-        doc.put(
-            &automerge::ROOT,
-            "settings.users.identity.activate.work",
-            true,
-        )
-        .unwrap();
-        pane.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(ids.0.lock().unwrap().as_slice(), ["activate:work"]);
-    }
+        // Case `legacy_identity_protection_uses_the_narrow_backend`.
+        {
+            let users = Arc::new(RecordingAdmin::default());
+            let ids = Arc::new(RecordingIds::default());
+            let mut legacy = identity("personal", true);
+            legacy.protection = KeyProtection::LegacyPlaintext;
+            let mut pane =
+                UsersPane::with_data(vec![user("ada", true)], vec![legacy], users, ids.clone());
+            let mut doc = AutoCommit::new();
+            doc.put(
+                &automerge::ROOT,
+                "settings.users.identity.protect.personal",
+                true,
+            )
+            .unwrap();
+            pane.sync(&mut doc, &automerge::ROOT);
+            assert_eq!(ids.0.lock().unwrap().as_slice(), ["protect:personal"]);
+        }
 
-    #[test]
-    fn legacy_identity_protection_uses_the_narrow_backend() {
-        let users = Arc::new(RecordingAdmin::default());
-        let ids = Arc::new(RecordingIds::default());
-        let mut legacy = identity("personal", true);
-        legacy.protection = KeyProtection::LegacyPlaintext;
-        let mut pane =
-            UsersPane::with_data(vec![user("ada", true)], vec![legacy], users, ids.clone());
-        let mut doc = AutoCommit::new();
-        doc.put(
-            &automerge::ROOT,
-            "settings.users.identity.protect.personal",
-            true,
-        )
-        .unwrap();
-        pane.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(ids.0.lock().unwrap().as_slice(), ["protect:personal"]);
-    }
-
-    #[test]
-    fn account_password_never_enters_the_settings_document() {
-        let users = Arc::new(RecordingAdmin::default());
-        let ids = Arc::new(RecordingIds::default());
-        let mut pane = UsersPane::with_data(
-            vec![user("ada", true)],
-            vec![identity("personal", true)],
-            users,
-            ids,
-        );
-        *pane.password_buffer.lock().unwrap() = "correct horse battery staple".into();
-        let mut doc = AutoCommit::new();
-        doc.put(&automerge::ROOT, SAVE_KEY, true).unwrap();
-        pane.sync(&mut doc, &automerge::ROOT);
-        assert!(
-            doc.get(&automerge::ROOT, "users.form.password")
-                .unwrap()
-                .is_none()
-        );
-        assert!(pane.password_buffer.lock().unwrap().is_empty());
+        // Case `account_password_never_enters_the_settings_document`.
+        {
+            let users = Arc::new(RecordingAdmin::default());
+            let ids = Arc::new(RecordingIds::default());
+            let mut pane = UsersPane::with_data(
+                vec![user("ada", true)],
+                vec![identity("personal", true)],
+                users,
+                ids,
+            );
+            *pane.password_buffer.lock().unwrap() = "correct horse battery staple".into();
+            let mut doc = AutoCommit::new();
+            doc.put(&automerge::ROOT, SAVE_KEY, true).unwrap();
+            pane.sync(&mut doc, &automerge::ROOT);
+            assert!(
+                doc.get(&automerge::ROOT, "users.form.password")
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(pane.password_buffer.lock().unwrap().is_empty());
+        }
     }
 }

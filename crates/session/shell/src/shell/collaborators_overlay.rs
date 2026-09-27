@@ -622,6 +622,7 @@ impl CollaboratorsOverlay {
         reason = "a declarative accessibility tree for every panel control"
     )]
     pub fn accessibility_snapshot(&self) -> ui::a11y::AccessNode {
+        use crate::shell::i18n::{t, t_args};
         use ui::a11y::{AccessNode, AccessState, Role};
 
         let people = self
@@ -631,22 +632,31 @@ impl CollaboratorsOverlay {
             .map(|(index, row)| {
                 let mut details = Vec::new();
                 if row.is_agent {
-                    details.push("Agent".to_string());
+                    details.push(t("a11y-shell-people-agent"));
                 }
                 if row.invited {
-                    details.push("Invited, not currently present".to_string());
+                    details.push(t("a11y-shell-people-invited"));
                 } else {
-                    details.push("Present now".to_string());
+                    details.push(t("a11y-shell-people-present"));
                 }
                 if let Some(activity) = &row.activity {
-                    details.push(format!("Now: {activity}"));
+                    details.push(t_args(
+                        "a11y-shell-people-now",
+                        &[("activity", activity.into())],
+                    ));
                 }
                 if let Some(status) = &row.status {
-                    details.push(format!(
-                        "Intent{}: {}",
-                        if status.automatic { ", inferred" } else { "" },
-                        status.text
-                    ));
+                    details.push(if status.automatic {
+                        t_args(
+                            "a11y-shell-people-intent-inferred",
+                            &[("status", (&status.text).into())],
+                        )
+                    } else {
+                        t_args(
+                            "a11y-shell-people-intent",
+                            &[("status", (&status.text).into())],
+                        )
+                    });
                 }
                 AccessNode::new(Role::ListItem)
                     .with_name(row.label.clone())
@@ -656,7 +666,7 @@ impl CollaboratorsOverlay {
             .collect();
         let mut children = vec![
             AccessNode::new(Role::List)
-                .with_name("People here now")
+                .with_name(t("a11y-shell-people-here-now"))
                 .with_children(people),
         ];
         for hit in self.focus_order() {
@@ -664,13 +674,16 @@ impl CollaboratorsOverlay {
             let (role, name, description, checked) = match hit {
                 CollaboratorsHit::EditStatus => {
                     let mut description = if self.accessibility_status_automatic {
-                        "Inferred on this device from recent semantic actions".to_string()
+                        t("a11y-shell-status-inferred")
                     } else {
-                        "Set what you are trying to accomplish".to_string()
+                        t("a11y-shell-status-set")
                     };
                     if let Some(activity) = &self.accessibility_own_activity {
-                        description.push_str("; Now: ");
-                        description.push_str(activity);
+                        description.push_str("; ");
+                        description.push_str(&t_args(
+                            "a11y-shell-people-now",
+                            &[("activity", activity.into())],
+                        ));
                     }
                     (
                         if self.accessibility_editing {
@@ -678,7 +691,7 @@ impl CollaboratorsOverlay {
                         } else {
                             Role::Button
                         },
-                        "Your collaboration status".to_string(),
+                        t("a11y-shell-status-name"),
                         description,
                         None,
                     )
@@ -686,19 +699,17 @@ impl CollaboratorsOverlay {
                 CollaboratorsHit::SetStatusSharing(mode) => (
                     Role::RadioButton,
                     match mode {
-                        ui::StatusSharing::Automatic => "Automatic status",
-                        ui::StatusSharing::ManualOnly => "Manual status only",
-                        ui::StatusSharing::Off => "Hide status",
-                    }
-                    .to_string(),
+                        ui::StatusSharing::Automatic => t("a11y-shell-status-automatic"),
+                        ui::StatusSharing::ManualOnly => t("a11y-shell-status-manual"),
+                        ui::StatusSharing::Off => t("a11y-shell-status-off"),
+                    },
                     match mode {
                         ui::StatusSharing::Automatic => {
-                            "Infer a short status locally from recent workspace actions"
+                            t("a11y-shell-status-automatic-description")
                         }
-                        ui::StatusSharing::ManualOnly => "Share only text you enter yourself",
-                        ui::StatusSharing::Off => "Publish no status to this workspace",
-                    }
-                    .to_string(),
+                        ui::StatusSharing::ManualOnly => t("a11y-shell-status-manual-description"),
+                        ui::StatusSharing::Off => t("a11y-shell-status-off-description"),
+                    },
                     Some(self.accessibility_sharing == mode),
                 ),
                 CollaboratorsHit::ToggleFollow(index) => {
@@ -706,41 +717,41 @@ impl CollaboratorsOverlay {
                     (
                         Role::Button,
                         row.map_or_else(
-                            || "Follow collaborator".to_string(),
-                            |row| format!("Follow {}", row.label),
+                            || t("a11y-shell-follow-collaborator"),
+                            |row| t_args("a11y-shell-follow", &[("name", (&row.label).into())]),
                         ),
-                        "Mirror this participant's live workspace view".to_string(),
+                        t("a11y-shell-follow-description"),
                         None,
                     )
                 }
                 CollaboratorsHit::PreviousPeople => (
                     Role::Button,
-                    "Previous people".to_string(),
-                    "Show the previous people in this workspace".to_string(),
+                    t("a11y-shell-people-previous"),
+                    t("a11y-shell-people-previous-description"),
                     None,
                 ),
                 CollaboratorsHit::NextPeople => (
                     Role::Button,
-                    "Next people".to_string(),
-                    "Show the next people in this workspace".to_string(),
+                    t("a11y-shell-people-next"),
+                    t("a11y-shell-people-next-description"),
                     None,
                 ),
                 CollaboratorsHit::Invite => (
                     Role::Button,
-                    "Invite people".to_string(),
-                    "Create an authenticated workspace invitation".to_string(),
+                    t("a11y-shell-invite"),
+                    t("a11y-shell-invite-description"),
                     None,
                 ),
                 CollaboratorsHit::Join => (
                     Role::Button,
-                    "Join workspace".to_string(),
-                    "Connect using an authenticated invitation".to_string(),
+                    t("a11y-shell-join"),
+                    t("a11y-shell-join-description"),
                     None,
                 ),
                 CollaboratorsHit::RoomActivity => (
                     Role::Button,
-                    "Workspace activity".to_string(),
-                    "Review grouped outcomes and what happened while you were away".to_string(),
+                    t("a11y-shell-workspace-activity"),
+                    t("a11y-shell-workspace-activity-description"),
                     None,
                 ),
                 CollaboratorsHit::Absorb | CollaboratorsHit::Dismiss => continue,
@@ -760,15 +771,16 @@ impl CollaboratorsOverlay {
             }
             children.push(node);
         }
-        let mut description =
-            "Live workspace presence, current activity, intent, and status privacy controls"
-                .to_string();
+        let mut description = t("a11y-shell-people-description");
         if let Some(exposure) = &self.accessibility_screen_exposure {
-            description.push_str("; Screen visible now: ");
-            description.push_str(exposure);
+            description.push_str("; ");
+            description.push_str(&t_args(
+                "a11y-shell-people-screen-visible",
+                &[("exposure", exposure.into())],
+            ));
         }
         AccessNode::new(Role::Dialog)
-            .with_name("People")
+            .with_name(t("a11y-shell-people"))
             .with_description(description)
             .with_children(children)
     }
@@ -1691,383 +1703,245 @@ mod tests {
     use super::*;
     use crate::shell::state::FreshId as _;
 
-    /// HIG §9.5: the footer separator (derived against the Panel ground) and
-    /// the activity row's edge (derived against its lift floor) must both
-    /// register on every shipped palette.
     #[test]
-    fn footer_separator_and_row_edge_register_on_every_palette() {
-        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
-            let ground = ui::chrome::shell::panel_ground(&theme);
-            let floor = theme.tokens.colors.lift(0.35);
-            for (what, fill) in [("separator", ground), ("activity row", floor)] {
-                let delta = ui::surface::edge_delta(ui::surface::edge_on(fill), fill);
-                assert!(
-                    delta >= ui::tokens::colors::HAIRLINE_MIN_DELTA,
-                    "{}: the {what} must separate from its ground (Δ luminance {delta:.4})",
-                    theme.name
-                );
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn collaborators_footer_and_buttons_keep_token_geometry_on_every_palette() {
+        /// HIG §9.5: the footer separator (derived against the Panel ground) and
+        /// the activity row's edge (derived against its lift floor) must both
+        /// register on every shipped palette.
+        fn footer_separator_and_row_edge_register_on_every_palette() {
+            for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+                let ground = ui::chrome::shell::panel_ground(&theme);
+                let floor = theme.tokens.colors.lift(0.35);
+                for (what, fill) in [("separator", ground), ("activity row", floor)] {
+                    let delta = ui::surface::edge_delta(ui::surface::edge_on(fill), fill);
+                    assert!(
+                        delta >= ui::tokens::colors::HAIRLINE_MIN_DELTA,
+                        "{}: the {what} must separate from its ground (Δ luminance {delta:.4})",
+                        theme.name
+                    );
+                }
             }
         }
-    }
 
-    /// Nothing in the footer touches (HIG §7): the separator clears the
-    /// action band, the row clears the separator and the panel's edge, and
-    /// the row keeps its inset from the panel sides.
-    #[test]
-    fn footer_keeps_a_token_gap_around_the_activity_row() {
-        let s1 = f64::from(ui::tokens::Spacing::BASE.s1);
-        let mut overlay = CollaboratorsOverlay::default();
-        overlay.layout(Rect::new(0.0, 0.0, 1280.0, 800.0), 2, false, true, false);
-        let panel = overlay.panel_rect();
-        let activity = overlay.activity_rect();
-        let (invite, _join) = overlay.action_rects();
-        let separator_y = activity.y0 - 4.0;
-        assert!(
-            separator_y - invite.y1 >= s1,
-            "separator clears the action band"
-        );
-        assert!(activity.y0 - separator_y >= s1, "row clears the separator");
-        assert!(panel.y1 - activity.y1 >= s1, "row clears the panel edge");
-        assert!(activity.x0 - panel.x0 >= s1 && panel.x1 - activity.x1 >= s1);
-    }
-
-    #[test]
-    fn every_button_is_at_least_one_pointer_target_and_centred_in_its_band() {
-        let mut overlay = CollaboratorsOverlay::default();
-        overlay.layout(Rect::new(0.0, 0.0, 1200.0, 800.0), 3, false, true, false);
-        let (invite, join) = overlay.action_rects();
-        for rect in [invite, join]
-            .into_iter()
-            .chain(overlay.row_action_rects().iter().copied())
-        {
+        /// Nothing in the footer touches (HIG §7): the separator clears the
+        /// action band, the row clears the separator and the panel's edge, and
+        /// the row keeps its inset from the panel sides.
+        fn footer_keeps_a_token_gap_around_the_activity_row() {
+            let s1 = f64::from(ui::tokens::Spacing::BASE.s1);
+            let mut overlay = CollaboratorsOverlay::default();
+            overlay.layout(Rect::new(0.0, 0.0, 1280.0, 800.0), 2, false, true, false);
+            let panel = overlay.panel_rect();
+            let activity = overlay.activity_rect();
+            let (invite, _join) = overlay.action_rects();
+            let separator_y = activity.y0 - 4.0;
             assert!(
-                rect.height() >= MIN_TARGET && rect.width() >= MIN_TARGET,
-                "{rect:?} is at least 32 x 32"
+                separator_y - invite.y1 >= s1,
+                "separator clears the action band"
             );
+            assert!(activity.y0 - separator_y >= s1, "row clears the separator");
+            assert!(panel.y1 - activity.y1 >= s1, "row clears the panel edge");
+            assert!(activity.x0 - panel.x0 >= s1 && panel.x1 - activity.x1 >= s1);
         }
-        for (index, rect) in overlay.row_action_rects().iter().enumerate() {
-            let row_top =
-                overlay.panel_rect().y0 + 48.0 + MY_STATUS_H + row_count_as_f64(index) * ROW_H;
+
+        fn every_button_is_at_least_one_pointer_target_and_centred_in_its_band() {
+            let mut overlay = CollaboratorsOverlay::default();
+            overlay.layout(Rect::new(0.0, 0.0, 1200.0, 800.0), 3, false, true, false);
+            let (invite, join) = overlay.action_rects();
+            for rect in [invite, join]
+                .into_iter()
+                .chain(overlay.row_action_rects().iter().copied())
+            {
+                assert!(
+                    rect.height() >= MIN_TARGET && rect.width() >= MIN_TARGET,
+                    "{rect:?} is at least 32 x 32"
+                );
+            }
+            for (index, rect) in overlay.row_action_rects().iter().enumerate() {
+                let row_top =
+                    overlay.panel_rect().y0 + 48.0 + MY_STATUS_H + row_count_as_f64(index) * ROW_H;
+                assert!(
+                    (rect.center().y - (row_top + ROW_H / 2.0)).abs() < f64::EPSILON,
+                    "row {index}'s button is centred in its row"
+                );
+                assert!(rect.y0 >= row_top && rect.y1 <= row_top + ROW_H);
+            }
+            let band_top = overlay.panel_rect().y1 - FOOTER_H - ACTIONS_H;
+            assert!(invite.y0 >= band_top && invite.y1 <= band_top + ACTIONS_H);
             assert!(
-                (rect.center().y - (row_top + ROW_H / 2.0)).abs() < f64::EPSILON,
-                "row {index}'s button is centred in its row"
+                (invite.center().y - (band_top + ACTIONS_H / 2.0)).abs() < f64::EPSILON,
+                "footer buttons are centred in the action band"
             );
-            assert!(rect.y0 >= row_top && rect.y1 <= row_top + ROW_H);
+            assert_eq!(invite.y0, join.y0);
+            assert_eq!(invite.y1, join.y1);
         }
-        let band_top = overlay.panel_rect().y1 - FOOTER_H - ACTIONS_H;
-        assert!(invite.y0 >= band_top && invite.y1 <= band_top + ACTIONS_H);
-        assert!(
-            (invite.center().y - (band_top + ACTIONS_H / 2.0)).abs() < f64::EPSILON,
-            "footer buttons are centred in the action band"
-        );
-        assert_eq!(invite.y0, join.y0);
-        assert_eq!(invite.y1, join.y1);
-    }
 
-    #[test]
-    fn agent_classification_uses_stable_identity_not_display_label() {
-        use crate::shell::state::{CapOverride, Subject, Verb, Workspace, WorkspaceId};
+        fn crowded_rosters_page_without_putting_rows_under_the_footer() {
+            let mut overlay = CollaboratorsOverlay::default();
+            let host = Rect::new(0.0, 0.0, 1200.0, 800.0);
+            overlay.layout(host, 8, false, true, false);
 
-        let mut workspace = Workspace::new(WorkspaceId::new(), "Shared");
-        workspace.owner = Some("owner".into());
-        workspace
-            .grant_as(
-                &"owner".to_string(),
-                CapOverride::membership(
-                    Subject::agent("scribe"),
-                    workspace.id.raw().to_string(),
-                    Verb::Write,
-                ),
-            )
-            .expect("owner admits agent");
-        workspace
-            .collaborators
-            .push(crate::shell::state::Collaborator::new(
-                "scribe",
-                "Release Notes Agent",
-            ));
-        let mut tree = WorkspaceTree::default();
-        tree.desktop.active = workspace.id;
-        tree.desktop.workspaces.push(workspace);
-
-        let rows = collaborator_roster_rows(&tree);
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].label, "Release Notes Agent");
-        assert!(
-            rows[0].is_agent,
-            "a renamed agent must never appear as a person"
-        );
-        assert_eq!(rows[0].role.as_deref(), Some("editor"));
-    }
-
-    #[test]
-    fn the_recorder_is_listed_as_an_observer_agent() {
-        use crate::shell::recorder::{RECORDER_ADMISSION, RECORDER_AGENT, RECORDER_LABEL};
-        use crate::shell::state::{CapOverride, Subject, Verb, Workspace, WorkspaceId};
-
-        let mut workspace = Workspace::new(WorkspaceId::new(), "Recorded");
-        workspace.owner = Some("owner".into());
-        workspace
-            .grant_as(
-                &"owner".to_string(),
-                CapOverride::membership(
-                    Subject::agent(RECORDER_AGENT),
-                    workspace.room.to_string(),
-                    Verb::Read,
-                )
-                .with_id(RECORDER_ADMISSION.to_string()),
-            )
-            .expect("owner admits the recorder");
-        workspace
-            .collaborators
-            .push(crate::shell::state::Collaborator::new(
-                RECORDER_AGENT,
-                RECORDER_LABEL,
-            ));
-        assert_eq!(
-            crate::shell::workspace_settings::agent_authority_preset(&workspace, RECORDER_AGENT),
-            crate::shell::workspace_settings::AgentAuthorityPreset::Observer
-        );
-        let mut tree = WorkspaceTree::default();
-        tree.desktop.active = workspace.id;
-        tree.desktop.workspaces.push(workspace);
-
-        let rows = collaborator_roster_rows(&tree);
-        assert_eq!(rows.len(), 1);
-        assert!(rows[0].is_agent, "the recording indicator is the AGENT row");
-        assert_eq!(rows[0].label, RECORDER_LABEL);
-        assert_eq!(rows[0].role.as_deref(), Some("viewer"));
-    }
-
-    #[test]
-    fn a_hidden_room_lists_nobody_even_when_it_is_active() {
-        use crate::shell::state::{Workspace, WorkspaceId};
-
-        let mut workspace = Workspace::new(WorkspaceId::new(), "Check");
-        workspace.ephemeral = true;
-        workspace.hidden = true;
-        let mut viewing = crate::shell::state::Collaborator::new("replay", "Replay");
-        viewing.active_tab = Some(1);
-        workspace.collaborators.push(viewing);
-        let mut tree = WorkspaceTree::default();
-        tree.desktop.active = workspace.id;
-        tree.desktop.workspaces.push(workspace);
-        tree.desktop
-            .collaborators
-            .push(crate::shell::state::Collaborator::new("replay", "Replay"));
-
-        assert!(collaborator_roster_rows(&tree).is_empty());
-        let mut presence = ui::presence::PresenceCtx::default();
-        crate::shell::sync_tab_presence_from_tree(&tree, &mut presence);
-        assert!(presence.here.is_empty());
-    }
-
-    #[test]
-    fn hit_testing_uses_the_same_cached_geometry_as_paint() {
-        let mut overlay = CollaboratorsOverlay::default();
-        overlay.layout(Rect::new(0.0, 0.0, 1200.0, 800.0), 2, false, true, false);
-        let (invite, join) = overlay.action_rects();
-        assert_eq!(overlay.hit_test(invite.center()), CollaboratorsHit::Invite);
-        assert_eq!(overlay.hit_test(join.center()), CollaboratorsHit::Join);
-        assert_eq!(
-            overlay.hit_test(overlay.row_action_rects()[0].center()),
-            CollaboratorsHit::ToggleFollow(0),
-        );
-        assert_eq!(
-            overlay.hit_test(overlay.activity_rect().center()),
-            CollaboratorsHit::RoomActivity
-        );
-        assert_eq!(
-            overlay.hit_test(overlay.panel_rect().center()),
-            CollaboratorsHit::Absorb
-        );
-        assert_eq!(overlay.hit_test(Point::ZERO), CollaboratorsHit::Dismiss);
-    }
-
-    #[test]
-    fn policy_removes_invite_geometry_instead_of_only_hiding_it() {
-        let mut overlay = CollaboratorsOverlay::default();
-        let host = Rect::new(0.0, 0.0, 1200.0, 800.0);
-        overlay.layout(host, 1, false, true, false);
-        assert!(overlay.action_rects().0.area() > 0.0);
-        overlay.layout(host, 1, false, false, false);
-        assert_eq!(overlay.action_rects(), (Rect::ZERO, Rect::ZERO));
-    }
-
-    #[test]
-    fn crowded_rosters_page_without_putting_rows_under_the_footer() {
-        let mut overlay = CollaboratorsOverlay::default();
-        let host = Rect::new(0.0, 0.0, 1200.0, 800.0);
-        overlay.layout(host, 8, false, true, false);
-
-        assert_eq!(
-            overlay
-                .row_action_rects()
-                .iter()
-                .filter(|rect| rect.area() > 0.0)
-                .count(),
-            ROSTER_PAGE_SIZE
-        );
-        assert!(overlay.next_people.area() > 0.0);
-        assert_eq!(
-            overlay.hit_test(overlay.next_people.center()),
-            CollaboratorsHit::NextPeople
-        );
-        assert!(
-            overlay
-                .row_rects
-                .iter()
-                .filter(|rect| rect.area() > 0.0)
-                .all(|rect| rect.y1 < overlay.activity.y0)
-        );
-
-        overlay.change_people_page(true, 8);
-        overlay.layout(host, 8, false, true, false);
-        assert_eq!(overlay.roster_range, 3..6);
-        assert!(overlay.previous_people.area() > 0.0);
-        assert_eq!(
-            overlay.hit_test(overlay.row_action_rects()[3].center()),
-            CollaboratorsHit::ToggleFollow(3)
-        );
-
-        overlay.change_people_page(true, 8);
-        overlay.layout(host, 8, false, true, false);
-        assert_eq!(overlay.roster_range, 6..8);
-        assert_eq!(
-            overlay
-                .row_action_rects()
-                .iter()
-                .filter(|rect| rect.area() > 0.0)
-                .count(),
-            2
-        );
-        assert_eq!(overlay.next_people, Rect::ZERO);
-    }
-
-    #[test]
-    fn clearing_drops_every_invisible_hit_target() {
-        let mut overlay = CollaboratorsOverlay::default();
-        overlay.layout(Rect::new(0.0, 0.0, 1200.0, 800.0), 1, false, true, false);
-        overlay.clear();
-        assert_eq!(overlay.panel_rect(), Rect::ZERO);
-        assert_eq!(overlay.action_rects(), (Rect::ZERO, Rect::ZERO));
-        assert_eq!(overlay.activity_rect(), Rect::ZERO);
-        assert!(overlay.row_action_rects().is_empty());
-    }
-
-    #[test]
-    fn own_status_and_privacy_modes_are_first_class_hit_targets() {
-        let mut overlay = CollaboratorsOverlay::default();
-        overlay.layout(Rect::new(0.0, 0.0, 1200.0, 800.0), 2, false, true, false);
-        assert_eq!(
-            overlay.hit_test(overlay.status.center()),
-            CollaboratorsHit::EditStatus
-        );
-        for (mode, rect) in &overlay.status_modes {
             assert_eq!(
-                overlay.hit_test(rect.center()),
-                CollaboratorsHit::SetStatusSharing(*mode)
+                overlay
+                    .row_action_rects()
+                    .iter()
+                    .filter(|rect| rect.area() > 0.0)
+                    .count(),
+                ROSTER_PAGE_SIZE
             );
+            assert!(overlay.next_people.area() > 0.0);
+            assert_eq!(
+                overlay.hit_test(overlay.next_people.center()),
+                CollaboratorsHit::NextPeople
+            );
+            assert!(
+                overlay
+                    .row_rects
+                    .iter()
+                    .filter(|rect| rect.area() > 0.0)
+                    .all(|rect| rect.y1 < overlay.activity.y0)
+            );
+
+            overlay.change_people_page(true, 8);
+            overlay.layout(host, 8, false, true, false);
+            assert_eq!(overlay.roster_range, 3..6);
+            assert!(overlay.previous_people.area() > 0.0);
+            assert_eq!(
+                overlay.hit_test(overlay.row_action_rects()[3].center()),
+                CollaboratorsHit::ToggleFollow(3)
+            );
+
+            overlay.change_people_page(true, 8);
+            overlay.layout(host, 8, false, true, false);
+            assert_eq!(overlay.roster_range, 6..8);
+            assert_eq!(
+                overlay
+                    .row_action_rects()
+                    .iter()
+                    .filter(|rect| rect.area() > 0.0)
+                    .count(),
+                2
+            );
+            assert_eq!(overlay.next_people, Rect::ZERO);
         }
+
+        footer_separator_and_row_edge_register_on_every_palette();
+        footer_keeps_a_token_gap_around_the_activity_row();
+        every_button_is_at_least_one_pointer_target_and_centred_in_its_band();
+        crowded_rosters_page_without_putting_rows_under_the_footer();
     }
 
     #[test]
-    fn keyboard_reaches_status_privacy_follow_and_activity_without_pointer_input() {
-        let mut overlay = CollaboratorsOverlay::default();
-        overlay.layout(Rect::new(0.0, 0.0, 1200.0, 800.0), 1, false, true, false);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn collaborators_accessibility_and_roster_separate_identity_action_and_intent() {
+        fn agent_classification_uses_stable_identity_not_display_label() {
+            use crate::shell::state::{CapOverride, Subject, Verb, Workspace, WorkspaceId};
 
-        assert_eq!(overlay.key(&Key::Named(NamedKey::Home), false), None);
-        assert_eq!(
-            overlay.key(&Key::Named(NamedKey::Enter), false),
-            Some(CollaboratorsHit::EditStatus)
-        );
-        assert_eq!(overlay.key(&Key::Named(NamedKey::End), false), None);
-        assert_eq!(
-            overlay.key(&Key::Named(NamedKey::Space), false),
-            Some(CollaboratorsHit::RoomActivity)
-        );
-        assert_eq!(
-            overlay.key(&Key::Named(NamedKey::Escape), false),
-            Some(CollaboratorsHit::Dismiss)
-        );
-    }
+            let mut workspace = Workspace::new(WorkspaceId::new(), "Shared");
+            workspace.owner = Some("owner".into());
+            workspace
+                .grant_as(
+                    &"owner".to_string(),
+                    CapOverride::membership(
+                        Subject::agent("scribe"),
+                        workspace.id.raw().to_string(),
+                        Verb::Write,
+                    ),
+                )
+                .expect("owner admits agent");
+            workspace
+                .collaborators
+                .push(crate::shell::state::Collaborator::new(
+                    "scribe",
+                    "Release Notes Agent",
+                ));
+            let mut tree = WorkspaceTree::default();
+            tree.desktop.active = workspace.id;
+            tree.desktop.workspaces.push(workspace);
 
-    #[test]
-    fn accessibility_distinguishes_live_action_from_inferred_intent() {
-        let mut overlay = CollaboratorsOverlay::default();
-        overlay.layout(Rect::new(0.0, 0.0, 1200.0, 800.0), 1, false, false, false);
-        overlay.accessibility_rows = vec![RosterRow {
-            id: "ada".into(),
-            label: "Ada".into(),
-            initial: 'A',
-            color: Color::from_rgb8(1, 2, 3),
-            is_agent: false,
-            role: None,
-            invited: false,
-            activity: Some("Editing · Q2 finance report".into()),
-            status: Some(RosterStatus {
-                text: "Preparing the board review".into(),
-                automatic: true,
-            }),
-            followable: true,
-        }];
-        let snapshot = overlay.accessibility_snapshot();
-        let person = snapshot
-            .children
-            .first()
-            .and_then(|list| list.children.first())
-            .expect("the live roster is exposed as a list");
-        let description = person.description.as_deref().unwrap_or_default();
-        assert!(description.contains("Now: Editing · Q2 finance report"));
-        assert!(description.contains("Intent, inferred: Preparing the board review"));
-    }
+            let rows = collaborator_roster_rows(&tree);
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].label, "Release Notes Agent");
+            assert!(
+                rows[0].is_agent,
+                "a renamed agent must never appear as a person"
+            );
+            assert_eq!(rows[0].role.as_deref(), Some("editor"));
+        }
 
-    #[test]
-    fn accessibility_keeps_own_live_action_separate_from_own_intent() {
-        let mut overlay = CollaboratorsOverlay::default();
-        overlay.layout(Rect::new(0.0, 0.0, 1200.0, 800.0), 0, false, false, false);
-        overlay.accessibility_status = Some("Closing the Q3 forecast".into());
-        overlay.accessibility_own_activity = Some("Reconciling · Q3 forecast".into());
-        let snapshot = overlay.accessibility_snapshot();
-        let status = snapshot
-            .children
-            .iter()
-            .find(|node| node.name.as_deref() == Some("Your collaboration status"))
-            .expect("the self status control is exposed");
-        assert!(
-            status
-                .description
-                .as_deref()
-                .is_some_and(|description| description.contains("Now: Reconciling · Q3 forecast"))
-        );
-    }
+        fn the_recorder_is_listed_as_an_observer_agent() {
+            use crate::shell::recorder::{RECORDER_ADMISSION, RECORDER_AGENT, RECORDER_LABEL};
+            use crate::shell::state::{CapOverride, Subject, Verb, Workspace, WorkspaceId};
 
-    #[test]
-    fn screen_exposure_is_persistent_layout_and_accessibility_content() {
-        let host = Rect::new(0.0, 0.0, 1200.0, 800.0);
-        let mut ordinary = CollaboratorsOverlay::default();
-        ordinary.layout(host, 0, false, false, false);
-        let ordinary_height = ordinary.panel.height();
+            let mut workspace = Workspace::new(WorkspaceId::new(), "Recorded");
+            workspace.owner = Some("owner".into());
+            workspace
+                .grant_as(
+                    &"owner".to_string(),
+                    CapOverride::membership(
+                        Subject::agent(RECORDER_AGENT),
+                        workspace.room.to_string(),
+                        Verb::Read,
+                    )
+                    .with_id(RECORDER_ADMISSION.to_string()),
+                )
+                .expect("owner admits the recorder");
+            workspace
+                .collaborators
+                .push(crate::shell::state::Collaborator::new(
+                    RECORDER_AGENT,
+                    RECORDER_LABEL,
+                ));
+            assert_eq!(
+                crate::shell::workspace_settings::agent_authority_preset(
+                    &workspace,
+                    RECORDER_AGENT
+                ),
+                crate::shell::workspace_settings::AgentAuthorityPreset::Observer
+            );
+            let mut tree = WorkspaceTree::default();
+            tree.desktop.active = workspace.id;
+            tree.desktop.workspaces.push(workspace);
 
-        let mut exposed = CollaboratorsOverlay::default();
-        exposed.layout(host, 0, false, false, true);
-        exposed.accessibility_screen_exposure =
-            Some("Ada (person) views Draft; Scribe (agent) controls Terminal".into());
+            let rows = collaborator_roster_rows(&tree);
+            assert_eq!(rows.len(), 1);
+            assert!(rows[0].is_agent, "the recording indicator is the AGENT row");
+            assert_eq!(rows[0].label, RECORDER_LABEL);
+            assert_eq!(rows[0].role.as_deref(), Some("viewer"));
+        }
 
-        assert_eq!(exposed.panel.height(), ordinary_height + EXPOSURE_H);
-        let description = exposed
-            .accessibility_snapshot()
-            .description
-            .expect("People dialog has a privacy description");
-        assert!(description.contains("Screen visible now"));
-        assert!(description.contains("Ada (person) views Draft"));
-        assert!(description.contains("Scribe (agent) controls Terminal"));
-    }
+        fn a_hidden_room_lists_nobody_even_when_it_is_active() {
+            use crate::shell::state::{Workspace, WorkspaceId};
 
-    #[test]
-    fn roster_model_keeps_follow_direction_when_cursors_are_not_visible() {
-        let rows = vec![
-            RosterRow {
+            let mut workspace = Workspace::new(WorkspaceId::new(), "Check");
+            workspace.ephemeral = true;
+            workspace.hidden = true;
+            let mut viewing = crate::shell::state::Collaborator::new("replay", "Replay");
+            viewing.active_tab = Some(1);
+            workspace.collaborators.push(viewing);
+            let mut tree = WorkspaceTree::default();
+            tree.desktop.active = workspace.id;
+            tree.desktop.workspaces.push(workspace);
+            tree.desktop
+                .collaborators
+                .push(crate::shell::state::Collaborator::new("replay", "Replay"));
+
+            assert!(collaborator_roster_rows(&tree).is_empty());
+            let mut presence = ui::presence::PresenceCtx::default();
+            crate::shell::sync_tab_presence_from_tree(&tree, &mut presence);
+            assert!(presence.here.is_empty());
+        }
+
+        fn accessibility_distinguishes_live_action_from_inferred_intent() {
+            let mut overlay = CollaboratorsOverlay::default();
+            overlay.layout(Rect::new(0.0, 0.0, 1200.0, 800.0), 1, false, false, false);
+            overlay.accessibility_rows = vec![RosterRow {
                 id: "ada".into(),
                 label: "Ada".into(),
                 initial: 'A',
@@ -2075,47 +1949,207 @@ mod tests {
                 is_agent: false,
                 role: None,
                 invited: false,
-                activity: None,
-                status: None,
+                activity: Some("Editing · Q2 finance report".into()),
+                status: Some(RosterStatus {
+                    text: "Preparing the board review".into(),
+                    automatic: true,
+                }),
                 followable: true,
-            },
-            RosterRow {
-                id: "bob".into(),
-                label: "Bob".into(),
-                initial: 'B',
-                color: Color::from_rgb8(4, 5, 6),
-                is_agent: false,
-                role: None,
-                invited: false,
-                activity: None,
-                status: None,
-                followable: true,
-            },
-        ];
-        let pairs = vec![("ada".to_string(), "bob".to_string())];
-        let model = CollaboratorsModel {
-            host: Rect::ZERO,
-            rows: &rows,
-            own_initial: 'Q',
-            own_color: Color::from_rgb8(7, 8, 9),
-            unavailable: None,
-            may_invite: false,
-            followed_id: None,
-            following_pairs: &pairs,
-            own_status: None,
-            own_activity: None,
-            own_status_automatic: false,
-            status_sharing: ui::StatusSharing::Automatic,
-            status_editing: false,
-            screen_exposure: None,
-        };
-        assert_eq!(
-            model.relationship_for("ada"),
-            Some(RosterFollowRelationship::Follows("bob".into()))
-        );
-        assert_eq!(
-            model.relationship_for("bob"),
-            Some(RosterFollowRelationship::FollowedBy("ada".into()))
-        );
+            }];
+            let snapshot = overlay.accessibility_snapshot();
+            let person = snapshot
+                .children
+                .first()
+                .and_then(|list| list.children.first())
+                .expect("the live roster is exposed as a list");
+            let description = person.description.as_deref().unwrap_or_default();
+            assert!(description.contains("Now: Editing · Q2 finance report"));
+            assert!(description.contains("Intent, inferred: Preparing the board review"));
+        }
+
+        fn accessibility_keeps_own_live_action_separate_from_own_intent() {
+            let mut overlay = CollaboratorsOverlay::default();
+            overlay.layout(Rect::new(0.0, 0.0, 1200.0, 800.0), 0, false, false, false);
+            overlay.accessibility_status = Some("Closing the Q3 forecast".into());
+            overlay.accessibility_own_activity = Some("Reconciling · Q3 forecast".into());
+            let snapshot = overlay.accessibility_snapshot();
+            let status = snapshot
+                .children
+                .iter()
+                .find(|node| node.name.as_deref() == Some("Your collaboration status"))
+                .expect("the self status control is exposed");
+            assert!(
+                status.description.as_deref().is_some_and(
+                    |description| description.contains("Now: Reconciling · Q3 forecast")
+                )
+            );
+        }
+
+        fn screen_exposure_is_persistent_layout_and_accessibility_content() {
+            let host = Rect::new(0.0, 0.0, 1200.0, 800.0);
+            let mut ordinary = CollaboratorsOverlay::default();
+            ordinary.layout(host, 0, false, false, false);
+            let ordinary_height = ordinary.panel.height();
+
+            let mut exposed = CollaboratorsOverlay::default();
+            exposed.layout(host, 0, false, false, true);
+            exposed.accessibility_screen_exposure =
+                Some("Ada (person) views Draft; Scribe (agent) controls Terminal".into());
+
+            assert_eq!(exposed.panel.height(), ordinary_height + EXPOSURE_H);
+            let description = exposed
+                .accessibility_snapshot()
+                .description
+                .expect("People dialog has a privacy description");
+            assert!(description.contains("Screen visible now"));
+            assert!(description.contains("Ada (person) views Draft"));
+            assert!(description.contains("Scribe (agent) controls Terminal"));
+        }
+
+        fn roster_model_keeps_follow_direction_when_cursors_are_not_visible() {
+            let rows = vec![
+                RosterRow {
+                    id: "ada".into(),
+                    label: "Ada".into(),
+                    initial: 'A',
+                    color: Color::from_rgb8(1, 2, 3),
+                    is_agent: false,
+                    role: None,
+                    invited: false,
+                    activity: None,
+                    status: None,
+                    followable: true,
+                },
+                RosterRow {
+                    id: "bob".into(),
+                    label: "Bob".into(),
+                    initial: 'B',
+                    color: Color::from_rgb8(4, 5, 6),
+                    is_agent: false,
+                    role: None,
+                    invited: false,
+                    activity: None,
+                    status: None,
+                    followable: true,
+                },
+            ];
+            let pairs = vec![("ada".to_string(), "bob".to_string())];
+            let model = CollaboratorsModel {
+                host: Rect::ZERO,
+                rows: &rows,
+                own_initial: 'Q',
+                own_color: Color::from_rgb8(7, 8, 9),
+                unavailable: None,
+                may_invite: false,
+                followed_id: None,
+                following_pairs: &pairs,
+                own_status: None,
+                own_activity: None,
+                own_status_automatic: false,
+                status_sharing: ui::StatusSharing::Automatic,
+                status_editing: false,
+                screen_exposure: None,
+            };
+            assert_eq!(
+                model.relationship_for("ada"),
+                Some(RosterFollowRelationship::Follows("bob".into()))
+            );
+            assert_eq!(
+                model.relationship_for("bob"),
+                Some(RosterFollowRelationship::FollowedBy("ada".into()))
+            );
+        }
+
+        agent_classification_uses_stable_identity_not_display_label();
+        the_recorder_is_listed_as_an_observer_agent();
+        a_hidden_room_lists_nobody_even_when_it_is_active();
+        accessibility_distinguishes_live_action_from_inferred_intent();
+        accessibility_keeps_own_live_action_separate_from_own_intent();
+        screen_exposure_is_persistent_layout_and_accessibility_content();
+        roster_model_keeps_follow_direction_when_cursors_are_not_visible();
+    }
+
+    #[test]
+    fn collaborators_hit_targets_follow_painted_geometry_and_policy() {
+        fn hit_testing_uses_the_same_cached_geometry_as_paint() {
+            let mut overlay = CollaboratorsOverlay::default();
+            overlay.layout(Rect::new(0.0, 0.0, 1200.0, 800.0), 2, false, true, false);
+            let (invite, join) = overlay.action_rects();
+            assert_eq!(overlay.hit_test(invite.center()), CollaboratorsHit::Invite);
+            assert_eq!(overlay.hit_test(join.center()), CollaboratorsHit::Join);
+            assert_eq!(
+                overlay.hit_test(overlay.row_action_rects()[0].center()),
+                CollaboratorsHit::ToggleFollow(0),
+            );
+            assert_eq!(
+                overlay.hit_test(overlay.activity_rect().center()),
+                CollaboratorsHit::RoomActivity
+            );
+            assert_eq!(
+                overlay.hit_test(overlay.panel_rect().center()),
+                CollaboratorsHit::Absorb
+            );
+            assert_eq!(overlay.hit_test(Point::ZERO), CollaboratorsHit::Dismiss);
+        }
+
+        fn policy_removes_invite_geometry_instead_of_only_hiding_it() {
+            let mut overlay = CollaboratorsOverlay::default();
+            let host = Rect::new(0.0, 0.0, 1200.0, 800.0);
+            overlay.layout(host, 1, false, true, false);
+            assert!(overlay.action_rects().0.area() > 0.0);
+            overlay.layout(host, 1, false, false, false);
+            assert_eq!(overlay.action_rects(), (Rect::ZERO, Rect::ZERO));
+        }
+
+        fn clearing_drops_every_invisible_hit_target() {
+            let mut overlay = CollaboratorsOverlay::default();
+            overlay.layout(Rect::new(0.0, 0.0, 1200.0, 800.0), 1, false, true, false);
+            overlay.clear();
+            assert_eq!(overlay.panel_rect(), Rect::ZERO);
+            assert_eq!(overlay.action_rects(), (Rect::ZERO, Rect::ZERO));
+            assert_eq!(overlay.activity_rect(), Rect::ZERO);
+            assert!(overlay.row_action_rects().is_empty());
+        }
+
+        fn own_status_and_privacy_modes_are_first_class_hit_targets() {
+            let mut overlay = CollaboratorsOverlay::default();
+            overlay.layout(Rect::new(0.0, 0.0, 1200.0, 800.0), 2, false, true, false);
+            assert_eq!(
+                overlay.hit_test(overlay.status.center()),
+                CollaboratorsHit::EditStatus
+            );
+            for (mode, rect) in &overlay.status_modes {
+                assert_eq!(
+                    overlay.hit_test(rect.center()),
+                    CollaboratorsHit::SetStatusSharing(*mode)
+                );
+            }
+        }
+
+        fn keyboard_reaches_status_privacy_follow_and_activity_without_pointer_input() {
+            let mut overlay = CollaboratorsOverlay::default();
+            overlay.layout(Rect::new(0.0, 0.0, 1200.0, 800.0), 1, false, true, false);
+
+            assert_eq!(overlay.key(&Key::Named(NamedKey::Home), false), None);
+            assert_eq!(
+                overlay.key(&Key::Named(NamedKey::Enter), false),
+                Some(CollaboratorsHit::EditStatus)
+            );
+            assert_eq!(overlay.key(&Key::Named(NamedKey::End), false), None);
+            assert_eq!(
+                overlay.key(&Key::Named(NamedKey::Space), false),
+                Some(CollaboratorsHit::RoomActivity)
+            );
+            assert_eq!(
+                overlay.key(&Key::Named(NamedKey::Escape), false),
+                Some(CollaboratorsHit::Dismiss)
+            );
+        }
+
+        hit_testing_uses_the_same_cached_geometry_as_paint();
+        policy_removes_invite_geometry_instead_of_only_hiding_it();
+        clearing_drops_every_invisible_hit_target();
+        own_status_and_privacy_modes_are_first_class_hit_targets();
+        keyboard_reaches_status_privacy_follow_and_activity_without_pointer_input();
     }
 }

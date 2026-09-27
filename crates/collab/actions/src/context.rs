@@ -355,7 +355,15 @@ mod tests {
         assert_eq!(shared.resource.unwrap().label, "▮▮▮");
     }
 
+    /// A change message round-trips its context; unrelated or malformed messages read as legacy
+    /// history.
+    /// Runs each phase below in order; every phase builds its own fixture.
     #[test]
+    fn change_messages_carry_their_context_and_anything_else_is_legacy() {
+        change_message_round_trips_context();
+        unrelated_or_malformed_messages_are_legacy_history();
+    }
+
     fn change_message_round_trips_context() {
         let context = ActionContext::for_resource(
             "Rename",
@@ -371,14 +379,24 @@ mod tests {
         assert_eq!(ActionContext::from_change_message(&message), Some(context));
     }
 
-    #[test]
     fn unrelated_or_malformed_messages_are_legacy_history() {
         assert!(ActionContext::from_change_message("saved draft").is_none());
         assert!(ActionContext::from_change_message("tilo.action/1 {").is_none());
         assert!(ActionContext::default().change_message().is_none());
     }
 
+    /// Summaries prefer a self-described purpose, serialisable actions get a readable truthful
+    /// fallback, the generic palette infers stable app ownership, and ambient context fills intent
+    /// without overwriting the action's own.
+    /// Runs each phase below in order; every phase builds its own fixture.
     #[test]
+    fn action_context_describes_intent_truthfully_without_overwriting_it() {
+        summary_prefers_self_described_purpose();
+        serializable_action_provides_a_readable_truthful_fallback();
+        generic_palette_context_infers_stable_app_ownership();
+        ambient_context_fills_intent_without_overwriting_the_action();
+    }
+
     fn summary_prefers_self_described_purpose() {
         let contextual = ActionContext::for_resource("Rename", "id", "kind", "brief.md")
             .with_purpose("Prepare the launch brief");
@@ -391,7 +409,6 @@ mod tests {
         assert_eq!(structural.summary().as_deref(), Some("Rename · brief.md"));
     }
 
-    #[test]
     fn serializable_action_provides_a_readable_truthful_fallback() {
         #[derive(Serialize)]
         enum ExampleAction {
@@ -409,7 +426,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn generic_palette_context_infers_stable_app_ownership() {
         let context = ActionContext::for_resource("Export", "doc:1", "document", "Brief")
             .with_inferred_app("word-processor.action");
@@ -422,7 +438,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn ambient_context_fills_intent_without_overwriting_the_action() {
         let action = ActionContext::for_resource("Rename", "file:1", "file", "brief.md")
             .with_app("org.tilo.Code", "Code");
