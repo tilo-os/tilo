@@ -64,6 +64,7 @@ impl ModerationService {
             &change,
             public.as_ref(),
             deferred.as_ref().or(pending.as_ref()),
+            &self.artifact_hosts(),
         )?;
         let submission = PendingSubmission {
             // The package id is a single atomic pending slot: replacing a
@@ -208,7 +209,11 @@ impl ModerationService {
                 Some(pending) if pending == *reviewed => {
                     verify_pending(&pending, allowlist)?;
                     let public = self.storage.load_entry(&pending.change.entry.package_id)?;
-                    let _already_applied = validate_approval(&pending.change, public.as_ref())?;
+                    let _already_applied = validate_approval(
+                        &pending.change,
+                        public.as_ref(),
+                        &self.artifact_hosts(),
+                    )?;
                 }
                 Some(pending) => {
                     if self.completed_review(reviewed)?.is_some() {
@@ -327,7 +332,25 @@ impl ModerationService {
             ));
         }
         let public = self.storage.load_entry(&reviewed.submission_id)?;
-        validate_submission(&successor.change, public.as_ref(), Some(reviewed))
+        validate_submission(
+            &successor.change,
+            public.as_ref(),
+            Some(reviewed),
+            &self.artifact_hosts(),
+        )
+    }
+
+    /// Where this registry accepts version artifacts to be hosted: the
+    /// official artifact tree, plus this registry's own `/artifacts/` when it
+    /// is a loopback development instance.
+    fn artifact_hosts(&self) -> ArtifactHosts {
+        ArtifactHosts {
+            local_prefix: self
+                .storage
+                .load_identity()
+                .ok()
+                .and_then(|identity| local_artifact_prefix(&identity.base_url)),
+        }
     }
 
     fn ensure_not_reserved_by_promotion(&self, package_id: &str) -> Result<(), ModerationError> {
@@ -371,7 +394,8 @@ impl ModerationService {
             return Ok(review);
         }
         let public = self.storage.load_entry(&pending.change.entry.package_id)?;
-        let already_applied = validate_approval(&pending.change, public.as_ref())?;
+        let already_applied =
+            validate_approval(&pending.change, public.as_ref(), &self.artifact_hosts())?;
 
         if !already_applied {
             match pending.change.action {
@@ -611,10 +635,41 @@ impl ModerationService {
     }
 }
 
+/// Hosts from which a version artifact may be reviewed and served.
+#[derive(Clone, Debug, Default)]
+struct ArtifactHosts {
+    local_prefix: Option<String>,
+}
+
+const OFFICIAL_ARTIFACT_PREFIX: &str = "https://apps.tilo.so/artifacts/";
+
+impl ArtifactHosts {
+    fn allows(&self, url: &str) -> bool {
+        url.starts_with(OFFICIAL_ARTIFACT_PREFIX)
+            || self
+                .local_prefix
+                .as_deref()
+                .is_some_and(|prefix| url.starts_with(prefix))
+    }
+}
+
+/// `<base_url>/artifacts/` when `base_url` is a loopback HTTP origin without
+/// credentials, path, query or fragment; `None` for every public deployment.
+fn local_artifact_prefix(base_url: &str) -> Option<String> {
+    let base = base_url.strip_suffix('/').unwrap_or(base_url);
+    let authority = base.strip_prefix("http://")?;
+    let port = ["127.0.0.1:", "localhost:", "[::1]:"]
+        .iter()
+        .find_map(|host| authority.strip_prefix(host))?;
+    (!port.is_empty() && port.bytes().all(|byte| byte.is_ascii_digit()))
+        .then(|| format!("{base}/artifacts/"))
+}
+
 fn validate_submission(
     change: &EntryChangeRequest,
     public: Option<&RegistryEntry>,
     pending: Option<&PendingSubmission>,
+    artifacts: &ArtifactHosts,
 ) -> Result<(), ModerationError> {
     match change.action {
         EntryAction::Add if public.is_some() => {
@@ -645,7 +700,7 @@ fn validate_submission(
         EntryAction::Add => {}
     }
     if matches!(change.action, EntryAction::Add | EntryAction::Update) {
-        validate_version_history(&change.entry, public)?;
+        validate_version_history(&change.entry, public, artifacts)?;
     }
     if let Some(pending) = pending {
         if pending.change == *change {
@@ -664,7 +719,7 @@ fn validate_submission(
             });
         }
         if matches!(change.action, EntryAction::Add | EntryAction::Update) {
-            validate_version_history(&change.entry, Some(&pending.change.entry))?;
+            validate_version_history(&change.entry, Some(&pending.change.entry), artifacts)?;
         }
     }
     Ok(())
@@ -673,9 +728,10 @@ fn validate_submission(
 fn validate_approval(
     change: &EntryChangeRequest,
     public: Option<&RegistryEntry>,
+    artifacts: &ArtifactHosts,
 ) -> Result<bool, ModerationError> {
     if change.action == EntryAction::Add {
-        validate_version_history(&change.entry, None)?;
+        validate_version_history(&change.entry, None, artifacts)?;
     }
     match change.action {
         EntryAction::Add => match public {
@@ -689,7 +745,7 @@ fn validate_approval(
             Some(current) if current == &change.entry => Ok(true),
             Some(current) => {
                 validate_owner(current, &change.entry)?;
-                validate_version_history(&change.entry, Some(current))?;
+                validate_version_history(&change.entry, Some(current), artifacts)?;
                 if change.entry.updated_at_unix <= current.updated_at_unix {
                     return Err(ModerationError::StaleTimestamp {
                         package_id: change.entry.package_id.clone(),
@@ -747,6 +803,7 @@ fn verify_pending(
 fn validate_version_history(
     proposed: &RegistryEntry,
     baseline: Option<&RegistryEntry>,
+    artifacts: &ArtifactHosts,
 ) -> Result<(), ModerationError> {
     for (index, version) in proposed.versions.iter().enumerate() {
         if proposed
@@ -761,7 +818,7 @@ fn validate_version_history(
                 version: version.version.clone(),
             });
         }
-        validate_bound_version(proposed, version)?;
+        validate_bound_version(proposed, version, artifacts)?;
     }
     if let Some(current) = baseline {
         for old in &current.versions {
@@ -830,6 +887,7 @@ fn same_version_target(
 fn validate_bound_version(
     entry: &RegistryEntry,
     version: &registry_types::RegistryVersion,
+    artifacts: &ArtifactHosts,
 ) -> Result<(), ModerationError> {
     let hash_ok = version.tapp_blake3_hex.len() == 64
         && version
@@ -837,19 +895,19 @@ fn validate_bound_version(
             .bytes()
             .all(|byte| byte.is_ascii_hexdigit());
     let target = &version.target;
-    let target_ok = target.platform == registry_types::TILO_OS_PLATFORM && {
-        matches!(
+    let target_ok = match target.platform.as_str() {
+        registry_types::TILO_OS_PLATFORM => matches!(
             (target.architecture.as_str(), target.isa.as_str()),
             ("x86_64", "x86_64" | "x86_64-v2" | "x86_64-v3" | "x86_64-v4")
                 | (
                     "aarch64",
                     "aarch64" | "aarch64-v8.2" | "aarch64-v8.4" | "aarch64-v9"
                 )
-        )
+        ),
+        registry_types::WEB_PLATFORM => target.validate().is_ok(),
+        _ => false,
     };
-    let canonical_url = version
-        .tapp_url
-        .starts_with("https://apps.tilo.so/artifacts/");
+    let canonical_url = artifacts.allows(&version.tapp_url);
     if !hash_ok || !target_ok || !canonical_url || version.tapp_size_bytes == 0 {
         return Err(ModerationError::UnsupportedPackageTarget {
             package_id: entry.package_id.clone(),
@@ -1073,8 +1131,9 @@ mod tests {
             let mut stale_x86 = stale.versions[0].clone();
             stale_x86.version = "0.1.41+gold".into();
             stale.versions.push(stale_x86);
+            let official = ArtifactHosts::default();
             assert!(matches!(
-                validate_version_history(&stale, Some(&current)),
+                validate_version_history(&stale, Some(&current), &official),
                 Err(ModerationError::VersionNotNewer { version, current, .. })
                     if version == "0.1.41+gold" && current == "0.1.42+gnew"
             ));
@@ -1082,7 +1141,7 @@ mod tests {
             let mut reused = current.clone();
             reused.versions[0].version = "0.1.42+gdifferent".into();
             assert!(matches!(
-                validate_version_history(&reused, Some(&current)),
+                validate_version_history(&reused, Some(&current), &official),
                 Err(ModerationError::VersionIdentityReused { .. })
             ));
 
@@ -1092,7 +1151,7 @@ mod tests {
             arm.target.architecture = "aarch64".into();
             arm.target.isa = "aarch64-v8.2".into();
             new_target.versions.push(arm);
-            assert!(validate_version_history(&new_target, Some(&current)).is_ok());
+            assert!(validate_version_history(&new_target, Some(&current), &official).is_ok());
         }
         // phase: pending_replacement_requires_append_only_history_and_same_owner
         {
@@ -1155,6 +1214,66 @@ mod tests {
             assert_eq!(retry, first);
             assert_eq!(service.pending_submissions().unwrap(), vec![first]);
         }
+    }
+
+    #[test]
+    fn web_versions_are_a_separate_target_history() {
+        let key = SigningKey::generate(&mut UnwrapErr(SysRng));
+        let current = entry(&key, 42);
+        let official = ArtifactHosts::default();
+        let mut with_web = current.clone();
+        let mut web = with_web.versions[0].clone();
+        web.version = "0.0.1".into();
+        web.target = registry_types::RegistryTarget {
+            platform: registry_types::WEB_PLATFORM.into(),
+            architecture: registry_types::WASM32_ARCHITECTURE.into(),
+            isa: "wasm32-mvp+bulk-memory+sign-ext".into(),
+            runtime: Some("tilo-runtime/2026.07+wasm.00112233445566778899aabbccddeeff".into()),
+        };
+        with_web.versions.push(web);
+        assert!(validate_version_history(&with_web, Some(&current), &official).is_ok());
+
+        let mut unordered = with_web.clone();
+        unordered.versions[1].target.isa = "wasm32-mvp+sign-ext+bulk-memory".into();
+        assert!(matches!(
+            validate_version_history(&unordered, Some(&current), &official),
+            Err(ModerationError::UnsupportedPackageTarget { .. })
+        ));
+        let mut no_abi = with_web;
+        no_abi.versions[1].target.runtime = Some("tilo-runtime/2026.07".into());
+        assert!(matches!(
+            validate_version_history(&no_abi, Some(&current), &official),
+            Err(ModerationError::UnsupportedPackageTarget { .. })
+        ));
+    }
+
+    #[test]
+    fn only_a_loopback_registry_hosts_its_own_artifacts() {
+        assert_eq!(
+            local_artifact_prefix("http://127.0.0.1:8787/").as_deref(),
+            Some("http://127.0.0.1:8787/artifacts/")
+        );
+        assert_eq!(
+            local_artifact_prefix("http://localhost:8787").as_deref(),
+            Some("http://localhost:8787/artifacts/")
+        );
+        for public in [
+            "https://apps.tilo.so",
+            "https://apps.acme.example",
+            "http://127.0.0.1.evil.example:80",
+            "http://127.0.0.1:80@evil.example",
+            "http://localhost:8787/nested",
+            "http://127.0.0.1",
+        ] {
+            assert_eq!(local_artifact_prefix(public), None, "{public}");
+        }
+        let hosts = ArtifactHosts {
+            local_prefix: local_artifact_prefix("http://127.0.0.1:8787"),
+        };
+        assert!(hosts.allows("http://127.0.0.1:8787/artifacts/ab.tapp"));
+        assert!(hosts.allows("https://apps.tilo.so/artifacts/ab.tapp"));
+        assert!(!hosts.allows("http://127.0.0.1:8788/artifacts/ab.tapp"));
+        assert!(!ArtifactHosts::default().allows("http://127.0.0.1:8787/artifacts/ab.tapp"));
     }
 
     #[test]

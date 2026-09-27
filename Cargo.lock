@@ -11439,10 +11439,35 @@ dependencies = [
  "getrandom 0.4.1",
  "hex",
  "postcard",
+ "semver",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
- "workspace-hack",
+]
+
+[[package]]
+name = "registry-web"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "ed25519-dalek 3.0.0",
+ "hex",
+ "registry-types",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tilo-app-package",
+ "toml 1.0.6+spec-1.1.0",
+]
+
+[[package]]
+name = "registry-web-bindgen"
+version = "0.1.0"
+dependencies = [
+ "registry-web",
+ "serde_json",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -14358,6 +14383,7 @@ dependencies = [
  "ed25519-dalek 3.0.0",
  "getrandom 0.4.1",
  "hex",
+ "registry-types",
  "semver",
  "serde",
  "tar",
@@ -14376,6 +14402,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "app-registry",
+ "blake3",
  "clap",
  "ed25519-dalek 3.0.0",
  "getrandom 0.4.1",
@@ -14464,6 +14491,9 @@ dependencies = [
 [[package]]
 name = "tilo-clock"
 version = "0.1.0"
+dependencies = [
+ "web-time",
+]
 
 [[package]]
 name = "tilo-connected-protocol"
