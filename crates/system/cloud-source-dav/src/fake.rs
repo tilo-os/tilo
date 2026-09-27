@@ -303,21 +303,18 @@ fn whole_seconds(time: SystemTime) -> u64 {
 }
 
 fn encode_path(path: &str) -> String {
-    let mut out = String::new();
-    for (i, segment) in path.split('/').enumerate() {
-        if i > 0 {
-            out.push('/');
-        }
-        for byte in segment.bytes() {
-            if byte.is_ascii_alphanumeric() || b"-._~".contains(&byte) {
-                out.push(char::from(byte));
-            } else {
-                let _ = write!(out, "%{byte:02X}");
-            }
-        }
-    }
-    out
+    path.split('/')
+        .map(|segment| percent_encoding::utf8_percent_encode(segment, UNRESERVED).to_string())
+        .collect::<Vec<_>>()
+        .join("/")
 }
+
+/// Everything but the RFC 3986 unreserved characters.
+const UNRESERVED: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'.')
+    .remove(b'_')
+    .remove(b'~');
 
 fn decode_path(raw: &str) -> Option<String> {
     let parts: Option<Vec<String>> = raw

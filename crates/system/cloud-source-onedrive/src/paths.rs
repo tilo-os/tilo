@@ -6,24 +6,16 @@ use std::ops::Range;
 /// characters, so ids and names with `#`, `?`, `%`, `:` or spaces address
 /// exactly one segment.
 pub fn encode_segment(segment: &str) -> String {
-    let mut out = String::with_capacity(segment.len());
-    for byte in segment.bytes() {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~' | b'!') {
-            out.push(char::from(byte));
-        } else {
-            out.push('%');
-            out.push(hex_digit(byte >> 4));
-            out.push(hex_digit(byte & 0x0f));
-        }
-    }
-    out
+    percent_encoding::utf8_percent_encode(segment, SEGMENT).to_string()
 }
 
-fn hex_digit(nibble: u8) -> char {
-    char::from_digit(u32::from(nibble), 16)
-        .unwrap_or('0')
-        .to_ascii_uppercase()
-}
+/// Everything but the RFC 3986 unreserved characters and `!`.
+const SEGMENT: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'.')
+    .remove(b'_')
+    .remove(b'~')
+    .remove(b'!');
 
 /// Encode a `/`-separated path relative to a folder; `None` when it names
 /// the folder itself.
@@ -39,26 +31,9 @@ pub fn encode_path(path: &str) -> Option<String> {
 /// Decode `%XX` escapes (and nothing else). Invalid escapes stay as they
 /// are.
 pub fn percent_decode(text: &str) -> String {
-    let bytes = text.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut index = 0;
-    while let Some(&byte) = bytes.get(index) {
-        let escaped = (byte == b'%')
-            .then(|| {
-                let high = char::from(*bytes.get(index.checked_add(1)?)?).to_digit(16)?;
-                let low = char::from(*bytes.get(index.checked_add(2)?)?).to_digit(16)?;
-                u8::try_from(high.checked_mul(16)?.checked_add(low)?).ok()
-            })
-            .flatten();
-        if let Some(decoded) = escaped {
-            out.push(decoded);
-            index = index.saturating_add(3);
-        } else {
-            out.push(byte);
-            index = index.saturating_add(1);
-        }
-    }
-    String::from_utf8_lossy(&out).into_owned()
+    percent_encoding::percent_decode_str(text)
+        .decode_utf8_lossy()
+        .into_owned()
 }
 
 /// A name this client will send: one non-empty segment. Graph judges the

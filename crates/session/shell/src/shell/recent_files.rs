@@ -15,7 +15,6 @@
 //! way — `~/.ssh`, `~/.gnupg`, `~/.password-store` and every dot-directory
 //! of application secrets are never named.
 
-use std::fmt::Write as _;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 
@@ -52,19 +51,10 @@ pub fn is_publishable(path: &Path, home: &Path) -> bool {
         && std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_file())
 }
 
-/// `file://` URI for an absolute path, percent-encoding everything but the
-/// unreserved characters and `/`.
+/// `file://` URI for an absolute path.
 pub fn file_uri(path: &Path) -> String {
-    use std::os::unix::ffi::OsStrExt;
-    let mut uri = String::from("file://");
-    for &byte in path.as_os_str().as_bytes() {
-        if byte.is_ascii_alphanumeric() || b"-._~/".contains(&byte) {
-            uri.push(char::from(byte));
-        } else {
-            let _ = write!(uri, "%{byte:02X}");
-        }
-    }
-    uri
+    url::Url::from_file_path(path)
+        .map_or_else(|()| path.to_string_lossy().into_owned(), String::from)
 }
 
 fn escape_attr(value: &str) -> String {
@@ -287,7 +277,7 @@ mod tests {
         let ours = &back[0];
         assert_eq!(ours.href, file_uri(&doc));
         assert!(
-            ours.href.ends_with("/Documents/report%201%262.pdf"),
+            ours.href.ends_with("/Documents/report%201&2.pdf"),
             "{}",
             ours.href
         );
