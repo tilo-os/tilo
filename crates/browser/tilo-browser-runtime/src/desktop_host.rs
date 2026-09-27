@@ -6557,15 +6557,13 @@ mod tests {
                             order: 0,
                         },
                     );
-                    NotesDoc::apply_block_ops(
+                    NotesDoc::fill_page_body(
                         doc,
                         page,
-                        &[ui::widget::BlockEditOp::Insert {
-                            block_id: uuid::Uuid::new_v4().to_string(),
-                            after: None,
-                            kind: "paragraph".into(),
-                            text: "quasar-notes-body-only".into(),
-                        }],
+                        &[ui::widget::BlockContent::paragraph(
+                            "",
+                            "quasar-notes-body-only",
+                        )],
                     )
                     .unwrap();
                     notes::notebook::validate(doc).unwrap();

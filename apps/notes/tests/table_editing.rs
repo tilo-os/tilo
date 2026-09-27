@@ -156,7 +156,7 @@ struct Bound {
 }
 
 impl Bound {
-    fn new(doc: &mut automerge::AutoCommit, page: notes::PageId) -> Self {
+    fn new(doc: &automerge::AutoCommit, page: notes::PageId) -> Self {
         let mut panel = notes::MainPanel::new();
         panel.bind_canonical_page(doc, page, "Bound table").unwrap();
         let mut bound = Self {
@@ -465,7 +465,7 @@ fn table_focus_is_exclusive_and_survives_shape_changes() {
         )
         .unwrap();
         state.commit_action(None, None);
-        let mut b = Bound::new(&mut state.doc, page);
+        let mut b = Bound::new(&state.doc, page);
         let block_id = b.editor().blocks()[0].id.clone();
         assert!(b.action(&mut state, &b.target(1, 1), Action::Focus));
         assert!(b.action(&mut state, "notes.editor:table-add-row", Action::Activate));
