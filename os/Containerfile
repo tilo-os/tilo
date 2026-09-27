@@ -2790,9 +2790,11 @@ RUN --mount=type=bind,source=os/scripts/clean-bootc-transient-state.py,target=/u
     && python3 /usr/local/libexec/tilo-clean-bootc-transient-state.py \
     && bootc container lint
 
-# COPY is a separate build operation, with no DNS mount in /run. Restore the
-# NetworkManager resolver before split/ukify seal the final rootfs digest.
-COPY --from=runtime-resolver-link /out/resolv.conf /etc/resolv.conf
+# COPY is a separate build operation, with no DNS mount in /run. Copy the
+# containing directory so builders preserve its only entry, the symlink,
+# instead of dereferencing a single-file source with an absent /run target.
+# Restore the NetworkManager resolver before split/ukify seal the rootfs.
+COPY --from=runtime-resolver-link /out/ /etc/
 
 # ---------------------------------------------------------------------------
 # The sealed layout: split the kernel out, build the UKI over what remains
