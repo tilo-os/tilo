@@ -152,6 +152,22 @@ mod unix {
             .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
     }
 
+    /// The desktop name a Tilo login announces before its compositor starts;
+    /// the compositor's own test for a real Tilo session reads the same value.
+    const TILO_DESKTOP: &str = "tilo";
+
+    /// Host executables to attach to, in preference order. Inside the Tilo
+    /// desktop only the session's own host serves, so an app never attaches
+    /// to a second authority beside it; elsewhere the standalone host comes
+    /// first.
+    fn host_names() -> &'static [&'static str] {
+        if env::var_os("XDG_CURRENT_DESKTOP").as_deref() == Some(OsStr::new(TILO_DESKTOP)) {
+            &["tilo-runtime-mcp"]
+        } else {
+            &["tilo-runtime", "tilo-runtime-mcp"]
+        }
+    }
+
     fn locate_host(app: &Path) -> io::Result<PathBuf> {
         if let Some(path) = env::var_os("TILO_RUNTIME_BINARY") {
             let path = PathBuf::from(path);
@@ -162,23 +178,29 @@ mod unix {
             }
             return Ok(path);
         }
-        if let Some(parent) = app.parent() {
-            let sibling = parent.join("tilo-runtime-mcp");
-            if executable(&sibling) {
-                return Ok(sibling);
+        let names = host_names();
+        for name in names {
+            if let Some(parent) = app.parent() {
+                let sibling = parent.join(name);
+                if executable(&sibling) {
+                    return Ok(sibling);
+                }
             }
-        }
-        if let Some(paths) = env::var_os("PATH") {
-            for directory in env::split_paths(&paths) {
-                let candidate = directory.join("tilo-runtime-mcp");
-                if executable(&candidate) {
-                    return candidate.canonicalize();
+            if let Some(paths) = env::var_os("PATH") {
+                for directory in env::split_paths(&paths) {
+                    let candidate = directory.join(name);
+                    if executable(&candidate) {
+                        return candidate.canonicalize();
+                    }
                 }
             }
         }
         Err(io::Error::new(
             io::ErrorKind::NotFound,
-            "tilo-runtime-mcp is missing; install it beside the app or on PATH",
+            format!(
+                "no runtime host found; install {} beside the app or on PATH",
+                names.join(" or ")
+            ),
         ))
     }
 }
