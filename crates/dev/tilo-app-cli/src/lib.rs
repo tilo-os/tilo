@@ -4958,6 +4958,7 @@ pub fn dev_app(start: &Path, request: &DevRequest) -> Result<()> {
         watcher.watch_tree(root)?;
     }
     let _signals = DevSignalGuard::install()?;
+    provide_runtime_host(&app_dir);
     eprintln!(
         "[tilo-app] watching {}",
         roots
@@ -5773,6 +5774,123 @@ fn attach_dev_session_env(command: &mut ProcessCommand, app_dir: &Path) {
         return;
     }
     command.env("TILO_DEV_SESSION", dir);
+    if let Some(host) = DEV_RUNTIME_HOST.get().and_then(Option::as_ref) {
+        command.env("TILO_RUNTIME_BINARY", host);
+    }
+}
+
+/// The runtime host [`provide_runtime_host`] built for this dev session.
+static DEV_RUNTIME_HOST: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+
+/// Whether the dev loop has to supply a runtime host. A workspace member finds
+/// the one the workspace builds beside it, a Tilo session serves its own, and
+/// `TILO_RUNTIME_BINARY` or `TILO_RUNTIME_STANDALONE=1` is the user's choice.
+fn wants_runtime_host(var: impl Fn(&str) -> Option<OsString>, workspace_member: bool) -> bool {
+    !workspace_member
+        && var("TILO_RUNTIME_BINARY").is_none()
+        && var("TILO_RUNTIME_STANDALONE").as_deref() != Some("1".as_ref())
+        && var("XDG_CURRENT_DESKTOP").as_deref() != Some("tilo".as_ref())
+}
+
+/// The checkout holding the `tilo-app` crate an app resolves to, from
+/// `cargo metadata`. Its workspace also builds the standalone runtime.
+fn sdk_root_from_metadata(metadata: &serde_json::Value) -> Option<PathBuf> {
+    let manifest = metadata
+        .get("packages")?
+        .as_array()?
+        .iter()
+        .find(|package| {
+            package.get("name").and_then(serde_json::Value::as_str) == Some("tilo-app")
+        })?
+        .get("manifest_path")?
+        .as_str()?;
+    Path::new(manifest)
+        .ancestors()
+        .find(|root| {
+            root.join("crates/runtime/tilo-runtime/Cargo.toml")
+                .is_file()
+        })
+        .map(Path::to_path_buf)
+}
+
+/// Builds `tilo-runtime` from the SDK an outside app uses, so the app can
+/// attach to a runtime that speaks its own protocol version.
+fn provide_runtime_host(app_dir: &Path) {
+    let wanted = wants_runtime_host(
+        |name| std::env::var_os(name),
+        app_is_workspace_member(app_dir),
+    );
+    let host = wanted.then(|| build_runtime_host(app_dir)).and_then(|built| {
+        built
+            .inspect_err(|error| {
+                eprintln!(
+                    "[tilo-app] no runtime host for the app: {error:#}\n\
+                     [tilo-app] set TILO_RUNTIME_BINARY to one, or TILO_RUNTIME_STANDALONE=1 to run without"
+                );
+            })
+            .ok()
+    });
+    let _ = DEV_RUNTIME_HOST.set(host);
+}
+
+fn build_runtime_host(app_dir: &Path) -> Result<PathBuf> {
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
+    let output = ProcessCommand::new(&cargo)
+        .args(["metadata", "--format-version", "1", "--manifest-path"])
+        .arg(app_dir.join("Cargo.toml"))
+        .current_dir(app_dir)
+        .stderr(Stdio::inherit())
+        .output()
+        .context("running cargo metadata")?;
+    if !output.status.success() {
+        bail!("cargo metadata failed with {}", output.status);
+    }
+    let metadata: serde_json::Value =
+        serde_json::from_slice(&output.stdout).context("parsing cargo metadata")?;
+    let root = sdk_root_from_metadata(&metadata).ok_or_else(|| {
+        anyhow::anyhow!("the app's tilo-app dependency is not in a Tilo checkout")
+    })?;
+    let manifest = root.join("crates/runtime/tilo-runtime/Cargo.toml");
+    eprintln!(
+        "[tilo-app] building the runtime host from {}",
+        root.display()
+    );
+    let mut child = ProcessCommand::new(&cargo)
+        .args([
+            "build",
+            "--locked",
+            "-p",
+            "tilo-runtime",
+            "--bin",
+            "tilo-runtime",
+        ])
+        .arg("--message-format=json-render-diagnostics")
+        .current_dir(&root)
+        .stdout(Stdio::piped())
+        .spawn()
+        .context("starting the runtime host build")?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("Cargo build has no artifact stream"))?;
+    let expected = manifest.canonicalize().unwrap_or(manifest);
+    let mut artifacts = HashMap::new();
+    for line in BufReader::new(stdout).lines() {
+        collect_cargo_message(
+            &line.context("reading Cargo artifact stream")?,
+            &expected,
+            &mut artifacts,
+        );
+    }
+    let status = child.wait().context("waiting for the runtime host build")?;
+    if !status.success() {
+        bail!("the runtime host build failed with {status}");
+    }
+    let host = artifacts
+        .remove("tilo-runtime")
+        .ok_or_else(|| anyhow::anyhow!("Cargo did not report the tilo-runtime binary"))?;
+    eprintln!("[tilo-app] runtime host {}", host.display());
+    Ok(host)
 }
 
 fn spawn_dev_child(plan: &CargoPlan) -> Result<Child> {
