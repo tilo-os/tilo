@@ -52,6 +52,9 @@ pub enum CommunityRequest {
         role: crate::network::invite::InviteRole,
         expires_in_seconds: Option<u64>,
     },
+    /// Stop redeeming a standing invitation (hex id) of a public room this
+    /// machine governs.
+    RevokeStandingInvite { room: String, invite_id: String },
     /// Open this person's direct room with the Tilo team principal.
     OpenTeamRoom,
     /// Open the direct room with `person` (the team's end).

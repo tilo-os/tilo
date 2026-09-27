@@ -2795,6 +2795,26 @@ impl ShellNetwork {
                     "role": role.label(),
                 }))
             }
+            CommunityRequest::RevokeStandingInvite { room, invite_id } => {
+                let room = crate::shell::state::RoomId::parse(&room)
+                    .ok_or_else(|| format!("{room:?} is not a room id"))?;
+                let local = self
+                    .tree_handle()?
+                    .read()
+                    .desktop
+                    .workspaces
+                    .iter()
+                    .find(|workspace| workspace.room == room)
+                    .map(|workspace| workspace.id)
+                    .ok_or_else(|| format!("no workspace holds room {room}"))?;
+                let invite_id = invite_id.trim().to_ascii_lowercase();
+                let revoked = self.revoke_pending_invite(local, &invite_id)?;
+                Ok(serde_json::json!({
+                    "room": room.to_string(),
+                    "invite_id": invite_id,
+                    "revoked": revoked,
+                }))
+            }
             CommunityRequest::OpenTeamRoom => status(self.open_team_direct_room()?),
             CommunityRequest::OpenDirectRoom { person, label } => {
                 status(self.open_direct_room_with(&person, &label)?)

@@ -194,6 +194,11 @@ pub enum Command {
         #[serde(default)]
         expires_in_seconds: Option<u64>,
     },
+    /// Stop redeeming the standing invitation `invite_id` (hex, as minted)
+    /// of public room `room` at this machine. People it admitted stay; the
+    /// room's hosts keep their own list (`tilo-relay-admin community
+    /// revoke-invite`).
+    StandingInviteRevoke { room: String, invite_id: String },
     /// A room's channel class, whether governance stated it, and this
     /// session's role in it.
     RoomStatus { room: String },
@@ -685,6 +690,7 @@ pub fn dispatch_command<S: ControlState>(
         | Command::CommunityDirectRoom { .. }
         | Command::PublicRoomCreate { .. }
         | Command::StandingInvite { .. }
+        | Command::StandingInviteRevoke { .. }
         | Command::RoomStatus { .. }
         | Command::RoomGrant { .. } => (community(state, cmd), Vec::new()),
         Command::CheckAction {
@@ -1148,6 +1154,12 @@ fn community<S: ControlState>(state: &S, cmd: &Command) -> Response {
                 room: room.clone(),
                 role,
                 expires_in_seconds: *expires_in_seconds,
+            }
+        }
+        Command::StandingInviteRevoke { room, invite_id } => {
+            CommunityRequest::RevokeStandingInvite {
+                room: room.clone(),
+                invite_id: invite_id.clone(),
             }
         }
         Command::RoomStatus { room } => CommunityRequest::RoomStatus { room: room.clone() },

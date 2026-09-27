@@ -299,13 +299,14 @@ fn parse_community_command<'a>(
 }
 
 /// Parse `public-room create NAME | invite ROOM [--role R] [--expires-in S] |
-/// status ROOM`.
+/// status ROOM | grant ROOM PERSON [--role R] | revoke ROOM INVITE_ID`.
 fn parse_public_room_command<'a>(
     iter: &mut impl Iterator<Item = &'a String>,
 ) -> Result<Command, ParseError> {
     let verb = iter.next().map(String::as_str).ok_or_else(|| {
         ParseError::Usage(
-            "public-room requires `create`, `invite` or `status` (try --help)".to_string(),
+            "public-room requires `create`, `invite`, `status`, `grant` or `revoke` (try --help)"
+                .to_string(),
         )
     })?;
     let wire = match verb {
@@ -371,9 +372,18 @@ fn parse_public_room_command<'a>(
             };
             json!({ "op": "room_grant", "room": room, "person": person, "role": role })
         }
+        "revoke" => {
+            let (Some(room), Some(invite_id), None) = (iter.next(), iter.next(), iter.next())
+            else {
+                return Err(ParseError::Usage(
+                    "public-room revoke ROOM INVITE_ID".to_string(),
+                ));
+            };
+            json!({ "op": "standing_invite_revoke", "room": room, "invite_id": invite_id })
+        }
         other => {
             return Err(ParseError::Usage(format!(
-                "public-room: unknown verb `{other}` (create, invite, status, grant)"
+                "public-room: unknown verb `{other}` (create, invite, status, grant, revoke)"
             )));
         }
     };
@@ -1162,7 +1172,10 @@ fn print_usage() {
          \x20 public-room status ROOM       a room's channel class and your role in it\n\
          \x20 public-room grant ROOM PERSON [--role viewer|commenter|editor]\n\
          \x20                               grant a role in a room you govern (default editor)\n\
-         \x20 inspect apps                  list app connections that answer inspection\n\
+         \x20 public-room revoke ROOM INVITE_ID\n\
+         \x20                               stop redeeming a standing invitation here; its\n\
+         \x20                               members stay (revoke it at the room's hosts too)\n\
+         \x20 inspect apps                 list app connections that answer inspection\n\
          \x20                               (PEER id, app id, room, record)\n\
          \x20                               PEER below may also be surface:ID, a window's surface\n\
          \x20                               id, to inspect the app behind that window\n\

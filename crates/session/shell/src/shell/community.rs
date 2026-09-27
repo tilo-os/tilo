@@ -109,12 +109,35 @@ pub enum CommunityConfigError {
 }
 
 /// The configuration file this device uses: `TILO_COMMUNITY_CONFIG` when set
-/// and non-empty, otherwise the shipped one.
+/// and non-empty, otherwise the shipped one — `/usr/share/tilo`, or, for a
+/// package installed under another prefix (Nix), the first
+/// `tilo/community.toml` in `XDG_DATA_DIRS`.
 #[must_use]
 pub fn config_path() -> PathBuf {
-    std::env::var_os(COMMUNITY_CONFIG_ENV)
-        .filter(|value| !value.is_empty())
-        .map_or_else(|| PathBuf::from(DEFAULT_COMMUNITY_CONFIG), PathBuf::from)
+    resolve_config_path(
+        std::env::var_os(COMMUNITY_CONFIG_ENV),
+        std::env::var_os("XDG_DATA_DIRS").as_deref(),
+    )
+}
+
+fn resolve_config_path(
+    configured: Option<std::ffi::OsString>,
+    data_dirs: Option<&std::ffi::OsStr>,
+) -> PathBuf {
+    if let Some(path) = configured.filter(|value| !value.is_empty()) {
+        return PathBuf::from(path);
+    }
+    let shipped = PathBuf::from(DEFAULT_COMMUNITY_CONFIG);
+    if shipped.exists() {
+        return shipped;
+    }
+    data_dirs
+        .into_iter()
+        .flat_map(std::env::split_paths)
+        .filter(|dir| dir.is_absolute())
+        .map(|dir| dir.join("tilo").join("community.toml"))
+        .find(|candidate| candidate.is_file())
+        .unwrap_or(shipped)
 }
 
 /// Read [`config_path`]. A file that does not exist is an unconfigured
@@ -234,6 +257,35 @@ mod tests {
             "one room, derived the same way on both ends"
         );
         assert_eq!(team_direct_room(&team.person_id(), &team), None);
+    }
+
+    #[test]
+    fn the_override_wins_and_another_prefix_is_found_through_xdg_data_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(
+            resolve_config_path(Some("/dev/community.toml".into()), None),
+            PathBuf::from("/dev/community.toml")
+        );
+        if Path::new(DEFAULT_COMMUNITY_CONFIG).exists() {
+            return; // this machine ships one, which wins over any prefix
+        }
+        let shipped = dir.path().join("share/tilo/community.toml");
+        std::fs::create_dir_all(shipped.parent().unwrap()).unwrap();
+        std::fs::write(&shipped, "").unwrap();
+        let dirs = std::env::join_paths([
+            PathBuf::from("relative/share"),
+            dir.path().join("empty"),
+            dir.path().join("share"),
+        ])
+        .unwrap();
+        assert_eq!(
+            resolve_config_path(Some("".into()), Some(dirs.as_os_str())),
+            shipped
+        );
+        assert_eq!(
+            resolve_config_path(None, None),
+            PathBuf::from(DEFAULT_COMMUNITY_CONFIG)
+        );
     }
 
     #[test]
