@@ -36,6 +36,7 @@ mod displays;
 mod history;
 mod notification_center;
 mod now_playing;
+mod shortcut_steps;
 mod shortcut_triggers;
 mod shortcuts;
 
@@ -264,6 +265,9 @@ enum ShortcutGuideFocus {
 /// semantic path onto the wrong target.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AccessibleOverlay {
+    /// The Alt+Tab switcher, while Alt is held and it is on screen. First:
+    /// it is above everything and owns the keyboard until Alt comes up.
+    WindowSwitcher,
     /// The tab right-click menu. Published first while open: it is the
     /// topmost transient and its rows are what a reader should land on.
     TabContextMenu,
@@ -846,6 +850,12 @@ pub struct ShellOverlayHost {
     display_identify: crate::shell::display_identify::DisplayIdentify,
     /// Keep or revert a display change a layout tool made, on every display.
     display_confirm: crate::shell::display_confirm::DisplayConfirmPrompt,
+    /// Alt+Tab: which windows were used most recently, and the switcher
+    /// while Alt is held.
+    window_switcher: crate::shell::window_switcher::WindowSwitcher,
+    /// Live window previews the switcher and the overview show, rendered
+    /// by the compositor only while one of them is up.
+    window_previews: crate::shell::window_previews::WindowPreviews,
     /// Shared toolkit capture selector. The shell only hosts it and drains
     /// semantic intents; compositor readback/encoding stays below this layer.
     capture_studio: ui::widget::CaptureStudio,
@@ -1957,6 +1967,9 @@ impl ShellOverlayHost {
         if self.display_confirm.visible() {
             order.push(AccessibleOverlay::DisplayConfirmation);
         }
+        if self.window_switcher.is_revealed(Instant::now()) {
+            order.push(AccessibleOverlay::WindowSwitcher);
+        }
         // The display sheet is modal and drawn above every other overlay.
         if flags.projection {
             order.push(AccessibleOverlay::DisplayLayouts);
@@ -2395,6 +2408,8 @@ impl ShellOverlayHost {
             projection_overlay: inputs.projection_overlay,
             display_identify: crate::shell::display_identify::DisplayIdentify::default(),
             display_confirm: crate::shell::display_confirm::DisplayConfirmPrompt::default(),
+            window_switcher: crate::shell::window_switcher::WindowSwitcher::default(),
+            window_previews: crate::shell::window_previews::WindowPreviews::default(),
             followed_peer: None,
             followed_room: None,
             follow_transition: ui::Transition::closed(),
@@ -6055,25 +6070,266 @@ impl ShellOverlayHost {
         self.focus_window_on_strip(strip, group, tab)
     }
 
-    /// Alt+Tab-style traversal of the active strip. Unlike spatial
-    /// Super+Arrow movement, a conventional switcher is a ring: continuing
-    /// past either end returns to the opposite end.
-    pub fn cycle_focus_along_strip(&mut self, direction: i32) -> bool {
-        if direction == 0 {
-            return false;
+    /// The Alt+Tab switcher, for input routing, state readers and tests.
+    pub fn window_switcher(&self) -> &crate::shell::window_switcher::WindowSwitcher {
+        &self.window_switcher
+    }
+
+    pub fn window_switcher_mut(&mut self) -> &mut crate::shell::window_switcher::WindowSwitcher {
+        &mut self.window_switcher
+    }
+
+    /// Alt is held after Alt+Tab: the shell owns the keyboard and pointer
+    /// until the switcher commits or cancels.
+    pub fn window_switcher_active(&self) -> bool {
+        self.window_switcher.is_active()
+    }
+
+    /// The windows whose live previews chrome is showing or about to show:
+    /// the open switcher's (from the first Alt+Tab, so they are ready when
+    /// it appears), else the current room's while the overview is up.
+    /// Nothing while the session is locked.
+    fn window_preview_targets(&self) -> Vec<crate::shell::window_previews::PreviewRequest> {
+        let Some(chrome) = self.chrome.as_ref() else {
+            return Vec::new();
+        };
+        let Ok(state) = chrome.try_borrow() else {
+            return Vec::new();
+        };
+        if state.session_locked() || self.onboarding.is_some() {
+            return Vec::new();
         }
+        if self.window_switcher.is_active() {
+            return self.window_switcher.preview_requests();
+        }
+        if state.overlays.overview {
+            let tree = state.tree();
+            return self
+                .overview_windows(&tree)
+                .into_iter()
+                .filter(|window| window.preview.renderable())
+                .map(|window| crate::shell::window_previews::PreviewRequest {
+                    tab: window.address.tab,
+                    source: window.preview,
+                })
+                .collect();
+        }
+        Vec::new()
+    }
+
+    /// Start a preview refresh round at `now`: what the compositor should
+    /// render this round, or nothing when the round is not due. Drops
+    /// every preview as soon as no chrome shows them.
+    pub fn window_preview_requests(
+        &mut self,
+        now: Instant,
+    ) -> Vec<crate::shell::window_previews::PreviewRequest> {
+        let wanted = self.window_preview_targets();
+        if wanted.is_empty() {
+            self.window_previews.clear();
+            return Vec::new();
+        }
+        self.window_previews.begin_refresh(now, &wanted)
+    }
+
+    /// The compositor went through `visited` requests of this round.
+    pub fn advance_window_previews(&mut self, visited: usize) {
+        self.window_previews.advance(visited);
+    }
+
+    /// The client frame the preview of `tab` was rendered from.
+    pub fn window_preview_stamp(&self, tab: u64) -> Option<u64> {
+        self.window_previews.stamp(tab)
+    }
+
+    /// Keep a freshly rendered preview of `tab`.
+    pub fn store_window_preview(
+        &mut self,
+        tab: u64,
+        rgba: std::sync::Arc<[u8]>,
+        width: u32,
+        height: u32,
+        stamp: Option<u64>,
+    ) {
+        self.window_previews.store(tab, rgba, width, height, stamp);
+    }
+
+    /// The previews on hand, for readers and tests.
+    pub fn window_previews(&self) -> &crate::shell::window_previews::WindowPreviews {
+        &self.window_previews
+    }
+
+    /// When the next preview round is due, while any chrome wants one.
+    fn window_previews_wake_deadline(&self, now: Instant) -> Option<Instant> {
+        if self.window_preview_targets().is_empty() {
+            return None;
+        }
+        Some(self.window_previews.next_refresh_at().unwrap_or(now))
+    }
+
+    /// The switcher as `state-dump` reports it: its windows, which is
+    /// selected, and whether each card shows a live preview.
+    pub fn window_switcher_state_json(&self) -> serde_json::Value {
+        self.window_switcher
+            .state_json(&self.window_previews, Instant::now())
+    }
+
+    /// The current room's windows as the overview lists them: most
+    /// recently used first, as many as its preview row holds.
+    fn overview_windows(
+        &self,
+        tree: &crate::shell::state::WorkspaceTree,
+    ) -> Vec<crate::shell::window_switcher::SwitcherWindow> {
+        let mut windows = self.window_switcher.ordered_windows(tree);
+        windows.truncate(OVERVIEW_WINDOWS_MAX);
+        windows
+    }
+
+    /// Record the focused window as the most recently used one.
+    fn observe_window_focus(&mut self) {
+        if let Some(chrome) = self.chrome.as_ref()
+            && let Ok(state) = chrome.try_borrow()
+        {
+            self.window_switcher.observe(&state.tree());
+        }
+    }
+
+    /// Alt+Tab or Alt+Grave: open the switcher on its first step.
+    fn begin_window_switcher(
+        &mut self,
+        scope: crate::shell::window_switcher::SwitcherScope,
+        backwards: bool,
+    ) -> bool {
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
-        let target = {
-            let st = chrome.borrow();
-            let tree = st.tree();
-            crate::shell::input_policy::cycle_active_window(&tree, direction)
+        self.window_switcher.set_host_rect(self.rect);
+        let began = {
+            let state = chrome.borrow();
+            let tree = state.tree();
+            self.window_switcher
+                .begin(&tree, scope, backwards, Instant::now())
         };
-        let Some((strip, group, tab)) = target else {
+        if began {
+            chrome.borrow_mut().bump();
+        }
+        began
+    }
+
+    /// The modifier state changed with no key event to carry it (the
+    /// control socket's modifier command, a backend's `ModifiersChanged`).
+    /// A switcher held open by Alt commits once Alt is up.
+    pub fn note_modifiers(&mut self, modifiers: winit::keyboard::ModifiersState) -> bool {
+        let outcome = self.window_switcher.modifiers_changed(modifiers);
+        self.apply_window_switcher_outcome(outcome)
+    }
+
+    /// Input while the switcher is open. Keys all belong to it; the pointer
+    /// does once the panel is on screen.
+    fn route_window_switcher_event(
+        &mut self,
+        event: &WindowEvent,
+        modifiers: winit::event::Modifiers,
+        handled: &mut bool,
+    ) -> bool {
+        use crate::shell::window_switcher::SwitcherOutcome;
+        if !self.window_switcher.is_active() {
+            return false;
+        }
+        let now = Instant::now();
+        let outcome = match event {
+            WindowEvent::KeyboardInput { event: key, .. } => {
+                self.window_switcher
+                    .key(&key.logical_key, key.state, modifiers.state())
+            }
+            WindowEvent::ModifiersChanged(changed) => {
+                let outcome = self.window_switcher.modifiers_changed(changed.state());
+                self.apply_window_switcher_outcome(outcome);
+                return false;
+            }
+            WindowEvent::CursorMoved { .. } => {
+                self.last_cursor.map_or(SwitcherOutcome::Ignored, |point| {
+                    self.window_switcher.pointer_moved(point, now)
+                })
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: winit::event::MouseButton::Left,
+                ..
+            } => self.last_cursor.map_or(SwitcherOutcome::Ignored, |point| {
+                self.window_switcher.pointer_pressed(point, now)
+            }),
+            WindowEvent::MouseInput { .. }
+            | WindowEvent::MouseWheel { .. }
+            | WindowEvent::Touch(_)
+                if self.window_switcher.is_revealed(now) =>
+            {
+                SwitcherOutcome::Consumed
+            }
+            _ => SwitcherOutcome::Ignored,
+        };
+        let taken = self.apply_window_switcher_outcome(outcome);
+        if taken {
+            *handled = true;
+        }
+        taken
+    }
+
+    fn apply_window_switcher_outcome(
+        &mut self,
+        outcome: crate::shell::window_switcher::SwitcherOutcome,
+    ) -> bool {
+        use crate::shell::window_switcher::SwitcherOutcome;
+        match outcome {
+            SwitcherOutcome::Ignored => false,
+            SwitcherOutcome::Consumed | SwitcherOutcome::Cancelled => {
+                if let Some(chrome) = self.chrome.as_ref() {
+                    chrome.borrow_mut().bump();
+                }
+                true
+            }
+            SwitcherOutcome::Commit(address) => {
+                let _ = self.focus_switcher_window(address);
+                true
+            }
+        }
+    }
+
+    /// Focus a window the switcher chose, on whichever strip of the active
+    /// workspace it lives. A window closed while Alt was held is skipped.
+    fn focus_switcher_window(
+        &mut self,
+        address: crate::shell::window_switcher::WindowAddress,
+    ) -> bool {
+        let Some(chrome) = self.chrome.clone() else {
             return false;
         };
-        self.focus_window_on_strip(strip, group, tab)
+        let workspace = {
+            let state = chrome.borrow();
+            let tree = state.tree();
+            let live = tree
+                .desktop
+                .active_workspace()
+                .and_then(|ws| ws.strips.iter().find(|strip| strip.id == address.strip))
+                .and_then(|strip| {
+                    strip
+                        .window_groups
+                        .iter()
+                        .find(|group| group.id == address.group)
+                })
+                .is_some_and(|group| group.tabs.iter().any(|tab| tab.id == address.tab));
+            live.then_some(tree.desktop.active)
+        };
+        let Some(workspace) = workspace else {
+            chrome.borrow_mut().bump();
+            return false;
+        };
+        let _ = self.focus_window_widget(address.strip, address.group, address.tab);
+        chrome
+            .borrow_mut()
+            .focus_tab(workspace, address.strip, address.group, address.tab);
+        self.observe_window_focus();
+        true
     }
 
     /// Cycle tabs inside the focused window group. Unlike strip focus, this
@@ -6378,6 +6634,7 @@ impl ShellOverlayHost {
         if changed {
             chrome.borrow_mut().bump();
         }
+        self.observe_window_focus();
         changed
     }
 
@@ -9908,7 +10165,38 @@ impl ShellOverlayHost {
             None => 1,
         };
         let m = self.overview_metrics;
-        m.here_h + m.caption_h + usize_to_f64_lossy(rows) * m.share_row_h
+        m.here_h
+            + self.overview_windows_row_height()
+            + m.caption_h
+            + usize_to_f64_lossy(rows) * m.share_row_h
+    }
+
+    /// The current room's windows get a row of live previews once any of
+    /// them has one; until then (and for a room whose windows all hold
+    /// secrets) the app marks beside the room's name say what is open.
+    fn overview_shows_windows(&self) -> bool {
+        !self.window_switcher.is_active() && !self.window_previews.is_empty()
+    }
+
+    /// One preview tile of the overview's window row: `OVERVIEW_WINDOWS_MAX`
+    /// across the content width, each a 16:10 well over a title line.
+    fn overview_window_tile_size(&self) -> (f64, f64) {
+        let m = self.overview_metrics;
+        let panel_w = OVERVIEW_PANEL_WIDTH_PX.min(self.rect.width() - m.margin * 2.0);
+        let content_w = (panel_w - m.pad * 2.0).max(0.0);
+        let columns = usize_to_f64_lossy(OVERVIEW_WINDOWS_MAX);
+        let tile_w = ((content_w - (columns - 1.0) * m.window_gap) / columns).max(0.0);
+        (tile_w, tile_w * 10.0 / 16.0)
+    }
+
+    /// Height the window row adds to the "you are here" block.
+    fn overview_windows_row_height(&self) -> f64 {
+        if !self.overview_shows_windows() {
+            return 0.0;
+        }
+        let m = self.overview_metrics;
+        let (_, well_h) = self.overview_window_tile_size();
+        m.window_gap + well_h + m.window_title_gap + m.window_title_lh
     }
 
     /// How many rows the "go to" list holds: every room but the one you
@@ -9953,7 +10241,12 @@ impl ShellOverlayHost {
     /// and people, with what it shares beneath.
     fn overview_here_rect(&self) -> Rect {
         let c = self.overview_content_rect();
-        Rect::new(c.x0, c.y0, c.x1, c.y0 + self.overview_metrics.here_h)
+        Rect::new(
+            c.x0,
+            c.y0,
+            c.x1,
+            c.y0 + self.overview_metrics.here_h + self.overview_windows_row_height(),
+        )
     }
 
     /// Y of the "Shared out of here" caption.
@@ -11286,8 +11579,27 @@ impl ShellOverlayHost {
         // This also keeps first-run discoverability consistent with other
         // Linux desktops.
         if mstate.alt_key() && matches!(logical_key, Key::Named(NamedKey::Tab)) {
-            let direction = if shift_down { -1 } else { 1 };
-            let _ = self.cycle_focus_along_strip(direction);
+            if !repeat {
+                let _ = self.begin_window_switcher(
+                    crate::shell::window_switcher::SwitcherScope::Workspace,
+                    shift_down,
+                );
+            }
+            *handled = true;
+            return true;
+        }
+        // Alt+` walks the focused app's windows, with the key above Tab.
+        if mstate.alt_key()
+            && !mstate.control_key()
+            && !super_down
+            && matches!(logical_key, Key::Character(text) if matches!(text.as_str(), "`" | "~"))
+        {
+            if !repeat {
+                let _ = self.begin_window_switcher(
+                    crate::shell::window_switcher::SwitcherScope::FocusedApp,
+                    shift_down,
+                );
+            }
             *handled = true;
             return true;
         }
@@ -15443,6 +15755,9 @@ const OVERVIEW_PANEL_WIDTH_PX: f64 = 720.0;
 /// panel says whether things leave this room, the permissions pane has
 /// the full list.
 const OVERVIEW_SHARES_MAX_ROWS: usize = 4;
+/// Windows of the current room pictured in the overview's preview row.
+/// A fixed count keeps each tile one size whatever the room holds.
+const OVERVIEW_WINDOWS_MAX: usize = 4;
 
 /// Overview panel density, resolved from the theme once per layout pass
 /// (`ShellOverlayHost::build_layout`) and cached on the host, so the
@@ -15488,6 +15803,14 @@ struct OverviewMetrics {
     row_pad: f64,
     /// Height of the "You are here" chip: its `sm` label plus `s2`.
     chip_h: f64,
+    /// Gutter between preview tiles, and above their row (`s3`).
+    window_gap: f64,
+    /// Air between a preview well and its title (`s1`).
+    window_title_gap: f64,
+    /// Line height of a preview tile's `sm` title.
+    window_title_lh: f64,
+    /// Corner radius of a preview well (`radii.md`).
+    window_radius: f64,
 }
 
 impl OverviewMetrics {
@@ -15525,6 +15848,10 @@ impl OverviewMetrics {
             room_row_gap: s2,
             row_pad: s4,
             chip_h: lh(scale.sm) + s2,
+            window_gap: s3,
+            window_title_gap: s1,
+            window_title_lh: lh(scale.sm),
+            window_radius: f64::from(tokens.radii.md),
         }
     }
 }
@@ -15714,6 +16041,7 @@ impl Widget for ShellOverlayHost {
         // Runs first so an invite token / prompt is in chrome before draw.
         self.pump_peer_sync();
         self.tick_shortcut_triggers();
+        self.pump_shortcut_step_prompts();
         if let Some(chrome) = self.chrome.as_ref() {
             let mut state = chrome.borrow_mut();
             state.sync_external_tree_revision();
@@ -16358,6 +16686,7 @@ impl Widget for ShellOverlayHost {
         // below the onboarding return, making a real DRM pointer visibly move
         // while every onboarding click was evaluated without a position.
         self.track_cursor_position(event, scale_factor);
+        self.observe_window_focus();
         // Print Screen has an explicit arbitration policy. It must run before
         // OOBE, portal and consent gates so Capture Studio can temporarily
         // own input above those preserved workflows instead of being consumed
@@ -16598,6 +16927,10 @@ impl Widget for ShellOverlayHost {
             return;
         }
 
+        if self.route_window_switcher_event(event, *modifiers, handled) {
+            return;
+        }
+
         // A drag that began inside an app keeps pointer ownership until its
         // release, even after the surface has crossed outside the app/window.
         // Route this before shell overlays so the boundary frame cannot steal
@@ -16829,6 +17162,11 @@ impl Widget for ShellOverlayHost {
         let mut root = AccessNode::new(Role::Group).with_name("Tilo workspace");
         for overlay in self.accessible_overlay_order() {
             match overlay {
+                AccessibleOverlay::WindowSwitcher => {
+                    if let Some(switcher) = self.window_switcher.accessibility() {
+                        root.children.push(switcher);
+                    }
+                }
                 AccessibleOverlay::TabContextMenu => {
                     root.children.push(self.tab_context_menu_accessibility());
                 }
@@ -17708,6 +18046,11 @@ impl Widget for ShellOverlayHost {
     fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
         let (&overlay_index, child_path) = path.split_first()?;
         match self.accessible_overlay_order().get(overlay_index)? {
+            AccessibleOverlay::WindowSwitcher => match child_path {
+                [] | [0] => Some(self.window_switcher.panel_rect()),
+                [0, index] => self.window_switcher.card_rect(*index),
+                _ => None,
+            },
             AccessibleOverlay::TabContextMenu => match child_path {
                 [] => Some(self.tab_menu.menu.get_rect()),
                 [ordinal] => self.tab_menu_action_rect(*ordinal),
@@ -17848,6 +18191,16 @@ impl Widget for ShellOverlayHost {
             return false;
         };
         match overlay {
+            AccessibleOverlay::WindowSwitcher => match child_path {
+                [0, index] => {
+                    let focused = self.window_switcher.focus_index(*index);
+                    if focused && let Some(chrome) = self.chrome.as_ref() {
+                        chrome.borrow_mut().bump();
+                    }
+                    focused
+                }
+                _ => false,
+            },
             AccessibleOverlay::TabContextMenu => match child_path {
                 [ordinal] => self
                     .tab_menu
@@ -18012,6 +18365,7 @@ impl Widget for ShellOverlayHost {
                 .and_then(|chrome| chrome.borrow().osd)
                 .and_then(|osd| osd.next_wake_deadline_at(now)),
             self.now_playing_wake_deadline(now),
+            self.window_previews_wake_deadline(now),
         ]
         .into_iter()
         .flatten()
@@ -18089,6 +18443,8 @@ impl ShellOverlayHost {
             || markup_frame
             || notification_frame
             || osd_frame
+            || self.window_switcher.needs_frame(now)
+            || self.window_previews.changed()
     }
 }
 
@@ -20105,6 +20461,28 @@ impl ShellOverlayHost {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        self.draw_top_overlays_below_switcher(scene, transform, text_renderer, theme, presence);
+        self.window_switcher.draw(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            self.rect,
+            Instant::now(),
+            &mut self.window_previews,
+        );
+        // The last pass: every preview on hand has now been painted.
+        self.window_previews.mark_painted();
+    }
+
+    fn draw_top_overlays_below_switcher(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
         self.palette_was_visible = self.palette_visible;
         self.palette_transition.set_open(
             self.palette_visible,
@@ -20322,7 +20700,10 @@ impl ShellOverlayHost {
                     text_renderer,
                     theme,
                     name_rect,
-                    self.portal_dialogs.launcher_name().unwrap_or(editor.name),
+                    &self
+                        .portal_dialogs
+                        .field_display()
+                        .unwrap_or_else(|| editor.name.to_string()),
                     theme.tokens.typography.scale.base,
                     ui::chrome::SelectionState::active(focused),
                 );
@@ -20651,7 +21032,11 @@ impl ShellOverlayHost {
             &colors_for,
             ground,
         );
-        let text_w = (faces_left - f64::from(tokens.spacing.s3) - x0).max(40.0);
+        let s3 = f64::from(tokens.spacing.s3);
+        let anchor = (faces_left - s3, rect.center().y);
+        let marks_left =
+            Self::draw_overview_app_marks(scene, transform, theme, anchor, &card.apps());
+        let text_w = (marks_left - s3 - x0).max(40.0);
 
         let name_size = tokens.typography.scale.lg;
         let name = text_renderer.elide_to_width_weighted(
@@ -20693,6 +21078,41 @@ impl ShellOverlayHost {
             transform.pre_translate((x0, top + f64::from(name_h) + line_gap).into()),
             None,
         );
+    }
+
+    /// Marks of the apps open in a room, ending at `right` and centred on
+    /// `center_y`, so a room is recognisable by what is in it. Returns the
+    /// left edge of what was drawn (`right` when the room is empty).
+    fn draw_overview_app_marks(
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        (right, center_y): (f64, f64),
+        apps: &[&crate::shell::window_switcher::WindowApp],
+    ) -> f64 {
+        /// More than this reads as a pile rather than a list of apps.
+        const MOST: usize = 5;
+        let edge = f64::from(theme.tokens.metrics.icon_md);
+        let gap = f64::from(theme.tokens.spacing.s1);
+        let mut left = right;
+        for app in apps.iter().take(MOST).rev() {
+            let mark = Rect::new(
+                left - edge,
+                center_y - edge / 2.0,
+                left,
+                center_y + edge / 2.0,
+            );
+            ui::widget::draw_app_mark(
+                scene,
+                transform,
+                mark,
+                app.icon.as_ref(),
+                app.kind,
+                theme.tokens.colors.text_dim,
+            );
+            left = mark.x0 - gap;
+        }
+        if left < right { left + gap } else { right }
     }
 
     /// The workspace overview: a switcher for rooms, so it's a floating
@@ -20753,6 +21173,10 @@ impl ShellOverlayHost {
             here_idx,
             &cards,
         );
+        if here_idx.is_some() && self.overview_shows_windows() {
+            let top = here_rect.y0 + m.here_h - f64::from(tokens.spacing.s6) + m.window_gap;
+            self.draw_overview_window_row(scene, transform, text_renderer, theme, content, top);
+        }
         self.draw_overview_shares_section(
             scene,
             transform,
@@ -20798,6 +21222,61 @@ impl ShellOverlayHost {
         self.draw_overview_scroll_fade(scene, transform, theme, band);
 
         scene.pop_layer();
+    }
+
+    /// The current room's windows, most recently used first: each one's
+    /// live preview in a well over its title, or its app mark when it has
+    /// no preview (an app that holds secrets never has one).
+    fn draw_overview_window_row(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        content: Rect,
+        top: f64,
+    ) {
+        let windows = match self.chrome.as_ref() {
+            Some(chrome) => {
+                let state = chrome.borrow();
+                let tree = state.tree();
+                self.overview_windows(&tree)
+            }
+            None => return,
+        };
+        let tokens = &theme.tokens;
+        let colors = &tokens.colors;
+        let m = self.overview_metrics;
+        let (tile_w, well_h) = self.overview_window_tile_size();
+        let title_size = tokens.typography.scale.sm;
+        let mark = f64::from(tokens.metrics.icon_lg);
+        let mut x0 = content.x0;
+        for window in &windows {
+            let well = Rect::new(x0, top, x0 + tile_w, top + well_h);
+            let _ = crate::shell::window_switcher::draw_preview_well(
+                scene,
+                transform,
+                theme,
+                crate::shell::window_switcher::PreviewWell {
+                    rect: well,
+                    radius: m.window_radius,
+                    icon: mark,
+                },
+                window,
+                &mut self.window_previews,
+            );
+            let title =
+                text_renderer.elide_to_width(&window.title, title_size, f64_to_f32_lossy(tile_w));
+            text_renderer.draw_text(
+                scene,
+                &title,
+                title_size,
+                colors.text_dim,
+                transform.pre_translate((well.x0, well.y1 + m.window_title_gap).into()),
+                None,
+            );
+            x0 += tile_w + m.window_gap;
+        }
     }
 
     /// "Where you are": the current room's face stack, name, "You are
@@ -20903,7 +21382,10 @@ impl ShellOverlayHost {
         let chip_h = m.chip_h;
         let chip_w =
             Chip::natural_width_at("You are here", chip_h, ChipLead::None, theme, text_renderer);
-        let name_avail = (faces_left - s4 - content.x0 - chip_w - s3).max(60.0);
+        let anchor = (faces_left - s4, here_rect.y0 + m.name_lh / 2.0);
+        let marks_left =
+            Self::draw_overview_app_marks(scene, transform, theme, anchor, &card.apps());
+        let name_avail = (marks_left - s4 - content.x0 - chip_w - s3).max(60.0);
         let name = text_renderer.elide_to_width_weighted(
             &card.name,
             name_size,

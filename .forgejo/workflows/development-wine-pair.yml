@@ -7,7 +7,7 @@ on:
         description: Immutable native Wine tools image
         required: true
         type: string
-        default: registry.tilo.so/tilo/wine-tools@sha256:2a85681f640ebfbe0a15e6e92bd181b13bc674f10ca98b136fed448a754d12d8
+        default: registry.tilo.so/tilo/wine-tools@sha256:ce66cbd0539b5871e0039676cfa58b4a6eaa764e2789e7c7c7621579b07dff34
       x64_candidate:
         description: Immutable retained x86-64 Wine RPM artifact
         required: true

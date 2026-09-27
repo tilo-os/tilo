@@ -342,7 +342,7 @@ mod tests {
     }
 
     fn finish(worker: &mut MigrationWorker) -> WorkerOutcome {
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = Instant::now() + crate::HANG_BOUND;
         loop {
             if let Some(WorkerEvent::Finished(outcome)) = worker.try_next() {
                 return outcome;
@@ -370,7 +370,7 @@ mod tests {
             let mut worker = MigrationWorker::start(job).unwrap();
             // Eighty durable copies can take tens of seconds on a loaded disk;
             // this bound only catches a worker that never finishes.
-            let deadline = Instant::now() + Duration::from_secs(60);
+            let deadline = Instant::now() + crate::HANG_BOUND;
             while worker.phase.load(Ordering::Acquire) != FINISHED {
                 assert!(Instant::now() < deadline, "worker did not finish");
                 std::thread::sleep(Duration::from_millis(1));
@@ -454,7 +454,7 @@ mod tests {
                 .unwrap();
             }
             let mut cancelled = MigrationWorker::start(fresh.clone()).unwrap();
-            let deadline = Instant::now() + Duration::from_secs(10);
+            let deadline = Instant::now() + crate::HANG_BOUND;
             loop {
                 if matches!(cancelled.try_next(), Some(WorkerEvent::Progress(_))) {
                     assert!(cancelled.cancel());

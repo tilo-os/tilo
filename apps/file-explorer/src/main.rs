@@ -208,6 +208,7 @@ fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
                 label: "Personal cloud".into(),
                 host: "cloud.example".into(),
                 health: file_explorer::remote_accounts::RemoteAccountHealth::NeedsAuthentication,
+                mount: None,
             };
             widget.debug_show_remote_account(&account, true);
         }

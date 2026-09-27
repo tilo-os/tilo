@@ -222,6 +222,8 @@ pub enum InputOperation {
     SetMiddleEmulation { enabled: bool },
     SetLeftHanded { enabled: bool },
     SetTouchpadGestures { enabled: bool },
+    SetTouchpadEnabled { enabled: bool },
+    SetTouchpadDisabledOnExternalMouse { enabled: bool },
     SetTouchpadClickMethod { method: String },
     SetTouchpadScrollMethod { method: String },
     SetScrollSpeed { value: f64 },
@@ -858,6 +860,10 @@ fn input_bool_operation(template: &InputOperation, enabled: bool) -> InputOperat
         InputOperation::SetLeftHanded { .. } => InputOperation::SetLeftHanded { enabled },
         InputOperation::SetTouchpadGestures { .. } => {
             InputOperation::SetTouchpadGestures { enabled }
+        }
+        InputOperation::SetTouchpadEnabled { .. } => InputOperation::SetTouchpadEnabled { enabled },
+        InputOperation::SetTouchpadDisabledOnExternalMouse { .. } => {
+            InputOperation::SetTouchpadDisabledOnExternalMouse { enabled }
         }
         _ => unreachable!("input bool resources only contain boolean operations"),
     }
@@ -1563,6 +1569,10 @@ fn accounts_section(account_inventory: &[accounts::Account]) -> Resource {
         ("caldav", "Add calendar account"),
         ("webdav", "Add WebDAV account"),
         ("nextcloud", "Add Nextcloud account"),
+        ("google-drive", "Connect Google Drive"),
+        ("onedrive", "Connect OneDrive"),
+        ("dropbox", "Connect Dropbox"),
+        ("icloud-drive", "Connect iCloud Drive"),
     ] {
         if let Some(action) = account_operation_spec(
             &format!("add-{kind}"),
@@ -3401,6 +3411,16 @@ fn input_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
         "Mouse & Keyboard",
     );
     for (id, label, operation) in [
+        (
+            "touchpad-enabled",
+            "Turn the touchpad on or off",
+            InputOperation::SetTouchpadEnabled { enabled: false },
+        ),
+        (
+            "touchpad-disabled-with-mouse",
+            "Set disable touchpad while a mouse is connected",
+            InputOperation::SetTouchpadDisabledOnExternalMouse { enabled: false },
+        ),
         (
             "touchpad-natural-scroll",
             "Set touchpad natural scrolling",
@@ -6013,6 +6033,8 @@ mod tests {
                 .map(|action| action.id.as_str())
                 .collect();
             for id in [
+                "touchpad-enabled",
+                "touchpad-disabled-with-mouse",
                 "touchpad-natural-scroll",
                 "mouse-natural-scroll",
                 "tap-to-click",

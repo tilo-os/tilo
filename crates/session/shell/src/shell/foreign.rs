@@ -370,6 +370,11 @@ struct ForeignEntry {
     last_error: Option<String>,
     /// The tab's rectangle in the logical desktop, published by `apply_layout`; `None` until laid out.
     placement: Option<Rect>,
+    /// A compositor-imposed rectangle that outranks the tab's own while it
+    /// is set — the presenter view moved onto its own screen. The tab keeps
+    /// publishing into `placement`, so clearing this falls straight back to
+    /// the tab size.
+    pinned: Option<Rect>,
     /// Size most recently sent to the client in an `xdg_toplevel` configure, in surface-local (logical) pixels.
     configured: Option<(i32, i32)>,
     /// That configure in the tab's (logical) units — smaller than the tab when the client's maximum size clamped it, which is what centres the window in its tab.
@@ -411,6 +416,7 @@ impl ForeignEntry {
             seq: 0,
             last_error: None,
             placement: None,
+            pinned: None,
             configured: None,
             configured_extent: None,
             min_size: (0, 0),
@@ -1590,13 +1596,32 @@ impl ForeignFrameStore {
         });
     }
 
-    /// The tab rectangle last published by [`Self::note_placement`].
+    /// Impose `rect` over the tab's own placement until cleared with `None`:
+    /// the client is configured to it and input and popups resolve against
+    /// it, however the strip lays the tab out meanwhile.
+    pub fn pin_placement(&self, id: SurfaceId, rect: Option<Rect>) {
+        self.with_entry(id, |e| {
+            e.pinned = rect;
+        });
+    }
+
+    /// Whether [`Self::pin_placement`] currently holds this surface.
+    pub fn is_pinned(&self, id: SurfaceId) -> bool {
+        let guard = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        guard.get(&id).is_some_and(|e| e.pinned.is_some())
+    }
+
+    /// Where the surface is: a pinned rectangle, else the tab rectangle last
+    /// published by [`Self::note_placement`].
     pub fn placement(&self, id: SurfaceId) -> Option<Rect> {
         let guard = self
             .entries
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        guard.get(&id).and_then(|e| e.placement)
+        guard.get(&id).and_then(|e| e.pinned.or(e.placement))
     }
 
     /// Size of the tab rectangle in physical pixels.
@@ -1627,7 +1652,7 @@ impl ForeignFrameStore {
     )]
     pub fn take_pending_configure(&self, id: SurfaceId) -> Option<(i32, i32)> {
         self.with_entry(id, |e| {
-            let rect = e.placement?;
+            let rect = e.pinned.or(e.placement)?;
             let logical = (
                 rect.width().round().clamp(0.0, f64::from(i32::MAX)) as i32,
                 rect.height().round().clamp(0.0, f64::from(i32::MAX)) as i32,
@@ -1860,7 +1885,9 @@ impl ForeignSurfaceWidget {
     /// xdg configure handshake, so the client renders at this exact size.
     pub fn place_floating(&mut self, rect: Rect) {
         self.rect = rect;
-        if rect.width() > 0.0 && rect.height() > 0.0 {
+        // A pinned surface's size is the pin's business; recording the
+        // overlay rect as its tab rect would outlive the pin.
+        if rect.width() > 0.0 && rect.height() > 0.0 && !store().is_pinned(self.surface_id) {
             store().note_placement(self.surface_id, rect);
         }
     }

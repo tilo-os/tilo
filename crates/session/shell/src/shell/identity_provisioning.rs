@@ -27,7 +27,7 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 
 use ui::widget::identity_flow::{
     IdentityFlowError, IdentityRecord, IdentityStore, InviteEnvelope, PAIRING_FRAMING,
-    PairingBrokerRequest, PairingBrokerResponse, PairingHandshake,
+    PAIRING_IO_TIMEOUT, PairingBrokerRequest, PairingBrokerResponse, PairingHandshake,
 };
 
 pub struct PairingBrokerServer {
@@ -214,8 +214,8 @@ impl PairingBrokerServer {
                         tracing::warn!(%error, "cannot configure blocking pairing connection");
                         return;
                     }
-                    let _ = tcp.set_read_timeout(Some(Duration::from_secs(2)));
-                    let _ = tcp.set_write_timeout(Some(Duration::from_secs(2)));
+                    let _ = tcp.set_read_timeout(Some(PAIRING_IO_TIMEOUT));
+                    let _ = tcp.set_write_timeout(Some(PAIRING_IO_TIMEOUT));
                     let Ok(connection) = rustls::ServerConnection::new(tls) else {
                         return;
                     };

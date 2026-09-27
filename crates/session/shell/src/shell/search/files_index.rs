@@ -3,7 +3,8 @@
 //! Owns a persistent on-disk index at `~/.cache/tilo/files-index` with BM25
 //! scoring over file bodies. A background walker rebuilds only what
 //! changed since the last commit, using each doc's stored `mtime`. A small
-//! LRU query cache absorbs repeated keystrokes; the writer commits every
+//! LRU query cache, keyed by the searcher generation each result was read
+//! from, absorbs repeated keystrokes; the writer commits every
 //! `COMMIT_BATCH` docs or `COMMIT_INTERVAL_SECS` seconds, whichever is
 //! first. Files over `MAX_FILE_BYTES` are indexed by header only.
 
@@ -83,8 +84,12 @@ struct Fields {
 }
 
 /// Small keys/values, so a bare `VecDeque` + linear scan beats a real LRU crate.
+///
+/// Every entry carries the searcher generation it was computed from, so a
+/// result read before a commit can never answer a query against the index
+/// after it — even when the search and the `put` straddle the reload.
 struct QueryCache {
-    entries: VecDeque<(String, usize, Vec<ContentHit>)>,
+    entries: VecDeque<(String, usize, u64, Vec<ContentHit>)>,
     capacity: usize,
 }
 
@@ -95,25 +100,22 @@ impl QueryCache {
             capacity,
         }
     }
-    fn get(&self, needle: &str, limit: usize) -> Option<Vec<ContentHit>> {
-        self.entries.iter().find_map(|(n, l, v)| {
-            if n == needle && *l == limit {
+    fn get(&self, needle: &str, limit: usize, generation: u64) -> Option<Vec<ContentHit>> {
+        self.entries.iter().find_map(|(n, l, g, v)| {
+            if n == needle && *l == limit && *g == generation {
                 Some(v.clone())
             } else {
                 None
             }
         })
     }
-    fn put(&mut self, needle: String, limit: usize, hits: Vec<ContentHit>) {
+    fn put(&mut self, needle: String, limit: usize, generation: u64, hits: Vec<ContentHit>) {
         self.entries
-            .retain(|(n, l, _)| !(n == &needle && *l == limit));
+            .retain(|(n, l, _, _)| !(n == &needle && *l == limit));
         if self.entries.len() >= self.capacity {
             self.entries.pop_front();
         }
-        self.entries.push_back((needle, limit, hits));
-    }
-    fn invalidate(&mut self) {
-        self.entries.clear();
+        self.entries.push_back((needle, limit, generation, hits));
     }
 }
 
@@ -173,7 +175,6 @@ impl FilesIndex {
         let writer_handle = Arc::new(RwLock::new(None));
         {
             let writer_handle = Arc::clone(&writer_handle);
-            let cache = Arc::clone(&cache);
             let worker_reader = reader.clone();
             let index = index;
             let home = home.to_owned();
@@ -209,9 +210,6 @@ impl FilesIndex {
                     // worker. `reload()` may touch disk and must never move
                     // back onto the compositor's per-keystroke query path.
                     let _ = worker_reader.reload();
-                    if let Ok(mut c) = cache.lock() {
-                        c.invalidate();
-                    }
                 })
                 .ok();
             if let Ok(mut slot) = writer_handle.write() {
@@ -232,18 +230,19 @@ impl FilesIndex {
         if needle.trim().is_empty() {
             return Vec::new();
         }
-        if let Ok(cache) = self.cache.lock()
-            && let Some(hit) = cache.get(needle, limit)
-        {
-            return hit;
-        }
         // `OnCommitWithDelay` refreshes the reader outside this call. Never
         // perform a disk-backed reader reload on the compositor's keystroke
         // path; a just-committed generation can appear on the next poll.
+        let searcher = self.reader.searcher();
+        let generation = searcher.generation().generation_id();
+        if let Ok(cache) = self.cache.lock()
+            && let Some(hit) = cache.get(needle, limit, generation)
+        {
+            return hit;
+        }
         let Ok(query) = self.query_parser.parse_query(needle) else {
             return Vec::new();
         };
-        let searcher = self.reader.searcher();
         let Ok(top) = searcher.search(&query, &TopDocs::with_limit(limit)) else {
             return Vec::new();
         };
@@ -268,7 +267,7 @@ impl FilesIndex {
         if !out.is_empty()
             && let Ok(mut cache) = self.cache.lock()
         {
-            cache.put(needle.to_string(), limit, out.clone());
+            cache.put(needle.to_string(), limit, generation, out.clone());
         }
         out
     }
@@ -508,25 +507,34 @@ mod tests {
         // Phase `query_cache_lru_evicts_oldest`.
         {
             let mut c = QueryCache::new(2);
-            c.put("a".to_string(), 10, Vec::new());
-            c.put("b".to_string(), 10, Vec::new());
-            c.put("c".to_string(), 10, Vec::new());
-            assert!(c.get("a", 10).is_none());
-            assert!(c.get("b", 10).is_some());
-            assert!(c.get("c", 10).is_some());
+            c.put("a".to_string(), 10, 0, Vec::new());
+            c.put("b".to_string(), 10, 0, Vec::new());
+            c.put("c".to_string(), 10, 0, Vec::new());
+            assert!(c.get("a", 10, 0).is_none());
+            assert!(c.get("b", 10, 0).is_some());
+            assert!(c.get("c", 10, 0).is_some());
         }
 
         // Phase `query_cache_moves_repeat_to_head`.
         {
             let mut c = QueryCache::new(2);
-            c.put("a".to_string(), 10, Vec::new());
-            c.put("b".to_string(), 10, Vec::new());
+            c.put("a".to_string(), 10, 0, Vec::new());
+            c.put("b".to_string(), 10, 0, Vec::new());
             // Re-put "a": the next eviction should drop "b", not "a".
-            c.put("a".to_string(), 10, Vec::new());
-            c.put("c".to_string(), 10, Vec::new());
-            assert!(c.get("a", 10).is_some());
-            assert!(c.get("b", 10).is_none());
-            assert!(c.get("c", 10).is_some());
+            c.put("a".to_string(), 10, 0, Vec::new());
+            c.put("c".to_string(), 10, 0, Vec::new());
+            assert!(c.get("a", 10, 0).is_some());
+            assert!(c.get("b", 10, 0).is_none());
+            assert!(c.get("c", 10, 0).is_some());
+        }
+
+        // An entry cached from an older searcher generation never answers
+        // a query against a newer one.
+        {
+            let mut c = QueryCache::new(2);
+            c.put("a".to_string(), 10, 1, Vec::new());
+            assert!(c.get("a", 10, 1).is_some());
+            assert!(c.get("a", 10, 2).is_none());
         }
     }
 }
