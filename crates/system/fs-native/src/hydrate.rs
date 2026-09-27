@@ -14,7 +14,6 @@
 //! further events and is invisible to the change journal.
 
 use std::collections::HashMap;
-use std::fmt::Write as _;
 use std::fs::{self, File, OpenOptions};
 use std::io;
 use std::ops::Range;
@@ -220,13 +219,7 @@ pub struct Hydrator {
 }
 
 fn encode_residency(st: &FileState) -> Vec<u8> {
-    let hex = st
-        .content
-        .iter()
-        .fold(String::with_capacity(64), |mut h, b| {
-            let _ = write!(h, "{b:02x}");
-            h
-        });
+    let hex = hex::encode(st.content);
     let mut resident = RangeSet::full(st.size);
     for r in st.missing.iter() {
         resident.remove(r.clone());
