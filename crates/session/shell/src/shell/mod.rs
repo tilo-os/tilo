@@ -114,6 +114,7 @@ mod projection_overlay;
 pub mod quick_settings;
 pub mod realtime_session;
 pub mod recent_files;
+pub mod record_hydration;
 pub mod remote_action_link;
 pub mod remote_actions;
 pub mod remote_audio;

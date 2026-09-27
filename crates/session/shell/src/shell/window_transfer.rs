@@ -71,6 +71,7 @@ use crate::shell::personal_continuity::{AppInstanceId, LaunchIntent};
 use crate::shell::portal_dialog::{
     PortalDialogQueue, WindowTransferChoice, WindowTransferDecision, WindowTransferRequest,
 };
+use crate::shell::record_hydration::profile_root;
 use crate::shell::state::WorkspaceAuthority as _;
 use crate::shell::state::{
     RoomId, StripId, Tab, TabId, TileContent, Workspace, WorkspaceId, WorkspaceTree,
@@ -243,6 +244,9 @@ pub struct WindowTransfers {
     handoff: Option<Box<dyn HandoffLink>>,
     /// Reports taken in this round, until a transfer claims them.
     notes: Vec<HandoffNote>,
+    /// Documents moved to a workspace this person is in, being brought here
+    /// so their window can follow them.
+    followers: Vec<Follower>,
     next: u64,
     polled: Option<Instant>,
 }
@@ -343,6 +347,7 @@ impl Default for WindowTransfers {
             data_home: None,
             handoff: None,
             notes: Vec::new(),
+            followers: Vec::new(),
             next: 0,
             polled: None,
         }
@@ -380,7 +385,7 @@ impl WindowTransfers {
     /// Whether any transfer is in flight, including one waiting on its
     /// sheet, or an instance has reported something to act on.
     pub fn is_pending(&self) -> bool {
-        !self.active.is_empty() || handoff_notes_waiting()
+        !self.active.is_empty() || !self.followers.is_empty() || handoff_notes_waiting()
     }
 
     fn ask(&self, room: RoomId, app_id: &str, instance: u64, request: HandoffRequest) {
@@ -420,14 +425,16 @@ impl WindowTransfers {
     /// window appearing, or a process letting go of its record — so the
     /// frame loop has to keep polling.
     pub fn is_busy(&self) -> bool {
-        self.active
-            .iter()
-            .any(|transfer| !matches!(transfer.phase, Phase::Consent(_)))
+        !self.followers.is_empty()
+            || self
+                .active
+                .iter()
+                .any(|transfer| !matches!(transfer.phase, Phase::Consent(_)))
     }
 
     /// When the frame loop should run [`tick`] again, while a transfer is busy.
     pub fn next_poll(&self) -> Option<Instant> {
-        self.is_busy().then(|| {
+        (self.is_busy() || crate::shell::record_hydration::any_waiting()).then(|| {
             self.polled.map_or_else(Instant::now, |polled| {
                 polled.checked_add(POLL_INTERVAL).unwrap_or(polled)
             })
@@ -440,19 +447,6 @@ impl WindowTransfers {
             .or_else(::launcher::appdir::host_data_home)
     }
 }
-
-/// Where the launcher keeps `app_id`'s profile in `room`: the directory the
-/// app sees as `XDG_DATA_HOME`.
-fn profile_root(data_home: &Path, room: RoomId, app_id: &str) -> PathBuf {
-    let room = room.to_string();
-    ::launcher::appdir::host_app_dir(
-        data_home,
-        &::launcher::appdir::room_slug(Some(&room)),
-        app_id,
-    )
-    .join(".local/share")
-}
-
 fn find_tab(tree: &WorkspaceTree, tab: TabId) -> Option<(&Workspace, &Tab)> {
     tree.desktop.workspaces.iter().find_map(|workspace| {
         workspace
@@ -821,7 +815,10 @@ pub fn request(
 /// Advance every transfer in flight. The frame loop calls this each round.
 pub fn tick(st: &mut ChromeState) {
     let notes = take_handoff_notes();
-    if st.window_transfers.active.is_empty() && notes.is_empty() {
+    if st.window_transfers.active.is_empty()
+        && st.window_transfers.followers.is_empty()
+        && notes.is_empty()
+    {
         return;
     }
     let mut transfers = std::mem::take(&mut st.window_transfers);
@@ -837,7 +834,12 @@ pub fn tick(st: &mut ChromeState) {
     // moved, arriving in a window of this desktop.
     for note in std::mem::take(&mut transfers.notes) {
         if let HandoffReport::Retired { successor } = &note.report {
-            moved_away(st, &note, successor);
+            moved_away(st, &mut transfers, &note, successor);
+        }
+    }
+    for follower in std::mem::take(&mut transfers.followers) {
+        if let Some(waiting) = follow(st, &transfers, follower) {
+            transfers.followers.push(waiting);
         }
     }
     // Anything queued while this ran (a nested request) is kept.
@@ -845,10 +847,70 @@ pub fn tick(st: &mut ChromeState) {
     st.window_transfers = transfers;
 }
 
+/// A moved document being brought here so its window can follow it.
+struct Follower {
+    address: crate::shell::record_hydration::RecordAddress,
+    workspace: WorkspaceId,
+    title: String,
+}
+
+/// Bring a moved document here and, once it is kept, open it in its new
+/// workspace as a window of this person's own, without taking them there.
+fn follow(
+    st: &mut ChromeState,
+    transfers: &WindowTransfers,
+    follower: Follower,
+) -> Option<Follower> {
+    use crate::shell::record_hydration::{Hydration, forget, hydrate, kept_here, reopen_on};
+    let data_home = transfers.data_home()?;
+    let record = if kept_here(&follower.address, &data_home) {
+        None
+    } else {
+        match hydrate(&follower.address, &data_home) {
+            Hydration::Waiting => return Some(follower),
+            Hydration::Kept(record) => Some(record),
+            Hydration::Failed(reason) => {
+                tracing::warn!(%reason, app = %follower.address.app_id, "a moved document could not be brought here");
+                forget(&follower.address);
+                return None;
+            }
+        }
+    };
+    forget(&follower.address);
+    let instance = crate::shell::state::next_id();
+    reopen_on(&follower.address, &data_home, instance, record.as_ref());
+    let strip = destination_strip(st, follower.workspace)?;
+    let tab = place_in(
+        st,
+        follower.workspace,
+        strip,
+        Tab {
+            id: crate::shell::state::next_id(),
+            title: follower.title.clone(),
+            tile: TileContent::LocalApp {
+                app_id: follower.address.app_id.clone(),
+                label: follower.title,
+                note: String::new(),
+            },
+        },
+    );
+    // Its launch opens this instance, which reopens on the record brought.
+    let mut tree = st.tree_mut();
+    tree.remember_local_app_record(tab, instance);
+    tree.flush_to_disk();
+    drop(tree);
+    None
+}
+
 /// Tell the person that the document a window of theirs shows was moved to
 /// another workspace, and by whom. Where it went is named only when they
 /// are in that workspace too.
-fn moved_away(st: &mut ChromeState, note: &HandoffNote, successor: &Successor) {
+fn moved_away(
+    st: &mut ChromeState,
+    transfers: &mut WindowTransfers,
+    note: &HandoffNote,
+    successor: &Successor,
+) {
     let (window, person, destination) = {
         let tree = st.tree();
         let source = tree
@@ -891,18 +953,32 @@ fn moved_away(st: &mut ChromeState, note: &HandoffNote, successor: &Successor) {
             .workspaces
             .iter()
             .find(|ws| ws.room.to_string() == successor.room)
-            .map(|ws| ws.name.clone());
+            .map(|ws| (ws.id, ws.room, ws.name.clone()));
         drop(tree);
         (window, person, destination)
     };
     let body = match destination {
-        Some(to) => t_args(
-            "window-transfer-moved-away-to",
-            &[
-                ("person", person.as_str().into()),
-                ("to", to.as_str().into()),
-            ],
-        ),
+        Some((workspace, room, to)) => {
+            // The person can see where it went: their window follows it.
+            if let Some(record) = RecordId::parse(&successor.record) {
+                transfers.followers.push(Follower {
+                    address: crate::shell::record_hydration::RecordAddress {
+                        room,
+                        app_id: note.app_id.clone(),
+                        record,
+                    },
+                    workspace,
+                    title: window.clone(),
+                });
+            }
+            t_args(
+                "window-transfer-moved-away-to",
+                &[
+                    ("person", person.as_str().into()),
+                    ("to", to.as_str().into()),
+                ],
+            )
+        }
         None => t_args(
             "window-transfer-moved-away-elsewhere",
             &[("person", person.as_str().into())],

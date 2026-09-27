@@ -15,6 +15,7 @@ use shell::shell::chrome_state::{Chrome, ChromeState};
 use shell::shell::personal_continuity::AppInstanceId;
 use shell::shell::personal_continuity_registry::global_registry;
 use shell::shell::portal_dialog::{PortalDialogController, PortalDialogQueue};
+use shell::shell::record_hydration::{RecordAddress, RecordSource, set_source};
 use shell::shell::state::{
     FreshId as _, RoomId, Strip, StripId, Tab, TabId, TileContent, WindowGroup, WindowWidth,
     Workspace, WorkspaceId, WorkspaceTree,
@@ -979,5 +980,84 @@ fn a_collaborator_is_told_who_moved_their_document_and_where_if_they_can_see_it(
         "a workspace the person is not in is not named: {:?}",
         f.notifications()
     );
+    assert!(!f.chrome.borrow().window_transfers.is_pending());
+}
+
+/// The collaborator's other device, which keeps the moved document in its
+/// new room.
+struct Holder(Vec<u8>, std::sync::Mutex<Vec<RecordAddress>>);
+
+impl RecordSource for Holder {
+    fn fetch(
+        &self,
+        address: &RecordAddress,
+    ) -> tilo_actions::remote::Pending<Result<Vec<u8>, String>> {
+        self.1.lock().unwrap().push(address.clone());
+        tilo_actions::remote::Pending::ready(Ok(self.0.clone()))
+    }
+}
+
+#[test]
+fn a_collaborators_window_follows_a_moved_document_into_the_workspace_it_went_to() {
+    let (f, _) = Fixture::new(false, false);
+    global_registry()
+        .lock()
+        .unwrap()
+        .bind_tab(AppInstanceId(TAB), AppInstanceId(INSTANCE));
+    // The successor as the mover's device keeps it in Elsewhere.
+    let there = tempfile::tempdir().unwrap();
+    let root = profile_root(there.path(), f.elsewhere_room);
+    std::fs::create_dir_all(&root).unwrap();
+    let profile = NativeProfile::open(&root, Some(&f.elsewhere_room.to_string())).unwrap();
+    let successor = RecordCheckout::new(RecordId::minted(), RecordKind::new("notes.notebook"));
+    let records = RecordOwners::new(root)
+        .open(APP, profile.workspace_id())
+        .unwrap();
+    records.create_record(&successor).unwrap();
+    records
+        .with(&successor.id, |doc| {
+            doc.put(ROOT, "body", "Groceries: milk, eggs").unwrap();
+        })
+        .unwrap();
+    records.try_flush().unwrap();
+    drop(records);
+    let bytes = transfer::read_by_id(profile.store(), APP, profile.workspace_id(), &successor.id)
+        .unwrap()
+        .save();
+    let holder = std::sync::Arc::new(Holder(bytes, std::sync::Mutex::default()));
+    set_source(std::sync::Arc::clone(&holder) as std::sync::Arc<dyn RecordSource>);
+
+    answer(
+        &f,
+        &HandoffReport::Retired {
+            successor: transfer::Successor {
+                room: f.elsewhere_room.to_string(),
+                record: successor.id.as_str().into(),
+                by: "person:ada".into(),
+            },
+        },
+    );
+    tick(&mut f.chrome.borrow_mut());
+
+    assert_eq!(
+        holder.1.lock().unwrap().as_slice(),
+        [RecordAddress {
+            room: f.elsewhere_room,
+            app_id: APP.into(),
+            record: successor.id.clone(),
+        }],
+        "the successor is asked for by the room it now lives in"
+    );
+    assert!(
+        f.tabs_in(f.elsewhere).iter().any(|(_, tile)| matches!(
+            tile,
+            TileContent::LocalApp { app_id, .. } if app_id == APP
+        )),
+        "the window reopens where the document went: {:?}",
+        f.tabs_in(f.elsewhere)
+    );
+    let here = f.profile(f.elsewhere_room);
+    let kept = read_record(here.store(), APP, here.workspace_id(), &successor).unwrap();
+    assert_eq!(body(&kept).as_deref(), Some("Groceries: milk, eggs"));
     assert!(!f.chrome.borrow().window_transfers.is_pending());
 }
