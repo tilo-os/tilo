@@ -447,6 +447,28 @@ impl CapnpBrokerState {
                         )
                     }),
             );
+            // Public-room governance, the same actions the palette offers.
+            let public_room = crate::shell::public_room_governance::resource(&workspace);
+            rows.extend(
+                tilo_actions::door::survey(&[public_room])
+                    .into_iter()
+                    .filter(|descriptor| {
+                        Self::allowed(
+                            &workspace,
+                            &policy,
+                            crate::shell::state::WORKSPACE_GOVERNANCE_APP_ID,
+                            &descriptor.address.action,
+                            descriptor.contract.permission,
+                        )
+                    })
+                    .map(|descriptor| {
+                        action_row(
+                            workspace_provider(&room),
+                            crate::shell::state::WORKSPACE_GOVERNANCE_APP_ID,
+                            descriptor,
+                        )
+                    }),
+            );
             rows.extend(
                 automation_host::descriptors(&workspace)
                     .into_iter()
@@ -1350,6 +1372,18 @@ impl CapnpBrokerState {
             && caller.device_public_key().is_none()
         {
             return self.start_keyboard_shortcut_action(caller, actor, room, address, argument);
+        }
+        if address.resource == crate::shell::public_room_governance::resource_id(room) {
+            return self
+                .invoke_public_room_action(
+                    room,
+                    actor,
+                    &address.action,
+                    argument,
+                    &confirmation_evidence(request.confirmation.as_ref()),
+                )
+                .map(|(id, _)| id)
+                .map_err(refusal);
         }
         if crate::shell::workspace_settings::is_governance_action(&address.action) {
             return self

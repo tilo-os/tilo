@@ -2698,3 +2698,5 @@ search-action-room-editor-grant-subtitle = Lets a teammate edit and triage here
 public-room-governance-done = Public room updated
 public-room-governance-copied = Copied to the clipboard
 public-room-governance-failed = The public room did not change
+search-action-public-room-host-delegate = Delegate this public room to its host
+search-action-public-room-host-delegate-subtitle = Records the relay that serves the room while you are away; every invitation names it

@@ -2705,3 +2705,5 @@ search-action-room-editor-grant-subtitle = Erlaubt einem Teammitglied, hier zu b
 public-room-governance-done = Öffentlicher Raum geändert
 public-room-governance-copied = In die Zwischenablage kopiert
 public-room-governance-failed = Der öffentliche Raum wurde nicht geändert
+search-action-public-room-host-delegate = Diesen öffentlichen Raum an seinen Host übertragen
+search-action-public-room-host-delegate-subtitle = Hält das Relay fest, das den Raum bedient, während du weg bist; jede Einladung nennt es

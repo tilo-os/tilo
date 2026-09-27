@@ -3686,6 +3686,120 @@ impl CapnpBrokerState {
         Ok((id, update))
     }
 
+    /// Run one public-room governance action (`shell::public_room_governance`)
+    /// for `actor` in `cluster_id`: the action must be on the room's surface,
+    /// confirmed, and the caller must hold Admin on it; the shell's network
+    /// then performs it exactly as the palette's does. The answer (a new
+    /// room's id, a minted invitation) is the invocation's output.
+    fn invoke_public_room_action(
+        &self,
+        cluster_id: &str,
+        actor: &BrokerActor,
+        action_id: &str,
+        argument: Option<&str>,
+        confirmation: &serde_json::Value,
+    ) -> Result<(u64, tilo_actions::InvocationUpdate), String> {
+        let membership = self
+            .membership
+            .as_ref()
+            .ok_or_else(|| "the action broker has no workspace authority".to_string())?;
+        let (workspace_id, room, spec, resource) = {
+            let workspace = membership
+                .read()
+                .desktop
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.room.to_string() == cluster_id)
+                .cloned()
+                .ok_or_else(|| "the application workspace is no longer hosted".to_string())?;
+            let workspace = &workspace;
+            let surface = crate::shell::public_room_governance::resource(workspace);
+            let spec = surface
+                .actions
+                .iter()
+                .find(|candidate| candidate.id == action_id)
+                .cloned()
+                .ok_or_else(|| "this room offers no such public-room action".to_string())?;
+            if confirmation
+                .get("confirm")
+                .and_then(serde_json::Value::as_bool)
+                != Some(true)
+            {
+                return Err("explicit confirmation is required".into());
+            }
+            let caller = actor.policy_in(workspace);
+            if workspace.decide(
+                &caller,
+                &ResourceRef::Action {
+                    app: crate::shell::state::WORKSPACE_GOVERNANCE_APP_ID.into(),
+                    action: action_id.into(),
+                },
+                Verb::Admin,
+            ) != CapDecision::Allow
+            {
+                return Err("the caller does not administer this room".into());
+            }
+            (workspace.id, workspace.room, spec, surface)
+        };
+        let json = argument
+            .and_then(|value| value.strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX))
+            .unwrap_or("{}");
+        let mut arguments =
+            serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(json)
+                .map_err(|error| format!("invalid public-room arguments: {error}"))?;
+        // The broker's confirmation is the action's `confirm`.
+        arguments.insert("confirm".into(), serde_json::Value::Bool(true));
+        let encoded = spec
+            .build_json(&arguments)
+            .map_err(|error| format!("invalid public-room arguments: {error}"))?;
+        if encoded.type_id != crate::shell::public_room_governance::ACTION_TYPE {
+            return Err(format!(
+                "invalid public-room arguments: {}",
+                String::from_utf8_lossy(&encoded.payload)
+            ));
+        }
+        let operation: crate::shell::public_room_governance::Operation =
+            serde_json::from_slice(&encoded.payload)
+                .map_err(|error| format!("invalid public-room operation: {error}"))?;
+        let network = self
+            .workspace_control_network()
+            .ok_or_else(|| "this host has no network to govern rooms through".to_string())?;
+        let (request, _) = operation.request(&room.to_string());
+        let answer = network.serve_community_request(request)?;
+        let id = self.invocation_id.fetch_add(1, Ordering::Relaxed);
+        let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
+        let update = tilo_actions::InvocationUpdate::Succeeded {
+            invocation,
+            output: tilo_actions::ActionOutput {
+                value: Some(answer),
+                ..tilo_actions::ActionOutput::default()
+            },
+        };
+        let context = tilo_actions::ActionContext::for_resource(
+            &spec.label,
+            resource.id.as_str(),
+            &resource.kind,
+            &resource.label,
+        )
+        .with_app(
+            crate::shell::state::WORKSPACE_GOVERNANCE_APP_ID,
+            "Public room",
+        );
+        let mut tree = membership.write();
+        let _ = tree.append_workspace_effect_receipt(
+            workspace_id,
+            invocation,
+            &actor.id,
+            context,
+            tilo_actions::EffectReceiptStatus::Succeeded,
+        );
+        tree.desktop.external_revision = tree.desktop.external_revision.wrapping_add(1);
+        tree.flush_to_disk();
+        drop(tree);
+        self.record_completion(id, actor.id.clone(), update.clone());
+        Ok((id, update))
+    }
+
     /// Address one operation back to the exact connection that published it.
     /// The returned receiver resolves only after the application reports a
     /// structured completion; dropping the connection resolves as a refusal.
@@ -12261,9 +12375,85 @@ pub(crate) mod tests {
             }));
         }
 
+        fn public_room_governance_reaches_an_admin_agent_and_nobody_else() {
+            let mut workspace = crate::shell::state::Workspace::new(
+                crate::shell::state::WorkspaceId(33),
+                "Tilo Community",
+            );
+            workspace.set_owner("owner");
+            workspace.channel_class = collab_types::ChannelClass::Public;
+            for action in crate::shell::public_room_governance::ACTIONS {
+                workspace.grant_capability(collab_types::CapOverride::grant(
+                    collab_types::Subject::agent("steward"),
+                    collab_types::Scope::Action {
+                        app: crate::shell::state::WORKSPACE_GOVERNANCE_APP_ID.into(),
+                        action: (*action).into(),
+                    },
+                    collab_types::Verb::Admin,
+                ));
+            }
+            let cluster = workspace.room.to_string();
+            let mut tree = WorkspaceTree::default();
+            tree.desktop.workspaces.push(workspace);
+            let membership = tree.shared();
+            let fanout = Arc::new(FanoutState::new());
+            let (state, _bridge_rx) = CapnpBrokerState::new(
+                &fanout,
+                Arc::new(Mutex::new(BrokerChannels::default())),
+                PeerPublisher::disabled(),
+                Some(membership),
+                None,
+            );
+            let steward = catalogue_text(
+                &state,
+                &tilo_actions::remote::Caller::local_agent("steward").in_room(&cluster),
+            );
+            for action in crate::shell::public_room_governance::ACTIONS {
+                assert!(
+                    steward.contains(action),
+                    "an Admin agent is offered {action}"
+                );
+            }
+            let bystander = catalogue_text(
+                &state,
+                &tilo_actions::remote::Caller::local_agent("bystander").in_room(&cluster),
+            );
+            assert!(
+                !bystander.contains(crate::shell::public_room_governance::ISSUE_INVITE),
+                "an agent without Admin is not offered public-room governance"
+            );
+
+            let invite = |who: &str, confirm: bool| {
+                state.invoke_public_room_action(
+                    &cluster,
+                    &BrokerActor {
+                        id: format!("agent:{who}"),
+                        is_agent: true,
+                    },
+                    crate::shell::public_room_governance::ISSUE_INVITE,
+                    None,
+                    &serde_json::json!({ "confirm": confirm }),
+                )
+            };
+            assert!(
+                invite("steward", false)
+                    .unwrap_err()
+                    .contains("confirmation")
+            );
+            assert!(
+                invite("bystander", true)
+                    .unwrap_err()
+                    .contains("administer")
+            );
+            // Confirmed and Admin: the broker hands it to the network, which
+            // this fixture has none of — the refusal is that, not a gate.
+            assert!(invite("steward", true).unwrap_err().contains("network"));
+        }
+
         agent_delegation_uses_agent_caps_and_is_revoked_live();
         non_owner_cannot_claim_an_agent_principal();
         broker_catalogue_agent_can_create_and_assign_a_permission_profile();
+        public_room_governance_reaches_an_admin_agent_and_nobody_else();
         remote_agent_effect_terminals_become_redacted_workspace_receipts();
     }
 

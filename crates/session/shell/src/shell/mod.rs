@@ -110,6 +110,7 @@ mod power_menu;
 pub mod present;
 pub mod projection;
 mod projection_overlay;
+pub mod public_room_governance;
 pub mod quick_settings;
 pub mod realtime_session;
 pub mod recent_files;

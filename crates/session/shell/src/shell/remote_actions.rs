@@ -334,6 +334,7 @@ mod tests {
                     ("workspace", "profile.assign"),
                     ("workspace", "app-action.grant"),
                     ("workspace", "app-action.revoke"),
+                    ("workspace", "public-room.create"),
                     ("workspace", "create"),
                     ("workspace", "update"),
                     ("workspace", "delete"),

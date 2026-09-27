@@ -248,56 +248,6 @@ const DEVICE_REVOKE_PARAMS: &[ActionParam] = &[
     ),
 ];
 
-const PUBLIC_ROOM_CREATE_PARAMS: &[ActionParam] = &[ActionParam::required(
-    "name",
-    ParamType::Text,
-    "What the public room is called (for the community: Tilo Community).",
-)];
-
-const STANDING_INVITE_ISSUE_PARAMS: &[ActionParam] = &[
-    ActionParam::optional(
-        "role",
-        ParamType::Text,
-        "viewer or commenter (the default, and the most a standing invitation grants).",
-    ),
-    ActionParam::optional(
-        "expires_in_days",
-        ParamType::Integer,
-        "End the invitation after this many days; without it, it lasts until revoked.",
-    ),
-    ActionParam::required(
-        "confirm",
-        ParamType::Boolean,
-        "Explicit confirmation: anyone holding this invitation can join the room.",
-    ),
-];
-
-const STANDING_INVITE_REVOKE_PARAMS: &[ActionParam] = &[
-    ActionParam::required(
-        "invite_id",
-        ParamType::Text,
-        "The standing invitation's 64-character id.",
-    ),
-    ActionParam::required(
-        "confirm",
-        ParamType::Boolean,
-        "Explicit confirmation that no one may join with this invitation any more.",
-    ),
-];
-
-const ROOM_EDITOR_GRANT_PARAMS: &[ActionParam] = &[
-    ActionParam::required(
-        "person",
-        ParamType::Text,
-        "The person's id (their 64-character user key).",
-    ),
-    ActionParam::required(
-        "confirm",
-        ParamType::Boolean,
-        "Explicit confirmation that this person may edit and triage in the room.",
-    ),
-];
-
 /// The public room this session administers: the active workspace, when it
 /// is a public room and the local person may administer it.
 fn active_public_room_admin(state: &ChromeState) -> Result<String, ActionError> {
@@ -314,15 +264,27 @@ fn active_public_room_admin(state: &ChromeState) -> Result<String, ActionError> 
     Ok(room.to_string())
 }
 
-fn push_community(
+/// Run one public-room governance action (`shell::public_room_governance`)
+/// from the palette: validated there, performed by the network, the
+/// outcome told in a notification.
+fn public_room_act(
     state: &mut ChromeState,
-    request: crate::shell::peer_sync_overlay::CommunityRequest,
-    copy: Option<&'static str>,
-) {
+    args: &ActionArgs,
+    action: &str,
+) -> Result<(), ActionError> {
+    use crate::shell::public_room_governance as governance;
+    let operation = governance::operation(action, args).map_err(ActionError::Refused)?;
+    let room = if operation.needs_public_room() {
+        active_public_room_admin(state)?
+    } else {
+        String::new()
+    };
+    let (request, copy) = operation.request(&room);
     state.push_peer_sync_request(crate::shell::overlay_host::PeerSyncAction::Community {
         request,
         copy,
     });
+    Ok(())
 }
 
 pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
@@ -354,6 +316,8 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         "identity.connect"
         | "identity.select"
         | "identity.device.revoke"
+        | "public-room.create"
+        | "public-room.host.delegate"
         | "public-room.invite.issue"
         | "public-room.invite.revoke"
         | "room.editor.grant" => {
@@ -1549,121 +1513,62 @@ impl Action {
         // next to a caret this room's capabilities gate. Recorded by the
         // inviter into the room document, the same place capability grants
         // live; the peer id stays the identity, the name is just a label.
-        // Public-room governance: how the owner of a public room (the Tilo
-        // team, for the community room) creates it, mints and revokes its
-        // standing invitation and makes teammates Editors, in a release
-        // desktop. `scripts/community-ops/tilo-community` names these rows.
+        // Public-room governance (`shell::public_room_governance`): the same
+        // actions the broker offers agents and peers — how the owner of a
+        // public room (the Tilo team, for the community room) creates it,
+        // delegates it to its relay, mints and revokes its standing
+        // invitation and makes teammates Editors.
         Action {
             id: "public-room.create",
             label: "search-action-public-room-create",
             subtitle: "search-action-public-room-create-subtitle",
-            params: PUBLIC_ROOM_CREATE_PARAMS,
+            params: crate::shell::public_room_governance::CREATE_PARAMS,
             apply: |st, args| {
-                let name = args.text("name").unwrap_or_default().trim().to_string();
-                if name.is_empty() {
-                    return Err(ActionError::Refused("a public room needs a name".into()));
-                }
-                push_community(
+                public_room_act(st, args, crate::shell::public_room_governance::CREATE)
+            },
+        },
+        Action {
+            id: "public-room.host.delegate",
+            label: "search-action-public-room-host-delegate",
+            subtitle: "search-action-public-room-host-delegate-subtitle",
+            params: crate::shell::public_room_governance::DELEGATE_HOST_PARAMS,
+            apply: |st, args| {
+                public_room_act(
                     st,
-                    crate::shell::peer_sync_overlay::CommunityRequest::CreatePublicRoom { name },
-                    Some("room"),
-                );
-                Ok(())
+                    args,
+                    crate::shell::public_room_governance::DELEGATE_HOST,
+                )
             },
         },
         Action {
             id: "public-room.invite.issue",
             label: "search-action-public-room-invite-issue",
             subtitle: "search-action-public-room-invite-issue-subtitle",
-            params: STANDING_INVITE_ISSUE_PARAMS,
+            params: crate::shell::public_room_governance::ISSUE_INVITE_PARAMS,
             apply: |st, args| {
-                require_explicit_confirmation(args, "mint a standing invitation")?;
-                let room = active_public_room_admin(st)?;
-                let role = match args.text("role").map_or("commenter", str::trim) {
-                    "" | "commenter" => crate::network::invite::InviteRole::Commenter,
-                    "viewer" => crate::network::invite::InviteRole::Viewer,
-                    other => {
-                        return Err(ActionError::Refused(format!(
-                            "a standing invitation is viewer or commenter, not {other:?}"
-                        )));
-                    }
-                };
-                let expires_in_seconds = match args.integer("expires_in_days") {
-                    None => None,
-                    Some(days) => match u64::try_from(days) {
-                        Ok(days) if days >= 1 => Some(days.saturating_mul(86_400)),
-                        _ => {
-                            return Err(ActionError::Refused(
-                                "expires_in_days must be at least one day".into(),
-                            ));
-                        }
-                    },
-                };
-                push_community(
-                    st,
-                    crate::shell::peer_sync_overlay::CommunityRequest::IssueStandingInvite {
-                        room,
-                        role,
-                        expires_in_seconds,
-                    },
-                    Some("invite"),
-                );
-                Ok(())
+                public_room_act(st, args, crate::shell::public_room_governance::ISSUE_INVITE)
             },
         },
         Action {
             id: "public-room.invite.revoke",
             label: "search-action-public-room-invite-revoke",
             subtitle: "search-action-public-room-invite-revoke-subtitle",
-            params: STANDING_INVITE_REVOKE_PARAMS,
+            params: crate::shell::public_room_governance::REVOKE_INVITE_PARAMS,
             apply: |st, args| {
-                require_explicit_confirmation(args, "revoke a standing invitation")?;
-                let room = active_public_room_admin(st)?;
-                let invite_id = args
-                    .text("invite_id")
-                    .unwrap_or_default()
-                    .trim()
-                    .to_string();
-                if invite_id.len() != 64 || !invite_id.bytes().all(|b| b.is_ascii_hexdigit()) {
-                    return Err(ActionError::Refused(
-                        "invite_id is the invitation's 64-character id".into(),
-                    ));
-                }
-                push_community(
+                public_room_act(
                     st,
-                    crate::shell::peer_sync_overlay::CommunityRequest::RevokeStandingInvite {
-                        room,
-                        invite_id,
-                    },
-                    None,
-                );
-                Ok(())
+                    args,
+                    crate::shell::public_room_governance::REVOKE_INVITE,
+                )
             },
         },
         Action {
             id: "room.editor.grant",
             label: "search-action-room-editor-grant",
             subtitle: "search-action-room-editor-grant-subtitle",
-            params: ROOM_EDITOR_GRANT_PARAMS,
+            params: crate::shell::public_room_governance::GRANT_EDITOR_PARAMS,
             apply: |st, args| {
-                require_explicit_confirmation(args, "make someone an Editor")?;
-                let room = active_public_room_admin(st)?;
-                let person = args.text("person").unwrap_or_default().trim().to_string();
-                if person.len() != 64 || !person.bytes().all(|b| b.is_ascii_hexdigit()) {
-                    return Err(ActionError::Refused(
-                        "person is the person's 64-character id".into(),
-                    ));
-                }
-                push_community(
-                    st,
-                    crate::shell::peer_sync_overlay::CommunityRequest::GrantRole {
-                        room,
-                        person,
-                        role: crate::network::invite::InviteRole::Editor,
-                    },
-                    None,
-                );
-                Ok(())
+                public_room_act(st, args, crate::shell::public_room_governance::GRANT_EDITOR)
             },
         },
         Action {
@@ -4129,7 +4034,7 @@ mod tests {
         apply(
             &mut st,
             "public-room.create",
-            &args(&[("name", "Tilo Community".into())]),
+            &args(&[("name", "Tilo Community".into()), ("confirm", true.into())]),
         )
         .unwrap();
         assert_eq!(
@@ -4167,6 +4072,8 @@ mod tests {
             ]
         );
         for id in [
+            "public-room.create",
+            "public-room.host.delegate",
             "public-room.invite.issue",
             "public-room.invite.revoke",
             "room.editor.grant",
