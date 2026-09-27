@@ -409,6 +409,9 @@ pub enum BackendEvent {
     /// something else. Reported by the source of the event, so emulated
     /// pointer input from a tap still counts as touch.
     InputUsed(ui::InputModality),
+    /// A convertible's tablet-mode switch changed: `true` when the keyboard
+    /// is folded away and the touchscreen is the primary input.
+    TabletMode(bool),
     Redraw,
     Focus(bool),
 }
