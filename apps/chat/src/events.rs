@@ -879,7 +879,7 @@ impl ChatApp {
                 }
             }
             Hit::CallShareScreen => {
-                self.media_error = Some(crate::i18n::t("chat-status-audio-only"));
+                self.media_error = Some("This call supports microphone audio only".into());
             }
             Hit::CallExpand => {
                 self.call.expanded = !self.call.expanded;
@@ -937,7 +937,7 @@ impl ChatApp {
                 workspace,
                 category,
                 &id,
-                &crate::i18n::t("chat-default-new-text-channel"),
+                "new-channel",
                 ChannelKind::Text,
             ),
         );
@@ -948,7 +948,7 @@ impl ChatApp {
         let id = new_category_id();
         self.perform_action(
             doc,
-            &actions::create_category_action(ws, &id, &crate::i18n::t("chat-default-new-category")),
+            &actions::create_category_action(ws, &id, "New Category"),
         );
         self.begin_rename(MenuTarget::Category(id));
     }
@@ -1018,20 +1018,14 @@ impl ChatApp {
                 existing
             } else {
                 if !self.can_participate() {
-                    self.media_error = Some(crate::i18n::t("chat-error-voice-channel-writer"));
+                    self.media_error = Some("A room writer must create a voice channel".into());
                     return;
                 }
                 let ws = self.active_ws.clone();
                 let id = new_channel_id();
                 self.perform_action(
                     doc,
-                    &actions::create_channel_action(
-                        &ws,
-                        "",
-                        &id,
-                        &crate::i18n::t("chat-default-call-channel"),
-                        ChannelKind::Voice,
-                    ),
+                    &actions::create_channel_action(&ws, "", &id, "Voice", ChannelKind::Voice),
                 );
                 self.reload(doc);
                 id
@@ -1113,11 +1107,7 @@ impl ChatApp {
                     let id = new_category_id();
                     self.perform_action(
                         doc,
-                        &actions::create_category_action(
-                            &ws,
-                            &id,
-                            &crate::i18n::t("chat-default-new-category"),
-                        ),
+                        &actions::create_category_action(&ws, &id, "New Category"),
                     );
                     self.begin_rename(MenuTarget::Category(id));
                 }
@@ -1170,7 +1160,7 @@ impl ChatApp {
                         &ws,
                         id,
                         &new_id,
-                        &crate::i18n::t("chat-default-new-text-channel"),
+                        "new-channel",
                         ChannelKind::Text,
                     ),
                 );
@@ -1184,7 +1174,7 @@ impl ChatApp {
                         &ws,
                         id,
                         &new_id,
-                        &crate::i18n::t("chat-default-new-voice-channel"),
+                        "New Voice",
                         ChannelKind::Voice,
                     ),
                 );
@@ -1535,18 +1525,19 @@ impl ChatApp {
         // keeps the reply channel backpressured and prevents a click storm
         // from creating unbounded directory scans.
         if self.attachment_picker_pending.is_some() {
-            self.show_attachment_status(crate::i18n::t("chat-attachment-loading"), false);
+            self.attachment_status = Some("Loading attachments…".into());
             self.attach_open = true;
             return;
         }
         let generation = self.attachment_picker_generation;
         let Some(next) = generation.checked_add(1) else {
-            self.show_attachment_status(crate::i18n::t("chat-status-picker-exhausted"), false);
+            self.attachment_status =
+                Some("Attachment picker unavailable: request counter exhausted".into());
             return;
         };
         self.attachment_picker_generation = next;
         self.attachment_picker_pending = Some(generation);
-        self.show_attachment_status(crate::i18n::t("chat-attachment-loading"), false);
+        self.attachment_status = Some("Loading attachments…".into());
         self.attach_entries.clear();
         self.attach_open = true;
         let sender = self.attachment_picker_result_tx.clone();
@@ -1560,18 +1551,11 @@ impl ChatApp {
             } else {
                 AttachmentPickerResult::Failed {
                     generation,
-                    reason: "chat-error-workspace-unavailable".into(),
+                    reason: "workspace is unavailable".into(),
                 }
             };
             let _ = sender.send(result);
         });
-    }
-
-    /// Show an attachment outcome in the picker's status line; `error` marks
-    /// a failed or cancelled attempt.
-    pub(crate) fn show_attachment_status(&mut self, text: String, error: bool) {
-        self.attachment_status = Some(text);
-        self.attachment_status_error = error;
     }
 
     /// Apply one bounded directory enumeration result during sync. Generation
@@ -1592,7 +1576,7 @@ impl ChatApp {
             // has a definite cancelled terminal outcome and frees the single
             // bounded slot; its entries must never flash on a later picker.
             self.attachment_picker_pending = None;
-            self.show_attachment_status(crate::i18n::t("chat-status-picker-cancelled"), true);
+            self.attachment_status = Some("Attachment picker cancelled".into());
             return;
         }
         self.attachment_picker_pending = None;
@@ -1602,15 +1586,7 @@ impl ChatApp {
                 self.attachment_status = None;
             }
             AttachmentPickerResult::Failed { reason, .. } => {
-                // The worker names its reason by catalogue key: the catalogue
-                // is per thread, so the words are resolved here, on the UI's.
-                self.show_attachment_status(
-                    crate::i18n::t_args(
-                        "chat-status-picker-failed",
-                        &[("reason", crate::i18n::t(&reason).into())],
-                    ),
-                    true,
-                );
+                self.attachment_status = Some(format!("Attachment picker failed: {reason}"));
             }
         }
     }
@@ -1637,7 +1613,8 @@ impl ChatApp {
         path: &std::path::Path,
     ) -> bool {
         if !self.external_services {
-            self.show_attachment_status(crate::i18n::t("chat-error-attachment-unsupported"), false);
+            self.attachment_status =
+                Some("Attachment import unsupported: no host asset transport".into());
             return false;
         }
 
@@ -1646,7 +1623,8 @@ impl ChatApp {
         }
         let token = self.attachment_next_token;
         let Some(next) = token.checked_add(1) else {
-            self.show_attachment_status(crate::i18n::t("chat-status-import-exhausted"), false);
+            self.attachment_status =
+                Some("Attachment import unavailable: request counter exhausted".into());
             return false;
         };
         self.attachment_next_token = next;
@@ -1655,7 +1633,7 @@ impl ChatApp {
             channel: channel.into(),
             author: self.me.id.clone(),
         });
-        self.show_attachment_status(crate::i18n::t("chat-status-attachment-preparing"), false);
+        self.attachment_status = Some("Preparing attachment…".into());
         let sender = self.attachment_result_tx.clone();
         let content = self.content.clone();
         let path = path.to_path_buf();
@@ -1681,11 +1659,11 @@ impl ChatApp {
             | AttachmentImportResult::Failed { token, .. } => *token,
         };
         let Some(pending) = self.attachment_pending.as_ref() else {
-            self.show_attachment_status(crate::i18n::t("chat-status-import-stale"), false);
+            self.attachment_status = Some("Attachment import discarded: stale result".into());
             return;
         };
         if pending.token != token {
-            self.show_attachment_status(crate::i18n::t("chat-status-import-stale"), false);
+            self.attachment_status = Some("Attachment import discarded: stale result".into());
             return;
         }
         // Only the matching result may consume the accepted request. A stale
@@ -1706,18 +1684,11 @@ impl ChatApp {
             let AttachmentImportResult::Failed { reason, .. } = result else {
                 return;
             };
-            // Resolved on the UI thread; the worker named the reason by key.
-            self.show_attachment_status(
-                crate::i18n::t_args(
-                    "chat-status-import-failed",
-                    &[("reason", crate::i18n::t(&reason).into())],
-                ),
-                true,
-            );
+            self.attachment_status = Some(format!("Attachment import failed: {reason}"));
             return;
         };
         if !self.can_participate() {
-            self.show_attachment_status(crate::i18n::t("chat-status-import-permission"), true);
+            self.attachment_status = Some("Attachment import cancelled: permission changed".into());
             return;
         }
         let attachment = if video {
@@ -1752,7 +1723,7 @@ impl ChatApp {
             ),
         );
         self.scroll = 0.0;
-        self.show_attachment_status(crate::i18n::t("chat-status-attachment-shared"), false);
+        self.attachment_status = Some("Attachment shared".into());
     }
 }
 
@@ -1761,29 +1732,27 @@ fn prepare_attachment_import(
     token: u64,
     path: &std::path::Path,
 ) -> AttachmentImportResult {
-    // A worker thread has no catalogue of its own: it reports the reason's
-    // key and the UI thread resolves the words when it settles the result.
     let fail = |reason: &str| AttachmentImportResult::Failed {
         token,
         reason: reason.into(),
     };
     let Ok(metadata) = std::fs::metadata(path) else {
-        return fail("chat-error-file-unavailable");
+        return fail("file is unavailable");
     };
     if !metadata.is_file() || metadata.len() > crate::doc::MAX_ATTACHMENT_BYTES {
-        return fail("chat-error-file-not-shareable");
+        return fail("file is not shareable or exceeds 32 MiB");
     }
     let Ok(bytes) = std::fs::read(path) else {
-        return fail("chat-error-file-unreadable");
+        return fail("could not read file");
     };
     if bytes.is_empty() {
-        return fail("chat-error-file-empty");
+        return fail("file is empty");
     }
     if u64::try_from(bytes.len())
         .ok()
         .is_none_or(|size| size > crate::doc::MAX_ATTACHMENT_BYTES)
     {
-        return fail("chat-error-file-too-large");
+        return fail("file exceeds 32 MiB");
     }
     let name = path
         .file_name()
@@ -1793,11 +1762,11 @@ fn prepare_attachment_import(
         Ok(blob) => blob,
         Err(error) => {
             eprintln!("chat: content store refused an attachment: {error}");
-            return fail("chat-error-content-store-refused");
+            return fail("shared content store refused the attachment");
         }
     };
     if content.read(&blob).as_deref() != Some(bytes.as_slice()) {
-        return fail("chat-error-verification-failed");
+        return fail("shared byte verification failed");
     }
     AttachmentImportResult::Ready {
         token,

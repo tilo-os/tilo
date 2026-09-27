@@ -63,21 +63,17 @@ pub fn spec(channel: &str) -> ActionSpec {
     let channel = channel.to_owned();
     ActionSpec::typed_operation(
         "read-messages",
-        crate::i18n::t("chat-read-messages"),
-        crate::i18n::t("chat-read-messages-placeholder"),
+        "Read conversation messages",
+        "pageSize and optional cursor",
         OperationKind::Effect,
         OPERATION_TYPE,
         vec![
-            ActionParam::required_owned(
-                "pageSize",
-                ParamType::Integer,
-                crate::i18n::t("chat-read-param-page-size"),
-            )
-            .with_schema(serde_json::json!({"type":"integer","minimum":1,"maximum":32})),
-            ActionParam::optional_owned(
+            ActionParam::required("pageSize", ParamType::Integer, "Maximum items in this page")
+                .with_schema(serde_json::json!({"type":"integer","minimum":1,"maximum":32})),
+            ActionParam::optional(
                 "cursor",
                 ParamType::Text,
-                crate::i18n::t("chat-read-param-cursor"),
+                "Opaque nextCursor from the preceding page",
             )
             .with_schema(serde_json::json!({"type":"string","maxLength":1024})),
         ],
@@ -106,7 +102,7 @@ pub fn spec(channel: &str) -> ActionSpec {
     })
     .unavailable(
         "qualified_read_unavailable",
-        crate::i18n::t("chat-read-unavailable"),
+        "A current committed document read is not available",
     )
 }
 
