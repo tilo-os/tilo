@@ -46,8 +46,15 @@ fn mark_scalar(value: MarkVal) -> ScalarValue {
 ///
 /// # Errors
 /// Returns [`ModelError`] when `root` holds no rich text.
-pub fn blocks_under(doc: &mut Doc, root: &ObjId) -> Result<Vec<BlockContent>, ModelError> {
-    FieldState::read(doc, root.clone(), 0).map(|field| shown(&field.state))
+pub fn blocks_under(doc: &Doc, root: &ObjId) -> Result<Vec<BlockContent>, ModelError> {
+    let containers =
+        qdoc::model::open(doc, root).map_err(|error| ModelError::invalid(error.to_string()))?;
+    Ok(
+        qdoc::model::materialize_region(doc, &containers, qdoc::model::Region::Body)
+            .iter()
+            .map(content_of)
+            .collect(),
+    )
 }
 
 /// Write `blocks` into the rich text under `root`, which holds no text yet
@@ -65,7 +72,7 @@ pub fn blocks_under(doc: &mut Doc, root: &ObjId) -> Result<Vec<BlockContent>, Mo
 /// # Errors
 /// Refuses rich text that already holds text.
 pub fn fill_under(doc: &mut Doc, root: &ObjId, blocks: &[BlockContent]) -> Result<(), ActionError> {
-    let field = FieldState::read(doc, root.clone(), 0)
+    let field = FieldState::read_only(doc, root.clone(), 0)
         .map_err(|error| refused(format!("no rich text to fill: {error}")))?;
     let presented = shown(&field.state);
     let [empty] = presented.as_slice() else {
@@ -79,11 +86,16 @@ pub fn fill_under(doc: &mut Doc, root: &ObjId, blocks: &[BlockContent]) -> Resul
     }
     let containers = qdoc::model::open(doc, root)
         .map_err(|error| refused(format!("no rich text to fill: {error}")))?;
-    // Clear of every id the field already holds, the empty paragraph's too.
-    let actor = doc.get_actor().to_hex_string();
-    let next = qdoc::model::next_counter_for(doc, &containers, &actor)
-        .map_err(|error| refused(error.to_string()))?;
-    let mut ids = qdoc::model::IdGen::with_counter(actor, next);
+    // Ids unique to this field and this content at this version of the
+    // document: the same on a replica replaying the write, and clear of every
+    // id elsewhere in the document.
+    let mut seed = root.to_string().into_bytes();
+    for block in blocks {
+        seed.extend_from_slice(block.text.as_bytes());
+        seed.push(0);
+    }
+    let cx = ui::tilo_resource::ActionCx::for_apply(doc, &seed, 0);
+    let mut ids = qdoc::model::IdGen::for_action(cx);
     let mut dm = qdoc::model::DocMut {
         doc,
         c: &containers,

@@ -36,6 +36,12 @@ pub trait RichTextSource {
     /// Increases whenever the state changes; `None` before there is one.
     fn revision(&self) -> Option<u64>;
 
+    /// Read the state from `doc` without writing to it, for a view shown
+    /// before its first sync; `false` when this source cannot.
+    fn read_from(&mut self, _doc: &Doc) -> bool {
+        false
+    }
+
     /// Read the state, once there is one.
     fn with_state<T>(&self, read: impl FnOnce(&RichTextState) -> T) -> Option<T>;
 
@@ -142,7 +148,9 @@ struct FrameworkSink<A> {
 /// changes by re-reading what changed.
 pub(crate) struct FieldState {
     pub(crate) root: ObjId,
-    tracker: Tracker,
+    /// `None` for a state read without writing: the next sync reads again,
+    /// and tracks from there.
+    tracker: Option<Tracker>,
     pub(crate) state: RichTextState,
     revision: u64,
 }
@@ -151,13 +159,21 @@ impl FieldState {
     /// The rich text under `root`, every paragraph read, with changes
     /// tracked from here.
     pub(crate) fn read(doc: &mut Doc, root: ObjId, revision: u64) -> Result<Self, ModelError> {
-        let mut state = RichText::read_under(doc, &root)?;
-        RichText::load(&mut state, doc, &all())?;
+        let mut field = Self::read_only(doc, root, revision)?;
         let mut tracker = Tracker::new();
         tracker.start(doc);
+        field.tracker = Some(tracker);
+        Ok(field)
+    }
+
+    /// The rich text under `root`, every paragraph read, without writing to
+    /// `doc`; nothing is tracked yet.
+    pub(crate) fn read_only(doc: &Doc, root: ObjId, revision: u64) -> Result<Self, ModelError> {
+        let mut state = RichText::read_under(doc, &root)?;
+        RichText::load(&mut state, doc, &all())?;
         Ok(Self {
             root,
-            tracker,
+            tracker: None,
             state,
             revision,
         })
@@ -170,9 +186,10 @@ impl FieldState {
     /// [`read`](Self::read) is then the way back.
     pub(crate) fn refresh(&mut self, doc: &mut Doc) -> Result<bool, ModelError> {
         let state = &self.state;
-        let delta = self
-            .tracker
-            .delta_located(doc, &|obj| RichText::locate(state, obj));
+        let Some(tracker) = self.tracker.as_mut() else {
+            return Err(ModelError::invalid("nothing tracked yet"));
+        };
+        let delta = tracker.delta_located(doc, &|obj| RichText::locate(state, obj));
         if delta.is_empty() {
             return Ok(false);
         }
@@ -320,10 +337,9 @@ impl<A: Action + serde::Serialize> RichTextSource for RichTextField<A> {
             self.field = None;
             return;
         };
-        let current = self
-            .field
-            .as_ref()
-            .is_some_and(|field| field.root == root && doc.pending_ops() == 0);
+        let current = self.field.as_ref().is_some_and(|field| {
+            field.root == root && field.tracker.is_some() && doc.pending_ops() == 0
+        });
         if !current {
             self.reread(doc, root);
             return;
@@ -338,6 +354,27 @@ impl<A: Action + serde::Serialize> RichTextSource for RichTextField<A> {
 
     fn revision(&self) -> Option<u64> {
         self.field.as_ref().map(|field| field.revision)
+    }
+
+    fn read_from(&mut self, doc: &Doc) -> bool {
+        let Some(root) = (self.locate)(doc) else {
+            self.field = None;
+            return false;
+        };
+        let revision = self
+            .field
+            .as_ref()
+            .map_or(0, |field| field.revision.wrapping_add(1));
+        match FieldState::read_only(doc, root, revision) {
+            Ok(field) => {
+                self.field = Some(field);
+                true
+            }
+            Err(error) => {
+                tracing::warn!(%error, "rich-text field unreadable");
+                false
+            }
+        }
     }
 
     fn with_state<T>(&self, read: impl FnOnce(&RichTextState) -> T) -> Option<T> {
@@ -378,7 +415,14 @@ impl<A: Action + serde::Serialize> RichTextSource for RichTextField<A> {
     fn take_committed(&mut self) -> Option<Vec<ChangeHash>> {
         let bracket = self.actions.take_committed();
         let continuing = std::mem::take(&mut self.step.continuing);
-        self.step.opened = bracket.is_some() && !continuing;
+        // Only typing continues into the next event; a split, a move or a
+        // format is a step of its own, closed now.
+        let continuable = self
+            .step
+            .last
+            .as_ref()
+            .is_some_and(|edit| matches!(edit, RichTextAction::SpliceText { .. }));
+        self.step.opened = bracket.is_some() && !continuing && continuable;
         self.step.applied = false;
         if continuing { None } else { bracket }
     }
@@ -401,6 +445,10 @@ impl<S: RichTextSource> RichTextSource for Rc<std::cell::RefCell<S>> {
 
     fn revision(&self) -> Option<u64> {
         self.borrow().revision()
+    }
+
+    fn read_from(&mut self, doc: &Doc) -> bool {
+        self.borrow_mut().read_from(doc)
     }
 
     fn with_state<T>(&self, read: impl FnOnce(&RichTextState) -> T) -> Option<T> {

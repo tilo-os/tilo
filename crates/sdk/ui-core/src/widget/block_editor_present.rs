@@ -223,8 +223,29 @@ impl BlockEditor {
         self.focused = focused_id
             .and_then(|id| self.blocks.iter().position(|block| block.id == id))
             .or_else(|| old_focus.map(|index| index.min(self.blocks.len().saturating_sub(1))));
+        // A focused table cell stays focused, clamped into the table's new
+        // shape; its hidden source line never takes the caret.
+        for block in &self.blocks {
+            if !matches!(block.kind, BlockKind::Table { visual: true }) {
+                continue;
+            }
+            if let Some(table) = self.table_editors.get_mut(&block.id) {
+                let rows: Vec<Vec<String>> = super::markdown_table_data_rows(block.text())
+                    .into_iter()
+                    .map(|row| row.into_iter().map(super::decode_table_cell).collect())
+                    .collect();
+                table.project_cells(&rows);
+            }
+        }
+        let cell_focused = self.blocks.iter().any(|block| {
+            matches!(block.kind, BlockKind::Table { visual: true })
+                && self
+                    .table_editors
+                    .get(&block.id)
+                    .is_some_and(|table| table.projected_focus().is_some())
+        });
         for (index, block) in self.blocks.iter_mut().enumerate() {
-            let focus = self.is_focused && self.focused == Some(index);
+            let focus = self.is_focused && self.focused == Some(index) && !cell_focused;
             if block.line.is_focused() != focus {
                 block.line.set_focus(focus);
             }
