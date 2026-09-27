@@ -13109,7 +13109,6 @@ dependencies = [
  "serial_test",
  "settings-store",
  "sha2 0.11.0",
- "shell",
  "smithay",
  "smithay-client-toolkit",
  "sysinfo",
