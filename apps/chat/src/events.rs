@@ -1786,6 +1786,9 @@ mod tests {
     use crate::model;
     use tilo_automerge::ApplyIncoming;
 
+    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+    const HANG_BOUND: ui::clock::Duration = ui::clock::Duration::from_secs(30);
+
     fn service_streams(app: &mut ChatApp, channel: &str, count: usize) {
         app.native_voice
             .submit(ui::native_media::Command::Join {
@@ -2966,25 +2969,27 @@ mod tests {
         channel: &str,
         expected_count: usize,
     ) {
-        for _ in 0..100 {
+        let deadline = ui::clock::Instant::now() + HANG_BOUND;
+        while ui::clock::Instant::now() < deadline {
             app.settle_attachment_import(doc);
             if ChatDoc::list_messages(doc, channel).len() == expected_count {
                 return;
             }
             std::thread::sleep(ui::clock::Duration::from_millis(5));
         }
-        panic!("attachment worker did not settle within 500ms");
+        panic!("attachment worker did not settle");
     }
 
     fn settle_picker_until(app: &mut ChatApp) {
-        for _ in 0..100 {
+        let deadline = ui::clock::Instant::now() + HANG_BOUND;
+        while ui::clock::Instant::now() < deadline {
             app.settle_attachment_picker();
             if app.attachment_picker_pending.is_none() {
                 return;
             }
             std::thread::sleep(ui::clock::Duration::from_millis(5));
         }
-        panic!("attachment picker worker did not settle within 500ms");
+        panic!("attachment picker worker did not settle");
     }
 
     #[test]

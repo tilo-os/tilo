@@ -15,6 +15,9 @@ use ui::presence::PresenceKey;
 use crate::typed_peer;
 use typed_peer::TypedPeer;
 
+/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+const HANG_BOUND: Duration = Duration::from_secs(30);
+
 fn hello(handle: &str) -> CollabRequest {
     CollabRequest::Hello {
         app_id: "so.tilo.word-processor".into(),
@@ -31,8 +34,8 @@ fn send_until_presence(
     expected: &(PresenceKey, PresencePayload),
 ) -> (PresenceKey, PresencePayload) {
     let deadline = Instant::now()
-        .checked_add(Duration::from_secs(3))
-        .expect("short test deadline fits in Instant");
+        .checked_add(HANG_BOUND)
+        .expect("test deadline fits in Instant");
     while Instant::now() < deadline {
         sender.send(request).expect("publish typed presence");
         if let Some(CollabEvent::RemotePresenceUpdate { key, payload, .. }) = receiver

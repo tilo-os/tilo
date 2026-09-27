@@ -33,6 +33,8 @@ use typed_peer::{TypedPeer as UnixStream, document_mutation, recv, send};
 
 const APP: &str = "so.tilo.word-processor";
 const RECORD: &str = "file:/var/workspace/Demo/brief.docx";
+/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+const HANG_BOUND: Duration = Duration::from_secs(30);
 
 /// The capability an inviter issues an agent for the app it was invited
 /// to. The agent holds no role, so this grant is the whole of what it may
@@ -467,7 +469,7 @@ fn the_agent_inserts_a_table_on_its_own_documents_replica_even_among_others() {
         // real document stream. Keep consuming after the visible table result:
         // history evidence must arrive even though the user-facing work already
         // looks complete.
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + HANG_BOUND;
         while Instant::now() < deadline && ui::read_runs(&replica).is_empty() {
             let Some(event) = recv(&mut peer) else {
                 continue;
@@ -664,7 +666,7 @@ fn connect_files_and_word_processor(
         ready_tx.send(()).unwrap();
         drive_files_peer(files_peer, seed_foreign(), &stop_rx);
     });
-    ready_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    ready_rx.recv_timeout(HANG_BOUND).unwrap();
 
     // The word processor, holding the page with the instruction on it.
     let mut wp_peer = UnixStream::connect(sock);

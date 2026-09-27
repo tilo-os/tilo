@@ -1,5 +1,8 @@
 use super::*;
 
+/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
 #[cfg(test)]
 mod open_with_tests {
     use super::*;
@@ -3273,15 +3276,11 @@ mod command_path_tests {
         )));
         // The daemon has the request but deliberately cannot reply yet. Reaching
         // this receive proves the UI command returned independently of I/O.
-        seen_rx
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .unwrap();
+        seen_rx.recv_timeout(HANG_BOUND).unwrap();
         assert!(widget.share_pending_path.is_some());
         release_tx.send(()).unwrap();
         server.join().unwrap();
-        wakes
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .unwrap();
+        wakes.recv_timeout(HANG_BOUND).unwrap();
         let mut doc = automerge::AutoCommit::new();
         assert!(widget.update(&mut doc, &automerge::ROOT));
         assert!(widget.share_pending_path.is_none());

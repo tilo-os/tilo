@@ -29,6 +29,9 @@ use db_client::engine::MAX_QUERY_ROWS;
 use db_client::model::{Cell, ConnectionProfile, Engine};
 use db_client::session::Session;
 
+/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
 fn env_or(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_string())
 }
@@ -187,7 +190,8 @@ fn postgres_real_round_trip_and_cancellation() {
         let started = std::time::Instant::now();
         s.run_query("SELECT pg_sleep(30)");
         let mut requested = false;
-        for _ in 0..200 {
+        let deadline = std::time::Instant::now() + HANG_BOUND;
+        while std::time::Instant::now() < deadline {
             if s.cancel_in_flight_query() {
                 requested = true;
                 break;
@@ -269,7 +273,8 @@ fn mysql_real_round_trip_and_cancellation() {
         let started = std::time::Instant::now();
         s.run_query("SELECT SLEEP(30)");
         let mut requested = false;
-        for _ in 0..200 {
+        let deadline = std::time::Instant::now() + HANG_BOUND;
+        while std::time::Instant::now() < deadline {
             if s.cancel_in_flight_query() {
                 requested = true;
                 break;

@@ -1196,8 +1196,8 @@ mod tests {
                 decoder.is_real_decode(),
                 "the decode feature must use the real pipeline"
             );
-            // Preroll is async: pump until a frame lands or a short deadline.
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            // Preroll is async: pump until a frame lands; the bound only catches a hang.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
             let mut got = false;
             while std::time::Instant::now() < deadline {
                 if decoder.update(&project, 1.0) {

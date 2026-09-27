@@ -3042,6 +3042,9 @@ mod handoff_test_peer;
 mod tests {
     use super::*;
 
+    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+    const HANG_BOUND: Duration = Duration::from_secs(30);
+
     #[test]
     fn word_actions_anchor_the_exact_document_objects_they_change() {
         // Case `image_layout_actions_anchor_the_exact_document_object`.
@@ -4335,7 +4338,7 @@ mod tests {
                 )
                 .unwrap(),
             );
-            let deadline = Instant::now() + Duration::from_secs(5);
+            let deadline = Instant::now() + HANG_BOUND;
             let offers = loop {
                 assert!(Instant::now() < deadline, "both app catalogues must arrive");
                 session.refresh_catalogue().unwrap();

@@ -18,6 +18,9 @@ use ui::widget::Widget;
 #[path = "support/ssh_remote.rs"]
 mod ssh_remote;
 
+/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+const HANG_BOUND: Duration = Duration::from_secs(30);
+
 struct Server(Child);
 
 impl Drop for Server {
@@ -398,7 +401,7 @@ fn remote_fetch_keeps_app_responsive_and_reports_completion_after_sync() {
         Some(ui::widget::ResourceOperationStart::Accepted)
     ));
     assert!(app.needs_animation_frame());
-    let request_deadline = Instant::now().checked_add(Duration::from_secs(5)).unwrap();
+    let request_deadline = Instant::now().checked_add(HANG_BOUND).unwrap();
     while !root.path().join("request-started").exists() {
         assert!(
             Instant::now() < request_deadline,

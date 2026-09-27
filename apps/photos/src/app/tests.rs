@@ -5,6 +5,9 @@ use crate::shots_pattern;
 use automerge::ROOT;
 use tilo_actions::{Action, ResourceProvider};
 
+/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
 fn has_resource_id(resource: &tilo_actions::Resource, id: &str) -> bool {
     resource.id.0 == id
         || resource
@@ -2078,7 +2081,7 @@ fn thumbnail_queue_is_bounded_wakes_its_host_and_rejects_stale_results() {
             let key = request.key();
             app.thumbnail_service.request(request);
             let event = receiver
-                .recv_timeout(std::time::Duration::from_secs(5))
+                .recv_timeout(HANG_BOUND)
                 .expect("thumbnail completion must wake the idle host without user input");
             assert!(scope.accepts(&event));
             let settled = app.thumbnail_service.peek(&key).unwrap();

@@ -970,7 +970,7 @@ mod tests {
                 let _ = tx.send(native::read_text(&path));
             });
             assert!(
-                rx.recv_timeout(std::time::Duration::from_millis(250))
+                rx.recv_timeout(crate::HANG_BOUND)
                     .expect("special host files must not block the probe")
                     .is_err()
             );

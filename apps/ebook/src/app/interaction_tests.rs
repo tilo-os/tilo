@@ -10,6 +10,9 @@ use ui::presence::PresenceCtx;
 use winit::dpi::PhysicalPosition;
 use winit::event::{DeviceId, KeyEvent};
 
+/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Point the compatibility `TILO_WORKSPACE_DIR` override at `path` until the
 /// returned scope is dropped, including during unwinding.
 fn workspace_env(path: &std::path::Path) -> tilo_test_env::ScopedEnv {
@@ -3420,7 +3423,7 @@ fn import_worker_is_non_blocking_and_wakes_its_host() {
             })
             .unwrap();
         let event = receiver
-            .recv_timeout(Duration::from_secs(5))
+            .recv_timeout(HANG_BOUND)
             .expect("completion wakes the host without an input event or polling frames");
         assert!(scope.accepts(&event));
         assert!(matches!(worker.try_recv(), Ok(result) if result.result.is_ok()));

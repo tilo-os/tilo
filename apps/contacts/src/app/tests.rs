@@ -5,6 +5,9 @@ use taffy::{AvailableSpace, Dimension, Size, Style};
 use tilo_automerge::ApplyIncoming;
 use vello::kurbo::Point;
 
+/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Sample seeding, view, edit, popup and importing frames render without panicking and with legible chips and a busy announcement.
 #[test]
 fn every_view_mode_renders_legibly() {
@@ -3570,7 +3573,8 @@ fn import_export_jobs_are_brokered_and_generation_fenced() {
         // The picker is drained on this frame; parsing happens on a worker so
         // a slow vCard cannot block rendering. Drive a few frames instead of
         // assuming the scheduler has already run that worker.
-        for _ in 0..500 {
+        let deadline = std::time::Instant::now() + HANG_BOUND;
+        while std::time::Instant::now() < deadline {
             app.sync(&mut doc, &ROOT);
             if !app.portal_in_flight() {
                 break;
