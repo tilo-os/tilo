@@ -287,6 +287,26 @@ fn rich_text_under_a_field_is_edited_and_refreshed_in_place() {
     RichText::refresh_under(&mut state, &doc, &delta).unwrap();
     RichText::load(&mut state, &doc, &everything).unwrap();
     assert_eq!(state.block(&block).unwrap().text, "hello");
+    RichTextAction::SplitBlock {
+        region: RegionKind::Body,
+        block,
+        at: 5,
+        kind: "paragraph".into(),
+        ordered: None,
+        next: None,
+    }
+    .apply_under(&mut doc, &first)
+    .unwrap();
+    doc.commit();
+    let delta = tracker.delta_located(&mut doc, &|obj| RichText::locate(&state, obj));
+    RichText::refresh_under(&mut state, &doc, &delta).unwrap();
+    RichText::load(&mut state, &doc, &everything).unwrap();
+    assert_eq!(
+        RichText::plain_text_under(&doc, &first).unwrap(),
+        "hello\n",
+        "a line per paragraph"
+    );
+    assert!(RichText::plain_text_under(&doc, &messages).is_err());
 
     let mut fresh = RichText::read_under(&doc, &first).unwrap();
     RichText::load(&mut fresh, &doc, &everything).unwrap();
