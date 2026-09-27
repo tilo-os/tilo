@@ -295,30 +295,12 @@ fn addr_from_parsed(a: &mail_parser::Addr) -> Addr {
     Addr::new(name, email)
 }
 
-/// Best-effort MIME type from a filename extension. Small static table —
-/// enough for the attachment glyph + the multipart Content-Type.
+/// Best-effort MIME type from a filename extension, for the attachment glyph
+/// and the multipart Content-Type.
 pub fn mime_from_filename(name: &str) -> &'static str {
-    let ext = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
-    match ext.as_str() {
-        "pdf" => "application/pdf",
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "gif" => "image/gif",
-        "svg" => "image/svg+xml",
-        "txt" | "log" => "text/plain",
-        "md" => "text/markdown",
-        "csv" => "text/csv",
-        "html" | "htm" => "text/html",
-        "ics" => "text/calendar",
-        "zip" => "application/zip",
-        "tar" => "application/x-tar",
-        "gz" => "application/gzip",
-        "doc" | "docx" => "application/msword",
-        "xls" | "xlsx" => "application/vnd.ms-excel",
-        "ppt" | "pptx" => "application/vnd.ms-powerpoint",
-        "json" => "application/json",
-        _ => "application/octet-stream",
-    }
+    mime_guess::from_path(name)
+        .first_raw()
+        .unwrap_or("application/octet-stream")
 }
 
 /// Outcome of a (simulated, in this slice) send. The live app returns the

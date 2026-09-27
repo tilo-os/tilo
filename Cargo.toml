@@ -399,6 +399,8 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 rcgen = "0.14"
 rustls-native-certs = "0.8"
 url = "2"
+# MIME types from file extensions.
+mime_guess = "2.0.5"
 # Percent-encoding and form-urlencoding outside a whole `url::Url`.
 percent-encoding = "2"
 form_urlencoded = "1"
