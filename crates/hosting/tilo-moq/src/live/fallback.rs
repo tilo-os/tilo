@@ -180,14 +180,7 @@ fn unhex_into(value: &str, out: &mut [u8]) -> Option<()> {
     Some(())
 }
 fn hex(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-    bytes.iter().fold(
-        String::with_capacity(bytes.len().saturating_mul(2)),
-        |mut out, byte| {
-            let _ = write!(out, "{byte:02x}");
-            out
-        },
-    )
+    hex::encode(bytes)
 }
 fn ops_name(record: &[u8; 32]) -> String {
     format!("{OPS_PREFIX}{}", hex(record))

@@ -28,7 +28,7 @@ fn refused(error: HostedAttemptError) -> String {
     }
 }
 fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    hex::encode(bytes)
 }
 fn selection(account_id: &str, machine_id: &str) -> Result<Selection, String> {
     if account_id.is_empty()
