@@ -6,9 +6,9 @@ use crate::history_mode::restore::{
 use crate::permissions::PermissionContext;
 use automerge::{AutoCommit, ChangeHash, transaction::Transactable};
 
-/// Private, synchronous admission staging. No production constructor exists:
-/// the History host must bind current authority and exact owner/lifetime first.
-/// A prepared content plan alone is never an authority grant.
+/// Private, synchronous admission staging. Only the History hosts' doors in
+/// this module construct one, after binding current authority and the exact
+/// owner/lifetime. A prepared content plan alone is never an authority grant.
 pub(crate) struct ConfirmedRestore<'a> {
     _authority: &'a PermissionContext,
     author: UserId,
@@ -29,8 +29,9 @@ impl ConfirmedRestore<'_> {
     }
 }
 
-/// The only production admission door. The current owner/context is borrowed
-/// through preparation, final authorization and the synchronous canonical write.
+/// The framework History host's admission door. The current owner/context is
+/// borrowed through preparation, final authorization and the synchronous
+/// canonical write.
 #[allow(
     clippy::too_many_arguments,
     reason = "restore admission binds the reviewed source and schema to current state, authority, author, title and time"
@@ -101,31 +102,19 @@ pub(crate) fn restore_reviewed_history(
     )
     .with_app(&review.resource().app_id, title);
     let apply = |authority: &PermissionContext, author: &UserId, file: bool, state: &mut State| {
-        use crate::permissions::{CapDecision, Principal, ResourceRef, Verb};
         let current = authority.clone().at_unix_time(now);
-        // The installed solo-workspace principal is the runner's existing
-        // local-author mapping. Other contexts must name the actual author.
-        let mapped = current.actor().principals.contains(&author.principal())
-            || current
-                .actor()
-                .principals
-                .contains(&Principal::Person(crate::permissions::LOCAL_USER.into()));
-        if !mapped
-            || current.decide(
-                &ResourceRef::App(review.resource().app_id.clone()),
-                Verb::Write,
-            ) != CapDecision::Allow
-        {
-            return Err("You no longer have permission to restore this document.".to_owned());
-        }
-        if file
-            && let Some(path) = review.resource().record_id.file_path()
-            && current.decide(
-                &ResourceRef::FsPath(path.to_string_lossy().into_owned()),
-                Verb::Write,
-            ) != CapDecision::Allow
-        {
-            return Err("You do not have permission to write this file.".to_owned());
+        if let Err(refusal) = check_restore_authority(
+            &current,
+            author,
+            &review.resource().app_id,
+            file.then_some(&review.resource().record_id),
+        ) {
+            return Err(match refusal {
+                RestoreRefusal::App => {
+                    "You no longer have permission to restore this document.".to_owned()
+                }
+                RestoreRefusal::File => "You do not have permission to write this file.".to_owned(),
+            });
         }
         let admitted = ConfirmedRestore {
             _authority: authority,
@@ -173,6 +162,82 @@ pub(crate) fn restore_reviewed_history(
         _ => apply(authority, author, false, state),
     }
 }
+
+enum RestoreRefusal {
+    App,
+    File,
+}
+
+/// Restoring writes: the author must be the actor `current` describes, and
+/// `current` must grant Write on the app and, for a file-backed record, on the
+/// file. `current` is already stamped at the caller's policy time.
+fn check_restore_authority(
+    current: &PermissionContext,
+    author: &UserId,
+    app_id: &str,
+    record: Option<&crate::record::RecordId>,
+) -> Result<(), RestoreRefusal> {
+    use crate::permissions::{CapDecision, Principal, ResourceRef, Verb};
+    // The installed solo-workspace principal is the runner's existing
+    // local-author mapping. Other contexts must name the actual author.
+    let mapped = current.actor().principals.contains(&author.principal())
+        || current
+            .actor()
+            .principals
+            .contains(&Principal::Person(crate::permissions::LOCAL_USER.into()));
+    if !mapped
+        || current.decide(&ResourceRef::App(app_id.to_owned()), Verb::Write) != CapDecision::Allow
+    {
+        return Err(RestoreRefusal::App);
+    }
+    if let Some(path) = record.and_then(crate::record::RecordId::file_path)
+        && current.decide(
+            &ResourceRef::FsPath(path.to_string_lossy().into_owned()),
+            Verb::Write,
+        ) != CapDecision::Allow
+    {
+        return Err(RestoreRefusal::File);
+    }
+    Ok(())
+}
+
+/// The standalone History host's door for a bound record: return the record
+/// to `target` as one forward change written through the record's own action
+/// frame and undo log, attributed to the binding's author. Refused unless the
+/// record is still exactly at `current`, the frontier the person reviewed.
+pub(crate) fn restore_reviewed_record(
+    outer: &mut AutoCommit,
+    binding: &crate::bound_dispatch::CallbackBinding,
+    current: &[ChangeHash],
+    target: &[ChangeHash],
+) -> Result<OwnedActionReceipt, OwnedRestoreError> {
+    let authority = binding.permissions.borrow();
+    check_restore_authority(
+        &authority,
+        &binding.author,
+        &binding.app_id,
+        Some(&binding.checkout.id),
+    )
+    .map_err(|_| OwnedRestoreError::Denied)?;
+    let mut context = tilo_actions::ActionContext {
+        action_label: crate::i18n::I18nManager::lookup_plain("standalone-history-restore-action"),
+        ..tilo_actions::ActionContext::default()
+    }
+    .enriched_by(&binding.operation_context);
+    if context.app.is_none() {
+        context = context.with_app(&binding.app_id, &binding.app_id);
+    }
+    let admitted = ConfirmedRestore {
+        _authority: &authority,
+        author: binding.author.clone(),
+        context,
+    };
+    binding.restore_write(
+        outer,
+        &admitted,
+        RestoreWrite::WholeDocument { current, target },
+    )
+}
 #[derive(Debug)]
 pub(crate) struct OwnedActionReceipt {
     #[cfg_attr(
@@ -199,6 +264,8 @@ pub(crate) enum OwnedRestoreError {
     Engine(RestoreError),
     EngineContract,
     Bound(crate::bound_dispatch::BoundDispatchError),
+    /// The record's current authority does not grant this author Write.
+    Denied,
 }
 /// Existing native commits and new owned restores use this same attribution.
 pub(super) struct OwnedActionAttribution {
