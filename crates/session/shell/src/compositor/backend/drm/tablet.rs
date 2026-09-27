@@ -2,13 +2,16 @@
 //! own saved settings ([`TabletConfig`], keyed by device identity): mapped
 //! onto the display it is tied to (or the whole desktop when it is tied to
 //! none or that display is unplugged), letterboxed to keep its aspect ratio,
-//! turned for left-handed use, pressure through its curve, and barrel
-//! buttons remapped. Pad buttons run shortcuts through [`chord_keycodes`].
+//! turned for left-handed use, pressure through its curve, barrel buttons
+//! and the eraser remapped. Pad buttons run shortcuts through
+//! [`chord_keycodes`].
 
 use smithay::backend::input::{Event, TabletToolCapabilities, TabletToolEvent, TabletToolType};
 use smithay::backend::libinput::LibinputInputBackend;
 
-use settings_store::hardware::{KeyChord, ShortcutAction, StylusButtonAction, TabletConfig};
+use settings_store::hardware::{
+    EraserAction, KeyChord, ShortcutAction, StylusButtonAction, TabletConfig,
+};
 
 use crate::compositor::backend::{
     TabletDevice, TabletInput, TabletPhase, TabletTool, TabletToolKind, map_tablet_position,
@@ -231,6 +234,32 @@ pub fn stylus_button(config: &TabletConfig, code: u32) -> ButtonOutcome {
     }
 }
 
+/// Where the eraser end of a pen goes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EraserRoute {
+    /// As an eraser tool: tablet-aware apps erase, others see a pointer.
+    Native,
+    /// As a pointer everywhere, touching the surface pressing this button
+    /// code.
+    Pointer(u32),
+    /// As a pointer that clicks nothing; touching the surface performs
+    /// this shortcut.
+    Shortcut(ShortcutAction),
+}
+
+/// Resolve the eraser against the tablet's saved mapping.
+pub fn eraser_route(config: &TabletConfig) -> EraserRoute {
+    match config.eraser {
+        EraserAction::Native => EraserRoute::Native,
+        EraserAction::Left => EraserRoute::Pointer(BTN_LEFT),
+        EraserAction::Middle => EraserRoute::Pointer(BTN_MIDDLE),
+        EraserAction::Right => EraserRoute::Pointer(BTN_RIGHT),
+        EraserAction::Back => EraserRoute::Pointer(BTN_SIDE),
+        EraserAction::Forward => EraserRoute::Pointer(BTN_EXTRA),
+        EraserAction::Shortcut(action) => EraserRoute::Shortcut(action),
+    }
+}
+
 /// The shortcut a pad button performs, if one is mapped.
 pub fn pad_button(config: &TabletConfig, button: u32) -> Option<ShortcutAction> {
     config.pad_buttons.get(&button).copied()
@@ -412,6 +441,32 @@ mod tests {
             ButtonOutcome::Button(BTN_STYLUS),
             "an unmapped button reaches tablet-aware apps as itself"
         );
+    }
+
+    #[test]
+    fn the_eraser_follows_the_saved_mapping() {
+        assert_eq!(
+            eraser_route(&TabletConfig::default()),
+            EraserRoute::Native,
+            "a new tablet erases natively"
+        );
+        for (action, route) in [
+            (EraserAction::Left, EraserRoute::Pointer(BTN_LEFT)),
+            (EraserAction::Middle, EraserRoute::Pointer(BTN_MIDDLE)),
+            (EraserAction::Right, EraserRoute::Pointer(BTN_RIGHT)),
+            (EraserAction::Back, EraserRoute::Pointer(BTN_SIDE)),
+            (EraserAction::Forward, EraserRoute::Pointer(BTN_EXTRA)),
+            (
+                EraserAction::Shortcut(ShortcutAction::ClipboardHistory),
+                EraserRoute::Shortcut(ShortcutAction::ClipboardHistory),
+            ),
+        ] {
+            let config = TabletConfig {
+                eraser: action,
+                ..TabletConfig::default()
+            };
+            assert_eq!(eraser_route(&config), route, "{action:?}");
+        }
     }
 
     #[test]

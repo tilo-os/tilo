@@ -225,14 +225,13 @@ impl Fixture {
     }
 }
 async fn live(client: &Client) {
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tilo_test_env::within("the native client to leave Connecting", async {
         while client.status() == Status::Connecting {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
         assert_eq!(client.status(), Status::Live);
     })
-    .await
-    .expect("native client ready deadline");
+    .await;
 }
 fn frame(sequence: u64) -> CapturedOpus {
     CapturedOpus {
@@ -265,7 +264,7 @@ async fn native_client_uses_real_grants_muted_start_five_objects_and_synchronous
         if sequence == 5 {
             sender.try_send(frame(sequence)).unwrap();
         }
-        let received = tokio::time::timeout(Duration::from_secs(5), async {
+        let received = tilo_test_env::within("real native media object", async {
             loop {
                 if let Some(value) = receiver.try_recv() {
                     break value;
@@ -273,8 +272,7 @@ async fn native_client_uses_real_grants_muted_start_five_objects_and_synchronous
                 tokio::time::sleep(Duration::from_millis(2)).await;
             }
         })
-        .await
-        .expect("real native media object");
+        .await;
         assert_eq!(received.object.sequence, sequence);
         assert_eq!(received.object.timestamp, sequence * 960);
         assert_eq!(received.object.payload, [0xf8, 0xff, 0xfe]);
@@ -328,24 +326,22 @@ async fn native_client_rejects_scope_substitution_and_single_use_proof_replay() 
     // Client `Live` follows the relay's ADMITTED reply, but the relay counts
     // the session as accepted only once SETUP completes. Wait for that before
     // replaying so the original's admission is ordered first.
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tilo_test_env::within("the relay to admit the original proof", async {
         while fixture.relay.counters().accepted < 1 {
             tokio::time::sleep(Duration::from_millis(2)).await;
         }
     })
-    .await
-    .expect("original proof admitted by the relay");
+    .await;
     let before = fixture.relay.counters();
     let replayed = Client::start(replay, custody).unwrap();
     // The replay is refused in the admission preface: it ends Failed and is
     // never admitted.
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tilo_test_env::within("the replayed single-use proof to be refused", async {
         while replayed.status() != Status::Failed {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
     })
-    .await
-    .expect("replayed single-use proof refused");
+    .await;
     let after = fixture.relay.counters();
     assert_eq!(after.accepted, before.accepted, "replay never admitted");
     assert_eq!(after.rejected, before.rejected + 1);
@@ -403,13 +399,12 @@ async fn native_client_expires_received_audio_and_reconnects_with_fresh_proof() 
     live(&sender).await;
     sender.enable_publication().unwrap();
     sender.try_send(frame(0)).unwrap();
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tilo_test_env::within("the queued object to arrive", async {
         while receiver.counters().queued_received == 0 {
             tokio::time::sleep(Duration::from_millis(2)).await;
         }
     })
-    .await
-    .unwrap();
+    .await;
     tokio::time::sleep(Duration::from_millis(220)).await;
     assert!(receiver.try_recv().is_none());
     assert_eq!(receiver.counters().queued_received, 0);
@@ -424,7 +419,7 @@ async fn native_client_expires_received_audio_and_reconnects_with_fresh_proof() 
     assert!(receiver.try_recv().is_none(), "no outage replay");
     sender.enable_publication().unwrap();
     sender.try_send(frame(0)).unwrap();
-    let next = tokio::time::timeout(Duration::from_secs(5), async {
+    let next = tilo_test_env::within("the next queued object", async {
         loop {
             if let Some(next) = receiver.try_recv() {
                 break next;
@@ -432,8 +427,7 @@ async fn native_client_expires_received_audio_and_reconnects_with_fresh_proof() 
             tokio::time::sleep(Duration::from_millis(2)).await;
         }
     })
-    .await
-    .unwrap();
+    .await;
     assert_eq!(next.publisher.carrier_generation, 2);
     assert_eq!(next.object.sequence, 0);
 }
@@ -467,21 +461,19 @@ async fn native_client_observes_one_publisher_replacement_and_recovers_other_sco
     unaffected.enable_publication().unwrap();
     sender.try_send(frame(0)).unwrap();
     unaffected.try_send(frame(0)).unwrap();
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tilo_test_env::within("the old subscriber to receive both objects", async {
         while old.counters().queued_received < 2 {
             tokio::time::sleep(Duration::from_millis(2)).await;
         }
     })
-    .await
-    .unwrap();
+    .await;
     sender.close();
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tilo_test_env::within("remote publisher loss to leave Live", async {
         while old.status() == Status::Live {
             tokio::time::sleep(Duration::from_millis(2)).await;
         }
     })
-    .await
-    .expect("remote publisher loss must be observable, not silently Live");
+    .await;
     assert_eq!(old.status(), Status::Failed);
     assert!(old.try_recv().is_none());
     assert_eq!(old.counters().queued_received, 0);
@@ -500,7 +492,7 @@ async fn native_client_observes_one_publisher_replacement_and_recovers_other_sco
     // attach may expire at the sender first).
     let mut received = std::collections::BTreeSet::new();
     let mut next = 0u64;
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tilo_test_env::within("both objects to arrive", async {
         while received.len() != 2 {
             if next.is_multiple_of(10) {
                 let step = next / 10;
@@ -525,8 +517,7 @@ async fn native_client_observes_one_publisher_replacement_and_recovers_other_sco
             tokio::time::sleep(Duration::from_millis(2)).await;
         }
     })
-    .await
-    .unwrap();
+    .await;
     assert_eq!(unaffected.status(), Status::Live);
     assert_eq!(fresh.status(), Status::Live);
 }
@@ -549,13 +540,12 @@ async fn native_relay_keeps_a_subscriber_live_when_a_new_publisher_joins() {
     signed(grant.metadata.request.clone(), GrantOperation::Leave);
     let receiver = f.client(false, 1);
     live(&receiver).await;
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tilo_test_env::within("the relay to admit the proof", async {
         while f.relay.counters().accepted < 1 {
             tokio::time::sleep(Duration::from_millis(2)).await;
         }
     })
-    .await
-    .unwrap();
+    .await;
     // An unchanged call inventory keeps the admitted subscriber open.
     tokio::time::sleep(Duration::from_millis(700)).await;
     assert_eq!(receiver.status(), Status::Live);

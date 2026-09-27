@@ -168,7 +168,9 @@ mod tests {
         strict_bundle("en-US", SOURCE_FTL);
     }
 
-    /// Every literal key passed to [`t`] or [`t_args`] in `src/`.
+    /// Every literal key passed to [`t`] or [`t_args`] in `src/`, and every
+    /// literal in the `activity-` namespace, which holds catalogue keys only:
+    /// the pane picks many of them with a `match` before resolving.
     fn keys_used_in_code() -> BTreeMap<String, String> {
         fn visit(dir: &std::path::Path, found: &mut BTreeMap<String, String>) {
             let mut entries: Vec<_> = std::fs::read_dir(dir)
@@ -181,7 +183,10 @@ mod tests {
                     visit(&path, found);
                 } else if path.extension().is_some_and(|ext| ext == "rs") {
                     let source = std::fs::read_to_string(&path).expect("read source file");
-                    for key in literal_keys(&source) {
+                    for key in literal_keys(&source)
+                        .into_iter()
+                        .chain(namespaced_keys(&source, "activity-"))
+                    {
                         found
                             .entry(key)
                             .or_insert_with(|| path.display().to_string());
@@ -231,6 +236,33 @@ mod tests {
         keys
     }
 
+    /// Every string literal in `source` that starts with `prefix` and is
+    /// spelled like a catalogue key.
+    fn namespaced_keys(source: &str, prefix: &str) -> Vec<String> {
+        let opening = format!("\"{prefix}");
+        source
+            .match_indices(&opening)
+            .filter_map(|(start, _)| {
+                let literal = source.get(start.saturating_add(1)..)?;
+                let (key, _) = literal.split_once('"')?;
+                (key.len() > prefix.len()
+                    && key
+                        .chars()
+                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'))
+                .then(|| key.to_string())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn namespaced_key_scan_finds_keys_picked_by_a_match() {
+        let source = "t(match v { A => \"activity-view-tasks\", B => \"activity-view-replay\" }) + \"activity x\"";
+        assert_eq!(
+            namespaced_keys(source, "activity-"),
+            vec!["activity-view-tasks", "activity-view-replay"]
+        );
+    }
+
     #[test]
     fn literal_key_scan_finds_direct_and_wrapped_calls() {
         let source = "t(\"a-b\") + crate::shell::i18n::t_args(\n    \"c-d\", &[]) + format(\"x\") + tt(\"no\")";
@@ -243,7 +275,7 @@ mod tests {
     fn every_key_used_in_code_is_in_every_catalogue() {
         let used = keys_used_in_code();
         assert!(
-            used.len() > 50,
+            used.len() > 200,
             "the source scan found only {} keys",
             used.len()
         );
@@ -259,6 +291,28 @@ mod tests {
     }
 
     #[test]
+    fn counts_choose_the_plural_form_in_every_locale() {
+        let changes = |changes: usize, people: usize| {
+            t_args(
+                "activity-changes-workspace",
+                &[
+                    ("workspace", "Design".into()),
+                    ("changes", changes.into()),
+                    ("people", people.into()),
+                ],
+            )
+        };
+        let english = (changes(1, 1), changes(3, 2));
+        ui::i18n::I18nManager::set_locale("de-DE");
+        let german = (changes(1, 1), changes(3, 2));
+        ui::i18n::I18nManager::set_locale("en-US");
+        assert_eq!(english.0, "Design · 1 change by 1 person");
+        assert_eq!(english.1, "Design · 3 changes by 2 people");
+        assert_eq!(german.0, "Design · 1 Änderung von 1 Person");
+        assert_eq!(german.1, "Design · 3 Änderungen von 2 Personen");
+    }
+
+    #[test]
     fn german_desktops_resolve_german_copy() {
         let english = t("topbar-open-overview");
         ui::i18n::I18nManager::set_locale("de-DE");
@@ -268,3 +322,7 @@ mod tests {
         assert_eq!(german, "Übersicht öffnen");
     }
 }
+
+#[cfg(test)]
+#[path = "i18n_copy_lint_tests.rs"]
+mod copy_lint_tests;

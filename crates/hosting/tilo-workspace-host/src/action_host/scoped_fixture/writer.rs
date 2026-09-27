@@ -1,7 +1,6 @@
 //! Real mounted Writer jobs retain their original caller across the chooser.
 use super::ScopedAppFixture;
 use std::sync::{Arc, Mutex, mpsc};
-use std::time::Duration;
 use tilo_actions::InvocationUpdate;
 use ui::automerge::transaction::Transactable;
 
@@ -23,7 +22,7 @@ impl Drop for ReleasePicker {
 }
 
 async fn accepted_chooser(fixture: &mut ScopedAppFixture, job: u64, entered: &mpsc::Receiver<()>) {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let deadline = tilo_test_env::hang_deadline();
     let mut entered_worker = false;
     loop {
         entered_worker |= entered.try_recv().is_ok();
@@ -37,7 +36,7 @@ async fn accepted_chooser(fixture: &mut ScopedAppFixture, job: u64, entered: &mp
         );
         fixture.pump().await.unwrap();
         assert!(
-            tokio::time::Instant::now() < deadline,
+            std::time::Instant::now() < deadline,
             "actual accepted chooser never entered"
         );
     }
@@ -58,7 +57,7 @@ async fn writer_save_as(expire: bool) {
         match release_rx
             .lock()
             .unwrap()
-            .recv_timeout(Duration::from_secs(10))
+            .recv_timeout(tilo_test_env::hang_bound())
         {
             Ok(()) => ui::portal::PortalOutcome::Opened(picked.clone()),
             Err(error) => {
@@ -81,7 +80,7 @@ async fn writer_save_as(expire: bool) {
         fixture.expire_original_caller();
     }
     release.release();
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         fixture.pump().await.unwrap();
         let status = fixture.invocation_status(job);
@@ -109,7 +108,7 @@ async fn writer_save_as(expire: bool) {
             );
         }
         assert!(
-            tokio::time::Instant::now() < deadline,
+            std::time::Instant::now() < deadline,
             "Writer did not finish the actual scoped continuation: {status:?}"
         );
     }

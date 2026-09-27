@@ -303,7 +303,7 @@ mod tests {
             // Connect through the bridge — small retry loop because the
             // accept thread may not have entered `accept` yet.
             let bridge_path = bridge.path().to_path_buf();
-            let deadline = Instant::now() + Duration::from_secs(30);
+            let deadline = tilo_test_env::hang_deadline();
             let mut client = loop {
                 match UnixStream::connect(&bridge_path) {
                     Ok(s) => break s,
@@ -315,7 +315,7 @@ mod tests {
             };
 
             client
-                .set_read_timeout(Some(Duration::from_secs(30)))
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
                 .unwrap();
 
             client.write_all(b"hello").expect("client write");
@@ -344,7 +344,7 @@ mod tests {
             bridge.shutdown();
             // The non-blocking accept polls every ~20ms; the thread should
             // exit well within 100ms of the flag flip.
-            let deadline = Instant::now() + Duration::from_millis(500);
+            let deadline = tilo_test_env::hang_deadline();
             while Instant::now() < deadline {
                 if handle.is_finished() {
                     break;

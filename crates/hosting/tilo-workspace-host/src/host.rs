@@ -2425,9 +2425,7 @@ mod tests {
                 drop(operation);
                 result
             }
-            Poll::Pending => tokio::time::timeout(Duration::from_secs(5), operation)
-                .await
-                .unwrap(),
+            Poll::Pending => tilo_test_env::within("the pending host operation", operation).await,
         };
         host.shutdown().await.unwrap();
         assert!(
@@ -2529,7 +2527,7 @@ mod tests {
         let could_reconnect = reconnect.is_some();
         if let Some(attempt) = reconnect.as_mut() {
             let mut session = (&mut attempt.task).await.unwrap().unwrap();
-            tokio::time::timeout(Duration::from_secs(3), async {
+            tilo_test_env::within("the reconnected session to become ready", async {
                 loop {
                     if matches!(
                         session.recv().await.expect("live prerequisite stream"),
@@ -2539,8 +2537,7 @@ mod tests {
                     }
                 }
             })
-            .await
-            .unwrap();
+            .await;
             assert!(session.is_ready());
             assert_eq!(prepare_ready_publication(&owner).unwrap(), !incomplete);
             if incomplete {

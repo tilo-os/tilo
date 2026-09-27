@@ -94,9 +94,7 @@ fn test_wayland_handshake_fixed() {
         }
     });
 
-    let socket_name = started_rx
-        .recv_timeout(Duration::from_secs(5))
-        .expect("Server failed to start");
+    let socket_name = tilo_test_env::recv("Server failed to start", &started_rx);
     let log_dir = tempfile::tempdir().unwrap();
 
     // The workspace's own Wayland client, not a terminal emulator off the
@@ -123,7 +121,7 @@ fn test_wayland_handshake_fixed() {
     let mut child = ChildGuard(cmd.spawn().expect("Failed to spawn the test client"));
 
     let mut event_received = false;
-    let timeout = Instant::now() + Duration::from_secs(8);
+    let timeout = tilo_test_env::hang_deadline();
 
     while Instant::now() < timeout {
         while let Ok(event) = rx.try_recv() {

@@ -71,9 +71,7 @@ struct InputAfterFile {
 impl Read for InputAfterFile {
     fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
         if !self.waited {
-            let deadline = Instant::now()
-                .checked_add(Duration::from_secs(5))
-                .ok_or_else(|| std::io::Error::other("pid wait deadline overflows"))?;
+            let deadline = tilo_test_env::hang_deadline();
             while !self.ready.exists() {
                 if Instant::now() >= deadline {
                     return Err(std::io::Error::new(
@@ -111,7 +109,7 @@ fn connected_manager() -> ui::collaboration::CollaborationManager {
     let mut manager = ui::collaboration::CollaborationManager::new();
     let started = Instant::now();
     while manager.state() == ui::collaboration::CollaborationState::Connecting
-        && started.elapsed() < Duration::from_secs(10)
+        && started.elapsed() < tilo_test_env::hang_bound()
     {
         let _ = manager.poll();
         std::thread::sleep(Duration::from_millis(10));
@@ -450,7 +448,7 @@ fn mcp_process_owns_and_reaps_its_children() {
                 .stderr(Stdio::from(log));
             children.push(session.launch("dev.tilo.same", command).unwrap());
         }
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = tilo_test_env::hang_deadline();
         let roots = loop {
             let roots = session
                 .broker
