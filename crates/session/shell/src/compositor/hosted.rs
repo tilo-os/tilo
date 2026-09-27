@@ -128,6 +128,12 @@ pub fn run_with_full_options(opts: HostedOptions) {
     let mut host = attach_peer_sync_bridge(host, peer_sync.as_ref(), tree_handle.clone());
     if let Some(broker) = collab_broker.as_ref() {
         let dispatcher = broker.follow_dispatcher();
+        chrome
+            .borrow_mut()
+            .window_transfers
+            .set_handoff_link(Box::new(crate::shell::window_transfer::BrokerHandoff::new(
+                dispatcher.clone(),
+            )));
         host.set_follow_bridge(std::rc::Rc::new(move |room, peer_id| {
             dispatcher.set(&room.to_string(), peer_id);
         }));
