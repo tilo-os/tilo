@@ -104,6 +104,8 @@ shortcut-explore-workspace-history = Explore workspace history
 shortcut-guide = Keyboard guide
 shortcut-stop-remote-input = Stop all remote input
 shortcut-toggle-mouse-keys = Toggle mouse keys
+shortcut-vim-navigation = Vim navigation
+shortcut-dismiss = Dismiss
 
 # What each changeable desktop shortcut is called
 shortcut-name-search = Global search
