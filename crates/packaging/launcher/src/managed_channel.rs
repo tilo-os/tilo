@@ -526,7 +526,7 @@ fn enrolled_current_executable_recheck_detects_exec_with_same_start() {
     recheck_executable_object(child.id(), &verified_object).unwrap();
     child.stdin.as_mut().unwrap().write_all(b"exec\n").unwrap();
     let expected = std::fs::metadata("/usr/bin/sleep").unwrap();
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let deadline = tilo_test_env::hang_deadline();
     let changed = loop {
         let current = std::fs::metadata(format!("/proc/{}/exe", child.id())).unwrap();
         if (current.dev(), current.ino()) == (expected.dev(), expected.ino()) {

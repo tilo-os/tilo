@@ -305,7 +305,7 @@ mod tests {
             browser_get(port, "/oauth?code=THECODE&state=STATE123")
         });
         let code = server
-            .wait_for_code("STATE123", Duration::from_secs(10))
+            .wait_for_code("STATE123", tilo_test_env::hang_bound())
             .unwrap();
         assert_eq!(code, "THECODE");
         assert!(browser.join().unwrap().contains("close this tab"));
