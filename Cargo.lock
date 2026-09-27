@@ -2566,7 +2566,6 @@ dependencies = [
  "automerge",
  "blake3",
  "bounded-command",
- "containers",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -17273,7 +17272,6 @@ dependencies = [
  "tilo-test-env",
  "tracing",
  "vello",
- "video-player",
  "winit",
  "workspace-hack",
 ]
