@@ -386,55 +386,6 @@ fn launcher_candidates() -> Vec<PathBuf> {
     out
 }
 
-/// Prove the installed package behind `app` is still the one that was
-/// installed: its record's signature by its publisher, the manifest and
-/// every payload file against the signed hashes, no file the package did
-/// not ship, and a publisher key this profile has not revoked.
-///
-/// # Errors
-///
-/// Names the first check that failed; the launch is refused.
-fn verify_installed(catalog: &package_store::Catalog, app: &InstalledApp) -> Result<(), String> {
-    use package_store::integrity;
-    let refuse = |why: String| format!("refusing to launch {}: {why}", app.package_id);
-    let package = catalog
-        .list()
-        .map_err(|error| refuse(error.to_string()))?
-        .into_iter()
-        .find(|package| package.manifest_path == app.manifest_path)
-        .ok_or_else(|| refuse("it is no longer installed".into()))?;
-    let report = integrity::verify(&package, &package.payload_root)
-        .map_err(|error| refuse(error.to_string()))?;
-    if let Some(fault) = report.faults.first() {
-        return Err(refuse(format!(
-            "its payload changed after install ({fault})"
-        )));
-    }
-    if let Some(unexpected) = report.unexpected.first() {
-        return Err(refuse(format!(
-            "its payload holds a file the package did not ship ({unexpected})"
-        )));
-    }
-    let record = integrity::read_record(
-        &integrity::record_dir(&package),
-        &package.id,
-        &package.package_id_hex,
-    )
-    .map_err(|error| refuse(error.to_string()))?;
-    let revoked = match tilo_app_package::default_revoked_keys_path() {
-        Some(path) => tilo_app_package::RevocationList::load(&path)
-            .map_err(|error| refuse(format!("the revocation list is unreadable ({error})")))?,
-        None => tilo_app_package::RevocationList::empty(),
-    };
-    if let Some(entry) = revoked.find(&record.root.publisher_identity) {
-        return Err(refuse(format!(
-            "its publisher's key is revoked ({})",
-            entry.reason
-        )));
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 #[path = "apps_tests.rs"]
 mod tests;

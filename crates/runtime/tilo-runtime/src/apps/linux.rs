@@ -153,6 +153,7 @@ fn resolve_launcher(candidates: &[PathBuf]) -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt as _;
 
     #[test]
     fn the_launcher_finds_the_profiles_services_where_it_looks() {
@@ -176,7 +177,6 @@ mod tests {
         );
         std::os::unix::net::UnixStream::connect(launcher::services::collab_socket()).unwrap();
         std::os::unix::net::UnixStream::connect(launcher::services::identity_socket()).unwrap();
-        use std::os::unix::fs::PermissionsExt;
         let mode = std::fs::metadata(runtime_dir.join("tilo/services"))
             .unwrap()
             .permissions()
