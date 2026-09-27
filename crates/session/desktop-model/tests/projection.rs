@@ -227,3 +227,29 @@ fn two_members_starting_a_rooms_records_share_one_map() {
         );
     }
 }
+
+/// Two members bringing the same record in at once make one entry, so
+/// neither's seal on it is hidden behind the other's.
+#[test]
+fn two_members_bringing_the_same_record_in_share_one_entry() {
+    use automerge::{ROOT, ReadDoc};
+    let mut alice = AutoCommit::new();
+    let mut bob = AutoCommit::new();
+    let held = [("rec-1".to_string(), "note".to_string())]
+        .into_iter()
+        .collect();
+    project_room_records(&mut alice, &held, None, &|_| None).unwrap();
+    project_room_records(&mut bob, &held, None, &|_| None).unwrap();
+    let alice_bytes = alice.save();
+    let bob_bytes = bob.save();
+    tilo_automerge::ApplyIncoming::load_incoming(&mut alice, &bob_bytes).unwrap();
+    tilo_automerge::ApplyIncoming::load_incoming(&mut bob, &alice_bytes).unwrap();
+    for peer in [&alice, &bob] {
+        let (_, records) = peer.get(ROOT, "records").unwrap().unwrap();
+        assert_eq!(
+            peer.get_all(&records, "rec-1").unwrap().len(),
+            1,
+            "one entry"
+        );
+    }
+}

@@ -984,6 +984,37 @@ pub mod room {
         matches!(index, ObjId::Id(_, actor, _) if actor.to_bytes() == INDEX_GENESIS_ACTOR.as_slice())
     }
 
+    /// The change that makes record `id`'s entry in the room index, of type
+    /// `kind` — like [`index_genesis`], byte for byte the same on every peer:
+    /// its actor is derived from the entry, it depends only on the index's
+    /// genesis and it carries no time. Two members bringing the same record
+    /// in at once make one entry, not two maps under one key with one hidden.
+    fn entry_genesis(id: &str, kind: &str) -> Vec<automerge::Change> {
+        let mut doc = AutoCommit::new();
+        if tilo_automerge::ApplyIncoming::apply_incoming(&mut doc, index_genesis()).is_err() {
+            return Vec::new();
+        }
+        let base = doc.get_heads();
+        let mut actor = blake3::Hasher::new();
+        actor.update(b"tilo.room-index.entry.v1\0");
+        actor.update(id.as_bytes());
+        actor.update(b"\0");
+        actor.update(kind.as_bytes());
+        let actor = actor.finalize();
+        let mut doc = doc.with_actor(automerge::ActorId::from(&actor.as_bytes()[..16]));
+        let Some(index) = index_ro(&doc) else {
+            return Vec::new();
+        };
+        let Ok(entry) = doc.put_object(&index, id, ObjType::Map) else {
+            return Vec::new();
+        };
+        if doc.put(&entry, "kind", kind).is_err() {
+            return Vec::new();
+        }
+        doc.commit_with(automerge::transaction::CommitOptions::default().with_time(0));
+        doc.get_changes(&base)
+    }
+
     /// The room's index map, made by [`index_genesis`] when the room has
     /// none yet. `None` only if the document refuses the genesis change.
     fn index_obj(doc: &mut AutoCommit) -> Option<ObjId> {
@@ -1023,6 +1054,13 @@ pub mod room {
                 let _ = doc.put(&obj, "kind", kind.as_str());
             }
             false
+        } else if made_by_genesis(&idx) {
+            tilo_automerge::ApplyIncoming::apply_incoming(
+                doc,
+                entry_genesis(id.as_str(), kind.as_str()),
+            )
+            .is_ok()
+                && doc.get(&idx, id.as_str()).ok().flatten().is_some()
         } else {
             let Ok(entry) = doc.put_object(&idx, id.as_str(), ObjType::Map) else {
                 return false;
@@ -3411,6 +3449,28 @@ mod tests {
         replica.put(&entry, "kind", kind.as_str()).unwrap();
         let delta = delta_since(&mut empty, &mut replica);
         assert!(!room::comment_references_only(&empty, &delta, &me));
+    }
+
+    #[test]
+    fn two_members_bringing_the_same_record_in_at_once_make_one_entry() {
+        let mut ada = AutoCommit::new();
+        let mut bo = AutoCommit::new();
+        let record = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
+        assert!(room::reference(&mut ada, &record.id, &record.kind));
+        assert!(room::reference(&mut bo, &record.id, &record.kind));
+        let ada_changes = ada.save();
+        let bo_changes = bo.save();
+        tilo_automerge::ApplyIncoming::load_incoming(&mut ada, &bo_changes).unwrap();
+        tilo_automerge::ApplyIncoming::load_incoming(&mut bo, &ada_changes).unwrap();
+        for peer in [&ada, &bo] {
+            let (_, index) = peer.get(ROOT, INDEX).unwrap().unwrap();
+            assert_eq!(
+                peer.get_all(&index, record.id.as_str()).unwrap().len(),
+                1,
+                "one entry, not one per member"
+            );
+        }
+        assert_eq!(ada.get_heads(), bo.get_heads(), "nothing left to exchange");
     }
 
     #[test]

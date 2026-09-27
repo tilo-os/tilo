@@ -852,6 +852,44 @@ fn room_records_genesis() -> Vec<automerge::Change> {
     GENESIS.with(Clone::clone)
 }
 
+/// The change that makes record `id`'s entry, of type `kind`, in a room
+/// document's record map — like [`room_records_genesis`], byte for byte the
+/// same on every machine: its actor is derived from the entry, it depends
+/// only on the map's genesis and it carries no time. Two members bringing the
+/// same record in at once make one entry rather than two maps under one key,
+/// one hiding the other and whatever was sealed in it.
+fn room_record_entry_genesis(id: &str, kind: &str) -> Vec<automerge::Change> {
+    use automerge::{ObjType, ROOT, ReadDoc, transaction::Transactable};
+    let mut doc = AutoCommit::new();
+    if tilo_automerge::ApplyIncoming::apply_incoming(&mut doc, room_records_genesis()).is_err() {
+        return Vec::new();
+    }
+    let base = doc.get_heads();
+    let mut actor = blake3::Hasher::new();
+    actor.update(b"tilo.room-records.entry.v1\0");
+    actor.update(id.as_bytes());
+    actor.update(b"\0");
+    actor.update(kind.as_bytes());
+    let actor = actor.finalize();
+    let mut doc = doc.with_actor(automerge::ActorId::from(&actor.as_bytes()[..16]));
+    let Some((_, records)) = doc.get(&ROOT, ROOM_RECORDS_KEY).ok().flatten() else {
+        return Vec::new();
+    };
+    let Ok(entry) = doc.put_object(&records, id, ObjType::Map) else {
+        return Vec::new();
+    };
+    if doc.put(&entry, "kind", kind).is_err() {
+        return Vec::new();
+    }
+    doc.commit_with(automerge::transaction::CommitOptions::default().with_time(0));
+    doc.get_changes(&base)
+}
+
+fn made_by_records_genesis(records: &automerge::ObjId) -> bool {
+    matches!(records, automerge::ObjId::Id(_, actor, _)
+        if actor.to_bytes() == ROOM_RECORDS_GENESIS_ACTOR.as_slice())
+}
+
 /// The room document's record map, made by [`room_records_genesis`] when
 /// the room has none yet.
 fn room_records_map(doc: &mut AutoCommit) -> Result<automerge::ObjId, automerge::AutomergeError> {
@@ -908,6 +946,20 @@ pub fn project_room_records(
     for (id, kind) in held {
         let (entry, brought_in) = match doc.get(&records_id, id.as_str()).ok().flatten() {
             Some((_, obj)) => (obj, false),
+            None if made_by_records_genesis(&records_id) => {
+                if tilo_automerge::ApplyIncoming::apply_incoming(
+                    doc,
+                    room_record_entry_genesis(id, kind),
+                )
+                .is_err()
+                {
+                    continue;
+                }
+                match doc.get(&records_id, id.as_str()).ok().flatten() {
+                    Some((_, obj)) => (obj, true),
+                    None => continue,
+                }
+            }
             None => match doc.put_object(&records_id, id.as_str(), ObjType::Map) {
                 Ok(obj) => (obj, true),
                 Err(_) => continue,
