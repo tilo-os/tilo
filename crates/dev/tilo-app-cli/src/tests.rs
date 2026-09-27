@@ -3983,6 +3983,89 @@ fn shot_and_inspection_plans_are_built_strictly() {
     }
 }
 
+/// Sizes parse in decimal and binary units, `[budget]` refuses unknown keys, ELF sections are
+/// read without trusting the file, and overruns name what is over and by how much.
+#[test]
+fn package_size_is_reported_against_the_app_budget() {
+    assert_eq!(size::parse_size("4096").unwrap(), 4096);
+    assert_eq!(size::parse_size("1.5 MiB").unwrap(), 1_572_864);
+    assert_eq!(size::parse_size("900KB").unwrap(), 900_000);
+    assert!(size::parse_size("2 GB").is_err());
+    assert!(size::parse_size("MiB").is_err());
+
+    assert_eq!(
+        size::Budget::from_manifest("[package]\nid = \"x\"\n").unwrap(),
+        size::Budget::default()
+    );
+    assert_eq!(
+        size::Budget::from_manifest("[budget]\npackage = \"1 MiB\"\nbinary = 800000\n").unwrap(),
+        size::Budget {
+            package: Some(1024 * 1024),
+            binary: Some(800_000)
+        }
+    );
+    let misspelt = size::Budget::from_manifest("[budget]\npackages = \"1 MiB\"\n").unwrap_err();
+    assert!(format!("{misspelt:#}").contains("unknown budget key"));
+
+    let own = std::fs::read(std::env::current_exe().unwrap()).unwrap();
+    if cfg!(all(
+        target_os = "linux",
+        target_pointer_width = "64",
+        target_endian = "little"
+    )) {
+        let sections = size::elf_sections(&own).expect("this test binary is ELF64");
+        assert!(sections.code > 0 && sections.read_only > 0);
+        assert!(
+            sections.code + sections.read_only + sections.linking + sections.other
+                <= own.len() as u64
+        );
+    }
+    assert_eq!(size::elf_sections(b"not an executable"), None);
+    assert_eq!(size::elf_sections(&own[..64.min(own.len())]), None);
+
+    let temp = tempfile::tempdir().unwrap();
+    let payload = temp.path();
+    std::fs::create_dir_all(payload.join("bin")).unwrap();
+    std::fs::write(payload.join("bin/app"), vec![0; 3000]).unwrap();
+    std::fs::create_dir_all(payload.join("share")).unwrap();
+    std::fs::write(payload.join("share/icon.svg"), vec![0; 100]).unwrap();
+    let budget = size::Budget {
+        package: Some(2000),
+        binary: Some(2500),
+    };
+    let report =
+        size::SizeReport::measure(payload, &[PathBuf::from("bin/app")], 1500, budget).unwrap();
+    assert_eq!(
+        report
+            .files
+            .iter()
+            .map(|file| (file.path.clone(), file.bytes, file.entrypoint))
+            .collect::<Vec<_>>(),
+        [
+            (PathBuf::from("bin/app"), 3000, true),
+            (PathBuf::from("share/icon.svg"), 100, false)
+        ]
+    );
+    assert_eq!(
+        report.overruns(),
+        ["bin/app is 500 B over the binary budget of 2.4 KiB"]
+    );
+    let rendered = report.render();
+    assert!(
+        rendered.contains("75% of the 2.0 KiB budget, 0% of the 8.0 MiB limit"),
+        "{rendered}"
+    );
+    let json = report.to_json();
+    assert_eq!(json["package_bytes"], 1500);
+    assert_eq!(json["over_budget"].as_array().unwrap().len(), 1);
+
+    let over = size::SizeReport::measure(payload, &[], 2001, budget).unwrap();
+    assert_eq!(
+        over.overruns(),
+        ["the package is 1 B over its budget of 2.0 KiB"]
+    );
+}
+
 /// Package specs use the manifest entrypoint and package name, artifact collection is scoped to the
 /// manifest, output is not replaced before building, the payload overlay copies nested files and
 /// rejects symlinks, and profile names are safe Cargo arguments.
