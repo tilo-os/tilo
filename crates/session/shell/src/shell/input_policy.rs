@@ -64,9 +64,17 @@ pub fn foreign_tile_at(
     point: (f64, f64),
 ) -> Option<TileHit> {
     let p = KurboPoint::new(point.0, point.1);
-    foreign_tiles(tree, host)
-        .into_iter()
-        .find(|hit| hit.rect.contains(p))
+    find_foreign_tile(tree, host, |hit| hit.rect.contains(p))
+}
+
+/// The live laid-out rect for one foreign surface in the active workspace.
+/// Used by per-tick pointer-constraint sync without building the full tile list.
+pub fn foreign_tile_for_surface(
+    tree: &WorkspaceTree,
+    host: &ShellOverlayHost,
+    surface_id: u64,
+) -> Option<TileHit> {
+    find_foreign_tile(tree, host, |hit| hit.surface_id == surface_id)
 }
 
 /// Every foreign tile currently on screen, in front-to-back order — the
@@ -74,10 +82,24 @@ pub fn foreign_tile_at(
 /// input must answer the same "what's on top here?" question from a
 /// different thread; a second traversal risks disagreeing with where the click really lands (see [`crate::network::input_firewall`]).
 pub fn foreign_tiles(tree: &WorkspaceTree, host: &ShellOverlayHost) -> Vec<TileHit> {
-    let Some(ws) = tree.desktop.active_workspace() else {
-        return Vec::new();
-    };
     let mut out = Vec::new();
+    for_each_foreign_tile(tree, host, |hit| {
+        out.push(hit);
+        true
+    });
+    out
+}
+
+/// Walk foreign tiles in the same front-to-back order as [`foreign_tiles`].
+/// `visit` returns `false` to stop early.
+fn for_each_foreign_tile(
+    tree: &WorkspaceTree,
+    host: &ShellOverlayHost,
+    mut visit: impl FnMut(TileHit) -> bool,
+) {
+    let Some(ws) = tree.desktop.active_workspace() else {
+        return;
+    };
     for strip in &ws.strips {
         for group in &strip.window_groups {
             let Some(tab) = group.tabs.iter().find(|t| t.id == group.active_tab) else {
@@ -92,15 +114,34 @@ pub fn foreign_tiles(tree: &WorkspaceTree, host: &ShellOverlayHost) -> Vec<TileH
             if rect.width() <= 0.0 || rect.height() <= 0.0 {
                 continue;
             }
-            out.push(TileHit {
+            let hit = TileHit {
                 surface_id: *surface_id,
                 strip: strip.id,
                 group: group.id,
                 rect,
-            });
+            };
+            if !visit(hit) {
+                return;
+            }
         }
     }
-    out
+}
+
+fn find_foreign_tile(
+    tree: &WorkspaceTree,
+    host: &ShellOverlayHost,
+    mut pred: impl FnMut(&TileHit) -> bool,
+) -> Option<TileHit> {
+    let mut found = None;
+    for_each_foreign_tile(tree, host, |hit| {
+        if pred(&hit) {
+            found = Some(hit);
+            false
+        } else {
+            true
+        }
+    });
+    found
 }
 
 /// Surface-local coordinates for a global `point` inside `rect`. Smithay does this itself when handed the focus origin, but it's exposed and asserted on separately since it's load-bearing.
