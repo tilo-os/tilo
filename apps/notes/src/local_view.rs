@@ -93,13 +93,9 @@ impl NotesLocalViewV1 {
             return Err(invalid("anchor requires a caret"));
         }
         for position in self.anchor.iter().chain(&self.caret) {
-            if position
-                .block_id
-                .parse::<uuid::Uuid>()
-                .ok()
-                .is_none_or(|id| id.is_nil())
-            {
-                return Err(invalid("invalid block UUID"));
+            let id = &position.block_id;
+            if id.is_empty() || id.len() > 256 || id.chars().any(char::is_control) {
+                return Err(invalid("invalid block id"));
             }
         }
         Ok(())
@@ -112,18 +108,20 @@ pub(crate) struct PreparedFocus {
     pub caret: Option<ui::widget::DocumentPosition>,
 }
 impl PreparedFocus {
-    pub fn resolve(view: &NotesLocalViewV1, editor: &ui::widget::BlockEditor) -> Self {
+    /// Where `view`'s caret and selection are in `editor`, among the blocks
+    /// `durable` names: the ones the note stores, not a placeholder.
+    pub fn resolve(
+        view: &NotesLocalViewV1,
+        editor: &ui::widget::BlockEditor,
+        durable: &dyn Fn(&str) -> bool,
+    ) -> Self {
         let blocks = editor.blocks();
-        let first = blocks
-            .iter()
-            .position(|block| block.line.bound_obj().is_some());
+        let first = blocks.iter().position(|block| durable(&block.id));
         let resolve = |position: &BlockPosition| {
             blocks
                 .iter()
                 .enumerate()
-                .find(|(_, block)| {
-                    block.id == position.block_id && block.line.bound_obj().is_some()
-                })
+                .find(|(_, block)| block.id == position.block_id && durable(&block.id))
                 .map(|(index, block)| {
                     let text = block.text();
                     let mut byte = position.byte_offset.min(text.len());
