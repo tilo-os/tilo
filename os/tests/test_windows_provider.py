@@ -182,7 +182,8 @@ class ProviderTests(unittest.TestCase):
                      for arch in ("aarch64", "x86_64")}
             self.assertTrue({"wine", "wine-dxvk"} <= roots["x86_64"])
             self.assertFalse({"wine", "wine-dxvk"} & roots["aarch64"])
-            self.assertTrue({"libstdc++", "libwayland-client", "qt6-qtdeclarative", "edk2-aarch64"} <= roots["aarch64"])
+            self.assertTrue({"libstdc++", "libwayland-client", "edk2-aarch64"} <= roots["aarch64"])
+            self.assertFalse({name for name in roots["aarch64"] if name.startswith("qt6")})
 
     def test_fex_patching(self):
         with self.subTest(phase="nonportable_fex_is_rejected"):
