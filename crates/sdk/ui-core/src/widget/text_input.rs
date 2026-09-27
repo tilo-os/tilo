@@ -2838,12 +2838,9 @@ impl TextInput {
             return;
         };
         // FNV-1a signature so re-tokenising is skipped when the text hasn't changed.
-        let mut sig: u64 = 0xcbf2_9ce4_8422_2325;
-        for &b in self.text.as_bytes() {
-            sig ^= u64::from(b);
-            sig = sig.wrapping_mul(0x100_0000_01b3);
-        }
-        sig ^= self.text.len() as u64;
+        let mut hasher = fnv::FnvHasher::default();
+        std::hash::Hasher::write(&mut hasher, self.text.as_bytes());
+        let sig = std::hash::Hasher::finish(&hasher) ^ self.text.len() as u64;
         if sig == self.hl_sig && !self.hl_line_starts.is_empty() {
             return;
         }

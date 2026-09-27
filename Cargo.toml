@@ -374,6 +374,8 @@ tilo-automerge = { path = "crates/doc/tilo-automerge" }
 tilo-automerge-isolate = { path = "crates/doc/tilo-automerge-isolate" }
 pollster = "0.4.0"
 rustc-hash = "2.1"
+# FNV-1a for stable, persisted identifiers: a fixed algorithm, unlike std's hashers.
+fnv = "1"
 cosmic-text = { version = "0.19.0", default-features = false }
 
 # ---------------------------------------------------------------------------

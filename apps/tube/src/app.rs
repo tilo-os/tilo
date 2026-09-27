@@ -84,12 +84,9 @@ fn resolve_history_owner() -> String {
     if seed == "@" {
         owner
     } else {
-        let mut hash = 0xcbf2_9ce4_8422_2325_u64;
-        for byte in seed.bytes() {
-            hash ^= u64::from(byte);
-            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-        }
-        format!("user:{hash:016x}")
+        let mut hasher = fnv::FnvHasher::default();
+        std::hash::Hasher::write(&mut hasher, seed.as_bytes());
+        format!("user:{:016x}", std::hash::Hasher::finish(&hasher))
     }
 }
 

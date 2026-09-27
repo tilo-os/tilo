@@ -16,6 +16,7 @@ name = "tilo-ush"
 path = "src/main.rs"
 
 [dependencies]
+fnv.workspace = true
 tilo-clock = { path = "../../system/tilo-clock" }
 runtime-portal = { path = "../runtime-portal" }
 collab-types = { path = "../../collab/collab-types" }
