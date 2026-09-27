@@ -362,6 +362,24 @@ fn is_legacy_demo_bootstrap(tree: &WorkspaceTree) -> bool {
             ))
 }
 
+/// The identity a live client window is relaunched by.
+///
+/// A mapped host window announces a toolkit/window-system identity, which
+/// need not be the desktop-file id that `run-host` accepts. Keep the durable
+/// record keyed by the launch identity whenever the installed catalogue can
+/// correlate it. For example, Rygel Preferences announces
+/// `org.gnome.Rygel.Preferences`, while its launchable entry is
+/// `rygel-preferences.desktop`. Persisting the former made a normal
+/// logout/login show "Not installed" even though a fresh palette launch
+/// worked. Unknown foreign windows deliberately retain their announced
+/// identity.
+pub(crate) fn durable_app_id(surface_id: u64, app_id: &str) -> String {
+    crate::shell::launcher::launch_key_for_surface(surface_id)
+        .or_else(|| crate::shell::launcher::launch_key_for_app_id(app_id))
+        .or_else(|| crate::shell::host_apps::app_for_window_id(app_id).map(|app| app.desktop_id))
+        .unwrap_or_else(|| app_id.to_string())
+}
+
 /// Remove live compositor-client bindings from a durable tree and repair the
 /// focus/index structures that referred to them.
 ///
@@ -376,25 +394,7 @@ fn symbolise_foreign_surfaces(tree: &mut WorkspaceTree) {
             for group in &mut strip.window_groups {
                 for tab in &mut group.tabs {
                     if let TileContent::Foreign { app_id, surface_id } = &tab.tile {
-                        // A mapped host window announces a toolkit/window-system
-                        // identity, which need not be the desktop-file id that
-                        // `run-host` accepts.  Keep the durable record keyed by
-                        // the launch identity whenever the installed catalogue
-                        // can correlate it.  For example, Rygel Preferences
-                        // announces `org.gnome.Rygel.Preferences`, while its
-                        // launchable entry is `rygel-preferences.desktop`.
-                        // Persisting the former made a normal logout/login show
-                        // "Not installed" even though a fresh palette launch
-                        // worked. Unknown foreign windows deliberately retain
-                        // their announced identity.
-                        let durable_app_id =
-                            crate::shell::launcher::launch_key_for_surface(*surface_id)
-                                .or_else(|| crate::shell::launcher::launch_key_for_app_id(app_id))
-                                .or_else(|| {
-                                    crate::shell::host_apps::app_for_window_id(app_id)
-                                        .map(|app| app.desktop_id)
-                                })
-                                .unwrap_or_else(|| app_id.clone());
+                        let durable_app_id = durable_app_id(*surface_id, app_id);
                         tab.tile = TileContent::LocalApp {
                             app_id: durable_app_id,
                             label: tab.title.clone(),

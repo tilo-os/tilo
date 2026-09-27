@@ -345,7 +345,7 @@ fn overview_panel_bounds_hit_rooms_fit_the_viewport_and_scroll_when_long() {
             button: winit::event::MouseButton::Left,
         };
         let mut handled = false;
-        h.handle_shell_overview_pointer_event(&event, &mut handled);
+        h.handle_shell_overview_pointer_event(&event, 1.0, &mut handled);
         let chrome = h.chrome.as_ref().unwrap().borrow();
         assert_eq!(chrome.tree().desktop.workspaces.len(), 2);
         assert!(

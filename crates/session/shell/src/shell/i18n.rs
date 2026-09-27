@@ -119,6 +119,9 @@ mod tests {
             "window-switcher-app-description",
             "window-switcher-untitled",
             "window-switcher-caption-paged",
+            "overview-windows-title",
+            "overview-windows-description",
+            "overview-window-move-failed",
         ] {
             let s = t(key);
             assert_ne!(s, key, "{key} has no entry in the catalogue");

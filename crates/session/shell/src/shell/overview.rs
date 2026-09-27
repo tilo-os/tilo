@@ -448,6 +448,141 @@ pub fn overview_people_label(card: &RoomCard) -> Option<String> {
     }
 }
 
+/// What began a press on the overview.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PressSource {
+    /// The primary mouse button.
+    Mouse,
+    /// A direct-touch contact, by its id.
+    Touch(u64),
+}
+
+/// How a press on the overview ended.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PressEnd {
+    /// Released where it began: a click or a tap on `tab`'s preview, or on
+    /// the panel when `tab` is `None`.
+    Tap {
+        tab: Option<TabId>,
+        at: vello::kurbo::Point,
+    },
+    /// `tab`'s preview was dragged and let go at `at`.
+    Drop { tab: TabId, at: vello::kurbo::Point },
+    /// Dragged from somewhere with nothing to carry.
+    Nothing,
+}
+
+/// One press on the overview, from down to up: a pointer button or a
+/// finger. It carries the window whose preview it began on, and turns
+/// into a drag once it travels past the slop, so a tap and a drag are told
+/// apart the same way for a mouse and for a finger.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OverviewPress {
+    pub source: PressSource,
+    /// The window whose preview the press began on.
+    pub tab: Option<TabId>,
+    origin: vello::kurbo::Point,
+    /// Where the pointer or finger is now.
+    pub at: vello::kurbo::Point,
+    dragging: bool,
+}
+
+impl OverviewPress {
+    pub fn new(source: PressSource, tab: Option<TabId>, at: vello::kurbo::Point) -> Self {
+        Self {
+            source,
+            tab,
+            origin: at,
+            at,
+            dragging: false,
+        }
+    }
+
+    /// The pointer or finger moved to `to`.
+    pub fn moved(&mut self, to: vello::kurbo::Point) {
+        self.at = to;
+        let slop = match self.source {
+            // The toolkit's own thresholds, so a preview starts dragging
+            // exactly when anything else dragged would.
+            PressSource::Mouse => ui::dnd::DRAG_START_THRESHOLD_PX,
+            PressSource::Touch(_) => ui::gesture::TouchGestureArena::TAP_SLOP,
+        };
+        if self.origin.distance(to) > slop {
+            self.dragging = true;
+        }
+    }
+
+    /// A window preview is being carried.
+    pub fn is_dragging(&self) -> bool {
+        self.dragging && self.tab.is_some()
+    }
+
+    /// Let go at `at`.
+    pub fn release(mut self, at: vello::kurbo::Point) -> PressEnd {
+        self.moved(at);
+        match (self.dragging, self.tab) {
+            (false, tab) => PressEnd::Tap { tab, at },
+            (true, Some(tab)) => PressEnd::Drop { tab, at },
+            (true, None) => PressEnd::Nothing,
+        }
+    }
+}
+
+#[cfg(test)]
+mod press_tests {
+    use super::*;
+    use vello::kurbo::Point;
+
+    #[test]
+    fn a_press_is_a_tap_until_it_travels_past_the_slop() {
+        let start = Point::new(100.0, 100.0);
+        let mut click = OverviewPress::new(PressSource::Mouse, Some(7), start);
+        click.moved(Point::new(102.0, 100.0));
+        assert!(!click.is_dragging());
+        assert_eq!(
+            click.release(Point::new(102.0, 101.0)),
+            PressEnd::Tap {
+                tab: Some(7),
+                at: Point::new(102.0, 101.0)
+            }
+        );
+
+        let mut drag = OverviewPress::new(PressSource::Mouse, Some(7), start);
+        drag.moved(Point::new(140.0, 180.0));
+        assert!(drag.is_dragging());
+        drag.moved(start);
+        assert!(drag.is_dragging(), "coming back does not undo a drag");
+        assert_eq!(drag.release(start), PressEnd::Drop { tab: 7, at: start });
+    }
+
+    #[test]
+    fn a_finger_gets_the_wider_touch_slop() {
+        let start = Point::new(0.0, 0.0);
+        let wobble = Point::new(10.0, 0.0);
+        let mut finger = OverviewPress::new(PressSource::Touch(3), Some(7), start);
+        finger.moved(wobble);
+        assert!(!finger.is_dragging(), "a finger's wobble is still a tap");
+        let mut mouse = OverviewPress::new(PressSource::Mouse, Some(7), start);
+        mouse.moved(wobble);
+        assert!(mouse.is_dragging());
+    }
+
+    #[test]
+    fn a_drag_that_carries_nothing_does_nothing() {
+        let start = Point::new(0.0, 0.0);
+        let press = OverviewPress::new(PressSource::Touch(1), None, start);
+        assert_eq!(press.release(Point::new(90.0, 0.0)), PressEnd::Nothing);
+        let press = OverviewPress::new(PressSource::Touch(1), None, start);
+        assert_eq!(
+            press.release(start),
+            PressEnd::Tap {
+                tab: None,
+                at: start
+            }
+        );
+    }
+}
+
 #[cfg(test)]
 mod room_tests {
     use super::*;
