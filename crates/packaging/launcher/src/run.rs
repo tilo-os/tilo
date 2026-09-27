@@ -37,7 +37,7 @@ struct SeccompFds {
 impl SeccompFds {
     fn prepend_bwrap_args(argv: &mut Vec<String>) {
         let mut prefix = vec![
-            "--seccomp".to_string(),
+            "--add-seccomp-fd".to_string(),
             CLONE3_COMPAT_SECCOMP_CHILD_FD.to_string(),
             "--add-seccomp-fd".to_string(),
             BASELINE_SECCOMP_CHILD_FD.to_string(),
@@ -70,7 +70,7 @@ mod seccomp_fd_tests {
         assert_eq!(
             argv,
             [
-                "--seccomp",
+                "--add-seccomp-fd",
                 "16",
                 "--add-seccomp-fd",
                 "17",
