@@ -4,6 +4,11 @@
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
+. "$repo_root/tools/desktop-isolation.sh"
+# The private manager below re-enters this script with its own bus.
+if [[ ${1:-} != --private-manager ]]; then
+    tilo_test_isolate "$@"
+fi
 
 for command in dbus-daemon dbus-send dbus-update-activation-environment \
                systemctl; do
@@ -123,20 +128,12 @@ private_manager() {
 
     # Stage the runner from the tree under test too; an installed host runner
     # would talk to the caller's real user manager.
-    sed \
-        -e "s|SYSTEMCTL=/usr/bin/systemctl|SYSTEMCTL=$root/systemctl|" \
-        -e "s|FLIGHT_RECORDER=/usr/libexec/tilo-flight-recorder|FLIGHT_RECORDER=$repo/dist/session/tilo-flight-recorder.py|" \
-        "$repo/dist/session/tilo-session-runner" >"$root/tilo-session-runner"
-    sed \
-        -e "s|TILO_SHELL=/usr/bin/tilo-shell|TILO_SHELL=$root/tilo-shell|" \
-        -e "s|SESSION_RUNNER=/usr/libexec/tilo-session-runner|SESSION_RUNNER=$root/tilo-session-runner|" \
-        "$repo/dist/session/tilo-session" >"$root/tilo-session"
-    chmod 0755 "$root/tilo-session" "$root/tilo-session-runner"
-    if grep -Fq /usr/libexec/tilo-session-runner "$root/tilo-session" \
-        || grep -Fq SYSTEMCTL=/usr/bin/systemctl "$root/tilo-session-runner"; then
-        echo 'private user-manager handoff: staged session still reaches the host systemctl' >&2
-        return 1
-    fi
+    tilo_stage_script "$repo/dist/session/tilo-session-runner" "$root/tilo-session-runner" \
+        SYSTEMCTL="$root/systemctl" \
+        FLIGHT_RECORDER="$repo/dist/session/tilo-flight-recorder.py" || return 1
+    tilo_stage_script "$repo/dist/session/tilo-session" "$root/tilo-session" \
+        TILO_SHELL="$root/tilo-shell" \
+        SESSION_RUNNER="$root/tilo-session-runner" || return 1
 
     "$systemd_bin" --user --unit=basic.target >"$root/systemd.stdout" 2>"$root/systemd.stderr" &
     private_manager_pid=$!

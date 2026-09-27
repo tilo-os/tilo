@@ -6,6 +6,11 @@
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
+. "$repo_root/tools/desktop-isolation.sh"
+# The private bus below re-enters this script with its own address.
+if [[ ${1:-} != --private-bus ]]; then
+    tilo_test_isolate "$@"
+fi
 for command in dbus-run-session dbus-send dbus-update-activation-environment; do
     if ! command -v "$command" >/dev/null 2>&1; then
         echo "private D-Bus handoff: SKIP ($command is unavailable)"
@@ -42,21 +47,15 @@ private_bus() {
     done
     # The wrapper execs the packaged runner by absolute path. Stage both from
     # the tree under test: a developer host may have Tilo installed, and its
-    # runner would stop the desktop's real graphical-session.target.
-    sed \
-        -e "s|SYSTEMCTL=/usr/bin/systemctl|SYSTEMCTL=$root/systemctl|" \
-        -e "s|FLIGHT_RECORDER=/usr/libexec/tilo-flight-recorder|FLIGHT_RECORDER=$repo/dist/session/tilo-flight-recorder.py|" \
-        "$repo/dist/session/tilo-session-runner" >"$root/tilo-session-runner"
-    sed \
-        -e "s|TILO_SHELL=/usr/bin/tilo-shell|TILO_SHELL=$root/tilo-shell|" \
-        -e "s|SESSION_RUNNER=/usr/libexec/tilo-session-runner|SESSION_RUNNER=$root/tilo-session-runner|" \
-        "$repo/dist/session/tilo-session" >"$root/tilo-session"
-    chmod 0755 "$root/tilo-session" "$root/tilo-session-runner"
-    if grep -Fq /usr/libexec/tilo-session-runner "$root/tilo-session" \
-        || grep -Fq SYSTEMCTL=/usr/bin/systemctl "$root/tilo-session-runner"; then
-        echo 'private D-Bus handoff: staged session still reaches the host systemctl' >&2
-        return 1
-    fi
+    # runner would stop the desktop's real graphical-session.target. The
+    # activation environment is what this test proves, so that command stays
+    # real and talks to the private bus.
+    tilo_stage_script "$repo/dist/session/tilo-session-runner" "$root/tilo-session-runner" \
+        SYSTEMCTL="$root/systemctl" \
+        FLIGHT_RECORDER="$repo/dist/session/tilo-flight-recorder.py" || return 1
+    tilo_stage_script "$repo/dist/session/tilo-session" "$root/tilo-session" \
+        TILO_SHELL="$root/tilo-shell" \
+        SESSION_RUNNER="$root/tilo-session-runner" || return 1
     export XDG_RUNTIME_DIR="$root/runtime" XDG_STATE_HOME="$root/state"
     mkdir -m 0700 "$XDG_RUNTIME_DIR"
 

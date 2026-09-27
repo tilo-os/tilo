@@ -30,6 +30,7 @@ use crate::portal::desktop_services::{
     AppChooserService, ApplicationChoice, ApplicationChoiceRequest, PortalResult,
 };
 use crate::shell::app_action_consent::{AppActionConsent, AppActionConsentRequest};
+use crate::shell::i18n::{t, t_args};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReviewRequest {
@@ -236,7 +237,45 @@ pub struct ShortcutBindingDecision {
     pub rows: Vec<ShortcutBindingRow>,
 }
 
+/// A step of a running shortcut that needs the person who started it: a
+/// confirmation, or a question. The sheet shows `choices` as rows and
+/// `field` as one text entry; a secret field is masked on screen.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShortcutStepRequest {
+    pub handle: String,
+    /// The shortcut's name.
+    pub shortcut: String,
+    pub title: String,
+    pub detail: String,
+    pub confirm_label: String,
+    pub choices: Vec<String>,
+    pub field: Option<ShortcutStepField>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShortcutStepField {
+    pub masked: bool,
+}
+
+/// The person's answer to a [`ShortcutStepRequest`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ShortcutStepDecision {
+    /// Confirmed, with the chosen row (when there were choices) and the
+    /// entered text (when there was a field).
+    Confirmed {
+        choice: Option<usize>,
+        text: String,
+    },
+    Cancelled,
+}
+
+type ShortcutStepReply = Box<dyn FnOnce(ShortcutStepDecision) + Send>;
+
 enum PendingDialog {
+    ShortcutStep {
+        request: ShortcutStepRequest,
+        reply: ShortcutStepReply,
+    },
     AppChoice {
         request: ApplicationChoiceRequest,
         reply: oneshot::Sender<PortalResult<ApplicationChoice>>,
@@ -573,6 +612,57 @@ impl PortalDialogQueue {
         }
     }
 
+    /// Queue a sheet for a running shortcut's step; `reply` receives the
+    /// answer exactly once, [`ShortcutStepDecision::Cancelled`] when the
+    /// sheet is withdrawn.
+    ///
+    /// # Errors
+    ///
+    /// When a sheet with the same handle is already live.
+    pub fn enqueue_shortcut_step(
+        &self,
+        request: ShortcutStepRequest,
+        reply: impl FnOnce(ShortcutStepDecision) + Send + 'static,
+    ) -> Result<(), String> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| "portal dialog controller is unavailable".to_string())?;
+        if inner.pending.contains_key(&request.handle) {
+            return Err("duplicate live shortcut step".into());
+        }
+        inner.order.push_back(request.handle.clone());
+        inner.pending.insert(
+            request.handle.clone(),
+            PendingDialog::ShortcutStep {
+                request,
+                reply: Box::new(reply),
+            },
+        );
+        Ok(())
+    }
+
+    fn finish_shortcut_step(&self, handle: &str, decision: ShortcutStepDecision) -> bool {
+        let pending = self
+            .inner
+            .lock()
+            .ok()
+            .and_then(|mut inner| inner.pending.remove(handle));
+        match pending {
+            Some(PendingDialog::ShortcutStep { reply, .. }) => {
+                reply(decision);
+                true
+            }
+            Some(other) => {
+                if let Ok(mut inner) = self.inner.lock() {
+                    inner.pending.insert(handle.into(), other);
+                }
+                false
+            }
+            None => false,
+        }
+    }
+
     fn next_handle(&self) -> Option<String> {
         let mut inner = self.inner.lock().ok()?;
         while let Some(handle) = inner.order.pop_front() {
@@ -586,6 +676,15 @@ impl PortalDialogQueue {
     fn view(&self, handle: &str) -> Option<DialogView> {
         let inner = self.inner.lock().ok()?;
         match inner.pending.get(handle)? {
+            PendingDialog::ShortcutStep { request, .. } => Some(DialogView::ShortcutStep {
+                handle: request.handle.clone(),
+                shortcut: request.shortcut.clone(),
+                title: request.title.clone(),
+                detail: request.detail.clone(),
+                confirm_label: request.confirm_label.clone(),
+                choices: request.choices.clone(),
+                field: request.field.clone(),
+            }),
             PendingDialog::AppChoice { request, .. } => Some(DialogView::AppChoice {
                 handle: request.handle.clone(),
                 app_name: friendly_app_name(&request.app_id),
@@ -653,16 +752,18 @@ impl PortalDialogQueue {
             }),
             PendingDialog::ActionGrant { request, .. } => Some(DialogView::ActionGrant {
                 handle: request.handle.clone(),
-                title: format!(
-                    "{} wants to use {}",
-                    friendly_app_name(&request.app_id),
-                    friendly_app_name(&request.target_app)
+                title: t_args(
+                    "portal-grant-title",
+                    &[
+                        ("app", friendly_app_name(&request.app_id).into()),
+                        ("target", friendly_app_name(&request.target_app).into()),
+                    ],
                 ),
                 action: request.action_label.clone(),
                 detail: action_grant_detail(request),
                 choices: AppActionConsent::ALLOWING
                     .iter()
-                    .map(|answer| answer.label().to_string())
+                    .map(|answer| answer.label())
                     .collect(),
             }),
             PendingDialog::UsbDevices {
@@ -728,6 +829,10 @@ impl PortalDialogQueue {
             .ok()
             .and_then(|mut inner| inner.pending.remove(handle));
         match pending {
+            Some(PendingDialog::ShortcutStep { reply, .. }) => {
+                reply(ShortcutStepDecision::Cancelled);
+                true
+            }
             Some(PendingDialog::AppChoice { reply, .. }) => {
                 let _ = reply.send(PortalResult::Cancelled);
                 true
@@ -921,22 +1026,19 @@ impl PortalDialogQueue {
         let Some(accelerator) =
             crate::portal::global_shortcuts::physical_accelerator(physical, modifiers)
         else {
-            request.rows[selected].status =
-                Some("Hold Ctrl, Alt, Shift, or Super, then press a key.".into());
+            request.rows[selected].status = Some(t("portal-shortcut-needs-modifier"));
             return true;
         };
         if crate::portal::global_shortcuts::ShellGlobalShortcutsService::global()
             .is_reserved(&accelerator)
         {
-            request.rows[selected].status =
-                Some("Reserved by Tilo. Choose another shortcut.".into());
+            request.rows[selected].status = Some(t("portal-shortcut-reserved"));
             return true;
         }
         if request.rows.iter().enumerate().any(|(index, other)| {
             index != selected && other.accelerator.as_deref() == Some(accelerator.as_str())
         }) {
-            request.rows[selected].status =
-                Some("Already assigned in this request. Choose another shortcut.".into());
+            request.rows[selected].status = Some(t("portal-shortcut-duplicate"));
             return true;
         }
         request.rows[selected].accelerator = Some(accelerator);
@@ -996,6 +1098,15 @@ impl AppChooserService for ShellAppChooserService {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DialogView {
+    ShortcutStep {
+        handle: String,
+        shortcut: String,
+        title: String,
+        detail: String,
+        confirm_label: String,
+        choices: Vec<String>,
+        field: Option<ShortcutStepField>,
+    },
     AppChoice {
         handle: String,
         app_name: String,
@@ -1075,7 +1186,8 @@ pub struct UsbDeviceViewRow {
 impl DialogView {
     pub fn handle(&self) -> &str {
         match self {
-            Self::AppChoice { handle, .. }
+            Self::ShortcutStep { handle, .. }
+            | Self::AppChoice { handle, .. }
             | Self::Review { handle, .. }
             | Self::ShortcutBindings { handle, .. }
             | Self::LauncherReview { handle, .. }
@@ -1087,9 +1199,10 @@ impl DialogView {
     }
     pub fn title(&self) -> String {
         match self {
-            Self::AppChoice { .. } => "Choose an application".into(),
+            Self::ShortcutStep { title, .. } => title.clone(),
+            Self::AppChoice { .. } => t("portal-choose-app-title"),
             Self::Review { title, .. } => title.clone(),
-            Self::ShortcutBindings { .. } => "Set global shortcuts".into(),
+            Self::ShortcutBindings { .. } => t("portal-shortcuts-title"),
             Self::LauncherReview { title, .. } => title.clone(),
             Self::UsbDevices { title, .. } => title.clone(),
             Self::ActionGrant { title, .. } => title.clone(),
@@ -1097,34 +1210,39 @@ impl DialogView {
             Self::NetworkSecrets { title, .. } => title.clone(),
         }
     }
-    pub fn app_name(&self) -> &str {
+    pub fn app_name(&self) -> String {
         match self {
-            Self::AppChoice { app_name, .. }
+            Self::ShortcutStep {
+                shortcut: app_name, ..
+            }
+            | Self::AppChoice { app_name, .. }
             | Self::Review { app_name, .. }
             | Self::ShortcutBindings { app_name, .. }
             | Self::LauncherReview { app_name, .. }
-            | Self::UsbDevices { app_name, .. } => app_name,
-            Self::ActionGrant { action, .. } => action,
-            Self::Authentication { .. } => "Administrator access",
-            Self::NetworkSecrets { .. } => "Network",
+            | Self::UsbDevices { app_name, .. } => app_name.clone(),
+            Self::ActionGrant { action, .. } => action.clone(),
+            Self::Authentication { .. } => t("portal-auth-heading"),
+            Self::NetworkSecrets { .. } => t("portal-network-heading"),
         }
     }
-    pub fn detail(&self) -> &str {
+    pub fn detail(&self) -> String {
         match self {
-            Self::AppChoice { detail, .. } | Self::Review { detail, .. } => detail,
-            Self::ShortcutBindings { .. } => {
-                "Select a row, then press the shortcut. Tilo and active app shortcuts cannot be claimed. Backspace clears a row."
-            }
-            Self::LauncherReview { detail, .. } => detail,
-            Self::UsbDevices { detail, .. } => detail,
-            Self::ActionGrant { detail, .. } => detail,
-            Self::Authentication { detail, .. } => detail,
-            Self::NetworkSecrets { detail, .. } => detail,
+            Self::ShortcutStep { detail, .. }
+            | Self::AppChoice { detail, .. }
+            | Self::Review { detail, .. } => detail.clone(),
+            Self::ShortcutBindings { .. } => t("portal-shortcuts-detail"),
+            Self::LauncherReview { detail, .. } => detail.clone(),
+            Self::UsbDevices { detail, .. } => detail.clone(),
+            Self::ActionGrant { detail, .. } => detail.clone(),
+            Self::Authentication { detail, .. } => detail.clone(),
+            Self::NetworkSecrets { detail, .. } => detail.clone(),
         }
     }
     pub fn choices(&self) -> &[String] {
         match self {
-            Self::AppChoice { choices, .. } | Self::ActionGrant { choices, .. } => choices,
+            Self::AppChoice { choices, .. }
+            | Self::ActionGrant { choices, .. }
+            | Self::ShortcutStep { choices, .. } => choices,
             Self::Authentication { identities, .. } => identities,
             Self::Review { .. }
             | Self::ShortcutBindings { .. }
@@ -1136,7 +1254,8 @@ impl DialogView {
     pub fn shortcut_rows(&self) -> &[ShortcutBindingRow] {
         match self {
             Self::ShortcutBindings { rows, .. } => rows,
-            Self::AppChoice { .. }
+            Self::ShortcutStep { .. }
+            | Self::AppChoice { .. }
             | Self::Review { .. }
             | Self::LauncherReview { .. }
             | Self::UsbDevices { .. }
@@ -1162,35 +1281,39 @@ impl DialogView {
             Self::Authentication { .. } => "authentication",
             Self::NetworkSecrets { .. } => "network_secrets",
             Self::ActionGrant { .. } => "action_grant",
+            Self::ShortcutStep { .. } => "shortcut_step",
         }
     }
     pub fn selectable_count(&self) -> usize {
         match self {
             Self::ShortcutBindings { rows, .. } => rows.len(),
-            Self::AppChoice { choices, .. } | Self::ActionGrant { choices, .. } => choices.len(),
+            Self::AppChoice { choices, .. }
+            | Self::ActionGrant { choices, .. }
+            | Self::ShortcutStep { choices, .. } => choices.len(),
             Self::UsbDevices { devices, .. } => devices.len(),
             Self::Authentication { identities, .. } => identities.len(),
             Self::Review { .. } | Self::LauncherReview { .. } | Self::NetworkSecrets { .. } => 0,
         }
     }
-    pub fn confirm_label(&self) -> &str {
+    pub fn confirm_label(&self) -> String {
         match self {
-            Self::AppChoice { .. } => "Open",
-            Self::Review { confirm_label, .. } => confirm_label,
-            Self::ShortcutBindings { .. } => "Save shortcuts",
-            Self::LauncherReview { confirm_label, .. } => confirm_label,
-            Self::UsbDevices { confirm_label, .. } => confirm_label,
-            Self::ActionGrant { .. } => "Allow",
-            Self::Authentication { .. } => "Authenticate",
-            Self::NetworkSecrets { .. } => "Connect",
+            Self::AppChoice { .. } => t("portal-open"),
+            Self::ShortcutStep { confirm_label, .. } => confirm_label.clone(),
+            Self::Review { confirm_label, .. } => confirm_label.clone(),
+            Self::ShortcutBindings { .. } => t("portal-save-shortcuts"),
+            Self::LauncherReview { confirm_label, .. } => confirm_label.clone(),
+            Self::UsbDevices { confirm_label, .. } => confirm_label.clone(),
+            Self::ActionGrant { .. } => t("portal-allow"),
+            Self::Authentication { .. } => t("portal-authenticate"),
+            Self::NetworkSecrets { .. } => t("portal-connect"),
         }
     }
 
     /// The label of the button that answers no.
-    pub fn cancel_label(&self) -> &'static str {
+    pub fn cancel_label(&self) -> String {
         match self {
             Self::ActionGrant { .. } => AppActionConsent::Deny.label(),
-            _ => "Cancel",
+            _ => t("portal-cancel"),
         }
     }
 
@@ -1207,6 +1330,13 @@ impl DialogView {
                 editable_name: *editable_name,
                 icon_choices,
                 editable_icon: *editable_icon,
+            }),
+            // A shortcut's text answer is edited in the same field.
+            Self::ShortcutStep { field: Some(_), .. } => Some(LauncherEditorView {
+                name: "",
+                editable_name: true,
+                icon_choices: &[],
+                editable_icon: false,
             }),
             _ => None,
         }
@@ -1273,7 +1403,7 @@ pub struct PortalDialogController {
     entry_focus: usize,
     remember: bool,
     /// Why the network-secrets sheet refused to close.
-    entry_error: Option<&'static str>,
+    entry_error: Option<String>,
 }
 
 fn small_count_as_f64(value: usize) -> f64 {
@@ -1300,6 +1430,11 @@ impl PortalDialogController {
             entry_error: None,
         }
     }
+    /// The queue this controller shows sheets from.
+    pub fn queue(&self) -> &PortalDialogQueue {
+        &self.queue
+    }
+
     pub fn pump(&mut self) -> bool {
         // A sheet its requester withdrew (a portal `Close`, polkit's or
         // NetworkManager's cancel) is gone from the queue: let go of it and
@@ -1392,6 +1527,13 @@ impl PortalDialogController {
             return false;
         };
         let done = match &view {
+            DialogView::ShortcutStep { choices, .. } => self.queue.finish_shortcut_step(
+                view.handle(),
+                ShortcutStepDecision::Confirmed {
+                    choice: (!choices.is_empty()).then_some(self.selected),
+                    text: std::mem::take(&mut self.launcher_name),
+                },
+            ),
             DialogView::AppChoice { choices, .. } => choices
                 .get(self.selected)
                 .cloned()
@@ -1435,14 +1577,9 @@ impl PortalDialogController {
                 let refusal = fields.iter().zip(&self.entries).enumerate().find_map(
                     |(index, (field, value))| {
                         if value.is_empty() {
-                            field
-                                .required
-                                .then_some((index, "Fill in every required field."))
+                            field.required.then(|| (index, t("portal-secret-required")))
                         } else if !field.rule.accepts(value) {
-                            Some((
-                                index,
-                                "A Wi-Fi password is 8 to 63 characters, or 64 hexadecimal digits.",
-                            ))
+                            Some((index, t("portal-secret-wifi-length")))
                         } else {
                             None
                         }
@@ -1475,6 +1612,9 @@ impl PortalDialogController {
             return false;
         };
         let done = match &view {
+            DialogView::ShortcutStep { .. } => self
+                .queue
+                .finish_shortcut_step(view.handle(), ShortcutStepDecision::Cancelled),
             DialogView::AppChoice { .. } => self.queue.finish_choice(view.handle(), None),
             DialogView::Review { .. } => self
                 .queue
@@ -1724,6 +1864,12 @@ impl PortalDialogController {
                 }
                 true
             }
+            Key::Named(NamedKey::Space) => {
+                if self.launcher_name.len() < 255 {
+                    self.launcher_name.push(' ');
+                }
+                true
+            }
             Key::Character(text) => {
                 let accepted: String = text.chars().filter(|ch| !ch.is_control()).collect();
                 if !accepted.is_empty()
@@ -1811,8 +1957,8 @@ impl PortalDialogController {
     }
 
     /// Why the network-secrets sheet did not close, when it refused.
-    pub fn entry_error(&self) -> Option<&'static str> {
-        self.entry_error
+    pub fn entry_error(&self) -> Option<&str> {
+        self.entry_error.as_deref()
     }
 
     /// The sheet up, for `state-dump`: what the person sees, with every
@@ -1867,7 +2013,7 @@ impl PortalDialogController {
                 } else {
                     serde_json::Value::Null
                 };
-                state["error"] = self.entry_error.into();
+                state["error"] = self.entry_error.clone().into();
             }
             _ => {}
         }
@@ -1907,6 +2053,20 @@ impl PortalDialogController {
         self.view()
             .is_some_and(|view| view.launcher_editor().is_some())
             .then_some(self.launcher_icon)
+    }
+
+    /// The editable field's text as the sheet shows it: a secret answer
+    /// is masked.
+    pub fn field_display(&self) -> Option<String> {
+        let view = self.view()?;
+        view.launcher_editor()?;
+        Some(match &view {
+            DialogView::ShortcutStep {
+                field: Some(ShortcutStepField { masked: true }),
+                ..
+            } => "•".repeat(self.launcher_name.chars().count()),
+            _ => self.launcher_name.clone(),
+        })
     }
 
     pub fn launcher_name_focused(&self) -> bool {
@@ -1969,21 +2129,24 @@ fn chooser_detail(request: &ApplicationChoiceRequest) -> String {
         .as_deref()
         .or(request.uri.as_deref())
         .or(request.content_type.as_deref())
-        .unwrap_or("this item");
-    format!(
-        "{} wants to open {}",
-        friendly_app_name(&request.app_id),
-        subject
+        .map_or_else(|| t("portal-chooser-this-item"), str::to_string);
+    t_args(
+        "portal-chooser-detail",
+        &[
+            ("app", friendly_app_name(&request.app_id).into()),
+            ("subject", subject.into()),
+        ],
     )
 }
 /// The action's consequences, as the grant sheet states them.
 fn action_grant_detail(request: &AppActionConsentRequest) -> String {
     let risk = crate::shell::app_action_consent::risk_label(request.risk);
-    if request.needs_confirmation {
-        format!("{risk}\nIt still asks you to confirm each time it runs.")
+    let key = if request.needs_confirmation {
+        "portal-grant-detail-confirms"
     } else {
-        format!("{risk}\nIt runs without asking you again.")
-    }
+        "portal-grant-detail-unattended"
+    };
+    t_args(key, &[("risk", risk.into())])
 }
 
 fn friendly_app_name(app_id: &str) -> String {

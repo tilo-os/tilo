@@ -218,15 +218,19 @@ pub enum InputOperation {
     SetMousePointerSpeed { value: f64 },
     SetKeyRepeat { value: f64 },
     SetTapDrag { enabled: bool },
+    SetTapDragLock { enabled: bool },
     SetDisableWhileTyping { enabled: bool },
     SetMiddleEmulation { enabled: bool },
     SetLeftHanded { enabled: bool },
     SetTouchpadGestures { enabled: bool },
+    SetTouchpadEnabled { enabled: bool },
+    SetTouchpadDisabledOnExternalMouse { enabled: bool },
     SetTouchpadClickMethod { method: String },
     SetTouchpadScrollMethod { method: String },
     SetScrollSpeed { value: f64 },
     SetAccelerationProfile { profile: String },
     SetComposeKey { key: String },
+    SetCapsLock { behavior: String },
     SetActiveSource { label: String },
 }
 
@@ -850,6 +854,7 @@ fn input_bool_operation(template: &InputOperation, enabled: bool) -> InputOperat
         }
         InputOperation::SetTapToClick { .. } => InputOperation::SetTapToClick { enabled },
         InputOperation::SetTapDrag { .. } => InputOperation::SetTapDrag { enabled },
+        InputOperation::SetTapDragLock { .. } => InputOperation::SetTapDragLock { enabled },
         InputOperation::SetDisableWhileTyping { .. } => {
             InputOperation::SetDisableWhileTyping { enabled }
         }
@@ -857,6 +862,10 @@ fn input_bool_operation(template: &InputOperation, enabled: bool) -> InputOperat
         InputOperation::SetLeftHanded { .. } => InputOperation::SetLeftHanded { enabled },
         InputOperation::SetTouchpadGestures { .. } => {
             InputOperation::SetTouchpadGestures { enabled }
+        }
+        InputOperation::SetTouchpadEnabled { .. } => InputOperation::SetTouchpadEnabled { enabled },
+        InputOperation::SetTouchpadDisabledOnExternalMouse { .. } => {
+            InputOperation::SetTouchpadDisabledOnExternalMouse { enabled }
         }
         _ => unreachable!("input bool resources only contain boolean operations"),
     }
@@ -1562,6 +1571,10 @@ fn accounts_section(account_inventory: &[accounts::Account]) -> Resource {
         ("caldav", "Add calendar account"),
         ("webdav", "Add WebDAV account"),
         ("nextcloud", "Add Nextcloud account"),
+        ("google-drive", "Connect Google Drive"),
+        ("onedrive", "Connect OneDrive"),
+        ("dropbox", "Connect Dropbox"),
+        ("icloud-drive", "Connect iCloud Drive"),
     ] {
         if let Some(action) = account_operation_spec(
             &format!("add-{kind}"),
@@ -3401,6 +3414,16 @@ fn input_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
     );
     for (id, label, operation) in [
         (
+            "touchpad-enabled",
+            "Turn the touchpad on or off",
+            InputOperation::SetTouchpadEnabled { enabled: false },
+        ),
+        (
+            "touchpad-disabled-with-mouse",
+            "Set disable touchpad while a mouse is connected",
+            InputOperation::SetTouchpadDisabledOnExternalMouse { enabled: false },
+        ),
+        (
             "touchpad-natural-scroll",
             "Set touchpad natural scrolling",
             InputOperation::SetTouchpadNaturalScroll { enabled: false },
@@ -3419,6 +3442,11 @@ fn input_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
             "tap-drag",
             "Set tap and drag",
             InputOperation::SetTapDrag { enabled: false },
+        ),
+        (
+            "tap-drag-lock",
+            "Set tap-and-drag lock",
+            InputOperation::SetTapDragLock { enabled: false },
         ),
         (
             "disable-while-typing",
@@ -3516,7 +3544,7 @@ fn input_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
         "Set touchpad click method",
         &crate::panes::mouse_keyboard::CLICK_METHOD_CHOICES
             .iter()
-            .map(|(label, _)| (*label).to_string())
+            .map(|(id, _, _)| (*id).to_string())
             .collect::<Vec<_>>(),
         |choice| InputOperation::SetTouchpadClickMethod { method: choice },
     ));
@@ -3525,7 +3553,7 @@ fn input_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
         "Set touchpad scroll method",
         &crate::panes::mouse_keyboard::SCROLL_METHOD_CHOICES
             .iter()
-            .map(|(label, _)| (*label).to_string())
+            .map(|(id, _, _)| (*id).to_string())
             .collect::<Vec<_>>(),
         |choice| InputOperation::SetTouchpadScrollMethod { method: choice },
     ));
@@ -3547,6 +3575,15 @@ fn input_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
             "Left Super".into(),
         ],
         |choice| InputOperation::SetComposeKey { key: choice },
+    ));
+    sec = sec.with_action(input_choice_spec(
+        "caps-lock",
+        "Set what Caps Lock does",
+        &crate::panes::mouse_keyboard::CAPS_LOCK_CHOICES
+            .iter()
+            .map(|(label, _)| (*label).to_string())
+            .collect::<Vec<_>>(),
+        |choice| InputOperation::SetCapsLock { behavior: choice },
     ));
     // Text assistance is portable user text preference rather than a hardware
     // command, and therefore intentionally remains in SettingsAction.
@@ -6003,6 +6040,8 @@ mod tests {
                 .map(|action| action.id.as_str())
                 .collect();
             for id in [
+                "touchpad-enabled",
+                "touchpad-disabled-with-mouse",
                 "touchpad-natural-scroll",
                 "mouse-natural-scroll",
                 "tap-to-click",
@@ -6010,14 +6049,18 @@ mod tests {
                 "mouse-speed",
                 "key-repeat",
                 "tap-drag",
+                "tap-drag-lock",
                 "disable-while-typing",
                 "middle-emulation",
                 "left-handed",
                 "touchpad-gestures",
+                "touchpad-click-method",
+                "touchpad-scroll-method",
                 "spell-checking",
                 "auto-correct",
                 "acceleration-profile",
                 "compose-key",
+                "caps-lock",
             ] {
                 assert!(
                     input_ids.contains(id),
