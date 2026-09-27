@@ -307,7 +307,12 @@ pub struct Message {
     pub channel: Id,
     pub author: Id,
     pub ts: i64,
+    /// The body's plain text (see [`crate::body`]): what search, agents,
+    /// notifications and edit history read.
     pub text: String,
+    /// The body as written, paragraphs with their marks; empty for a message
+    /// written before bodies were rich, shown from `text` ([`Self::blocks`]).
+    pub body: Vec<ui::widget::BlockContent>,
     pub edited: bool,
     pub history: Vec<EditRecord>,
     /// `Some(parent_id)` when this message is a threaded reply.
@@ -338,6 +343,16 @@ pub struct Message {
 }
 
 impl Message {
+    /// The body to show: as written, or for an older message its text with
+    /// its mentions marked.
+    pub fn blocks(&self) -> Vec<ui::widget::BlockContent> {
+        if self.body.is_empty() {
+            crate::body::legacy(&self.id, &self.text, &self.mentions)
+        } else {
+            self.body.clone()
+        }
+    }
+
     pub fn is_top_level(&self) -> bool {
         self.parent.is_none()
     }
@@ -715,6 +730,7 @@ mod tests {
             author: author.into(),
             ts,
             text: "x".into(),
+            body: Vec::new(),
             edited: false,
             history: vec![],
             parent: parent.map(std::string::ToString::to_string),

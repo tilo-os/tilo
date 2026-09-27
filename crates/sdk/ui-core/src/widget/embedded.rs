@@ -194,6 +194,12 @@ impl<W: Widget + 'static> Embedded<W> {
         path: &ObjId,
         handled: &mut bool,
     ) {
+        // An event before the first layout (a key typed as the widget opens)
+        // still reaches it: its tree is built with the default theme, and
+        // the next layout replaces it.
+        if self.root.is_none() {
+            self.rebuild(&Theme::default());
+        }
         let Some(root) = self.root else {
             return;
         };

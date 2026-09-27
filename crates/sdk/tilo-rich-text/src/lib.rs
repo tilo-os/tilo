@@ -55,10 +55,10 @@ use ui::framework::ViewCx;
 use ui::tilo_resource::{Doc, Resource};
 use ui::widget::Element;
 
-pub use blocks::{blocks_under, fill_under};
+pub use blocks::{blocks_under, fill_clips_under, fill_under};
 pub use convert::{clip_block, content_of, document_mark};
 pub use draft::Draft;
-pub use source::{Hosted, RichTextField, RichTextSource};
+pub use source::{DirectField, Hosted, RichTextField, RichTextSource};
 pub use surface::{FieldOutcome, RichTextSurface, SubmitKey};
 pub use view::RichTextView;
 
