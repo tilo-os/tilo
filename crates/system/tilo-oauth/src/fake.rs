@@ -120,6 +120,13 @@ impl FakeAuthorizationServer {
         lock(&self.state).client_secret = Some(secret.to_string());
     }
 
+    /// Accept `token` as a refresh token this server issued, for a grant
+    /// sealed before the test started (a vault written by an earlier
+    /// version).
+    pub fn accept_refresh_token(&self, token: &str) {
+        lock(&self.state).refresh_tokens.insert(token.to_string());
+    }
+
     /// Make the redirect carry `state` instead of the request's own.
     pub fn forge_state(&self, state: &str) {
         lock(&self.state).forged = Some(state.to_string());
