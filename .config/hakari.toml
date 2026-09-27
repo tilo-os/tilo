@@ -26,15 +26,25 @@ platforms = [
     "aarch64-unknown-linux-gnu",
 ]
 
+# unify-target-host stays at its default, which replicates target features on
+# the host because the workspace has a proc macro. Native builds, all of CI,
+# then share host and target units; syn, serde and every proc macro built on
+# them no longer vary with the selection. A cross build (Imager for Windows or
+# macOS) compiles the unified set for its Linux or macOS host as well.
+
 [traversal-excludes]
-# Media stays optional everywhere: hermetic builds, `--shots` and CI must not
-# need the gstreamer-1.0 development stack. Unifying it would make every
-# member link gstreamer-sys.
+# Every managed member builds every crate listed in the hack, so none may need
+# a system library: server containers (tilo-relay, registry-server) and cross
+# builds have no desktop development packages. Media stays optional
+# everywhere: hermetic builds, `--shots` and CI must not need gstreamer-1.0.
 third-party = [
     { name = "gstreamer" },
     { name = "gstreamer-app" },
     { name = "gstreamer-base" },
     { name = "gstreamer-video" },
+    # Its build script requires xkbcommon from pkg-config. zstd-sys builds its
+    # bundled sources and wayland-sys is dlopen-only, so both may stay.
+    { name = "smithay-client-toolkit" },
 ]
 
 [final-excludes]
