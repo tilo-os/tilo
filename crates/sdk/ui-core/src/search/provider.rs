@@ -1,6 +1,6 @@
 //! The [`SearchProvider`] trait, the typed [`SearchResult`] it returns, and the
-//! retained [`SearchCatalog`] and [`SearchTextIndex`] app providers answer
-//! from. Both keep their records in a [`tilo_search::SearchIndex`].
+//! retained [`SearchCatalog`] app providers answer from, which keeps its
+//! records in a [`tilo_search::SearchIndex`].
 
 use super::body::{BodyIndex, SearchBody};
 use super::rank::FieldWeight;
@@ -34,102 +34,6 @@ pub const DEFAULT_SEARCH_CANDIDATE_LIMIT: usize = 256;
 pub const MAX_SEARCH_QUERY_SCALARS: usize = 1_024;
 use std::borrow::Borrow;
 use tilo_actions::ActionAddress;
-
-/// A compact exact-substring index over a snapshot of texts, for providers
-/// that keep their own records and only need matching offsets.
-///
-/// Texts are folded like every search index. Matches come in snapshot
-/// order, a bounded page at a time, resuming after the last offset seen.
-#[derive(Clone, Debug, Default)]
-pub struct SearchTextIndex {
-    index: Arc<SearchIndex>,
-}
-
-/// A bounded page of snapshot offsets from [`SearchTextIndex`].
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct SearchTextPage {
-    pub ids: Vec<usize>,
-    /// Resume strictly after this snapshot offset. `None` means exhausted.
-    pub next_after: Option<usize>,
-    /// Number of matching records materialised for this page.
-    pub inspected: usize,
-}
-
-impl SearchTextIndex {
-    /// Build an index over every supplied searchable record.
-    pub fn new<S>(texts: impl IntoIterator<Item = S>) -> Self
-    where
-        S: AsRef<str>,
-    {
-        let mut index = SearchIndex::default();
-        index.replace_all(texts.into_iter().enumerate().map(|(record_id, text)| {
-            Document::new(record_id as u64).field(text.as_ref(), FieldWeight::UNRANKED)
-        }));
-        if let Err(error) = index.commit() {
-            tracing::error!(%error, "could not index search texts");
-        }
-        Self {
-            index: Arc::new(index),
-        }
-    }
-
-    /// Number of complete records represented by this snapshot.
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.index.len()
-    }
-
-    /// Whether the snapshot contains no records.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.index.is_empty()
-    }
-
-    /// Return up to `budget` matching snapshot offsets, earliest first.
-    #[must_use]
-    pub fn matching_ids(&self, query: &str, budget: usize) -> Vec<usize> {
-        self.matching_page(query, None, budget, budget).ids
-    }
-
-    /// Return a deterministic bounded page of matching snapshot offsets,
-    /// strictly after `after`.
-    #[must_use]
-    pub fn matching_page(
-        &self,
-        query: &str,
-        after: Option<usize>,
-        work_budget: usize,
-        result_limit: usize,
-    ) -> SearchTextPage {
-        // Budgets are caller-requested ceilings, not authority to make one
-        // UI-thread page arbitrarily large; callers continue with
-        // `next_after`.
-        let limit = work_budget
-            .min(DEFAULT_SEARCH_CANDIDATE_LIMIT)
-            .min(result_limit.min(DEFAULT_SEARCH_RESULT_LIMIT));
-        if limit == 0 || !query_is_bounded(query) {
-            return SearchTextPage::default();
-        }
-        let found = self.index.search(
-            query,
-            Page {
-                offset: 0,
-                limit,
-                after_key: after.map(|after| after as u64),
-            },
-        );
-        let ids: Vec<usize> = found
-            .hits
-            .iter()
-            .filter_map(|hit| usize::try_from(hit.key).ok())
-            .collect();
-        SearchTextPage {
-            next_after: found.more.then(|| ids.last().copied()).flatten(),
-            inspected: ids.len(),
-            ids,
-        }
-    }
-}
 
 /// Fold text the way every index does: case, compatibility forms and
 /// alphabetic diacritics (see [`tilo_search::fold`]).
@@ -721,14 +625,7 @@ impl SearchCatalog {
                 cursor.generation == generation && cursor.normalized_query == normalized_query
             })
             .map_or(0, |cursor| cursor.offset);
-        let found = inner.index.search(
-            query,
-            Page {
-                offset,
-                limit,
-                after_key: None,
-            },
-        );
+        let found = inner.index.search(query, Page { offset, limit });
         let results: Vec<SearchResult> = found
             .hits
             .iter()
@@ -1460,29 +1357,7 @@ mod tests {
     }
 
     #[test]
-    fn the_shared_text_index_matches_exact_unicode_substrings() {
-        // phase: shared_text_index_keeps_the_complete_corpus
-        {
-            let texts =
-                (0..(DEFAULT_SEARCH_INDEX_LIMIT + 500)).map(|index| format!("Document {index}"));
-            let index = SearchTextIndex::new(texts);
-
-            assert_eq!(index.len(), DEFAULT_SEARCH_INDEX_LIMIT + 500);
-            assert_eq!(
-                index.matching_ids("Document 4595", DEFAULT_SEARCH_CANDIDATE_LIMIT),
-                vec![4595]
-            );
-        }
-        // phase: shared_text_index_is_unicode_aware_and_case_insensitive
-        {
-            let index = SearchTextIndex::new(["Résumé — Αθήνα", "東京 notes"]);
-
-            assert_eq!(index.matching_ids("ΑΘΉ", 8), vec![0]);
-            assert_eq!(index.matching_ids("東京", 8), vec![1]);
-            // Diacritics fold away with the shared tokenizer.
-            assert_eq!(index.matching_ids("resume", 8), vec![0]);
-            assert_eq!(index.matching_ids("αθηνα", 8), vec![0]);
-        }
+    fn queries_fold_unicode_and_stop_at_the_input_ceiling() {
         // phase: bounded_query_normalization_keeps_unicode_case_matching
         {
             let catalog = SearchCatalog::new("Documents");
@@ -1498,68 +1373,10 @@ mod tests {
             assert_eq!(page.results.len(), 1);
             assert_eq!(page.inspected, 1);
         }
-        // phase: embedded_nul_substrings_remain_distinct
-        {
-            let index = SearchTextIndex::new(["a", "a\0", "a\0\0"]);
-            assert_eq!(index.matching_ids("a\0\0", 8), vec![2]);
-        }
-        // phase: repeated_occurrences_do_not_consume_the_result_budget_twice
-        {
-            let index = SearchTextIndex::new(["aaaaaa", "aaab"]);
-            assert_eq!(index.matching_ids("aaa", 2), vec![0, 1]);
-        }
-        // phase: exact_suffix_range_does_not_lose_late_matches_to_false_candidates
-        {
-            let false_candidate = "abcXbcdXcdeXdefXefgXfgh";
-            let mut texts = vec![false_candidate; DEFAULT_SEARCH_CANDIDATE_LIMIT + 40];
-            texts.push("the exact abcdefgh resource");
-            let index = SearchTextIndex::new(texts);
-
-            assert_eq!(
-                index.matching_ids("abcdefgh", 1),
-                vec![DEFAULT_SEARCH_CANDIDATE_LIMIT + 40]
-            );
-        }
-    }
-
-    #[test]
-    fn the_shared_text_index_pages_within_hostile_budgets() {
-        // phase: shared_text_index_honours_the_query_budget
-        {
-            let index = SearchTextIndex::new((0..1_000).map(|i| format!("common item {i}")));
-            assert_eq!(index.matching_ids("common", 7).len(), 7);
-            assert!(index.matching_ids("common", 0).is_empty());
-        }
-        // phase: shared_text_index_clamps_hostile_page_budgets
-        {
-            let index = SearchTextIndex::new((0..1_000).map(|i| format!("common item {i}")));
-            let page = index.matching_page("common", None, usize::MAX, usize::MAX);
-
-            assert_eq!(page.inspected, DEFAULT_SEARCH_CANDIDATE_LIMIT);
-            assert_eq!(page.ids.len(), DEFAULT_SEARCH_RESULT_LIMIT);
-            assert!(
-                page.next_after.is_some(),
-                "the bounded page remains continuable"
-            );
-        }
-        // phase: shared_text_index_pages_a_broad_hundred_thousand_row_posting
-        {
-            let index = SearchTextIndex::new(
-                std::iter::once("common common item 0".to_owned())
-                    .chain((1..100_001).map(|i| format!("common item {i}"))),
-            );
-            let first = index.matching_page("common", None, 7, 3);
-            assert_eq!(first.inspected, 3);
-            assert_eq!(first.ids, vec![0, 1, 2]);
-            let second = index.matching_page("common", first.next_after, 7, 3);
-            assert_eq!(second.inspected, 3);
-            assert_eq!(second.ids, vec![3, 4, 5]);
-        }
         // phase: oversized_query_stops_before_index_work_or_materialisation
         {
             // Every record contains the whole query, so any index work would
-            // inspect candidates and find them; `inspected == 0` proves the
-            // rejection came first without a large corpus to make a scan slow.
+            // find them; `inspected == 0` proves the rejection came first.
             let query = "x".repeat(MAX_SEARCH_QUERY_SCALARS + 1);
             let catalog = SearchCatalog::new("Documents");
             for index in 0..32 {
@@ -1573,49 +1390,6 @@ mod tests {
             assert!(page.results.is_empty());
             assert!(page.next.is_none());
             assert_eq!(page.inspected, 0, "input rejection must precede scans");
-            assert!(
-                SearchTextIndex::new(["common searchable document"])
-                    .matching_ids(&query, 1)
-                    .is_empty()
-            );
-        }
-        // phase: suffix_pages_match_naive_exact_record_order_across_cursors_and_budgets
-        {
-            let source = ["banana", "bandana", "ananas", "", "BANANA"];
-            let index = SearchTextIndex::new(source);
-            for query in ["a", "ana", "nana", "band", "missing"] {
-                let normalized = normalize_search_text(query);
-                let matches: Vec<usize> = source
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(record_id, text)| {
-                        normalize_search_text(text)
-                            .contains(&normalized)
-                            .then_some(record_id)
-                    })
-                    .collect();
-                for after in [None, Some(0), Some(1), Some(3), Some(usize::MAX)] {
-                    for budget in 1..=3 {
-                        let remaining: Vec<usize> = matches
-                            .iter()
-                            .copied()
-                            .filter(|record_id| after.is_none_or(|after| *record_id > after))
-                            .collect();
-                        let expected: Vec<usize> = remaining.iter().copied().take(budget).collect();
-                        let expected_next = expected
-                            .last()
-                            .copied()
-                            .filter(|_| remaining.len() > expected.len());
-                        let page = index.matching_page(query, after, budget, budget);
-                        assert_eq!(page.ids, expected, "query={query:?}, after={after:?}");
-                        assert_eq!(
-                            page.next_after, expected_next,
-                            "query={query:?}, after={after:?}"
-                        );
-                        assert_eq!(page.inspected, page.ids.len());
-                    }
-                }
-            }
         }
     }
 

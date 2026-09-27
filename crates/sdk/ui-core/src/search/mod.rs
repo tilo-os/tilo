@@ -37,7 +37,7 @@ pub use provider::{
     CatalogSearchProvider, DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_INDEX_LIMIT,
     DEFAULT_SEARCH_RESULT_LIMIT, MAX_SEARCH_QUERY_SCALARS, OpenResourceSearch, SearchCatalog,
     SearchCatalogError, SearchCatalogStats, SearchCursor, SearchPage, SearchProvider, SearchRecord,
-    SearchResult, SearchTextIndex, SearchTextPage, normalize_search_text,
+    SearchResult, normalize_search_text,
 };
 pub use rank::{
     FieldWeight, MatchTier, RankField, field_rank, fuzzy_score, relevance_fraction,
@@ -47,6 +47,6 @@ pub use registry::{FnProvider, SearchGroup, SearchRegistry};
 /// Fold text the way every index does: case, compatibility forms and
 /// alphabetic diacritics.
 pub use tilo_search::fold as fold_search_text;
-pub use tilo_search::fold_char;
+pub use tilo_search::{fold_char, locate};
 
 pub mod system;
