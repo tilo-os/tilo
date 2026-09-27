@@ -125,6 +125,7 @@ members = [
     "crates/dev/collab-probe",
     "crates/dev/frame-link",
     "crates/dev/headless-schema",
+    "crates/dev/shell-redraw-bench",
     "crates/dev/test-env",
     "crates/dev/test-http",
     "crates/dev/tilo-app-cli",

@@ -1367,7 +1367,7 @@ impl Session {
                     address: descriptor.address,
                 },
                 argument: tilo_actions::remote::InvokeArgument::Json(arguments.clone()),
-                context: None,
+                context: self.task_context(),
                 confirmation: match confirmation {
                     ConfirmationEvidence::None => None,
                     ConfirmationEvidence::Confirm => {
@@ -1951,41 +1951,24 @@ impl Session {
             .iter()
             .filter_map(|&i| blocks.get(i).map(|b| b.text.as_str()))
             .collect();
-        let rows = plan::table_cells(&lines);
-        let cols = rows.first().map_or(1, Vec::len).max(1);
+        let mut rows = plan::table_cells(&lines);
+        for row in &mut rows {
+            if row.is_empty() {
+                row.push(String::new());
+            }
+        }
         let Some(last_bullet_block) = bullets.last().and_then(|&i| blocks.get(i)) else {
             // `bullets` was already shown non-empty above.
             return Ok(false);
         };
         let last_bullet = last_bullet_block.id.clone();
-        let before: HashSet<String> = plan::table_ids(blocks).into_iter().collect();
 
+        // The table arrives with its text: one edit, whose cells are minted
+        // inside the action.
         self.edit(
             &last_bullet,
-            &wp::insert_table_action(&last_bullet, rows.len(), cols),
+            &wp::insert_filled_table_action(&last_bullet, rows),
         )?;
-
-        // The table's cells were minted inside the action; read them back.
-        let fresh = plan::blocks(&self.editor.as_ref().context("no document")?.snapshot()?);
-        let table_id = plan::table_ids(&fresh)
-            .into_iter()
-            .find(|t| !before.contains(t))
-            .context("the inserted table's cells were not found")?;
-        let cells = plan::cells_of(&fresh, &table_id);
-        for (row, col, cell_id) in cells {
-            let text = rows
-                .get(row as usize)
-                .and_then(|r| r.get(col as usize))
-                .cloned()
-                .unwrap_or_default();
-            if text.is_empty() {
-                continue;
-            }
-            self.edit(
-                &cell_id,
-                &wp::splice_text_action(RegionKind::Body, &cell_id, 0, 0, &text),
-            )?;
-        }
         let gone: Vec<String> = bullets
             .iter()
             .filter_map(|&i| blocks.get(i).map(|b| b.id.clone()))
@@ -2268,7 +2251,8 @@ fn word_action_anchor(action: &RichTextAction, _focus: &str) -> tilo_actions::In
         | RichTextAction::DeleteStyle { style, .. } => object_anchor(style),
         RichTextAction::EditTable { table, .. } => object_anchor(table),
         RichTextAction::InsertParagraph { after, .. }
-        | RichTextAction::InsertTable { after, .. } => object_anchor(after),
+        | RichTextAction::InsertTable { after, .. }
+        | RichTextAction::InsertFilledTable { after, .. } => object_anchor(after),
         RichTextAction::InsertImage { block, .. }
         | RichTextAction::InsertPageBreak { block, .. }
         | RichTextAction::SetImageCrop { block, .. }
@@ -2305,6 +2289,10 @@ fn describe(action: &RichTextAction) -> String {
         }
         RichTextAction::InsertTable { rows, cols, .. } => {
             format!("insert table {rows}x{cols}")
+        }
+        RichTextAction::InsertFilledTable { cells, .. } => {
+            let cols = cells.first().map_or(0, Vec::len);
+            format!("insert table {}x{cols} with its text", cells.len())
         }
         RichTextAction::InsertParagraph { .. } => "insert paragraph".to_string(),
         RichTextAction::RemoveBlocks { blocks } => format!("remove {} block(s)", blocks.len()),
@@ -2873,7 +2861,7 @@ mod tests {
                             action,
                             argument,
                             actor,
-                            ..
+                            context,
                         } = event
                         {
                             let json = argument
@@ -2918,6 +2906,7 @@ mod tests {
                                     action,
                                     argument.as_deref(),
                                     &actor,
+                                    context.as_deref(),
                                 )
                             };
                             client
