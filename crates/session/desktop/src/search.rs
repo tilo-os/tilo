@@ -28,8 +28,16 @@ pub enum WindowAction {
     CloseGroup { group: GroupId },
     /// Close one tab through the tab lifecycle.
     CloseTab { group: GroupId, tab: TabId },
-    /// Move one tab to another workspace.
+    /// Move one tab to another workspace. A client window's document
+    /// leaves its workspace once the person agrees to what crosses.
     MoveTab {
+        group: GroupId,
+        tab: TabId,
+        workspace: WorkspaceId,
+    },
+    /// Give another workspace its own copy of a client window's document,
+    /// history included; the original window stays.
+    CopyTab {
         group: GroupId,
         tab: TabId,
         workspace: WorkspaceId,
@@ -68,6 +76,11 @@ pub fn tab_move_id(group: GroupId, tab: TabId, workspace: WorkspaceId) -> String
     format!("tab.move:{group}:{tab}:{}", workspace.raw())
 }
 
+/// The exact address of copying `tab`'s document in `group` into `workspace`.
+pub fn tab_copy_id(group: GroupId, tab: TabId, workspace: WorkspaceId) -> String {
+    format!("tab.copy:{group}:{tab}:{}", workspace.raw())
+}
+
 fn app_id(tile: &TileContent) -> Option<&str> {
     match tile {
         TileContent::Foreign { app_id, .. }
@@ -79,8 +92,9 @@ fn app_id(tile: &TileContent) -> Option<&str> {
     }
 }
 
-/// One "move to workspace" row per other workspace `tab` may go to. A
-/// workspace's own history and a collaborator's window stay where they are.
+/// One "move to workspace" row per other workspace `tab` may go to, and a
+/// "copy to workspace" row for a client window. A workspace's own history
+/// and a collaborator's window stay where they are.
 fn move_rows(
     rows: &mut Vec<WindowRow>,
     rank: &impl Fn(&[&str]) -> Option<i32>,
@@ -124,6 +138,43 @@ fn move_rows(
             badge: t("search-badge-tab"),
             score,
             action: WindowAction::MoveTab {
+                group,
+                tab: tab.id,
+                workspace: other.id,
+            },
+        });
+        if !matches!(
+            tab.tile,
+            TileContent::Foreign { .. } | TileContent::LocalApp { .. }
+        ) {
+            continue;
+        }
+        let id = tab_copy_id(group, tab.id, other.id);
+        let Some(score) = rank(&[title, app, &workspace.name, &other.name, &id]) else {
+            continue;
+        };
+        rows.push(WindowRow {
+            kind: WindowRowKind::Tab,
+            id,
+            title: t_args(
+                "search-window-copy-tab",
+                &[
+                    ("tab", title.as_str().into()),
+                    ("workspace", other.name.as_str().into()),
+                ],
+            ),
+            subtitle: t_args(
+                "search-window-move-tab-detail",
+                &[
+                    ("app", app.into()),
+                    ("workspace", workspace.name.as_str().into()),
+                    ("group", group.to_string().into()),
+                    ("tab", tab.id.to_string().into()),
+                ],
+            ),
+            badge: t("search-badge-tab"),
+            score,
+            action: WindowAction::CopyTab {
                 group,
                 tab: tab.id,
                 workspace: other.id,

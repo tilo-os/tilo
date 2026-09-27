@@ -8,7 +8,6 @@
     reason = "the adopted import API retains the exact checkout, source key and strong owner in its durability error"
 )]
 use crate::{
-    actions::InlineMarkSpan,
     doc::NotesDoc,
     markdown,
     model::{PageId, Workspace},
@@ -23,7 +22,7 @@ use ui::{
     record::{
         RecordCheckout, RecordId, RecordKind, RecordOpenError, RecordSaveStatus, RecordStore,
     },
-    widget::{BlockEditOp, marks::Mark},
+    widget::{BlockContent, marks::Mark},
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -41,8 +40,7 @@ pub struct LegacySnapshot {
 }
 pub struct ImportedPage {
     id: PageId,
-    ops: Vec<BlockEditOp>,
-    marks: Vec<(String, Vec<InlineMarkSpan>)>,
+    blocks: Vec<BlockContent>,
 }
 #[derive(Debug)]
 pub struct ImportOutcome {
@@ -355,9 +353,7 @@ fn compile_page(
     warnings: &mut Vec<String>,
 ) -> Result<ImportedPage, String> {
     let rows = markdown::expanded_rows(&markdown::parse(body));
-    let mut ops = Vec::new();
-    let mut marks = Vec::new();
-    let mut after = None;
+    let mut blocks = Vec::new();
     let mut groups = BTreeMap::new();
     for (index, (kind, inline, fence, nesting)) in rows.into_iter().enumerate() {
         let mut spans = Vec::new();
@@ -380,35 +376,23 @@ fn compile_page(
                     }
                 }
             }
-            spans.push(InlineMarkSpan::from_ui(&span));
+            spans.push(span);
         }
-        let block_id = block_id(key, id, index);
-        ops.push(BlockEditOp::Insert {
-            block_id: block_id.clone(),
-            after: after.clone(),
-            kind: markdown::block_kind_wire(&kind),
-            text: inline.text,
-        });
-        if nesting > 0 {
-            ops.push(BlockEditOp::SetNesting {
-                block_id: block_id.clone(),
-                depth: nesting,
-            });
-        }
-        if let Some(fence) = fence {
-            let group = groups
+        let code_group = fence.map(|fence| {
+            groups
                 .entry(fence)
-                .or_insert_with(|| block_id.clone())
-                .clone();
-            ops.push(BlockEditOp::SetCodeGroup {
-                block_id: block_id.clone(),
-                group_id: Some(group),
-            });
-        }
-        marks.push((block_id.clone(), spans));
-        after = Some(block_id);
+                .or_insert_with(|| block_id(key, id, index))
+                .clone()
+        });
+        blocks.push(BlockContent {
+            kind,
+            marks: spans,
+            nesting,
+            code_group,
+            ..BlockContent::paragraph("", inline.text)
+        });
     }
-    Ok(ImportedPage { id, ops, marks })
+    Ok(ImportedPage { id, blocks })
 }
 
 fn matches_receipt(
@@ -473,10 +457,7 @@ fn initialize(
         NotesDoc::set_tag_assignment(doc, edge.page, edge.tag, true);
     }
     for page in &snapshot.pages {
-        NotesDoc::apply_block_ops(doc, page.id, &page.ops)?;
-        for (block, marks) in &page.marks {
-            NotesDoc::set_block_marks(doc, page.id, block, marks)?;
-        }
+        NotesDoc::fill_page_body(doc, page.id, &page.blocks)?;
     }
     let receipt = doc
         .put_object(ROOT, "notes_import_v1", ObjType::Map)

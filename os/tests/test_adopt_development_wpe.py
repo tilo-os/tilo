@@ -57,7 +57,7 @@ class AdoptionTests(unittest.TestCase):
                     self.validate(self.audit | {field: value})
         restart_fixture(self)
         with self.subTest(phase="recipe_and_archive_changes_reject_compatibility"):
-            path = self.repo / 'os/Containerfile'
+            path = self.repo / 'os/Containerfile.wpe'
             original = path.read_bytes()
             path.write_bytes(original + b'# changed consumer\n')
             with self.assertRaises(ValueError):
