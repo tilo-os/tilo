@@ -52,9 +52,7 @@ async fn wait_for_mount(mount: impl AsRef<std::path::Path>) {
     tokio::task::spawn_blocking(move || {
         let parent = mount.parent().expect("a mount point has a parent");
         let outside = std::fs::metadata(parent).expect("stat mount parent").dev();
-        let deadline = std::time::Instant::now()
-            .checked_add(Duration::from_secs(10))
-            .expect("a 10s deadline is representable");
+        let deadline = tilo_test_env::hang_deadline();
         while !std::fs::metadata(&mount).is_ok_and(|meta| meta.dev() != outside) {
             assert!(
                 std::time::Instant::now() < deadline,
@@ -765,7 +763,7 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
     // Phase `fuse_non_utf8_name_survives_rename_and_namespace_restart`.
     {
         require_fuse!();
-        timeout(Duration::from_secs(20), async {
+        tilo_test_env::within("the non-UTF8 real-FUSE restart test", async {
             let first_mount = tempdir().unwrap();
             let second_mount = tempdir().unwrap();
             let store = Arc::new(ContentStore::memory());
@@ -813,8 +811,7 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
             shutdown_endpoint.close().await;
             store.store().shutdown().await.unwrap();
         })
-        .await
-        .expect("non-UTF8 real-FUSE restart test timed out");
+        .await;
     }
     // Phase `rmdir_rejects_nonempty_and_unlink_rejects_dir`.
     // rmdir must refuse a non-empty directory (no silent rm -rf), and
@@ -996,7 +993,7 @@ async fn fuse_open_handles_survive_replacement_unlink_and_concurrent_writes() {
     // must keep reading that original object until its handle closes.
     {
         require_fuse!();
-        timeout(Duration::from_secs(20), async {
+        tilo_test_env::within("the real-FUSE replacement test", async {
             let mount_dir = tempdir().expect("mount temp dir");
             let path = mount_dir.path().to_path_buf();
             let endpoint = Endpoint::bind(presets::Minimal)
@@ -1048,8 +1045,7 @@ async fn fuse_open_handles_survive_replacement_unlink_and_concurrent_writes() {
             drop(replaced_handle);
             shutdown_fuse_fixture(session, shutdown_endpoint, shutdown_store).await;
         })
-        .await
-        .expect("real-FUSE replacement test timed out");
+        .await;
     }
     // Phase `fuse_unlink_and_recreate_keeps_the_old_open_inode_private`.
     // An unlinked inode belongs to its existing handles until the last close. A
@@ -1057,7 +1053,7 @@ async fn fuse_open_handles_survive_replacement_unlink_and_concurrent_writes() {
     // private buffer or inode identity.
     {
         require_fuse!();
-        timeout(Duration::from_secs(20), async {
+        tilo_test_env::within("the real-FUSE unlink/recreate test", async {
             let mount_dir = tempdir().expect("mount temp dir");
             let endpoint = Endpoint::bind(presets::Minimal)
                 .await
@@ -1105,15 +1101,14 @@ async fn fuse_open_handles_survive_replacement_unlink_and_concurrent_writes() {
             drop(old);
             shutdown_fuse_fixture(session, shutdown_endpoint, shutdown_store).await;
         })
-        .await
-        .expect("real-FUSE unlink/recreate test timed out");
+        .await;
     }
     // Phase `fuse_two_writable_handles_preserve_disjoint_writes`.
     // Writable handles share one live inode buffer. Closing or flushing either
     // handle must not commit a stale per-handle snapshot over the other writer.
     {
         require_fuse!();
-        timeout(Duration::from_secs(20), async {
+        tilo_test_env::within("the real-FUSE two-writer test", async {
             let mount_dir = tempdir().expect("mount temp dir");
             let endpoint = Endpoint::bind(presets::Minimal)
                 .await
@@ -1156,8 +1151,7 @@ async fn fuse_open_handles_survive_replacement_unlink_and_concurrent_writes() {
             assert_eq!(std::fs::read(&path).unwrap(), b"ONETWO");
             shutdown_fuse_fixture(session, shutdown_endpoint, shutdown_store).await;
         })
-        .await
-        .expect("real-FUSE two-writer test timed out");
+        .await;
     }
     // Phase `signed_fuse_replacement_is_transactional_and_preserves_open_handles`.
     // The production signed path must preserve the same kernel contract while
@@ -1165,7 +1159,7 @@ async fn fuse_open_handles_survive_replacement_unlink_and_concurrent_writes() {
     // namespace persistence, and the recovery journal.
     {
         require_fuse!();
-        timeout(Duration::from_secs(30), async {
+        tilo_test_env::within("the signed real-FUSE replacement test", async {
             let mount_dir = tempdir().expect("mount temp dir");
             let state_dir = tempdir().expect("state temp dir");
             let endpoint = Endpoint::bind(presets::Minimal)
@@ -1257,8 +1251,7 @@ async fn fuse_open_handles_survive_replacement_unlink_and_concurrent_writes() {
             drop(victim_handle);
             shutdown_fuse_fixture(session, shutdown_endpoint, shutdown_store).await;
         })
-        .await
-        .expect("signed real-FUSE replacement test timed out");
+        .await;
     }
 }
 

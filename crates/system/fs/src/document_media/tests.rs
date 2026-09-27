@@ -16,9 +16,7 @@ fn scope(room: &str, app: &str) -> BlobScope {
 
 /// Poll a read until it settles; a peer fetch answers `Pending` first.
 async fn settle(media: &Arc<DocumentMedia>, scope: &BlobScope, hash: Hash) -> ReadOutcome {
-    let deadline = Instant::now()
-        .checked_add(Duration::from_secs(20))
-        .expect("a 20s deadline is representable");
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         let outcome = media.read_range(scope.clone(), hash, 0, u32::MAX).await;
         if outcome != ReadOutcome::Pending || Instant::now() > deadline {
