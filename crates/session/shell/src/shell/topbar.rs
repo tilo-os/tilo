@@ -62,7 +62,7 @@ impl TopBar {
             last_wheel: None,
             cooldown: Duration::from_millis(200),
             spark_samples: Vec::new(),
-            ws_name_tooltip: Tooltip::new("Open workspace settings"),
+            ws_name_tooltip: Tooltip::new(crate::shell::i18n::t("topbar-workspace-name-tooltip")),
         }
     }
 

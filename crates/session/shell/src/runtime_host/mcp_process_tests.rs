@@ -367,15 +367,17 @@ fn mcp_process_owns_and_reaps_its_children() {
             }],
         })
         .unwrap();
+        // The input stays idle far longer than any loaded start-up, so returning
+        // well before its EOF proves the child's exit interrupted the wait.
         let started = Instant::now();
         let error = serve(
             &root,
             manifest,
-            DelayedEof(Duration::from_secs(5)),
+            DelayedEof(Duration::from_secs(120)),
             Vec::new(),
         )
         .unwrap_err();
-        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(started.elapsed() < Duration::from_secs(60));
         assert!(error.to_string().contains("exited"));
     }
     // Phase `output_failure_reaps_the_surviving_child_and_releases_the_profile`.

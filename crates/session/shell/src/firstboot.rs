@@ -297,6 +297,11 @@ fn host_pointer_updates(
             "tap-and-drag",
         );
         insert_bool(
+            "tap_drag_lock",
+            "org.gnome.desktop.peripherals.touchpad",
+            "tap-and-drag-lock",
+        );
+        insert_bool(
             "disable_while_typing",
             "org.gnome.desktop.peripherals.touchpad",
             "disable-while-typing",

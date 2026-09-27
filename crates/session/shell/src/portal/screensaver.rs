@@ -144,7 +144,7 @@ fn display_name(application_name: &str) -> String {
         .take(MAX_NAME_CHARS)
         .collect();
     if cleaned.is_empty() {
-        "An app".to_owned()
+        crate::shell::i18n::t("portal-inhibit-unnamed-app")
     } else {
         cleaned
     }

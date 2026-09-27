@@ -85,7 +85,7 @@ pub struct SecretVault {
     load_error: Option<String>,
 }
 
-fn explicit_root_custody() -> SecretCustody {
+pub(crate) fn explicit_root_custody() -> SecretCustody {
     #[cfg(windows)]
     {
         SecretCustody::WindowsDpapi

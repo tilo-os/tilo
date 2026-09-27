@@ -374,6 +374,111 @@ pub fn display_snapshot_path() -> Option<std::path::PathBuf> {
     xdg_paths::xdg::runtime_dir().map(|path| path.join("tilo/display-state.json"))
 }
 
+/// What kind of input device libinput reports, as far as Settings cares:
+/// each kind has its own section, shown only while one is attached.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InputDeviceKind {
+    Touchpad,
+    /// Any relative pointer that is not a touchpad: mice, trackballs,
+    /// pointing sticks.
+    Mouse,
+    Keyboard,
+    Touchscreen,
+    /// A drawing tablet's pen digitiser.
+    Tablet,
+    /// The button pad on a drawing tablet.
+    TabletPad,
+    #[default]
+    #[serde(other)]
+    Other,
+}
+
+/// The identity input preferences are keyed by: USB vendor and product id
+/// plus the kernel's device name, so two identical tablets share settings
+/// while a tablet's pen and pad (same ids, different names) do not.
+pub fn input_device_key(vendor: u32, product: u32, name: &str) -> String {
+    format!("{vendor:04x}:{product:04x}:{}", name.trim())
+}
+
+/// One attached input device, as the compositor sees it right now.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct InputDeviceSnapshot {
+    /// [`input_device_key`] of the device.
+    pub key: String,
+    pub name: String,
+    pub kind: InputDeviceKind,
+    /// Physical buttons on a tablet pad; zero for every other kind.
+    pub pad_buttons: u32,
+}
+
+/// Read-only state written atomically by the compositor in the private user
+/// runtime directory: the input devices attached right now. Like
+/// [`DisplayHardwareSnapshot`] it is separate from durable intent, so
+/// unplugging a device hides its section without forgetting its settings.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct InputHardwareSnapshot {
+    pub publisher_pid: u32,
+    /// Paired with the PID so a stale file cannot outlive its compositor.
+    pub publisher_start_ticks: u64,
+    pub devices: Vec<InputDeviceSnapshot>,
+}
+
+impl InputHardwareSnapshot {
+    /// The live snapshot, or `None` when no running compositor published one.
+    pub fn load() -> Option<Self> {
+        Self::load_at(&input_snapshot_path()?)
+    }
+
+    pub fn load_at(path: &std::path::Path) -> Option<Self> {
+        let snapshot: Self = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+        let live_start = process_start_ticks(snapshot.publisher_pid)?;
+        (snapshot.publisher_pid != 0 && live_start == snapshot.publisher_start_ticks)
+            .then_some(snapshot)
+    }
+
+    /// # Errors
+    ///
+    /// Returns an error if `XDG_RUNTIME_DIR` is unset or relative, or the
+    /// snapshot file can't be written.
+    pub fn save(&self) -> std::io::Result<()> {
+        let path = input_snapshot_path()
+            .ok_or_else(|| std::io::Error::other("XDG_RUNTIME_DIR is unavailable"))?;
+        self.save_at(&path)
+    }
+
+    /// # Errors
+    ///
+    /// Returns an error if `self` can't be serialised or written to `path`.
+    pub fn save_at(&self, path: &std::path::Path) -> std::io::Result<()> {
+        let mut body = serde_json::to_vec_pretty(self).map_err(std::io::Error::other)?;
+        body.push(b'\n');
+        atomic_file::write_creating_parent(path, &body)
+    }
+
+    /// Whether at least one device of `kind` is attached.
+    pub fn has(&self, kind: InputDeviceKind) -> bool {
+        self.devices.iter().any(|device| device.kind == kind)
+    }
+
+    /// The attached devices of `kind`, one entry per identity.
+    pub fn of_kind(&self, kind: InputDeviceKind) -> Vec<&InputDeviceSnapshot> {
+        let mut seen = BTreeSet::new();
+        self.devices
+            .iter()
+            .filter(|device| device.kind == kind && seen.insert(device.key.as_str()))
+            .collect()
+    }
+}
+
+/// Private session state path for [`InputHardwareSnapshot`]; like
+/// [`display_snapshot_path`] it never falls back to a shared directory.
+pub fn input_snapshot_path() -> Option<std::path::PathBuf> {
+    xdg_paths::xdg::runtime_dir().map(|path| path.join("tilo/input-state.json"))
+}
+
 // Four independent, user-facing toggles (Enabled, Primary, HDR, VRR), not a state
 // machine — and this document's JSON shape and field names are load-bearing across
 // `apps/settings` and `shell`, so folding them into a bitflags type ripples well
@@ -616,6 +721,10 @@ pub const DEFAULT_MOUSE_NATURAL_SCROLL: bool = false;
 /// the touchpad-toggle hardware key flips it and the compositor applies it
 /// to every touchpad through libinput's send-events mode.
 pub const TOUCHPAD_ENABLED_KEY: &str = "touchpad_enabled";
+/// `input` key for switching touchpads off while an external mouse is
+/// connected (libinput's disabled-on-external-mouse send-events mode). Absent
+/// means off.
+pub const TOUCHPAD_DISABLED_ON_EXTERNAL_MOUSE_KEY: &str = "touchpad_disabled_on_external_mouse";
 
 /// How a clickpad (a touchpad whose whole surface is the button) decides
 /// which button a physical press means. libinput decides per device which of
@@ -725,6 +834,8 @@ pub struct RichInputConfig {
     pub mouse_natural_scroll: Option<bool>,
     pub tap_to_click: bool,
     pub tap_drag: bool,
+    /// Keep a tap-and-drag going after the finger lifts, until the next tap.
+    pub tap_drag_lock: bool,
     pub disable_while_typing: bool,
     pub middle_emulation: bool,
     pub left_handed: bool,
@@ -743,6 +854,9 @@ pub struct RichInputConfig {
     #[serde(alias = "layouts")]
     pub keyboard_layouts: Vec<String>,
     pub compose_key: Option<String>,
+    /// What Caps Lock does: `None` keeps it Caps Lock; `ctrl`, `escape` or
+    /// `backspace` turn it into that key.
+    pub caps_lock: Option<String>,
     pub touchpad_gestures: bool,
     pub touchpad_click_method: TouchpadClickMethod,
     pub touchpad_scroll_method: TouchpadScrollMethod,
@@ -764,6 +878,7 @@ impl Default for RichInputConfig {
             mouse_natural_scroll: Some(DEFAULT_MOUSE_NATURAL_SCROLL),
             tap_to_click: true,
             tap_drag: true,
+            tap_drag_lock: false,
             disable_while_typing: true,
             middle_emulation: true,
             left_handed: false,
@@ -774,6 +889,7 @@ impl Default for RichInputConfig {
             keyboard_layout: "us".into(),
             keyboard_layouts: vec!["us".into()],
             compose_key: None,
+            caps_lock: None,
             touchpad_gestures: true,
             touchpad_click_method: TouchpadClickMethod::Default,
             touchpad_scroll_method: TouchpadScrollMethod::TwoFinger,
@@ -984,6 +1100,10 @@ impl RichInputConfig {
             .get(SCROLL_SPEED_KEY)
             .and_then(serde_json::Value::as_f64)
             .map_or(1.0, clamp_scroll_speed);
+        config.caps_lock = section
+            .get("caps_lock")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
         config.normalise_sources();
         config
     }
@@ -1050,6 +1170,21 @@ impl RichInputConfig {
             .collect()
     }
 
+    /// Make the source after the active one active, wrapping, and return
+    /// its index. `None` with fewer than two sources: there is nothing to
+    /// switch to.
+    pub fn select_next_source(&mut self) -> Option<usize> {
+        if self.keyboard_layouts.len() < 2 {
+            return None;
+        }
+        let next = self
+            .active_source_index()
+            .saturating_add(1)
+            .checked_rem(self.keyboard_layouts.len())?;
+        self.keyboard_layout = self.keyboard_layouts.get(next)?.clone();
+        Some(next)
+    }
+
     /// Position of the active source in the full source list.
     pub fn active_source_index(&self) -> usize {
         self.keyboard_layouts
@@ -1084,13 +1219,23 @@ impl RichInputConfig {
         }
     }
 
-    /// XKB option fragments owned by this preference section. Layout
-    /// switching is Alt+Shift because Super+Space is Tilo global search;
-    /// Compose remains independently configurable.
+    /// XKB option fragments owned by this preference section. No XKB group
+    /// toggle: switching sources is the compositor's rebindable
+    /// input-source shortcut, which persists the choice and shows it —
+    /// an XKB toggle would switch silently, forget it on reload, and
+    /// collide with Alt+Shift+Tab. A Caps Lock remap yields to Compose on
+    /// Caps Lock, the more specific choice.
     pub fn xkb_options(&self) -> Vec<String> {
         let mut options = Vec::new();
-        if self.sources().len() > 1 {
-            options.push("grp:alt_shift_toggle".into());
+        if self.compose_key.as_deref() != Some("caps")
+            && let Some(option) = match self.caps_lock.as_deref() {
+                Some("ctrl") => Some("ctrl:nocaps"),
+                Some("escape") => Some("caps:escape"),
+                Some("backspace") => Some("caps:backspace"),
+                _ => None,
+            }
+        {
+            options.push(option.into());
         }
         if let Some(option) = match self.compose_key.as_deref() {
             Some("ralt") => Some("compose:ralt"),
@@ -1157,6 +1302,8 @@ pub enum ShortcutAction {
     MagnifierZoomIn,
     MagnifierZoomOut,
     PowerMenu,
+    /// Switch to the next keyboard input source.
+    NextInputSource,
 }
 
 impl ShortcutAction {
@@ -1639,6 +1786,7 @@ pub fn fixed_shell_chords() -> Vec<(&'static str, KeyChord)> {
     let mut fixed = vec![
         ("Switch windows", chord(&["Alt"], "tab")),
         ("Switch windows", chord(&["Alt", "Shift"], "tab")),
+        ("Switch windows of the app", chord(&["Alt"], "`")),
         ("Close tab", chord(&["Alt"], "f4")),
         ("Close tab", chord(&["Super"], "w")),
         ("Previous workspace", chord(&["Super"], "pageup")),
@@ -1791,6 +1939,9 @@ impl Default for ShortcutConfig {
             // The session action sheet: the chord every PC user tries when
             // something has hung.
             (ShortcutAction::PowerMenu, ctrl_alt_chord("delete")),
+            // Super+Space is global search; the Alt-modified chord is the
+            // nearest free spelling of the GNOME/Windows convention.
+            (ShortcutAction::NextInputSource, super_alt_chord("space")),
         ]
         .into_iter()
         .collect();
@@ -2435,7 +2586,7 @@ mod tests {
         // Phase `desktop_navigation_defaults_are_complete_and_conflict_free`.
         {
             let cfg = ShortcutConfig::default();
-            assert_eq!(cfg.bindings.len(), 42);
+            assert_eq!(cfg.bindings.len(), 43);
             let unique: BTreeSet<_> = cfg.bindings.values().collect();
             assert_eq!(unique.len(), cfg.bindings.len());
             assert_eq!(
@@ -2562,7 +2713,15 @@ mod tests {
                 ..Default::default()
             };
             cfg.normalise_sources();
-            assert_eq!(cfg.xkb_options(), ["grp:alt_shift_toggle", "compose:ralt"]);
+            assert_eq!(
+                cfg.xkb_options(),
+                ["compose:ralt"],
+                "no XKB group toggle: it collides with Alt+Shift+Tab and switches silently"
+            );
+            assert_eq!(
+                ShortcutConfig::default().bindings[&ShortcutAction::NextInputSource].display(),
+                "Super+Alt+Space"
+            );
         }
         // Phase `malformed_pointer_field_does_not_discard_keyboard_sources`.
         {
@@ -2599,6 +2758,45 @@ mod tests {
         assert_eq!(back.touchpad_click_method, TouchpadClickMethod::Clickfinger);
         assert_eq!(back.touchpad_scroll_method, TouchpadScrollMethod::Edge);
         assert!((back.scroll_speed - 2.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn input_snapshot_is_trusted_only_from_its_live_publisher() {
+        let dir = std::env::temp_dir().join(format!("tilo-input-state-{}", std::process::id()));
+        let path = dir.join("input-state.json");
+        let pen = InputDeviceSnapshot {
+            key: input_device_key(0x056a, 0x0374, "Wacom Intuos S Pen"),
+            name: "Wacom Intuos S Pen".into(),
+            kind: InputDeviceKind::Tablet,
+            pad_buttons: 0,
+        };
+        assert_eq!(pen.key, "056a:0374:Wacom Intuos S Pen");
+        let pid = std::process::id();
+        let live = InputHardwareSnapshot {
+            publisher_pid: pid,
+            publisher_start_ticks: process_start_ticks(pid).unwrap_or_default(),
+            devices: vec![pen.clone(), pen],
+        };
+        live.save_at(&path).unwrap();
+        let back = InputHardwareSnapshot::load_at(&path).expect("live publisher");
+        assert!(back.has(InputDeviceKind::Tablet));
+        assert!(!back.has(InputDeviceKind::Touchpad));
+        assert_eq!(
+            back.of_kind(InputDeviceKind::Tablet).len(),
+            1,
+            "one section per identity, however many handles libinput opened"
+        );
+
+        let stale = InputHardwareSnapshot {
+            publisher_start_ticks: live.publisher_start_ticks.wrapping_add(1),
+            ..live
+        };
+        stale.save_at(&path).unwrap();
+        assert!(
+            InputHardwareSnapshot::load_at(&path).is_none(),
+            "a reused PID must not resurrect a dead compositor's devices"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -2662,7 +2860,62 @@ mod tests {
             0,
             "an engine types on the primary layout"
         );
-        assert_eq!(cfg.xkb_options(), ["grp:alt_shift_toggle"]);
+        assert!(cfg.xkb_options().is_empty());
+    }
+
+    #[test]
+    fn the_next_source_wraps_through_layouts_and_engines() {
+        let mut cfg = RichInputConfig {
+            keyboard_layout: "de".into(),
+            keyboard_layouts: vec!["us".into(), "de".into(), "fr".into()],
+            ..Default::default()
+        };
+        assert_eq!(cfg.select_next_source(), Some(2));
+        assert_eq!(cfg.keyboard_layout, "fr");
+        assert_eq!(cfg.select_next_source(), Some(0));
+        assert_eq!(cfg.keyboard_layout, "us");
+        let mut single = RichInputConfig::default();
+        assert_eq!(single.select_next_source(), None);
+        assert_eq!(single.keyboard_layout, "us");
+        let mut with_engine = RichInputConfig {
+            keyboard_layout: "us".into(),
+            keyboard_layouts: vec!["us".into(), "ime/pinyin".into()],
+            ..Default::default()
+        };
+        assert_eq!(with_engine.select_next_source(), Some(1));
+        assert_eq!(
+            with_engine.active_input_method(),
+            Some(InputMethodEngine::Pinyin)
+        );
+    }
+
+    #[test]
+    fn caps_lock_remaps_map_to_standard_xkb_options() {
+        for (choice, option) in [
+            ("ctrl", "ctrl:nocaps"),
+            ("escape", "caps:escape"),
+            ("backspace", "caps:backspace"),
+        ] {
+            let section = serde_json::json!({ "caps_lock": choice })
+                .as_object()
+                .unwrap()
+                .clone();
+            assert_eq!(
+                RichInputConfig::from_section(&section).xkb_options(),
+                [option]
+            );
+        }
+        let composing = RichInputConfig {
+            caps_lock: Some("escape".into()),
+            compose_key: Some("caps".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            composing.xkb_options(),
+            ["compose:caps"],
+            "Caps Lock cannot be both Compose and Escape"
+        );
+        assert!(RichInputConfig::default().xkb_options().is_empty());
     }
 
     #[test]

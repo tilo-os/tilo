@@ -371,7 +371,7 @@ fn mode_for(out: &Output, fallback_refresh_mhz: Option<u32>) -> OutputMode {
 /// so a tool can match a `wl_output` to its head. An output without a
 /// connector gets the virtual head name its head is advertised under. It
 /// must be unique, so a repeated connector gets its id appended.
-fn advertised_name(out: &Output, desired: &[Output]) -> String {
+pub(crate) fn advertised_name(out: &Output, desired: &[Output]) -> String {
     let connector = &out.identity.connector;
     let repeated = desired
         .iter()

@@ -7,7 +7,11 @@
 //! Account inventory in Tilo is presented in one place: this app's External
 //! Accounts panel. Password/app-password accounts for Mail, `CalDAV`, `WebDAV`,
 //! and Nextcloud can be added, edited, tested, reauthenticated, and removed
-//! there. Provider-specific OAuth authorization remains in its owning app.
+//! there. Google Drive, `OneDrive` and Dropbox sign in through the browser
+//! (`OAuth`), Nextcloud through its Login Flow v2, and `iCloud` Drive with an
+//! Apple ID and verification code; `account_custody` keeps those grants and
+//! hands the storage daemon only short-lived credentials. Mail's own `OAuth`
+//! sign-in for Gmail and Outlook remains in Mail.
 //!
 //! # Where email + `CalDAV` live: the shared `accounts` crate
 //!
@@ -77,6 +81,16 @@ impl AccountRoot {
         Self {
             explicit: Some(config_root.into()),
         }
+    }
+
+    /// The explicit config root, `None` for the live root.
+    pub fn explicit(&self) -> Option<&std::path::Path> {
+        self.explicit.as_deref()
+    }
+
+    /// Credential custody for cloud accounts over the same stores.
+    pub fn custodian(&self) -> account_custody::Custodian {
+        account_custody::Custodian::for_root(self.explicit.clone()).with_apple_icloud()
     }
 
     /// The config root, `None` when the live root has no usable home.
@@ -624,24 +638,48 @@ pub enum AccountKind {
     CalDav,
     WebDav,
     Nextcloud,
+    GoogleDrive,
+    OneDrive,
+    Dropbox,
+    ICloudDrive,
 }
 
 impl AccountKind {
+    /// Every kind, in panel order.
+    pub const ALL: [Self; 8] = [
+        Self::Mail,
+        Self::CalDav,
+        Self::WebDav,
+        Self::Nextcloud,
+        Self::GoogleDrive,
+        Self::OneDrive,
+        Self::Dropbox,
+        Self::ICloudDrive,
+    ];
+
     pub fn label(self) -> &'static str {
         match self {
             AccountKind::Mail => "Email",
             AccountKind::CalDav => "Calendar (CalDAV)",
             AccountKind::WebDav => "Files (WebDAV)",
             AccountKind::Nextcloud => "Nextcloud",
+            AccountKind::GoogleDrive => "Google Drive",
+            AccountKind::OneDrive => "OneDrive",
+            AccountKind::Dropbox => "Dropbox",
+            AccountKind::ICloudDrive => "iCloud Drive",
         }
     }
 
     pub fn glyph(self) -> &'static str {
         match self {
-            AccountKind::Mail => "\u{f01ee}",      // md-email
-            AccountKind::CalDav => "\u{f00ed}",    // md-calendar
-            AccountKind::WebDav => "\u{f0256}",    // md-folder_outline
-            AccountKind::Nextcloud => "\u{f015f}", // md-cloud
+            AccountKind::Mail => "\u{f01ee}",   // md-email
+            AccountKind::CalDav => "\u{f00ed}", // md-calendar
+            AccountKind::WebDav => "\u{f0256}", // md-folder_outline
+            AccountKind::Nextcloud
+            | AccountKind::GoogleDrive
+            | AccountKind::OneDrive
+            | AccountKind::Dropbox
+            | AccountKind::ICloudDrive => "\u{f015f}", // md-cloud
         }
     }
 
@@ -651,7 +689,56 @@ impl AccountKind {
             AccountKind::CalDav => "caldav",
             AccountKind::WebDav => "webdav",
             AccountKind::Nextcloud => "nextcloud",
+            AccountKind::GoogleDrive => "google-drive",
+            AccountKind::OneDrive => "onedrive",
+            AccountKind::Dropbox => "dropbox",
+            AccountKind::ICloudDrive => "icloud-drive",
         }
+    }
+
+    /// The canonical store's type id for accounts of this kind.
+    pub fn type_id(self) -> &'static str {
+        match self {
+            AccountKind::Mail => MAIL_TYPE,
+            AccountKind::CalDav => CALDAV_TYPE,
+            AccountKind::WebDav => WEBDAV_TYPE,
+            AccountKind::Nextcloud => NEXTCLOUD_TYPE,
+            AccountKind::GoogleDrive => account_custody::providers::GOOGLE_DRIVE_TYPE,
+            AccountKind::OneDrive => account_custody::providers::ONEDRIVE_TYPE,
+            AccountKind::Dropbox => account_custody::providers::DROPBOX_TYPE,
+            AccountKind::ICloudDrive => account_custody::providers::ICLOUD_DRIVE_TYPE,
+        }
+    }
+
+    pub fn from_slug(slug: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|kind| kind.slug() == slug)
+    }
+
+    pub fn from_type_id(type_id: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|kind| kind.type_id() == type_id)
+    }
+
+    /// The `OAuth` provider behind a cloud storage kind.
+    pub fn oauth_cloud(self) -> Option<account_custody::OAuthCloud> {
+        account_custody::OAuthCloud::from_type_id(self.type_id())
+    }
+
+    /// Google Drive, `OneDrive`, Dropbox and `iCloud` Drive: accounts held
+    /// entirely by credential custody, listed from the canonical store.
+    pub fn is_cloud_storage(self) -> bool {
+        self.oauth_cloud().is_some() || self == AccountKind::ICloudDrive
+    }
+
+    /// Whether accounts of this kind are connected through a sign-in flow
+    /// (browser or Apple ID) rather than a typed password.
+    pub fn signs_in(self) -> bool {
+        self.is_cloud_storage() || self == AccountKind::Nextcloud
+    }
+
+    /// Whether the provider is reached through an undocumented API and is
+    /// supported on a best-effort basis.
+    pub fn best_effort(self) -> bool {
+        self == AccountKind::ICloudDrive
     }
 }
 
@@ -676,6 +763,9 @@ pub struct AccountDirectory {
     pub calendar: DavStore,
     pub files: DavStore,
     pub nextcloud: NextcloudStore,
+    /// Google Drive, `OneDrive`, Dropbox and `iCloud` Drive accounts,
+    /// straight from the canonical store.
+    pub cloud: Vec<accounts::Account>,
 }
 
 impl AccountDirectory {
@@ -729,6 +819,15 @@ impl AccountDirectory {
             calendar: caldav_store_from_shared(&shared),
             files: webdav_store_from_shared(&shared),
             nextcloud: nextcloud_store_from_shared(&shared),
+            cloud: shared
+                .all()
+                .iter()
+                .filter(|account| {
+                    AccountKind::from_type_id(account.type_id.as_str())
+                        .is_some_and(AccountKind::is_cloud_storage)
+                })
+                .cloned()
+                .collect(),
         }
     }
 
@@ -739,6 +838,7 @@ impl AccountDirectory {
             && self.calendar.accounts.is_empty()
             && self.files.accounts.is_empty()
             && self.nextcloud.accounts.is_empty()
+            && self.cloud.is_empty()
     }
 
     /// The uniform views for one kind, in store order.
@@ -763,6 +863,15 @@ impl AccountDirectory {
             AccountKind::CalDav => self.calendar.accounts.iter().map(dav_view_caldav).collect(),
             AccountKind::WebDav => self.files.accounts.iter().map(dav_view_webdav).collect(),
             AccountKind::Nextcloud => self.nextcloud.accounts.iter().map(nextcloud_view).collect(),
+            AccountKind::GoogleDrive
+            | AccountKind::OneDrive
+            | AccountKind::Dropbox
+            | AccountKind::ICloudDrive => self
+                .cloud
+                .iter()
+                .filter(|account| account.type_id.as_str() == kind.type_id())
+                .map(|account| cloud_view(kind, account))
+                .collect(),
         }
     }
 }
@@ -807,6 +916,33 @@ fn nextcloud_view(a: &NextcloudAccount) -> AccountView {
         summary: format!("{} · {}", short_url(&a.server_url), svc.join(", ")),
         enabled: a.enabled,
         tint: a.tint,
+    }
+}
+
+fn cloud_view(kind: AccountKind, account: &accounts::Account) -> AccountView {
+    let identity = account
+        .config
+        .get("identity")
+        .and_then(serde_json::Value::as_str)
+        .filter(|identity| !identity.is_empty());
+    let summary = match (identity, kind.oauth_cloud()) {
+        (Some(identity), _) => format!("{} · {identity}", kind.label()),
+        (None, Some(cloud)) => {
+            format!("{} · signed in with {}", kind.label(), cloud.sign_in_with())
+        }
+        (None, None) => format!("{} · Apple ID", kind.label()),
+    };
+    AccountView {
+        id: account.id.to_string(),
+        kind,
+        label: if account.display_name.is_empty() {
+            kind.label().to_string()
+        } else {
+            account.display_name.clone()
+        },
+        summary,
+        enabled: account.enabled,
+        tint: account.tint,
     }
 }
 
@@ -1038,6 +1174,7 @@ pub fn sample_directory() -> AccountDirectory {
             version: 1,
             accounts: vec![cloud],
         },
+        cloud: Vec::new(),
     }
 }
 

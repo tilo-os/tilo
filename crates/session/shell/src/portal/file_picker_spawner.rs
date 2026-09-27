@@ -114,12 +114,13 @@ pub struct FilePickerRequest {
 
 impl FilePickerRequest {
     /// The label the confirm button should carry.
-    pub fn confirm_label(&self) -> &str {
+    pub fn confirm_label(&self) -> String {
+        use crate::shell::i18n::t;
         match self.accept_label.as_deref() {
-            Some(l) if !l.trim().is_empty() => l,
-            _ if self.save => "Save",
-            _ if self.directory => "Choose folder",
-            _ => "Open",
+            Some(l) if !l.trim().is_empty() => l.to_string(),
+            _ if self.save => t("portal-file-save"),
+            _ if self.directory => t("portal-file-choose-folder"),
+            _ => t("portal-file-open"),
         }
     }
 }

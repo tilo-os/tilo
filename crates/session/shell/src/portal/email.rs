@@ -80,21 +80,29 @@ fn attachment_uris(values: &[String]) -> bool {
 #[cfg(target_os = "linux")]
 fn compose_detail(request: &EmailRequest) -> String {
     let mut recipients = request.addresses.clone();
-    recipients.extend(request.cc.iter().map(|address| format!("Cc: {address}")));
-    recipients.extend(request.bcc.iter().map(|address| format!("Bcc: {address}")));
+    recipients.extend(request.cc.iter().map(|address| {
+        crate::shell::i18n::t_args("portal-email-cc", &[("address", address.as_str().into())])
+    }));
+    recipients.extend(request.bcc.iter().map(|address| {
+        crate::shell::i18n::t_args("portal-email-bcc", &[("address", address.as_str().into())])
+    }));
     let mut detail = if recipients.is_empty() {
-        "No recipient prefilled".into()
+        crate::shell::i18n::t("portal-email-no-recipient")
     } else {
         recipients.join("\n")
     };
     if let Some(subject) = request.subject.as_deref() {
-        detail.push_str("\n\nSubject: ");
-        detail.push_str(subject);
+        detail.push_str("\n\n");
+        detail.push_str(&crate::shell::i18n::t_args(
+            "portal-email-subject",
+            &[("subject", subject.into())],
+        ));
     }
     if !request.attachments.is_empty() {
-        detail.push_str(&format!(
-            "\n\n{} attachment(s) will be available through the document portal.",
-            request.attachments.len()
+        detail.push_str("\n\n");
+        detail.push_str(&crate::shell::i18n::t_args(
+            "portal-email-attachments",
+            &[("count", request.attachments.len().into())],
         ));
     }
     detail
@@ -171,12 +179,10 @@ impl EmailBackend {
         let review = match self.dialogs.enqueue_review(ReviewRequest {
             handle: path.clone(),
             app_id: request.app_id.clone(),
-            title: "Open your mail app?".into(),
-            reason:
-                "Review the prefilled message before it is handed to your configured mail provider."
-                    .into(),
+            title: crate::shell::i18n::t("portal-email-title"),
+            reason: crate::shell::i18n::t("portal-email-reason"),
             resource: compose_detail(&request),
-            confirm_label: "Open mail app".into(),
+            confirm_label: crate::shell::i18n::t("portal-email-confirm"),
         }) {
             Ok(review) => review,
             Err(_) => {
