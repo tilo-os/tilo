@@ -87,7 +87,7 @@ impl RuntimeServices for Standalone {
         let lock = profile::lock(root)?;
         stage("provisioning the collaboration identity");
         let identity_dir = runtime_identity::identity_dir_from_env()?;
-        tilo_identity_host::provisioning::ensure_collaboration_identity(
+        tilo_identity_host::provisioning::ensure_foreign_collaboration_identity(
             &identity_dir,
             &tilo_identity_host::provisioning::collaboration_identity_paths(),
             IdentityStorage::Platform,
