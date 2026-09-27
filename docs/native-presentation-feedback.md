@@ -3,7 +3,7 @@
 Build the native probe with:
 
 ```sh
-cargo build -p ui --example ui-native-input-probe --profile thin-app --no-default-features --features presentation-feedback
+cargo build -p ui-examples --example ui-native-input-probe --profile thin-app --no-default-features --features presentation-feedback
 ```
 
 Set `TILO_PROFILE_PRESENTATION=1` alongside `TILO_NATIVE_SCENARIO`,

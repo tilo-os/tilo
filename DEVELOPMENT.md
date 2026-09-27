@@ -399,7 +399,7 @@ multiple-file and folder dialogs, with results delivered on the existing picker
 channel. To exercise the host picker without opening or modifying a document:
 
 ```powershell
-cargo run --locked -p ui --example native-file-picker --features portal -- open
+cargo run --locked -p ui-examples --example native-file-picker --features portal -- open
 # Also accepts: multiple, directory, save
 cargo test --locked -p ui --lib --features portal portal::
 ```
@@ -785,7 +785,7 @@ installer registers to open the installed executable. This route launches a
 normal Clocks window; it does not yet focus an already-running instance. The
 registered command ignores URI contents rather than forwarding them as arguments.
 
-For device verification, build `cargo build --locked -p ui --example windows-host
+For device verification, build `cargo build --locked -p ui-examples --example windows-host
 --features notifications`. The helper accepts `history so.tilo.clocks` to inspect
 only Clocks' notifications and `remove so.tilo.clocks TAG` to dismiss one test
 notification. `show ID TAG TITLE BODY` exercises the production SDK API; Windows

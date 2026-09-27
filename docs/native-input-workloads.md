@@ -52,7 +52,7 @@ assert effects. Optional macOS drawable presentation evidence is documented in
 
 ## Native delivery probe
 
-Build `cargo build --profile thin-app -p ui --no-default-features --example
+Build `cargo build --profile thin-app -p ui-examples --no-default-features --example
 ui-native-input-probe`. The example uses an ordinary button callback to emit
 `tilo-native-effect` activation counts. It runs until closed by its test harness
 or the user. Repeated clicks verify input routing but do not represent sustained
