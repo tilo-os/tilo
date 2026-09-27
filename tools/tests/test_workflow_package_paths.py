@@ -104,7 +104,7 @@ jobs:
 
             repository_metadata = load_metadata(ROOT)
             relay_text = (
-                ROOT / ".forgejo/workflows/tilo-relay.yaml"
+                ROOT / ".forgejo/workflows/release-relay.yml"
             ).read_text(encoding="utf-8")
             relay_inputs = {
                 ".cargo/**",
@@ -122,8 +122,8 @@ jobs:
                     f"{sorted(relay_inputs - block)}",
                 )
             pairs = (
-                ("tilo-relay", ".forgejo/workflows/tilo-relay.yaml"),
-                ("fs", ".forgejo/workflows/tilo-relay.yaml"),
+                ("tilo-relay", ".forgejo/workflows/release-relay.yml"),
+                ("fs", ".forgejo/workflows/release-relay.yml"),
                 ("tilo-crypto", ".forgejo/workflows/build-kernel.yml"),
             )
             violations: list[str] = []
@@ -135,7 +135,7 @@ jobs:
                 )
             self.assertEqual(violations, [])
         with self.subTest(phase='relay catalog only changes do not build an unsigned image'):
-            source = (ROOT / ".forgejo/workflows/tilo-relay.yaml").read_text(
+            source = (ROOT / ".forgejo/workflows/release-relay.yml").read_text(
                 encoding="utf-8"
             )
             blocks = workflow_path_blocks(source)
@@ -158,7 +158,7 @@ jobs:
         with self.subTest(phase='relay image paths exclude test-only workspace edges'):
             # The image Containerfile runs cargo build -p tilo-relay -p fs --bins.
             # Dev-harness crates must not schedule that rebuild.
-            source = (ROOT / ".forgejo/workflows/tilo-relay.yaml").read_text(
+            source = (ROOT / ".forgejo/workflows/release-relay.yml").read_text(
                 encoding="utf-8"
             )
             for block in workflow_path_blocks(source):
