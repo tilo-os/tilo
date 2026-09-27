@@ -12995,7 +12995,6 @@ dependencies = [
  "emoji",
  "file-explorer",
  "fluent",
- "fs",
  "futures-util",
  "gbm",
  "getrandom 0.4.3",
