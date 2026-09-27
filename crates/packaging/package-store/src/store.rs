@@ -754,11 +754,11 @@ mod image_build_tests {
     fn image_install_timestamp_is_fixed_without_changing_user_installs() {
         assert_eq!(
             image_install_time(true, Some("1790502039"), 17).unwrap(),
-            1790502039
+            1_790_502_039
         );
         assert_eq!(
             image_install_time(true, Some("1790502039"), 99).unwrap(),
-            1790502039
+            1_790_502_039
         );
         assert_eq!(
             image_install_time(false, Some("1790502039"), 17).unwrap(),
