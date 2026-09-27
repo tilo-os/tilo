@@ -616,6 +616,10 @@ pub const DEFAULT_MOUSE_NATURAL_SCROLL: bool = false;
 /// the touchpad-toggle hardware key flips it and the compositor applies it
 /// to every touchpad through libinput's send-events mode.
 pub const TOUCHPAD_ENABLED_KEY: &str = "touchpad_enabled";
+/// `input` key for switching touchpads off while an external mouse is
+/// connected (libinput's disabled-on-external-mouse send-events mode). Absent
+/// means off.
+pub const TOUCHPAD_DISABLED_ON_EXTERNAL_MOUSE_KEY: &str = "touchpad_disabled_on_external_mouse";
 
 /// How a clickpad (a touchpad whose whole surface is the button) decides
 /// which button a physical press means. libinput decides per device which of
@@ -1674,6 +1678,7 @@ pub fn fixed_shell_chords() -> Vec<(&'static str, KeyChord)> {
     let mut fixed = vec![
         ("Switch windows", chord(&["Alt"], "tab")),
         ("Switch windows", chord(&["Alt", "Shift"], "tab")),
+        ("Switch windows of the app", chord(&["Alt"], "`")),
         ("Close tab", chord(&["Alt"], "f4")),
         ("Close tab", chord(&["Super"], "w")),
         ("Previous workspace", chord(&["Super"], "pageup")),

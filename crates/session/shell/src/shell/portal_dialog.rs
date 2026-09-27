@@ -236,7 +236,45 @@ pub struct ShortcutBindingDecision {
     pub rows: Vec<ShortcutBindingRow>,
 }
 
+/// A step of a running shortcut that needs the person who started it: a
+/// confirmation, or a question. The sheet shows `choices` as rows and
+/// `field` as one text entry; a secret field is masked on screen.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShortcutStepRequest {
+    pub handle: String,
+    /// The shortcut's name.
+    pub shortcut: String,
+    pub title: String,
+    pub detail: String,
+    pub confirm_label: String,
+    pub choices: Vec<String>,
+    pub field: Option<ShortcutStepField>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShortcutStepField {
+    pub masked: bool,
+}
+
+/// The person's answer to a [`ShortcutStepRequest`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ShortcutStepDecision {
+    /// Confirmed, with the chosen row (when there were choices) and the
+    /// entered text (when there was a field).
+    Confirmed {
+        choice: Option<usize>,
+        text: String,
+    },
+    Cancelled,
+}
+
+type ShortcutStepReply = Box<dyn FnOnce(ShortcutStepDecision) + Send>;
+
 enum PendingDialog {
+    ShortcutStep {
+        request: ShortcutStepRequest,
+        reply: ShortcutStepReply,
+    },
     AppChoice {
         request: ApplicationChoiceRequest,
         reply: oneshot::Sender<PortalResult<ApplicationChoice>>,
@@ -573,6 +611,57 @@ impl PortalDialogQueue {
         }
     }
 
+    /// Queue a sheet for a running shortcut's step; `reply` receives the
+    /// answer exactly once, [`ShortcutStepDecision::Cancelled`] when the
+    /// sheet is withdrawn.
+    ///
+    /// # Errors
+    ///
+    /// When a sheet with the same handle is already live.
+    pub fn enqueue_shortcut_step(
+        &self,
+        request: ShortcutStepRequest,
+        reply: impl FnOnce(ShortcutStepDecision) + Send + 'static,
+    ) -> Result<(), String> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| "portal dialog controller is unavailable".to_string())?;
+        if inner.pending.contains_key(&request.handle) {
+            return Err("duplicate live shortcut step".into());
+        }
+        inner.order.push_back(request.handle.clone());
+        inner.pending.insert(
+            request.handle.clone(),
+            PendingDialog::ShortcutStep {
+                request,
+                reply: Box::new(reply),
+            },
+        );
+        Ok(())
+    }
+
+    fn finish_shortcut_step(&self, handle: &str, decision: ShortcutStepDecision) -> bool {
+        let pending = self
+            .inner
+            .lock()
+            .ok()
+            .and_then(|mut inner| inner.pending.remove(handle));
+        match pending {
+            Some(PendingDialog::ShortcutStep { reply, .. }) => {
+                reply(decision);
+                true
+            }
+            Some(other) => {
+                if let Ok(mut inner) = self.inner.lock() {
+                    inner.pending.insert(handle.into(), other);
+                }
+                false
+            }
+            None => false,
+        }
+    }
+
     fn next_handle(&self) -> Option<String> {
         let mut inner = self.inner.lock().ok()?;
         while let Some(handle) = inner.order.pop_front() {
@@ -586,6 +675,15 @@ impl PortalDialogQueue {
     fn view(&self, handle: &str) -> Option<DialogView> {
         let inner = self.inner.lock().ok()?;
         match inner.pending.get(handle)? {
+            PendingDialog::ShortcutStep { request, .. } => Some(DialogView::ShortcutStep {
+                handle: request.handle.clone(),
+                shortcut: request.shortcut.clone(),
+                title: request.title.clone(),
+                detail: request.detail.clone(),
+                confirm_label: request.confirm_label.clone(),
+                choices: request.choices.clone(),
+                field: request.field.clone(),
+            }),
             PendingDialog::AppChoice { request, .. } => Some(DialogView::AppChoice {
                 handle: request.handle.clone(),
                 app_name: friendly_app_name(&request.app_id),
@@ -728,6 +826,10 @@ impl PortalDialogQueue {
             .ok()
             .and_then(|mut inner| inner.pending.remove(handle));
         match pending {
+            Some(PendingDialog::ShortcutStep { reply, .. }) => {
+                reply(ShortcutStepDecision::Cancelled);
+                true
+            }
             Some(PendingDialog::AppChoice { reply, .. }) => {
                 let _ = reply.send(PortalResult::Cancelled);
                 true
@@ -996,6 +1098,15 @@ impl AppChooserService for ShellAppChooserService {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DialogView {
+    ShortcutStep {
+        handle: String,
+        shortcut: String,
+        title: String,
+        detail: String,
+        confirm_label: String,
+        choices: Vec<String>,
+        field: Option<ShortcutStepField>,
+    },
     AppChoice {
         handle: String,
         app_name: String,
@@ -1075,7 +1186,8 @@ pub struct UsbDeviceViewRow {
 impl DialogView {
     pub fn handle(&self) -> &str {
         match self {
-            Self::AppChoice { handle, .. }
+            Self::ShortcutStep { handle, .. }
+            | Self::AppChoice { handle, .. }
             | Self::Review { handle, .. }
             | Self::ShortcutBindings { handle, .. }
             | Self::LauncherReview { handle, .. }
@@ -1087,6 +1199,7 @@ impl DialogView {
     }
     pub fn title(&self) -> String {
         match self {
+            Self::ShortcutStep { title, .. } => title.clone(),
             Self::AppChoice { .. } => "Choose an application".into(),
             Self::Review { title, .. } => title.clone(),
             Self::ShortcutBindings { .. } => "Set global shortcuts".into(),
@@ -1099,7 +1212,10 @@ impl DialogView {
     }
     pub fn app_name(&self) -> &str {
         match self {
-            Self::AppChoice { app_name, .. }
+            Self::ShortcutStep {
+                shortcut: app_name, ..
+            }
+            | Self::AppChoice { app_name, .. }
             | Self::Review { app_name, .. }
             | Self::ShortcutBindings { app_name, .. }
             | Self::LauncherReview { app_name, .. }
@@ -1111,7 +1227,9 @@ impl DialogView {
     }
     pub fn detail(&self) -> &str {
         match self {
-            Self::AppChoice { detail, .. } | Self::Review { detail, .. } => detail,
+            Self::ShortcutStep { detail, .. }
+            | Self::AppChoice { detail, .. }
+            | Self::Review { detail, .. } => detail,
             Self::ShortcutBindings { .. } => {
                 "Select a row, then press the shortcut. Tilo and active app shortcuts cannot be claimed. Backspace clears a row."
             }
@@ -1124,7 +1242,9 @@ impl DialogView {
     }
     pub fn choices(&self) -> &[String] {
         match self {
-            Self::AppChoice { choices, .. } | Self::ActionGrant { choices, .. } => choices,
+            Self::AppChoice { choices, .. }
+            | Self::ActionGrant { choices, .. }
+            | Self::ShortcutStep { choices, .. } => choices,
             Self::Authentication { identities, .. } => identities,
             Self::Review { .. }
             | Self::ShortcutBindings { .. }
@@ -1136,7 +1256,8 @@ impl DialogView {
     pub fn shortcut_rows(&self) -> &[ShortcutBindingRow] {
         match self {
             Self::ShortcutBindings { rows, .. } => rows,
-            Self::AppChoice { .. }
+            Self::ShortcutStep { .. }
+            | Self::AppChoice { .. }
             | Self::Review { .. }
             | Self::LauncherReview { .. }
             | Self::UsbDevices { .. }
@@ -1162,12 +1283,15 @@ impl DialogView {
             Self::Authentication { .. } => "authentication",
             Self::NetworkSecrets { .. } => "network_secrets",
             Self::ActionGrant { .. } => "action_grant",
+            Self::ShortcutStep { .. } => "shortcut_step",
         }
     }
     pub fn selectable_count(&self) -> usize {
         match self {
             Self::ShortcutBindings { rows, .. } => rows.len(),
-            Self::AppChoice { choices, .. } | Self::ActionGrant { choices, .. } => choices.len(),
+            Self::AppChoice { choices, .. }
+            | Self::ActionGrant { choices, .. }
+            | Self::ShortcutStep { choices, .. } => choices.len(),
             Self::UsbDevices { devices, .. } => devices.len(),
             Self::Authentication { identities, .. } => identities.len(),
             Self::Review { .. } | Self::LauncherReview { .. } | Self::NetworkSecrets { .. } => 0,
@@ -1176,6 +1300,7 @@ impl DialogView {
     pub fn confirm_label(&self) -> &str {
         match self {
             Self::AppChoice { .. } => "Open",
+            Self::ShortcutStep { confirm_label, .. } => confirm_label,
             Self::Review { confirm_label, .. } => confirm_label,
             Self::ShortcutBindings { .. } => "Save shortcuts",
             Self::LauncherReview { confirm_label, .. } => confirm_label,
@@ -1207,6 +1332,13 @@ impl DialogView {
                 editable_name: *editable_name,
                 icon_choices,
                 editable_icon: *editable_icon,
+            }),
+            // A shortcut's text answer is edited in the same field.
+            Self::ShortcutStep { field: Some(_), .. } => Some(LauncherEditorView {
+                name: "",
+                editable_name: true,
+                icon_choices: &[],
+                editable_icon: false,
             }),
             _ => None,
         }
@@ -1300,6 +1432,11 @@ impl PortalDialogController {
             entry_error: None,
         }
     }
+    /// The queue this controller shows sheets from.
+    pub fn queue(&self) -> &PortalDialogQueue {
+        &self.queue
+    }
+
     pub fn pump(&mut self) -> bool {
         // A sheet its requester withdrew (a portal `Close`, polkit's or
         // NetworkManager's cancel) is gone from the queue: let go of it and
@@ -1392,6 +1529,13 @@ impl PortalDialogController {
             return false;
         };
         let done = match &view {
+            DialogView::ShortcutStep { choices, .. } => self.queue.finish_shortcut_step(
+                view.handle(),
+                ShortcutStepDecision::Confirmed {
+                    choice: (!choices.is_empty()).then_some(self.selected),
+                    text: std::mem::take(&mut self.launcher_name),
+                },
+            ),
             DialogView::AppChoice { choices, .. } => choices
                 .get(self.selected)
                 .cloned()
@@ -1475,6 +1619,9 @@ impl PortalDialogController {
             return false;
         };
         let done = match &view {
+            DialogView::ShortcutStep { .. } => self
+                .queue
+                .finish_shortcut_step(view.handle(), ShortcutStepDecision::Cancelled),
             DialogView::AppChoice { .. } => self.queue.finish_choice(view.handle(), None),
             DialogView::Review { .. } => self
                 .queue
@@ -1724,6 +1871,12 @@ impl PortalDialogController {
                 }
                 true
             }
+            Key::Named(NamedKey::Space) => {
+                if self.launcher_name.len() < 255 {
+                    self.launcher_name.push(' ');
+                }
+                true
+            }
             Key::Character(text) => {
                 let accepted: String = text.chars().filter(|ch| !ch.is_control()).collect();
                 if !accepted.is_empty()
@@ -1907,6 +2060,20 @@ impl PortalDialogController {
         self.view()
             .is_some_and(|view| view.launcher_editor().is_some())
             .then_some(self.launcher_icon)
+    }
+
+    /// The editable field's text as the sheet shows it: a secret answer
+    /// is masked.
+    pub fn field_display(&self) -> Option<String> {
+        let view = self.view()?;
+        view.launcher_editor()?;
+        Some(match &view {
+            DialogView::ShortcutStep {
+                field: Some(ShortcutStepField { masked: true }),
+                ..
+            } => "•".repeat(self.launcher_name.chars().count()),
+            _ => self.launcher_name.clone(),
+        })
     }
 
     pub fn launcher_name_focused(&self) -> bool {

@@ -150,11 +150,21 @@ impl WindowAttributesExtWayland for WindowAttributes {
 pub trait MonitorHandleExtWayland {
     /// Returns the inner identifier of the monitor.
     fn native_id(&self) -> u32;
+
+    /// The display's physical size in millimetres, when the compositor
+    /// reports one. Lets a client tell a 14" panel from a 65" television
+    /// that happen to share a resolution.
+    fn physical_size_mm(&self) -> Option<(u32, u32)>;
 }
 
 impl MonitorHandleExtWayland for MonitorHandle {
     #[inline]
     fn native_id(&self) -> u32 {
         self.inner.native_identifier()
+    }
+
+    #[inline]
+    fn physical_size_mm(&self) -> Option<(u32, u32)> {
+        self.inner.physical_size_mm()
     }
 }

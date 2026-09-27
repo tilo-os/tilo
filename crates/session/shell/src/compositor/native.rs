@@ -1919,6 +1919,11 @@ impl ControlState for FrameBuilderControlState<'_> {
             // Each tab pill's artwork: `toplevel:` when the window set its
             // own, `theme:` for its application's icon.
             "tab_icons": tab_icons_json(&chrome.tree()),
+            // The Alt+Tab switcher while it is open: its windows in order,
+            // the selected one, and whether each card shows a live preview
+            // (`live`), its app mark because the app holds secrets
+            // (`withheld`), or its app mark for now (`none`).
+            "window_switcher": self.fb.host().window_switcher_state_json(),
             // Nested resource search is a visible place in the palette, not
             // merely provider-internal state. Expose the authenticated route
             // and label so agents and accessibility tooling can tell exactly
@@ -2751,6 +2756,11 @@ fn execute_planned_action(
             }
             // Mutate the modifier snapshot directly — the host reads it on the next chord dispatch, no event needed.
             apply_modifier_mask(ctx, mask);
+            // No key event carries this change, so a gesture held open by a
+            // modifier (Alt+Tab) hears the release here.
+            if fb.host_mut().note_modifiers(mask) {
+                fb.host_mut().flush_active_tab_writeback();
+            }
         }
         PlannedAction::Snapshot { path } => {
             // Re-render into a fresh OffscreenRenderer rather than tap a backend-cached
@@ -6489,6 +6499,27 @@ pub fn run() {
                 frame_builder.host_mut().open_portable_identity_backup()
             });
         }
+        // A pen goes to a tablet-aware client directly and stands in for the
+        // pointer everywhere else, so it expands into ordinary input here,
+        // in order, before the batch is dispatched.
+        if pending_events
+            .iter()
+            .any(|event| matches!(event, BackendEvent::Tablet(_)))
+        {
+            for event in std::mem::take(&mut pending_events) {
+                match event {
+                    BackendEvent::Tablet(input) => {
+                        pending_events.extend(client_input::route_tablet_event(
+                            &mut state,
+                            &frame_builder,
+                            &input,
+                            session.is_locked(),
+                        ));
+                    }
+                    other => pending_events.push_back(other),
+                }
+            }
+        }
         let had_backend_events = !pending_events.is_empty();
         let mut session_changed = false;
         let mut accessibility_changed = false;
@@ -6733,19 +6764,27 @@ pub fn run() {
                             spatial_control = None;
                         }
                         session_changed = true;
-                    } else if state.pointer_lock.is_engaged()
+                    } else if (state.pointer_lock.is_engaged()
+                        || state.shortcut_inhibit.is_active())
                         && crate::compositor::pointer_lock::is_release_chord(
                             wev,
                             test_control_ctx.modifiers,
                         )
                     {
                         // Ctrl+Alt+Esc: always gets the pointer back from a
-                        // game that locked or confined it — ahead of the
-                        // client router, so the game cannot swallow it.
+                        // game that locked or confined it, and the shell
+                        // shortcuts back from an app that captured them —
+                        // ahead of the client router, so the app cannot
+                        // swallow it.
                         if let Some(change) = state.release_pointer_constraint() {
                             apply_pointer_constraint_change(backend.as_mut(), change);
                             frame_builder.with_chrome(|chrome| {
                                 chrome.show_osd(crate::shell::osd::Osd::pointer_held(false));
+                            });
+                        }
+                        if state.suspend_shortcut_inhibit() {
+                            frame_builder.with_chrome(|chrome| {
+                                chrome.show_osd(crate::shell::osd::Osd::keys_captured(false));
                             });
                         }
                         session_changed = true;
@@ -7027,8 +7066,10 @@ pub fn run() {
                     frame_builder.with_chrome(|st| st.flash_visual_alert(Instant::now()));
                     session_changed = true;
                 }
-                BackendEvent::Redraw => {
+                BackendEvent::Redraw | BackendEvent::Tablet(_) => {
                     // Redraw is implicit: the native loop paints every tick.
+                    // Pen events were expanded into client or pointer input
+                    // before the batch.
                 }
             }
         }
@@ -7695,6 +7736,14 @@ pub fn run() {
                 injected_redraw_pending = true;
             }
             apply_pointer_constraint_change(backend.as_mut(), change);
+        }
+        let inhibit_allowed = !session.is_locked()
+            && !crate::shell::input_policy::chrome_captures_input(&frame_builder);
+        if state.sync_shortcut_inhibit(inhibit_allowed) == Some(true) {
+            frame_builder.with_chrome(|chrome| {
+                chrome.show_osd(crate::shell::osd::Osd::keys_captured(true));
+            });
+            injected_redraw_pending = true;
         }
 
         // Per-output HiDPI: tell each client the scale of its current display.
@@ -9253,7 +9302,8 @@ fn sync_quick_settings_from_osd(
         | crate::shell::osd::OsdKind::PointerHeld { .. }
         | crate::shell::osd::OsdKind::MouseKeys { .. }
         | crate::shell::osd::OsdKind::Magnifier { .. }
-        | crate::shell::osd::OsdKind::InputSource(_) => {}
+        | crate::shell::osd::OsdKind::InputSource(_)
+        | crate::shell::osd::OsdKind::KeysCaptured { .. } => {}
     }
 }
 
@@ -11767,7 +11817,8 @@ fn apply_shell_gesture(
 }
 
 /// Resolve an xdg fullscreen request to one live backend output and paint it
-/// above the normal tiled scene.  The requested `wl_output` wins; if it was
+/// above the normal tiled scene.  A compositor pin (the presenter view beside
+/// an audience surface) wins, then the requested `wl_output`; if it was
 /// removed, use the output currently containing the window's centre, then the
 /// first live output as a deterministic hotplug fallback.
 /// The full-screen chord: the focused Wayland client enters or leaves
@@ -11811,10 +11862,12 @@ fn reconcile_fullscreen_overlay(
         frame.set_fullscreen_surface(None);
         return;
     };
-    let requested_id = target
-        .requested_output
-        .as_ref()
-        .and_then(|output| globals.id_for_resource(output));
+    let requested_id = target.pinned_output.or_else(|| {
+        target
+            .requested_output
+            .as_ref()
+            .and_then(|output| globals.id_for_resource(output))
+    });
     let current_rect = frame.foreign_surface_rect(target.surface_id);
     let centre = current_rect.map(|rect| rect.center());
     let output = select_fullscreen_output(requested_id, centre, outputs);
@@ -11825,7 +11878,9 @@ fn reconcile_fullscreen_overlay(
     // Logical, like every other configure: a 2x output's fullscreen client
     // is asked for half its pixels and renders them at scale 2.
     let size = size_to_signed(output.logical_size());
-    if target.configured_size != Some(size) {
+    // A compositor-placed presenter view is sized through its pinned
+    // placement by the ordinary configure pass, never told it is fullscreen.
+    if target.pinned_output.is_none() && target.configured_size != Some(size) {
         target.surface.with_pending_state(|pending| {
             pending.states.set(
                 smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Fullscreen,

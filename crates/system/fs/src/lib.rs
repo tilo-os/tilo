@@ -26,6 +26,8 @@ mod canonical_frame;
 pub mod caps_file;
 #[cfg(feature = "filesystem")]
 pub mod clock;
+#[cfg(all(feature = "filesystem", target_os = "linux"))]
+pub mod cloud;
 #[cfg(feature = "filesystem")]
 pub mod conflict;
 #[cfg(feature = "filesystem")]

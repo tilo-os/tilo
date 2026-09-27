@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use reqwest::blocking::{Client, RequestBuilder, Response};
-use reqwest::header::{CONTENT_TYPE, ETAG, IF_MATCH, IF_NONE_MATCH};
+use reqwest::header::{CONTENT_LENGTH, CONTENT_TYPE, ETAG, IF_MATCH, IF_NONE_MATCH, RANGE};
 use reqwest::{IntoUrl, Method};
 use zeroize::Zeroizing;
 
@@ -23,10 +23,11 @@ use crate::multistatus::{self, Limits, Multistatus, XmlError};
 
 const XML_CONTENT_TYPE: &str = "application/xml; charset=utf-8";
 
-/// HTTP Basic credentials, zeroized on drop.
+/// HTTP Basic credentials or an `OAuth2` bearer token, zeroized on drop.
 pub struct Credentials {
     username: String,
     password: Zeroizing<String>,
+    bearer: bool,
 }
 
 impl Credentials {
@@ -34,6 +35,16 @@ impl Credentials {
         Self {
             username: username.into(),
             password: Zeroizing::new(password.into()),
+            bearer: false,
+        }
+    }
+
+    /// `Authorization: Bearer <token>`.
+    pub fn bearer(token: impl Into<String>) -> Self {
+        Self {
+            username: String::new(),
+            password: Zeroizing::new(token.into()),
+            bearer: true,
         }
     }
 }
@@ -42,6 +53,7 @@ impl fmt::Debug for Credentials {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Credentials")
             .field("username", &self.username)
+            .field("bearer", &self.bearer)
             .finish_non_exhaustive()
     }
 }
@@ -105,6 +117,25 @@ pub enum Precondition<'a> {
     IfMatch(&'a str),
     /// `If-None-Match: *`: create only, never overwrite.
     IfNoneMatchAny,
+}
+
+/// A request body for [`DavClient::send`].
+pub enum Body {
+    Empty,
+    Bytes(Vec<u8>),
+    /// A streamed body of exactly `len` bytes, sent with that
+    /// `Content-Length` and never buffered whole.
+    Reader(Box<dyn Read + Send>, u64),
+}
+
+impl fmt::Debug for Body {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Empty => f.write_str("Empty"),
+            Self::Bytes(bytes) => write!(f, "Bytes({})", bytes.len()),
+            Self::Reader(_, len) => write!(f, "Reader({len})"),
+        }
+    }
 }
 
 /// Transport and bounded-read failures. HTTP statuses are not errors.
@@ -271,9 +302,63 @@ impl DavClient {
         send(apply(request, precondition))
     }
 
+    /// `GET` of `range` (a half-open byte range; the whole resource when
+    /// `None`) under `precondition`. A server that ignores ranges answers
+    /// 200 with the whole body; check [`DavResponse::content_range`].
+    ///
+    /// # Errors
+    /// On transport failure.
+    pub fn get_range(
+        &self,
+        url: impl IntoUrl,
+        range: Option<std::ops::Range<u64>>,
+        precondition: Precondition<'_>,
+    ) -> Result<DavResponse, Error> {
+        let mut request = self.request(Method::GET, url);
+        if let Some(range) = range.filter(|range| range.end > range.start) {
+            request = request.header(
+                RANGE,
+                format!("bytes={}-{}", range.start, range.end.saturating_sub(1)),
+            );
+        }
+        send(apply(request, precondition))
+    }
+
+    /// Any method with extra headers and a body. For protocol extensions
+    /// (chunked upload sessions, `COPY`) the typed methods do not cover.
+    ///
+    /// # Errors
+    /// On transport failure, or an invalid method token.
+    pub fn send(
+        &self,
+        method_name: &str,
+        url: impl IntoUrl,
+        headers: &[(&str, &str)],
+        body: Body,
+        precondition: Precondition<'_>,
+    ) -> Result<DavResponse, Error> {
+        let method = Method::from_bytes(method_name.as_bytes())
+            .map_err(|_| Error::Read(std::io::Error::other("invalid HTTP method")))?;
+        let mut request = self.request(method, url);
+        for (name, value) in headers {
+            request = request.header(*name, *value);
+        }
+        request = match body {
+            Body::Empty => request,
+            Body::Bytes(bytes) => request.body(bytes),
+            Body::Reader(reader, len) => request
+                .header(CONTENT_LENGTH, len)
+                .body(reqwest::blocking::Body::sized(reader, len)),
+        };
+        send(apply(request, precondition))
+    }
+
     fn request(&self, method: Method, url: impl IntoUrl) -> RequestBuilder {
         let request = self.http.request(method, url);
         match &self.credentials {
+            Some(credentials) if credentials.bearer => {
+                request.bearer_auth(credentials.password.as_str())
+            }
             Some(credentials) => {
                 request.basic_auth(&credentials.username, Some(credentials.password.as_str()))
             }
@@ -300,6 +385,37 @@ impl DavResponse {
             .get(ETAG)
             .and_then(|value| value.to_str().ok())
             .map(ToOwned::to_owned)
+    }
+
+    /// A response header as visible ASCII.
+    pub fn header(&self, name: &str) -> Option<String> {
+        self.inner
+            .headers()
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .map(ToOwned::to_owned)
+    }
+
+    /// The declared body length.
+    pub fn content_length(&self) -> Option<u64> {
+        self.inner.content_length()
+    }
+
+    /// `Content-Range: bytes start-end/total` as `(start..end+1, total)`.
+    pub fn content_range(&self) -> Option<(std::ops::Range<u64>, Option<u64>)> {
+        let value = self.header("content-range")?;
+        let spec = value.trim().strip_prefix("bytes ")?;
+        let (range, total) = spec.split_once('/')?;
+        let (start, end) = range.split_once('-')?;
+        let start: u64 = start.trim().parse().ok()?;
+        let end: u64 = end.trim().parse().ok()?;
+        let total = total.trim().parse().ok();
+        (end >= start).then(|| (start..end.saturating_add(1), total))
+    }
+
+    /// The body as a stream. The caller bounds how much it reads.
+    pub fn into_reader(self) -> Box<dyn Read + Send> {
+        Box::new(self.inner)
     }
 
     /// Read at most `limit` bytes. A server that declares or streams more is
@@ -443,6 +559,42 @@ mod tests {
             assert_eq!(moved.header("destination"), Some(destination.as_str()));
             assert_eq!(moved.header("overwrite"), Some("F"));
         }
+    }
+
+    #[test]
+    fn ranged_gets_and_streamed_puts() {
+        let server = Responder::start(vec![
+            Reply::status(206)
+                .header("Content-Range", "bytes 2-4/10")
+                .body("cde"),
+            Reply::status(201).header("ETag", "\"n\""),
+        ]);
+        let client = client();
+        let url = format!("{}/f", server.url());
+        let ranged = client
+            .get_range(&url, Some(2..5), Precondition::IfMatch("\"e\""))
+            .unwrap();
+        assert_eq!(ranged.content_range(), Some((2..5, Some(10))));
+        let mut body = String::new();
+        ranged.into_reader().read_to_string(&mut body).unwrap();
+        assert_eq!(body, "cde");
+        let put = client
+            .send(
+                "PUT",
+                &url,
+                &[("OC-Total-Length", "5")],
+                Body::Reader(Box::new(std::io::Cursor::new(b"hello".to_vec())), 5),
+                Precondition::IfNoneMatchAny,
+            )
+            .unwrap();
+        assert_eq!(put.etag().as_deref(), Some("\"n\""));
+        let get = server.next_request();
+        assert_eq!(get.header("range"), Some("bytes=2-4"));
+        assert_eq!(get.header("if-match"), Some("\"e\""));
+        let upload = server.next_request();
+        assert_eq!(upload.header("content-length"), Some("5"));
+        assert_eq!(upload.header("oc-total-length"), Some("5"));
+        assert_eq!(upload.body, b"hello");
     }
 
     #[test]
