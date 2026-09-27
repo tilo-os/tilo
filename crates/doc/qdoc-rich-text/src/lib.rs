@@ -43,6 +43,18 @@ pub struct ClipBlock {
     pub level: Option<i64>,
     pub ordered: Option<bool>,
     pub align: Option<String>,
+    /// The block's other attributes (a checklist item's `checked`, a code
+    /// line's `lang`), set as they are.
+    #[serde(default)]
+    pub attrs: std::collections::BTreeMap<String, ClipAttr>,
+}
+
+/// One block attribute a [`ClipBlock`] carries.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
+pub enum ClipAttr {
+    Bool(bool),
+    Int(i64),
+    Str(String),
 }
 
 /// The rich-text resource. See the module docs.

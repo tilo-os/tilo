@@ -4718,6 +4718,61 @@ fn comments_highlight_open_threads_and_delete_cleanly() {
             wp.thread_snapshot.is_none(),
             "interactive panel reads current review data"
         );
+
+        // The reply field is the SDK editor: plain Enter starts a paragraph,
+        // Ctrl+Enter sends the reply as written, and the field clears.
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        {
+            // The thread panel paints in the top layer, which lays out its field.
+            let mut tr = TextRenderer::new();
+            wp.draw_overlay(
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut tr,
+                &Theme::dark(),
+                &PresenceCtx::empty(),
+            );
+        }
+        for ch in "Done".chars() {
+            type_char(&mut wp, &mut state, ch);
+        }
+        press_named(&mut wp, &mut state, NamedKey::Enter);
+        for ch in "Thanks".chars() {
+            type_char(&mut wp, &mut state, ch);
+        }
+        assert_eq!(
+            wp.thread_reply.widget().source().plain_text(),
+            "Done\nThanks"
+        );
+        press_named_with_modifiers(
+            &mut wp,
+            &mut state,
+            NamedKey::Enter,
+            Modifiers::from(winit::keyboard::ModifiersState::CONTROL),
+        );
+        let after = snapshot(&state, &c);
+        let thread = after.comments.iter().find(|cm| cm.id == comment).unwrap();
+        assert_eq!(thread.replies.len(), 2, "the reply was sent");
+        let reply = thread
+            .replies
+            .iter()
+            .find(|reply| reply.author != "Bea")
+            .unwrap();
+        let sent: Vec<&str> = reply
+            .blocks
+            .iter()
+            .map(|block| block.text.as_str())
+            .collect();
+        assert_eq!(sent, ["Done", "Thanks"], "sent as its paragraphs");
+        assert!(
+            wp.thread_reply.widget().source().is_empty(),
+            "the field clears"
+        );
+        assert_eq!(wp.thread_comment.as_deref(), Some(comment.as_str()));
+
+        // Escape in the field closes the thread.
+        press_named(&mut wp, &mut state, NamedKey::Escape);
+        assert!(wp.thread_comment.is_none());
     }
 
     // Phase: deleting_comment_removes_it_and_clears_the_highlight.

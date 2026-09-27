@@ -43,9 +43,11 @@
 
 mod blocks;
 mod convert;
+mod draft;
 mod edit;
 mod source;
 mod surface;
+mod view;
 
 use qdoc_rich_text::{RichText, RichTextAction};
 use ui::automerge::ObjId;
@@ -54,9 +56,11 @@ use ui::tilo_resource::{Doc, Resource};
 use ui::widget::Element;
 
 pub use blocks::{blocks_under, fill_under};
-pub use convert::document_mark;
+pub use convert::{clip_block, content_of, document_mark};
+pub use draft::Draft;
 pub use source::{Hosted, RichTextField, RichTextSource};
-pub use surface::RichTextSurface;
+pub use surface::{FieldOutcome, RichTextSurface, SubmitKey};
+pub use view::RichTextView;
 
 /// Rich text in a view: `cx.rich_text()`.
 pub trait RichTextViews {

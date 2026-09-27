@@ -170,6 +170,7 @@ fn long_document(paragraphs: usize) -> TestApp<WordProcessorApp> {
             level: (n % 40 == 0).then_some(2),
             ordered: None,
             align: None,
+            attrs: std::collections::BTreeMap::default(),
         })
         .collect();
     let first = app.read_document(|doc| {
