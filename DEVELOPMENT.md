@@ -1450,6 +1450,11 @@ manifest and rejects missing, duplicate, excluded, or stale workspace members.
 Nested fixture workspaces and explicit `[workspace].exclude` entries are ignored.
 Compilation and tests run in CI (`.forgejo/workflows/check.yml`).
 
+The hook runs rustfmt on the staged `.rs` files, except `vendor/` and any
+generated source: a file with an `@generated` marker in its first five lines
+(the capnpc-rust bindings, the tilo-app registries). Such a file is exactly
+what its generator emits; regenerate it rather than formatting it.
+
 The hook refuses a staged `Cargo.lock` change with no `Cargo.toml` beside it,
 except a declared single-crate update. Name the `cargo update` you ran (several
 separated by `;`):
