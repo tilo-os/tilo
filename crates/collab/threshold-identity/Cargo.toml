@@ -65,6 +65,7 @@ sha2.workspace = true
 # inside frost.
 ed25519-dalek = { workspace = true, features = ["serde", "rand_core"] }
 zeroize.workspace = true
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 # Same dep that tilo-collab-types uses for ArtifactId / ChannelId /

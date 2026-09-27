@@ -21,6 +21,7 @@ tilo-automerge.workspace = true
 uuid.workspace = true
 tilo-actions = { path = "../../collab/actions" }
 tilo-resource-macros = { path = "../tilo-resource-macros" }
+workspace-hack = { version = "0.1" }
 
 [[test]]
 name = "it"

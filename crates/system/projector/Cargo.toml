@@ -18,6 +18,7 @@ rand.workspace = true
 tokio.workspace = true
 tilo-rt.workspace = true
 zbus = { workspace = true, features = ["tokio", "p2p"] }
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 futures-util.workspace = true

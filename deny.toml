@@ -2,6 +2,12 @@
 #
 # Run: cargo deny check
 
+# crates/workspace-hack (cargo hakari) names every feature-unified crate only to
+# fix its features. Pruned from the graph, deny sees the dependency edges members
+# really have, so `workspace` scoped advisories stay about direct dependencies.
+[graph]
+exclude = ["workspace-hack"]
+
 [advisories]
 # Both remaining quick-xml versions are selected by current upstream releases:
 # citationberg (Typst 0.15.1) uses 0.38 and zbus_xml (AccessKit 0.34) uses 0.39.

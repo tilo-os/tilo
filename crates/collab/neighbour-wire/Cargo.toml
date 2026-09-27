@@ -21,6 +21,7 @@ collab-types = { path = "../collab-types" }
 tilo-user-identity = { path = "../tilo-user-identity" }
 # Host retention channels are BLAKE3 digests of the message route.
 blake3.workspace = true
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 # The production codec; tests pin every variant's exact encoding.

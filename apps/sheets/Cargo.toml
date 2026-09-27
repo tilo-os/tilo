@@ -38,6 +38,7 @@ anyhow.workspace = true
 qdoc = { path = "../../crates/doc/qdoc" }
 qdoc-codecs = { path = "../../crates/doc/qdoc-codecs", default-features = false, features = ["xlsx", "ods"] }
 uuid.workspace = true
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }

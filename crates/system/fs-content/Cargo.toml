@@ -11,6 +11,7 @@ blake3.workspace = true
 fastcdc.workspace = true
 serde.workspace = true
 postcard = { workspace = true, features = ["use-std"] }
+workspace-hack = { version = "0.1" }
 
 [lints]
 workspace = true

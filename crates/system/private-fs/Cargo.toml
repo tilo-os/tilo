@@ -8,6 +8,7 @@ description = "User-owned private files with native ownership and access checks"
 
 [dependencies]
 atomic-file = { path = "../atomic-file" }
+workspace-hack = { version = "0.1" }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
