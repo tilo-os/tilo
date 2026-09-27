@@ -69,11 +69,11 @@ fn run_calendar(directory: &Path, source: Option<&Path>, name: &str) -> serde_js
         if let Some(status) = child.try_wait().unwrap() {
             break status;
         }
-        if started.elapsed() > std::time::Duration::from_secs(30) {
+        if started.elapsed() > tilo_test_env::hang_bound() {
             child.kill().unwrap();
             child.wait().unwrap();
             panic!(
-                "Calendar {name} timed out: {}",
+                "Calendar {name} never exited within the hang bound: {}",
                 std::fs::read_to_string(&stderr).unwrap()
             );
         }

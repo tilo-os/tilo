@@ -174,7 +174,7 @@ fn drive_peer_and_type(
     head: &str,
 ) -> (usize, bool, String) {
     peer.set_read_timeout(Some(Duration::from_millis(200)));
-    let deadline = Instant::now() + Duration::from_secs(20);
+    let deadline = tilo_test_env::hang_deadline();
     let mut typed = 0usize;
     let mut table_done = false;
     let mut invocation_actor = None;
@@ -370,11 +370,7 @@ fn a_person_typing_and_the_agent_working_both_land() {
     let dir = tempfile::tempdir().unwrap();
     let sock = dir.path().join("collab.sock");
     let _broker = typed_peer::spawn_with_agent_actions(&sock, &[(APP, "insert-table")]);
-    let started = Instant::now();
-    while !sock.exists() {
-        assert!(started.elapsed() < HANG_BOUND, "relay never bound");
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    tilo_test_env::wait_until("the relay to bind its socket", || sock.exists());
 
     let room = typed_peer::room();
 
@@ -417,7 +413,7 @@ fn a_person_typing_and_the_agent_working_both_land() {
     };
     let agent = std::thread::spawn(move || {
         let mut s = Session::connect(cfg).expect("agent connects");
-        s.run_until(Instant::now() + Duration::from_secs(20))
+        s.run_until(tilo_test_env::hang_deadline())
             .expect("agent session")
     });
 

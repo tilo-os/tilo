@@ -285,7 +285,9 @@ fn rejected_as(answer: &Answer, name: &str) -> bool {
 
 #[test]
 fn pairing_questions_are_answered_only_in_the_shells_protected_dialog() {
-    let mut rig = Rig::new(Duration::from_secs(30));
+    // Every question here is answered; none may run into the unanswered
+    // timeout, however slow the runner.
+    let mut rig = Rig::new(tilo_test_env::hang_bound());
 
     // Phase `the_agent_is_the_default_agent`.
     assert_eq!(
