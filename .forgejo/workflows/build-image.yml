@@ -74,6 +74,18 @@ concurrency:
   group: ${{ (startsWith(github.ref, 'refs/tags/v') || (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.publish == 'true')))) && 'tilo-os-image-series' || format('tilo-os-image-validate-{0}', github.ref) }}
   cancel-in-progress: false
 
+env:
+  # The compiler cache belongs to this repository: its key is a repository
+  # secret, not runner environment, because the runners serve every repository.
+  SCCACHE_BUCKET: tilo-ci-sccache-125650147312-us-west-2
+  SCCACHE_REGION: us-west-2
+  SCCACHE_ENDPOINT: https://s3.us-west-2.amazonaws.com
+  SCCACHE_S3_USE_SSL: "true"
+  SCCACHE_S3_KEY_PREFIX: forgejo-runners/v1
+  SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
+  AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_AWS_SECRET_ACCESS_KEY }}
+
 jobs:
   plan:
     runs-on: runner
@@ -978,11 +990,10 @@ jobs:
           echo "TILO_GENERATION=$gen" >> "$GITHUB_ENV"
           echo "::notice::building generation $gen"
 
-      # The broker gives every CI pool (on-prem and cloud) the same S3
-      # compiler cache and a bucket-scoped credential. A cluster-local
-      # endpoint neither resolves from cloud pools nor accepts that
-      # credential, so the image build uses exactly what the runner provides.
-      # A missing cache fails here instead of compiling uncached for hours.
+      # Every CI job gets the same S3 compiler cache and a bucket-scoped
+      # credential from the workflow env, so the image build uses exactly
+      # that. A missing cache fails here instead of compiling uncached for
+      # hours.
       #
       # A publication never uses it. That credential can write every object
       # in the bucket, and every CI job and agent sandbox holds it, so any of

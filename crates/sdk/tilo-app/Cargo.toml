@@ -45,7 +45,7 @@ ui-core = { package = "tilo-ui", path = "../ui-core", default-features = false }
 # `#[resource]` and `#[derive(Model)]` expansions resolve through the prelude.
 tilo-resource = { path = "../tilo-resource" }
 tilo-actions = { path = "../../collab/actions" }
-# A test's collaborator replica exchanges changes the way sync does.
+# Merging a collaborator's change in tests, the way sync does.
 tilo-automerge.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true

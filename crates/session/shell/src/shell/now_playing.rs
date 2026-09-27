@@ -224,6 +224,9 @@ pub enum OutputKind {
     Local,
     /// One of the person's certified devices.
     Device,
+    /// One of the person's speaker groups: the sound keeps playing here and
+    /// every ready speaker of the group plays it in sync.
+    SpeakerGroup,
 }
 
 /// One destination in the output picker. `token` is the destination's
@@ -253,7 +256,8 @@ fn player_session<'a>(
 }
 
 /// Every place the shown player's sound can go: this machine's outputs, then
-/// the person's devices this session can move to.
+/// the person's devices this session can move to, then the speaker groups
+/// with at least one ready speaker it can play on.
 #[must_use]
 pub fn output_targets(
     view: &DeviceFabricView,
@@ -291,6 +295,22 @@ pub fn output_targets(
                 current: false,
             }
         }));
+        targets.extend(
+            view.speaker_groups
+                .groups
+                .iter()
+                .filter(|group| group.ready_members() > 0)
+                .map(|group| OutputTarget {
+                    token:
+                        crate::shell::search::providers::continuity::speaker_group_media_action_id(
+                            &media.session_id,
+                            group.id,
+                        ),
+                    label: group.name.clone(),
+                    kind: OutputKind::SpeakerGroup,
+                    current: false,
+                }),
+        );
     }
     targets
 }
@@ -313,18 +333,30 @@ pub fn resolve_output(
         });
     }
     let media = player_session(view, player_bus, controller_of)?;
-    media
-        .targets
-        .iter()
-        .find(|target| {
-            crate::shell::search::providers::continuity::media_handoff_action_id(
-                &media.session_id,
-                target,
-            ) == token
-        })
-        .map(|target| DeviceFabricUiAction::HandoffMedia {
+    if let Some(target) = media.targets.iter().find(|target| {
+        crate::shell::search::providers::continuity::media_handoff_action_id(
+            &media.session_id,
+            target,
+        ) == token
+    }) {
+        return Some(DeviceFabricUiAction::HandoffMedia {
             session_id: media.session_id.clone(),
             target: target.clone(),
+        });
+    }
+    view.speaker_groups
+        .groups
+        .iter()
+        .filter(|group| group.ready_members() > 0)
+        .find(|group| {
+            crate::shell::search::providers::continuity::speaker_group_media_action_id(
+                &media.session_id,
+                group.id,
+            ) == token
+        })
+        .map(|group| DeviceFabricUiAction::PlayMediaOnSpeakerGroup {
+            session_id: media.session_id.clone(),
+            group: group.id,
         })
 }
 
@@ -558,6 +590,97 @@ pub(crate) mod tests {
                 .expect("one player");
             assert_eq!(view.seek_command(0.5), None);
         }
+    }
+
+    fn speaker_group(
+        seed: u8,
+        name: &str,
+        state: crate::shell::speaker_group::SpeakerMemberState,
+    ) -> crate::shell::speaker_group_runtime::SpeakerGroupView {
+        use crate::shell::speaker_group::{
+            EndpointSelector, SpeakerGroupId, SpeakerRole, SpeakerTrim, StereoSide,
+        };
+        crate::shell::speaker_group_runtime::SpeakerGroupView {
+            id: SpeakerGroupId([seed; 16]),
+            name: name.into(),
+            leader: DeviceId::new("desk").expect("device id"),
+            leader_label: "Desk speakers".into(),
+            led_locally: true,
+            members: vec![crate::shell::speaker_group_runtime::SpeakerMemberView {
+                device: DeviceId::new("desk").expect("device id"),
+                device_label: "Desk speakers".into(),
+                output: EndpointSelector([seed.wrapping_add(1); 16]),
+                output_label: None,
+                role: SpeakerRole::Stereo(StereoSide::Left),
+                trim: SpeakerTrim::default(),
+                state,
+            }],
+        }
+    }
+
+    #[test]
+    fn speaker_groups_are_output_targets_named_like_the_palette_and_revalidated() {
+        use crate::shell::speaker_group::{SpeakerGroupId, SpeakerMemberState};
+        let mut view = fabric();
+        view.speaker_groups.groups = vec![
+            speaker_group(0x51, "Living room", SpeakerMemberState::Ready),
+            speaker_group(0x61, "Kitchen", SpeakerMemberState::AwaitingConsent),
+        ];
+        let controller = |session: &str| {
+            (session == "so.tilo.music:mpris:abc").then(|| "org.mpris.MediaPlayer2.music".into())
+        };
+        let bus = Some("org.mpris.MediaPlayer2.music");
+        let targets = output_targets(&view, bus, &controller);
+        let groups = targets
+            .iter()
+            .filter(|target| target.kind == OutputKind::SpeakerGroup)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            groups
+                .iter()
+                .map(|target| (target.label.as_str(), target.current))
+                .collect::<Vec<_>>(),
+            vec![("Living room", false)],
+            "only a group with a ready speaker is offered"
+        );
+        let token = &groups[0].token;
+        assert_eq!(
+            token,
+            &crate::shell::search::providers::continuity::speaker_group_media_action_id(
+                "so.tilo.music:mpris:abc",
+                SpeakerGroupId([0x51; 16]),
+            ),
+            "the picker names the group by the continuity action id"
+        );
+        assert!(!token.contains("5151"), "{token} leaks the group id");
+
+        assert_eq!(
+            resolve_output(&view, token, bus, &controller),
+            Some(DeviceFabricUiAction::PlayMediaOnSpeakerGroup {
+                session_id: "so.tilo.music:mpris:abc".into(),
+                group: SpeakerGroupId([0x51; 16]),
+            })
+        );
+
+        let mut fresh = view.clone();
+        fresh.speaker_groups.groups[0].members[0].state = SpeakerMemberState::AwaitingConsent;
+        assert_eq!(
+            resolve_output(&fresh, token, bus, &controller),
+            None,
+            "a group with no ready speaker left is not routed to"
+        );
+        fresh.speaker_groups.groups.clear();
+        assert_eq!(resolve_output(&fresh, token, bus, &controller), None);
+        assert_eq!(
+            resolve_output(
+                &view,
+                token,
+                Some("org.mpris.MediaPlayer2.other"),
+                &controller
+            ),
+            None,
+            "another player's picker cannot send this session to the group"
+        );
     }
 
     #[test]

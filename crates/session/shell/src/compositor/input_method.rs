@@ -26,6 +26,12 @@
 //! current owner's kind, and the compositor disconnects the previous owner's
 //! connections when ownership moves, so a slow-exiting process can never hold
 //! the slot the new owner needs.
+//!
+//! An idle seat — nobody owns it — can be lent to the compositor itself for a
+//! single commit ([`TrustedInputMethod::Compositor`], see
+//! [`super::text_commit`]): text the shell inserts on the user's behalf, such
+//! as a picked emoji, reaches the focused field as an input method's commit,
+//! never as synthesised key events.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -42,6 +48,10 @@ pub enum TrustedInputMethod {
     OnScreenKeyboard,
     /// The composing input method for Chinese, Japanese and Korean.
     Composer,
+    /// The compositor's own in-process connection, which borrows an idle
+    /// seat for one commit. No socket accepts this kind: only the compositor
+    /// creates such a connection.
+    Compositor,
 }
 
 impl TrustedInputMethod {
@@ -49,6 +59,7 @@ impl TrustedInputMethod {
         match self {
             Self::OnScreenKeyboard => 1,
             Self::Composer => 2,
+            Self::Compositor => 3,
         }
     }
 
@@ -56,6 +67,7 @@ impl TrustedInputMethod {
         match code {
             1 => Some(Self::OnScreenKeyboard),
             2 => Some(Self::Composer),
+            3 => Some(Self::Compositor),
             _ => None,
         }
     }
@@ -118,9 +130,19 @@ impl SeatInputMethod {
 
     /// Whether a connection with `credential` may see and bind the
     /// input-method and virtual-keyboard globals. Public connections carry no
-    /// credential and never can.
+    /// credential and never can; the compositor's own connection only while
+    /// nobody owns the seat.
     pub fn admits(&self, credential: Option<TrustedInputMethod>) -> bool {
-        credential.is_some() && credential == self.get()
+        match (credential, self.get()) {
+            (None, _) => false,
+            (Some(TrustedInputMethod::Compositor), owner) => owner.is_none(),
+            (Some(kind), owner) => Some(kind) == owner,
+        }
+    }
+
+    /// Whether a connection of `kind` survives the seat moving to `owner`.
+    pub fn keeps(kind: TrustedInputMethod, owner: Option<TrustedInputMethod>) -> bool {
+        Some(kind) == owner || (kind == TrustedInputMethod::Compositor && owner.is_none())
     }
 }
 
@@ -131,9 +153,10 @@ pub const COMPOSER_EXECUTABLE: &str = "/usr/bin/fcitx5";
 /// Addons of the composer that Tilo does not use. Cloud Pinyin sends typed
 /// text to a remote server, the tray and panel addons need services the
 /// session does not run, the clipboard addon claims a global chord, and the
-/// X11/IBus/Fcitx4 frontends would claim buses and displays nobody asked for.
+/// IBus/Fcitx4 frontends would claim bus names nobody asked for. XIM stays:
+/// it serves X11 apps on the workspace displays the session connects it to.
 const DISABLED_COMPOSER_ADDONS: &str = "cloudpinyin,clipboard,kimpanel,notificationitem,\
-ibusfrontend,fcitx4frontend,xim,virtualkeyboard";
+ibusfrontend,fcitx4frontend,virtualkeyboard";
 
 /// What the composer needs from the session: its user, locale, session bus,
 /// and the directories its dictionaries and engines live in.
@@ -177,8 +200,9 @@ pub struct ComposerLaunch {
 }
 
 /// Describe the composer run for `engine`, typing on `layout` (an XKB source
-/// id, `layout` or `layout:variant`), connected to `socket` and configured
-/// from `config_home`. The configuration is regenerated on every start: the
+/// id, `layout` or `layout:variant`), connected to `socket`, configured from
+/// `config_home`, and reaching X11 workspace displays with the cookies in
+/// `x11_authority`. The configuration is regenerated on every start: the
 /// session owns which engine is active and how it is switched, so the
 /// composer's own switching chords are cleared (Super+Space is Tilo's
 /// search, Ctrl+Space is an application chord). User dictionaries stay in the
@@ -188,6 +212,7 @@ pub fn composer_launch(
     layout: &str,
     socket: &Path,
     config_home: &Path,
+    x11_authority: &Path,
 ) -> ComposerLaunch {
     let layout = layout.replace(':', "-");
     let profile = format!(
@@ -221,6 +246,7 @@ pub fn composer_launch(
             ("WAYLAND_DISPLAY".into(), socket.display().to_string()),
             ("XDG_CONFIG_HOME".into(), config_home.display().to_string()),
             ("XDG_SESSION_TYPE".into(), "wayland".into()),
+            ("XAUTHORITY".into(), x11_authority.display().to_string()),
         ],
         inherit: COMPOSER_INHERITED_ENV.to_vec(),
         files: vec![(dir.join("profile"), profile), (dir.join("config"), config)],
@@ -278,12 +304,30 @@ mod tests {
     }
 
     #[test]
+    fn only_an_idle_seat_is_lent_to_the_compositor() {
+        use TrustedInputMethod::{Composer, Compositor, OnScreenKeyboard};
+        let seat = SeatInputMethod::default();
+        assert!(seat.admits(Some(Compositor)), "nobody owns the seat");
+        assert!(SeatInputMethod::keeps(Compositor, None));
+        for owner in [OnScreenKeyboard, Composer] {
+            seat.set(Some(owner));
+            assert!(
+                !seat.admits(Some(Compositor)),
+                "{owner:?} owns the seat; its commits go through it"
+            );
+            assert!(!SeatInputMethod::keeps(Compositor, Some(owner)));
+            assert!(SeatInputMethod::keeps(owner, Some(owner)));
+        }
+    }
+
+    #[test]
     fn composer_runs_the_engine_on_the_private_display_without_cloud_or_chords() {
         let launch = composer_launch(
             InputMethodEngine::Mozc,
             "jp:kana",
             Path::new("/run/user/1000/tilo-im-1"),
             Path::new("/run/user/1000/tilo-session/input-method"),
+            Path::new("/run/user/1000/tilo-session/xwayland/composer-Xauthority"),
         );
         assert_eq!(launch.program, Path::new(COMPOSER_EXECUTABLE));
         let disabled = launch
@@ -293,6 +337,14 @@ mod tests {
             .nth(1)
             .expect("disabled addons");
         assert!(disabled.split(',').any(|addon| addon == "cloudpinyin"));
+        assert!(
+            !disabled.split(',').any(|addon| addon == "xim"),
+            "X11 apps compose through XIM"
+        );
+        assert!(launch.env.contains(&(
+            "XAUTHORITY".into(),
+            "/run/user/1000/tilo-session/xwayland/composer-Xauthority".into()
+        )));
         assert!(
             launch
                 .env

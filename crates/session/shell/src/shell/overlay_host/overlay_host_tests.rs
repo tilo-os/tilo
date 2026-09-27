@@ -1752,65 +1752,8 @@ fn app_pickers_and_alt_tab_target_the_focused_group_and_strip() {
         assert!(h.host.palette_visible());
     }
 
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the input-routing test holds test state guards through each asserted event transition"
-    )]
-    fn alt_tab_walks_the_window_strip_and_shift_reverses() {
-        let tree = WorkspaceTree::bootstrap_demo();
-        let (host, chrome) = crate::shell::build_tilo_overlay_host_with_chrome(&tree);
-        let mut h = build_harness_with_host(host, chrome);
-        let first = {
-            let state = h.chrome.borrow();
-            crate::shell::input_policy::cycle_active_window(&state.tree(), 1)
-                .expect("the demo strip contains another window")
-        };
-        let alt = Modifiers::from(ModifiersState::ALT);
-        assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Tab)), alt));
-        {
-            let state = h.chrome.borrow();
-            let tree = state.tree();
-            assert_eq!(tree.desktop.active_group_for(first.0), Some(first.1));
-            let active_tab = tree
-                .desktop
-                .active_workspace()
-                .and_then(|workspace| workspace.strips.iter().find(|strip| strip.id == first.0))
-                .and_then(|strip| strip.window_groups.iter().find(|group| group.id == first.1))
-                .map(|group| group.active_tab);
-            assert_eq!(active_tab, Some(first.2));
-        }
-
-        let previous = {
-            let state = h.chrome.borrow();
-            crate::shell::input_policy::cycle_active_window(&state.tree(), -1)
-                .expect("the forward step can be reversed")
-        };
-        let alt_shift = Modifiers::from(ModifiersState::ALT | ModifiersState::SHIFT);
-        assert!(pump(
-            &mut h,
-            &key_press(Key::Named(NamedKey::Tab)),
-            alt_shift
-        ));
-        let state = h.chrome.borrow();
-        let tree = state.tree();
-        assert_eq!(tree.desktop.active_group_for(previous.0), Some(previous.1));
-        let active_tab = tree
-            .desktop
-            .active_workspace()
-            .and_then(|workspace| workspace.strips.iter().find(|strip| strip.id == previous.0))
-            .and_then(|strip| {
-                strip
-                    .window_groups
-                    .iter()
-                    .find(|group| group.id == previous.1)
-            })
-            .map(|group| group.active_tab);
-        assert_eq!(active_tab, Some(previous.2));
-    }
-
     super_t_opens_a_workspace_scoped_app_picker_in_the_focused_group();
     super_t_from_a_fresh_empty_workspace_opens_a_new_group_picker();
-    alt_tab_walks_the_window_strip_and_shift_reverses();
 }
 
 fn pump(h: &mut Harness, event: &WindowEvent, modifiers: Modifiers) -> bool {

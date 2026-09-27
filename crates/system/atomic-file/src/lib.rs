@@ -234,6 +234,25 @@ pub fn write_with_mode(path: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
     write_inner(path, bytes, Some(mode))
 }
 
+/// Replace `path` with `bytes` for data that can be recreated, such as a cache entry: readers
+/// still see either the old file or the new one, never a partial one, but nothing is synced.
+/// After a crash `path` may hold the old contents, the new ones, or a torn file, so the reader
+/// must validate what it finds. Skipping the syncs keeps a write from waiting for the
+/// filesystem to flush every other dirty page first.
+///
+/// # Errors
+///
+/// Returns an error if the temp file can't be created or written, or if the rename fails.
+pub fn write_regenerable(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    publish(
+        path,
+        bytes,
+        |tmp| open_temp(tmp, None),
+        Publish::ReplaceUnsynced,
+    )
+    .map(|_| ())
+}
+
 fn write_inner(path: &Path, bytes: &[u8], mode: Option<u32>) -> io::Result<()> {
     publish(path, bytes, |tmp| open_temp(tmp, mode), Publish::Replace).map(|_| ())
 }
@@ -244,6 +263,8 @@ enum Publish {
     Replace,
     /// Hard-link into place only while `path` is still absent.
     CreateNew,
+    /// Rename over `path` without syncing the file or its directory.
+    ReplaceUnsynced,
 }
 
 fn publish(
@@ -253,7 +274,10 @@ fn publish(
     how: Publish,
 ) -> io::Result<bool> {
     let (tmp, mut file) = create_temp(path, open)?;
-    let written = file.write_all(bytes).and_then(|()| file.sync_all());
+    let sync = how != Publish::ReplaceUnsynced;
+    let written = file
+        .write_all(bytes)
+        .and_then(|()| if sync { file.sync_all() } else { Ok(()) });
     drop(file);
     if let Err(error) = written {
         let _ = fs::remove_file(&tmp);
@@ -261,7 +285,7 @@ fn publish(
     }
 
     let published = match how {
-        Publish::Replace => fs::rename(&tmp, path),
+        Publish::Replace | Publish::ReplaceUnsynced => fs::rename(&tmp, path),
         Publish::CreateNew => fs::hard_link(&tmp, path),
     };
     if how == Publish::CreateNew || published.is_err() {
@@ -281,7 +305,9 @@ fn publish(
     // without this step can resurrect an old rollback floor after power loss.
     // A failure happens after publication, so callers may observe the new file,
     // but they must not treat it as crash-durable and may safely retry.
-    sync_directory(parent_or_current(path))?;
+    if sync {
+        sync_directory(parent_or_current(path))?;
+    }
     Ok(true)
 }
 
@@ -448,6 +474,19 @@ mod tests {
             write(&p, b"a very long previous document").unwrap();
             write(&p, b"short").unwrap();
             assert_eq!(fs::read(&p).unwrap(), b"short");
+        }
+        // Phase `regenerable_writes_replace_completely_too`.
+        {
+            let d = TempDir::new().unwrap();
+            let p = d.path().join("a.idx");
+            write_regenerable(&p, b"a very long previous entry").unwrap();
+            write_regenerable(&p, b"short").unwrap();
+            assert_eq!(fs::read(&p).unwrap(), b"short");
+            assert_eq!(
+                fs::read_dir(d.path()).unwrap().count(),
+                1,
+                "no temp file left"
+            );
         }
         // Phase `empty_content_is_a_valid_write`.
         {

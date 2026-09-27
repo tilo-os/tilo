@@ -20,10 +20,12 @@ use serde_json::{Map, Value};
 use tilo_actions::remote::{
     ActionHost as _, Caller, CatalogueQuery, CatalogueRow, InvokeArgument, InvokeRequest,
     MAX_CATALOGUE_PAGE, PendingPoll, RemoteActionTarget, workspace_provider,
+    workspace_provider_room,
 };
 use tilo_actions::{ActionAddress, InvocationId, InvocationUpdate};
 use tilo_automation::{SHORTCUTS_APP_ID, quick_action_arguments, quick_action_input};
 
+use crate::shell::automation_host::run_target;
 use crate::shell::chrome_state::SearchResourceScope;
 use crate::shell::collab_broker::AppActionBroker;
 use crate::shell::remote_actions::BrokerActionHost;
@@ -92,11 +94,16 @@ impl ShortcutsProvider {
                   _chrome: &crate::shell::chrome_state::Chrome,
                   args: &tilo_actions::ActionArgs|
                   -> Result<ActionReceipt, ActionError> {
-                let invocation = InvocationId::new();
                 let mut arguments = bound.clone();
                 if !args.is_empty() {
                     arguments.extend(args.to_json());
                 }
+                if let Some(room) = workspace_provider_room(&target.provider)
+                    && let Some(shortcut) = run_target(&target.address)
+                {
+                    return start_interactive_run(&broker, &caller, room, shortcut, arguments);
+                }
+                let invocation = InvocationId::new();
                 let request = InvokeRequest {
                     invocation,
                     target: target.clone(),
@@ -174,6 +181,28 @@ struct QuickAction {
     /// The resource's label, for the row.
     label: String,
     arguments: Map<String, Value>,
+}
+
+/// Start a shortcut run for the person at the palette: the run asks them for
+/// its confirmations and questions in the shell's sheet.
+fn start_interactive_run(
+    broker: &AppActionBroker,
+    caller: &Caller,
+    room: &str,
+    shortcut: &str,
+    arguments: Map<String, Value>,
+) -> Result<ActionReceipt, ActionError> {
+    match broker.start_interactive_shortcut_run(caller, room, shortcut, arguments) {
+        Ok(job) => Ok(ActionReceipt {
+            broker_invocation_id: Some(job),
+            update: broker
+                .status(job)
+                .unwrap_or_else(|| InvocationUpdate::Accepted {
+                    invocation: InvocationId::new(),
+                }),
+        }),
+        Err(error) => Err(ActionError::Refused(error.to_string())),
+    }
 }
 
 impl SearchProvider for ShortcutsProvider {
