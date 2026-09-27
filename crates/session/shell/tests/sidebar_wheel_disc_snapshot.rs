@@ -25,7 +25,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
 
-use shell::shell::sidebar_wheel_disc::{SidebarWheelDisc, SpokeLabel};
+use tilo_desktop::sidebar_wheel_disc::{SidebarWheelDisc, SpokeLabel};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;

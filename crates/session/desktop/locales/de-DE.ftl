@@ -853,3 +853,56 @@ people-panel-invite = Einladen
 people-panel-join = Beitreten
 launchpad-subtitle = Wähle, wie du beginnen möchtest. Inhalte des Arbeitsbereichs werden synchronisiert; deine Anordnung und Bedienelemente bleiben lokal.
 workspace-settings-sheet-keyboard-hint = ↑ ↓ zum Auswählen · Eingabetaste zum Bestätigen · Esc zum Abbrechen
+
+# The emoji picker (Super+. by default)
+emoji-picker-title = Emoji
+emoji-picker-search = Emoji suchen
+emoji-picker-groups = Emoji-Kategorien
+emoji-picker-recent = Zuletzt verwendet
+emoji-picker-results = Passende Emoji
+emoji-picker-no-results = Keine Emoji gefunden
+emoji-picker-hint = Eingabe fügt ein · Esc schließt
+emoji-picker-hint-tones = Eingabe fügt ein · Umschalt+Eingabe wählt einen Hautton
+emoji-picker-tones = Hauttöne
+emoji-picker-tones-hint = Rechtsklick, langes Drücken oder Umschalt+Eingabe für Hauttöne
+emoji-picker-a11y-description = Tippen Sie, um zu suchen. Die Pfeiltasten wechseln zwischen den Emoji, Tab wechselt die Kategorie, Eingabe fügt das markierte Emoji in das Textfeld ein, in dem Sie geschrieben haben, Umschalt+Eingabe wählt einen Hautton, Escape schließt.
+
+# Ein Emoji in einem Hautton: „Daumen hoch, mittlerer Hautton“.
+emoji-picker-toned = { $name }, { $tone }
+emoji-picker-tone-light = heller Hautton
+emoji-picker-tone-medium-light = mittelheller Hautton
+emoji-picker-tone-medium = mittlerer Hautton
+emoji-picker-tone-medium-dark = mitteldunkler Hautton
+emoji-picker-tone-dark = dunkler Hautton
+
+# Der Fensterwechsler (Alt+Tab).
+window-switcher-title = Fenster wechseln
+window-switcher-description = Fenster in diesem Arbeitsbereich, zuletzt verwendete zuerst. Halte Alt gedrückt und drücke Tab oder die Pfeiltasten zum Bewegen, lass Alt los zum Wechseln oder drücke Escape, um zu bleiben.
+window-switcher-app-title = Fenster dieser App wechseln
+window-switcher-app-description = Fenster dieser App in diesem Arbeitsbereich, zuletzt verwendete zuerst. Halte Alt gedrückt und drücke ` zum Bewegen, lass Alt los zum Wechseln oder drücke Escape, um zu bleiben.
+window-switcher-untitled = Unbenanntes Fenster
+window-switcher-caption-paged = { $title } ({ $position } von { $count })
+
+# Workspace wheel
+a11y-shell-wheel = Arbeitsbereichsrad
+a11y-shell-wheel-switch = Zu { $workspace } wechseln
+a11y-shell-wheel-add = Arbeitsbereich hinzufügen
+
+# Workspace overview
+overview-empty-window = Leeres Fenster
+overview-untitled = Ohne Titel
+overview-access-nobody = Niemand hat Zugriff
+overview-access-private = Nur für Sie
+overview-access-one = Geteilt mit { $name }
+overview-access-two = Geteilt mit { $name } und { $other }
+overview-access-many = Geteilt mit { $name } und { $count } weiteren
+overview-shares = { $count ->
+        [one] 1 Element geteilt
+       *[other] { $count } Elemente geteilt
+    }
+overview-presence-you = Sie sind hier
+overview-presence-you-and-one = Sie und { $name } sind hier
+overview-presence-you-and-many = Sie und { $count } weitere sind hier
+overview-presence-one = { $name } ist hier
+overview-presence-many = { $count } Personen sind hier
+overview-collaborators-here = { $count } Mitwirkende sind hier

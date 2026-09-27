@@ -67,14 +67,6 @@ wireless-protocols = Miracast · Google Cast · AirPlay · FCast
 display-identify-builtin = Built-in display
 display-identify-unnamed = Display { $number }
 
-# The Alt+Tab window switcher.
-window-switcher-title = Switch windows
-window-switcher-description = Windows in this workspace, most recently used first. Hold Alt and press Tab or the arrow keys to move, release Alt to switch, or press Escape to stay.
-window-switcher-app-title = Switch windows of this app
-window-switcher-app-description = This app's windows in this workspace, most recently used first. Hold Alt and press ` to move, release Alt to switch, or press Escape to stay.
-window-switcher-untitled = Untitled window
-window-switcher-caption-paged = { $title } ({ $position } of { $count })
-
 # The overview's row of the current workspace's windows.
 overview-windows-title = Windows in this workspace
 overview-windows-description = Most recently used first. Left and Right move between them and Enter goes to one. Click or tap a window to go there, middle-click to close it, or drag it onto another workspace to move it there.
@@ -1153,31 +1145,6 @@ portal-capture-default-camera = Default camera
 portal-capture-primary-display = Primary display
 portal-capture-system-audio = System audio
 
-# Workspace wheel
-a11y-shell-wheel = Workspace wheel
-a11y-shell-wheel-switch = Switch to { $workspace }
-a11y-shell-wheel-add = Add a workspace
-
-# The emoji picker (Super+. by default)
-emoji-picker-title = Emoji
-emoji-picker-search = Search emoji
-emoji-picker-groups = Emoji categories
-emoji-picker-recent = Recently used
-emoji-picker-results = Matching emoji
-emoji-picker-no-results = No emoji found
-emoji-picker-hint = Enter inserts · Esc closes
-emoji-picker-hint-tones = Enter inserts · Shift+Enter picks a skin tone
-emoji-picker-tones = Skin tones
-emoji-picker-tones-hint = Right-click, long-press or Shift+Enter for skin tones
-emoji-picker-a11y-description = Type to search. The arrow keys move between emoji, Tab changes the category, Enter inserts the highlighted emoji into the text field you were typing in, Shift+Enter picks a skin tone, Escape closes.
-# An emoji in a skin tone: "thumbs up, medium skin tone".
-emoji-picker-toned = { $name }, { $tone }
-emoji-picker-tone-light = light skin tone
-emoji-picker-tone-medium-light = medium-light skin tone
-emoji-picker-tone-medium = medium skin tone
-emoji-picker-tone-medium-dark = medium-dark skin tone
-emoji-picker-tone-dark = dark skin tone
-
 # A speaker's role in a speaker group, as the $role of a sentence ("Join Living room as the right speaker")
 speaker-role-left = left speaker
 speaker-role-right = right speaker
@@ -1882,9 +1849,6 @@ state-notice-newer-detail = { $path } was written by a newer version of Tilo (la
 state-notice-unreadable-detail = { $path } exists but could not be read ({ $error }). It has not been changed, and this session runs without saving, so it cannot be.
 
 # Workspace overview: who is in a room and what it shares
-overview-empty-window = Empty window
-overview-access-nobody = No one has access
-overview-access-private = Private to you
 overview-access-shared-one = Shared with { $name }
 overview-access-shared-two = Shared with { $first } and { $second }
 overview-access-shared-many = { $count ->
@@ -1895,12 +1859,6 @@ overview-items-shared = { $count ->
     [one] 1 item shared
    *[other] { $count } items shared
 }
-overview-presence-you = You are here
-overview-presence-you-and-one = You and { $name } are here
-overview-presence-you-and-many = You and { $count } others are here
-overview-presence-one = { $name } is here
-overview-presence-many = { $count } people are here
-overview-collaborators-here = { $count } collaborators are here
 
 # Windows and documents the shell hosts
 shell-window-restoring = Restoring this window…
