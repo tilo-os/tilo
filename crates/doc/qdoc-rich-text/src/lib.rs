@@ -580,6 +580,20 @@ impl RichText {
         Ok(())
     }
 
+    /// The body's text under `root`, a line per paragraph: what search
+    /// indexes and a plain-text export writes.
+    ///
+    /// # Errors
+    /// Returns [`ModelError`] when `root` holds no rich text.
+    pub fn plain_text_under(doc: &Doc, root: &ObjId) -> Result<String, ModelError> {
+        let c = containers_of(doc, root)?;
+        Ok(model::materialize_region(doc, &c, Region::Body)
+            .into_iter()
+            .map(|block| block.text)
+            .collect::<Vec<_>>()
+            .join("\n"))
+    }
+
     /// [`Resource::refresh`] for rich text under any root: the state knows
     /// where it was read from.
     ///
