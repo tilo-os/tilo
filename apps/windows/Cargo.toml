@@ -29,6 +29,7 @@ taffy.workspace = true
 compat-service = { path = "../../crates/windows/compat-service" }
 runtime-portal = { path = "../../crates/runtime/runtime-portal" }
 bounded-command = { path = "../../crates/system/bounded-command" }
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tempfile.workspace = true

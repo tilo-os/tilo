@@ -139,7 +139,7 @@ policies! {
         "tilo.audio.input_device",
         "tilo.display.auto_brightness",
         "tilo.display.scale",
-        "tilo.input.pen_output",
+        "tilo.input.tablets",
         "tilo.input.touchpad_enabled",
         "tilo.input.host_input_migration_version",
         // Like whether the touchpad is on, whether a mouse switches it off
@@ -329,7 +329,7 @@ mod tests {
                 "tilo.security.local_credential.pin",
                 "tilo.audio.output_device",
                 "tilo.display.scale",
-                "tilo.input.pen_output",
+                "tilo.input.tablets",
                 "tilo.continuity.clipboard",
                 "tilo.continuity.typed_gamepad",
                 "tilo.continuity.app_continuations",

@@ -24,6 +24,7 @@ path = "src/lib.rs"
 thiserror.workspace = true
 tracing.workspace = true
 bounded-command = { path = "../bounded-command" }
+workspace-hack = { version = "0.1" }
 
 [target.'cfg(unix)'.dependencies]
 rustix = { workspace = true, features = ["process"] }

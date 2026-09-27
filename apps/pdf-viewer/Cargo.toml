@@ -38,6 +38,7 @@ anyhow.workspace = true
 tilo-pdf = { path = "../../crates/doc/pdf" }
 image = { workspace = true, features = ["png", "jpeg"] }
 tempfile.workspace = true
+workspace-hack = { version = "0.1" }
 # Host-native file open/save through the XDG Desktop Portal; calls run off the
 # UI thread and return through `ui::portal`.
 

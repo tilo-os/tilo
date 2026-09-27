@@ -72,6 +72,7 @@ sandbox-core = { path = "../../system/sandbox-core" }
 # a bounded runtime rather than an OS thread (or two) per connection.
 tilo-rt.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "sync", "time"] }
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 # Tests whose subject is the environment itself (session variables, service

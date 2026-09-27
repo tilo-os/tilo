@@ -479,6 +479,158 @@ pub fn input_snapshot_path() -> Option<std::path::PathBuf> {
     xdg_paths::xdg::runtime_dir().map(|path| path.join("tilo/input-state.json"))
 }
 
+/// `input` key holding per-tablet settings, keyed by [`input_device_key`].
+pub const TABLETS_KEY: &str = "tablets";
+
+/// What a pen barrel button does. `Default` reports the button as itself:
+/// tablet-aware apps see a pen button, everything else a right (lower
+/// button) or middle (upper button) click.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StylusButtonAction {
+    #[default]
+    Default,
+    Left,
+    Middle,
+    Right,
+    Back,
+    Forward,
+    /// Press the chord bound to this desktop shortcut.
+    Shortcut(ShortcutAction),
+    Disabled,
+}
+
+/// Pressure curves Settings offers, softest first, as Bézier control points
+/// `[x1, y1, x2, y2]` between `(0, 0)` and `(1, 1)`. The middle one is linear.
+pub const PRESSURE_CURVE_PRESETS: [[f64; 4]; 7] = [
+    [0.0, 0.75, 0.25, 1.0],
+    [0.0, 0.5, 0.5, 1.0],
+    [0.0, 0.25, 0.75, 1.0],
+    [0.0, 0.0, 1.0, 1.0],
+    [0.25, 0.0, 1.0, 0.75],
+    [0.5, 0.0, 1.0, 0.5],
+    [0.75, 0.0, 1.0, 0.25],
+];
+
+/// The preset for a soft (`0.0`) … firm (`1.0`) slider position.
+pub fn pressure_curve_for_feel(feel: f64) -> [f64; 4] {
+    let feel = if feel.is_finite() {
+        feel.clamp(0.0, 1.0)
+    } else {
+        0.5
+    };
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "feel is clamped to [0, 1], so the index is within 0..=6"
+    )]
+    let index = (feel * 6.0).round() as usize;
+    PRESSURE_CURVE_PRESETS
+        .get(index)
+        .copied()
+        .unwrap_or(PRESSURE_CURVE_PRESETS[3])
+}
+
+/// The slider position of the preset nearest to `curve`.
+pub fn feel_for_pressure_curve(curve: [f64; 4]) -> f64 {
+    let distance = |preset: &[f64; 4]| -> f64 {
+        preset
+            .iter()
+            .zip(curve.iter())
+            .map(|(a, b)| (a - b).powi(2))
+            .sum()
+    };
+    let nearest = PRESSURE_CURVE_PRESETS
+        .iter()
+        .enumerate()
+        .min_by(|(_, a), (_, b)| distance(a).total_cmp(&distance(b)))
+        .map_or(3, |(index, _)| index);
+    #[allow(clippy::cast_precision_loss, reason = "index is at most 6")]
+    let position = nearest as f64 / 6.0;
+    position
+}
+
+/// One drawing tablet's settings, stored per device identity so each
+/// tablet keeps its own mapping when several are used.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TabletConfig {
+    /// Collision-free output key ([`OutputDescriptor::connector`]) the
+    /// tablet maps onto; `None` spans the whole desktop.
+    pub output: Option<String>,
+    /// Use only the part of the tablet that has the target's shape, so
+    /// strokes are not stretched.
+    pub keep_aspect: bool,
+    /// Turn the tablet half a turn, for use with its buttons on the right.
+    pub left_handed: bool,
+    /// Bézier control points `[x1, y1, x2, y2]`; see
+    /// [`PRESSURE_CURVE_PRESETS`].
+    pub pressure_curve: [f64; 4],
+    /// The barrel button nearest the tip.
+    pub lower_button: StylusButtonAction,
+    /// The barrel button further from the tip.
+    pub upper_button: StylusButtonAction,
+    /// A third barrel button, on pens that have one.
+    pub third_button: StylusButtonAction,
+    /// Pad button number (libinput's, from zero) to the shortcut it runs.
+    pub pad_buttons: BTreeMap<u32, ShortcutAction>,
+}
+
+impl Default for TabletConfig {
+    fn default() -> Self {
+        Self {
+            output: None,
+            keep_aspect: false,
+            left_handed: false,
+            pressure_curve: PRESSURE_CURVE_PRESETS[3],
+            lower_button: StylusButtonAction::Default,
+            upper_button: StylusButtonAction::Default,
+            third_button: StylusButtonAction::Default,
+            pad_buttons: BTreeMap::new(),
+        }
+    }
+}
+
+/// Every tablet's settings from an `input` section. One malformed tablet
+/// entry is skipped rather than discarding the others.
+pub fn tablets_from_section(
+    section: &serde_json::Map<String, serde_json::Value>,
+) -> BTreeMap<String, TabletConfig> {
+    section
+        .get(TABLETS_KEY)
+        .map(tablets_from_value)
+        .unwrap_or_default()
+}
+
+fn tablets_from_value(value: &serde_json::Value) -> BTreeMap<String, TabletConfig> {
+    value
+        .as_object()
+        .map(|tablets| {
+            tablets
+                .iter()
+                .filter_map(|(key, value)| {
+                    serde_json::from_value(value.clone())
+                        .ok()
+                        .map(|config| (key.clone(), config))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Serde half of [`tablets_from_section`], for `deserialize_with`: one bad
+/// tablet cannot make the whole `input` section unreadable.
+///
+/// # Errors
+///
+/// Only when the input is not JSON at all; malformed tablets are skipped.
+pub fn lenient_tablets<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<BTreeMap<String, TabletConfig>, D::Error> {
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(tablets_from_value(&value))
+}
+
 // Four independent, user-facing toggles (Enabled, Primary, HDR, VRR), not a state
 // machine — and this document's JSON shape and field names are load-bearing across
 // `apps/settings` and `shell`, so folding them into a bitflags type ripples well
@@ -864,7 +1016,9 @@ pub struct RichInputConfig {
     /// [`SCROLL_SPEED_MIN`] … [`SCROLL_SPEED_MAX`].
     #[serde(default = "default_scroll_speed")]
     pub scroll_speed: f64,
-    pub pen_output: Option<String>,
+    /// Per-tablet settings keyed by [`input_device_key`].
+    #[serde(deserialize_with = "lenient_tablets")]
+    pub tablets: BTreeMap<String, TabletConfig>,
 }
 
 impl Default for RichInputConfig {
@@ -894,7 +1048,7 @@ impl Default for RichInputConfig {
             touchpad_click_method: TouchpadClickMethod::Default,
             touchpad_scroll_method: TouchpadScrollMethod::TwoFinger,
             scroll_speed: default_scroll_speed(),
-            pen_output: None,
+            tablets: BTreeMap::new(),
         }
     }
 }
@@ -1304,6 +1458,8 @@ pub enum ShortcutAction {
     PowerMenu,
     /// Switch to the next keyboard input source.
     NextInputSource,
+    /// Open the emoji picker over the focused text field.
+    EmojiPicker,
 }
 
 impl ShortcutAction {
@@ -1942,6 +2098,8 @@ impl Default for ShortcutConfig {
             // Super+Space is global search; the Alt-modified chord is the
             // nearest free spelling of the GNOME/Windows convention.
             (ShortcutAction::NextInputSource, super_alt_chord("space")),
+            // Windows' emoji panel key; GNOME uses Super+. for the same.
+            (ShortcutAction::EmojiPicker, super_chord(".")),
         ]
         .into_iter()
         .collect();
@@ -2441,6 +2599,7 @@ mod tests {
         assert_eq!(shown(ShortcutAction::MagnifierZoomIn), "Super+Alt+=");
         assert_eq!(shown(ShortcutAction::MagnifierZoomOut), "Super+Alt+-");
         assert_eq!(shown(ShortcutAction::PowerMenu), "Ctrl+Alt+Delete");
+        assert_eq!(shown(ShortcutAction::EmojiPicker), "Super+.");
         assert_eq!(ShortcutAction::OpenFiles.focus_group_index(), None);
         assert!(cfg.validate().is_ok(), "no two defaults share a chord");
     }
@@ -2586,7 +2745,7 @@ mod tests {
         // Phase `desktop_navigation_defaults_are_complete_and_conflict_free`.
         {
             let cfg = ShortcutConfig::default();
-            assert_eq!(cfg.bindings.len(), 43);
+            assert_eq!(cfg.bindings.len(), 44);
             let unique: BTreeSet<_> = cfg.bindings.values().collect();
             assert_eq!(unique.len(), cfg.bindings.len());
             assert_eq!(
@@ -2797,6 +2956,72 @@ mod tests {
             "a reused PID must not resurrect a dead compositor's devices"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[allow(
+        clippy::float_cmp,
+        reason = "presets are exact constants handed back unchanged"
+    )]
+    fn tablet_settings_round_trip_per_device_and_survive_a_bad_neighbour() {
+        let mut pen = TabletConfig {
+            output: Some("DP-2".into()),
+            keep_aspect: true,
+            left_handed: true,
+            pressure_curve: pressure_curve_for_feel(0.0),
+            lower_button: StylusButtonAction::Right,
+            upper_button: StylusButtonAction::Shortcut(ShortcutAction::Search),
+            ..TabletConfig::default()
+        };
+        pen.pad_buttons.insert(3, ShortcutAction::WorkspaceOverview);
+        let key = input_device_key(0x056a, 0x0374, "Wacom Intuos S Pen");
+        let section = serde_json::json!({
+            TABLETS_KEY: {
+                key.clone(): serde_json::to_value(&pen).unwrap(),
+                "0000:0000:Broken": {"keep_aspect": "sometimes"},
+            }
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let value = serde_json::to_value(&pen).unwrap();
+        assert_eq!(
+            value["upper_button"],
+            serde_json::json!({"shortcut": "search"})
+        );
+        assert_eq!(value["lower_button"], "right");
+        assert_eq!(value["pad_buttons"]["3"], "workspace_overview");
+
+        let tablets = tablets_from_section(&section);
+        assert_eq!(tablets.get(&key), Some(&pen));
+        assert_eq!(tablets.len(), 1, "a malformed entry is skipped, not fatal");
+
+        let rich = RichInputConfig::from_section(&section);
+        assert_eq!(rich.tablets.get(&key), Some(&pen));
+
+        let fresh = TabletConfig::default();
+        assert_eq!(fresh.output, None, "a new tablet spans the whole desktop");
+        assert_eq!(fresh.pressure_curve, [0.0, 0.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    #[allow(
+        clippy::float_cmp,
+        reason = "presets are exact constants handed back unchanged"
+    )]
+    fn tip_feel_positions_and_curves_map_both_ways() {
+        assert_eq!(pressure_curve_for_feel(0.5), PRESSURE_CURVE_PRESETS[3]);
+        assert_eq!(pressure_curve_for_feel(0.0), PRESSURE_CURVE_PRESETS[0]);
+        assert_eq!(pressure_curve_for_feel(1.0), PRESSURE_CURVE_PRESETS[6]);
+        assert_eq!(pressure_curve_for_feel(f64::NAN), PRESSURE_CURVE_PRESETS[3]);
+        for (index, preset) in PRESSURE_CURVE_PRESETS.iter().enumerate() {
+            let feel = feel_for_pressure_curve(*preset);
+            assert_eq!(pressure_curve_for_feel(feel), *preset, "preset {index}");
+        }
+        assert!(
+            (feel_for_pressure_curve([0.02, 0.73, 0.26, 0.98]) - 0.0).abs() < f64::EPSILON,
+            "a hand-edited curve reads as its nearest preset"
+        );
     }
 
     #[test]

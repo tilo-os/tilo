@@ -41,6 +41,12 @@ pub fn t_args(key: &str, args: &[(&str, ArgValue)]) -> String {
     CATALOG.t_args(key, args)
 }
 
+/// The desktop's language (BCP 47), for content that is localised outside
+/// the catalogue, such as emoji names.
+pub fn current_locale() -> String {
+    CATALOG.current_locale()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

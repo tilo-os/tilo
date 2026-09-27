@@ -19,6 +19,7 @@ automerge.workspace = true
 tilo-automerge.workspace = true
 postcard.workspace = true
 tokio = { workspace = true, features = ["rt", "macros", "time"] }
+workspace-hack = { version = "0.1" }
 
 [lints]
 workspace = true

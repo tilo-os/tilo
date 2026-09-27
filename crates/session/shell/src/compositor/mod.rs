@@ -83,6 +83,8 @@ pub mod tablet;
 #[cfg(target_os = "linux")]
 pub mod test_control;
 #[cfg(target_os = "linux")]
+pub mod text_commit;
+#[cfg(target_os = "linux")]
 pub mod toplevel_icon;
 #[cfg(target_os = "linux")]
 pub mod window_previews;

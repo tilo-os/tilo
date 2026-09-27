@@ -943,20 +943,28 @@ impl Widget for NotificationStack {
                     .with_value(lock_suppressed_label(n)),
             );
         }
-        let latest = ch.notifications().last().map(|t| {
-            if t.body.is_empty() {
+        let latest = ch.notifications().last();
+        let text = latest.map_or_else(String::new, |t| {
+            let body = if t.show_preview { t.body.as_str() } else { "" };
+            if body.is_empty() {
                 t.title.clone()
             } else {
-                format!("{}. {}", t.title, t.body)
+                format!("{}. {body}", t.title)
             }
         });
-        let mut node = AccessNode::new(Role::Group)
-            .with_name(t("notification-stack-a11y"))
-            .with_live(Politeness::Assertive);
-        if let Some(v) = latest {
-            node = node.with_value(v);
-        }
-        Some(node)
+        // Ordinary arrivals wait their turn; only an error cuts in. An empty
+        // stack publishes an empty value so its clearing is silent.
+        let politeness = if latest.is_some_and(|t| t.severity == NotificationSeverity::Error) {
+            Politeness::Assertive
+        } else {
+            Politeness::Polite
+        };
+        Some(
+            AccessNode::new(Role::Group)
+                .with_name(t("notification-stack-a11y"))
+                .with_live(politeness)
+                .with_value(text),
+        )
     }
 }
 
@@ -1271,17 +1279,32 @@ mod tests {
             let node = Widget::accessibility(&stack).expect("the stack is a live region");
             assert_eq!(node.role, Role::Group);
             assert_eq!(node.name.as_deref(), Some("Notifications"));
-            assert_eq!(node.live, Some(Politeness::Assertive));
-            assert!(node.value.is_none(), "an empty stack announces nothing");
+            assert_eq!(node.live, Some(Politeness::Polite));
+            assert_eq!(
+                node.value.as_deref(),
+                Some(""),
+                "an empty stack announces nothing"
+            );
             chrome
                 .borrow_mut()
                 .push_notification("New mail", "secret subject");
             let node = Widget::accessibility(&stack).unwrap();
             assert_eq!(node.value.as_deref(), Some("New mail. secret subject"));
+            assert_eq!(
+                node.live,
+                Some(Politeness::Polite),
+                "an ordinary arrival waits its turn"
+            );
+            chrome
+                .borrow_mut()
+                .push_error_notification("Backup failed", "");
+            let node = Widget::accessibility(&stack).unwrap();
+            assert_eq!(node.value.as_deref(), Some("Backup failed"));
+            assert_eq!(node.live, Some(Politeness::Assertive), "an error cuts in");
             // Locked: no title/body/app reaches the a11y tree.
             chrome.borrow_mut().set_session_locked(true);
             let node = Widget::accessibility(&stack).unwrap();
-            assert_eq!(node.value.as_deref(), Some("1 notification"));
+            assert_eq!(node.value.as_deref(), Some("2 notifications"));
             assert_eq!(node.live, Some(Politeness::Polite));
         }
 

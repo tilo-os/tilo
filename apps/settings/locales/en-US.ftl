@@ -62,3 +62,26 @@ input-middle-emulation-description = Press left and right together for middle-cl
 input-acceleration = Acceleration
 input-scroll-speed = Scroll speed
 input-scroll-speed-description = Distance per wheel click or finger movement
+
+# Mouse & Keyboard pane: drawing tablets
+input-tablet-whole-desktop = Whole desktop
+input-tablet-map-to = Map to
+input-tablet-keep-aspect = Keep aspect ratio
+input-tablet-keep-aspect-description = Use only the part of the tablet that matches the display's shape, so strokes are not stretched
+input-tablet-left-handed = Left-handed orientation
+input-tablet-left-handed-description = Turn the tablet around, with its buttons on the right
+input-tablet-tip-feel = Tip feel
+input-tablet-tip-feel-description = Soft draws heavily with a light touch; firm needs a harder press
+input-tablet-lower-button = Lower pen button
+input-tablet-upper-button = Upper pen button
+input-pen-button-default = Default
+input-pen-button-left = Left click
+input-pen-button-middle = Middle click
+input-pen-button-right = Right click
+input-pen-button-back = Back
+input-pen-button-forward = Forward
+input-pen-button-disabled = Do nothing
+input-pad-title = { $name } buttons
+input-pad-button = Button { $number }
+input-pad-button-none = Do nothing
+input-pad-no-buttons = This pad reports no buttons

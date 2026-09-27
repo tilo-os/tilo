@@ -132,6 +132,7 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 # Systemd sd_notify for `Type=notify` — best-effort, silently no-ops
 # outside a systemd session.
 sd-notify.workspace = true
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tempfile.workspace = true

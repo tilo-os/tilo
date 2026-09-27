@@ -302,13 +302,14 @@ class SelectorTests(unittest.TestCase):
             for path in ("Cargo.lock", "Cargo.toml", "rust-toolchain.toml", "crates/unmapped/src/lib.rs"):
                 with self.subTest(path=path):
                     plan = ci_select.make_plan(self.metadata, self.root, [path], 99)
-                    rows = plan["matrix"]["include"]
+                    rows = plan["clippy_matrix"]["include"]
                     self.assertEqual(plan["shard_count"], 2)
                     self.assertEqual(len(rows), 2)
                     self.assertEqual({row["arch"] for row in rows}, {"x86_64"})
                     self.assertEqual({row["runner"] for row in rows}, {ci_select.NATIVE_RUNNERS["x86_64"]})
-                    for field in ("packages", "test_packages"):
-                        names = [name for row in rows for name in row[field].split()[1::2]]
+                    for field, field_rows in (("packages", rows),
+                                              ("test_packages", plan["matrix"]["include"])):
+                        names = [name for row in field_rows for name in row[field].split()[1::2]]
                         self.assertEqual(sorted(names), plan["selected"])
                         self.assertEqual(len(names), len(set(names)))
                     self.assertEqual(sum(row["estimated_cost"] for row in rows), plan["estimated_cost"])
@@ -353,6 +354,27 @@ class SelectorTests(unittest.TestCase):
             # The structural estimate keeps its meaning.
             self.assertEqual(sum(shard["estimated_cost"] for shard in shards),
                              sum(ci_select.package_cost(pkg) for pkg in packages.values()))
+        with self.subTest(phase='recorded test time splits test jobs, not type-check shards'):
+            self.setUp()
+            changes = ["base/src/lib.rs"]
+            seconds = {"base": 900, "middle": 800, "qdoc": 150, "pkg": 10}
+            plan = ci_select.make_plan(self.metadata, self.root, changes, 2, test_seconds=seconds)
+            self.assertEqual(plan["shard_count"], 1)
+            self.assertEqual(len(plan["clippy_matrix"]["include"]), 1)
+            rows = plan["matrix"]["include"]
+            self.assertEqual(plan["test_shard_count"], 2)
+            self.assertEqual([row["shard"] for row in rows], [1, 2])
+            placed = [set(row["test_packages"].split()[1::2]) for row in rows]
+            self.assertFalse(any({"base", "middle"} <= names for names in placed))
+            names = [name for group in placed for name in group]
+            self.assertEqual(sorted(names), plan["tested"])
+            original = ci_select.MAX_TEST_SHARDS
+            try:
+                ci_select.MAX_TEST_SHARDS = 1
+                capped = ci_select.make_plan(self.metadata, self.root, changes, 2, test_seconds=seconds)
+            finally:
+                ci_select.MAX_TEST_SHARDS = original
+            self.assertEqual(capped["test_shard_count"], 1)
         with self.subTest(phase='recorded test time never changes selection or budgets'):
             self.setUp()
             changes = ["leaf/src/lib.rs"]
@@ -385,7 +407,7 @@ class SelectorTests(unittest.TestCase):
                 self.assertEqual({row["runner"] for row in native}, {runner})
                 names = " ".join(row["packages"] for row in native).split()[1::2]
                 self.assertEqual(sorted(names), plan["selected"])
-                self.assertEqual(len(native), plan["shard_count"])
+                self.assertEqual(len(native), plan["test_shard_count"])
                 tested = " ".join(row["test_packages"] for row in native).split()[1::2]
                 self.assertEqual(sorted(tested), plan["selected"])
         with self.subTest(phase='cost threshold adds shards only when useful'):
@@ -408,7 +430,9 @@ class SelectorTests(unittest.TestCase):
             values = dict(line.split("=", 1) for line in output.read_text().splitlines())
             self.assertEqual(values["shard_count"], "1")
             self.assertEqual(values["estimated_cost"], str(plan["estimated_cost"]))
-            self.assertEqual(json.loads(values["clippy_matrix"]), plan["matrix"])
+            self.assertEqual(json.loads(values["matrix"]), plan["matrix"])
+            self.assertEqual(json.loads(values["clippy_matrix"]), plan["clippy_matrix"])
+            self.assertEqual(values["test_shard_count"], "1")
             # An x86_64-only plan needs no standalone check: Clippy covers it.
             self.assertEqual(json.loads(values["check_matrix"]), {"include": []})
             self.assertEqual(values["check_required"], "false")
@@ -419,15 +443,17 @@ class SelectorTests(unittest.TestCase):
                 self.metadata, self.root, ["os/Containerfile.builder"], 2, force_full=True)
             rows = plan["matrix"]["include"]
             self.assertEqual({row["arch"] for row in rows}, set(ci_select.NATIVE_RUNNERS))
-            clippy = plan["clippy_matrix"]["include"]
-            self.assertEqual(clippy, [row for row in rows if row["arch"] == "x86_64"])
-            self.assertEqual(sorted(row["packages"] for row in clippy),
-                             sorted(row["packages"] for row in rows if row["arch"] == "aarch64"))
             for row in rows:
                 self.assertEqual(row["check_runner"], ci_select.NATIVE_RUNNERS[row["arch"]])
+            clippy = plan["clippy_matrix"]["include"]
+            self.assertEqual({row["arch"] for row in clippy}, {"x86_64"})
+            self.assertEqual(" ".join(row["packages"] for row in clippy).split()[1::2],
+                             plan["selected"])
             # Architectures Clippy does not lint keep a standalone all-target check.
             check = plan["check_matrix"]["include"]
-            self.assertEqual(check, [row for row in rows if row["arch"] != "x86_64"])
+            self.assertEqual({row["arch"] for row in check}, set(ci_select.NATIVE_RUNNERS) - {"x86_64"})
+            for row in clippy + check:
+                self.assertEqual(row["check_runner"], ci_select.NATIVE_RUNNERS[row["arch"]])
             self.assertEqual(sorted(row["packages"] for row in check),
                              sorted(row["packages"] for row in clippy))
             output = self.root / "github-output"

@@ -71,6 +71,7 @@ tokio = { workspace = true, optional = true, features = ["rt", "macros", "time"]
 # resolution. Embeds `rquickjs` for signature deobfuscation — no external
 # interpreter, downloader, or JS runtime binary. Gated behind `live`.
 rustypipe = { workspace = true, optional = true, features = ["rustls-no-provider"] }
+workspace-hack = { version = "0.1" }
 
 [target.'cfg(all(windows, target_arch = "aarch64"))'.dependencies]
 # QuickJS does not ship Windows ARM64 bindings; generate the actual target ABI.

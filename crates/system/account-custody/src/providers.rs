@@ -1,6 +1,15 @@
-//! The `OAuth` cloud storage providers, as data.
+//! The `OAuth` providers and what their grants are used for, as data.
+//!
+//! An [`OAuthIssuer`] is a provider that registered Tilo as an installed app
+//! and signs the person in (Google, Microsoft, Dropbox): its endpoints, and
+//! one client registration in `oauth-clients.toml`. An [`OAuthUse`] is one
+//! thing a grant from that issuer is for ([`Capability::Files`] for cloud
+//! storage, [`Capability::Mail`] for IMAP and SMTP). Scopes belong to the
+//! use, so Google Drive and Gmail share Google's client with different
+//! scopes.
 
-use tilo_oauth::{Provider, Revocation};
+use serde::Deserialize;
+use tilo_oauth::{ClientId, Provider, Revocation};
 
 /// Account type id of a Google Drive account.
 pub const GOOGLE_DRIVE_TYPE: &str = accounts::cloud_types::GOOGLE_DRIVE;
@@ -14,6 +23,159 @@ pub const ICLOUD_DRIVE_TYPE: &str = accounts::cloud_types::ICLOUD_DRIVE;
 pub const NEXTCLOUD_TYPE: &str = accounts::cloud_types::NEXTCLOUD;
 /// Account type id of a plain `WebDAV` account.
 pub const WEBDAV_TYPE: &str = accounts::cloud_types::WEBDAV;
+
+/// A provider that registered Tilo as an installed `OAuth` client.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum OAuthIssuer {
+    Google,
+    Microsoft,
+    Dropbox,
+}
+
+impl OAuthIssuer {
+    pub const ALL: [Self; 3] = [Self::Google, Self::Microsoft, Self::Dropbox];
+
+    /// Stable identifier, also the issuer's table in `oauth-clients.toml`.
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Google => "google",
+            Self::Microsoft => "microsoft",
+            Self::Dropbox => "dropbox",
+        }
+    }
+
+    /// Who the person signs in with.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Google => "Google",
+            Self::Microsoft => "Microsoft",
+            Self::Dropbox => "Dropbox",
+        }
+    }
+
+    /// The environment variable that overrides the client id, read at
+    /// runtime and then at build time.
+    pub fn client_id(self) -> ClientId {
+        match self {
+            Self::Google => ClientId::new(
+                "TILO_OAUTH_GOOGLE_CLIENT_ID",
+                option_env!("TILO_OAUTH_GOOGLE_CLIENT_ID"),
+            ),
+            Self::Microsoft => ClientId::new(
+                "TILO_OAUTH_MICROSOFT_CLIENT_ID",
+                option_env!("TILO_OAUTH_MICROSOFT_CLIENT_ID"),
+            ),
+            Self::Dropbox => ClientId::new(
+                "TILO_OAUTH_DROPBOX_CLIENT_ID",
+                option_env!("TILO_OAUTH_DROPBOX_CLIENT_ID"),
+            ),
+        }
+    }
+
+    /// The environment variable that overrides the client secret, for the
+    /// issuers whose installed-app clients have one (Google).
+    pub fn client_secret(self) -> Option<ClientId> {
+        match self {
+            Self::Google => Some(ClientId::new(
+                "TILO_OAUTH_GOOGLE_CLIENT_SECRET",
+                option_env!("TILO_OAUTH_GOOGLE_CLIENT_SECRET"),
+            )),
+            Self::Microsoft | Self::Dropbox => None,
+        }
+    }
+
+    /// The issuer's endpoints and the authorization parameters that make it
+    /// issue a refresh token, without scopes: those come from the use (see
+    /// [`crate::ClientTable::descriptor`]).
+    pub fn endpoints(self) -> Provider {
+        let pairs = |values: &[(&str, &str)]| {
+            values
+                .iter()
+                .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
+                .collect()
+        };
+        match self {
+            Self::Google => Provider {
+                id: self.id().into(),
+                label: self.label().into(),
+                authorization_endpoint: "https://accounts.google.com/o/oauth2/v2/auth".into(),
+                token_endpoint: "https://oauth2.googleapis.com/token".into(),
+                revocation: Revocation::Rfc7009 {
+                    endpoint: "https://oauth2.googleapis.com/revoke".into(),
+                },
+                scopes: Vec::new(),
+                // Without both, Google issues no refresh token on a repeat
+                // consent.
+                authorization_params: pairs(&[("access_type", "offline"), ("prompt", "consent")]),
+            },
+            // The `common` tenant accepts both personal Microsoft accounts
+            // and work or school accounts; `offline_access` (in each use's
+            // scopes) yields the refresh token.
+            Self::Microsoft => Provider {
+                id: self.id().into(),
+                label: self.label().into(),
+                authorization_endpoint:
+                    "https://login.microsoftonline.com/common/oauth2/v2.0/authorize".into(),
+                token_endpoint: "https://login.microsoftonline.com/common/oauth2/v2.0/token".into(),
+                revocation: Revocation::Unsupported,
+                scopes: Vec::new(),
+                authorization_params: pairs(&[("prompt", "select_account")]),
+            },
+            Self::Dropbox => Provider {
+                id: self.id().into(),
+                label: self.label().into(),
+                authorization_endpoint: "https://www.dropbox.com/oauth2/authorize".into(),
+                token_endpoint: "https://api.dropboxapi.com/oauth2/token".into(),
+                revocation: Revocation::BearerPost {
+                    endpoint: "https://api.dropboxapi.com/2/auth/token/revoke".into(),
+                },
+                scopes: Vec::new(),
+                authorization_params: pairs(&[("token_access_type", "offline")]),
+            },
+        }
+    }
+}
+
+/// What a grant is used for. Each has its own scopes per issuer in
+/// `oauth-clients.toml`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Capability {
+    /// Cloud storage the storage daemon mounts.
+    Files,
+    /// Mail over IMAP and SMTP (`XOAUTH2`).
+    Mail,
+}
+
+/// One use of an issuer's client: who signs the person in, and what for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct OAuthUse {
+    pub issuer: OAuthIssuer,
+    pub capability: Capability,
+}
+
+impl OAuthUse {
+    pub const fn new(issuer: OAuthIssuer, capability: Capability) -> Self {
+        Self { issuer, capability }
+    }
+
+    /// Mail from `issuer` (Gmail, Outlook).
+    pub const fn mail(issuer: OAuthIssuer) -> Self {
+        Self::new(issuer, Capability::Mail)
+    }
+
+    /// The product name shown to the person.
+    pub fn label(self) -> &'static str {
+        match (self.issuer, self.capability) {
+            (OAuthIssuer::Google, Capability::Files) => "Google Drive",
+            (OAuthIssuer::Google, Capability::Mail) => "Gmail",
+            (OAuthIssuer::Microsoft, Capability::Files) => "OneDrive",
+            (OAuthIssuer::Microsoft, Capability::Mail) => "Outlook",
+            (OAuthIssuer::Dropbox, Capability::Files) => "Dropbox",
+            (OAuthIssuer::Dropbox, Capability::Mail) => "Dropbox mail",
+        }
+    }
+}
 
 /// A cloud storage provider that signs in with `OAuth`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -40,77 +202,44 @@ impl OAuthCloud {
             .find(|provider| provider.type_id() == type_id)
     }
 
-    pub fn label(self) -> &'static str {
+    /// Whose client this provider signs in through.
+    pub fn issuer(self) -> OAuthIssuer {
         match self {
-            Self::GoogleDrive => "Google Drive",
-            Self::OneDrive => "OneDrive",
-            Self::Dropbox => "Dropbox",
+            Self::GoogleDrive => OAuthIssuer::Google,
+            Self::OneDrive => OAuthIssuer::Microsoft,
+            Self::Dropbox => OAuthIssuer::Dropbox,
         }
+    }
+
+    /// The use a grant for this provider is for.
+    pub fn oauth_use(self) -> OAuthUse {
+        OAuthUse::new(self.issuer(), Capability::Files)
+    }
+
+    pub fn label(self) -> &'static str {
+        self.oauth_use().label()
     }
 
     /// Who the person signs in with.
     pub fn sign_in_with(self) -> &'static str {
-        match self {
-            Self::GoogleDrive => "Google",
-            Self::OneDrive => "Microsoft",
-            Self::Dropbox => "Dropbox",
-        }
+        self.issuer().label()
     }
 
-    /// The provider descriptor.
+    /// The environment variable that overrides the client id; see
+    /// [`OAuthIssuer::client_id`].
+    pub fn client_id(self) -> ClientId {
+        self.issuer().client_id()
+    }
+
+    /// The environment variable that overrides the client secret; see
+    /// [`OAuthIssuer::client_secret`].
+    pub fn client_secret(self) -> Option<ClientId> {
+        self.issuer().client_secret()
+    }
+
+    /// The provider descriptor with the committed storage scopes.
     pub fn descriptor(self) -> Provider {
-        let owned = |values: &[&str]| values.iter().map(|value| (*value).to_string()).collect();
-        let pairs = |values: &[(&str, &str)]| {
-            values
-                .iter()
-                .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
-                .collect()
-        };
-        match self {
-            Self::GoogleDrive => Provider {
-                id: "google".into(),
-                label: "Google".into(),
-                authorization_endpoint: "https://accounts.google.com/o/oauth2/v2/auth".into(),
-                token_endpoint: "https://oauth2.googleapis.com/token".into(),
-                revocation: Revocation::Rfc7009 {
-                    endpoint: "https://oauth2.googleapis.com/revoke".into(),
-                },
-                scopes: owned(&["https://www.googleapis.com/auth/drive"]),
-                // Without both, Google issues no refresh token on a repeat
-                // consent.
-                authorization_params: pairs(&[("access_type", "offline"), ("prompt", "consent")]),
-            },
-            // The `common` tenant accepts both personal Microsoft accounts
-            // and work or school accounts; `offline_access` yields the
-            // refresh token.
-            Self::OneDrive => Provider {
-                id: "microsoft".into(),
-                label: "Microsoft".into(),
-                authorization_endpoint:
-                    "https://login.microsoftonline.com/common/oauth2/v2.0/authorize".into(),
-                token_endpoint: "https://login.microsoftonline.com/common/oauth2/v2.0/token".into(),
-                revocation: Revocation::Unsupported,
-                scopes: owned(&["offline_access", "Files.ReadWrite.All", "User.Read"]),
-                authorization_params: pairs(&[("prompt", "select_account")]),
-            },
-            Self::Dropbox => Provider {
-                id: "dropbox".into(),
-                label: "Dropbox".into(),
-                authorization_endpoint: "https://www.dropbox.com/oauth2/authorize".into(),
-                token_endpoint: "https://api.dropboxapi.com/oauth2/token".into(),
-                revocation: Revocation::BearerPost {
-                    endpoint: "https://api.dropboxapi.com/2/auth/token/revoke".into(),
-                },
-                scopes: owned(&[
-                    "account_info.read",
-                    "files.metadata.read",
-                    "files.metadata.write",
-                    "files.content.read",
-                    "files.content.write",
-                ]),
-                authorization_params: pairs(&[("token_access_type", "offline")]),
-            },
-        }
+        crate::ClientTable::defaults().descriptor(self.oauth_use())
     }
 }
 
@@ -148,11 +277,22 @@ mod tests {
         for provider in OAuthCloud::ALL {
             assert_eq!(OAuthCloud::from_type_id(provider.type_id()), Some(provider));
         }
-        let keys: std::collections::BTreeSet<_> = OAuthCloud::ALL
+        let keys: std::collections::BTreeSet<_> = OAuthIssuer::ALL
             .into_iter()
-            .map(|provider| provider.client_id().key)
+            .map(|issuer| issuer.client_id().key)
             .collect();
         assert_eq!(keys.len(), 3);
         assert_eq!(OAuthCloud::from_type_id(WEBDAV_TYPE), None);
+    }
+
+    #[test]
+    fn mail_and_files_share_an_issuer_but_not_a_use() {
+        assert_eq!(OAuthCloud::GoogleDrive.issuer(), OAuthIssuer::Google);
+        assert_ne!(
+            OAuthCloud::GoogleDrive.oauth_use(),
+            OAuthUse::mail(OAuthIssuer::Google)
+        );
+        assert_eq!(OAuthUse::mail(OAuthIssuer::Google).label(), "Gmail");
+        assert_eq!(OAuthUse::mail(OAuthIssuer::Microsoft).label(), "Outlook");
     }
 }

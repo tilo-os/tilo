@@ -26,6 +26,12 @@
 //! current owner's kind, and the compositor disconnects the previous owner's
 //! connections when ownership moves, so a slow-exiting process can never hold
 //! the slot the new owner needs.
+//!
+//! An idle seat — nobody owns it — can be lent to the compositor itself for a
+//! single commit ([`TrustedInputMethod::Compositor`], see
+//! [`super::text_commit`]): text the shell inserts on the user's behalf, such
+//! as a picked emoji, reaches the focused field as an input method's commit,
+//! never as synthesised key events.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -42,6 +48,10 @@ pub enum TrustedInputMethod {
     OnScreenKeyboard,
     /// The composing input method for Chinese, Japanese and Korean.
     Composer,
+    /// The compositor's own in-process connection, which borrows an idle
+    /// seat for one commit. No socket accepts this kind: only the compositor
+    /// creates such a connection.
+    Compositor,
 }
 
 impl TrustedInputMethod {
@@ -49,6 +59,7 @@ impl TrustedInputMethod {
         match self {
             Self::OnScreenKeyboard => 1,
             Self::Composer => 2,
+            Self::Compositor => 3,
         }
     }
 
@@ -56,6 +67,7 @@ impl TrustedInputMethod {
         match code {
             1 => Some(Self::OnScreenKeyboard),
             2 => Some(Self::Composer),
+            3 => Some(Self::Compositor),
             _ => None,
         }
     }
@@ -118,9 +130,19 @@ impl SeatInputMethod {
 
     /// Whether a connection with `credential` may see and bind the
     /// input-method and virtual-keyboard globals. Public connections carry no
-    /// credential and never can.
+    /// credential and never can; the compositor's own connection only while
+    /// nobody owns the seat.
     pub fn admits(&self, credential: Option<TrustedInputMethod>) -> bool {
-        credential.is_some() && credential == self.get()
+        match (credential, self.get()) {
+            (None, _) => false,
+            (Some(TrustedInputMethod::Compositor), owner) => owner.is_none(),
+            (Some(kind), owner) => Some(kind) == owner,
+        }
+    }
+
+    /// Whether a connection of `kind` survives the seat moving to `owner`.
+    pub fn keeps(kind: TrustedInputMethod, owner: Option<TrustedInputMethod>) -> bool {
+        Some(kind) == owner || (kind == TrustedInputMethod::Compositor && owner.is_none())
     }
 }
 
@@ -279,6 +301,23 @@ mod tests {
 
         seat.set(None);
         assert_eq!(seat.get(), None);
+    }
+
+    #[test]
+    fn only_an_idle_seat_is_lent_to_the_compositor() {
+        use TrustedInputMethod::{Composer, Compositor, OnScreenKeyboard};
+        let seat = SeatInputMethod::default();
+        assert!(seat.admits(Some(Compositor)), "nobody owns the seat");
+        assert!(SeatInputMethod::keeps(Compositor, None));
+        for owner in [OnScreenKeyboard, Composer] {
+            seat.set(Some(owner));
+            assert!(
+                !seat.admits(Some(Compositor)),
+                "{owner:?} owns the seat; its commits go through it"
+            );
+            assert!(!SeatInputMethod::keeps(Compositor, Some(owner)));
+            assert!(SeatInputMethod::keeps(owner, Some(owner)));
+        }
     }
 
     #[test]

@@ -16,6 +16,7 @@ tilo-net = { path = "../tilo-net", features = ["blocking"] }
 # The in-memory Graph server behind `fake-server`.
 sha2 = { workspace = true, optional = true }
 test-http = { path = "../../dev/test-http", optional = true }
+workspace-hack = { version = "0.1" }
 
 [features]
 # `cloud_source_onedrive::fake::FakeGraph`, an in-memory Microsoft Graph

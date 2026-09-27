@@ -21,7 +21,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{BlendMode, Color, Fill, ImageData as PenikoImage};
 
-use ui::ColorCompat;
+use ui::paint::with_alpha;
 use ui::text_render::{FontChoice, TextRenderer, TextWeight};
 use ui::theme::Theme;
 
@@ -71,7 +71,7 @@ pub fn swatch_color(theme: &Theme, s: Swatch) -> Color {
 const ACCENT_PURPLE: usize = 6; // indigo-400, reads as a violet ink
 
 pub fn alpha(c: Color, a: u8) -> Color {
-    Color::from_rgba8(c.r(), c.g(), c.b(), a)
+    with_alpha(c, a)
 }
 
 /// Per-block typographic spec, in points.
