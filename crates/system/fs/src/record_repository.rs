@@ -306,6 +306,9 @@ pub struct RepositoryState {
     /// reading by anything that shows namespace or record state to peers or
     /// to the live tree: none of them ever sees half of a changeset.
     gate: tokio::sync::RwLock<()>,
+    /// Versions one record may hold: [`MAX_RECORD_VERSIONS`], lowered only
+    /// by tests so they can cross the bound cheaply.
+    max_versions: std::sync::atomic::AtomicUsize,
 }
 
 type CachedCursors = (usize, std::sync::Arc<[RecordStreamCursor]>);
@@ -1072,7 +1075,21 @@ impl RecordRepository {
             scope: Mutex::new(None),
             changesets: Mutex::new(index),
             gate: tokio::sync::RwLock::new(()),
+            max_versions: std::sync::atomic::AtomicUsize::new(MAX_RECORD_VERSIONS),
         })
+    }
+
+    /// Versions one record may hold before a write is refused.
+    pub(crate) fn max_record_versions(&self) -> usize {
+        self.max_versions.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Lower the per-record version bound, so a test crosses it without
+    /// writing [`MAX_RECORD_VERSIONS`] versions.
+    #[cfg(test)]
+    pub(crate) fn set_max_record_versions(&self, versions: usize) {
+        self.max_versions
+            .store(versions, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Make every durable write fail (or succeed again).
@@ -1132,6 +1149,7 @@ impl RecordRepository {
     /// Validate one batch against `records` and the candidates staged so
     /// far, and stage its candidate.
     fn stage_batch<A: RecordAuthorizer + ?Sized>(
+        &self,
         records: &Records,
         candidates: &mut BTreeMap<RecordRepositoryKey, StoredRecord>,
         key: RecordRepositoryKey,
@@ -1184,7 +1202,7 @@ impl RecordRepository {
             }
             candidate.push_pending(envelope.clone());
         }
-        if candidate.replica.version_count() > MAX_RECORD_VERSIONS {
+        if candidate.replica.version_count() > self.max_record_versions() {
             return Err(RecordRepositoryError::TooManyVersions);
         }
         if candidate.replica.conflict_count() > MAX_RECORD_CONFLICTS {
@@ -1249,7 +1267,7 @@ impl RecordRepository {
                 .all(|pair| matches!(pair, [a, b] if a.actor == b.actor));
         let mut records = self.lock_records()?;
         let mut candidates = BTreeMap::new();
-        Self::stage_batch(
+        self.stage_batch(
             &records,
             &mut candidates,
             key,
@@ -1287,7 +1305,7 @@ impl RecordRepository {
         let mut records = self.lock_records()?;
         let mut candidates = BTreeMap::new();
         for (key, envelopes) in batches {
-            Self::stage_batch(
+            self.stage_batch(
                 &records,
                 &mut candidates,
                 *key,
@@ -1417,7 +1435,7 @@ impl RecordRepository {
             if candidate.envelopes.len() > MAX_RECORD_OPERATIONS {
                 return Err(RecordRepositoryError::TooManyOperations);
             }
-            if candidate.replica.version_count() > MAX_RECORD_VERSIONS {
+            if candidate.replica.version_count() > self.max_record_versions() {
                 return Err(RecordRepositoryError::TooManyVersions);
             }
             if candidate.replica.conflict_count() > MAX_RECORD_CONFLICTS {

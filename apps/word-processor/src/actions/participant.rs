@@ -131,20 +131,40 @@ impl ParticipantView {
     /// unchanged. Pure.
     #[must_use]
     pub fn settle(&self, doc: &AutoCommit) -> Self {
+        self.settle_in(doc, None)
+    }
+
+    /// [`Self::settle`] reading the body's order from `body`, the kept order
+    /// of `doc`, so a body caret settles without listing the body.
+    #[must_use]
+    pub fn settle_in(&self, doc: &AutoCommit, body: Option<&qdoc_rich_text::BodyOrder>) -> Self {
         let mut out = self.clone();
         let Some(pending) = out.pending.take() else {
             return out;
         };
-        let Ok(containers) = qdoc::model::open(doc, &automerge::ROOT) else {
+        // The block after `pending.after`, and the one `steps` after it.
+        let at = |id_at: &dyn Fn(usize) -> Option<String>, index: usize| {
+            (id_at(index + 1), id_at(index + pending.steps.max(1)))
+        };
+        let found = if let Some(body) = body.filter(|_| self.region == RegionKind::Body) {
+            body.position(&pending.after)
+                .map(|index| at(&|i| body.id_at(i).map(str::to_owned), index))
+        } else {
+            let Ok(containers) = qdoc::model::open(doc, &automerge::ROOT) else {
+                return out;
+            };
+            let order =
+                qdoc::model::region_blocks_in_order(doc, &containers, self.region.to_region());
+            order
+                .iter()
+                .position(|block| *block == pending.after)
+                .map(|index| at(&|i| order.get(i).cloned(), index))
+        };
+        let Some((next, target)) = found else {
             return out;
         };
-        let order = qdoc::model::region_blocks_in_order(doc, &containers, self.region.to_region());
-        let Some(index) = order.iter().position(|block| *block == pending.after) else {
-            return out;
-        };
-        let next = order.get(index + 1);
-        let applied = next.is_some() && next != pending.was_next.as_ref();
-        if applied && let Some(block) = order.get(index + pending.steps.max(1)) {
+        let applied = next.is_some() && next != pending.was_next;
+        if applied && let Some(block) = target {
             out.caret = ViewPoint::new(block, pending.offset);
             out.anchor = None;
         }
@@ -172,11 +192,20 @@ impl ParticipantView {
         &'a self,
         order: &[String],
     ) -> Option<(&'a ViewPoint, &'a ViewPoint)> {
+        self.ordered_selection_by(|block| order.iter().position(|b| b == block))
+    }
+
+    /// [`Self::ordered_selection`] with the region's positions read through
+    /// `position`.
+    pub(super) fn ordered_selection_by(
+        &self,
+        position: impl Fn(&str) -> Option<usize>,
+    ) -> Option<(&ViewPoint, &ViewPoint)> {
         let anchor = self.anchor.as_ref()?;
         if *anchor == self.caret {
             return None;
         }
-        let index = |p: &ViewPoint| order.iter().position(|b| *b == p.block);
+        let index = |p: &ViewPoint| position(&p.block);
         let key_anchor = (index(anchor)?, anchor.offset);
         let key_caret = (index(&self.caret)?, self.caret.offset);
         Some(if key_anchor <= key_caret {

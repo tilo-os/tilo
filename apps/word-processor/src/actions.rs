@@ -510,8 +510,14 @@ pub const DEPRECATED_TAG: &str = "tilo.deprecated:";
 /// of a long paragraph is typed at that caret. `continue-paragraph` is
 /// deprecated in favour of `type-text` at a caret (`move-caret {to:
 /// document-end}` first).
-fn add_body_append_actions(root: &mut Resource, ctx: &WpResourceCtx, doc: &AutoCommit) {
-    let appended = editing::AppendTarget::new(&participant::ParticipantView::from_ctx(ctx), doc);
+fn add_body_append_actions(
+    root: &mut Resource,
+    ctx: &WpResourceCtx,
+    doc: &AutoCommit,
+    body: Option<&qdoc_rich_text::BodyOrder>,
+) {
+    let appended =
+        editing::AppendTarget::new(&participant::ParticipantView::from_ctx(ctx), doc, body);
     for (id, label, description, handler, append) in [
         (
             "append-paragraph",
@@ -1340,40 +1346,44 @@ pub(crate) fn provide_resources_with_file(
     file: Option<&continuation::FileContext>,
 ) -> Vec<Resource> {
     let Ok(containers) = qdoc::model::open(doc, &automerge::ROOT) else {
-        return vec![resource_root(ctx, doc, file)];
+        return vec![resource_root(ctx, doc, file, None)];
     };
     let snapshot = qdoc::model::materialize(doc, &containers);
-    provide_resources_from(ctx, doc, file, &snapshot, true)
+    provide_resources_from(ctx, doc, file, None, &snapshot, true)
 }
 
 /// The operations every tree has, before any listing is read from the
-/// document.
+/// document. `body` is the kept order of `doc`'s body, when there is one.
 fn resource_root(
     ctx: &WpResourceCtx,
     doc: &AutoCommit,
     file: Option<&continuation::FileContext>,
+    body: Option<&qdoc_rich_text::BodyOrder>,
 ) -> Resource {
     let mut root = document_resource();
     add_file_operations(&mut root, file);
     add_view_operations(&mut root);
     add_caret_actions(&mut root, ctx);
-    add_selection_resources(&mut root, ctx, editing::large_selection(ctx, doc));
-    add_body_append_actions(&mut root, ctx, doc);
+    add_selection_resources(&mut root, ctx, editing::large_selection(ctx, doc, body));
+    add_body_append_actions(&mut root, ctx, doc, body);
     add_comment_resource_action(&mut root, ctx);
     root
 }
 
 /// The resource tree over `listed`: a snapshot holding at least the blocks,
-/// review, notes, styles and properties the tree lists.
+/// review, notes, styles and properties the tree lists. `body`, the kept
+/// order of `doc`'s body, lets the operations read only the blocks around
+/// the caret.
 fn provide_resources_from(
     ctx: &WpResourceCtx,
     doc: &AutoCommit,
     file: Option<&continuation::FileContext>,
+    body: Option<&qdoc_rich_text::BodyOrder>,
     listed: &qdoc::snapshot::DocSnapshot,
     revisions: bool,
 ) -> Vec<Resource> {
-    let mut root = resource_root(ctx, doc, file);
-    editing::add_operations(&mut root, ctx, doc);
+    let mut root = resource_root(ctx, doc, file, body);
+    editing::add_operations(&mut root, ctx, doc, body);
     view_ops::add_operations(&mut root, ctx);
     add_search_resources(&mut root, ctx, listed);
     add_document_edit_actions(&mut root, ctx);
@@ -1442,7 +1452,7 @@ pub(crate) fn provide_resources_listed(
         changes: state.changes().as_ref().clone(),
         ..qdoc::snapshot::DocSnapshot::default()
     };
-    provide_resources_from(ctx, doc, file, &listed, revisions)
+    provide_resources_from(ctx, doc, file, Some(&**body), &listed, revisions)
 }
 
 pub(crate) fn file_choice_resource(generation: u64) -> Result<Resource, String> {
