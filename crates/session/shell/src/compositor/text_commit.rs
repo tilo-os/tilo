@@ -25,6 +25,10 @@
 //! request therefore waits, bounded by [`DELIVERY_WINDOW`], for the focused
 //! field to be enabled again.
 //!
+//! The shell also follows where each field's caret is
+//! (`set_cursor_rectangle`), so the picker opens beside it
+//! ([`State::focused_text_caret`]).
+//!
 //! Every request reports whether the field it reached was sensitive
 //! (a password, a PIN, or hidden/sensitive content hints), from the content
 //! type the field declared. Emoji are content and are committed into such a
@@ -78,16 +82,21 @@ impl ContentType {
     }
 }
 
+/// A caret in the field's surface coordinates: `x`, `y`, width, height.
+type CursorRectangle = (i32, i32, i32, i32);
+
 #[derive(Clone, Copy, Debug, Default)]
 struct FieldState {
     pending_enable: bool,
     pending: Option<ContentType>,
     committed: ContentType,
+    pending_cursor: Option<CursorRectangle>,
+    cursor: Option<CursorRectangle>,
 }
 
-/// The content type every text input has committed, tracked beside Smithay's
-/// own text-input state (which forwards it to an input method but does not
-/// keep it).
+/// The content type and caret every text input has committed, tracked beside
+/// Smithay's own text-input state (which forwards them to an input method but
+/// does not keep them).
 #[derive(Debug, Default)]
 pub struct TextFields {
     fields: HashMap<ObjectId, FieldState>,
@@ -112,12 +121,25 @@ impl TextFields {
                     },
                 });
             }
+            zwp_text_input_v3::Request::SetCursorRectangle {
+                x,
+                y,
+                width,
+                height,
+            } => field.pending_cursor = Some((*x, *y, *width, *height)),
             zwp_text_input_v3::Request::Commit => {
                 let pending = field.pending.take();
+                let pending_cursor = field.pending_cursor.take();
                 if std::mem::take(&mut field.pending_enable) {
                     field.committed = pending.unwrap_or_default();
-                } else if let Some(pending) = pending {
-                    field.committed = pending;
+                    field.cursor = pending_cursor;
+                } else {
+                    if let Some(pending) = pending {
+                        field.committed = pending;
+                    }
+                    if pending_cursor.is_some() {
+                        field.cursor = pending_cursor;
+                    }
                 }
             }
             _ => {}
@@ -126,6 +148,13 @@ impl TextFields {
 
     pub fn forget(&mut self, resource: &ZwpTextInputV3) {
         self.fields.remove(&resource.id());
+    }
+
+    /// The caret `resource` last committed, in its surface's coordinates.
+    pub fn cursor_rectangle(&self, resource: &ZwpTextInputV3) -> Option<CursorRectangle> {
+        self.fields
+            .get(&resource.id())
+            .and_then(|field| field.cursor)
     }
 
     /// The content type `resource` last committed.
@@ -303,6 +332,30 @@ impl State {
         Some(sensitive)
     }
 
+    /// Where the focused field's caret is, in desktop coordinates: the
+    /// cursor rectangle its enabled text input last committed, placed on the
+    /// surface it belongs to. `None` when no field takes text, it has not
+    /// said, or its surface is not on screen.
+    pub fn focused_text_caret(&self) -> Option<vello::kurbo::Rect> {
+        let mut target = None;
+        self.seat
+            .text_input()
+            .with_active_text_input(|field, surface| {
+                target = Some((field.clone(), super::state::surface_id(surface)));
+            });
+        let (field, surface) = target?;
+        let (x, y, width, height) = self.text_fields.cursor_rectangle(&field)?;
+        let origin = self.surface_desktop_rect(surface)?;
+        let x0 = origin.x0 + f64::from(x);
+        let y0 = origin.y0 + f64::from(y);
+        Some(vello::kurbo::Rect::new(
+            x0,
+            y0,
+            x0 + f64::from(width.max(0)),
+            y0 + f64::from(height.max(0)),
+        ))
+    }
+
     /// The content type of the focused field's enabled text input; the
     /// default (nothing secret) when no field takes text.
     pub(crate) fn active_field_content_type(&self) -> ContentType {
@@ -331,6 +384,9 @@ pub fn relay(
     for text in &delivered {
         host.note_emoji_delivered(&text.text, text.sensitive);
     }
+    // Where the next Super+. opens. The picker takes the keyboard while it
+    // is open, so it keeps the caret it opened against.
+    host.set_text_caret(state.focused_text_caret());
     delivered
 }
 
