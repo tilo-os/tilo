@@ -7606,6 +7606,10 @@ pub fn run() {
             if let Some(index) = input_source {
                 state.activate_keyboard_source(index);
                 backend.set_keyboard_source(index);
+                // The saved choice may be an input-method engine (or leave
+                // one): hand typing to its owner now, not on the next
+                // settings poll.
+                input_methods.reload(&mut state);
             }
 
             // Protocol callbacks and the frame builder share one tree handle, so
