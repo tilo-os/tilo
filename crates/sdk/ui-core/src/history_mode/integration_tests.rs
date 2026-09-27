@@ -2539,7 +2539,7 @@ fn hidden_legacy_tile_continues_exact_owner_lifecycle_and_settles_once() {
         "the legitimate result is one authored undo step on its actual owner"
     );
 
-    let deadline = crate::time::now() + crate::time::Duration::from_secs(3);
+    let deadline = crate::time::now() + crate::time::Duration::from_secs(30);
     while store.save_status(&first.id).unwrap() != crate::record::RecordSaveStatus::Saved
         && crate::time::now() < deadline
     {

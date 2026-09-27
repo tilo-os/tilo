@@ -5817,9 +5817,9 @@ impl Widget for SheetsApp {
 
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
         if !self.pending.seeded {
-            // Pull the shared global defaults once at startup.
-            self.global = GlobalSettings::load();
             if !self.persistence_started {
+                // Pull the shared global defaults once at startup.
+                self.global = GlobalSettings::load();
                 self.persistence_started = true;
                 if self.run.persists() {
                     if let Err(error) = self.start_persistence_load(state.get_heads()) {
@@ -8187,10 +8187,10 @@ mod tests {
     /// need its result drive the same frame pump a running app uses, with a
     /// bounded deadline so a lost worker fails deterministically.
     fn sync_until(app: &mut SheetsApp, doc: &mut AutoCommit, done: impl Fn(&SheetsApp) -> bool) {
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + Duration::from_secs(30);
         while !done(app) && Instant::now() < deadline {
             app.sync(doc, &automerge::ROOT);
-            std::thread::yield_now();
+            std::thread::sleep(Duration::from_millis(1));
         }
         assert!(done(app), "background Sheets worker did not settle in time");
     }

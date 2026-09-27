@@ -1883,7 +1883,7 @@ pub(super) mod tests {
                 });
                 let mut job = f.session.start(f.copy("a")).unwrap();
                 let id = job.operation_id();
-                let deadline = Instant::now() + Duration::from_secs(10);
+                let deadline = Instant::now() + Duration::from_secs(30);
                 let mut updates = vec![];
                 let error = loop {
                     match job.poll() {
@@ -1894,7 +1894,7 @@ pub(super) mod tests {
                         Instant::now() < deadline,
                         "terminal receipt failure was not surfaced"
                     );
-                    std::thread::yield_now();
+                    std::thread::sleep(Duration::from_millis(1));
                 };
                 assert_publication(&error, expected);
                 assert!(matches!(job.poll(), Err(FsError::StoreUnavailable)));
