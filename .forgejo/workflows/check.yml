@@ -282,7 +282,9 @@ jobs:
       # The native ARM runner has enough memory for one of the largest test
       # links, but not four simultaneously. Most compile work is served by
       # sccache, so serialize ARM rustc/linker processes without slowing x86.
-      CARGO_BUILD_JOBS: ${{ matrix.arch == 'aarch64' && '1' || '4' }}
+      # The x86 runners have 16 or 24 CPUs; four jobs left the uncached test
+      # crates and links queueing behind each other.
+      CARGO_BUILD_JOBS: ${{ matrix.arch == 'aarch64' && '1' || '8' }}
     strategy:
       fail-fast: false
       max-parallel: 8
@@ -537,7 +539,7 @@ jobs:
     runs-on: ${{ matrix.check_runner }}
     timeout-minutes: 120
     env:
-      CARGO_BUILD_JOBS: '4'
+      CARGO_BUILD_JOBS: '8'
     strategy:
       fail-fast: false
       max-parallel: 2
