@@ -30,12 +30,13 @@ out=$(mktemp -d "${RUNNER_TEMP:-/var/tmp}/tilo-vm-disk-candidate.XXXXXX")
 trap 'rm -rf -- "$out"' EXIT
 
 disk="tilo-vm-candidate-$ARCH.qcow2"
-qemu-img convert -f qcow2 -O qcow2 -c -o compression_type=zstd "$SOURCE_DISK" "$out/$disk"
-qemu-img check -f qcow2 "$out/$disk" >/dev/null
-(cd "$out" && sha256sum "$disk" > "$disk.sha256")
+# Upload the installed disk directly. Keeping a second qcow2 on the 100 GiB
+# Kata runner exhausted its Docker overlay before the boot gate could run.
+qemu-img check -f qcow2 "$SOURCE_DISK" >/dev/null
+sha256sum "$SOURCE_DISK" | awk -v file="$disk" '{print $1 "  " file}' > "$out/$disk.sha256"
 disk_sha=$(awk '{print $1}' "$out/$disk.sha256")
-disk_bytes=$(stat -c %s "$out/$disk")
-virtual_bytes=$(qemu-img info --output=json "$out/$disk" | jq -er '."virtual-size"')
+disk_bytes=$(stat -c %s "$SOURCE_DISK")
+virtual_bytes=$(qemu-img info --output=json "$SOURCE_DISK" | jq -er '."virtual-size"')
 
 files=$(jq -nc --arg file "$disk" --arg url "$package/$disk" \
   --arg sha "$disk_sha" --argjson size "$disk_bytes" --argjson virtual "$virtual_bytes" \
@@ -57,7 +58,8 @@ fi
 
 uploads="$out/uploads.tsv"
 while read -r file; do
-  printf '%s\t%s\n' "$out/$file" "$package/$file" \
+  if [[ $file == "$disk" ]]; then path=$SOURCE_DISK; else path="$out/$file"; fi
+  printf '%s\t%s\n' "$path" "$package/$file" \
     "$out/$file.sha256" "$package/$file.sha256" >> "$uploads"
 done < <(jq -r '.[].file' <<< "$files")
 TILO_PACKAGE_UPLOAD_WORKERS=2 "$repo/tools/upload_immutable_packages.sh" "$uploads"
@@ -78,7 +80,7 @@ printf '%s\t%s\n' "$out/$manifest" "$package/$manifest" \
   "$out/$manifest.sha256" "$package/$manifest.sha256" > "$uploads"
 "$repo/tools/upload_immutable_packages.sh" "$uploads"
 echo "::notice::UNVALIDATED installed disk checkpoint: $package/$manifest"
-echo "::notice::disk SHA-256: $disk_sha; compressed bytes: $disk_bytes; source: $SOURCE_REVISION; tooling: $DISK_TOOLING_REVISION"
+echo "::notice::disk SHA-256: $disk_sha; bytes: $disk_bytes; source: $SOURCE_REVISION; tooling: $DISK_TOOLING_REVISION"
 if [[ -n ${GITHUB_STEP_SUMMARY:-} ]]; then
   {
     echo '### Unvalidated installed dev disk checkpoint'
