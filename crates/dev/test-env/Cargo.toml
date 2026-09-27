@@ -11,6 +11,7 @@ description = "Serialised, self-restoring process environment and XDG fixtures f
 
 [dependencies]
 tempfile.workspace = true
+workspace-hack = { version = "0.1" }
 
 [lints]
 workspace = true

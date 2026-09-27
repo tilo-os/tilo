@@ -582,6 +582,48 @@ impl LaunchSpec {
     }
 }
 
+/// One named screenshot pose for a legacy app that is not yet on
+/// [`crate::framework::ResourceApp`]: a label for `--scenario` and the
+/// factory that builds that pose.
+pub struct ShotScenario {
+    pub name: &'static str,
+    pub build: fn(&LaunchArgs) -> Result<Box<dyn Widget>, LaunchError>,
+}
+
+/// Build the widget for `args.scenario` from a pose table.
+///
+/// `default` is used when `--scenario` is omitted (plain `--shots`).
+/// Declaring the names on [`LaunchSpec::scenarios`] still belongs on the
+/// spec so an unknown name is rejected before this runs.
+///
+/// # Errors
+/// Propagates the chosen factory's error. An undeclared scenario name
+/// is already refused by [`LaunchSpec`] validation.
+pub fn build_shot_scenario(
+    args: &LaunchArgs,
+    table: &[ShotScenario],
+    default: fn(&LaunchArgs) -> Result<Box<dyn Widget>, LaunchError>,
+) -> Result<Box<dyn Widget>, LaunchError> {
+    let Some(name) = args.scenario.as_deref() else {
+        return default(args);
+    };
+    for pose in table {
+        if pose.name == name {
+            return (pose.build)(args);
+        }
+    }
+    // Validation should have rejected unknown names; keep a hard error
+    // so a table/spec drift cannot silently fall through to the default.
+    Err(LaunchError::Scenario(format!(
+        "unknown screenshot scenario {name:?}; expected one of {}",
+        table
+            .iter()
+            .map(|pose| format!("{:?}", pose.name))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )))
+}
+
 pub enum LaunchError {
     Record(crate::record::RecordOpenError),
     Restore(crate::view::ThawError),

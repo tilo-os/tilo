@@ -34,6 +34,7 @@ libc.workspace = true
 zeroize.workspace = true
 tar.workspace = true
 zstd.workspace = true
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tempfile.workspace = true

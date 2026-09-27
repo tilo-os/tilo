@@ -36,6 +36,95 @@ def fixture():
 
 
 class AllocateTests(unittest.TestCase):
+    def test_diskpart_fallback_exact_shrink_on_file_backed_gpt(self):
+        plan, request, before, _, final, disk_size, c = fixture()
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            physical = directory / "physical.raw"
+            with physical.open("wb") as stream:
+                stream.truncate(disk_size)
+                fixture_module.write_gpt(stream, before["partitions"], disk_size)
+            request_path = directory / "request.json"
+            request_path.write_text(json.dumps(request))
+            output = directory / "realized.json"
+            args = SimpleNamespace(request=request_path,
+                                   confirm_request_sha256=hashlib.sha256(request_path.read_bytes()).hexdigest(),
+                                   confirm_disk_id="physical-fixture",
+                                   confirm_recovery_protector_id=PROTECTOR,
+                                   confirm_recovery_key_backed_up=True, output=output)
+            state = {"rows": before["partitions"], "free": c["free_bytes"],
+                     "ntfs": request["planned_windows_shrink"]["original_size_bytes"] - MIB}
+            diskpart_commands = []
+
+            def snapshot(_disk):
+                return {"partitions": list(state["rows"]), **plan["windows_disk"]}
+
+            def diskpart(command):
+                diskpart_commands.append(command)
+                if command.startswith("shrink desired="):
+                    state["rows"] = list(request["preserve_partitions"])
+                    state["free"] -= request["target_free_extent"]["size_bytes"]
+                    state["ntfs"] -= request["target_free_extent"]["size_bytes"]
+                    with physical.open("r+b") as stream:
+                        fixture_module.write_gpt(stream, state["rows"], disk_size)
+                return ""
+
+            def ps(command):
+                if "Get-PartitionSupportedSize" in command:
+                    # Model the real host: PowerShell rejects a target DiskPart can shrink.
+                    return {"min": request["planned_windows_shrink"]["new_size_bytes"] + MIB,
+                            "max": request["planned_windows_shrink"]["original_size_bytes"]}
+                if "New-Partition" in command:
+                    count = len(state["rows"]) - 4
+                    state["rows"] = list(state["rows"]) + [final[count]]
+                    with physical.open("r+b") as stream:
+                        fixture_module.write_gpt(stream, state["rows"], disk_size)
+                    return {}
+                self.fail("unexpected PowerShell mutation")
+
+            with patch.object(allocate.platform, "system", return_value="Windows"), \
+                 patch.object(allocate.ctypes, "windll", SimpleNamespace(shell32=SimpleNamespace(IsUserAnAdmin=lambda: True)), create=True), \
+                 patch.object(allocate, "GIB", MIB), \
+                 patch.object(allocate.stage, "snapshot", side_effect=snapshot), \
+                 patch.object(allocate, "windows_c_and_recovery", side_effect=lambda: {**c, "free_bytes": state["free"]}), \
+                 patch.object(allocate.stage, "ps_json", side_effect=ps), \
+                 patch.object(allocate.stage, "windows_install_gate", return_value={}) as gate, \
+                 patch.object(allocate, "c_ntfs_size", side_effect=lambda: state["ntfs"]), \
+                 patch.object(allocate, "run_diskpart", side_effect=diskpart), \
+                 patch.object(allocate, "raw_disk_read", side_effect=lambda _: physical.open("rb")):
+                allocate.execute(args)
+            self.assertEqual(diskpart_commands,
+                             ["shrink querymax", "shrink desired=35 minimum=35"])
+            self.assertEqual(gate.call_count, 2)
+            self.assertEqual(json.loads(output.read_text()), plan)
+
+    def test_diskpart_script_selects_only_c_volume(self):
+        commands = []
+
+        def fake_run(argv, **kwargs):
+            self.assertEqual(argv[:2], ["diskpart.exe", "/s"])
+            commands.append(Path(argv[2]).read_text(encoding="ascii"))
+            return SimpleNamespace(returncode=0, stdout="ok", stderr="")
+
+        with patch.object(allocate.subprocess, "run", side_effect=fake_run):
+            self.assertEqual(allocate.run_diskpart("shrink desired=49152 minimum=49152"), "ok")
+        self.assertEqual(commands, ["select volume C\nshrink desired=49152 minimum=49152\nexit\n"])
+
+    def test_diskpart_fallback_rejects_partial_shrink(self):
+        _, request, before, _, _, _, c = fixture()
+        partial = json.loads(json.dumps(before))
+        partial["partitions"][2]["size_bytes"] -= MIB
+        snapshots = [before, partial]
+        with patch.object(allocate.stage, "snapshot", side_effect=lambda _: snapshots.pop(0)), \
+             patch.object(allocate, "check_gpt"), \
+             patch.object(allocate, "windows_c_and_recovery", return_value=c), \
+             patch.object(allocate.stage, "windows_install_gate", return_value={}), \
+             patch.object(allocate, "c_ntfs_size", return_value=before["partitions"][2]["size_bytes"] - MIB), \
+             patch.object(allocate, "run_diskpart", return_value="") as diskpart:
+            with self.assertRaisesRegex(ValueError, "preserved Windows partition"):
+                allocate.exact_diskpart_shrink(request)
+        self.assertEqual(diskpart.call_count, 2)
+
     def test_allocation_plan_and_request(self):
         with self.subTest(phase="reviewed_shrink_plan_and_resume_states"):
             plan, request, before, complete, final, _, c = fixture()

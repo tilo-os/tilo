@@ -20,6 +20,7 @@ tilo-clock = { path = "../tilo-clock" }
 reqwest = { workspace = true, optional = true, features = ["blocking"] }
 tilo-net = { path = "../tilo-net", optional = true, features = ["blocking"] }
 test-http = { path = "../../dev/test-http", optional = true }
+workspace-hack = { version = "0.1" }
 
 [features]
 default = ["client"]

@@ -15,6 +15,7 @@ uuid.workspace = true
 url = { workspace = true, features = ["serde"] }
 # The in-memory WebDAV/Nextcloud server behind `fake-server`.
 test-http = { path = "../../dev/test-http", optional = true }
+workspace-hack = { version = "0.1" }
 
 [features]
 # `cloud_source_dav::fake::FakeDav`, an in-memory WebDAV/Nextcloud server on

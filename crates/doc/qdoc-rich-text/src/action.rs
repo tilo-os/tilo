@@ -20,6 +20,7 @@ use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ReadDoc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use tilo_resource::JsonSchema;
 
 use qdoc::model::Region;
 use qdoc::{Containers, DocMut};
@@ -48,7 +49,7 @@ mod num {
 
 /// Which page region a text/formatting op addresses. Mirrors [`qdoc::model::Region`]
 /// (which is not itself serializable) so the region travels in the payload.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub enum RegionKind {
     #[default]
     Body,
@@ -77,7 +78,7 @@ impl RegionKind {
 /// A serializable inline-mark value (the character-format payload). `Bool` is a
 /// toggle mark (bold/italic/underline/strike/super/sub); `Int` is a size; `Str`
 /// is a font family / colour / highlight.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub enum MarkVal {
     Bool(bool),
     Int(i64),
@@ -87,7 +88,7 @@ pub enum MarkVal {
 /// A serializable block-attribute value. Maps onto the scalar an attr stores
 /// (`align`/`style`/`tab_stops` are `Str`, `level`/image dims are `Int`,
 /// `indent`/`line_spacing` are `Float`, `page_break_before`/flips are `Bool`).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub enum AttrVal {
     Bool(bool),
     Int(i64),
@@ -106,14 +107,14 @@ pub struct SelectionTarget {
 
 /// One `(block, [start, end))` range a formatting mark covers. A selection that
 /// spans several blocks is carried as one span per touched block.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Span {
     pub block: String,
     pub start: usize,
     pub end: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct TocTarget {
     pub heading: String,
     pub level: i64,
@@ -121,7 +122,7 @@ pub struct TocTarget {
     pub page: Option<usize>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub enum TableEdit {
     InsertRow { at: usize },
     InsertColumn { at: usize },
@@ -136,7 +137,7 @@ pub enum TableEdit {
 /// it touches, so [`Action::apply`] is a pure, replayable write. Ordinary typing,
 /// deletion, paragraph splitting, Find & Replace, and agent-authored edits all
 /// enter through these same envelopes; caret and selection updates remain local.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub enum RichTextAction {
     /// Replace `[at, at+del)` of `block` with `ins` (insert = `del` 0; delete =
     /// `ins` empty). The deterministic text primitive.

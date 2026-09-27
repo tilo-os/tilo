@@ -51,6 +51,7 @@ pub mod display_identify;
 pub mod display_mode;
 pub mod display_tools;
 pub mod hardware;
+pub mod keyboard_shortcuts;
 pub mod magnifier;
 pub mod notification_policy;
 pub mod roaming_provenance;

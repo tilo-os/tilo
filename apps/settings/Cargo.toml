@@ -102,6 +102,7 @@ atomic-file = { path = "../../crates/system/atomic-file" }
 xdg-paths = { path = "../../crates/system/xdg-paths" }
 quick-xml.workspace = true
 uuid.workspace = true
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }

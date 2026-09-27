@@ -76,6 +76,7 @@ tokio = { workspace = true, optional = true, features = ["sync"] }
 # Length-prefixed media frames on the call stream.
 wire-frame = { path = "../../crates/system/wire-frame", optional = true, features = ["tokio"] }
 tilo-callstream = { path = "../../crates/collab/tilo-callstream", optional = true }
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
