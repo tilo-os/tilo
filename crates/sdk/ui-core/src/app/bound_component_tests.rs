@@ -957,6 +957,7 @@ include!("owner_publication_tests.rs");
 
 include!("action_directory_snapshot_bound_tests.rs");
 include!("bound_record_sync_tests.rs");
+include!("standalone_history_record_restore_tests.rs");
 
 #[allow(
     clippy::too_many_lines,

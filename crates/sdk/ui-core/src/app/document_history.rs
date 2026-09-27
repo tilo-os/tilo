@@ -337,11 +337,11 @@ impl App {
     /// Write a restore the History pane confirmed into the live document,
     /// through the same undo log as every other action, then persist it.
     fn apply_confirmed_history_restore(&mut self) {
-        let Some(review) = self.document_history.take_confirmed_restore() else {
+        let Some(confirmed) = self.document_history.take_confirmed_restore() else {
             return;
         };
         let author = Some(self.local_author().clone());
-        let result = crate::standalone_history::apply_restore(&mut self.state, &review, author);
+        let result = crate::standalone_history::apply_restore(&mut self.state, &confirmed, author);
         if matches!(result, Ok(true)) {
             self.needs_sync = true;
             self.layout.layout_dirty = true;
