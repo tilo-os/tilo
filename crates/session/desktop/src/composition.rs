@@ -1,6 +1,5 @@
 //! The production desktop hierarchy, shared by native and portable hosts.
 use crate::resolver::{TileRequest, TileResolver, tile_app_kind};
-use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
 use taffy::{NodeId, TaffyTree};
 use tilo_desktop_model::{

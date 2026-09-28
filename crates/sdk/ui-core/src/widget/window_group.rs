@@ -11,7 +11,7 @@ use crate::widget::{AppModel, ModelPath};
 use crate::widget::{
     FloatingSurfaceProvider, TabBar, TabDescriptor, TileContent, TileHost, Widget,
 };
-use automerge::{AutoCommit, ObjId};
+use automerge::AutoCommit;
 use std::collections::HashMap;
 use taffy::style_helpers::length;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -2267,6 +2267,7 @@ impl Widget for WindowGroup {
 mod tests {
     use super::*;
     use crate::widget::{AppKind, TabDescriptor, TileContent};
+    use automerge::ObjId;
 
     #[test]
     fn external_navigation_omits_bar_from_layout_and_semantics_but_retains_tabs() {

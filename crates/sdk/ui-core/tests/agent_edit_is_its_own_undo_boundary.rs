@@ -21,7 +21,7 @@
 )]
 
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjId, ROOT, ReadDoc};
+use automerge::{AutoCommit, ROOT, ReadDoc};
 use tilo_ui::widget::{AppModel, ModelPath};
 
 use crate::support::typed_collab::TypedBroker;

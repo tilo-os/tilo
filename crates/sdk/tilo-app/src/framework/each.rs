@@ -8,7 +8,6 @@ use ui_core::widget::{AppModel, ModelPath};
 use taffy::style_helpers::{length, percent};
 use taffy::{NodeId, Style, TaffyTree};
 use tilo_resource::{Id, Resource};
-use ui_core::automerge::{AutoCommit, ObjId};
 use ui_core::presence::PresenceCtx;
 use ui_core::text_render::TextRenderer;
 use ui_core::vello::Scene;

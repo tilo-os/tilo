@@ -35,7 +35,6 @@
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
@@ -759,6 +758,7 @@ impl Widget for SlashMenu {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::AutoCommit;
     use winit::event::{ElementState, KeyEvent};
     use winit::keyboard::{KeyLocation, PhysicalKey, SmolStr};
 

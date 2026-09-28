@@ -21,7 +21,6 @@ use std::collections::HashMap;
 use ui::doc::read_str_or_text;
 use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
@@ -250,7 +249,7 @@ impl Widget for KeyboardView {
 mod tests {
     use super::*;
     use automerge::transaction::Transactable;
-    use automerge::{ObjType, ReadDoc};
+    use automerge::{AutoCommit, ObjId, ObjType, ReadDoc};
 
     fn doc_with_keymap(value: &str) -> (AutoCommit, ObjId) {
         let mut doc = AutoCommit::new();

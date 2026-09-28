@@ -17,7 +17,6 @@ use crate::time::SystemTime;
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
 use collab_types::{ChannelEvent, Ed25519PublicKey};
 use taffy::{Dimension, Display, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -636,6 +635,7 @@ impl Widget for InviteAcceptScreen {
 mod tests {
     use super::*;
     use crate::time::Duration;
+    use automerge::AutoCommit;
     use collab_types::{ChannelId, Role as ChannelRole, generate_keypair};
 
     fn fixture_url(now: SystemTime) -> String {

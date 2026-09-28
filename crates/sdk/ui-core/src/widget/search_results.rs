@@ -15,7 +15,6 @@
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
-use automerge::AutoCommit;
 use taffy::style_helpers::{length, percent};
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
@@ -824,6 +823,7 @@ impl Widget for SearchResultsView {
 mod tests {
     use super::*;
     use crate::search::SearchRegistry;
+    use automerge::AutoCommit;
 
     /// Relative luminance of the composited pixel at (`x`, `y`).
     #[allow(

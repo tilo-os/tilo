@@ -7,7 +7,6 @@
 //! `MenuItem::separator()` entries, then call `open_at` on right-click.
 
 use crate::widget::{AppModel, ModelPath};
-use automerge::{AutoCommit, ObjId};
 use std::sync::Arc;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -1230,6 +1229,7 @@ mod a11y_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::AutoCommit;
     use std::collections::HashMap;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU32, Ordering};

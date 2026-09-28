@@ -16,7 +16,6 @@
 //! host's CRDT), matching the toolkit's CRDT-native pattern.
 
 use crate::widget::{AppModel, ModelPath};
-use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
 use taffy::style_helpers::{length, percent};
 use taffy::{NodeId, Style, TaffyTree};
@@ -764,6 +763,7 @@ impl Widget for ColorSwatchPicker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::AutoCommit;
 
     fn lay_out(w: &mut dyn Widget) {
         let theme = Theme::dark();

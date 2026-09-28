@@ -11,7 +11,6 @@
 //! resulting `Capability` grant.
 
 use crate::widget::{AppModel, ModelPath};
-use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -711,6 +710,7 @@ mod tests {
     //! `apply_layout_helper` populates the hit-test rects from a synthetic
     //! `self.rect` so tests don't depend on a GPU/text-renderer.
     use super::*;
+    use automerge::AutoCommit;
     use winit::event::{DeviceId, ElementState, MouseButton};
 
     fn synth_device() -> DeviceId {

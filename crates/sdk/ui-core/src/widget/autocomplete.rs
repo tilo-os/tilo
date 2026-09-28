@@ -23,7 +23,6 @@
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
@@ -984,6 +983,7 @@ impl Widget for Autocomplete {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::AutoCommit;
     use winit::event::Modifiers;
 
     #[test]
