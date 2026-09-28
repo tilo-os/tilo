@@ -34,6 +34,8 @@ const CHAT_KEYS: &[&str] = &[
     "messages",
     "drafts",
     "rich_drafts",
+    // A feedback channel's report statuses and votes.
+    "reports",
     "users",
 ];
 const PROFILE_KEYS: &[&str] = &["name", "initials", "color_idx", "agent", "status"];
@@ -101,6 +103,7 @@ static CHAT_SCHEMA: HistoryRestoreSchema = HistoryRestoreSchema {
         map_root("messages", false),
         map_root("drafts", false),
         map_root("rich_drafts", false),
+        map_root("reports", false),
     ],
     selectors: &[HistoryRootSelector {
         pattern: HistoryRootPattern::Exact("users"),
