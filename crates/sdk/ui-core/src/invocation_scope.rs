@@ -307,6 +307,11 @@ impl ResourceInvocationScope {
         self.lease.request.invocation
     }
 
+    /// The canonical record route construction verified against the owner.
+    pub(crate) fn route(&self) -> &RouteSpec {
+        &self.lease.route
+    }
+
     /// Irreversibly retire this job and all derived worker-effect custody.
     /// Cancellation grants no authority and cannot affect another job.
     pub fn cancel(&self) {
@@ -351,15 +356,8 @@ impl ResourceInvocationScope {
         })
     }
 
-    /// Verify only the original caller and exact immutable local record loan.
-    /// This does not confer a qualified committed read frame or disclosure.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "admission stays closed until a qualified committed read view exists; only the inert semantic reader (tested) checks a read loan"
-        )
-    )]
+    /// Verify the original caller and that `document` is the record store's
+    /// current loan of this scope's exact record.
     pub(crate) fn check_read_loan(&self, document: &AutoCommit) -> Result<(), String> {
         self.check()?;
         let (store, checkout) = self.owner.store_checkout();
@@ -885,6 +883,51 @@ fn record_loan_matches(
                 && loan.record == checkout.id
                 && std::ptr::eq(loan.document, document)
         })
+    })
+}
+
+struct MountedDocument {
+    route: RouteSpec,
+    document: *const AutoCommit,
+}
+thread_local! {
+    static MOUNTED_DOCUMENTS: RefCell<Vec<MountedDocument>> = const { RefCell::new(Vec::new()) };
+}
+struct MountedLoan;
+impl Drop for MountedLoan {
+    fn drop(&mut self) {
+        MOUNTED_DOCUMENTS.with_borrow_mut(|mounted| {
+            mounted.pop();
+        });
+    }
+}
+
+/// Lend the app's mounted primary document to `callback`, identified as the
+/// canonical record on `route`. Without a current primary route the document
+/// is lent unidentified, and nothing may disclose it as a record.
+pub(crate) fn with_mounted_document<R>(
+    route: Option<RouteSpec>,
+    document: &mut AutoCommit,
+    callback: impl FnOnce(&mut AutoCommit) -> R,
+) -> R {
+    let Some(route) = route else {
+        return callback(document);
+    };
+    MOUNTED_DOCUMENTS.with_borrow_mut(|mounted| {
+        mounted.push(MountedDocument { route, document });
+    });
+    let _loan = MountedLoan;
+    callback(document)
+}
+
+/// The route of the innermost mounted primary document, when it is exactly
+/// `document`.
+pub(crate) fn mounted_document_route(document: &AutoCommit) -> Option<RouteSpec> {
+    MOUNTED_DOCUMENTS.with_borrow(|mounted| {
+        mounted
+            .last()
+            .filter(|mount| std::ptr::eq(mount.document, document))
+            .map(|mount| mount.route.clone())
     })
 }
 

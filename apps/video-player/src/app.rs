@@ -1838,7 +1838,7 @@ impl PlayerApp {
         use crate::actions::PlayerOperation;
         match operation {
             PlayerOperation::Open { path: None } => {
-                // `invoke_resource_operation` starts portal opens so it can
+                // `answer_resource_operation` starts portal opens so it can
                 // report a refusal to agents; this branch is retained for the
                 // in-app path and intentionally ignores an already-reported
                 // failure rather than panicking.
@@ -3584,137 +3584,35 @@ impl Widget for PlayerApp {
         }
     }
 
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        if kind == tilo_actions::OperationKind::Document {
-            return Ok(false);
-        }
-        let Some(operation) = crate::actions::decode(type_id, payload)? else {
-            return Ok(false);
-        };
-        if operation.requires_media() && !self.player.has_media() {
-            return Err("open a video before using this playback control".into());
-        }
-        self.validate_dynamic_target(&operation)?;
-        if let PlayerOperation::JumpToAnnotation {
-            id,
-            media_ref,
-            time_ms,
-        } = &operation
-        {
-            let annotation_is_current =
-                crate::shared::read(doc)
-                    .annotations
-                    .iter()
-                    .any(|annotation| {
-                        annotation.id == *id
-                            && annotation.media_ref == *media_ref
-                            && annotation.time_ms == *time_ms
-                    });
-            if !annotation_is_current {
-                return Err("the review marker changed; refresh search and try again".into());
-            }
-        }
-        if self
-            .collab
-            .as_ref()
-            .is_some_and(|collab| collab.role() == Role::Follower)
-            && matches!(
-                &operation,
-                crate::actions::PlayerOperation::TogglePlayback
-                    | crate::actions::PlayerOperation::SeekSeconds(_)
-                    | crate::actions::PlayerOperation::SeekBySeconds(_)
-                    | crate::actions::PlayerOperation::Restart
-                    | crate::actions::PlayerOperation::SeekToEnd
-                    | crate::actions::PlayerOperation::SetLoop(_)
-                    | crate::actions::PlayerOperation::SetPlaybackRate(_)
-                    | crate::actions::PlayerOperation::JumpToChapter { .. }
-                    | crate::actions::PlayerOperation::JumpToAnnotation { .. }
-            )
-        {
-            return Err("this player is following the collaborative host".into());
-        }
-        if let crate::actions::PlayerOperation::Open { path: Some(path) } = &operation {
-            if !Path::new(path).is_file() {
-                let label = Path::new(path)
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .filter(|name| !name.is_empty())
-                    .unwrap_or("selected video");
-                let message = format!("Video does not exist: {label}");
-                self.open_error = Some(message.clone());
-                self.dirty = true;
-                return Err(message);
-            }
-            self.open_path(Path::new(path))?;
-        } else if matches!(
-            operation,
-            crate::actions::PlayerOperation::Open { path: None }
-        ) {
-            self.trigger_open()?;
-        } else if let crate::actions::PlayerOperation::OpenQueueItem { item_id } = &operation {
-            self.open_local_entry(item_id)?;
-        } else if matches!(
-            operation,
-            crate::actions::PlayerOperation::ClearRecentHistory
-        ) {
-            self.clear_recent_history()?;
-        } else if let crate::actions::PlayerOperation::RemoveQueueItem { item_id } = &operation {
-            self.remove_queue_entry(item_id)?;
-        } else {
-            self.perform_resource_operation(operation);
-        }
-        Ok(true)
-    }
-
-    fn start_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let operation = crate::actions::decode(type_id, payload)?;
-        if !self.invoke_resource_operation(kind, type_id, payload, doc, path)? {
-            return Ok(None);
+        let Some(request) = op.unscoped() else {
+            return ui::widget::start_in_children(self, op, doc, path);
+        };
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
         }
-        if matches!(
-            operation,
-            Some(crate::actions::PlayerOperation::Open { path: None })
-        ) {
-            let Some(pending) = self.portal_open.as_mut() else {
-                return Err("video picker did not start".into());
-            };
-            pending.invocation = Some(invocation);
-            Ok(Some(ui::widget::ResourceOperationStart::Accepted))
-        } else if matches!(
-            operation,
-            Some(crate::actions::PlayerOperation::Open { path: Some(_) })
-        ) {
-            // A filesystem path exists before admission, but a real decoder
-            // can still fail after `open`. Accepted therefore means only
-            // "decoding has begun"; polling waits for an actual frame.
-            self.await_open_frame(invocation)?;
-            Ok(Some(ui::widget::ResourceOperationStart::Accepted))
-        } else if matches!(
-            operation,
-            Some(crate::actions::PlayerOperation::OpenQueueItem { .. })
-        ) {
-            self.await_open_frame(invocation)?;
-            Ok(Some(ui::widget::ResourceOperationStart::Accepted))
-        } else {
-            Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                tilo_actions::ActionOutput::default(),
-            )))
+        if let Some(started) = self.admit_resource_operation(
+            request.invocation,
+            request.kind,
+            request.type_id,
+            request.payload,
+            doc,
+            path,
+        )? {
+            return Ok(Some(started));
         }
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
     }
 
     fn poll_resource_operation(
@@ -4343,6 +4241,141 @@ impl Widget for PlayerApp {
     }
 }
 
+impl PlayerApp {
+    fn answer_resource_operation(
+        &mut self,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind == tilo_actions::OperationKind::Document {
+            return Ok(false);
+        }
+        let Some(operation) = crate::actions::decode(type_id, payload)? else {
+            return Ok(false);
+        };
+        if operation.requires_media() && !self.player.has_media() {
+            return Err("open a video before using this playback control".into());
+        }
+        self.validate_dynamic_target(&operation)?;
+        if let PlayerOperation::JumpToAnnotation {
+            id,
+            media_ref,
+            time_ms,
+        } = &operation
+        {
+            let annotation_is_current =
+                crate::shared::read(doc)
+                    .annotations
+                    .iter()
+                    .any(|annotation| {
+                        annotation.id == *id
+                            && annotation.media_ref == *media_ref
+                            && annotation.time_ms == *time_ms
+                    });
+            if !annotation_is_current {
+                return Err("the review marker changed; refresh search and try again".into());
+            }
+        }
+        if self
+            .collab
+            .as_ref()
+            .is_some_and(|collab| collab.role() == Role::Follower)
+            && matches!(
+                &operation,
+                crate::actions::PlayerOperation::TogglePlayback
+                    | crate::actions::PlayerOperation::SeekSeconds(_)
+                    | crate::actions::PlayerOperation::SeekBySeconds(_)
+                    | crate::actions::PlayerOperation::Restart
+                    | crate::actions::PlayerOperation::SeekToEnd
+                    | crate::actions::PlayerOperation::SetLoop(_)
+                    | crate::actions::PlayerOperation::SetPlaybackRate(_)
+                    | crate::actions::PlayerOperation::JumpToChapter { .. }
+                    | crate::actions::PlayerOperation::JumpToAnnotation { .. }
+            )
+        {
+            return Err("this player is following the collaborative host".into());
+        }
+        if let crate::actions::PlayerOperation::Open { path: Some(path) } = &operation {
+            if !Path::new(path).is_file() {
+                let label = Path::new(path)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .filter(|name| !name.is_empty())
+                    .unwrap_or("selected video");
+                let message = format!("Video does not exist: {label}");
+                self.open_error = Some(message.clone());
+                self.dirty = true;
+                return Err(message);
+            }
+            self.open_path(Path::new(path))?;
+        } else if matches!(
+            operation,
+            crate::actions::PlayerOperation::Open { path: None }
+        ) {
+            self.trigger_open()?;
+        } else if let crate::actions::PlayerOperation::OpenQueueItem { item_id } = &operation {
+            self.open_local_entry(item_id)?;
+        } else if matches!(
+            operation,
+            crate::actions::PlayerOperation::ClearRecentHistory
+        ) {
+            self.clear_recent_history()?;
+        } else if let crate::actions::PlayerOperation::RemoveQueueItem { item_id } = &operation {
+            self.remove_queue_entry(item_id)?;
+        } else {
+            self.perform_resource_operation(operation);
+        }
+        Ok(true)
+    }
+
+    fn admit_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        let operation = crate::actions::decode(type_id, payload)?;
+        if !self.answer_resource_operation(kind, type_id, payload, doc, path)? {
+            return Ok(None);
+        }
+        if matches!(
+            operation,
+            Some(crate::actions::PlayerOperation::Open { path: None })
+        ) {
+            let Some(pending) = self.portal_open.as_mut() else {
+                return Err("video picker did not start".into());
+            };
+            pending.invocation = Some(invocation);
+            Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+        } else if matches!(
+            operation,
+            Some(crate::actions::PlayerOperation::Open { path: Some(_) })
+        ) {
+            // A filesystem path exists before admission, but a real decoder
+            // can still fail after `open`. Accepted therefore means only
+            // "decoding has begun"; polling waits for an actual frame.
+            self.await_open_frame(invocation)?;
+            Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+        } else if matches!(
+            operation,
+            Some(crate::actions::PlayerOperation::OpenQueueItem { .. })
+        ) {
+            self.await_open_frame(invocation)?;
+            Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+        } else {
+            Ok(Some(ui::widget::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            )))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4589,12 +4622,15 @@ mod tests {
                 },
             )
             .expect("operation encodes");
-            let error = Widget::invoke_resource_operation(
+            let error = Widget::start_operation(
                 &mut app,
-                tilo_actions::OperationKind::View,
-                &encoded.type_id,
-                &encoded.payload,
-                &doc,
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::View,
+                    &encoded.type_id,
+                    &encoded.payload,
+                ),
+                &mut doc,
                 &root(),
             )
             .expect_err("changed timestamp must be refused");
@@ -5015,12 +5051,15 @@ mod tests {
                 &crate::actions::PlayerOperation::TogglePlayback,
             )
             .unwrap();
-            let result = Widget::invoke_resource_operation(
+            let result = Widget::start_operation(
                 &mut app,
-                tilo_actions::OperationKind::View,
-                &encoded.type_id,
-                &encoded.payload,
-                &AutoCommit::new(),
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::View,
+                    &encoded.type_id,
+                    &encoded.payload,
+                ),
+                &mut AutoCommit::new(),
                 &automerge::ROOT,
             );
             assert!(result.is_err());
@@ -5033,12 +5072,15 @@ mod tests {
                 &crate::actions::PlayerOperation::TogglePlayback,
             )
             .unwrap();
-            let result = Widget::invoke_resource_operation(
+            let result = Widget::start_operation(
                 &mut app,
-                tilo_actions::OperationKind::View,
-                &encoded.type_id,
-                &encoded.payload,
-                &AutoCommit::new(),
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::View,
+                    &encoded.type_id,
+                    &encoded.payload,
+                ),
+                &mut AutoCommit::new(),
                 &automerge::ROOT,
             );
             assert!(result.is_err());
@@ -5361,14 +5403,16 @@ mod tests {
             };
             let payload = serde_json::to_vec(&operation).expect("serialize operation");
             let invocation = tilo_actions::InvocationId::new();
-            let doc = AutoCommit::new();
-            let started = Widget::start_resource_operation(
+            let mut doc = AutoCommit::new();
+            let started = Widget::start_operation(
                 &mut app,
-                invocation,
-                tilo_actions::OperationKind::Effect,
-                crate::actions::OPERATION_TYPE,
-                &payload,
-                &doc,
+                &ui::widget::ResourceOperation::local(
+                    invocation,
+                    tilo_actions::OperationKind::Effect,
+                    crate::actions::OPERATION_TYPE,
+                    &payload,
+                ),
+                &mut doc,
                 &root(),
             )
             .expect("direct open admits");
@@ -5400,14 +5444,16 @@ mod tests {
             let invocation = tilo_actions::InvocationId::new();
             let mut doc = AutoCommit::new();
             assert_eq!(
-                Widget::start_resource_operation(
+                Widget::start_operation(
                     &mut app,
-                    invocation,
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::OPERATION_TYPE,
-                    &payload,
-                    &doc,
-                    &root(),
+                    &ui::widget::ResourceOperation::local(
+                        invocation,
+                        tilo_actions::OperationKind::Effect,
+                        crate::actions::OPERATION_TYPE,
+                        &payload
+                    ),
+                    &mut doc,
+                    &root()
                 )
                 .expect("queue item admits"),
                 Some(ui::widget::ResourceOperationStart::Accepted)
@@ -5442,16 +5488,18 @@ mod tests {
             })
             .expect("serialize operation");
             let invocation = tilo_actions::InvocationId::new();
-            let doc = AutoCommit::new();
+            let mut doc = AutoCommit::new();
             assert_eq!(
-                Widget::start_resource_operation(
+                Widget::start_operation(
                     &mut app,
-                    invocation,
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::OPERATION_TYPE,
-                    &payload,
-                    &doc,
-                    &root(),
+                    &ui::widget::ResourceOperation::local(
+                        invocation,
+                        tilo_actions::OperationKind::Effect,
+                        crate::actions::OPERATION_TYPE,
+                        &payload
+                    ),
+                    &mut doc,
+                    &root()
                 )
                 .expect("direct open admits"),
                 Some(ui::widget::ResourceOperationStart::Accepted)

@@ -20,13 +20,15 @@ fn direct_open_is_accepted_then_reports_the_exact_failure() {
         path: Some("/definitely/missing/tilo-code-file".into()),
     })
     .unwrap();
-    let started = Widget::start_resource_operation(
+    let started = Widget::start_operation(
         &mut app,
-        invocation,
-        tilo_actions::OperationKind::Effect,
-        crate::actions::CODE_EDITOR_OPERATION_TYPE,
-        &payload,
-        &doc,
+        &ui::widget::ResourceOperation::local(
+            invocation,
+            tilo_actions::OperationKind::Effect,
+            crate::actions::CODE_EDITOR_OPERATION_TYPE,
+            &payload,
+        ),
+        &mut doc,
         &automerge::ROOT,
     )
     .unwrap()
@@ -40,7 +42,7 @@ fn direct_open_is_accepted_then_reports_the_exact_failure() {
 }
 
 fn resource_operations_reject_wrong_kinds_without_changing_state() {
-    let (mut app, doc) = synced_sample();
+    let (mut app, mut doc) = synced_sample();
     let active = app.active_file_node();
     let other = app
         .session
@@ -55,13 +57,16 @@ fn resource_operations_reject_wrong_kinds_without_changing_state() {
     })
     .unwrap();
     assert!(
-        Widget::invoke_resource_operation(
+        Widget::start_operation(
             &mut app,
-            tilo_actions::OperationKind::Effect,
-            crate::actions::CODE_EDITOR_OPERATION_TYPE,
-            &open,
-            &doc,
-            &automerge::ROOT,
+            &ui::widget::ResourceOperation::local(
+                ui::tilo_actions::InvocationId::new(),
+                tilo_actions::OperationKind::Effect,
+                crate::actions::CODE_EDITOR_OPERATION_TYPE,
+                &open
+            ),
+            &mut doc,
+            &automerge::ROOT
         )
         .is_err()
     );
@@ -72,14 +77,16 @@ fn resource_operations_reject_wrong_kinds_without_changing_state() {
     })
     .unwrap();
     assert!(
-        Widget::start_resource_operation(
+        Widget::start_operation(
             &mut app,
-            tilo_actions::InvocationId::new(),
-            tilo_actions::OperationKind::View,
-            crate::actions::CODE_EDITOR_OPERATION_TYPE,
-            &open_file,
-            &doc,
-            &automerge::ROOT,
+            &ui::widget::ResourceOperation::local(
+                tilo_actions::InvocationId::new(),
+                tilo_actions::OperationKind::View,
+                crate::actions::CODE_EDITOR_OPERATION_TYPE,
+                &open_file
+            ),
+            &mut doc,
+            &automerge::ROOT
         )
         .is_err()
     );
@@ -131,17 +138,21 @@ fn invoke_search_hit(app: &mut CodeApp, doc: &mut AutoCommit, query: &str, kind:
         .expect("address resolves through current widget authority");
     let encoded = tilo_actions::door::encode(&[resource], &address, None)
         .expect("lazy resource exports the searched action");
-    assert!(
-        Widget::invoke_resource_operation(
+    assert!(matches!(
+        Widget::start_operation(
             app,
-            tilo_actions::OperationKind::View,
-            &encoded.type_id,
-            &encoded.payload,
+            &ui::widget::ResourceOperation::local(
+                ui::tilo_actions::InvocationId::new(),
+                tilo_actions::OperationKind::View,
+                &encoded.type_id,
+                &encoded.payload
+            ),
             doc,
-            &automerge::ROOT,
+            &automerge::ROOT
         )
-        .unwrap()
-    );
+        .unwrap(),
+        Some(ui::widget::ResourceOperationStart::Completed(_))
+    ));
     app.sync(doc, &automerge::ROOT);
 }
 
@@ -335,17 +346,21 @@ fn large_resource_snapshot_is_bounded_but_late_file_activates_lazily() {
         .expect("late file is still current widget authority");
     let encoded = tilo_actions::door::encode(&[resource], &address, None)
         .expect("the lazy resource retains its open action");
-    assert!(
-        Widget::invoke_resource_operation(
+    assert!(matches!(
+        Widget::start_operation(
             &mut app,
-            tilo_actions::OperationKind::View,
-            &encoded.type_id,
-            &encoded.payload,
-            &doc,
-            &automerge::ROOT,
+            &ui::widget::ResourceOperation::local(
+                ui::tilo_actions::InvocationId::new(),
+                tilo_actions::OperationKind::View,
+                &encoded.type_id,
+                &encoded.payload
+            ),
+            &mut doc,
+            &automerge::ROOT
         )
-        .expect("operation routes through the widget")
-    );
+        .expect("operation routes through the widget"),
+        Some(ui::widget::ResourceOperationStart::Completed(_))
+    ));
 }
 
 fn symbol_search_resolves_and_reproduces_the_exact_caret() {
