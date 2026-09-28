@@ -6366,7 +6366,28 @@ fn stage_dev_reload_library(app_dir: &Path, library: &Path) -> Result<PathBuf> {
     let pointer = dir.join("reload.path");
     std::fs::write(&pointer, format!("{}\n", destination.display()))
         .with_context(|| format!("writing {}", pointer.display()))?;
+    remove_superseded_reload_libraries(&dir, seq);
     Ok(destination)
+}
+
+/// Drops every staged library older than the one before `current`. An app
+/// that already mapped one keeps it after the file goes; it only ever opens
+/// the library `reload.path` names.
+fn remove_superseded_reload_libraries(dir: &Path, current: u64) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let superseded = name
+            .to_str()
+            .and_then(|name| name.strip_prefix("reload-")?.strip_suffix(".so"))
+            .and_then(|seq| seq.parse::<u64>().ok())
+            .is_some_and(|seq| seq.saturating_add(1) < current);
+        if superseded {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 fn spawn_thin_dev_binary_reported(

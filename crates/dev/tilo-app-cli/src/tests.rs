@@ -4448,6 +4448,42 @@ fn the_dev_loop_watches_rebuilds_and_restarts_only_on_real_edits() {
 }
 
 #[test]
+fn staging_a_reload_library_keeps_only_the_current_and_previous() {
+    let app = tempfile::tempdir().unwrap();
+    let session = dev_session_dir(app.path());
+    std::fs::create_dir_all(&session).unwrap();
+    std::fs::write(session.join("reload.seq"), "6").unwrap();
+    for stale in ["reload-2.so", "reload-6.so"] {
+        std::fs::write(session.join(stale), b"left by an earlier session").unwrap();
+    }
+    std::fs::write(session.join("notes.txt"), b"not a library").unwrap();
+    let built = app.path().join("libapp.so");
+    std::fs::write(&built, b"library").unwrap();
+    let mut staged = Vec::new();
+    for _ in 0..4 {
+        staged.push(stage_dev_reload_library(app.path(), &built).unwrap());
+    }
+    let mut remaining = std::fs::read_dir(&session)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect::<Vec<_>>();
+    remaining.sort();
+    let result = std::fs::read_to_string(session.join("reload.path"));
+    std::fs::remove_dir_all(&session).unwrap();
+    assert_eq!(
+        remaining,
+        [
+            "notes.txt",
+            "reload-10.so",
+            "reload-9.so",
+            "reload.path",
+            "reload.seq"
+        ]
+    );
+    assert_eq!(result.unwrap().trim(), staged[3].display().to_string());
+}
+
+#[test]
 fn dev_session_dir_is_stable_and_outside_the_app_tree() {
     let app = PathBuf::from("/workspace/apps/demo");
     let session = dev_session_dir(&app);
