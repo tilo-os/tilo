@@ -25,9 +25,6 @@ pub struct Workspace {
     pub id: WorkspaceId,
     /// Durable identity of this workspace as a collaboration room — the
     /// value two hosts must agree on, unlike the local-only [`Self::id`].
-    /// `#[serde(default)]` yields [`RoomId::nil`] for pre-room state
-    /// files until `adopt_roomless_workspaces` mints a real one at boot.
-    #[serde(default)]
     pub room: RoomId,
     pub name: String,
     pub strips: Vec<Strip>,
@@ -40,8 +37,7 @@ pub struct Workspace {
     #[serde(skip_deserializing)]
     pub collaborators: Vec<Collaborator>,
     /// Who owns this room — the one principal whose authority is not
-    /// itself a capability. `None` means a pre-ownership state file,
-    /// adopted by the local user on first load.
+    /// itself a capability. `None` until the local user adopts it on load.
     #[serde(default)]
     pub owner: Option<UserId>,
     /// One exact, owner-signed offer awaiting the named recipient's consent.
@@ -856,8 +852,7 @@ impl Workspace {
 
 impl Default for Workspace {
     /// Room is minted, not left at [`RoomId::nil`] — two workspaces
-    /// built this way must not silently become the same room. Nil is
-    /// reachable only via deserializing a pre-rooms state file.
+    /// built this way must not silently become the same room.
     fn default() -> Self {
         Self {
             id: WorkspaceId::default(),

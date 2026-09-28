@@ -4370,13 +4370,6 @@ fn load_session_tree(
         tree.flush_to_disk();
     }
 
-    let roomless = tree.adopt_roomless_workspaces();
-    if !roomless.is_empty() {
-        tracing::info!(
-            "collaboration: minted a room identity for {} workspace(s)",
-            roomless.len()
-        );
-    }
     let adopted = tree.adopt_ownerless_workspaces_with(crate::shell::state::local_user_id_for_room);
     if !adopted.is_empty() {
         tracing::info!(
