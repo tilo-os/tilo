@@ -361,8 +361,14 @@ jobs:
           else
             echo '::notice::no usable DRI render node; installed-desktop gate will use the 2D virtio GPU with guest software rendering'
           fi
-          if test -c /dev/kvm && test -r /dev/kvm && test -w /dev/kvm; then
+          # A device node can exist in Kata while KVM_CREATE_VM is denied.
+          # Check the ioctl before the expensive release build; publishing must
+          # never spend hours running the installed-desktop gate under TCG.
+          if python3 os/dev/probe-kvm.py '${{ matrix.arch }}'; then
             echo '::notice::installed-desktop gate will use KVM acceleration'
+          elif [[ '${{ needs.plan.outputs.publish }}' == true ]]; then
+            echo '::error::release runner cannot create a KVM VM; restore nested virtualization before publishing'
+            exit 1
           else
             echo '::notice::installed-desktop gate will use the bounded QEMU TCG fallback'
           fi
