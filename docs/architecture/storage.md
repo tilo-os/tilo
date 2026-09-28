@@ -1016,9 +1016,7 @@ rule, and two physical backings:
   the repository directory) under a global position; records, stream
   cursors and history are rebuilt from it in log order. Envelopes are
   verified once, at ingest; reopening replays the log without verifying
-  signatures again. The per-record JSON files of earlier releases are
-  verified and imported into the log in one transaction on first start,
-  then moved aside (`imported-json/`).
+  signatures again.
 - The 16,384-record bound is gone. What bounds a device is the in-memory
   index (replica state and envelopes per record); the repository refuses
   more than 2^24 records, far past any tree one device holds.

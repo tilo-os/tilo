@@ -38,16 +38,6 @@ pub static SCHEMA: HistoryRestoreSchema = HistoryRestoreSchema {
             expected_type: RestoreValueType::Scalar(ui::history_mode::restore::ScalarType::String),
         },
         HistoryRestoreRoot {
-            key: "edits",
-            required: false,
-            expected_type: RestoreValueType::Scalar(ui::history_mode::restore::ScalarType::String),
-        },
-        HistoryRestoreRoot {
-            key: "library",
-            required: false,
-            expected_type: RestoreValueType::Scalar(ui::history_mode::restore::ScalarType::String),
-        },
-        HistoryRestoreRoot {
             key: "photos_edits",
             required: false,
             expected_type: RestoreValueType::Object(ObjType::Map),
@@ -174,23 +164,19 @@ fn string_list(doc: &AutoCommit, value: &Value<'_>, id: &ObjId) -> Result<(), St
     }
     Ok(())
 }
-/// Absolute album memberships now use JSON arrays; older documents use lists.
-/// Validate every representation conflict, not only the reader's chosen set.
+/// Absolute album memberships are JSON arrays. Validate every conflict, not
+/// only the reader's chosen set.
 fn album_membership(doc: &AutoCommit, row: &ObjId) -> Result<(), String> {
-    for (value, id) in values(doc, row, "photo_ids")? {
-        if matches!(value, Value::Object(ObjType::List)) {
-            string_list(doc, &value, &id)?;
-        } else {
-            let members = json::<Vec<String>>(&value)?;
-            if members.len() > MAX_RECORDS || members.iter().any(|id| id.len() > 65_536) {
-                return Err("Invalid recorded album membership".into());
-            }
+    for (value, _) in values(doc, row, "photo_ids")? {
+        let members = json::<Vec<String>>(&value)?;
+        if members.len() > MAX_RECORDS || members.iter().any(|id| id.len() > 65_536) {
+            return Err("Invalid recorded album membership".into());
         }
     }
     Ok(())
 }
-/// Labels migrated from JSON arrays to per-label boolean membership maps.
-/// Inspect every membership conflict, including false removal tombstones.
+/// Labels are per-label boolean membership maps. Inspect every membership
+/// conflict, including false removal tombstones.
 fn labels(doc: &AutoCommit, value: &Value<'_>, row: &ObjId) -> Result<(), String> {
     if matches!(value, Value::Object(ObjType::Map)) {
         if doc.length(row) > MAX_RECORDS {
@@ -212,8 +198,8 @@ fn labels(doc: &AutoCommit, value: &Value<'_>, row: &ObjId) -> Result<(), String
                 }
             }
         }
-    } else if json::<Vec<String>>(value)?.len() > MAX_RECORDS {
-        return Err("Too many metadata labels".into());
+    } else {
+        return Err("Recorded metadata labels must be a membership map".into());
     }
     Ok(())
 }
@@ -221,19 +207,13 @@ fn labels(doc: &AutoCommit, value: &Value<'_>, row: &ObjId) -> Result<(), String
 /// refuses selected conflicts it cannot restore exactly. No tolerant fallback here.
 #[allow(
     clippy::too_many_lines,
-    reason = "validate the complete current and legacy authored schema together"
+    reason = "validate the complete authored schema together"
 )]
 pub(crate) fn validate(doc: &AutoCommit) -> Result<(), String> {
     for (v, _) in values(doc, &ROOT, "image")? {
         if let Some(open) = json::<Option<OpenImage>>(&v)? {
             image(&open)?;
         }
-    }
-    for (v, _) in values(doc, &ROOT, "edits")? {
-        edits(json(&v)?)?;
-    }
-    for (v, _) in values(doc, &ROOT, "library")? {
-        library(&json(&v)?)?;
     }
     for (v, root) in values(doc, &ROOT, "photos_edits")? {
         map(&v)?;
@@ -259,13 +239,12 @@ pub(crate) fn validate(doc: &AutoCommit) -> Result<(), String> {
     }
     for (v, root) in values(doc, &ROOT, "photos_library")? {
         map(&v)?;
-        for required in ["photos", "albums"] {
+        for required in ["photo_core", "albums"] {
             if values(doc, &root, required)?.is_empty() {
                 return Err(format!("Missing recorded {required}"));
             }
         }
         for key in [
-            "photos",
             "albums",
             "photo_core",
             "photo_favorite",
@@ -306,34 +285,8 @@ pub(crate) fn validate(doc: &AutoCommit) -> Result<(), String> {
                                 if values(doc, &row, "name")?.is_empty() {
                                     return Err("Missing recorded name".into());
                                 }
-                                for field in ["name", "path", "content", "folder", "captured_at"] {
-                                    for (v, _) in values(doc, &row, field)? {
-                                        text(&v)?;
-                                        if field == "content" {
-                                            let h = v.as_str().unwrap_or_default();
-                                            image(&OpenImage {
-                                                content: Some(h.into()),
-                                                ..OpenImage::default()
-                                            })?;
-                                        }
-                                    }
-                                }
-                                for field in ["width", "height"] {
-                                    for (v, _) in values(doc, &row, field)? {
-                                        if !matches!(v, Value::Scalar(s) if matches!(s.as_ref(), automerge::ScalarValue::Int(n) if u32::try_from(*n).is_ok()))
-                                        {
-                                            return Err("Invalid recorded dimensions".into());
-                                        }
-                                    }
-                                }
-                                for (v, _) in values(doc, &row, "favorite")? {
-                                    if !matches!(v, Value::Scalar(s) if matches!(s.as_ref(), automerge::ScalarValue::Boolean(_)))
-                                    {
-                                        return Err("Invalid favorite".into());
-                                    }
-                                }
-                                for field in ["people", "tags"] {
-                                    list(doc, &row, field)?;
+                                for (v, _) in values(doc, &row, "name")? {
+                                    text(&v)?;
                                 }
                                 album_membership(doc, &row)?;
                             }

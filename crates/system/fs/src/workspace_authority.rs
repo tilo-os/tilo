@@ -89,15 +89,6 @@ impl PersistedContentPeer {
     }
 }
 
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum PersistedContentPeersFile {
-    Current(Vec<PersistedContentPeer>),
-    /// Version-zero files contained bare endpoint addresses.  Keep them for
-    /// on-demand blob hydration, but never invent a workspace binding.
-    Legacy(Vec<iroh_base::EndpointAddr>),
-}
-
 /// Load the bounded, de-duplicated direct content peers for a cache.
 ///
 /// # Errors
@@ -109,17 +100,7 @@ pub fn load_persisted_content_peers(cache_dir: &Path) -> anyhow::Result<Vec<Pers
     if !path.exists() {
         return Ok(Vec::new());
     }
-    let peers = match serde_json::from_slice(&std::fs::read(&path)?)? {
-        PersistedContentPeersFile::Current(peers) => peers,
-        PersistedContentPeersFile::Legacy(peers) => peers
-            .into_iter()
-            .map(|endpoint| PersistedContentPeer {
-                endpoint,
-                ticket: None,
-                relay_service_id: None,
-            })
-            .collect(),
-    };
+    let peers: Vec<PersistedContentPeer> = serde_json::from_slice(&std::fs::read(&path)?)?;
     anyhow::ensure!(
         peers.len() <= MAX_PERSISTED_CONTENT_PEERS,
         "persisted content peers exceed {MAX_PERSISTED_CONTENT_PEERS}"

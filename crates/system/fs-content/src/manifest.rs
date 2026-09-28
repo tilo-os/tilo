@@ -22,19 +22,10 @@ pub struct ChunkRef {
     pub len: u32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Format {
-    /// A postcard list of gear-hash chunks, as written before format 2.
-    Legacy,
-    /// The self-describing `HashSeq` of format 2.
-    V2,
-}
-
 /// The chunks of one file version.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Manifest {
-    format: Format,
-    tier: Option<ChunkTier>,
+    tier: ChunkTier,
     chunks: Vec<ChunkRef>,
     /// End offset of every chunk.
     ends: Vec<u64>,
@@ -45,23 +36,21 @@ pub struct Manifest {
 #[derive(Debug)]
 pub enum DecodeError {
     Malformed(&'static str),
-    Legacy(postcard::Error),
 }
 
 impl std::fmt::Display for DecodeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Malformed(why) => write!(f, "malformed manifest: {why}"),
-            Self::Legacy(error) => write!(f, "malformed legacy manifest: {error}"),
         }
     }
 }
 
 impl std::error::Error for DecodeError {}
 
-/// Whether `bytes` carry a format-2 header. Cheap: looks at the first entry
-/// only, so a caller can tell the formats apart before decoding.
-pub fn is_manifest_v2(bytes: &[u8]) -> bool {
+/// Whether `bytes` carry a manifest header. Cheap: looks at the first entry
+/// only.
+pub fn is_manifest(bytes: &[u8]) -> bool {
     bytes.len().is_multiple_of(ENTRY)
         && bytes.get(..HEADER_MAGIC.len()) == Some(&HEADER_MAGIC[..])
         && bytes.get(HEADER_MAGIC.len()) == Some(&FORMAT)
@@ -84,12 +73,11 @@ fn read_u64(bytes: &[u8], at: usize) -> Option<u64> {
 }
 
 impl Manifest {
-    /// A format-2 manifest of `chunks`, chunked with `tier`.
+    /// A manifest of `chunks`, chunked with `tier`.
     pub fn new(tier: ChunkTier, chunks: Vec<ChunkRef>) -> Self {
         let ends = ends_of(&chunks);
         let mut m = Self {
-            format: Format::V2,
-            tier: Some(tier),
+            tier,
             chunks,
             ends,
             id: [0; 32],
@@ -98,26 +86,8 @@ impl Manifest {
         m
     }
 
-    /// A legacy manifest of `chunks` (tests and fixtures of old content).
-    pub fn legacy(chunks: Vec<ChunkRef>) -> Self {
-        let ends = ends_of(&chunks);
-        let mut m = Self {
-            format: Format::Legacy,
-            tier: None,
-            chunks,
-            ends,
-            id: [0; 32],
-        };
-        m.id = *blake3::hash(&m.encode()).as_bytes();
-        m
-    }
-
-    pub const fn format(&self) -> Format {
-        self.format
-    }
-
-    /// The size tier, `None` for legacy manifests.
-    pub const fn tier(&self) -> Option<ChunkTier> {
+    /// The size tier.
+    pub const fn tier(&self) -> ChunkTier {
         self.tier
     }
 
@@ -185,28 +155,18 @@ impl Manifest {
     /// Chunk index for a `RangeSpecSeq` position, if it names a chunk.
     pub fn chunk_of_child(&self, offset: u64) -> Option<usize> {
         let index = usize::try_from(offset.checked_sub(2)?).ok()?;
-        (index < self.chunks.len() && self.format == Format::V2).then_some(index)
+        (index < self.chunks.len()).then_some(index)
     }
 
-    /// The manifest's bytes in its own format.
+    /// The manifest's bytes.
     pub fn encode(&self) -> Vec<u8> {
-        match self.format {
-            Format::Legacy => postcard::to_allocvec(&LegacyManifest {
-                chunks: self.chunks.clone(),
-            })
-            .unwrap_or_default(),
-            Format::V2 => self.encode_v2(),
-        }
-    }
-
-    fn encode_v2(&self) -> Vec<u8> {
         let n = self.chunks.len();
         let length_entries = n.div_ceil(LENGTHS_PER_ENTRY);
         let entries = n.saturating_add(length_entries).saturating_add(1);
         let mut out = Vec::with_capacity(entries.saturating_mul(ENTRY));
         out.extend_from_slice(&HEADER_MAGIC);
         out.push(FORMAT);
-        out.push(self.tier.map_or(0, ChunkTier::code));
+        out.push(self.tier.code());
         out.extend_from_slice(&self.total_len().to_le_bytes());
         out.extend_from_slice(&(n as u64).to_le_bytes());
         out.extend_from_slice(&[0; 8]);
@@ -220,31 +180,16 @@ impl Manifest {
         out
     }
 
-    /// Decodes either format; the content id is BLAKE3 of `bytes`.
+    /// Decodes a manifest; the content id is BLAKE3 of `bytes`.
     ///
     /// # Errors
     ///
-    /// Returns an error when `bytes` are neither a well-formed format-2
-    /// manifest nor a legacy one.
+    /// Returns an error when `bytes` are not a well-formed manifest.
     pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
-        let mut manifest = if is_manifest_v2(bytes) {
-            Self::decode_v2(bytes)?
-        } else {
-            let (legacy, rest): (LegacyManifest, &[u8]) =
-                postcard::take_from_bytes(bytes).map_err(DecodeError::Legacy)?;
-            if !rest.is_empty() {
-                return Err(DecodeError::Malformed(
-                    "trailing bytes after legacy manifest",
-                ));
-            }
-            Self::legacy(legacy.chunks)
-        };
-        manifest.id = *blake3::hash(bytes).as_bytes();
-        Ok(manifest)
-    }
-
-    fn decode_v2(bytes: &[u8]) -> Result<Self, DecodeError> {
         use DecodeError::Malformed;
+        if !is_manifest(bytes) {
+            return Err(Malformed("no manifest header"));
+        }
         let header = bytes.get(..ENTRY).ok_or(Malformed("no header"))?;
         let tier = header
             .get(7)
@@ -294,11 +239,10 @@ impl Manifest {
         }
         let ends = ends_of(&chunks);
         Ok(Self {
-            format: Format::V2,
-            tier: Some(tier),
+            tier,
             chunks,
             ends,
-            id: [0; 32],
+            id: *blake3::hash(bytes).as_bytes(),
         })
     }
 
@@ -317,11 +261,6 @@ impl Manifest {
     }
 }
 
-#[derive(Serialize, Deserialize)]
-struct LegacyManifest {
-    chunks: Vec<ChunkRef>,
-}
-
 #[cfg(test)]
 #[allow(
     clippy::unwrap_used,
@@ -337,36 +276,24 @@ mod tests {
     }
 
     #[test]
-    fn v2_round_trips_and_is_recognised() {
+    fn round_trips_and_is_recognised() {
         for count in [1_usize, 7, 8, 9, 100] {
             let chunks: Vec<ChunkRef> = (0..count)
                 .map(|i| chunk(u8::try_from(i % 250).unwrap() + 1, 1000 + i as u32))
                 .collect();
             let m = Manifest::new(ChunkTier::Small, chunks);
             let bytes = m.encode();
-            assert!(is_manifest_v2(&bytes));
+            assert!(is_manifest(&bytes));
             assert_eq!(bytes.len() % 32, 0);
             let back = Manifest::decode(&bytes).unwrap();
             assert_eq!(back, m);
             assert_eq!(back.id(), *blake3::hash(&bytes).as_bytes());
-            assert_eq!(back.tier(), Some(ChunkTier::Small));
+            assert_eq!(back.tier(), ChunkTier::Small);
         }
     }
 
     #[test]
-    fn legacy_manifests_stay_readable() {
-        let m = Manifest::legacy(vec![chunk(1, 10), chunk(2, 20)]);
-        let bytes = m.encode();
-        assert!(!is_manifest_v2(&bytes));
-        let back = Manifest::decode(&bytes).unwrap();
-        assert_eq!(back.format(), Format::Legacy);
-        assert_eq!(back.total_len(), 30);
-        assert_eq!(back.chunks(), m.chunks());
-        assert_eq!(back.id(), *blake3::hash(&bytes).as_bytes());
-    }
-
-    #[test]
-    fn tampered_v2_manifests_are_refused() {
+    fn tampered_manifests_are_refused() {
         let m = Manifest::new(ChunkTier::Small, vec![chunk(1, 10), chunk(2, 20)]);
         let good = m.encode();
         let mut wrong_total = good.clone();

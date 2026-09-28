@@ -28,6 +28,7 @@ base64.workspace = true
 # Seals and opens the channel state this device keeps for its encrypted routes.
 channel-crypto = { path = "../../collab/channel-crypto" }
 blake3.workspace = true
+chrono = { workspace = true, features = ["std"] }
 collab-types = { path = "../../collab/collab-types" }
 ed25519-dalek.workspace = true
 # The random key sealing the channel state.

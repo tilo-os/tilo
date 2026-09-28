@@ -536,6 +536,7 @@ readers = ["apps/ebook/src/app/interaction_tests.rs"]
 [[cargo]]
 package = "shell"
 inputs = [
+  "apps/chat/tilo-app.toml",
   "apps/notes/tilo-app.toml",
   "crates/sdk/ui-core/assets/fonts/",
   "docs/shell-navigation-keyboard-map.md",
@@ -546,9 +547,15 @@ readers = [
   "crates/session/shell/src/shell/fixture_inputs.rs",
   "crates/session/shell/src/shell/notes_app.rs",
   "crates/session/shell/src/shell/test_support.rs",
-  "crates/session/shell/src/shell/topbar_chrome.rs",
+  "crates/session/shell/tests/chat_feedback_live_e2e.rs",
   "crates/session/shell/tests/replay_headless_e2e.rs",
 ]
+
+[[cargo]]
+package = "account-custody"
+# The OAuth flow's single-owner check scans every workspace source.
+inputs = ["apps/", "crates/"]
+readers = ["crates/system/account-custody/src/tests.rs"]
 
 [[cargo]]
 package = "settings"
@@ -761,6 +768,11 @@ reason = "needs a built Arch package"
 [[unrequired]]
 suite = "dist/ci/run-dev-session-test.sh"
 reason = "needs docker and a built distribution package container"
+workflow = "package-desktop.yml"
+
+[[unrequired]]
+suite = "dist/ci/test-community-config.sh"
+reason = "run with the payload contract tests against a built distribution package"
 workflow = "package-desktop.yml"
 
 [[unrequired]]

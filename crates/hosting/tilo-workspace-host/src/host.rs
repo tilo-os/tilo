@@ -566,9 +566,34 @@ impl LocalHost {
         owner: &SessionOwner,
         join: crate::collaboration::CollaborationHandle,
     ) -> Result<Self> {
-        let mut config = ServerConfig::default();
-        config.relay = Some(PacketConfig::new((Ipv4Addr::LOCALHOST, 0)));
-        let packet = Server::spawn(config).await?;
+        // Native members hold this URL from their invitation and reach the
+        // host only through it, so a restart keeps the port it had.
+        let port_file = owner.root().join(PACKET_RELAY_PORT_FILE);
+        let retained = std::fs::read_to_string(&port_file)
+            .ok()
+            .and_then(|port| port.trim().parse::<u16>().ok())
+            .unwrap_or(0);
+        let spawn = |port: u16| {
+            let mut config = ServerConfig::default();
+            config.relay = Some(PacketConfig::new((Ipv4Addr::LOCALHOST, port)));
+            Server::spawn(config)
+        };
+        let packet = match spawn(retained).await {
+            Ok(packet) => packet,
+            Err(error) if retained != 0 => {
+                tracing::warn!(%error, port = retained, "retained packet relay port unavailable; native members must be invited again");
+                spawn(0).await?
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let bound = packet
+            .http_addr()
+            .context("packet relay HTTP listener unavailable")?
+            .port();
+        if bound != retained {
+            atomic_file::write_with_mode(&port_file, bound.to_string().as_bytes(), 0o600)?;
+            crate::store::sync_dir(owner.root())?;
+        }
         let packet_url: RelayUrl = format!(
             "http://{}",
             packet
@@ -837,6 +862,8 @@ pub fn message_kind(message: &tilo_peer_state::NeighbourMsg) -> &'static str {
 }
 /// How long a subscription must stay ready before its recovery counts as
 /// settled. A shorter session continues the same reconnect episode.
+/// The packet relay's port, kept in the owner root across restarts.
+pub const PACKET_RELAY_PORT_FILE: &str = "packet-relay-port";
 const STABLE_SESSION: Duration = Duration::from_secs(30);
 /// Bound repeated retained-baseline replay when a connection cannot stay up.
 const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(15);
@@ -2434,7 +2461,8 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                 }
                 status["native_subscription_generation"] = json!(subscription_generation);
                 let authorization=authorization.clone();let commands=enrollment_commands.clone();
-                tokio::spawn(async move { let _=crate::enrollment_http::serve(socket,authorization,commands,status).await; });
+                let operator = crate::enrollment_http::Operator { admin: collaboration_admin.clone(), authority: owner.peer().authority().clone() };
+                tokio::spawn(async move { let _=crate::enrollment_http::serve_with_operator(socket,authorization,commands,status,Some(operator)).await; });
             }
             line = stdin.recv(), if stdin_open => {
                 match line.transpose()? {

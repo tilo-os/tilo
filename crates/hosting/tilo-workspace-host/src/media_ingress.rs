@@ -25,6 +25,8 @@ pub(crate) struct IngressConfig {
     pub certificates: Vec<CertificateDer<'static>>,
     pub key: PrivateKeyDer<'static>,
     pub local_enrollment: Option<Arc<crate::https::LocalEnrollment>>,
+    /// Dashboard origins that may embed the page; empty forbids embedding.
+    pub frame_ancestors: Vec<String>,
 }
 // Operation time is captured only from the actual owner. Numeric time exists
 // solely for the existing explicit fixture renewal path.

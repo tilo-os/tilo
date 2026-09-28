@@ -1185,7 +1185,7 @@ macro_rules! run_nas_replica_lifecycle_scenario {
         ];
         std::fs::write(&revoked_acl, serde_json::to_vec(&revoked_caps).unwrap()).unwrap();
         let owner_personal = temp.path().join("owner-personal");
-        provision_personal_identity(&owner_personal, [0xa1; 32]);
+        provision_personal_identity(&owner_personal, owner_person_seed);
         publish_authority(
             binary,
             &owner_identity,

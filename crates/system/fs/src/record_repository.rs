@@ -20,7 +20,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use collab_types::{FileActor, FileMutationTransaction, FileRecordId};
-use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -36,7 +35,6 @@ use crate::record_transaction::{
     RecordTransactionParticipantBatch, RecordTransactionPhase,
 };
 
-pub const RECORD_REPOSITORY_VERSION: u16 = 1;
 /// Records one repository holds. The log itself has no practical limit
 /// (positions are `u64`); what bounds a device is the in-memory index,
 /// which keeps each record's replica state and envelopes (a few KiB for a
@@ -47,14 +45,10 @@ pub const MAX_REPOSITORY_RECORDS: usize = 1 << 24;
 pub const MAX_RECORD_OPERATIONS: usize = 4_096;
 pub const MAX_RECORD_VERSIONS: usize = 1_024;
 pub const MAX_RECORD_CONFLICTS: usize = 256;
-/// Bound on one legacy record file read during the one-time import.
-pub const MAX_RECORD_FILE_BYTES: u64 = 8 * 1024 * 1024;
 pub const MAX_RECORD_BATCH_OPERATIONS: usize = 256;
 
 /// The operation log inside the repository root.
 const LOG_FILE: &str = "records.redb";
-/// Where record files from before the log are kept once imported.
-const IMPORTED_DIR: &str = "imported-json";
 /// Position of an envelope a changeset scope still holds back.
 const PENDING: u64 = u64::MAX;
 
@@ -168,15 +162,6 @@ pub(crate) struct RecordReconciliationBatch {
     pub key: RecordRepositoryKey,
     pub envelopes: Vec<RecordEnvelopeV1>,
     pub snapshot: RecordSnapshot,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct PersistedRecordV1 {
-    schema_version: u16,
-    workspace_id: Uuid,
-    record_id: FileRecordId,
-    envelopes: Vec<RecordEnvelopeV1>,
 }
 
 /// The local author's open publish batch.
@@ -603,7 +588,7 @@ impl RecordRepository {
             })
             .collect();
         let count = ops.len();
-        let first = self.log.append(&ops, changeset.map(AsRef::as_ref), false)?;
+        let first = self.log.append(&ops, changeset.map(AsRef::as_ref))?;
         drop(ops);
         let mut next = first;
         let mut written = Vec::with_capacity(candidates.len());
@@ -651,7 +636,7 @@ impl RecordRepository {
             if ops.is_empty() && changeset.is_none() {
                 return Ok(());
             }
-            self.log.append(&ops, changeset.map(AsRef::as_ref), false)?
+            self.log.append(&ops, changeset.map(AsRef::as_ref))?
         };
         let mut next = first;
         for key in keys {
@@ -955,7 +940,7 @@ impl RecordRepository {
         } else {
             // Already in the log; an empty commit is the durability barrier
             // after an ambiguous earlier write error.
-            self.log.append(&[], None, false)?;
+            self.log.append(&[], None)?;
         }
         self.forget_scope_keys(&records, &keys);
         if journal
@@ -983,19 +968,12 @@ impl RecordRepository {
         Ok(())
     }
 
-    /// Open the repository at `root`: its operation log, importing the
-    /// per-record files of earlier releases into it on first start.
-    ///
-    /// The import verifies every legacy record exactly as those releases
-    /// did (malformed, duplicate, cross-key or oversized state fails closed
-    /// rather than being silently discarded), writes all of it in one log
-    /// transaction and only then moves the files aside, so an interrupted
-    /// import is simply repeated.
+    /// Open the repository at `root` and replay its operation log.
     ///
     /// # Errors
     ///
-    /// Returns an error for I/O, a damaged log, invalid legacy state, or any
-    /// repository bound violation.
+    /// Returns an error for I/O, a damaged log, or any repository bound
+    /// violation.
     pub fn open(root: impl Into<PathBuf>) -> Result<Self, RecordRepositoryError> {
         let root = root.into();
         std::fs::create_dir_all(&root)?;
@@ -1015,27 +993,6 @@ impl RecordRepository {
 
     fn load(root: PathBuf) -> Result<RepositoryState, RecordRepositoryError> {
         let log = RecordLog::open(&root.join(LOG_FILE))?;
-        if !log.legacy_imported()? {
-            let legacy = load_records(&root)?;
-            let ops: Vec<(Uuid, &RecordEnvelopeV1)> = legacy
-                .iter()
-                .flat_map(|(key, record)| {
-                    record
-                        .envelopes
-                        .iter()
-                        .map(|envelope| (key.workspace_id, envelope))
-                })
-                .collect();
-            log.append(&ops, None, true)?;
-            if !legacy.is_empty() {
-                eprintln!(
-                    "imported {} signed record file(s) ({} operations) into the record log",
-                    legacy.len(),
-                    ops.len()
-                );
-            }
-            retire_legacy_records(&root)?;
-        }
         let mut records = Records::new();
         log.replay_ops(|position, workspace_id, envelope| {
             let key = RecordRepositoryKey {
@@ -2428,191 +2385,6 @@ fn envelope_prefix_digest<'a>(
     Ok(*digest.finalize().as_bytes())
 }
 
-/// Whether a root entry is the log (or anything else that is not a legacy
-/// workspace directory of record files).
-fn is_repository_entry(name: &str) -> bool {
-    name == IMPORTED_DIR || name.starts_with(LOG_FILE)
-}
-
-/// Read and fully verify the per-record files of releases before the log.
-fn load_records(root: &Path) -> Result<Records, RecordRepositoryError> {
-    let root_entries = match std::fs::read_dir(root) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Records::new()),
-        Err(error) => return Err(error.into()),
-    };
-    let mut records = Records::new();
-    for workspace_entry in root_entries {
-        let workspace_entry = workspace_entry?;
-        let workspace_name = entry_name(&workspace_entry)?;
-        if is_atomic_temp(&workspace_name)
-            || is_repository_entry(&workspace_name)
-            || crate::durable_backup::is_backup_directory_name(&workspace_name)
-        {
-            continue;
-        }
-        if !workspace_entry.file_type()?.is_dir() {
-            return Err(RecordRepositoryError::UnexpectedEntry(
-                workspace_entry.path(),
-            ));
-        }
-        let workspace_id = Uuid::parse_str(&workspace_name)
-            .map_err(|_| RecordRepositoryError::UnexpectedEntry(workspace_entry.path()))?;
-        for record_entry in std::fs::read_dir(workspace_entry.path())? {
-            let record_entry = record_entry?;
-            let record_name = entry_name(&record_entry)?;
-            if is_atomic_temp(&record_name)
-                || crate::durable_backup::is_backup_directory_name(&record_name)
-            {
-                continue;
-            }
-            if !record_entry.file_type()?.is_file() {
-                return Err(RecordRepositoryError::UnexpectedEntry(record_entry.path()));
-            }
-            let record_text = record_name
-                .strip_suffix(".json")
-                .ok_or_else(|| RecordRepositoryError::UnexpectedEntry(record_entry.path()))?;
-            let path_record_id = FileRecordId(
-                Uuid::parse_str(record_text)
-                    .map_err(|_| RecordRepositoryError::UnexpectedEntry(record_entry.path()))?,
-            );
-            let key = RecordRepositoryKey {
-                workspace_id,
-                record_id: path_record_id,
-            };
-            let primary = crate::durable_backup::read_primary(&record_entry.path())?
-                .ok_or_else(|| RecordRepositoryError::UnexpectedEntry(record_entry.path()))?;
-            let outcome = match decode_stored_record(&primary, key) {
-                Ok(stored) => {
-                    if records.insert(key, stored).is_some() {
-                        return Err(RecordRepositoryError::DuplicateRecord);
-                    }
-                    if records.len() > MAX_REPOSITORY_RECORDS {
-                        return Err(RecordRepositoryError::TooManyRecords);
-                    }
-                    continue;
-                }
-                Err(primary_error) => {
-                    match crate::durable_backup::read_or_recover(&record_entry.path(), |bytes| {
-                        bytes.len() as u64 <= MAX_RECORD_FILE_BYTES
-                            && decode_stored_record(bytes, key).is_ok()
-                    }) {
-                        Ok(Some(outcome)) => outcome,
-                        Ok(None) => return Err(primary_error),
-                        Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
-                            return Err(primary_error);
-                        }
-                        Err(error) => return Err(error.into()),
-                    }
-                }
-            };
-            if let Some(recovery) = &outcome.recovery {
-                eprintln!(
-                    "RECOVERED damaged signed record {} from {}; evidence {}; receipt {}",
-                    record_entry.path().display(),
-                    recovery.backup_path.display(),
-                    recovery.damaged_evidence_path.display(),
-                    recovery.receipt_path.display()
-                );
-            }
-            let stored = decode_stored_record(&outcome.bytes, key)?;
-            if records.insert(key, stored).is_some() {
-                return Err(RecordRepositoryError::DuplicateRecord);
-            }
-            if records.len() > MAX_REPOSITORY_RECORDS {
-                return Err(RecordRepositoryError::TooManyRecords);
-            }
-        }
-    }
-    Ok(records)
-}
-
-/// Move imported legacy workspace directories under [`IMPORTED_DIR`]. They
-/// are never read again; they stay as the pre-import copy.
-fn retire_legacy_records(root: &Path) -> Result<(), RecordRepositoryError> {
-    let mut moved = false;
-    for entry in std::fs::read_dir(root)? {
-        let entry = entry?;
-        let name = entry_name(&entry)?;
-        if is_repository_entry(&name)
-            || is_atomic_temp(&name)
-            || crate::durable_backup::is_backup_directory_name(&name)
-            || !entry.file_type()?.is_dir()
-            || Uuid::parse_str(&name).is_err()
-        {
-            continue;
-        }
-        let target = root.join(IMPORTED_DIR);
-        std::fs::create_dir_all(&target)?;
-        std::fs::rename(entry.path(), target.join(&name))?;
-        moved = true;
-    }
-    if moved {
-        atomic_file::sync_directory(root)?;
-    }
-    Ok(())
-}
-
-fn decode_stored_record(
-    bytes: &[u8],
-    key: RecordRepositoryKey,
-) -> Result<StoredRecord, RecordRepositoryError> {
-    if bytes.len() as u64 > MAX_RECORD_FILE_BYTES {
-        return Err(RecordRepositoryError::RecordFileTooLarge);
-    }
-    let persisted: PersistedRecordV1 = serde_json::from_slice(bytes)?;
-    if persisted.schema_version != RECORD_REPOSITORY_VERSION {
-        return Err(RecordRepositoryError::UnsupportedVersion(
-            persisted.schema_version,
-        ));
-    }
-    if persisted.workspace_id != key.workspace_id || persisted.record_id != key.record_id {
-        return Err(RecordRepositoryError::PathKeyMismatch);
-    }
-    if persisted.envelopes.is_empty() {
-        return Err(RecordRepositoryError::EmptyRecord);
-    }
-    if persisted.envelopes.len() > MAX_RECORD_OPERATIONS {
-        return Err(RecordRepositoryError::TooManyOperations);
-    }
-    let mut record = StoredRecord::new(key.record_id);
-    for envelope in persisted.envelopes {
-        if envelope.record_id != key.record_id {
-            return Err(RecordRepositoryError::CrossRecordEnvelope);
-        }
-        if matches!(
-            &envelope.operation,
-            crate::record_replication::RecordOperationV1::PrepareTransaction(transaction)
-                if transaction.manifest.workspace_id != key.workspace_id
-        ) {
-            return Err(RecordRepositoryError::TransactionWorkspaceMismatch);
-        }
-        record.replica.restore_envelope(&envelope)?;
-        if record.replica.version_count() > MAX_RECORD_VERSIONS {
-            return Err(RecordRepositoryError::TooManyVersions);
-        }
-        if record.replica.conflict_count() > MAX_RECORD_CONFLICTS {
-            return Err(RecordRepositoryError::TooManyConflicts);
-        }
-        record.push_pending(envelope);
-    }
-    Ok(record)
-}
-
-fn entry_name(entry: &std::fs::DirEntry) -> Result<String, RecordRepositoryError> {
-    entry
-        .file_name()
-        .into_string()
-        .map_err(|_| RecordRepositoryError::UnexpectedEntry(entry.path()))
-}
-
-fn is_atomic_temp(name: &str) -> bool {
-    name.starts_with('.')
-        && name
-            .rsplit_once('.')
-            .is_some_and(|(_, extension)| extension.eq_ignore_ascii_case("tmp"))
-}
-
 #[derive(Debug, Error)]
 pub enum RecordRepositoryError {
     #[error(
@@ -2625,12 +2397,6 @@ pub enum RecordRepositoryError {
     Log(#[from] RecordLogError),
     #[error("record repository contains invalid JSON: {0}")]
     Json(#[from] serde_json::Error),
-    #[error("unsupported record repository schema version {0}")]
-    UnsupportedVersion(u16),
-    #[error("record repository contains an unexpected entry at {0:?}")]
-    UnexpectedEntry(PathBuf),
-    #[error("persisted record path and embedded workspace/record key differ")]
-    PathKeyMismatch,
     #[error("persisted record contains an envelope for another record")]
     CrossRecordEnvelope,
     #[error("transaction workspace does not match the repository key")]
@@ -2647,10 +2413,6 @@ pub enum RecordRepositoryError {
     TransactionJournal(#[from] RecordTransactionJournalError),
     #[error("transaction failure injected at a durable checkpoint: {0}")]
     TransactionFailureInjected(std::io::Error),
-    #[error("persisted record contains no accepted operations")]
-    EmptyRecord,
-    #[error("record repository contains the same workspace/record more than once")]
-    DuplicateRecord,
     #[error("record repository has reached its record bound")]
     TooManyRecords,
     #[error("record has reached its signed-operation bound")]
@@ -2659,8 +2421,6 @@ pub enum RecordRepositoryError {
     TooManyVersions,
     #[error("record has reached its conflict snapshot bound")]
     TooManyConflicts,
-    #[error("persisted record exceeds its byte bound")]
-    RecordFileTooLarge,
     #[error("record does not exist in this workspace")]
     RecordNotFound,
     #[error("record repository batch size is outside its bound")]
@@ -3953,35 +3713,8 @@ mod tests {
         }
     }
 
-    /// A record file as releases before the operation log wrote it.
-    fn legacy_path(root: &Path, key: RecordRepositoryKey) -> PathBuf {
-        root.join(key.workspace_id.to_string())
-            .join(format!("{}.json", key.record_id.0))
-    }
-
-    fn legacy_json(key: RecordRepositoryKey, envelopes: &[RecordEnvelopeV1]) -> serde_json::Value {
-        serde_json::to_value(PersistedRecordV1 {
-            schema_version: RECORD_REPOSITORY_VERSION,
-            workspace_id: key.workspace_id,
-            record_id: key.record_id,
-            envelopes: envelopes.to_vec(),
-        })
-        .unwrap()
-    }
-
-    fn write_legacy(root: &Path, key: RecordRepositoryKey, value: &serde_json::Value) {
-        let path = legacy_path(root, key);
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        crate::durable_backup::write(&path, &serde_json::to_vec(value).unwrap(), |_| true).unwrap();
-    }
-
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
-    )]
-    fn restart_verifies_signed_state_and_recovers_valid_generations() {
-        // Phase `restart_preserves_snapshot_and_replay_watermark`.
+    fn restart_preserves_snapshot_and_replay_watermark() {
         {
             let fixture = Fixture::new();
             let repo = RecordRepository::open(&fixture.root).unwrap();
@@ -4008,143 +3741,6 @@ mod tests {
                 .unwrap();
             assert!(!reopened.is_latest_envelope(fixture.key, &first));
             assert!(reopened.is_latest_envelope(fixture.key, &second));
-        }
-        // Phase `legacy_record_files_are_imported_once_and_kept_aside`.
-        {
-            let fixture = Fixture::new();
-            let other = RecordRepositoryKey {
-                workspace_id: fixture.key.workspace_id,
-                record_id: FileRecordId::new(),
-            };
-            let other_envelope = RecordEnvelopeV1::signed(
-                other.record_id,
-                fixture.actor,
-                1,
-                RecordOperationV1::SetMetadata(FileMetadataV1 {
-                    schema_version: 1,
-                    record_id: other.record_id,
-                    content_hash: None,
-                    byte_len: 0,
-                    mime: None,
-                    previews: Vec::new(),
-                    latest_actor: Some(fixture.actor),
-                    observed_at_ms: 5,
-                    index_status: IndexStatus::Indexed,
-                    properties: None,
-                }),
-                &fixture.device_key,
-            )
-            .unwrap();
-            write_legacy(
-                &fixture.root,
-                fixture.key,
-                &legacy_json(
-                    fixture.key,
-                    &[fixture.metadata_envelope(1), fixture.metadata_envelope(2)],
-                ),
-            );
-            write_legacy(&fixture.root, other, &legacy_json(other, &[other_envelope]));
-
-            let repo = RecordRepository::open(&fixture.root).unwrap();
-            assert_eq!(repo.len(), 2);
-            assert_eq!(repo.logged_operations().unwrap(), 3);
-            assert_eq!(
-                repo.snapshot(fixture.key, &fixture.actor, &fixture.auth(true, false))
-                    .unwrap()
-                    .metadata
-                    .unwrap()
-                    .observed_at_ms,
-                2
-            );
-            assert!(!legacy_path(&fixture.root, fixture.key).exists());
-            assert!(
-                fixture
-                    .root
-                    .join(IMPORTED_DIR)
-                    .join(fixture.key.workspace_id.to_string())
-                    .join(format!("{}.json", fixture.key.record_id.0))
-                    .exists()
-            );
-            let cursors = repo
-                .stream_cursors_in(fixture.key.workspace_id, None, None, None)
-                .unwrap();
-            drop(repo);
-
-            // A second start neither imports again nor loses anything.
-            let reopened = RecordRepository::open(&fixture.root).unwrap();
-            assert_eq!(reopened.logged_operations().unwrap(), 3);
-            assert_eq!(
-                reopened
-                    .stream_cursors_in(fixture.key.workspace_id, None, None, None)
-                    .unwrap(),
-                cursors
-            );
-            reopened
-                .apply(
-                    fixture.key,
-                    &fixture.metadata_envelope(3),
-                    &fixture.auth(true, true),
-                )
-                .unwrap();
-        }
-        // Phase `a_tampered_legacy_record_is_rejected_on_import`.
-        {
-            let fixture = Fixture::new();
-            let mut value = legacy_json(fixture.key, &[fixture.metadata_envelope(1)]);
-            value["envelopes"][0]["sequence"] = serde_json::json!(2);
-            write_legacy(&fixture.root, fixture.key, &value);
-            assert!(matches!(
-                RecordRepository::open(&fixture.root),
-                Err(RecordRepositoryError::Replication(
-                    RecordReplicationError::Signature(_)
-                ))
-            ));
-            // Nothing was imported, and the file is where it was.
-            assert!(legacy_path(&fixture.root, fixture.key).exists());
-        }
-        // Phase `a_damaged_legacy_primary_is_imported_from_its_latest_valid_generation`.
-        {
-            let fixture = Fixture::new();
-            write_legacy(
-                &fixture.root,
-                fixture.key,
-                &legacy_json(fixture.key, &[fixture.metadata_envelope(1)]),
-            );
-            write_legacy(
-                &fixture.root,
-                fixture.key,
-                &legacy_json(
-                    fixture.key,
-                    &[fixture.metadata_envelope(1), fixture.metadata_envelope(2)],
-                ),
-            );
-            let path = legacy_path(&fixture.root, fixture.key);
-            let damaged = b"{\"schema_version\":1,\"tampered\":true}";
-            std::fs::write(&path, damaged).unwrap();
-            let reopened = RecordRepository::open(&fixture.root).unwrap();
-            let snapshot = reopened
-                .snapshot(fixture.key, &fixture.actor, &fixture.auth(true, false))
-                .unwrap();
-            assert_eq!(snapshot.metadata.unwrap().observed_at_ms, 1);
-
-            // The evidence moved aside with the imported files.
-            let backup_dir = fixture
-                .root
-                .join(IMPORTED_DIR)
-                .join(fixture.key.workspace_id.to_string())
-                .join(format!(
-                    ".{}.tilo-backups",
-                    path.file_name().unwrap().to_string_lossy()
-                ));
-            let entries = std::fs::read_dir(backup_dir)
-                .unwrap()
-                .map(|entry| entry.unwrap())
-                .collect::<Vec<_>>();
-            let evidence = entries
-                .iter()
-                .find(|entry| entry.file_name().to_string_lossy().starts_with("evidence-"))
-                .unwrap();
-            assert_eq!(std::fs::read(evidence.path()).unwrap(), damaged);
         }
     }
 
@@ -4232,23 +3828,8 @@ mod tests {
                     RecordReplicationError::Replay { sequence: 1 }
                 ))
             ));
-            drop(repo);
-
-            let other = Fixture::new();
-            let first = other.metadata_envelope(1);
-            write_legacy(
-                &other.root,
-                other.key,
-                &legacy_json(other.key, &[first.clone(), first]),
-            );
-            assert!(matches!(
-                RecordRepository::open(&other.root),
-                Err(RecordRepositoryError::Replication(
-                    RecordReplicationError::Replay { sequence: 1 }
-                ))
-            ));
         }
-        // Phase `cross_record_state_is_rejected_on_apply_and_import`.
+        // Phase `cross_record_state_is_rejected_on_apply`.
         {
             let fixture = Fixture::new();
             let repo = RecordRepository::open(&fixture.root).unwrap();
@@ -4263,19 +3844,6 @@ mod tests {
                     &fixture.auth(true, true)
                 ),
                 Err(RecordRepositoryError::CrossRecordEnvelope)
-            ));
-            drop(repo);
-
-            let legacy = Fixture::new();
-            let misplaced = RecordRepositoryKey {
-                workspace_id: legacy.key.workspace_id,
-                record_id: FileRecordId::new(),
-            };
-            let value = legacy_json(legacy.key, &[legacy.metadata_envelope(1)]);
-            write_legacy(&legacy.root, misplaced, &value);
-            assert!(matches!(
-                RecordRepository::open(&legacy.root),
-                Err(RecordRepositoryError::PathKeyMismatch)
             ));
         }
     }

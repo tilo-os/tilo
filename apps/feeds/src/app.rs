@@ -6389,8 +6389,18 @@ mod tests {
                 .find(|(_, node)| node.label() == Some("Feed URL"))
                 .map(|(id, _)| *id)
                 .expect("native field must be exported");
-            assert!(
-                field.0 < (1_u64 << 48),
+            // The exported field is the retained TextInput itself, not a
+            // synthetic mirror: its id is the one its layout node exports.
+            app.refresh_semantic_tree();
+            let retained = app
+                .semantic_tree()
+                .iter()
+                .find(|node| node.name.as_deref() == Some("Feed URL"))
+                .and_then(|node| node.widget_taffy_id)
+                .expect("the field is a retained widget");
+            assert_eq!(
+                app.accessibility_node_id(ui::taffy::NodeId::from(retained)),
+                Some(field),
                 "field has no retained layout id: {field:?}"
             );
             app.dispatch_a11y_action(

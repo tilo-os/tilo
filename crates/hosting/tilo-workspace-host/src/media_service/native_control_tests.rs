@@ -49,6 +49,7 @@ impl Fixture {
                     rustls::pki_types::PrivatePkcs8KeyDer::from(cert.signing_key.serialize_der()),
                 ),
                 local_enrollment: None,
+                frame_ancestors: Vec::new(),
             },
         )
         .await

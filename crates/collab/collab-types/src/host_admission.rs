@@ -27,7 +27,7 @@
 //! it cannot mint an Editor, change the room's governance, or speak for
 //! another room.
 
-use std::time::SystemTime;
+use web_time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;

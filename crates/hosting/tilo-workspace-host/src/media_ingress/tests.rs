@@ -162,6 +162,7 @@ async fn installed_tls_native_owner_and_same_origin_draft21_share_real_custody()
         certificates: vec![certificate.clone()],
         key: PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(cert.signing_key.serialize_der())),
         local_enrollment: None,
+        frame_ancestors: Vec::new(),
     };
     let mut ingress = InstalledIngress::start(&mut f.owner, f.current.clone(), listener, config)
         .await
@@ -623,6 +624,7 @@ async fn installed_discovery_cannot_rollback_the_actual_owner_clock() {
                 certificate.signing_key.serialize_der(),
             )),
             local_enrollment: None,
+            frame_ancestors: Vec::new(),
         },
     )
     .await

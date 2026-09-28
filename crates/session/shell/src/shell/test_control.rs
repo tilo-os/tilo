@@ -80,6 +80,8 @@ pub enum Command {
         #[serde(default)]
         scale: Option<f64>,
     },
+    /// Say whether a viewer is looking at a headless session's frames. Unwatched, the headless backend lays frames out and hands clients their frame callbacks but does not rasterize them; attaching a viewer paints a fresh frame. `snapshot` renders on demand either way. Other backends always paint. Answered by the native transport.
+    Watch { watching: bool },
     /// Read-only snapshot of the live `shell::state::WorkspaceTree` plus [`ChromeState`](crate::shell::chrome_state::ChromeState), both as opaque `serde_json::Value` so future fields don't break the wire.
     StateDump,
     /// Grant a capability on the active workspace on behalf of the user at this session, through `Workspace::grant_as` — the production authority check, so a grantor without ownership or `Admin` is refused, not worked around.
@@ -717,6 +719,13 @@ pub fn dispatch_command<S: ControlState>(
                 code: "test_transport_required".to_string(),
                 message: "host activation tokens are minted by the native test transport"
                     .to_string(),
+            },
+            Vec::new(),
+        ),
+        Command::Watch { .. } => (
+            Response::Err {
+                code: "test_transport_required".to_string(),
+                message: "watching is answered by the native compositor transport".to_string(),
             },
             Vec::new(),
         ),
