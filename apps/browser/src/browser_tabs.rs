@@ -900,7 +900,8 @@ impl Widget for BrowserTabs {
         dyn ui::widget::FloatingSurfaceProvider,
         dyn ui::widget::Continuable,
         dyn ui::widget::controls::ActionControls,
-        dyn ui::search::capability::SearchSource
+        dyn ui::search::capability::SearchSource,
+        dyn ui::component_lifecycle::ComponentLifecycle
     );
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
@@ -1489,6 +1490,9 @@ impl Widget for BrowserTabs {
     fn get_rect(&self) -> Rect {
         self.rect
     }
+}
+
+impl ui::component_lifecycle::ComponentLifecycle for BrowserTabs {
     fn on_window_close_requested(&mut self) -> WindowCloseAdmission {
         match self.exit_state {
             ExitState::Choice | ExitState::Cancelling => WindowCloseAdmission::Defer,
@@ -2309,7 +2313,7 @@ mod tests {
             assert_eq!(tabs.fullscreen_intent(), Some(true));
 
             assert_eq!(
-                tabs.on_window_close_requested(),
+                ui::component_lifecycle::on_window_close_requested(&mut tabs),
                 WindowCloseAdmission::Defer
             );
             assert_eq!(tabs.fullscreen_intent(), Some(false));
@@ -2324,11 +2328,15 @@ mod tests {
             assert!(commands.contains(&WebViewCommand::ExitFullscreen));
             assert!(!commands.contains(&WebViewCommand::CancelAllDownloads));
             drop(commands);
-            assert!(!tabs.take_window_close_intent());
+            assert!(!ui::component_lifecycle::take_window_close_intent(
+                &mut tabs
+            ));
             invoke_exit_choice(&mut tabs, "browser.download-exit.keep", &mut doc);
             tabs.sync(&mut doc, &automerge::ROOT);
             assert!(tabs.exit_panel.is_none());
-            assert!(!tabs.take_window_close_intent());
+            assert!(!ui::component_lifecycle::take_window_close_intent(
+                &mut tabs
+            ));
             assert!(
                 !engine
                     .commands
@@ -2353,7 +2361,7 @@ mod tests {
                 tabs.sync(&mut doc, &automerge::ROOT);
                 tabs.on_fullscreen_changed(true);
                 assert_eq!(
-                    tabs.on_window_close_requested(),
+                    ui::component_lifecycle::on_window_close_requested(&mut tabs),
                     WindowCloseAdmission::Defer
                 );
                 if cancelling {
@@ -2373,7 +2381,9 @@ mod tests {
                     assert!(rects.contains_key("browser.download-exit.keep"));
                     assert!(rects.contains_key("browser.download-exit.cancel"));
                 }
-                assert!(!tabs.take_window_close_intent());
+                assert!(!ui::component_lifecycle::take_window_close_intent(
+                    &mut tabs
+                ));
             }
         }
 
@@ -2429,14 +2439,16 @@ mod tests {
             tabs.sync(&mut doc, &automerge::ROOT);
 
             assert_eq!(
-                tabs.on_window_close_requested(),
+                ui::component_lifecycle::on_window_close_requested(&mut tabs),
                 ui::widget::WindowCloseAdmission::Defer
             );
             assert!(tabs.exit_panel.is_some(), "both exit choices are visible");
 
             invoke_exit_choice(&mut tabs, "browser.download-exit.keep", &mut doc);
             tabs.sync(&mut doc, &automerge::ROOT);
-            assert!(!tabs.take_window_close_intent());
+            assert!(!ui::component_lifecycle::take_window_close_intent(
+                &mut tabs
+            ));
             assert!(
                 !engine
                     .commands
@@ -2445,7 +2457,7 @@ mod tests {
                     .contains(&WebViewCommand::CancelAllDownloads)
             );
             assert_eq!(
-                tabs.on_window_close_requested(),
+                ui::component_lifecycle::on_window_close_requested(&mut tabs),
                 ui::widget::WindowCloseAdmission::Defer,
                 "keeping downloads does not arm a delayed automatic quit"
             );
@@ -2479,9 +2491,11 @@ mod tests {
                     .unwrap()
                     .contains(&WebViewCommand::CancelAllDownloads)
             );
-            assert!(!tabs.take_window_close_intent());
+            assert!(!ui::component_lifecycle::take_window_close_intent(
+                &mut tabs
+            ));
             assert_eq!(
-                tabs.on_window_close_requested(),
+                ui::component_lifecycle::on_window_close_requested(&mut tabs),
                 ui::widget::WindowCloseAdmission::Defer,
                 "repeated close cannot bypass native cancellation"
             );
@@ -2507,7 +2521,7 @@ mod tests {
             ]);
             tabs.sync(&mut doc, &automerge::ROOT);
             assert!(
-                !tabs.take_window_close_intent(),
+                !ui::component_lifecycle::take_window_close_intent(&mut tabs),
                 "new admission precedes cancel barrier"
             );
             engine.events.lock().unwrap().extend([
@@ -2531,7 +2545,7 @@ mod tests {
             ]);
             tabs.sync(&mut doc, &automerge::ROOT);
             assert!(
-                !tabs.take_window_close_intent(),
+                !ui::component_lifecycle::take_window_close_intent(&mut tabs),
                 "physical owner is still closing"
             );
             engine
@@ -2545,8 +2559,11 @@ mod tests {
                     error: String::new(),
                 });
             tabs.sync(&mut doc, &automerge::ROOT);
-            assert!(tabs.take_window_close_intent());
-            assert!(!tabs.take_window_close_intent(), "approval is one shot");
+            assert!(ui::component_lifecycle::take_window_close_intent(&mut tabs));
+            assert!(
+                !ui::component_lifecycle::take_window_close_intent(&mut tabs),
+                "approval is one shot"
+            );
         }
 
         // Phase `admitted_close_releases_cached_favicon_and_visual_state`.

@@ -159,13 +159,13 @@ fn checked_components_keep_exact_records_and_close_owners_inside_groups() {
     }
     tree.workspaces[0].strips[0].window_groups.clear();
     surface.reconcile(&tree, &records, &mut resolver);
-    let reports = surface.take_component_close_reports();
+    let reports = ui::component_lifecycle::take_component_close_reports(&mut surface);
     assert_eq!(
         reports.len(),
         3,
         "every removed component must transfer close/persistence custody, including inactive tabs"
     );
-    assert!(surface.take_component_close_reports().is_empty());
+    assert!(ui::component_lifecycle::take_component_close_reports(&mut surface).is_empty());
     assert!(
         reports
             .iter()
@@ -244,9 +244,12 @@ fn moving_checked_tabs_between_groups_preserves_record_owner() {
         retained, owner,
         "reparenting must retain the actual checked component allocation"
     );
-    assert!(surface.take_component_close_reports().is_empty());
+    assert!(ui::component_lifecycle::take_component_close_reports(&mut surface).is_empty());
     assert!(surface.take_setup_failures().is_empty());
-    assert_eq!(surface.close_components().len(), 3);
+    assert_eq!(
+        ui::component_lifecycle::close_components(&mut surface).len(),
+        3
+    );
 }
 
 #[test]
@@ -379,7 +382,7 @@ fn hierarchy_rebuild_retains_checked_component_custody_for_unchanged_tabs() {
         before, after,
         "adding a strip must retain the actual component allocation"
     );
-    assert!(surface.take_component_close_reports().is_empty());
+    assert!(ui::component_lifecycle::take_component_close_reports(&mut surface).is_empty());
     assert_eq!(surface.strip_ids(), vec![StripId(2), StripId(99)]);
     surface.take_component_wake();
     resolver.host.wakes[0].wake();
@@ -387,7 +390,7 @@ fn hierarchy_rebuild_retains_checked_component_custody_for_unchanged_tabs() {
         surface.take_component_wake(),
         "retained owner must keep its original wake binding"
     );
-    surface.close_components();
+    ui::component_lifecycle::close_components(&mut surface);
     surface.take_component_wake();
     resolver.host.wakes[0].wake();
     assert!(

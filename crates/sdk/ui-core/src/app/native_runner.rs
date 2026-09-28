@@ -1531,7 +1531,7 @@ impl AppHandler {
             floating_content_changed = true;
             full_redraw_required = true;
         }
-        if app.root_widget.take_window_close_intent() {
+        if crate::component_lifecycle::take_window_close_intent(app.root_widget.as_mut()) {
             if app.admit_native_close_request() {
                 event_loop.exit();
                 return;
@@ -3517,7 +3517,7 @@ impl AppHandler {
     }
 
     fn close_primary_window(&mut self, event_loop: &ActiveEventLoop, window: &Arc<Window>) {
-        match self.app.root_widget.on_window_close_requested() {
+        match crate::component_lifecycle::on_window_close_requested(self.app.root_widget.as_mut()) {
             crate::widget::WindowCloseAdmission::Allow => {
                 if self.app.admit_native_close_request() {
                     event_loop.exit();

@@ -762,45 +762,6 @@ pub trait Widget {
         None
     }
 
-    /// Admit or defer the primary native window's ordinary close request.
-    /// Roots that defer must later produce a one-shot close intent.
-    fn on_window_close_requested(&mut self) -> WindowCloseAdmission {
-        WindowCloseAdmission::Allow
-    }
-
-    /// One-shot approval after an earlier deferred ordinary window close.
-    fn take_window_close_intent(&mut self) -> bool {
-        false
-    }
-
-    /// App-declared external document obligations. An in-memory `RecordSet` is
-    /// not evidence that an editable file has been saved.
-    fn unsaved_documents(&self, doc: &AutoCommit) -> Vec<crate::close_admission::UnsavedDocument> {
-        self.children()
-            .into_iter()
-            .flat_map(|child| child.unsaved_documents(doc))
-            .collect()
-    }
-    /// Non-destructive persistence checkpoint. Never closes a wake scope or
-    /// removes a tree; a failed host close must leave every child usable.
-    fn checkpoint_components(&mut self) -> Vec<String> {
-        let mut errors = Vec::new();
-        errors.extend(
-            self.children_mut()
-                .into_iter()
-                .flat_map(Widget::checkpoint_components),
-        );
-        errors
-    }
-    /// Only the host may call this after every checkpoint succeeded, without
-    /// dispatching another document mutation in between.
-    fn finish_admitted_close(&mut self) -> Vec<crate::application::ComponentCloseReport> {
-        self.children_mut()
-            .into_iter()
-            .flat_map(Widget::finish_admitted_close)
-            .collect()
-    }
-
     /// Explicit app-owned region; never search secondary children implicitly.
     fn primary_vertical_scroll(&self) -> Option<PrimaryScrollRegion> {
         None
@@ -810,30 +771,6 @@ pub trait Widget {
         _action: PrimaryScrollAction,
     ) -> PrimaryScrollResult {
         PrimaryScrollResult::Unsupported
-    }
-
-    /// Transitional durable writer owned by this root rather than the host.
-    /// `None` means no such writer exists. Implementations must wait for all
-    /// pending writes and report failure; a queued flush is not success.
-    fn try_flush_owned_persistence(&mut self) -> Option<Result<(), String>> {
-        None
-    }
-
-    /// Owning lifecycle path: capture and close nested components before removing
-    /// their live trees, transferring all recovery reports to the caller.
-    fn close_components(&mut self) -> Vec<crate::application::ComponentCloseReport> {
-        self.children_mut()
-            .into_iter()
-            .flat_map(Widget::close_components)
-            .collect()
-    }
-    /// Drain inert close-report ownership once; never invoke ordinary app callbacks
-    /// through a closed component. Bound owners override this to use cached metadata.
-    fn take_component_close_reports(&mut self) -> Vec<crate::application::ComponentCloseReport> {
-        self.children_mut()
-            .into_iter()
-            .flat_map(Widget::take_component_close_reports)
-            .collect()
     }
 
     /// Runtime binding inherited by descendants in a matching layout topology.
@@ -1490,26 +1427,6 @@ pub trait Widget {
         false
     }
 
-    /// Which **record** (see [`crate::record`]) this widget's document
-    /// should be, so opening a second file checks out a different document
-    /// instead of overwriting the first. Root widget only; `None` keeps the
-    /// default package-level document.
-    fn record_intent(&self) -> Option<crate::record::RecordCheckout> {
-        None
-    }
-
-    /// Presentation fields (scroll offset, view mode) contributed to the
-    /// App's [`View`](crate::view::View), restored via
-    /// [`restore_view_state`](Self::restore_view_state). Distinct from
-    /// [`get_state`](Self::get_state) (the *focused* widget's
-    /// caret/selection): this is root-owned, usually not the focused
-    /// widget's.
-    fn view_state(&self) -> Option<crate::view::ViewContribution> {
-        None
-    }
-
-    fn restore_view_state(&mut self, _view: &crate::view::ViewContribution) {}
-
     /// Route history when this widget, or one it contains, is a [`Router`](router::Router).
     ///
     /// Dev reload writes this beside the document so the same screen is showing
@@ -1558,26 +1475,6 @@ pub trait Widget {
         for child in self.children_mut() {
             child.set_motion_reduced(reduced);
         }
-    }
-
-    /// Inverse of [`Self::record_intent`]. A widget that publishes
-    /// presence **must** fold this into its presence key — two instances
-    /// of one app are two records, and a key that only names the field
-    /// collides between them, so a peer's caret lands in whichever
-    /// instance drew last.
-    fn set_record_scope(&mut self, _record: &crate::record::RecordId) {}
-
-    /// Detach every receiver, queued result and deferred document write owned by
-    /// the current record before a host can retain this root under another
-    /// record owner. This runs without a document loan. Returning `Ok(())`
-    /// certifies that no later lifecycle callback can apply old-owner work to a
-    /// replacement document. Opaque roots refuse by default.
-    ///
-    /// # Errors
-    /// Returns an explanatory refusal when the widget cannot yet detach every
-    /// continuation associated with its current record owner.
-    fn release_record_scope(&mut self) -> Result<(), String> {
-        Err("This application cannot release retained work from its current document owner".into())
     }
 
     // --- Collab / DnD contract extensions ---
@@ -2651,10 +2548,12 @@ mod tests {
         fn ordinary_window_close_defaults_to_immediate_exit() {
             let mut spacer = Spacer::new();
             assert_eq!(
-                spacer.on_window_close_requested(),
+                crate::component_lifecycle::on_window_close_requested(&mut spacer),
                 WindowCloseAdmission::Allow
             );
-            assert!(!spacer.take_window_close_intent());
+            assert!(!crate::component_lifecycle::take_window_close_intent(
+                &mut spacer
+            ));
         }
 
         fn native_input_snapshot_defaults_to_none() {
@@ -2901,15 +2800,10 @@ pub(crate) mod control_result_probe {
     impl Widget for Probe {
         crate::provides!(
             dyn crate::widget::controls::ActionControls,
-            dyn crate::resources::PublishesResources
+            dyn crate::resources::PublishesResources,
+            dyn crate::component_lifecycle::ComponentLifecycle
         );
 
-        fn try_flush_owned_persistence(&mut self) -> Option<Result<(), String>> {
-            self.observed
-                .flushes
-                .set(self.observed.flushes.get().saturating_add(1));
-            self.owned_flush.clone()
-        }
         fn needs_commit(&self) -> bool {
             self.dirty_typing
         }
@@ -2998,6 +2892,15 @@ pub(crate) mod control_result_probe {
             } else {
                 ResourceOperationStart::Completed(tilo_actions::ActionOutput::default())
             }))
+        }
+    }
+
+    impl crate::component_lifecycle::ComponentLifecycle for Probe {
+        fn try_flush_owned_persistence(&mut self) -> Option<Result<(), String>> {
+            self.observed
+                .flushes
+                .set(self.observed.flushes.get().saturating_add(1));
+            self.owned_flush.clone()
         }
     }
 

@@ -524,7 +524,8 @@ impl Widget for ProbeRoot {
     tilo_ui::provides!(
         dyn tilo_ui::widget::NativeViewLifecycle,
         dyn tilo_ui::resources::PublishesResources,
-        dyn tilo_ui::search::capability::SearchSource
+        dyn tilo_ui::search::capability::SearchSource,
+        dyn tilo_ui::view::capability::ViewState
     );
 
     fn set_motion_reduced(&mut self, reduced: bool) {
@@ -670,6 +671,9 @@ impl Widget for ProbeRoot {
     fn set_state(&mut self, state: &str) {
         self.caret = state.into();
     }
+}
+
+impl tilo_ui::view::capability::ViewState for ProbeRoot {
     fn view_state(&self) -> Option<ViewContribution> {
         Some(ViewContribution {
             scroll: self.scroll.clone(),
