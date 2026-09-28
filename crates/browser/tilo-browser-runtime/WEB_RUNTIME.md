@@ -44,10 +44,17 @@ The Cloud frontend's monolithic module is unchanged in behaviour:
 | (none, the default) | the toolkit core: toolkit, page host, catalogue; no apps, no peer |
 | `dylink` | links the cdylib as a dynamic-linking main module (see below) |
 | `static-apps` | compiles Writer, Chat, Notes, Calculator and Books into the module |
-| `cloud` | the certified peer, iroh transport, delivery, onboarding, MoQ media, the canonical desktop |
+| `cloud` | the certified peer (HTTPS delivery, onboarding, invited guests), MoQ media, the canonical desktop |
 
 Host tests (`cargo test -p tilo-browser-runtime`) always cover the peer modules
 and the catalogue's apps.
+
+`cloud` adds no dependency: every crate the peer uses is already in the core.
+Since the ABI id leaves the core crate out, `build-web-core.sh OUT --features
+cloud` builds a core with the peer (`connectPeer` in `peer.mjs`) that has the
+default core's ABI id and links the same app side modules, from the same
+registry. A page that needs the peer loads that core instead of the default
+one, not a second runtime.
 
 ## The web app collection
 
