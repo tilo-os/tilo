@@ -517,7 +517,7 @@ fn parse_32(value: &str) -> Result<[u8; 32], String> {
         .map_err(|bytes: Vec<u8>| format!("expected 32 bytes, got {}", bytes.len()))
 }
 
-fn public_ip(ip: IpAddr) -> bool {
+pub(crate) fn public_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(ip) => public_v4(ip),
         IpAddr::V6(ip) => public_v6(ip),
