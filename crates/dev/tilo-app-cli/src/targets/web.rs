@@ -597,6 +597,11 @@ fn optimize(wasm: &Path) -> Result<()> {
                 "-Oz",
                 "--enable-bulk-memory",
                 "--enable-nontrapping-float-to-int",
+                // Folds constant address offsets into loads and stores
+                // (about 540 KB of code). Sound because rustc links wasm32
+                // stack-first: the first KiB of memory is the bottom of the
+                // 1 MiB stack, reached only by a stack about to overflow.
+                "--low-memory-unused",
             ])
             .arg(wasm)
             .arg("-o")
