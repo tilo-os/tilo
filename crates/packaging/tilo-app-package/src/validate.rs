@@ -315,7 +315,7 @@ fn validate_target(m: &Manifest) -> Result<(), ManifestError> {
     Ok(())
 }
 
-/// A Windows or macOS app: `module` is the executable the entrypoint names,
+/// A Linux, Windows or macOS app: `module` is the executable the entrypoint names,
 /// and `runtime` is the toolkit release linked into it, as declared.
 fn validate_desktop_target(
     m: &Manifest,

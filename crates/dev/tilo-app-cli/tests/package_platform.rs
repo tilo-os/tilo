@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
-//! `tilo-app package --platform macos|windows` builds one static executable
+//! `tilo-app package --platform linux|macos|windows` builds one static executable
 //! for the platform's triple and packs it under a signed desktop `[target]`.
 
 use std::path::Path;
@@ -58,6 +58,7 @@ fn desktop_packages_ship_one_executable_under_a_signed_target() {
 
     for (platform, arch, triple, module) in [
         ("macos", "aarch64", "aarch64-apple-darwin", "bin/notes"),
+        ("linux", "x86_64", "x86_64-unknown-linux-gnu", "bin/notes"),
         (
             "windows",
             "x86_64",

@@ -499,6 +499,9 @@ pub enum PackagePlatform {
     /// A thin Tilo OS app, linked against the toolkit the OS ships.
     #[default]
     Tilo,
+    /// One self-contained executable with the toolkit linked in, for Linux
+    /// desktops other than Tilo OS.
+    Linux,
     /// One self-contained Windows executable with the toolkit linked in.
     Windows,
     /// One self-contained macOS executable with the toolkit linked in.
@@ -513,6 +516,7 @@ impl PackagePlatform {
     pub const fn registry_name(self) -> &'static str {
         match self {
             Self::Tilo => registry_types::TILO_OS_PLATFORM,
+            Self::Linux => registry_types::LINUX_PLATFORM,
             Self::Windows => registry_types::WINDOWS_PLATFORM,
             Self::Macos => registry_types::MACOS_PLATFORM,
             Self::Web => registry_types::WEB_PLATFORM,
@@ -524,7 +528,7 @@ impl PackagePlatform {
     pub fn triple(self, arch: PackageArch) -> String {
         let arch = arch.as_str();
         match self {
-            Self::Tilo => format!("{arch}-unknown-linux-gnu"),
+            Self::Tilo | Self::Linux => format!("{arch}-unknown-linux-gnu"),
             Self::Windows => format!("{arch}-pc-windows-msvc"),
             Self::Macos => format!("{arch}-apple-darwin"),
             Self::Web => "wasm32-unknown-unknown".to_owned(),
@@ -534,7 +538,7 @@ impl PackagePlatform {
     const fn executable_suffix(self) -> &'static str {
         match self {
             Self::Windows => ".exe",
-            Self::Tilo | Self::Macos | Self::Web => "",
+            Self::Tilo | Self::Linux | Self::Macos | Self::Web => "",
         }
     }
 }

@@ -562,7 +562,7 @@ struct PackageArgs {
     static_link: bool,
 
     /// The system to build for: a thin Tilo OS app, one self-contained
-    /// Windows or macOS executable with the toolkit linked in, or a
+    /// Linux, Windows or macOS executable with the toolkit linked in, or a
     /// WebAssembly side module of the browser's toolkit core.
     #[arg(long, value_enum, default_value_t = PlatformArg::Tilo)]
     platform: PlatformArg,
@@ -1221,6 +1221,7 @@ fn read_ui_node(source: NodeSourceArgs) -> Result<tilo_ui_graph::UiNode> {
 #[derive(Clone, Copy, clap::ValueEnum)]
 enum PlatformArg {
     Tilo,
+    Linux,
     Windows,
     Macos,
     Web,
@@ -1273,6 +1274,7 @@ fn run_package(args: PackageArgs) -> Result<Value> {
             target: args.target,
             platform: match args.platform {
                 PlatformArg::Tilo => tilo_app_cli::PackagePlatform::Tilo,
+                PlatformArg::Linux => tilo_app_cli::PackagePlatform::Linux,
                 PlatformArg::Windows => tilo_app_cli::PackagePlatform::Windows,
                 PlatformArg::Macos => tilo_app_cli::PackagePlatform::Macos,
                 PlatformArg::Web => tilo_app_cli::PackagePlatform::Web,
