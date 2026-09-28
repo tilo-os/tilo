@@ -650,8 +650,7 @@ struct NameDlg {
 impl MusicApp {
     // A flat struct literal initializing every field of `MusicApp`'s ~90-field
     // state; splitting it into sub-builders would only relocate the field
-    // assignments across more functions, not reduce them (the same reasoning
-    // as the file-level `too_many_arguments` allow above).
+    // assignments across more functions, not reduce them.
     #[allow(
         clippy::too_many_lines,
         reason = "flat struct-literal initializing every MusicApp field once; splitting it would only relocate field assignments, not reduce them"

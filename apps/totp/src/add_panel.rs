@@ -22,8 +22,7 @@
 //! among them itself, forwarding key/pointer events to the focused field.
 //! Results surface as an [`AddPanelEvent`] drained by the app.
 
-use automerge::{AutoCommit, ObjId};
-use taffy::{NodeId, TaffyTree};
+use taffy::NodeId;
 use uuid::Uuid;
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Stroke};
@@ -38,7 +37,7 @@ use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{
-    Button, ButtonFace, SegmentedFace, TextInput, TextInputKind, ToggleGroup, Widget,
+    Button, ButtonFace, EventCtx, SegmentedFace, TextInput, TextInputKind, ToggleGroup, Widget,
 };
 
 use crate::model::{self, Account, Algorithm};
@@ -1770,45 +1769,22 @@ impl AddAccountPanel {
 
     // ---- events ------------------------------------------------------
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the full winit routing signature every Widget::handle_event carries"
-    )]
-    pub fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    pub fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
         if !self.open {
             return;
         }
         // The modal is fully blocking — every event is consumed.
-        *handled = true;
+        *ctx.handled = true;
 
         if matches!(event, WindowEvent::CursorMoved { .. }) {
-            self.handle_cursor_moved(
-                event,
-                scale_factor,
-                *modifiers,
-                state,
-                path,
-                handled,
-                node_id,
-                taffy,
-            );
+            self.handle_cursor_moved(event, ctx);
             return;
         }
 
         // Wheel scrolls the body when the form is taller than the window.
         // The next layout pass re-offsets every rect from the new scroll.
         if let WindowEvent::MouseWheel { delta, .. } = event {
-            self.handle_wheel(delta, scale_factor);
+            self.handle_wheel(delta, ctx.scale_factor);
             return;
         }
 
@@ -1824,7 +1800,7 @@ impl AddAccountPanel {
                 },
             ..
         } = event
-            && self.handle_key(logical_key, modifiers.state().shift_key())
+            && self.handle_key(logical_key, ctx.modifiers.state().shift_key())
         {
             return;
         }
@@ -1836,35 +1812,15 @@ impl AddAccountPanel {
             ..
         } = event
         {
-            self.handle_mouse_press(
-                event,
-                scale_factor,
-                *modifiers,
-                state,
-                path,
-                handled,
-                node_id,
-                taffy,
-            );
+            self.handle_mouse_press(event, ctx);
             return;
         }
 
         // Forward remaining events (chars, drag) to the focused field.
         if let Some(f) = self.focused {
             let mut throwaway = None;
-            self.field_mut(f).handle_event(
-                event,
-                &mut ui::widget::EventCtx {
-                    scale_factor,
-                    modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target: &mut throwaway,
-                    node_id,
-                    taffy,
-                },
-            );
+            self.field_mut(f)
+                .handle_event(event, &mut field_ctx(ctx, &mut throwaway));
         }
     }
 
@@ -1872,25 +1828,11 @@ impl AddAccountPanel {
     /// reach every text field so their `is_hovered` is set before a click
     /// lands. Split out of [`Self::handle_event`] to keep that function's
     /// line count in check.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the full winit routing signature every Widget::handle_event carries"
-    )]
-    fn handle_cursor_moved(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_cursor_moved(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
         let WindowEvent::CursorMoved { position, .. } = event else {
             return;
         };
-        self.last_mouse = Point::new(position.x / scale_factor, position.y / scale_factor);
+        self.last_mouse = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
         for field in [
             Field::Uri,
             Field::Issuer,
@@ -1899,19 +1841,8 @@ impl AddAccountPanel {
             Field::Period,
         ] {
             let mut throwaway = None;
-            self.field_mut(field).handle_event(
-                event,
-                &mut ui::widget::EventCtx {
-                    scale_factor,
-                    modifiers: &modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target: &mut throwaway,
-                    node_id,
-                    taffy,
-                },
-            );
+            self.field_mut(field)
+                .handle_event(event, &mut field_ctx(ctx, &mut throwaway));
         }
     }
 
@@ -1954,21 +1885,7 @@ impl AddAccountPanel {
     /// A left click: method cards, disclosures, chips, footer buttons, and
     /// focusing a text field. Split out of [`Self::handle_event`] to keep
     /// that function's line count in check.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the full winit routing signature every Widget::handle_event carries"
-    )]
-    fn handle_mouse_press(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_mouse_press(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
         let p = self.last_mouse;
 
         // Method cards.
@@ -2020,19 +1937,9 @@ impl AddAccountPanel {
             let r = self.field_rect(field);
             if r.contains(p) {
                 self.set_focus(Some(field));
-                self.field_mut(field).handle_event(
-                    event,
-                    &mut ui::widget::EventCtx {
-                        scale_factor,
-                        modifiers: &modifiers,
-                        state,
-                        path,
-                        handled,
-                        focus_target: &mut None,
-                        node_id,
-                        taffy,
-                    },
-                );
+                let mut throwaway = None;
+                self.field_mut(field)
+                    .handle_event(event, &mut field_ctx(ctx, &mut throwaway));
                 return;
             }
         }
@@ -2157,10 +2064,26 @@ fn draw_glyph(scene: &mut Scene, transform: Affine, tile: Rect, glyph: ImportMet
     }
 }
 
+/// `ctx` for one of the panel's text fields. The modal decides focus itself,
+/// so a field's focus request lands in `focus` and goes no further.
+fn field_ctx<'b>(ctx: &'b mut EventCtx<'_>, focus: &'b mut Option<NodeId>) -> EventCtx<'b> {
+    EventCtx {
+        scale_factor: ctx.scale_factor,
+        modifiers: ctx.modifiers,
+        state: &mut *ctx.state,
+        path: ctx.path,
+        handled: &mut *ctx.handled,
+        focus_target: focus,
+        node_id: ctx.node_id,
+        taffy: ctx.taffy,
+    }
+}
 #[cfg(test)]
 #[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests {
     use super::*;
+    use automerge::AutoCommit;
+    use taffy::TaffyTree;
 
     fn opened() -> AddAccountPanel {
         let mut p = AddAccountPanel::new();
@@ -2482,7 +2405,19 @@ mod tests {
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let node = taffy.new_leaf(taffy::Style::default()).unwrap();
         let mut handled = false;
-        p.handle_event(ev, 1.0, &mods, &mut doc, &root, &mut handled, node, &taffy);
+        p.handle_event(
+            ev,
+            &mut EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut None,
+                node_id: node,
+                taffy: &taffy,
+            },
+        );
     }
 
     /// Pointer clicks on the add panel's cards, chips and buttons emit the right events.

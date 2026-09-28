@@ -250,10 +250,6 @@ pub fn task_effective_scopes(
 /// # Errors
 ///
 /// Returns the refusal or decoding error that fails the check.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "each is an independent input of the one per-step authorization"
-)]
 pub fn authorize_published<W: WorkspacePolicy>(
     workspace: &W,
     now: u64,

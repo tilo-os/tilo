@@ -696,9 +696,11 @@ impl DrmPresenter {
             &self.outputs,
             &mut self.paint,
             self.pointer,
-            scene,
-            None,
-            &[],
+            ScanoutFrame {
+                scene,
+                damage: None,
+                hdr_layers: &[],
+            },
             Some(&mut self.phase_window),
             &mut self.direct_bypass_reported,
         );
@@ -719,13 +721,15 @@ impl DrmPresenter {
             &self.outputs,
             &mut self.paint,
             self.pointer,
-            &frame.scene,
-            (frame.revision != 0).then_some(SceneDamage {
-                revision: frame.revision,
-                previous_revision: frame.previous_revision,
-                regions: frame.damage_regions.as_deref(),
-            }),
-            &frame.hdr_layers,
+            ScanoutFrame {
+                scene: &frame.scene,
+                damage: (frame.revision != 0).then_some(SceneDamage {
+                    revision: frame.revision,
+                    previous_revision: frame.previous_revision,
+                    regions: frame.damage_regions.as_deref(),
+                }),
+                hdr_layers: &frame.hdr_layers,
+            },
             Some(&mut self.phase_window),
             &mut self.direct_bypass_reported,
         );
@@ -997,7 +1001,16 @@ fn apply_scanout_command(
     }
 }
 
-/// Render `scene` into `scanouts`, sized to the combined geometry of
+/// One composed frame on its way to the scanouts: the scene, what changed
+/// since the previous revision (when known), and its HDR layers.
+#[derive(Clone, Copy)]
+struct ScanoutFrame<'a> {
+    scene: &'a Scene,
+    damage: Option<SceneDamage<'a>>,
+    hdr_layers: &'a [HdrLayer],
+}
+
+/// Render the frame's scene into `scanouts`, sized to the combined geometry of
 /// `outputs`; lazily (re)allocates `*paint` to that size. Shared by
 /// [`DrmPresenter::render`] (post-split, render thread) and
 /// [`Backend::submit_frame`] for [`DrmBackend`] (inline path, pre-split) —
@@ -1011,12 +1024,15 @@ fn paint_scanouts(
     outputs: &[Output],
     paint: &mut Option<paint::VelloDrmBridge>,
     pointer: (f64, f64),
-    scene: &Scene,
-    damage: Option<SceneDamage<'_>>,
-    hdr_layers: &[HdrLayer],
+    frame: ScanoutFrame<'_>,
     mut phase_window: Option<&mut PhaseWindow>,
     direct_bypass_reported: &mut bool,
 ) -> PaintScanoutSample {
+    let ScanoutFrame {
+        scene,
+        damage,
+        hdr_layers,
+    } = frame;
     if scanouts.iter().all(|entry| entry.powered_off) {
         return PaintScanoutSample::default();
     }
@@ -1326,15 +1342,7 @@ fn paint_scanouts(
     for entry in scanouts.iter_mut().filter(|entry| !entry.powered_off) {
         entry.sync_hdr_readback();
     }
-    render_combined_readback(
-        scanouts,
-        outputs,
-        paint,
-        pointer,
-        scene,
-        target_size,
-        hdr_layers,
-    )
+    render_combined_readback(scanouts, outputs, paint, pointer, frame)
 }
 
 /// Direct targets in the format the output needs now: the HDR formats in
@@ -1437,19 +1445,16 @@ fn present_single_xrgb(
 /// While an output is driven in HDR, `hdr_layers` are composited on the CPU
 /// at full precision: into the PQ signal of HDR outputs and tone-mapped for
 /// SDR ones.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the frame, its HDR layers and the presenter state it paints are independent inputs"
-)]
 fn render_combined_readback(
     scanouts: &mut [ScanoutEntry],
     outputs: &[Output],
     paint: &mut Option<paint::VelloDrmBridge>,
     pointer: (f64, f64),
-    scene: &Scene,
-    target_size: (u32, u32),
-    hdr_layers: &[HdrLayer],
+    frame: ScanoutFrame<'_>,
 ) -> PaintScanoutSample {
+    let ScanoutFrame {
+        scene, hdr_layers, ..
+    } = frame;
     let Some(bridge) = paint.as_mut() else {
         return PaintScanoutSample::default();
     };
@@ -1483,6 +1488,7 @@ fn render_combined_readback(
     };
     let bridge_us = bridge_started.elapsed().as_micros();
     let scanout_started = Instant::now();
+    let target_size = combined_geometry(outputs);
     let (cw, ch) = (target_size.0 as usize, target_size.1 as usize);
     let hdr = second.as_deref().map(|second| CpuComposite {
         second,
@@ -1490,7 +1496,7 @@ fn render_combined_readback(
         layers: hdr_layers,
     });
     for e in scanouts.iter_mut().filter(|entry| !entry.powered_off) {
-        paint_one_scanout(e, outputs, rgba, cw, ch, pointer, hdr);
+        paint_one_scanout(e, outputs, rgba, (cw, ch), pointer, hdr);
     }
     PaintScanoutSample {
         legacy_attempted: true,
@@ -1566,16 +1572,12 @@ fn page_flip_completion_recipients<T: Copy + Eq>(
 /// (possibly colour-transformed) sub-rect for `e`, then presents it —
 /// unchanged from the inline version, so the present call still lands at
 /// exactly the same point in the per-output iteration.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the combined frame, its extent, the pointer and the HDR composite are independent inputs"
-)]
+/// `rgba` is the combined frame, `(cw, ch)` pixels.
 fn paint_one_scanout(
     e: &mut ScanoutEntry,
     outputs: &[Output],
     rgba: &[u8],
-    cw: usize,
-    ch: usize,
+    (cw, ch): (usize, usize),
     pointer: (f64, f64),
     hdr_layers: Option<CpuComposite<'_>>,
 ) {
@@ -1755,9 +1757,11 @@ impl Backend for DrmBackend {
             &self.outputs,
             &mut self.paint,
             pointer,
-            scene,
-            None,
-            &[],
+            ScanoutFrame {
+                scene,
+                damage: None,
+                hdr_layers: &[],
+            },
             None,
             &mut self.direct_bypass_reported,
         );
@@ -1774,13 +1778,15 @@ impl Backend for DrmBackend {
             &self.outputs,
             &mut self.paint,
             pointer,
-            &frame.scene,
-            (frame.revision != 0).then_some(SceneDamage {
-                revision: frame.revision,
-                previous_revision: frame.previous_revision,
-                regions: frame.damage_regions.as_deref(),
-            }),
-            &frame.hdr_layers,
+            ScanoutFrame {
+                scene: &frame.scene,
+                damage: (frame.revision != 0).then_some(SceneDamage {
+                    revision: frame.revision,
+                    previous_revision: frame.previous_revision,
+                    regions: frame.damage_regions.as_deref(),
+                }),
+                hdr_layers: &frame.hdr_layers,
+            },
             None,
             &mut self.direct_bypass_reported,
         );
