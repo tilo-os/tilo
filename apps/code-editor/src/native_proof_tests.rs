@@ -75,14 +75,16 @@ fn native_snapshot_observes_real_wheel_input_with_explicit_units() {
     let mut send = |event| {
         app.editor.handle_event(
             &event,
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut doc,
-            &automerge::ROOT,
-            &mut false,
-            &mut None,
-            NodeId::new(0),
-            &TaffyTree::new(),
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &winit::event::Modifiers::default(),
+                state: &mut doc,
+                path: &automerge::ROOT,
+                handled: &mut false,
+                focus_target: &mut None,
+                node_id: NodeId::new(0),
+                taffy: &TaffyTree::new(),
+            },
         );
     };
     send(WindowEvent::CursorMoved {

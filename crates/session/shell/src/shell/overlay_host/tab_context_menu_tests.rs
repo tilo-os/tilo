@@ -194,14 +194,16 @@ impl Harness {
         let mut focus: Option<NodeId> = None;
         self.host.handle_event(
             event,
-            1.0,
-            &Modifiers::default(),
-            &mut self.doc,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus,
-            self.root,
-            &self.taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &Modifiers::default(),
+                state: &mut self.doc,
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: self.root,
+                taffy: &self.taffy,
+            },
         );
         handled
     }
@@ -623,7 +625,7 @@ fn tab_context_menu_opens_navigates_dismisses_and_paints_only_while_open() {
         let mut tr = TextRenderer::new();
         let presence = ui::presence::PresenceCtx::default();
         let mut closed = Scene::new();
-        let viewport = h.host.rect;
+        let outputs = h.host.layer_outputs();
         h.host.layers.draw(
             LayerId::TabContextMenu,
             &mut LayerPaint {
@@ -632,7 +634,7 @@ fn tab_context_menu_opens_navigates_dismisses_and_paints_only_while_open() {
                 text_renderer: &mut tr,
                 theme: &h.theme,
                 presence: &presence,
-                viewport,
+                geometry: h.host.layer_geometry(&outputs),
             },
         );
         assert!(
@@ -641,7 +643,7 @@ fn tab_context_menu_opens_navigates_dismisses_and_paints_only_while_open() {
         );
         h.right_click_pill(1);
         let mut open = Scene::new();
-        let viewport = h.host.rect;
+        let outputs = h.host.layer_outputs();
         h.host.layers.draw(
             LayerId::TabContextMenu,
             &mut LayerPaint {
@@ -650,7 +652,7 @@ fn tab_context_menu_opens_navigates_dismisses_and_paints_only_while_open() {
                 text_renderer: &mut tr,
                 theme: &h.theme,
                 presence: &presence,
-                viewport,
+                geometry: h.host.layer_geometry(&outputs),
             },
         );
         assert!(

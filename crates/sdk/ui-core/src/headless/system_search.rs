@@ -156,7 +156,6 @@ struct Overlay {
     hover: Option<Point>,
 }
 impl Widget for Overlay {
-    fn sync(&mut self, _: &mut automerge::AutoCommit, _: &automerge::ObjId) {}
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -197,21 +196,8 @@ impl Widget for Overlay {
             Some((rect.width() - 24.0).max(1.0) as f32),
         );
     }
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale: f64,
-        modifiers: &winit::event::Modifiers,
-        doc: &mut automerge::AutoCommit,
-        path: &automerge::ObjId,
-        handled: &mut bool,
-        focus: &mut Option<NodeId>,
-        node: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        self.palette.handle_event(
-            event, scale, modifiers, doc, path, handled, focus, node, taffy,
-        );
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        self.palette.handle_event(event, ctx);
     }
     fn name(&self) -> &str {
         "SystemSearch"
@@ -825,14 +811,16 @@ impl FrameHarness {
         let mut focus = None;
         overlay.palette.handle_event(
             event,
-            self.input_scale,
-            &self.modifiers,
-            &mut self.state.doc,
-            &self.state.root,
-            &mut handled,
-            &mut focus,
-            NodeId::from(0u64),
-            &self.taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor: self.input_scale,
+                modifiers: &self.modifiers,
+                state: &mut self.state.doc,
+                path: &self.state.root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: NodeId::from(0u64),
+                taffy: &self.taffy,
+            },
         );
         let edited = before != overlay.palette.query();
         if edited {

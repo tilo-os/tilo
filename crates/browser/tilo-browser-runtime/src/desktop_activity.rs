@@ -1,6 +1,6 @@
 //! Admitted history capture and a viewer-local modal over the retained desktop.
 use crate::{desktop::Requirement, desktop_host::OwnedRecord};
-use automerge::{AutoCommit, ObjId, transaction::Transactable};
+use automerge::transaction::Transactable;
 use std::{
     collections::{BTreeMap, HashMap},
     rc::Rc,
@@ -130,7 +130,6 @@ impl BrowserActivity {
     }
 }
 impl Widget for BrowserActivity {
-    fn sync(&mut self, _doc: &mut AutoCommit, _path: &ObjId) {}
     fn name(&self) -> &str {
         "WorkspaceActivity"
     }
@@ -217,33 +216,33 @@ impl Widget for BrowserActivity {
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        scale: f64,
-        modifiers: &winit::event::Modifiers,
-        _doc: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        _focus: &mut Option<NodeId>,
-        _node: NodeId,
-        _tree: &TaffyTree<()>,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) {
         use winit::{
             event::{ElementState, WindowEvent},
             keyboard::{Key, NamedKey},
         };
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.cursor = Some(Point::new(position.x / scale, position.y / scale));
+            self.cursor = Some(Point::new(
+                position.x / ctx.scale_factor,
+                position.y / ctx.scale_factor,
+            ));
         }
         if matches!(event, WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed && event.logical_key == Key::Named(NamedKey::Escape))
         {
             self.finish();
             self.close_requested = true;
         } else {
-            let outcome =
-                self.pane
-                    .handle_event(event, scale, modifiers, self.cursor, &mut self.snapshot);
+            let outcome = self.pane.handle_event(
+                event,
+                ctx.scale_factor,
+                ctx.modifiers,
+                self.cursor,
+                &mut self.snapshot,
+            );
             self.open_target = outcome.open_target;
         }
         self.dirty = true;
-        *handled = true;
+        *ctx.handled = true;
     }
 }

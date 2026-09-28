@@ -11,6 +11,7 @@
 use std::collections::HashMap;
 use std::sync::mpsc;
 use std::thread;
+use ui::widget::{AppModel, ModelPath};
 
 use ui::automerge::{AutoCommit, ObjId};
 use ui::format::bytes_si;
@@ -3585,66 +3586,26 @@ impl Widget for DisksApp {
         vec![root]
     }
 
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: OperationKind,
-        type_id: &str,
-        _payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        if kind != OperationKind::Effect || type_id != "disks.operation" {
-            return Ok(false);
-        }
-        Err("disk operations require the lifecycle-capable operation host".into())
-    }
-
-    fn start_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if kind != OperationKind::Effect || type_id != "disks.operation" {
-            return Ok(None);
+        let Some(request) = op.unscoped() else {
+            return ui::widget::start_in_children(self, op, doc, path);
+        };
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
         }
-        if self.action_rx.is_some() {
-            return Err("another disk operation is still running".into());
-        }
-        let args: Vec<String> = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
-        let action = ActionKind::from_key(args.first().map_or("", String::as_str))
-            .ok_or_else(|| "unknown disk operation".to_string())?;
-        let leaf = args
-            .get(1)
-            .ok_or_else(|| "missing device".to_string())?
-            .clone();
-        if !self.live {
-            return Err("live disk access is disabled".into());
-        }
-        // Re-check against the locally probed inventory immediately before
-        // execution. This rejects stale remote/search invocations and ignores
-        // a caller-supplied filesystem type in favour of current system data.
-        let fstype = self.revalidate_operation_target(action, &leaf)?;
-        let (tx, rx) = mpsc::channel();
-        let refresh = action.changes_topology();
-        thread::spawn(move || {
-            let (text, error) = match ops::run(action.op(), &leaf, fstype.as_deref()) {
-                Ok(text) => (text, None),
-                Err(error) => (format!("{} failed — {error}", action.label()), Some(error)),
-            };
-            let _ = tx.send(ActionResult {
-                text,
-                error,
-                refresh,
-            });
-        });
-        self.action_rx = Some(rx);
-        self.action_invocation = Some(invocation);
-        self.dirty = true;
-        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+        self.admit_resource_operation(
+            request.invocation,
+            request.kind,
+            request.type_id,
+            request.payload,
+            doc,
+            path,
+        )
     }
 
     fn poll_resource_operation(
@@ -3668,7 +3629,8 @@ impl Widget for DisksApp {
         clippy::too_many_lines,
         reason = "one ordered reconciliation pass keeps the CRDT projection and operation lifecycle atomic"
     )]
-    fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, _) = ui::doc::document(state, path);
         if !self.init.seeded {
             if DisksDoc::is_empty(state) {
                 // Live: reflect the real system only. If the probe finds
@@ -3835,7 +3797,7 @@ impl Widget for DisksApp {
         }
     }
 
-    fn update(&mut self, _state: &mut AutoCommit, _path: &ObjId) -> bool {
+    fn update(&mut self, _state: &mut AppModel, _path: &ModelPath) -> bool {
         // Advance the eased slide every frame so the flap opens/collapses
         // smoothly. Mirrors the shared `NavSplit`'s fixed-step tick.
         let animating = self.flap.tick(self.split_layout(), 1.0 / 60.0);
@@ -3974,18 +3936,7 @@ impl Widget for DisksApp {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &ui::winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         let lay = self.compute_layout();
 
         // The confirmation text is deliberately local-only: it gates a
@@ -3994,7 +3945,7 @@ impl Widget for DisksApp {
         // drag behavior come from the shared editor rather than a key shim.
         if self.pending.is_some() {
             if let WindowEvent::CursorMoved { position, .. } = event {
-                self.handle_cursor_moved(*position, scale_factor, &lay);
+                self.handle_cursor_moved(*position, ctx.scale_factor, &lay);
             }
             if let WindowEvent::KeyboardInput {
                 event:
@@ -4007,20 +3958,10 @@ impl Widget for DisksApp {
             } = event
                 && matches!(logical_key, Key::Named(NamedKey::Escape | NamedKey::Enter))
             {
-                self.handle_key_press(logical_key, state, &lay, handled);
+                self.handle_key_press(logical_key, ctx.state, &lay, ctx.handled);
                 return;
             }
-            self.confirm_input.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
-            );
+            self.confirm_input.handle_event(event, ctx);
             if self.confirm_input.take_dirty().is_some() {
                 self.dirty = true;
             }
@@ -4032,28 +3973,28 @@ impl Widget for DisksApp {
                     ..
                 }
             ) {
-                self.handle_mouse_click(state, &lay, handled);
+                self.handle_mouse_click(ctx.state, &lay, ctx.handled);
             } else {
                 // The open modal is fully blocking, including IME events and
                 // clicks/releases that the editor itself did not consume.
-                *handled = true;
+                *ctx.handled = true;
             }
             return;
         }
 
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.handle_cursor_moved(*position, scale_factor, &lay);
+                self.handle_cursor_moved(*position, ctx.scale_factor, &lay);
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                self.handle_mouse_wheel(delta, &lay, handled);
+                self.handle_mouse_wheel(delta, &lay, ctx.handled);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
             } => {
-                self.handle_mouse_click(state, &lay, handled);
+                self.handle_mouse_click(ctx.state, &lay, ctx.handled);
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -4064,7 +4005,7 @@ impl Widget for DisksApp {
                     },
                 ..
             } => {
-                self.handle_key_press(logical_key, state, &lay, handled);
+                self.handle_key_press(logical_key, ctx.state, &lay, ctx.handled);
             }
             _ => {}
         }
@@ -4316,9 +4257,10 @@ impl Widget for DisksApp {
         &mut self,
         target: &str,
         action: &A11yAction,
-        state: &mut AutoCommit,
-        _path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
+        let (state, _) = ui::doc::document(state, path);
         if let A11yAction::SetValue(value) = action
             && target == "disks.modal.confirm-input"
             && self.pending.is_some()
@@ -4394,6 +4336,56 @@ impl Widget for DisksApp {
         _permissions: &PermissionContext,
     ) {
         self.draw(scene, transform, text_renderer, theme, presence);
+    }
+}
+
+impl DisksApp {
+    fn admit_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        kind: OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if kind != OperationKind::Effect || type_id != "disks.operation" {
+            return Ok(None);
+        }
+        if self.action_rx.is_some() {
+            return Err("another disk operation is still running".into());
+        }
+        let args: Vec<String> = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+        let action = ActionKind::from_key(args.first().map_or("", String::as_str))
+            .ok_or_else(|| "unknown disk operation".to_string())?;
+        let leaf = args
+            .get(1)
+            .ok_or_else(|| "missing device".to_string())?
+            .clone();
+        if !self.live {
+            return Err("live disk access is disabled".into());
+        }
+        // Re-check against the locally probed inventory immediately before
+        // execution. This rejects stale remote/search invocations and ignores
+        // a caller-supplied filesystem type in favour of current system data.
+        let fstype = self.revalidate_operation_target(action, &leaf)?;
+        let (tx, rx) = mpsc::channel();
+        let refresh = action.changes_topology();
+        thread::spawn(move || {
+            let (text, error) = match ops::run(action.op(), &leaf, fstype.as_deref()) {
+                Ok(text) => (text, None),
+                Err(error) => (format!("{} failed — {error}", action.label()), Some(error)),
+            };
+            let _ = tx.send(ActionResult {
+                text,
+                error,
+                refresh,
+            });
+        });
+        self.action_rx = Some(rx);
+        self.action_invocation = Some(invocation);
+        self.dirty = true;
+        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
     }
 }
 

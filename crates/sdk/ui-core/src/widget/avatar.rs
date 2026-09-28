@@ -10,12 +10,10 @@
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, Vec2};
 use vello::peniko::{self, BlendMode, Color, Fill};
-use winit::event::WindowEvent;
 
 use crate::presence::PresenceCtx;
 use crate::text_metrics::renderer_type_size;
@@ -379,8 +377,6 @@ fn px(v: f64) -> f32 {
 }
 
 impl Widget for Avatar {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -470,20 +466,6 @@ impl Widget for Avatar {
     /// after that since avatars are fixed-size leaves.
     fn is_layout_dirty(&self) -> bool {
         self.cache_rect == Rect::ZERO
-    }
-
-    fn handle_event(
-        &mut self,
-        _event: &WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
     }
 
     fn name(&self) -> &'static str {

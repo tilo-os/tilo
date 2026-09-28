@@ -5,9 +5,11 @@
 //! both validate the same bytes. This module mints tokens for the shell's own
 //! workspaces and accepts them into the local tree.
 
-mod certified;
 pub(crate) mod enrollment_driver;
-pub(crate) use certified::{VerifiedNativeEnrollment, VerifiedNativeEnrollmentIntent};
+#[cfg(test)]
+#[path = "invite/native_exchange_tests.rs"]
+mod exchange_tests;
+pub(crate) use tilo_joined_room::{VerifiedNativeEnrollment, VerifiedNativeEnrollmentIntent};
 
 use tilo_user_identity::DeviceCert;
 

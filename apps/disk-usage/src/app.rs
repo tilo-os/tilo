@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::{Duration, Instant};
+use ui::widget::{AppModel, ModelPath};
 
 use ui::a11y::{AccessNode, AccessState, Role};
 use ui::automerge::{AutoCommit, ObjId};
@@ -328,13 +329,41 @@ impl Drop for DiskUsageApp {
     }
 }
 
+impl DiskUsageApp {
+    fn answer_resource_operation(
+        &mut self,
+        kind: OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<Option<ActionOutput>, String> {
+        if kind == OperationKind::Document || type_id != OPERATION_TYPE {
+            return Ok(None);
+        }
+        let operation: DiskUsageOperation =
+            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+        match operation {
+            DiskUsageOperation::Analyze { path } => {
+                self.start_scan(path, matches!(self.view, View::Analysis(_)));
+            }
+            DiskUsageOperation::Choose => self.choose_folder(),
+            DiskUsageOperation::Back => self.go_back(),
+            DiskUsageOperation::Home => self.go_home(),
+        }
+        Ok(Some(ActionOutput::default()))
+    }
+}
+
 impl Widget for DiskUsageApp {
-    fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, _) = ui::doc::document(state, path);
         if !self.shot_mode {
             self.recent = DiskUsageDoc::recent(state);
         }
     }
-    fn update(&mut self, state: &mut AutoCommit, _path: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+        let (state, _) = ui::doc::document(state, path);
         if let Some(outcome) = self
             .picker_rx
             .as_ref()
@@ -699,20 +728,9 @@ impl Widget for DiskUsageApp {
             }
         }
     }
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &ui::winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.pointer = Point::new(position.x / scale_factor, position.y / scale_factor);
+            self.pointer = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
         }
         if matches!(
             event,
@@ -736,13 +754,13 @@ impl Widget for DiskUsageApp {
                         } else {
                             self.start_scan(place.path, false);
                         }
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                 }
                 _ => {
                     if self.back_rect().contains(self.pointer) {
                         self.go_back();
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                 }
             }
@@ -786,8 +804,8 @@ impl Widget for DiskUsageApp {
         &mut self,
         action: &ui::a11y::Action,
         key_path: &[u64],
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         if !matches!(action, ui::a11y::Action::Activate) {
             return false;
@@ -863,28 +881,21 @@ impl Widget for DiskUsageApp {
         }
         vec![root]
     }
-    fn invoke_resource_operation_v2(
+    fn start_operation(
         &mut self,
-        kind: OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<Option<ActionOutput>, String> {
-        if kind == OperationKind::Document || type_id != OPERATION_TYPE {
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
+        }
+        let Some(request) = op.unscoped() else {
             return Ok(None);
-        }
-        let operation: DiskUsageOperation =
-            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-        match operation {
-            DiskUsageOperation::Analyze { path } => {
-                self.start_scan(path, matches!(self.view, View::Analysis(_)));
-            }
-            DiskUsageOperation::Choose => self.choose_folder(),
-            DiskUsageOperation::Back => self.go_back(),
-            DiskUsageOperation::Home => self.go_home(),
-        }
-        Ok(Some(ActionOutput::default()))
+        };
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .map(ui::widget::ResourceOperationStart::Completed))
     }
     fn children(&self) -> Vec<&dyn Widget> {
         if matches!(self.view, View::Analysis(_)) {
@@ -948,13 +959,17 @@ mod tests {
             let payload = serde_json::to_vec(&DiskUsageOperation::Analyze { path: path.clone() })
                 .unwrap_or_default();
             let handled = app
-                .invoke_resource_operation_v2(
-                    OperationKind::Effect,
-                    OPERATION_TYPE,
-                    &payload,
-                    &AutoCommit::new(),
+                .start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        OperationKind::Effect,
+                        OPERATION_TYPE,
+                        &payload,
+                    ),
+                    &mut AutoCommit::new(),
                     &ObjId::Root,
                 )
+                .map(|started| started.and_then(ui::widget::ResourceOperationStart::completed))
                 .unwrap_or_default();
             assert!(handled.is_some());
             assert!(matches!(app.view, View::Loading(ref loading) if loading == &path));
@@ -972,13 +987,17 @@ mod tests {
             recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(selected.clone()));
             let payload = serde_json::to_vec(&DiskUsageOperation::Choose).unwrap_or_default();
             let handled = ui::host::scoped(&services, || {
-                app.invoke_resource_operation_v2(
-                    OperationKind::Effect,
-                    OPERATION_TYPE,
-                    &payload,
-                    &AutoCommit::new(),
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        OperationKind::Effect,
+                        OPERATION_TYPE,
+                        &payload,
+                    ),
+                    &mut AutoCommit::new(),
                     &ObjId::Root,
                 )
+                .map(|started| started.and_then(ui::widget::ResourceOperationStart::completed))
                 .unwrap_or_default()
             });
             assert!(handled.is_some());

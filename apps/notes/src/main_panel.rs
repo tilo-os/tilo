@@ -30,8 +30,9 @@
 //! ```
 
 use std::collections::HashMap;
+use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId};
+use automerge::AutoCommit;
 use taffy::style_helpers::length;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -1213,7 +1214,8 @@ impl Widget for MainPanel {
         }
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, path) = ui::doc::document(state, path);
         self.date_index.sync(state);
         let dates = self
             .page_id
@@ -1716,22 +1718,12 @@ impl Widget for MainPanel {
         clippy::too_many_lines,
         reason = "the widget event boundary keeps pointer, keyboard, empty-state and editor routing ordered around one handled flag"
     )]
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         // Track the pointer so a press (which carries no position) can be
         // classified as landing in the title band.
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_pointer = Point::new(position.x / scale_factor, position.y / scale_factor);
+            self.last_pointer =
+                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
             let inside_document = self.scroll_viewport().contains(self.last_pointer);
             let hovered = inside_document
                 .then(|| {
@@ -1796,17 +1788,17 @@ impl Widget for MainPanel {
                 self.empty_action_requested = true;
                 self.empty_action_focused = true;
                 self.dirty = true;
-                *focus_target = Some(node_id);
-                *handled = true;
+                *ctx.focus_target = Some(ctx.node_id);
+                *ctx.handled = true;
             } else if keyboard_activation {
                 self.empty_action_requested = true;
                 self.dirty = true;
-                *handled = true;
+                *ctx.handled = true;
             }
             return;
         }
 
-        if self.handle_scrollbar_event(event, handled) {
+        if self.handle_scrollbar_event(event, ctx.handled) {
             return;
         }
 
@@ -1833,8 +1825,8 @@ impl Widget for MainPanel {
             self.pending_tag_open = Some(tag);
             self.focused_tag = Some(tag);
             self.dirty = true;
-            *focus_target = Some(node_id);
-            *handled = true;
+            *ctx.focus_target = Some(ctx.node_id);
+            *ctx.handled = true;
             return;
         }
         if press_on_tag
@@ -1848,8 +1840,8 @@ impl Widget for MainPanel {
             self.pending_backlink_open = Some(page);
             self.focused_backlink = Some(page);
             self.dirty = true;
-            *focus_target = Some(node_id);
-            *handled = true;
+            *ctx.focus_target = Some(ctx.node_id);
+            *ctx.handled = true;
             return;
         }
 
@@ -1868,23 +1860,14 @@ impl Widget for MainPanel {
         ) && self.title_rect.contains(self.last_pointer);
         if !self.title_label.is_editing() && press_in_title {
             self.begin_title_edit();
-            *focus_target = self.title_node;
-            *handled = true;
+            *ctx.focus_target = self.title_node;
+            *ctx.handled = true;
             return;
         }
         if self.title_label.is_editing() {
             self.title_label.apply_layout_external(self.title_rect);
-            self.title_label.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
-            );
+            self.title_label
+                .handle_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id));
             match self.title_label.take_outcome() {
                 EditOutcome::Committed(new) => {
                     self.pending_rename = Some(new);
@@ -1901,7 +1884,7 @@ impl Widget for MainPanel {
             // never reach the body. A blur-commit press outside the title is
             // deliberately NOT consumed, so it falls through to place the
             // caret in the body below.
-            if *handled {
+            if *ctx.handled {
                 return;
             }
         }
@@ -1923,24 +1906,15 @@ impl Widget for MainPanel {
                 // since that's where we know the content extent.
                 if (self.scroll_y - prev).abs() > f64::EPSILON {
                     self.dirty = true;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
         }
         if let Some(n) = self.editor_node {
-            self.editor.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                n,
-                taffy,
-            );
+            self.editor
+                .handle_event(event, &mut ctx.reborrow(ctx.path, n));
             if self.editor.is_focused()
-                && *handled
+                && *ctx.handled
                 && matches!(
                     event,
                     WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_)
@@ -2193,8 +2167,8 @@ impl Widget for MainPanel {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         if self.page_id.is_none() && matches!(action, ui::a11y::Action::Activate) {
             self.empty_action_requested = true;
@@ -2210,8 +2184,8 @@ impl Widget for MainPanel {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         if target == "notes.scroll-position" {
             if self.scroll_thumb().is_none() {
@@ -2312,6 +2286,7 @@ impl Widget for MainPanel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::ObjId;
     use ui::widget::BlockKind;
     use uuid::Uuid;
 

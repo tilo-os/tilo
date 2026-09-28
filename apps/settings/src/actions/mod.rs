@@ -660,10 +660,15 @@ pub enum SpeakerOperation {
         device: String,
         output: String,
     },
+    /// Measure from the microphone of `listening` (where the person sits),
+    /// with every other offered microphone except those of `excluded`.
     Calibrate {
         group: String,
-        microphone_device: String,
-        microphone: String,
+        excluded: Vec<String>,
+        listening: Option<String>,
+    },
+    CancelCalibration {
+        group: String,
     },
     ApplyCalibration {
         group: String,
@@ -689,13 +694,14 @@ impl SpeakerOperation {
             Self::Identify { device, output } => Command::Identify { device, output },
             Self::Calibrate {
                 group,
-                microphone_device,
-                microphone,
+                excluded,
+                listening,
             } => Command::StartCalibration {
                 group,
-                microphone_device,
-                microphone,
+                excluded,
+                listening,
             },
+            Self::CancelCalibration { group } => Command::CancelCalibration { group },
             Self::ApplyCalibration { group } => Command::ApplyCalibration { group },
             Self::RevertCalibration { group } => Command::RevertCalibration { group },
             Self::DismissCalibration { group } => Command::DismissCalibration { group },
@@ -5778,18 +5784,6 @@ fn speakers_section() -> Resource {
         },
     ));
     let snapshot = crate::speaker_setup::cached_snapshot();
-    let microphones = snapshot
-        .devices
-        .iter()
-        .filter(|device| device.online)
-        .flat_map(|device| {
-            device
-                .microphones
-                .iter()
-                .map(move |microphone| format!("{}/{}", device.id, microphone.selector))
-        })
-        .take(MAX_DYNAMIC_CHOICES)
-        .collect::<Vec<_>>();
     for group in snapshot
         .groups
         .iter()
@@ -5815,34 +5809,56 @@ fn speakers_section() -> Resource {
             )
             .destructive(),
         );
+        let microphones = group
+            .microphones
+            .iter()
+            .filter(|microphone| microphone.status.usable())
+            .map(|microphone| microphone.device.clone())
+            .take(MAX_DYNAMIC_CHOICES)
+            .collect::<Vec<_>>();
         if !microphones.is_empty() {
             let calibrate_id = id.clone();
             resource = resource.with_action(speaker_spec(
                 "calibrate",
-                "Calibrate with a microphone",
-                "Microphone",
+                "Calibrate from where you sit",
+                "Listening device",
                 vec![
                     ActionParam::required_owned(
-                        "microphone",
+                        "listening",
                         ParamType::Text,
-                        "Microphone that listens at your seat",
+                        "Device whose microphone is where you sit",
                     )
                     .with_choices(microphones.clone()),
+                    ActionParam::optional_owned(
+                        "exclude",
+                        ParamType::Text,
+                        "Comma-separated device ids whose microphones stay out; every other offered microphone also listens",
+                    ),
                 ],
-                move |args| {
-                    let (device, selector) = args
-                        .text("microphone")
+                move |args| SpeakerOperation::Calibrate {
+                    group: calibrate_id.clone(),
+                    excluded: args
+                        .text("exclude")
                         .unwrap_or_default()
-                        .split_once('/')
-                        .unwrap_or_default();
-                    SpeakerOperation::Calibrate {
-                        group: calibrate_id.clone(),
-                        microphone_device: device.to_string(),
-                        microphone: selector.to_string(),
-                    }
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|device| !device.is_empty())
+                        .map(str::to_string)
+                        .collect(),
+                    listening: args.text("listening").map(str::to_string),
                 },
             ));
         }
+        let cancel_id = id.clone();
+        resource = resource.with_action(speaker_spec(
+            "cancel-calibration",
+            "Stop the running calibration",
+            "",
+            Vec::new(),
+            move |_| SpeakerOperation::CancelCalibration {
+                group: cancel_id.clone(),
+            },
+        ));
         for (action, label, make) in [
             (
                 "apply-calibration",

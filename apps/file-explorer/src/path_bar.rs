@@ -18,8 +18,8 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -132,8 +132,6 @@ impl PathBar {
 }
 
 impl Widget for PathBar {
-    fn sync(&mut self, _state: &mut AutoCommit, _root: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -208,30 +206,9 @@ impl Widget for PathBar {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if self.editing {
-            self.field.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
-            );
+            self.field.handle_event(event, ctx);
             match self.field.take_outcome() {
                 AutocompleteOutcome::Accepted(value) => {
                     let resolved =
@@ -243,17 +220,7 @@ impl Widget for PathBar {
                 AutocompleteOutcome::None => {}
             }
         } else {
-            self.crumbs.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
-            );
+            self.crumbs.handle_event(event, ctx);
             if self.crumbs.take_edit_requested() {
                 self.begin_edit();
             }
@@ -315,8 +282,8 @@ impl Widget for PathBar {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         if self.editing {
             return self.field.perform_action(action, state, path);
@@ -442,6 +409,7 @@ pub fn path_completions(input: &str, home: Option<&Path>) -> Vec<Suggestion> {
 mod tests {
     use super::*;
     use crate::command::new_sink;
+    use automerge::AutoCommit;
 
     /// Editing keeps completion and submission on one location, accepted locations preserve roots, and breadcrumb mode enters named text input.
     #[allow(
@@ -505,14 +473,16 @@ mod tests {
                 let mut focus = None;
                 bar.handle_event(
                     &event,
-                    1.0,
-                    &winit::event::Modifiers::default(),
-                    &mut doc,
-                    &automerge::ROOT,
-                    &mut handled,
-                    &mut focus,
-                    node,
-                    &taffy,
+                    &mut ui::widget::EventCtx {
+                        scale_factor: 1.0,
+                        modifiers: &winit::event::Modifiers::default(),
+                        state: &mut doc,
+                        path: &automerge::ROOT,
+                        handled: &mut handled,
+                        focus_target: &mut focus,
+                        node_id: node,
+                        taffy: &taffy,
+                    },
                 );
                 assert!(handled);
                 assert!(!bar.is_editing());

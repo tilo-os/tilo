@@ -1,57 +1,16 @@
 //! Closed relay provenance for rooms installed by the native durable owner.
+//!
+//! The session itself is `tilo_joined_room::session`'s; this actor keeps one
+//! route per enrolled room, dials it again when its pin changes and runs
+//! the connected session's pump beside every other host session.
 use super::{
-    ActorState, Arc, DeviceCert, Duration, HashMap, HostIdentity, HostRuntime, InternalEvent,
-    Mutex, RelayClient, RelayCoeditSession, RevocationList, spawn_host_pump,
+    ActorState, Arc, DeviceCert, HashMap, HostRuntime, InternalEvent, RelayCoeditSession,
+    spawn_host_pump,
 };
-use crate::shell::{native_workspace_owner::NativeWorkspaceOwner, state::RoomId};
-use tilo_delivery_protocol::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceHostTrust};
-use tilo_peer_state::{NeighbourMsg, TransportOrigin, join::TransportHint};
+use tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1;
+pub use tilo_joined_room::session::{Connect, Input, Scope};
+use tilo_peer_state::join::TransportHint;
 
-#[derive(Clone)]
-pub struct Connect {
-    owner: NativeWorkspaceOwner,
-    room: RoomId,
-}
-impl std::fmt::Debug for Connect {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("NativeConnect").field(&self.room).finish()
-    }
-}
-impl Connect {
-    pub(crate) fn new(owner: NativeWorkspaceOwner, room: RoomId) -> Result<Self, String> {
-        owner.with_current(room, |_| Ok(()))?;
-        Ok(Self { owner, room })
-    }
-    fn material(
-        &self,
-        identity: &HostIdentity,
-    ) -> Result<(TransportHint, DeviceCert, RevocationList, u64), String> {
-        self.owner.with_current(self.room, |view| {
-            let (cert, entries) = identity.current_native_material(view.workspace())?;
-            if &cert != view.device() {
-                return Err("native relay custody differs from enrollment".into());
-            }
-            view.peer()
-                .permissions(cert.device_public_key, std::time::SystemTime::now())?;
-            if !view.peer().certificates().contains(&cert) {
-                return Err("selected certificate differs from current admitted roster".into());
-            }
-            let mut revocations = RevocationList::new();
-            for entry in entries.into_iter().chain(view.peer().revocations()) {
-                revocations.insert(entry).map_err(|e| e.to_string())?;
-            }
-            if revocations.is_revoked(&view.transport_hint().host.device_public_key) {
-                return Err("native relay host is revoked".into());
-            }
-            Ok((
-                view.transport_hint().clone(),
-                cert,
-                revocations,
-                view.continuity(),
-            ))
-        })
-    }
-}
 struct Route {
     connect: Connect,
     serial: u64,
@@ -78,116 +37,9 @@ impl Routes {
     }
 }
 
-pub(super) struct Scope {
-    connect: Connect,
-    hint: TransportHint,
-    device: DeviceCert,
-    continuity: u64,
-    live: Mutex<bool>,
-    cursor: Mutex<super::native_publication::Cursor>,
-    refresh_sent: Mutex<Option<std::time::Instant>>,
-}
-impl Scope {
-    pub(super) fn close(&self) {
-        if let Ok(mut live) = self.live.lock() {
-            *live = false;
-        }
-    }
-}
-impl Scope {
-    pub(super) fn input(
-        self: &Arc<Self>,
-        author: [u8; 32],
-        retained: bool,
-        msg: NeighbourMsg,
-    ) -> Input {
-        Input {
-            scope: self.clone(),
-            author,
-            retained,
-            msg,
-        }
-    }
-}
-/// Only the authenticated relay pump can construct this. Generic gossip messages
-/// cannot become `RelayDelta` evidence through the shell event dispatcher.
-#[derive(Clone)]
-pub struct Input {
-    scope: Arc<Scope>,
-    author: [u8; 32],
-    retained: bool,
-    msg: NeighbourMsg,
-}
-impl std::fmt::Debug for Input {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("NativeRelayInput")
-            .field("room", &self.scope.connect.room)
-            .field("retained", &self.retained)
-            .finish_non_exhaustive()
-    }
-}
-impl Input {
-    pub(crate) fn room(&self) -> RoomId {
-        self.scope.connect.room
-    }
-    #[cfg(test)]
-    pub(crate) fn author(&self) -> [u8; 32] {
-        self.author
-    }
-    pub(crate) fn message(&self) -> &NeighbourMsg {
-        &self.msg
-    }
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the live flag stays locked through admission so a close cannot interleave"
-    )]
-    pub(crate) fn admit(
-        &self,
-        identity: &HostIdentity,
-    ) -> Result<tilo_peer_state::AdmissionReport, String> {
-        let live = self
-            .scope
-            .live
-            .lock()
-            .map_err(|_| "native relay continuity poisoned")?;
-        if !*live {
-            return Err("native relay session closed".into());
-        }
-        let (hint, device, _, continuity) = self.scope.connect.material(identity)?;
-        if hint != self.scope.hint
-            || device != self.scope.device
-            || continuity != self.scope.continuity
-        {
-            return Err("native relay pin changed".into());
-        }
-        let origin = if self.retained {
-            TransportOrigin::RetainedRelayDelta(self.author)
-        } else {
-            TransportOrigin::RelayDelta(self.author)
-        };
-        self.scope.connect.owner.receive(
-            self.room(),
-            origin,
-            self.msg.clone(),
-            std::time::SystemTime::now(),
-        )
-    }
-    pub(crate) fn role(&self) -> Result<collab_types::Role, String> {
-        self.scope.connect.owner.with_current(self.room(), |view| {
-            view.peer()
-                .permissions(self.author, std::time::SystemTime::now())
-                .map(|(role, _, _)| role)
-        })
-    }
-}
 impl ActorState {
     /// A refresh only asks the original subscribed host to run its own genuine
     /// checkpoint barrier. It grants no local admission and retires no outbox.
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the live flag and refresh cadence stay locked through the request so a close \
-                  or a concurrent refresh cannot interleave"
-    )]
     pub(super) fn request_native_refresh(&self, ws: u64) {
         let Some(identity) = self.host_identity.as_ref() else {
             return;
@@ -199,59 +51,12 @@ impl ActorState {
             let Some(scope) = runtime.native_scope.as_ref() else {
                 continue;
             };
-            let result = (|| {
-                let live = scope
-                    .live
-                    .lock()
-                    .map_err(|_| "native refresh session poisoned")?;
-                if !*live {
-                    return Err("native refresh session closed".into());
-                }
-                let (hint, device, _, continuity) = scope.connect.material(identity)?;
-                if hint != scope.hint || device != scope.device || continuity != scope.continuity {
-                    return Err("native refresh scope changed".into());
-                }
-                scope
-                    .connect
-                    .owner
-                    .with_current(scope.connect.room, |view| {
-                        if view.device() != &scope.device
-                            || view.transport_hint() != &scope.hint
-                            || view.continuity() != scope.continuity
-                        {
-                            return Err("native refresh current owner changed".into());
-                        }
-                        view.peer().permissions(
-                            scope.device.device_public_key,
-                            std::time::SystemTime::now(),
-                        )?;
-                        let mut last = scope
-                            .refresh_sent
-                            .lock()
-                            .map_err(|_| "native refresh cadence poisoned")?;
-                        let now = std::time::Instant::now();
-                        if last.is_some_and(|sent| {
-                            now.saturating_duration_since(sent) < Duration::from_secs(30)
-                        }) {
-                            return Ok(());
-                        }
-                        runtime
-                            .session
-                            .request_checkpoint_refresh()
-                            .map_err(|error| error.to_string())?;
-                        *last = Some(now);
-                        Ok(())
-                    })
-            })();
+            let result = scope.refresh(&runtime.session, identity);
             if let Err(error) = result {
                 tracing::debug!(%error, "native checkpoint refresh blocked");
             }
         }
     }
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the live flag and cursor stay locked through publication so a close cannot interleave"
-    )]
     pub(super) fn drive_native_publication(&self, ws: u64) {
         let Some(identity) = self.host_identity.as_ref() else {
             return;
@@ -263,77 +68,7 @@ impl ActorState {
             let Some(scope) = runtime.native_scope.as_ref() else {
                 continue;
             };
-            let result = (|| {
-                let live = scope
-                    .live
-                    .lock()
-                    .map_err(|_| "native publication session poisoned")?;
-                if !*live {
-                    return Err("native publication session closed".into());
-                }
-                let (hint, device, _, continuity) = scope.connect.material(identity)?;
-                if hint != scope.hint || device != scope.device || continuity != scope.continuity {
-                    return Err("native publication session changed".into());
-                }
-                // Reconciliation may persist a genuine authorized successor. Its
-                // failure must not erase or prevent other fresh retained frames.
-                if let Err(error) = scope.connect.owner.reconcile_outgoing(
-                    scope.connect.room,
-                    &identity.device_signing_key,
-                    std::time::SystemTime::now(),
-                ) {
-                    tracing::debug!(%error,"native publication reconciliation blocked");
-                }
-                scope.connect.owner.with_outgoing(
-                    scope.connect.room,
-                    std::time::SystemTime::now(),
-                    |view, outgoing| {
-                        if view.device() != &scope.device
-                            || view.transport_hint() != &scope.hint
-                            || view.continuity() != scope.continuity
-                        {
-                            return Err("native publication authority changed".into());
-                        }
-                        let (selected, _) = identity.current_native_material(view.workspace())?;
-                        if &selected != view.device() {
-                            return Err("native publication custody changed".into());
-                        }
-                        view.peer().permissions(
-                            selected.device_public_key,
-                            std::time::SystemTime::now(),
-                        )?;
-                        let mut cursor = scope
-                            .cursor
-                            .lock()
-                            .map_err(|_| "native publication cursor poisoned")?;
-                        cursor.drive(
-                            outgoing.entries().map(|entry| {
-                                (
-                                    entry.id(),
-                                    entry.bytes(),
-                                    entry.channel(),
-                                    entry.retention(),
-                                )
-                            }),
-                            |bytes, channel, retention| {
-                                match retention {
-                                    tilo_peer_state::transport::Retention::Delta => runtime
-                                        .session
-                                        .publish_retained_delta(channel, bytes.to_vec()),
-                                    // Members never republish a governor checkpoint with
-                                    // their own relay author, even if a producer errs.
-                                    tilo_peer_state::transport::Retention::Checkpoint => {
-                                        return Err(
-                                            "native member checkpoint publication refused".into()
-                                        );
-                                    }
-                                }
-                                .map_err(|e| e.to_string())
-                            },
-                        )
-                    },
-                )
-            })();
+            let result = scope.publish(&runtime.session, identity);
             if let Err(error) = result {
                 tracing::debug!(%error,"native publication remains in durable custody");
             }
@@ -366,7 +101,7 @@ impl ActorState {
     }
 
     pub(super) fn native_connect(&mut self, connect: Connect) {
-        let ws = crate::shell::network::room_topic_id(connect.room);
+        let ws = crate::shell::network::room_topic_id(connect.room());
         if !self.native_routes.contains(ws) && self.native_routes.entries.len() >= 64 {
             return;
         }
@@ -404,9 +139,7 @@ impl ActorState {
                         material
                             .as_ref()
                             .is_ok_and(|(hint, device, _, continuity)| {
-                                hint == &scope.hint
-                                    && device == &scope.device
-                                    && *continuity == scope.continuity
+                                scope.pinned_to(hint, device, *continuity)
                             })
                     })
             });
@@ -427,51 +160,9 @@ impl ActorState {
             let tx = self.internal_tx.clone();
             let serial = route.serial;
             route.pending = Some(tokio::spawn(async move {
-                let result = tokio::time::timeout(Duration::from_secs(10), async {
-                    let (payload, trust) =
-                        IrohWorkspaceHostHintV1::authenticate_transport_hint(&hint)
-                            .map_err(|e| e.to_string())?;
-                    if payload.workspace_id != ws {
-                        return Err("native relay workspace pin mismatch".into());
-                    }
-                    let addr = payload.endpoint_addr.clone();
-                    let own_device = cert.device_public_key;
-                    let client = match trust {
-                        WorkspaceHostTrust::CertifiedHost => {
-                            RelayClient::connect_v2_to_enrolled_home_peer(
-                                endpoint,
-                                addr,
-                                hint.host.user_public_key,
-                                hint.host.device_public_key,
-                                cert,
-                                key,
-                                revocations,
-                            )
-                            .await
-                        }
-                        WorkspaceHostTrust::InteractiveOwner(trust) => {
-                            RelayClient::connect_v2_to_interactive_workspace_owner(
-                                endpoint,
-                                addr,
-                                trust,
-                                cert,
-                                key,
-                                revocations,
-                            )
-                            .await
-                        }
-                    }
-                    .map_err(|e| e.to_string())?;
-                    if client.relay_peer.cert != hint.host {
-                        return Err(
-                            "native relay authenticated a different host certificate".into()
-                        );
-                    }
-                    RelayCoeditSession::join(client, ws, own_device).map_err(|e| e.to_string())
-                })
-                .await
-                .map_err(|_| "native relay connection timed out".to_string())
-                .and_then(|result| result);
+                let result =
+                    tilo_joined_room::session::dial(endpoint, ws, &hint, cert, key, revocations)
+                        .await;
                 let _ = tx
                     .send(InternalEvent::NativeHostConnected {
                         ws,
@@ -520,15 +211,12 @@ impl ActorState {
             return;
         };
         let host = payload.endpoint_addr.id;
-        let scope = Arc::new(Scope {
-            connect: route.connect.clone(),
+        let scope = Arc::new(Scope::new(
+            route.connect.clone(),
             hint,
-            device: certificate,
+            certificate,
             continuity,
-            live: Mutex::new(true),
-            cursor: Mutex::new(super::native_publication::Cursor::default()),
-            refresh_sent: Mutex::new(None),
-        });
+        ));
         let session = Arc::new(session);
         let pump = spawn_host_pump(
             ws,
@@ -548,6 +236,7 @@ impl ActorState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::network::actor::HostIdentity;
     #[test]
     fn native_custody_missing_disk_never_uses_retained_certificate() {
         let (directory, owner, room, _, key) =

@@ -13,6 +13,7 @@ use tilo_ui::record::{RecordCheckout, RecordKind, RecordOwners, RecordStore};
 use tilo_ui::view::ViewContribution;
 use tilo_ui::wake::WakeHandle;
 use tilo_ui::widget::{AppKind, AppWidget, IconDescriptor, NativeViewLifecycle, Widget};
+use tilo_ui::widget::{AppModel, ModelPath};
 
 pub const APP: &str = "so.tilo.application-probe";
 pub const DEVICE: &str = "D";
@@ -725,7 +726,7 @@ impl Widget for ProbeRoot {
             })
         })
     }
-    fn sync(&mut self, _: &mut AutoCommit, _: &ObjId) {
+    fn sync(&mut self, _: &mut AppModel, _: &ModelPath) {
         assert!(self.operational, "construction must project read-only");
         self.local_snapshot = self.local.with(Clone::clone);
     }
@@ -782,19 +783,6 @@ impl Widget for ProbeRoot {
                 observations.local_draws.push(self.local_snapshot.clone());
             }
         });
-    }
-    fn handle_event(
-        &mut self,
-        _: &winit::event::WindowEvent,
-        _: f64,
-        _: &winit::event::Modifiers,
-        _: &mut AutoCommit,
-        _: &ObjId,
-        _: &mut bool,
-        _: &mut Option<taffy::NodeId>,
-        _: taffy::NodeId,
-        _: &taffy::TaffyTree<()>,
-    ) {
     }
     fn name(&self) -> &'static str {
         "application-probe"

@@ -5,6 +5,7 @@
 //! State lives entirely on the widget (no CRDT round-trip) because the
 //! segmented control's selection is ephemeral UI sugar — callers persist
 //! the choice via the `on_change` callback into their own CRDT slot.
+use crate::widget::{AppModel, ModelPath};
 use automerge::{AutoCommit, ObjId};
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -753,8 +754,6 @@ impl ToggleGroup {
 }
 
 impl Widget for ToggleGroup {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -880,31 +879,32 @@ impl Widget for ToggleGroup {
         self.cache_rect == Rect::ZERO
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         match event {
-            WindowEvent::KeyboardInput { event, .. } => self.handle_key_event(event, handled),
+            WindowEvent::KeyboardInput { event, .. } => self.handle_key_event(event, ctx.handled),
             WindowEvent::CursorMoved { position, .. } => {
-                let logical_pos = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let logical_pos =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.last_cursor.set(logical_pos);
             }
             WindowEvent::MouseInput {
                 state: element_state,
                 button: MouseButton::Left,
                 ..
-            } => self.handle_pointer_press(*element_state, handled, focus_target, node_id),
+            } => self.handle_pointer_press(
+                *element_state,
+                ctx.handled,
+                ctx.focus_target,
+                ctx.node_id,
+            ),
             WindowEvent::Touch(touch) => {
-                self.handle_touch_event(touch, scale_factor, handled, focus_target, node_id);
+                self.handle_touch_event(
+                    touch,
+                    ctx.scale_factor,
+                    ctx.handled,
+                    ctx.focus_target,
+                    ctx.node_id,
+                );
             }
             _ => {}
         }
@@ -1052,8 +1052,8 @@ impl Widget for ToggleGroup {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         let prefix = self.segment_prefix();
         let Some(index) = target
@@ -1161,14 +1161,16 @@ mod tests {
         let root = automerge::ROOT;
         g.handle_event(
             event,
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &tree,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &winit::event::Modifiers::default(),
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &tree,
+            },
         );
         handled
     }

@@ -7,11 +7,9 @@
 
 use crate::time::Instant;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect};
-use winit::event::WindowEvent;
 
 use crate::color_compat::ColorCompat;
 use crate::text_render::TextRenderer;
@@ -89,8 +87,6 @@ impl Default for Spinner {
 }
 
 impl Widget for Spinner {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -164,20 +160,6 @@ impl Widget for Spinner {
             let colour = accent.with_alpha_factor(alpha);
             scene.fill(vello::peniko::Fill::NonZero, transform, colour, None, &dot);
         }
-    }
-
-    fn handle_event(
-        &mut self,
-        _event: &WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
     }
 
     fn name(&self) -> &'static str {

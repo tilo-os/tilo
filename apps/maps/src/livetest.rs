@@ -6,9 +6,9 @@
 //! actually shows real content. Hermetic `--shots` prove *layout* only (they
 //! render offline/sample data); this harness proves the *live* path:
 //!
-//!   * [`Harness::pump_frame`] runs one real frame — `sync` → `build_layout` →
-//!     `compute_layout` → `apply_layout` → `draw` — exactly like `ui::App` and
-//!     the `--shots` renderer. `draw` is what issues real tile requests; the
+//!   * [`Harness::pump_frame`] runs one real frame through
+//!     [`ui::headless::FrameHarness`] — `sync` → layout → `draw` — the same
+//!     cycle `ui::App` runs. `draw` is what issues real tile requests; the
 //!     next frame's `sync` drains the decoded results. No GPU needed.
 //!   * [`pump_frames_until`] loops that until a caller predicate holds (e.g.
 //!     "tiles resident") or a timeout elapses, sleeping between frames so the
@@ -22,104 +22,51 @@
 //! The module is generic over `ui::widget::Widget`, so any app can reuse it;
 //! the map-specific predicates live in the app's own live tests.
 
-use std::collections::HashMap;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use taffy::prelude::*;
+use ui::headless::Framed;
 use ui::offscreen::OffscreenRenderer;
-use ui::permissions::PermissionContext;
-use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::Rect;
 use vello::peniko::Color;
 
-/// Per-run context reused across pumped frames: the theme, presence/permission
-/// contexts, the text-shaping cache, the CRDT document and the viewport size.
-/// One `Harness` drives one widget instance through many frames.
-pub struct Harness {
-    pub theme: Theme,
-    pub presence: PresenceCtx,
-    pub permission: PermissionContext,
-    pub text: TextRenderer,
-    pub state: ui::State,
-    pub viewport: (u32, u32),
+/// One widget instance mounted at a viewport with the OS dark theme (matching
+/// `--shots`), driven through many frames. Derefs to the widget.
+pub struct Harness<W: Widget + 'static> {
+    framed: Framed<W>,
+    viewport: (u32, u32),
 }
 
-impl Harness {
-    /// A harness at `viewport` size with the OS dark theme (matching `--shots`).
-    pub fn new(viewport: (u32, u32)) -> Self {
+impl<W: Widget + 'static> Harness<W> {
+    /// Mount `widget` at `viewport` and run its first frame.
+    pub fn new(widget: W, viewport: (u32, u32)) -> Self {
         Self {
-            theme: Theme::dark(),
-            presence: PresenceCtx::empty(),
-            permission: PermissionContext::permissive(),
-            text: TextRenderer::new(),
-            state: ui::State::new(),
+            framed: Framed::new(ui::State::new(), widget, viewport, Theme::dark()),
             viewport,
         }
     }
 
-    /// Run ONE real frame of `widget` into `scene`. Mirrors `ui::App`'s cycle
-    /// (and `main.rs`'s `--shots` renderer) precisely: `sync` folds in any
-    /// worker results, layout is recomputed, and `draw_with_presence` paints —
-    /// which, for the map, computes `visible_tiles` and issues the real tile
-    /// `request()`s. Passing a throwaway `scene` still drives those draw-side
-    /// side effects, so the plumbing runs whether or not the frame is
-    /// rasterised.
-    pub fn pump_frame(&mut self, widget: &mut dyn Widget, scene: &mut Scene) {
-        let (w, h) = self.viewport;
-        widget.sync(&mut self.state.doc, &self.state.root);
+    /// Run ONE real frame: `sync` folds in any worker results, layout is
+    /// recomputed, and `draw` paints — which, for the map, computes
+    /// `visible_tiles` and issues the real tile `request()`s.
+    pub fn pump_frame(&mut self) {
+        Framed::harness_mut(&mut self.framed).relayout();
+    }
+}
 
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let child = widget.build_layout(&mut taffy, &self.theme, &mut node_map);
-        let Ok(root) = taffy.new_with_children(
-            Style {
-                size: Size {
-                    width: Dimension::length(w as f32),
-                    height: Dimension::length(h as f32),
-                },
-                ..Default::default()
-            },
-            &[child],
-        ) else {
-            return;
-        };
-        {
-            let measure_map = node_map.clone();
-            let tr = &mut self.text;
-            let laid_out = taffy
-                .compute_layout_with_measure(
-                    root,
-                    taffy::Size {
-                        width: AvailableSpace::Definite(w as f32),
-                        height: AvailableSpace::Definite(h as f32),
-                    },
-                    |known, available, node_id, _, _| {
-                        if let Some(&ptr) = measure_map.get(&node_id) {
-                            unsafe { (*ptr).measure(known, available, tr) }
-                        } else {
-                            taffy::Size::ZERO
-                        }
-                    },
-                )
-                .is_ok();
-            if !laid_out {
-                return;
-            }
-        }
-        widget.apply_layout(&taffy, child, Point::ORIGIN);
-        widget.draw_with_presence(
-            scene,
-            Affine::IDENTITY,
-            &mut self.text,
-            &self.theme,
-            &self.presence,
-            &self.permission,
-        );
+impl<W: Widget + 'static> std::ops::Deref for Harness<W> {
+    type Target = W;
+
+    fn deref(&self) -> &W {
+        &self.framed
+    }
+}
+
+impl<W: Widget + 'static> std::ops::DerefMut for Harness<W> {
+    fn deref_mut(&mut self) -> &mut W {
+        &mut self.framed
     }
 }
 
@@ -134,14 +81,12 @@ pub struct PumpStats {
     pub stopped: bool,
 }
 
-/// Pump real frames of `widget` until `stop(widget)` is true or `max_wait`
-/// elapses, sleeping `poll` between frames so the background worker can make
-/// progress. Draws into a throwaway `Scene` each frame purely to drive the
-/// draw-side plumbing (tile requests) — no GPU is touched here, so this is the
-/// cheap way to exercise a full data path and assert its in-memory outcome.
+/// Pump real frames until `stop(widget)` is true or `max_wait` elapses,
+/// sleeping `poll` between frames so the background worker can make progress.
+/// No GPU is touched here, so this is the cheap way to exercise a full data
+/// path and assert its in-memory outcome.
 pub fn pump_frames_until<W, F>(
-    h: &mut Harness,
-    widget: &mut W,
+    h: &mut Harness<W>,
     max_wait: Duration,
     poll: Duration,
     mut stop: F,
@@ -153,10 +98,9 @@ where
     let start = Instant::now();
     let mut frames = 0u32;
     loop {
-        let mut scene = Scene::new();
-        h.pump_frame(widget, &mut scene);
+        h.pump_frame();
         frames += 1;
-        if stop(widget) {
+        if stop(h) {
             return PumpStats {
                 frames,
                 elapsed: start.elapsed(),
@@ -178,12 +122,11 @@ where
 /// (opaque-black background so "did anything paint" is unambiguous), returning
 /// the tight RGBA buffer for pixel inspection. Requires a working offscreen
 /// GPU; lavapipe (software Vulkan) is sufficient.
-pub fn render_live_to_png<W: Widget>(h: &mut Harness, widget: &mut W, path: &Path) -> Frame {
+pub fn render_live_to_png<W: Widget + 'static>(h: &mut Harness<W>, path: &Path) -> Frame {
     let (w, ht) = h.viewport;
-    let mut scene = Scene::new();
-    h.pump_frame(widget, &mut scene);
+    h.pump_frame();
     let mut renderer = OffscreenRenderer::new(w, ht);
-    let rgba = renderer.render(&scene, Color::BLACK);
+    let rgba = renderer.render(Framed::harness(&h.framed).scene(), Color::BLACK);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).ok();
     }

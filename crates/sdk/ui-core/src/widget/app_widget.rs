@@ -586,7 +586,11 @@ mod component_adapter {
 
         // A component's diagnostic probe observes its own record, the
         // document its widgets actually render, not the runner's outer one.
-        fn native_input_snapshot(&self, _: &AutoCommit, _: &ObjId) -> Option<serde_json::Value> {
+        fn native_input_snapshot(
+            &self,
+            _: &crate::widget::AppModel,
+            _: &crate::widget::ModelPath,
+        ) -> Option<serde_json::Value> {
             let binding = self.component.callback_binding();
             let _entry = binding.enter().ok()?;
             let root = self.component.root.as_deref()?;
@@ -761,7 +765,8 @@ mod component_adapter {
             };
             root.set_interaction_environment(environment);
         }
-        fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+        fn sync(&mut self, state: &mut crate::widget::AppModel, path: &crate::widget::ModelPath) {
+            let (state, _) = crate::doc::document(state, path);
             let binding = self.component.callback_binding();
             binding
                 .with_document(state, |document, record_root| {
@@ -774,7 +779,12 @@ mod component_adapter {
                 .unwrap_or(());
             self.component.project_record_save_status();
         }
-        fn update(&mut self, state: &mut AutoCommit, _path: &ObjId) -> bool {
+        fn update(
+            &mut self,
+            state: &mut crate::widget::AppModel,
+            path: &crate::widget::ModelPath,
+        ) -> bool {
+            let (state, _) = crate::doc::document(state, path);
             let binding = self.component.callback_binding();
             binding
                 .with_document(state, |document, record_root| {
@@ -878,37 +888,28 @@ mod component_adapter {
                 &permissions,
             );
         }
-        fn handle_event(
-            &mut self,
-            event: &WindowEvent,
-            scale_factor: f64,
-            modifiers: &winit::event::Modifiers,
-            state: &mut AutoCommit,
-            _path: &ObjId,
-            handled: &mut bool,
-            focus_target: &mut Option<NodeId>,
-            node_id: NodeId,
-            taffy: &TaffyTree<()>,
-        ) {
+        fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
             let binding = self.component.callback_binding();
             binding
-                .with_document(state, |document, record_root| {
+                .with_document(ctx.state, |document, record_root| {
                     let Some(root) = self.component.root.as_deref_mut() else {
                         return;
                     };
-                    if let Ok(children) = taffy.children(node_id)
+                    if let Ok(children) = ctx.taffy.children(ctx.node_id)
                         && let Some(child) = children.first()
                     {
                         root.handle_event(
                             event,
-                            scale_factor,
-                            modifiers,
-                            document,
-                            record_root,
-                            handled,
-                            focus_target,
-                            *child,
-                            taffy,
+                            &mut crate::widget::EventCtx {
+                                scale_factor: ctx.scale_factor,
+                                modifiers: ctx.modifiers,
+                                state: document,
+                                path: record_root,
+                                handled: ctx.handled,
+                                focus_target: ctx.focus_target,
+                                node_id: *child,
+                                taffy: ctx.taffy,
+                            },
                         );
                     }
                     let _ = binding.drain_owned_tree(root, document);
@@ -1112,9 +1113,10 @@ mod component_adapter {
         fn perform_action(
             &mut self,
             action: &crate::a11y::Action,
-            state: &mut AutoCommit,
-            _path: &ObjId,
+            state: &mut crate::widget::AppModel,
+            path: &crate::widget::ModelPath,
         ) -> bool {
+            let (state, _) = crate::doc::document(state, path);
             let binding = self.component.callback_binding();
             binding
                 .with_document(state, |document, record_root| {
@@ -1129,9 +1131,10 @@ mod component_adapter {
             &mut self,
             action: &crate::a11y::Action,
             key_path: &[u64],
-            state: &mut AutoCommit,
-            _path: &ObjId,
+            state: &mut crate::widget::AppModel,
+            path: &crate::widget::ModelPath,
         ) -> bool {
+            let (state, _) = crate::doc::document(state, path);
             let binding = self.component.callback_binding();
             binding
                 .with_document(state, |document, record_root| {
@@ -1146,9 +1149,10 @@ mod component_adapter {
             &mut self,
             target: &str,
             action: &crate::a11y::Action,
-            state: &mut AutoCommit,
-            _path: &ObjId,
+            state: &mut crate::widget::AppModel,
+            path: &crate::widget::ModelPath,
         ) -> bool {
+            let (state, _) = crate::doc::document(state, path);
             let binding = self.component.callback_binding();
             binding
                 .with_document(state, |document, record_root| {
@@ -1266,7 +1270,13 @@ mod component_adapter {
             let root = self.component.root.as_deref()?;
             root.text_review()
         }
-        fn on_external_event(&mut self, payload: &str, state: &mut AutoCommit, _root: &ObjId) {
+        fn on_external_event(
+            &mut self,
+            payload: &str,
+            state: &mut crate::widget::AppModel,
+            root: &crate::widget::ModelPath,
+        ) {
+            let (state, _) = crate::doc::document(state, root);
             let binding = self.component.callback_binding();
             binding
                 .with_document(state, |document, record_root| {
@@ -1280,9 +1290,10 @@ mod component_adapter {
         fn on_nav_gesture(
             &mut self,
             dir: crate::gesture::NavDirection,
-            state: &mut AutoCommit,
-            _path: &ObjId,
+            state: &mut crate::widget::AppModel,
+            path: &crate::widget::ModelPath,
         ) -> bool {
+            let (state, _) = crate::doc::document(state, path);
             let binding = self.component.callback_binding();
             binding
                 .with_document(state, |document, record_root| {
@@ -1516,7 +1527,13 @@ mod component_adapter {
         fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
             self.component.search_providers()
         }
-        fn activate_search_result(&mut self, action_id: &str, doc: &mut AutoCommit, _path: &ObjId) {
+        fn activate_search_result(
+            &mut self,
+            action_id: &str,
+            doc: &mut crate::widget::AppModel,
+            path: &crate::widget::ModelPath,
+        ) {
+            let (doc, _) = crate::doc::document(doc, path);
             let binding = self.component.callback_binding();
             binding
                 .with_document(doc, |document, record_root| {
@@ -1713,7 +1730,13 @@ mod component_adapter {
             };
             root.accepts_drop(payload)
         }
-        fn on_drop(&mut self, payload: DragPayload, state: &mut AutoCommit, _path: &ObjId) {
+        fn on_drop(
+            &mut self,
+            payload: DragPayload,
+            state: &mut crate::widget::AppModel,
+            path: &crate::widget::ModelPath,
+        ) {
+            let (state, _) = crate::doc::document(state, path);
             let binding = self.component.callback_binding();
             binding
                 .with_document(state, |document, record_root| {

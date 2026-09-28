@@ -36,9 +36,9 @@
 //! screen's layout node as a child of its own so the host's focus order,
 //! the accessibility tree and the headless driver all reach it by name.
 
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use taffy::{Dimension, Display, NodeId, Size, Style, TaffyTree};
 use threshold_identity::ThresholdIdentity;
@@ -255,37 +255,29 @@ impl CreateIdentityScreen {
     // this is invoked from the trait impl, forwarding the same event,
     // scale, modifiers, CRDT handle, and out-params the screen host
     // received; bundling it would mean bundling the trait method too.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "identity creation forwards the host's Widget event, CRDT, focus and layout context and adds the persistence store"
-    )]
     pub fn handle_event_screen(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
+        ctx: &mut crate::widget::EventCtx<'_>,
         store: &dyn IdentityStore,
     ) -> ScreenOutcome {
+        let handled = &mut *ctx.handled;
         // The field answers for its own node, so a click in it moves the
         // host's focus to the field rather than to the screen.
-        let field_node = self.name_node.unwrap_or(node_id);
+        let field_node = self.name_node.unwrap_or(ctx.node_id);
         let mut forward = |name: &mut TextInput, handled: &mut bool| {
             name.handle_event(
                 event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                field_node,
-                taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: ctx.scale_factor,
+                    modifiers: ctx.modifiers,
+                    state: ctx.state,
+                    path: ctx.path,
+                    handled,
+                    focus_target: ctx.focus_target,
+                    node_id: field_node,
+                    taffy: ctx.taffy,
+                },
             );
         };
         // Set after the match, once `forward` has released `focus_target`:
@@ -294,7 +286,7 @@ impl CreateIdentityScreen {
         let mut claim_focus = false;
         let outcome = match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let pos = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let pos = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.last_cursor = pos;
                 let hovering = self.submit_rect.contains(pos) && self.is_submit_enabled();
                 if hovering != self.submit_hovered {
@@ -354,7 +346,7 @@ impl CreateIdentityScreen {
             }
         };
         if claim_focus {
-            *focus_target = Some(field_node);
+            *ctx.focus_target = Some(field_node);
         }
         // An edit clears a stale submit error, as retyping the name did; a
         // caret or selection move alone does not.
@@ -539,7 +531,7 @@ impl CreateIdentityScreen {
 }
 
 impl Widget for CreateIdentityScreen {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
+    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {}
 
     fn build_layout(
         &mut self,
@@ -663,22 +655,6 @@ impl Widget for CreateIdentityScreen {
         sheet.paint_actions(scene, transform, text_renderer, theme, &spec);
     }
 
-    fn handle_event(
-        &mut self,
-        _event: &WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
-        // Real input goes through `handle_event_screen`, which the
-        // container calls with the IdentityStore; this path is unused.
-    }
-
     fn name(&self) -> &'static str {
         "CreateIdentityScreen"
     }
@@ -723,6 +699,7 @@ impl Widget for CreateIdentityScreen {
 mod tests {
     use super::*;
     use crate::widget::identity_flow::MemoryIdentityStore;
+    use automerge::AutoCommit;
 
     #[test]
     fn create_identity_submit_validates_name_and_stores_record() {
@@ -855,14 +832,16 @@ mod tests {
                 let mut target = None;
                 let outcome = s.handle_event_screen(
                     e,
-                    1.0,
-                    &winit::event::Modifiers::default(),
-                    &mut doc,
-                    &automerge::ROOT,
-                    &mut handled,
-                    &mut target,
-                    node,
-                    &taffy,
+                    &mut crate::widget::EventCtx {
+                        scale_factor: 1.0,
+                        modifiers: &winit::event::Modifiers::default(),
+                        state: &mut doc,
+                        path: &automerge::ROOT,
+                        handled: &mut handled,
+                        focus_target: &mut target,
+                        node_id: node,
+                        taffy: &taffy,
+                    },
                     &store,
                 );
                 (outcome, target)

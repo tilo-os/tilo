@@ -8,8 +8,8 @@
 //! variant, placed by this layer rather than by the workspace column.
 
 use std::collections::HashMap;
+use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -111,13 +111,13 @@ impl Widget for DisplayBars {
         Some(self)
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
         for (_, bar) in &mut self.bars {
             bar.sync(state, root);
         }
     }
 
-    fn update(&mut self, state: &mut AutoCommit, root: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, root: &ModelPath) -> bool {
         let mut changed = false;
         for (_, bar) in &mut self.bars {
             changed |= bar.update(state, root);
@@ -166,24 +166,13 @@ impl Widget for DisplayBars {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if self.suppressed() {
             return;
         }
         let target = match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.cursor = Some(p);
                 self.bar_under(p)
             }
@@ -204,17 +193,7 @@ impl Widget for DisplayBars {
             return;
         };
         if let Some((_, bar)) = self.bars.iter_mut().find(|(id, _)| *id == target) {
-            bar.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
-            );
+            bar.handle_event(event, ctx);
         }
     }
 

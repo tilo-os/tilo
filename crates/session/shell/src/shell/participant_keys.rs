@@ -266,7 +266,6 @@ pub(crate) mod tests {
     use collab_types::{ChannelClass, OpClass};
 
     use super::*;
-    use crate::shell::channel_encryption::tests::{Directory, Policy, key, public};
     use crate::shell::channel_encryption::{
         ChannelEncryption, ChannelEncryptionConfig, ChannelKeyAccess,
     };
@@ -274,6 +273,7 @@ pub(crate) mod tests {
     use crate::shell::recorder::{RECORDER_ADMISSION, RECORDER_AGENT};
     use crate::shell::replay::{REPLAY_ADMISSION, REPLAY_AGENT};
     use crate::shell::state::{CapOverride, Subject, Verb, WorkspaceId, WorkspaceTree};
+    use tilo_action_broker::channel_encryption::testing::{Directory, Policy, key, public};
 
     /// The device the fixture's room lives on; its person owns the room.
     pub(crate) const DEVICE: u8 = 50;

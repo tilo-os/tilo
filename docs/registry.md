@@ -169,6 +169,40 @@ never expose pending payloads. They expose only the most recently published,
 owner-signed snapshot: approval changes staging state, and the public catalogue
 changes only after the offline signing step below.
 
+### Publisher applications
+
+A key that is not allowlisted yet asks for namespaces with
+`POST /publishers/applications`, sending a signed
+`registry_types::application::PublisherApplication`: the key, up to eight
+claims, a contact address for the owner and a note. Each claim is proven by
+publishing the line `tilo-publisher=<pubkey hex>` where only the namespace's
+owner can write it:
+
+| Claim | Namespace | Where the proof lives |
+| --- | --- | --- |
+| domain `example.com` | `com.example` | DNS TXT at `_tilo-publisher.example.com`, else `https://example.com/.well-known/tilo-publisher.txt` |
+| GitHub account `ada` | `io.github.ada` | `tilo-publisher.txt` in the public repository `ada/tilo-publisher` |
+| Codeberg account `ada` | `org.codeberg.ada` | the same file and repository on Codeberg |
+| Forgejo or Gitea at `git.example.net`, account `ada` | `net.example.git.ada` | the same file and repository on that host |
+
+The registry verifies the signature, refuses applications dated more than a
+day from its clock, reads every proof and answers `202 Accepted` with the
+pending status, or `422` naming the namespace, the expected line and every
+place it looked. The application then waits for the owner;
+`GET /publishers/applications/<pubkey>` reports its status and proven
+namespaces but never the contact address. Nothing is approved over HTTP:
+
+```
+tilo-registry-server applications list
+tilo-registry-server applications approve <pubkey> --reviewer <name>
+tilo-registry-server applications reject <pubkey> --reviewer <name> --reason <text>
+```
+
+`approve` reads the proofs again, so a proof withdrawn while the application
+waited fails the approval and changes nothing. Otherwise it allowlists the key
+with `--can-add-new` for the proven namespaces, adding them to any it already
+had.
+
 ## Bootstrapping your own instance
 
 ### 1. Generate an owner keypair
@@ -293,6 +327,15 @@ size limit, and answers `201` with `{"blake3", "url"}`. The URL is
 local registry. Uploads stay private: review reads them from storage instead of
 fetching the URL (`review_entry_bytes`), and `review approve` imports the
 approved bytes as the artifact the URL then serves.
+
+A newer request for a package replaces the one waiting for review and must
+keep every version it lists, so a publisher releasing again before review
+builds on its waiting entry. `GET /entries/<package id>/pending` returns that
+request to its publisher only: the public key in `Tilo-Publisher`, the Unix
+time in `Tilo-Signed-At`, and in `Tilo-Signature` an Ed25519 signature over
+`"tilo-registry-pending-read-v1\0"`, the package id, a NUL and the time in
+decimal (`registry_types::pending`), within five minutes of the registry's
+clock. Any other caller, and a publisher with nothing waiting, gets `404`.
 
 Presentation metadata is a signed part of the entry. Localized fields use one
 consistent language-tag map, and every non-empty localized map must contain an

@@ -137,6 +137,8 @@ fn fixture_with_extra_calculators(
         1,
         permissions,
         Arc::new(|| {}),
+        None,
+        None,
     )
     .unwrap();
     assert!(

@@ -742,7 +742,6 @@ impl Widget for AnonymousFocusProbe {
     fn name(&self) -> &str {
         "AnonymousFocusProbe"
     }
-    fn sync(&mut self, _: &mut automerge::AutoCommit, _: &automerge::ObjId) {}
     fn build_layout(
         &mut self,
         tree: &mut TaffyTree<()>,
@@ -770,19 +769,6 @@ impl Widget for AnonymousFocusProbe {
     }
     fn get_rect(&self) -> vello::kurbo::Rect {
         vello::kurbo::Rect::ZERO
-    }
-    fn handle_event(
-        &mut self,
-        _: &winit::event::WindowEvent,
-        _: f64,
-        _: &winit::event::Modifiers,
-        _: &mut automerge::AutoCommit,
-        _: &automerge::ObjId,
-        _: &mut bool,
-        _: &mut Option<NodeId>,
-        _: NodeId,
-        _: &TaffyTree<()>,
-    ) {
     }
     fn is_focusable(&self) -> bool {
         true
@@ -819,7 +805,6 @@ mod tests {
         fn name(&self) -> &'static str {
             "UnsettledStyles"
         }
-        fn sync(&mut self, _: &mut automerge::AutoCommit, _: &automerge::ObjId) {}
         fn build_layout(
             &mut self,
             tree: &mut TaffyTree<()>,
@@ -867,19 +852,6 @@ mod tests {
         }
         fn get_rect(&self) -> Rect {
             Rect::ZERO
-        }
-        fn handle_event(
-            &mut self,
-            _: &winit::event::WindowEvent,
-            _: f64,
-            _: &winit::event::Modifiers,
-            _: &mut automerge::AutoCommit,
-            _: &automerge::ObjId,
-            _: &mut bool,
-            _: &mut Option<NodeId>,
-            _: NodeId,
-            _: &TaffyTree<()>,
-        ) {
         }
     }
 

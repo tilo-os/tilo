@@ -18,6 +18,7 @@ use super::{
     TextWeight, Theme, View, Widget, art, draw_text, elide, fill_rrect, icon, is_live_album_id,
     is_live_id, is_live_playlist_id, lyrics, rrect,
 };
+use ui::widget::{AppModel, ModelPath};
 
 use ui::surface;
 use ui::text_render::{NumericStyle, TextStyle};
@@ -795,7 +796,8 @@ impl Widget for MusicApp {
         }
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, _) = ui::doc::document(state, path);
         self.ensure_seeded(state);
         if self.playback_loaded {
             self.reload_library(state);
@@ -1186,24 +1188,11 @@ impl Widget for MusicApp {
         self.render_frame(scene, transform, text_renderer, theme);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         // While the context menu is open it owns the pointer + keyboard: route
         // the event to it, then drain any selection into the Action pipeline.
-        if self.context.is_open()
-            && self.route_context_menu(event, scale_factor, *modifiers, state, path, node_id, taffy)
-        {
-            *handled = true;
+        if self.context.is_open() && self.route_context_menu(event, ctx) {
+            *ctx.handled = true;
             return;
         }
 
@@ -1211,57 +1200,72 @@ impl Widget for MusicApp {
         // captures every event (typing, clicks, Esc) and nothing leaks to the
         // library behind the scrim.
         if self.name_prompt.is_some() {
-            self.route_name_event(event, scale_factor, *modifiers, state, handled);
+            self.route_name_event(
+                event,
+                ctx.scale_factor,
+                *ctx.modifiers,
+                ctx.state,
+                ctx.handled,
+            );
             return;
         }
 
         if matches!(self.view, View::Home)
-            && let Ok(children) = taffy.children(node_id)
+            && let Ok(children) = ctx.taffy.children(ctx.node_id)
             && let Some(button_node) = children.first()
         {
-            self.open_file_button.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                *button_node,
-                taffy,
-            );
+            self.open_file_button
+                .handle_event(event, &mut ctx.reborrow(ctx.path, *button_node));
         }
-        if *handled {
+        if *ctx.handled {
             self.dirty = true;
             return;
         }
         match event {
             WindowEvent::CursorMoved { .. } => {
-                self.on_cursor_moved(event, scale_factor, *modifiers, state, handled);
+                self.on_cursor_moved(
+                    event,
+                    ctx.scale_factor,
+                    *ctx.modifiers,
+                    ctx.state,
+                    ctx.handled,
+                );
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Right,
                 ..
             } => {
-                self.on_right_click(state, handled);
+                self.on_right_click(ctx.state, ctx.handled);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
             } => {
-                self.on_left_press(event, scale_factor, *modifiers, state, handled);
+                self.on_left_press(
+                    event,
+                    ctx.scale_factor,
+                    *ctx.modifiers,
+                    ctx.state,
+                    ctx.handled,
+                );
             }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
                 button: MouseButton::Left,
                 ..
             } => {
-                self.on_left_release(event, scale_factor, *modifiers, state, handled);
+                self.on_left_release(
+                    event,
+                    ctx.scale_factor,
+                    *ctx.modifiers,
+                    ctx.state,
+                    ctx.handled,
+                );
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                self.on_wheel(*delta, scale_factor, handled);
+                self.on_wheel(*delta, ctx.scale_factor, ctx.handled);
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -1277,10 +1281,10 @@ impl Widget for MusicApp {
                     logical_key,
                     text.as_deref(),
                     event,
-                    scale_factor,
-                    *modifiers,
-                    state,
-                    handled,
+                    ctx.scale_factor,
+                    *ctx.modifiers,
+                    ctx.state,
+                    ctx.handled,
                 );
             }
             _ => {}
@@ -1769,9 +1773,10 @@ impl Widget for MusicApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
-        _path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
+        let (state, _) = ui::doc::document(state, path);
         if target == "music.search" {
             match action {
                 ui::a11y::Action::Focus | ui::a11y::Action::Activate => {
@@ -2067,14 +2072,16 @@ impl MusicApp {
         let mut focus_target = None;
         self.search_input.handle_event(
             event,
-            scale_factor,
-            &modifiers,
-            state,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor,
+                modifiers: &modifiers,
+                state,
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         handled
     }
@@ -2085,27 +2092,19 @@ impl MusicApp {
     fn route_context_menu(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
         let mut menu_handled = false;
         let mut ft = None;
         self.context.handle_event(
             event,
-            scale_factor,
-            &modifiers,
-            state,
-            path,
-            &mut menu_handled,
-            &mut ft,
-            node_id,
-            taffy,
+            &mut ui::widget::EventCtx {
+                handled: &mut menu_handled,
+                focus_target: &mut ft,
+                ..ctx.reborrow(ctx.path, ctx.node_id)
+            },
         );
-        if self.drain_menu_selection(state) {
+        if self.drain_menu_selection(ctx.state) {
             self.dirty = true;
             return true;
         }

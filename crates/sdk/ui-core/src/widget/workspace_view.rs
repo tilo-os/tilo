@@ -5,7 +5,7 @@ use crate::theme::Theme;
 use crate::tokens::SpringParams;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
-use automerge::{AutoCommit, ObjId};
+use crate::widget::{AppModel, ModelPath};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Vec2};
@@ -97,8 +97,7 @@ impl Widget for WorkspaceView {
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }
-    fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
-    fn update(&mut self, _s: &mut AutoCommit, _p: &ObjId) -> bool {
+    fn update(&mut self, _s: &mut AppModel, _p: &ModelPath) -> bool {
         if self.slide.is_settled() {
             false
         } else {
@@ -156,18 +155,7 @@ impl Widget for WorkspaceView {
             );
         }
     }
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        _sf: f64,
-        modifiers: &winit::event::Modifiers,
-        _s: &mut AutoCommit,
-        _p: &ObjId,
-        handled: &mut bool,
-        _f: &mut Option<NodeId>,
-        _n: NodeId,
-        _t: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if let WindowEvent::KeyboardInput {
             event:
                 winit::event::KeyEvent {
@@ -177,18 +165,18 @@ impl Widget for WorkspaceView {
                 },
             ..
         } = event
-            && (modifiers.state().super_key() || modifiers.state().control_key())
+            && (ctx.modifiers.state().super_key() || ctx.modifiers.state().control_key())
         {
             match k {
                 winit::keyboard::NamedKey::ArrowUp => {
                     if self.switch(WorkspaceSwitchDirection::Up) {
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                 }
                 winit::keyboard::NamedKey::ArrowDown
                     if self.switch(WorkspaceSwitchDirection::Down) =>
                 {
-                    *handled = true;
+                    *ctx.handled = true;
                 }
                 _ => {}
             }

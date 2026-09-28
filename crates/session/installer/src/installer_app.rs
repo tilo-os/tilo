@@ -43,6 +43,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use ui::doc::{read_bool, read_text};
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value, transaction::Transactable};
 use taffy::style_helpers::{length, percent};
@@ -711,12 +712,6 @@ impl Card {
 }
 
 impl Widget for Card {
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        for child in &mut self.children {
-            child.sync(state, root);
-        }
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -837,52 +832,21 @@ impl Widget for Card {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        let Ok(child_nodes) = taffy.children(node_id) else {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        let Ok(child_nodes) = ctx.taffy.children(ctx.node_id) else {
             return;
         };
         if let Some(idx) = self.children.iter().position(|c| c.wants_pointer_capture()) {
             if let Some(&cnode) = child_nodes.get(idx)
                 && let Some(child) = self.children.get_mut(idx)
             {
-                child.handle_event(
-                    event,
-                    scale_factor,
-                    modifiers,
-                    state,
-                    root,
-                    handled,
-                    focus_target,
-                    cnode,
-                    taffy,
-                );
+                child.handle_event(event, &mut ctx.reborrow(ctx.path, cnode));
             }
             return;
         }
         for (child, &child_node) in self.children.iter_mut().zip(child_nodes.iter()) {
-            child.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                root,
-                handled,
-                focus_target,
-                child_node,
-                taffy,
-            );
-            if *handled {
+            child.handle_event(event, &mut ctx.reborrow(ctx.path, child_node));
+            if *ctx.handled {
                 break;
             }
         }
@@ -958,12 +922,6 @@ impl ViewportStage {
 }
 
 impl Widget for ViewportStage {
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        for child in &mut self.children {
-            child.sync(state, root);
-        }
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -1051,19 +1009,8 @@ impl Widget for ViewportStage {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        let Ok(child_nodes) = taffy.children(node_id) else {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        let Ok(child_nodes) = ctx.taffy.children(ctx.node_id) else {
             return;
         };
         if let Some(index) = self
@@ -1074,33 +1021,13 @@ impl Widget for ViewportStage {
             if let (Some(child), Some(&child_node)) =
                 (self.children.get_mut(index), child_nodes.get(index))
             {
-                child.handle_event(
-                    event,
-                    scale_factor,
-                    modifiers,
-                    state,
-                    root,
-                    handled,
-                    focus_target,
-                    child_node,
-                    taffy,
-                );
+                child.handle_event(event, &mut ctx.reborrow(ctx.path, child_node));
             }
             return;
         }
         for (child, &child_node) in self.children.iter_mut().zip(child_nodes.iter()) {
-            child.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                root,
-                handled,
-                focus_target,
-                child_node,
-                taffy,
-            );
-            if *handled {
+            child.handle_event(event, &mut ctx.reborrow(ctx.path, child_node));
+            if *ctx.handled {
                 break;
             }
         }
@@ -4019,7 +3946,8 @@ fn args_none() -> serde_json::Map<String, serde_json::Value> {
 }
 
 impl Widget for InstallerApp {
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+        let (state, root) = ui::doc::document(state, root);
         if !self.bootstrap_done {
             self.bootstrap_crdt(state, root);
             self.bootstrap_done = true;
@@ -4107,18 +4035,7 @@ impl Widget for InstallerApp {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         // Forward to the composed card FIRST so a focused field can
         // consume the event before the wizard interprets it. This matters
         // for the Options-step time-zone `Dropdown`: when it's open, Enter
@@ -4126,27 +4043,17 @@ impl Widget for InstallerApp {
         // without forwarding first we'd also raise `NEXT` and skip the
         // step out from under the user.
         if let Some(c) = &mut self.composed
-            && let Ok(children) = taffy.children(node_id)
+            && let Ok(children) = ctx.taffy.children(ctx.node_id)
             && let Some(&card_node) = children.first()
         {
-            c.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                root,
-                handled,
-                focus_target,
-                card_node,
-                taffy,
-            );
+            c.handle_event(event, &mut ctx.reborrow(ctx.path, card_node));
         }
 
         // Enter advances only when no inner field consumed it: Begin on
         // Review, Next on Disk/Account/Options. We mark the event handled
         // so the App runs its post-event `sync` (which detects the rising
         // edge).
-        if !*handled
+        if !*ctx.handled
             && let WindowEvent::KeyboardInput {
                 event:
                     KeyEvent {
@@ -4163,9 +4070,9 @@ impl Widget for InstallerApp {
                     // when encrypting, the recovery-key acknowledgement is
                     // required before the install can start.
                     if self.encryption_ready() && self.destructive_confirmation_ready() {
-                        let _ = state.put(root, BEGIN_PATH, true);
+                        let _ = ctx.state.put(ctx.path, BEGIN_PATH, true);
                     }
-                    *handled = true;
+                    *ctx.handled = true;
                 }
                 Step::Network => {
                     if self
@@ -4173,22 +4080,23 @@ impl Widget for InstallerApp {
                         .selected_network()
                         .is_some_and(|network| !network.connected)
                     {
-                        let _ = state.put(root, NETWORK_CONNECT_PATH, true);
+                        let _ = ctx.state.put(ctx.path, NETWORK_CONNECT_PATH, true);
                     } else {
-                        let _ = state.put(root, NEXT_PATH, true);
+                        let _ = ctx.state.put(ctx.path, NEXT_PATH, true);
                     }
-                    *handled = true;
+                    *ctx.handled = true;
                 }
                 Step::Disk | Step::Account | Step::Keyboard | Step::Options => {
-                    let _ = state.put(root, NEXT_PATH, true);
-                    *handled = true;
+                    let _ = ctx.state.put(ctx.path, NEXT_PATH, true);
+                    *ctx.handled = true;
                 }
                 Step::Install => {}
             }
         }
     }
 
-    fn on_external_event(&mut self, payload: &str, state: &mut AutoCommit, root: &ObjId) {
+    fn on_external_event(&mut self, payload: &str, state: &mut AppModel, root: &ModelPath) {
+        let (state, root) = ui::doc::document(state, root);
         if payload == CONSOLE_WAKE {
             self.serve_console(state, root);
         } else if payload == NETWORK_WAKE_EVENT {

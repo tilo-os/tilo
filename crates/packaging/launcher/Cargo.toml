@@ -39,6 +39,7 @@ dev-overrides = ["package-store/dev-overrides"]
 managed-tree-test = []
 
 [dependencies]
+xdg-paths = { path = "../../system/xdg-paths" }
 fnv.workspace = true
 tilo-clock = { path = "../../system/tilo-clock" }
 clap.workspace = true

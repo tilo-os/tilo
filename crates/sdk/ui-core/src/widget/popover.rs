@@ -19,7 +19,6 @@
 
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Stroke, Vec2};
@@ -369,8 +368,6 @@ impl Widget for Popover {
         }
     }
 
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -494,24 +491,14 @@ impl Widget for Popover {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if !self.open {
             return;
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_cursor =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 if let Some(idx) = self.item_at(self.last_cursor) {
                     self.highlighted = idx;
                 }
@@ -536,7 +523,7 @@ impl Widget for Popover {
                 }
                 // Focus capture: an open menu owns the keyboard. EVERY key press
                 // is consumed so nothing leaks to the app behind the overlay.
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -550,7 +537,7 @@ impl Widget for Popover {
                     // closed the menu doesn't also hit whatever sits beneath.
                     self.close();
                 }
-                *handled = true;
+                *ctx.handled = true;
             }
             _ => {}
         }
@@ -611,6 +598,7 @@ impl Widget for Popover {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::AutoCommit;
     use winit::event::{DeviceId, KeyEvent};
     use winit::keyboard::{KeyLocation, NativeKeyCode, PhysicalKey};
 
@@ -723,14 +711,16 @@ mod tests {
         let root = automerge::ROOT;
         p.handle_event(
             event,
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &winit::event::Modifiers::default(),
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         handled
     }

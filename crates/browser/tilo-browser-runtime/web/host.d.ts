@@ -5,7 +5,7 @@ import type {CertifiedActionsV1,PrivateInvocation} from './peer';
  * What a mount runs: the id of any installed application
  * (`so.tilo.word-processor`, `so.tilo.ebook`, …; see `applications()`), the
  * Cloud frontend's aliases `writer` and `chat`, or `desktop` for the canonical
- * desktop, which requires an admitted certified peer. An id neither installed
+ * desktop, which requires an admitted certified peer or `MountOptions.local`. An id neither installed
  * nor resolvable (see `AppResolver`) rejects the mount with
  * `application "…" is not available`.
  */
@@ -62,6 +62,51 @@ export interface ResolvedApp {
   assets?: Map<string, string>;
 }
 export type AppResolver = (appId: string, options: {signal?: AbortSignal}) => ResolvedApp | Promise<ResolvedApp>;
+/** A window of a local desktop: one app in its own window group. */
+export interface LocalDesktopWindow {
+  /** An app id or alias, linked through the resolver when the core lacks it. */
+  app: Application;
+  /**
+   * An existing record of the app in the mount's room, such as the `record`
+   * of a standalone mount with the same profile and device: the window shows
+   * that document, live with the other mount. Without it the app creates a
+   * new record when the window first mounts.
+   */
+  record?: string;
+  /** The tab's title (`label` is accepted too); defaults to the app's. */
+  title?: string;
+  /** Select this window when the desktop first presents. */
+  focused?: boolean;
+}
+/**
+ * The page's own desktop (`app: 'desktop'` without a peer): room documents
+ * the page seeds and only this mount holds, one per workspace, the first
+ * being the mount's `room`. The mount is their topology owner: the commands
+ * the shell binds (open, close, reorder, move, split, strips, renames) apply
+ * at once. Nothing is replicated; the rooms last as long as the mount.
+ * Unknown fields are refused.
+ */
+export type LocalDesktopAccess = 'read' | 'comment' | 'write' | 'invite' | 'admin';
+export interface LocalDesktopWorkspace {
+  /** The workspace's name (`label` is accepted too); defaults to `Workspace <n>`. */
+  title?: string;
+  /** Each strip's windows, left to right; a workspace without strips shows the launcher. */
+  strips?: Array<{title?: string; windows?: LocalDesktopWindow[]}>;
+  /**
+   * Room membership the owner (the mount's `author`) granted, as the
+   * workspace settings' People, Agents and Privacy tabs show it. Default
+   * access `write`. Presentation only: the page's own permissions stay the owner's.
+   */
+  members?: Array<{name: string; access?: LocalDesktopAccess; agent?: boolean}>;
+  /** Capabilities granted to an app: over another app's artifacts (`over`), else the whole workspace. */
+  grants?: Array<{app: string; access?: LocalDesktopAccess; over?: string}>;
+}
+export interface LocalDesktop {
+  /** Defaults to one empty workspace. At most 16 workspaces, 64 windows, and 64 members and grants a workspace. */
+  workspaces?: LocalDesktopWorkspace[];
+  /** More apps to link before mounting, so the launcher, search and palette offer them. */
+  apps?: string[];
+}
 export interface RuntimeStatus {
   /** `resolving`/`linking`/`linked` report an app installed from a side module (`app`). */
   phase?: 'resolving' | 'linking' | 'linked' | 'gpu-pending' | 'presented' | 'failed' | 'closed';
@@ -110,8 +155,17 @@ export interface MountOptions {
   /**
    * Resolves `app` when the core does not contain it; defaults to the one
    * `setAppResolver` set. Resolution starts alongside the core's download.
+   * A local desktop resolves its windows' apps, its `apps`, and every app
+   * `openApp` or `{kind: 'open'}` names through it.
    */
   resolveApp?: AppResolver;
+  /** With `app: 'desktop'`: mount the page's own desktop, seeded thus. */
+  local?: LocalDesktop;
+}
+/** Which window of a local desktop an action call addresses. */
+export interface WindowOption {
+  /** The window's tab id (a navigation route's `tab`); defaults to the focused window. */
+  window?: string;
 }
 /** One published action, as `tilo-control actions list` describes it. */
 export interface ActionDescriptor {
@@ -148,17 +202,26 @@ export interface DesktopMount {
   /**
    * The actions the mounted application publishes now, with its permissions
    * applied. `resource` narrows to one resource and its children, including
-   * one the application resolves only on request. Throws for the canonical desktop.
+   * one the application resolves only on request. On a local desktop, those
+   * of one window's app (`window`, else the focused window). Throws for a
+   * peer's canonical desktop.
    */
-  actions(resource?: string): ActionDescriptor[];
+  actions(resource?: string, options?: WindowOption): ActionDescriptor[];
   /**
    * Invoke one published action through the application's action door, the
    * one the palette, agents and assistive technology use. Throws
    * `code: reason` when the address is not published now, the permissions
    * refuse it, the arguments do not bind, or its contract requires
-   * confirmation and `confirm` is not set.
+   * confirmation and `confirm` is not set. On a local desktop it addresses
+   * one window's app, as `actions` does.
    */
-  invokeAction(resource: string, action: string, args?: Record<string, unknown>, options?: {confirm?: boolean}): ActionResult;
+  invokeAction(resource: string, action: string, args?: Record<string, unknown>, options?: {confirm?: boolean} & WindowOption): ActionResult;
+  /**
+   * A desktop's `navigation.dispatch({kind: 'open', app})` for the current
+   * generation: link `app` if the core lacks it, then open it in a new window
+   * of the active workspace, which a local desktop selects.
+   */
+  openApp(app: Application): Promise<void>;
   cleanup(): Promise<void>;
   flush(): Promise<void>;
   state(): RuntimeStatus | undefined;

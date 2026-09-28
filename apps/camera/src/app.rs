@@ -23,6 +23,7 @@ use std::time::{Duration, Instant};
 #[cfg(test)]
 use tilo_actions::EncodedAction;
 use tilo_clock::unix_now_i64;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ChangeHash, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -2784,7 +2785,8 @@ impl Widget for CameraApp {
         clippy::too_many_lines,
         reason = "sync is the one ordered document/lifecycle boundary"
     )]
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, path) = ui::doc::document(state, path);
         self.poll_document_job();
         self.poll_document_export();
         self.poll_scan_image_picker();
@@ -3260,33 +3262,12 @@ impl Widget for CameraApp {
         clippy::too_many_lines,
         reason = "the root event router keeps pointer, touch, keyboard, crop, modal, and drawer precedence together so painted and semantic hit-testing cannot diverge"
     )]
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, TouchPhase};
         use winit::keyboard::{Key, NamedKey};
 
         if self.document_popover.is_open() {
-            self.document_popover.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
-            );
+            self.document_popover.handle_event(event, ctx);
             if let Some(index) = self.document_popover.take_selection() {
                 self.apply_document_choice(index);
             }
@@ -3294,14 +3275,15 @@ impl Widget for CameraApp {
             return;
         }
         if let Some(editor) = self.document_crop_editor.as_mut()
-            && editor.handle_event_at(event, scale_factor)
+            && editor.handle_event_at(event, ctx.scale_factor)
         {
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_mouse = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_mouse =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.dirty = true;
             }
             WindowEvent::MouseInput {
@@ -3309,14 +3291,14 @@ impl Widget for CameraApp {
                 button: MouseButton::Left,
                 ..
             } => {
-                if self.hit(self.last_mouse, state, path) {
-                    *handled = true;
+                if self.hit(self.last_mouse, ctx.state, ctx.path) {
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::Touch(touch) => {
                 let point = Point::new(
-                    touch.location.x / scale_factor,
-                    touch.location.y / scale_factor,
+                    touch.location.x / ctx.scale_factor,
+                    touch.location.y / ctx.scale_factor,
                 );
                 match touch.phase {
                     TouchPhase::Started if self.active_touch.is_none() => {
@@ -3333,7 +3315,7 @@ impl Widget for CameraApp {
                                 action,
                                 cancelled: false,
                             });
-                            *handled = true;
+                            *ctx.handled = true;
                         }
                     }
                     TouchPhase::Moved => {
@@ -3343,7 +3325,7 @@ impl Widget for CameraApp {
                             if !target.rect.contains(point) {
                                 target.cancelled = true;
                             }
-                            *handled = true;
+                            *ctx.handled = true;
                         }
                     }
                     TouchPhase::Ended => {
@@ -3357,9 +3339,9 @@ impl Widget for CameraApp {
                                 && !target.cancelled
                                 && target.rect.contains(point)
                             {
-                                self.apply(target.action, state, path);
+                                self.apply(target.action, ctx.state, ctx.path);
                             }
-                            *handled = true;
+                            *ctx.handled = true;
                         }
                     }
                     TouchPhase::Cancelled
@@ -3369,7 +3351,7 @@ impl Widget for CameraApp {
                             .is_some_and(|target| target.id == touch.id) =>
                     {
                         self.active_touch = None;
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                     TouchPhase::Cancelled | TouchPhase::Started => {}
                 }
@@ -3377,13 +3359,13 @@ impl Widget for CameraApp {
             WindowEvent::MouseWheel { delta, .. } => {
                 let dy = match delta {
                     MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * 48.0,
-                    MouseScrollDelta::PixelDelta(pos) => pos.y / scale_factor,
+                    MouseScrollDelta::PixelDelta(pos) => pos.y / ctx.scale_factor,
                 };
                 // Wheel up (dy > 0) scrolls toward the top of the content.
                 if self.screen == Screen::Settings {
                     self.settings_scroll = (self.settings_scroll - dy).max(0.0);
                     self.dirty = true;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::KeyboardInput {
@@ -3431,8 +3413,8 @@ impl Widget for CameraApp {
                     _ => None,
                 };
                 if let Some(a) = act {
-                    self.apply(a, state, path);
-                    *handled = true;
+                    self.apply(a, ctx.state, ctx.path);
+                    *ctx.handled = true;
                 }
             }
             _ => {}
@@ -3486,9 +3468,10 @@ impl Widget for CameraApp {
         &mut self,
         target: &str,
         action: &A11yAction,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
+        let (state, path) = ui::doc::document(state, path);
         if let Some(editor) = self.document_crop_editor.as_mut()
             && editor.perform_semantic_action(target, action, state, path)
         {
@@ -6644,6 +6627,7 @@ impl CameraApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui::headless::{Framed, viewport};
 
     fn sample_app() -> (CameraApp, AutoCommit, ObjId) {
         let mut app = CameraApp::sample();
@@ -6676,89 +6660,44 @@ mod tests {
         );
     }
 
-    /// Run the full five-pass frame (sync → layout → draw) for `app` at a
-    /// given viewport, on the caller's shared doc. CPU-only; no GPU needed
-    /// (rasterization is skipped — we only exercise layout + scene build).
-    fn render_at(app: &mut CameraApp, doc: &mut AutoCommit, root: &ObjId, w: f32, h: f32) {
-        render_with_theme(app, doc, root, w, h, &Theme::dark());
+    /// Mount `app` over the case's `doc` in the production frame host and run
+    /// one full frame (sync → layout → draw) at a given viewport. CPU-only; no
+    /// GPU needed (rasterization is skipped — we only exercise layout + scene
+    /// build).
+    fn render_at(app: CameraApp, doc: AutoCommit, w: f32, h: f32) -> Framed<CameraApp> {
+        render_with_theme(app, doc, w, h, Theme::dark())
     }
 
     fn render_at_scaled(
-        app: &mut CameraApp,
-        doc: &mut AutoCommit,
-        root: &ObjId,
+        app: CameraApp,
+        doc: AutoCommit,
         w: f32,
         h: f32,
         text_scale: f32,
-    ) {
-        render_with_theme(
-            app,
-            doc,
-            root,
-            w,
-            h,
-            &Theme::dark().with_text_scale(text_scale),
-        );
+    ) -> Framed<CameraApp> {
+        render_with_theme(app, doc, w, h, Theme::dark().with_text_scale(text_scale))
     }
 
     fn render_with_theme(
-        app: &mut CameraApp,
-        doc: &mut AutoCommit,
-        root: &ObjId,
+        app: CameraApp,
+        doc: AutoCommit,
         w: f32,
         h: f32,
-        theme: &Theme,
-    ) {
-        let presence = PresenceCtx::empty();
-        let perms = ui::permissions::PermissionContext::permissive();
-        let mut tr = TextRenderer::new();
-        tr.set_text_scale(theme.text_scale);
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        app.sync(doc, root);
-        let child = app.build_layout(&mut taffy, theme, &mut node_map);
-        let rootn = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::length(w),
-                        height: Dimension::length(h),
-                    },
-                    ..Default::default()
-                },
-                &[child],
-            )
-            .unwrap();
-        {
-            let mm = node_map.clone();
-            let trr = &mut tr;
-            taffy
-                .compute_layout_with_measure(
-                    rootn,
-                    taffy::Size {
-                        width: taffy::AvailableSpace::Definite(w),
-                        height: taffy::AvailableSpace::Definite(h),
-                    },
-                    |known, avail, id, _, _| {
-                        if let Some(&p) = mm.get(&id) {
-                            unsafe { (*p).measure(known, avail, trr) }
-                        } else {
-                            taffy::Size::ZERO
-                        }
-                    },
-                )
-                .unwrap();
-        }
-        app.apply_layout(&taffy, child, Point::ORIGIN);
-        let mut scene = Scene::new();
-        app.draw_with_presence(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            theme,
-            &presence,
-            &perms,
+        theme: Theme,
+    ) -> Framed<CameraApp> {
+        let mut state = ui::State::new();
+        assert!(
+            state.adopt_doc(doc),
+            "the harness adopts the case's document"
         );
+        Framed::new(state, app, viewport((w, h)), theme)
+    }
+
+    /// Rebuild and run the next frame of an already-rendered app at `w`x`h`.
+    fn rerender_at(app: &mut Framed<CameraApp>, w: f32, h: f32) {
+        Framed::harness_mut(app)
+            .relayout_themed(viewport((w, h)), Theme::dark())
+            .expect("camera frame lays out");
     }
 
     fn wheel(dy: f32) -> WindowEvent {
@@ -6777,14 +6716,16 @@ mod tests {
         let mut focus = None;
         app.handle_event(
             ev,
-            1.0,
-            &mods,
-            doc,
-            root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: doc,
+                path: root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         handled
     }
@@ -6813,8 +6754,8 @@ mod tests {
                 "the widest label sizes every segment"
             );
             for scale in [1.0_f32, 2.0] {
-                let (mut app, mut doc, root) = sample_app();
-                render_at_scaled(&mut app, &mut doc, &root, 800.0, 900.0, scale);
+                let (app, doc, _root) = sample_app();
+                let app = render_at_scaled(app, doc, 800.0, 900.0, scale);
                 let mut tr = TextRenderer::new();
                 tr.set_text_scale(scale);
                 let tree = app.accessibility().expect("camera has a semantic window");
@@ -6860,9 +6801,9 @@ mod tests {
         }
         // Phase `viewfinder_keeps_the_full_stage_at_wide_narrow_and_large_text_sizes`.
         {
-            let (mut app, mut doc, root) = sample_app();
+            let (app, mut doc, _root) = sample_app();
             let heads = doc.get_heads();
-            render_at(&mut app, &mut doc, &root, 1_100.0, 720.0);
+            let mut app = render_at(app, doc, 1_100.0, 720.0);
             assert_eq!(app.rect.width(), 1_100.0);
             assert!(
                 app.accessibility()
@@ -6872,7 +6813,7 @@ mod tests {
                     .any(|node| { node.action_target.as_deref() == Some("camera.open-photos") })
             );
 
-            render_at(&mut app, &mut doc, &root, 390.0, 720.0);
+            rerender_at(&mut app, 390.0, 720.0);
             assert_eq!(app.rect.width(), 390.0);
             assert!(
                 app.accessibility()
@@ -6881,7 +6822,11 @@ mod tests {
                     .iter()
                     .any(|node| { node.action_target.as_deref() == Some("camera.shutter") })
             );
-            assert_eq!(doc.get_heads(), heads, "viewfinder layout remains local");
+            assert_eq!(
+                Framed::split(&mut app).1.doc.get_heads(),
+                heads,
+                "viewfinder layout remains local"
+            );
         }
         // Phase `viewfinder_capsules_contain_their_labels_at_accessibility_scale`.
         // corrected-review-1 (2026-09-15) camera P2: at 200% text the "12 MP /
@@ -6895,8 +6840,8 @@ mod tests {
             // the painted capsule itself, and centres are always painted centres.
             const TOUCH_MIN: f64 = 44.0;
             for scale in [1.0_f32, 2.0] {
-                let (mut app, mut doc, root) = sample_app();
-                render_at_scaled(&mut app, &mut doc, &root, 1366.0, 768.0, scale);
+                let (app, doc, _root) = sample_app();
+                let app = render_at_scaled(app, doc, 1366.0, 768.0, scale);
                 let mut tr = TextRenderer::new();
                 tr.set_text_scale(scale);
                 let pill_label_h = f64::from(tr.measure("HDR", CTRL_PILL_LABEL_SIZE, None).1);
@@ -6975,15 +6920,8 @@ mod tests {
         }
         // Phase `large_text_mode_switcher_keeps_each_destination_separate`.
         {
-            let (mut app, mut doc, root) = sample_app();
-            render_with_theme(
-                &mut app,
-                &mut doc,
-                &root,
-                390.0,
-                844.0,
-                &Theme::dark().with_text_scale(2.0),
-            );
+            let (app, doc, _root) = sample_app();
+            let app = render_with_theme(app, doc, 390.0, 844.0, Theme::dark().with_text_scale(2.0));
 
             let tree = app.accessibility().expect("camera accessibility tree");
             let bounds_for = |target| {
@@ -7009,8 +6947,8 @@ mod tests {
         }
         // Phase `compact_mode_switcher_stays_within_the_viewport`.
         {
-            let (mut app, mut doc, root) = sample_app();
-            render_at(&mut app, &mut doc, &root, 260.0, 700.0);
+            let (app, doc, _root) = sample_app();
+            let app = render_at(app, doc, 260.0, 700.0);
             let tree = app.accessibility().expect("camera has a semantic window");
             let mode_controls: Vec<_> = tree
                 .children
@@ -7034,16 +6972,15 @@ mod tests {
             // The breakpoint must be re-derived from the current width every frame:
             // one instance rendered wide THEN narrow must reflow, not stay frozen
             // at the first frame's layout.
-            let mut app = CameraApp::with(Storage::Sample, Screen::Scanner);
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
+            let app = CameraApp::with(Storage::Sample, Screen::Scanner);
+            let doc = AutoCommit::new();
 
-            render_at(&mut app, &mut doc, &root, 1280.0, 720.0);
+            let mut app = render_at(app, doc, 1280.0, 720.0);
             assert_eq!(app.screen, Screen::Scanner);
             let wide_w = app.scan_view.as_ref().expect("wide viewfinder").0;
             assert!(app.rect.width() >= 1279.0);
 
-            render_at(&mut app, &mut doc, &root, 560.0, 720.0);
+            rerender_at(&mut app, 560.0, 720.0);
             let narrow_w = app.scan_view.as_ref().expect("narrow viewfinder").0;
             assert!(app.rect.width() <= 561.0, "rect tracked the resize");
 
@@ -7169,8 +7106,8 @@ mod tests {
         }
         // Phase `accessibility_exports_named_controls_from_the_painted_hit_map`.
         {
-            let (mut app, mut doc, root) = sample_app();
-            render_at(&mut app, &mut doc, &root, 900.0, 700.0);
+            let (app, doc, _root) = sample_app();
+            let app = render_at(app, doc, 900.0, 700.0);
             let tree = app.accessibility().expect("camera has a semantic window");
             assert_eq!(tree.role, Role::Window);
             assert_eq!(tree.name.as_deref(), Some("Camera"));
@@ -7193,8 +7130,8 @@ mod tests {
         }
         // Phase `capture_switcher_exposes_document_capture_without_a_gallery_surface`.
         {
-            let (mut app, mut doc, root) = sample_app();
-            render_at(&mut app, &mut doc, &root, 1_200.0, 760.0);
+            let (app, doc, _root) = sample_app();
+            let app = render_at(app, doc, 1_200.0, 760.0);
             let tree = app
                 .accessibility()
                 .expect("camera has semantic capture controls");
@@ -7211,15 +7148,16 @@ mod tests {
         }
         // Phase `browse_photos_uses_the_typed_owner_handoff_without_a_gallery`.
         {
-            let (mut app, mut doc, root) = sample_app();
-            render_at(&mut app, &mut doc, &root, 900.0, 700.0);
-            assert!(app.perform_semantic_action(
+            let (app, doc, root) = sample_app();
+            let mut app = render_at(app, doc, 900.0, 700.0);
+            let (camera, state) = Framed::split(&mut app);
+            assert!(camera.perform_semantic_action(
                 "camera.open-photos",
                 &A11yAction::Activate,
-                &mut doc,
+                &mut state.doc,
                 &root,
             ));
-            let invocation = Widget::take_control_invocation(&mut app)
+            let invocation = Widget::take_control_invocation(&mut *app)
                 .expect("Photos browse emits a typed external invocation");
             assert_eq!(invocation.address.resource, "camera.capture");
             assert_eq!(invocation.address.action, "open-photos");
@@ -7231,13 +7169,14 @@ mod tests {
         }
         // Phase `accessibility_activation_reuses_camera_action_dispatch`.
         {
-            let (mut app, mut doc, root) = sample_app();
-            render_at(&mut app, &mut doc, &root, 900.0, 700.0);
+            let (app, doc, root) = sample_app();
+            let mut app = render_at(app, doc, 900.0, 700.0);
             let before = app.captures[0].id.clone();
-            assert!(app.perform_semantic_action(
+            let (camera, state) = Framed::split(&mut app);
+            assert!(camera.perform_semantic_action(
                 "camera.shutter",
                 &A11yAction::Activate,
-                &mut doc,
+                &mut state.doc,
                 &root,
             ));
             assert_eq!(app.captures.len(), 1);
@@ -7255,7 +7194,7 @@ mod tests {
             let root = automerge::ROOT;
             app.sync(&mut doc, &root);
             app.camera_issue = Some(CameraIssue::PermissionDenied);
-            render_at(&mut app, &mut doc, &root, 320.0, 680.0);
+            let mut app = render_at(app, doc, 320.0, 680.0);
             let tree = app.accessibility().expect("camera has semantics");
             let privacy = tree
                 .children
@@ -7271,10 +7210,11 @@ mod tests {
                 let bounds = node.bounds.expect("recovery has bounds");
                 assert!(bounds.x1 - bounds.x0 >= 44.0 && bounds.y1 - bounds.y0 >= 44.0);
             }
-            assert!(app.perform_semantic_action(
+            let (camera, state) = Framed::split(&mut app);
+            assert!(camera.perform_semantic_action(
                 "camera.retry-camera",
                 &A11yAction::Activate,
-                &mut doc,
+                &mut state.doc,
                 &root,
             ));
             // Device discovery is deliberately real. The test host may expose a
@@ -7294,10 +7234,10 @@ mod tests {
             // camera and private imagery.  An explicit permission result must
             // still win over that procedural feed, otherwise visual regressions
             // would accidentally hide the most important recovery state.
-            let (mut app, mut doc, root) = sample_app();
+            let (mut app, doc, _root) = sample_app();
             app.camera_issue = Some(CameraIssue::PermissionDenied);
             assert!(!app.feed_active());
-            render_at(&mut app, &mut doc, &root, 390.0, 844.0);
+            let app = render_at(app, doc, 390.0, 844.0);
             let tree = app.accessibility().expect("camera has semantics");
             assert!(
                 tree.children
@@ -7478,14 +7418,16 @@ mod tests {
             let mut focus = None;
             app.handle_event(
                 &event,
-                1.0,
-                &mods,
-                &mut doc,
-                &root,
-                &mut handled,
-                &mut focus,
-                node,
-                &taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &mods,
+                    state: &mut doc,
+                    path: &root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &taffy,
+                },
             );
             assert!(handled, "space should be handled on the camera screen");
 
@@ -7998,14 +7940,16 @@ mod tests {
                 let mut focus = None;
                 app.handle_event(
                     event,
-                    1.0,
-                    &winit::event::Modifiers::default(),
-                    doc,
-                    &automerge::ROOT,
-                    &mut handled,
-                    &mut focus,
-                    node,
-                    tree,
+                    &mut ui::widget::EventCtx {
+                        scale_factor: 1.0,
+                        modifiers: &winit::event::Modifiers::default(),
+                        state: doc,
+                        path: &automerge::ROOT,
+                        handled: &mut handled,
+                        focus_target: &mut focus,
+                        node_id: node,
+                        taffy: tree,
+                    },
                 );
                 assert!(handled);
             }

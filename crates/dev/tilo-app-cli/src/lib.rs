@@ -22,6 +22,7 @@ use std::time::{Duration, Instant, SystemTime};
 use anyhow::{Context, Result, bail};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher as _};
 
+pub mod ci;
 mod json;
 mod pack;
 pub mod portability;
@@ -567,6 +568,17 @@ impl PackageArch {
     #[must_use]
     pub fn host() -> Option<Self> {
         match std::env::consts::ARCH {
+            "x86_64" => Some(Self::X86_64),
+            "aarch64" => Some(Self::Aarch64),
+            _ => None,
+        }
+    }
+
+    /// The architecture a target triple such as `aarch64-unknown-linux-gnu`
+    /// builds for.
+    #[must_use]
+    pub fn of_triple(triple: &str) -> Option<Self> {
+        match triple.split('-').next()? {
             "x86_64" => Some(Self::X86_64),
             "aarch64" => Some(Self::Aarch64),
             _ => None,
@@ -4725,26 +4737,21 @@ pub fn package_app(start: &Path, request: &PackageRequest) -> Result<PackageOutc
     let staged_package = staging.path().join("package.tapp");
     let identity = signing_identity(&spec.app_dir, request.identity.as_deref())?;
     let resource_kinds = resource_kinds::declared_in(&spec.app_dir)?;
-    let packed = match (desktop_arch, shipped.first()) {
-        (Some(arch), Some((_, module))) => {
-            let manifest =
-                desktop_manifest(&spec, request.platform, arch, &manifest_source, module)?;
-            pack::pack_manifest(
-                manifest,
-                resource_kinds,
-                &payload,
-                &staged_package,
-                &identity,
-            )?
-        }
-        _ => pack::pack_payload(
-            &spec.manifest_path,
-            resource_kinds,
-            &payload,
-            &staged_package,
-            &identity,
-        )?,
-    };
+    let manifest = signed_manifest(
+        &spec,
+        request,
+        &manifest_source,
+        desktop_arch,
+        triple.as_deref(),
+        &shipped,
+    )?;
+    let packed = pack::pack_manifest(
+        manifest,
+        resource_kinds,
+        &payload,
+        &staged_package,
+        &identity,
+    )?;
     let entrypoints: Vec<PathBuf> = shipped.iter().map(|(_, path)| path.clone()).collect();
     let size = within_budget(&payload, &entrypoints, packed.bytes, budget, &output)?;
     std::fs::rename(&staged_package, &output)
@@ -4876,6 +4883,69 @@ fn desktop_manifest(
     })
 }
 
+/// The manifest `tilo-app package` signs for this build.
+fn signed_manifest(
+    spec: &AppPackageSpec,
+    request: &PackageRequest,
+    manifest_source: &str,
+    desktop_arch: Option<PackageArch>,
+    triple: Option<&str>,
+    shipped: &[(String, PathBuf)],
+) -> Result<tilo_app_package::Manifest> {
+    if let (Some(arch), Some((_, module))) = (desktop_arch, shipped.first()) {
+        return desktop_manifest(spec, request.platform, arch, manifest_source, module);
+    }
+    let arch = request
+        .arch
+        .or_else(|| triple.and_then(PackageArch::of_triple))
+        .or_else(PackageArch::host)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "cannot tell which architecture to build for on {}; pass --arch",
+                std::env::consts::ARCH
+            )
+        })?;
+    tilo_manifest(spec, manifest_source, arch)
+}
+
+/// The authored manifest, declaring exactly the architecture this build is
+/// for: the level it names for that architecture, else the floor the
+/// scaffolded `.cargo/config.toml` builds at (`x86-64-v3`, generic ARMv8-A).
+/// A package never claims a build it does not carry.
+fn tilo_manifest(
+    spec: &AppPackageSpec,
+    manifest_source: &str,
+    arch: PackageArch,
+) -> Result<tilo_app_package::Manifest> {
+    use tilo_app_package::manifest::{AArch64Level, IsaRequirements, X86_64Level};
+    let mut manifest = tilo_app_package::Manifest::from_toml_str(manifest_source)
+        .with_context(|| format!("parsing {}", spec.manifest_path.display()))?;
+    let declared = manifest.package.isa;
+    let undeclared = declared.x86_64.is_none() && declared.aarch64.is_none();
+    manifest.package.isa = match arch {
+        PackageArch::X86_64 => IsaRequirements {
+            x86_64: declared
+                .x86_64
+                .or_else(|| undeclared.then_some(X86_64Level::V3)),
+            aarch64: None,
+        },
+        PackageArch::Aarch64 => IsaRequirements {
+            x86_64: None,
+            aarch64: declared
+                .aarch64
+                .or_else(|| undeclared.then_some(AArch64Level::Armv8A)),
+        },
+    };
+    if manifest.package.isa.x86_64.is_none() && manifest.package.isa.aarch64.is_none() {
+        bail!(
+            "{}: [package.isa] names other architectures, not {}, which this build is for",
+            spec.manifest_path.display(),
+            arch.as_str()
+        );
+    }
+    Ok(manifest)
+}
+
 fn package_profile(request: &PackageRequest) -> Result<String> {
     let profile = request.profile.clone().unwrap_or_else(|| {
         if request.static_link || request.platform != PackagePlatform::Tilo {
@@ -4923,7 +4993,18 @@ fn signing_identity(
     path: Option<&Path>,
 ) -> Result<tilo_app_package::SigningIdentity> {
     let Some(path) = path else {
-        eprintln!("[tilo-app] no --identity supplied; signing with an ephemeral key");
+        if let Some(key) = registry_client::key::discover()? {
+            eprintln!(
+                "[tilo-app] signing with publisher key {}",
+                registry_client::key::public_hex(&key)
+            );
+            return Ok(tilo_app_package::SigningIdentity::from_seed(
+                &key.to_bytes(),
+            ));
+        }
+        eprintln!(
+            "[tilo-app] no --identity or publisher key; signing with an ephemeral key the registry will not accept"
+        );
         return Ok(tilo_app_package::SigningIdentity::generate());
     };
     pack::load_identity(&absolute_from(app_dir, path))
@@ -8853,7 +8934,7 @@ fn app_test(spec: &AppSpec) -> String {
 
 fn app_manifest(spec: &AppSpec) -> String {
     format!(
-        "[package]\nid = {app_id:?}\nname = {title:?}\ncategory = \"Utility\"\nversion = \"0.1.0\"\nkind = \"app\"\nruntime = \"tilo-runtime/2026.07\"\n\n[publisher]\nidentity = \"ed25519:0000000000000000000000000000000000000000000000000000000000000000\"\nsignature = \"\"\n\n[sandbox]\nnamespaces = [\"user\", \"pid\", \"uts\", \"ipc\", \"mount\"]\nseccomp = \"tilo-default\"\nlandlock = \"strict\"\n\n[sandbox.net]\nmode = \"off\"\n\n[sandbox.portals]\n\n[sandbox.services]\ncollab = \"optional@1\"\ntilo-fs = \"optional@1\"\n\n[entrypoint]\nbin = \"bin/{package}\"\ntype = \"gui\"\nsplash-budget = 250\n\n[providers]\nmime = []\next = []\n",
+        "[package]\nid = {app_id:?}\nname = {title:?}\ncategory = \"Utility\"\nversion = \"0.1.0\"\nkind = \"app\"\nruntime = \"tilo-runtime/2026.07\"\n\n[package.isa]\nx86_64 = \"v3\"\naarch64 = \"aarch64\"\n\n[publisher]\nidentity = \"ed25519:0000000000000000000000000000000000000000000000000000000000000000\"\nsignature = \"\"\n\n[sandbox]\nnamespaces = [\"user\", \"pid\", \"uts\", \"ipc\", \"mount\"]\nseccomp = \"tilo-default\"\nlandlock = \"strict\"\n\n[sandbox.net]\nmode = \"off\"\n\n[sandbox.portals]\n\n[sandbox.services]\ncollab = \"optional@1\"\ntilo-fs = \"optional@1\"\n\n[entrypoint]\nbin = \"bin/{package}\"\ntype = \"gui\"\nsplash-budget = 250\n\n[providers]\nmime = []\next = []\n",
         app_id = spec.app_id,
         title = spec.title,
         package = spec.package_name,

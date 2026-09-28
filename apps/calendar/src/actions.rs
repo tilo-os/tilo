@@ -3542,7 +3542,7 @@ mod tests {
         // Search activation stays entirely inside the resource/action door for
         // both content types and invokes the exact exported view operation.
         {
-            let (mut app, doc) = seeded();
+            let (mut app, mut doc) = seeded();
 
             let resources = Widget::resources(&app, &doc);
             let all_hits = Widget::search_providers(&app)[0].search("");
@@ -3588,23 +3588,27 @@ mod tests {
                     palette.take_navigation().is_none(),
                     "legacy callback was not used"
                 );
-                assert!(
-                    Widget::invoke_resource_operation(
+                assert!(matches!(
+                    Widget::start_operation(
                         &mut app,
-                        operation.kind,
-                        &operation
-                            .encoded()
-                            .expect("test requires prepared encoding")
-                            .type_id,
-                        &operation
-                            .encoded()
-                            .expect("test requires prepared encoding")
-                            .payload,
-                        &doc,
-                        &ROOT,
+                        &ui::widget::ResourceOperation::local(
+                            ui::tilo_actions::InvocationId::new(),
+                            operation.kind,
+                            &operation
+                                .encoded()
+                                .expect("test requires prepared encoding")
+                                .type_id,
+                            &operation
+                                .encoded()
+                                .expect("test requires prepared encoding")
+                                .payload
+                        ),
+                        &mut doc,
+                        &ROOT
                     )
-                    .expect("view operation succeeds")
-                );
+                    .expect("view operation succeeds"),
+                    Some(ui::widget::ResourceOperationStart::Completed(_))
+                ));
                 let id = resource_id
                     .rsplit_once(':')
                     .and_then(|(_, id)| id.parse::<Id>().ok())

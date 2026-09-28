@@ -16,6 +16,7 @@
 
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::Instant;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use std::cell::Cell;
@@ -394,7 +395,7 @@ pub struct ContainersApp {
     pending_resource_tab: Option<DetailTab>,
     /// In-app lifecycle controls emit the same inert resource intent as Ctrl+K
     /// and agents. The host re-resolves authority, records the Effect, then
-    /// calls `invoke_resource_operation`.
+    /// calls `Widget::start_operation`.
     pub(crate) pending_control_invocation: RawControlSlot,
     /// Collapsible sidebar reveal kernel (the shared `ui` flap animation).
     pub(crate) sidebar_flap: FlapState,
@@ -1307,7 +1308,7 @@ impl ContainersApp {
             .build_json(&intent.arguments)
             .expect("valid palette arguments");
         assert!(
-            self.invoke_resource_operation(
+            self.answer_resource_operation(
                 kind,
                 &encoded.type_id,
                 &encoded.payload,
@@ -1341,14 +1342,16 @@ impl ContainersApp {
         let mut ignored = false;
         self.search_field.handle_event(
             event,
-            scale_factor,
-            &modifiers,
-            doc,
-            path,
-            &mut ignored,
-            focus_target,
-            dummy_node,
-            &dummy_taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor,
+                modifiers: &modifiers,
+                state: doc,
+                path,
+                handled: &mut ignored,
+                focus_target,
+                node_id: dummy_node,
+                taffy: &dummy_taffy,
+            },
         );
     }
 }
@@ -2078,6 +2081,104 @@ fn distrobox_resource(distrobox: &crate::model::DistroBox, engine_live: bool) ->
     resource
 }
 
+impl ContainersApp {
+    fn answer_resource_operation(
+        &mut self,
+        kind: OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        let args: Vec<String> = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+        let Some(verb) = args.first().map(String::as_str) else {
+            return Err("missing operation".into());
+        };
+        let target = args.get(1).map(String::as_str).unwrap_or_default();
+        if kind == OperationKind::View && type_id == "containers.engine" && verb == "create" {
+            self.create_open = true;
+            self.focus_create_field(CreateField::Image);
+            return Ok(true);
+        }
+        if kind == OperationKind::View && type_id == "containers.container" && verb == "select" {
+            self.pending_resource_selection = Some(target.to_string());
+            return Ok(true);
+        }
+        if kind == OperationKind::View && type_id == "containers.logs" && verb == "logs" {
+            self.pending_resource_selection = Some(target.to_string());
+            self.pending_resource_section = Some(Section::Containers);
+            self.pending_resource_tab = Some(DetailTab::Logs);
+            return Ok(true);
+        }
+        if kind == OperationKind::View && verb == "open" {
+            self.pending_resource_section = Some(match type_id {
+                "containers.image" => Section::Images,
+                "containers.volume" => Section::Volumes,
+                "containers.distrobox" => Section::Distrobox,
+                _ => return Ok(false),
+            });
+            return Ok(true);
+        }
+        if kind != OperationKind::Effect {
+            return Ok(false);
+        }
+        if !self.engine.live {
+            return Err("container engine actions are unavailable while Podman is offline".into());
+        }
+        #[cfg(test)]
+        if let Some(result) = self.controlled_immediate(
+            format!("{type_id}.{verb}"),
+            target.to_string(),
+            args.clone(),
+        ) {
+            result?;
+            self.spawn_refresh();
+            self.show_toast(format!("{verb} accepted for {target}"), false);
+            return Ok(true);
+        }
+        match type_id {
+            "containers.container" => match verb {
+                "start" => {
+                    podman::run_action(Action::Start, target)?;
+                }
+                "stop" => {
+                    podman::run_action(Action::Stop, target)?;
+                }
+                "restart" => {
+                    podman::run_action(Action::Restart, target)?;
+                }
+                "pause" => {
+                    podman::run_action(Action::Pause, target)?;
+                }
+                "unpause" => {
+                    podman::run_action(Action::Unpause, target)?;
+                }
+                "remove" => {
+                    podman::run_action(Action::Remove, target)?;
+                }
+                "shell" => {
+                    crate::terminal::spawn_exec_attach(target, "/bin/sh")
+                        .map_err(|e| e.to_string())?;
+                }
+                _ => return Ok(false),
+            },
+            "containers.image" if verb == "remove" => {
+                podman::remove_image(target, true)?;
+            }
+            "containers.volume" if verb == "remove" => {
+                podman::remove_volume(target, false)?;
+            }
+            "containers.distrobox" if verb == "enter" => {
+                crate::terminal::spawn_distrobox_enter(target).map_err(|e| e.to_string())?;
+            }
+            _ => return Ok(false),
+        }
+        self.spawn_refresh();
+        self.show_toast(format!("{verb} accepted for {target}"), false);
+        Ok(true)
+    }
+}
+
 impl Widget for ContainersApp {
     fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
         Some(&crate::framework_history::HISTORY)
@@ -2210,103 +2311,29 @@ impl Widget for ContainersApp {
         vec![Box::new(self.search_index.provider())]
     }
 
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        let args: Vec<String> = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
-        let Some(verb) = args.first().map(String::as_str) else {
-            return Err("missing operation".into());
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
+        }
+        let Some(request) = op.unscoped() else {
+            return Ok(None);
         };
-        let target = args.get(1).map(String::as_str).unwrap_or_default();
-        if kind == OperationKind::View && type_id == "containers.engine" && verb == "create" {
-            self.create_open = true;
-            self.focus_create_field(CreateField::Image);
-            return Ok(true);
-        }
-        if kind == OperationKind::View && type_id == "containers.container" && verb == "select" {
-            self.pending_resource_selection = Some(target.to_string());
-            return Ok(true);
-        }
-        if kind == OperationKind::View && type_id == "containers.logs" && verb == "logs" {
-            self.pending_resource_selection = Some(target.to_string());
-            self.pending_resource_section = Some(Section::Containers);
-            self.pending_resource_tab = Some(DetailTab::Logs);
-            return Ok(true);
-        }
-        if kind == OperationKind::View && verb == "open" {
-            self.pending_resource_section = Some(match type_id {
-                "containers.image" => Section::Images,
-                "containers.volume" => Section::Volumes,
-                "containers.distrobox" => Section::Distrobox,
-                _ => return Ok(false),
-            });
-            return Ok(true);
-        }
-        if kind != OperationKind::Effect {
-            return Ok(false);
-        }
-        if !self.engine.live {
-            return Err("container engine actions are unavailable while Podman is offline".into());
-        }
-        #[cfg(test)]
-        if let Some(result) = self.controlled_immediate(
-            format!("{type_id}.{verb}"),
-            target.to_string(),
-            args.clone(),
-        ) {
-            result?;
-            self.spawn_refresh();
-            self.show_toast(format!("{verb} accepted for {target}"), false);
-            return Ok(true);
-        }
-        match type_id {
-            "containers.container" => match verb {
-                "start" => {
-                    podman::run_action(Action::Start, target)?;
-                }
-                "stop" => {
-                    podman::run_action(Action::Stop, target)?;
-                }
-                "restart" => {
-                    podman::run_action(Action::Restart, target)?;
-                }
-                "pause" => {
-                    podman::run_action(Action::Pause, target)?;
-                }
-                "unpause" => {
-                    podman::run_action(Action::Unpause, target)?;
-                }
-                "remove" => {
-                    podman::run_action(Action::Remove, target)?;
-                }
-                "shell" => {
-                    crate::terminal::spawn_exec_attach(target, "/bin/sh")
-                        .map_err(|e| e.to_string())?;
-                }
-                _ => return Ok(false),
-            },
-            "containers.image" if verb == "remove" => {
-                podman::remove_image(target, true)?;
-            }
-            "containers.volume" if verb == "remove" => {
-                podman::remove_volume(target, false)?;
-            }
-            "containers.distrobox" if verb == "enter" => {
-                crate::terminal::spawn_distrobox_enter(target).map_err(|e| e.to_string())?;
-            }
-            _ => return Ok(false),
-        }
-        self.spawn_refresh();
-        self.show_toast(format!("{verb} accepted for {target}"), false);
-        Ok(true)
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
     }
 
-    fn sync(&mut self, doc: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
+        let (doc, _) = ui::doc::document(doc, path);
         #[cfg(test)]
         if self
             .history_runtime_replacement
@@ -2527,18 +2554,7 @@ impl Widget for ContainersApp {
         clippy::too_many_lines,
         reason = "the top-level dispatcher coordinates overlays, shared inputs, and app navigation"
     )]
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         // While open, the shared palette owns all input. It runs against the
         // live document; an Enter outcome selects the chosen container, and
         // Escape (or clicking away) closes it.
@@ -2549,21 +2565,17 @@ impl Widget for ContainersApp {
             if let Ok(dummy_node) = dummy_taffy.new_leaf(Style::default()) {
                 self.palette.handle_event(
                     event,
-                    scale_factor,
-                    modifiers,
-                    doc,
-                    path,
-                    handled,
-                    focus_target,
-                    dummy_node,
-                    &dummy_taffy,
+                    &mut ui::widget::EventCtx {
+                        taffy: &dummy_taffy,
+                        ..ctx.reborrow(ctx.path, dummy_node)
+                    },
                 );
                 if !self.palette.is_open() {
                     self.palette_open = false;
                 }
             }
-            *handled = true;
-            self.refresh_view(doc);
+            *ctx.handled = true;
+            self.refresh_view(ctx.state);
             return;
         }
 
@@ -2573,12 +2585,12 @@ impl Widget for ContainersApp {
             event: key_event, ..
         } = event
             && key_event.state == ElementState::Pressed
-            && modifiers.state().control_key()
+            && ctx.modifiers.state().control_key()
             && matches!(&key_event.logical_key, Key::Character(c) if c.eq_ignore_ascii_case("k"))
         {
             self.open_container_palette();
-            *handled = true;
-            self.refresh_view(doc);
+            *ctx.handled = true;
+            self.refresh_view(ctx.state);
             return;
         }
 
@@ -2586,41 +2598,61 @@ impl Widget for ContainersApp {
         // the shared ModalDialog captures every event (typing, clicks, Esc)
         // and nothing leaks to the app behind the scrim.
         if self.confirm.is_some() {
-            self.route_confirm_event(event, scale_factor, *modifiers, doc, handled);
-            self.refresh_view(doc);
+            self.route_confirm_event(
+                event,
+                ctx.scale_factor,
+                *ctx.modifiers,
+                ctx.state,
+                ctx.handled,
+            );
+            self.refresh_view(ctx.state);
             return;
         }
         if self.prompt.is_some() {
-            self.route_prompt_event(event, scale_factor, *modifiers, doc, handled);
-            self.refresh_view(doc);
+            self.route_prompt_event(
+                event,
+                ctx.scale_factor,
+                *ctx.modifiers,
+                ctx.state,
+                ctx.handled,
+            );
+            self.refresh_view(ctx.state);
             return;
         }
 
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.cursor =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 if self.create_open {
                     for field in CreateField::ALL {
                         self.route_create_input(
                             field,
                             event,
-                            scale_factor,
-                            *modifiers,
-                            doc,
-                            path,
-                            focus_target,
+                            ctx.scale_factor,
+                            *ctx.modifiers,
+                            ctx.state,
+                            ctx.path,
+                            ctx.focus_target,
                         );
                     }
                 }
                 // Keep the launcher's pointer position current for its click test.
-                self.route_to_launcher(event, scale_factor, *modifiers, doc, path, focus_target);
+                self.route_to_launcher(
+                    event,
+                    ctx.scale_factor,
+                    *ctx.modifiers,
+                    ctx.state,
+                    ctx.path,
+                    ctx.focus_target,
+                );
                 // Hover changes button shading — request a redraw.
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let dy = match delta {
                     MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * 48.0,
-                    MouseScrollDelta::PixelDelta(p) => p.y / scale_factor,
+                    MouseScrollDelta::PixelDelta(p) => p.y / ctx.scale_factor,
                 };
                 // Scroll the panel under the cursor. A compact selected
                 // container *is* the detail panel, so it must not leak wheel
@@ -2629,13 +2661,13 @@ impl Widget for ContainersApp {
                     && self.view.section == Section::Containers
                     && self.view.selected.is_some();
                 if compact_detail
-                    || self.cursor.x > self.rect.x0 + RAIL_WIDTH + self.list_area_width(doc)
+                    || self.cursor.x > self.rect.x0 + RAIL_WIDTH + self.list_area_width(ctx.state)
                 {
                     self.detail_scroll = (self.detail_scroll - dy).max(0.0);
                 } else {
                     self.list_scroll = (self.list_scroll - dy).max(0.0);
                 }
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -2644,21 +2676,28 @@ impl Widget for ContainersApp {
             } => {
                 // A click on the search launcher opens the palette instead of
                 // running a list hit.
-                self.route_to_launcher(event, scale_factor, *modifiers, doc, path, focus_target);
+                self.route_to_launcher(
+                    event,
+                    ctx.scale_factor,
+                    *ctx.modifiers,
+                    ctx.state,
+                    ctx.path,
+                    ctx.focus_target,
+                );
                 if self.search_field.take_palette_request() {
                     self.open_container_palette();
-                    *handled = true;
+                    *ctx.handled = true;
                 } else {
-                    self.on_click(doc, handled);
+                    self.on_click(ctx.state, ctx.handled);
                     if self.create_open {
                         self.route_create_input(
                             self.create_focus,
                             event,
-                            scale_factor,
-                            *modifiers,
-                            doc,
-                            path,
-                            focus_target,
+                            ctx.scale_factor,
+                            *ctx.modifiers,
+                            ctx.state,
+                            ctx.path,
+                            ctx.focus_target,
                         );
                     }
                 }
@@ -2666,16 +2705,7 @@ impl Widget for ContainersApp {
             WindowEvent::KeyboardInput {
                 event: key_event, ..
             } => {
-                self.on_key(
-                    doc,
-                    event,
-                    key_event,
-                    scale_factor,
-                    *modifiers,
-                    path,
-                    focus_target,
-                    handled,
-                );
+                self.on_key(event, ctx, key_event);
             }
             WindowEvent::Ime(_) if self.create_open => {
                 let field = self.create_focus;
@@ -2683,20 +2713,20 @@ impl Widget for ContainersApp {
                 self.route_create_input(
                     field,
                     event,
-                    scale_factor,
-                    *modifiers,
-                    doc,
-                    path,
-                    focus_target,
+                    ctx.scale_factor,
+                    *ctx.modifiers,
+                    ctx.state,
+                    ctx.path,
+                    ctx.focus_target,
                 );
                 self.after_create_input(field);
-                *handled = true;
+                *ctx.handled = true;
             }
             _ => {}
         }
         // Refresh the cached view state after any mutation so the next draw
         // reflects it (draw has no doc access).
-        self.refresh_view(doc);
+        self.refresh_view(ctx.state);
     }
 
     fn name(&self) -> &'static str {
@@ -2875,9 +2905,10 @@ impl Widget for ContainersApp {
         &mut self,
         target: &str,
         action: &AccessibilityAction,
-        state: &mut AutoCommit,
-        _path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
+        let (state, _) = ui::doc::document(state, path);
         if self.palette_open {
             return self
                 .palette
@@ -3283,14 +3314,16 @@ impl ContainersApp {
         Widget::handle_event(
             self.create_input_mut(field),
             event,
-            scale_factor,
-            &modifiers,
-            doc,
-            path,
-            &mut ignored,
-            focus_target,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor,
+                modifiers: &modifiers,
+                state: doc,
+                path,
+                handled: &mut ignored,
+                focus_target,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         let after = self.create_input(field).value().to_string();
         if before != after {
@@ -3619,14 +3652,16 @@ mod tests {
             let mut focus = None;
             app.handle_event(
                 &key_press(Key::Named(NamedKey::Enter)),
-                1.0,
-                &winit::event::Modifiers::default(),
-                &mut doc,
-                &root,
-                &mut handled,
-                &mut focus,
-                node,
-                &taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &winit::event::Modifiers::default(),
+                    state: &mut doc,
+                    path: &root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &taffy,
+                },
             );
             app.dispatch_palette_invocation_for_test(&mut doc);
 
@@ -3766,14 +3801,16 @@ mod tests {
         let mut focus = None;
         app.handle_event(
             ev,
-            1.0,
-            &winit::event::Modifiers::default(),
-            doc,
-            root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &winit::event::Modifiers::default(),
+                state: doc,
+                path: root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
     }
 

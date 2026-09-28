@@ -69,17 +69,17 @@ on:
         default: ""
 
 concurrency:
-  # Generations are a single dense security series. This workflow can publish
-  # from a tag, a manual main run or the nightly main run. Every run that may
-  # publish shares the series lock so concurrent releases cannot allocate the
-  # same generation; a scheduled run holds it even when it then skips, so its
-  # freshness check sees a publication queued ahead of it. Validation builds
-  # allocate nothing and must not hold up a release, so they serialize per ref.
+  # Generic generations are a single dense security series. Generic tag,
+  # manual main and nightly publications share its lock so concurrent runs
+  # cannot allocate the same generation; a scheduled run also holds it for its
+  # freshness check. The one-off Lenovo image uses fixed generation 1 and an
+  # immutable source-specific tag, so it serializes only with Lenovo reruns of
+  # the same source. Validation builds allocate nothing and serialize per ref.
   # Job outputs are unavailable here; this mirrors the plan job's rule.
   # Epoch 2 retires the lock held by cancelled run 36454. Forgejo left one
   # failed release's ARM worker active after cancellation and queued later
   # signed releases behind it. The old run cannot enter promotion.
-  group: ${{ (startsWith(github.ref, 'refs/tags/v') || (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.publish == 'true')))) && 'tilo-os-image-series-2' || format('tilo-os-image-validate-{0}', github.ref) }}
+  group: ${{ (github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && github.event.inputs.publish == 'true' && github.event.inputs.hardware_profile == 'lenovo-83ed') && format('tilo-os-image-lenovo-{0}', github.sha) || (startsWith(github.ref, 'refs/tags/v') || (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.publish == 'true')))) && 'tilo-os-image-series-2' || format('tilo-os-image-validate-{0}', github.ref) }}
   cancel-in-progress: false
 
 env:
@@ -205,8 +205,8 @@ jobs:
             else
               # A protected manual or nightly main publication uses the same native
               # runner-large fleet as the integration build below; its runner
-              # image carries the release signer. Its VM gate already falls
-              # back to TCG inside Kata when KVM is unavailable. Tags retain
+              # image carries the release signer. The early KVM probe rejects
+              # publishing if nested virtualization is unavailable. Tags retain
               # the dedicated release fleet above.
               matrix='{"include":[{"arch":"x86_64","runner":"runner-large"},{"arch":"aarch64","runner":"runner-large-arm64"},{"arch":"x86_64","runner":"runner-large","role":"reproduce"},{"arch":"aarch64","runner":"runner-large-arm64","role":"reproduce"}]}'
             fi
@@ -361,8 +361,14 @@ jobs:
           else
             echo '::notice::no usable DRI render node; installed-desktop gate will use the 2D virtio GPU with guest software rendering'
           fi
-          if test -c /dev/kvm && test -r /dev/kvm && test -w /dev/kvm; then
+          # A device node can exist in Kata while KVM_CREATE_VM is denied.
+          # Check the ioctl before the expensive release build; publishing must
+          # never spend hours running the installed-desktop gate under TCG.
+          if python3 os/dev/probe-kvm.py '${{ matrix.arch }}'; then
             echo '::notice::installed-desktop gate will use KVM acceleration'
+          elif [[ '${{ needs.plan.outputs.publish }}' == true ]]; then
+            echo '::error::release runner cannot create a KVM VM; restore nested virtualization before publishing'
+            exit 1
           else
             echo '::notice::installed-desktop gate will use the bounded QEMU TCG fallback'
           fi
@@ -1533,6 +1539,19 @@ jobs:
           provenance: false
           no-cache: true
 
+      # Keep the rebuild after its runner is gone, so a publication lane whose
+      # image differs can diff the two file by file.
+      - name: Retain the independent rebuild for comparison
+        if: steps.repro.outcome == 'success'
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          repro_ref="$(python3 os/scripts/oci-archive-ref.py /var/tmp/tilo-image-repro.tar \
+            "$TILO_OS_REPOSITORY:repro-${{ github.sha }}" '${{ steps.repro.outputs.digest }}')"
+          TMPDIR=/var/tmp skopeo copy --retry-times 3 --preserve-digests \
+            "oci-archive:/var/tmp/tilo-image-repro.tar:$repro_ref" \
+            'docker://registry.tilo.so/tilo/tilo-repro-debug:${{ github.run_id }}-${{ matrix.arch }}-reproduce'
+
       # Hand the rebuild's manifest digest to the publication lane of this run,
       # which waits for it before installing or signing anything. A failed
       # rebuild says so, so the publication fails instead of waiting it out.
@@ -1617,6 +1636,40 @@ jobs:
           df -h /var/tmp
           docker buildx prune --builder "$BUILDER_NAME" --all --force
           df -h /var/tmp
+
+      # On a mismatch, retain both images under scratch tags and print which
+      # layers and files differ before failing.
+      - name: Compare with the independent rebuild
+        if: steps.release-mode.outputs.publish == 'true' && matrix.role != 'reproduce'
+        env:
+          REPRO_MANIFEST: ${{ steps.reproduction.outputs.manifest }}
+          BUILD_DIGEST: ${{ steps.build.outputs.digest || steps.build-uncached.outputs.digest }}
+          DEBUG_TAG: registry.tilo.so/tilo/tilo-repro-debug:${{ github.run_id }}-${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          first_tag="$(printf '%s\n' '${{ steps.meta.outputs.tags }}' | sed -n '1p')"
+          first_ref="$(python3 os/scripts/oci-archive-ref.py /var/tmp/tilo-image.tar "$first_tag" "$BUILD_DIGEST")"
+          first_manifest="$(skopeo inspect --raw "oci-archive:/var/tmp/tilo-image.tar:$first_ref" | sha256sum | awk '{print $1}')"
+          if [[ -n $first_manifest && $first_manifest == "$REPRO_MANIFEST" ]]; then
+            echo "::notice::independent OS builds reproduced manifest sha256:$first_manifest"
+            exit 0
+          fi
+          echo "::error::independent OS builds differ: $first_manifest != $REPRO_MANIFEST"
+          TMPDIR=/var/tmp skopeo copy --retry-times 3 --preserve-digests \
+            "oci-archive:/var/tmp/tilo-image.tar:$first_ref" "docker://$DEBUG_TAG-publish" \
+            || echo "::warning::could not retain the publication image as $DEBUG_TAG-publish"
+          repro=/var/tmp/tilo-repro-debug
+          rm -rf "$repro"
+          if TMPDIR=/var/tmp skopeo copy --retry-times 3 --preserve-digests \
+              "docker://$DEBUG_TAG-reproduce" "oci:$repro:reproduce"; then
+            python3 os/scripts/oci-image-diff.py \
+              "/var/tmp/tilo-image.tar@sha256:$first_manifest" "$repro" || true
+            rm -rf "$repro"
+          else
+            echo "::warning::the independent rebuild was not retained as $DEBUG_TAG-reproduce"
+          fi
+          echo "::notice::retained as $DEBUG_TAG-publish and $DEBUG_TAG-reproduce"
+          exit 1
 
       # One install and one boot per lane. A publication installs the sealed
       # release candidate itself, resealing it as bootc#2334 requires, and
@@ -1714,15 +1767,6 @@ jobs:
           test -n "$first_tag"
           first_ref="$(python3 os/scripts/oci-archive-ref.py /var/tmp/tilo-image.tar "$first_tag" '${{ steps.build.outputs.digest || steps.build-uncached.outputs.digest }}')"
           repro_image="$TILO_OS_REPOSITORY:repro-${GITHUB_SHA}"
-          if [[ $PUBLISH == true ]]; then
-            first_manifest="$(skopeo inspect --raw "oci-archive:/var/tmp/tilo-image.tar:$first_ref" | sha256sum | awk '{print $1}')"
-            second_manifest='${{ steps.reproduction.outputs.manifest }}'
-            test -n "$first_manifest" && test "$first_manifest" = "$second_manifest" || {
-              echo "::error::independent OS builds differ: $first_manifest != $second_manifest"
-              exit 1
-            }
-            echo "::notice::independent OS builds reproduced manifest sha256:$first_manifest"
-          fi
 
           if [[ $HARDWARE_PROFILE == lenovo-83ed ]]; then
             printf '%s' "$TILO_REGISTRY_TOKEN" | podman login code.tilo.so \

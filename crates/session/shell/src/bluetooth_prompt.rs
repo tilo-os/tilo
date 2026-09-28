@@ -20,6 +20,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
+use ui::widget::{AppModel, ModelPath};
 
 use crate::bluetooth::PairingPromptHandle;
 use crate::shell::i18n::{t, t_args};
@@ -358,7 +359,8 @@ fn pressed(event: &WindowEvent, key: NamedKey) -> bool {
 }
 
 impl Widget for PairingPromptView {
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+        let (state, root) = ui::doc::document(state, root);
         if read_bool(state, root, KEY_REJECT) {
             let _ = state.put(root, KEY_REJECT, ScalarValue::Boolean(false));
             self.answer = Some(PairingReply::Reject);
@@ -441,45 +443,23 @@ impl Widget for PairingPromptView {
         }
     }
 
-    #[allow(clippy::too_many_arguments, reason = "mirrors the Widget event inputs")]
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if pressed(event, NamedKey::Escape) {
             self.answer = Some(PairingReply::Reject);
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
         if let Some(c) = &mut self.composed
-            && let Ok(children) = taffy.children(node_id)
+            && let Ok(children) = ctx.taffy.children(ctx.node_id)
             && let Some(&cn) = children.first()
         {
-            c.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                cn,
-                taffy,
-            );
+            c.handle_event(event, &mut ctx.reborrow(ctx.path, cn));
         }
         // Enter in the entry field submits what was typed, the way the
         // device's own keyboard finishes the code.
-        if !*handled && self.request.prompt.expects_entry() && pressed(event, NamedKey::Enter) {
+        if !*ctx.handled && self.request.prompt.expects_entry() && pressed(event, NamedKey::Enter) {
             self.answer = Some(self.accepted());
-            *handled = true;
+            *ctx.handled = true;
         }
     }
 
@@ -733,14 +713,16 @@ impl PairingOverlay {
         };
         view.handle_event(
             event,
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node,
-            taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                node_id: node,
+                taffy,
+            },
         );
         // A button writes its key into `state`; read it now so the answer
         // is the one given in this event, whatever document the next frame

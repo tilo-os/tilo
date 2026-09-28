@@ -11,12 +11,11 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use collab_types::{
-    ArtifactId, ArtifactKind, OpClass, RedactedMarker, ValidationError,
-    validate_admitted_inbound_op,
-};
+use collab_types::ArtifactId;
 #[cfg(test)]
-use collab_types::{DocumentMutation, document_artifact_id, document_attestation_id};
+use collab_types::{
+    DocumentMutation, OpClass, ValidationError, document_artifact_id, document_attestation_id,
+};
 use ui::collaboration::CollabEvent;
 
 pub use crate::shell::collab_core::{
@@ -27,6 +26,8 @@ use crate::shell::network::{
     InboundAppPresence, InboundDocument, InboundScrollbackRequest, InboundScrollbackResponse,
     ShellNetwork,
 };
+#[cfg(test)]
+use tilo_action_broker::collab_inbound::validate_route as validate_document_route;
 
 /// What a room calls the peers in it, keyed by the handle presence
 /// frames identify their sender by. Same shape as
@@ -500,185 +501,38 @@ impl DrainQueues {
             std::mem::take(&mut *buf)
         };
         for entry in drained_signed {
-            let envelope = *entry.envelope;
-            let artifact = envelope.artifact;
-            let route = CrdtRoute::record(&entry.app_id, &entry.cluster_id, &entry.record_id);
-            let payload = validate_document_route(&route, &envelope);
-            // A requested replay of an exact op this broker already
-            // validated goes to local apps again — one that restarted since
-            // does not hold it — rather than being refused as a repeat.
-            if entry.replayed
-                && payload.is_ok()
-                && self
-                    .channels
-                    .lock()
-                    .is_ok_and(|channels| channels.validated(&envelope))
-            {
-                self.fan_out_signed_op(envelope, entry.peer, &route, labels, announced);
-                continue;
-            }
-            let validation = match &payload {
-                Ok(payload) => {
-                    let Ok(mut ch) = self.channels.lock() else {
-                        return false;
-                    };
-                    let channel = match payload {
-                        collab_types::WholeDocumentPayload::Cleartext(_) => {
-                            collab_types::document_channel_id(
-                                &entry.app_id,
-                                &entry.cluster_id,
-                                &entry.record_id,
-                            )
-                        }
-                        collab_types::WholeDocumentPayload::Encrypted { channel, .. } => *channel,
-                    };
-                    if ch.document_encryption_allowed(channel, envelope.encryption.as_ref()) {
-                        let state = ch.state_for(artifact);
-                        state.artifacts.insert(artifact, ArtifactKind::Note);
-                        state.artifact_apps.insert(artifact, entry.app_id.clone());
-                        // What a durable host delivers may be the room's past
-                        // (a catch-up, a queued delta, a replay), as old as the
-                        // room: it is checked like a live op but for its age.
-                        let validate = if entry.history {
-                            collab_types::validate_admitted_history_op
-                        } else {
-                            validate_admitted_inbound_op
-                        };
-                        validate(
-                            &envelope,
-                            entry.role,
-                            state,
-                            std::time::SystemTime::now(),
-                            Duration::from_secs(300),
-                        )
-                    } else {
-                        Err(ValidationError::DocumentRouteMismatch)
-                    }
-                }
-                Err(error) => Err(error.clone()),
+            let peer = entry.peer;
+            let document = tilo_action_broker::collab_inbound::RemoteDocument {
+                app_id: entry.app_id,
+                cluster_id: entry.cluster_id,
+                record_id: entry.record_id,
+                role: entry.role,
+                envelope: *entry.envelope,
+                history: entry.history,
+                replayed: entry.replayed,
             };
-            match (payload, validation) {
-                (Ok(_), Ok(())) => {
-                    self.accept_signed_op(envelope, entry.peer, &route, labels, announced);
-                }
-                (_, Err(ValidationError::OpAlreadyRedacted { target })) => {
-                    self.record_already_redacted(envelope, artifact, target);
-                }
-                (_, Err(reason)) => {
-                    tracing::warn!("collab_broker (net): dropping invalid signed op: {reason}",);
-                    if let Ok(mut ch) = self.channels.lock() {
-                        ch.audit.record(
-                            artifact,
-                            AuditEntry {
-                                envelope: Box::new(envelope),
-                                rejection: Some(reason),
-                                at: std::time::SystemTime::now(),
-                            },
-                        );
-                    }
-                }
-                (Err(_), Ok(())) => return false,
+            // Same id and room lookup the peer's presence arrives under, so
+            // one person reads as one participant.
+            let delivered = tilo_action_broker::collab_inbound::deliver(
+                &self.channels,
+                &self.table,
+                document,
+                |route| {
+                    remote_participant_id(
+                        &route.cluster_id,
+                        peer,
+                        &|c| self.net.peer_labels(c),
+                        &self.table,
+                        labels,
+                        announced,
+                    )
+                },
+            );
+            if !delivered {
+                return false;
             }
         }
         true
-    }
-
-    /// Record a signed op that passed validation and fan it to local
-    /// apps — the `Ok(())` arm of [`Self::drain_documents`]'s per-entry
-    /// match, split out to keep that match's arms short.
-    fn accept_signed_op(
-        &self,
-        envelope: collab_types::SignedOp,
-        peer: u64,
-        route: &CrdtRoute,
-        labels: &mut HashMap<String, (Instant, PeerLabels)>,
-        announced: &mut HashMap<(String, u64), (String, u64)>,
-    ) {
-        let artifact = envelope.artifact;
-        if let Ok(mut ch) = self.channels.lock() {
-            let mls_vault = ch.mls_vault.clone();
-            ch.record_history(&envelope);
-            let state = ch.state_for(artifact);
-            state.record_validated_op(envelope.clone());
-            if envelope.op_class == OpClass::Compaction
-                && let Ok(cp) = collab_types::parse_compaction_payload(&envelope)
-            {
-                let _ = state.apply_compaction(&cp);
-            }
-            if envelope.op_class == OpClass::Compaction
-                && let Some(metadata) = envelope.encryption
-                && let Some(vault) = mls_vault
-                && let Err(error) = vault.mint_snapshot_receipt(metadata.channel, &envelope)
-            {
-                tracing::warn!(%error, "encrypted snapshot was accepted but durable receipt minting failed");
-            }
-        }
-        if envelope.op_class == OpClass::Redact {
-            apply_redaction_from_envelope(&envelope, artifact, &self.channels);
-        }
-        self.fan_out_signed_op(envelope, peer, route, labels, announced);
-    }
-
-    /// Hand a validated signed op to the local apps on `route`.
-    fn fan_out_signed_op(
-        &self,
-        envelope: collab_types::SignedOp,
-        peer: u64,
-        route: &CrdtRoute,
-        labels: &mut HashMap<String, (Instant, PeerLabels)>,
-        announced: &mut HashMap<(String, u64), (String, u64)>,
-    ) {
-        // Same id and room lookup the peer's
-        // presence arrives under, so one
-        // person reads as one participant.
-        let from_user_id = remote_participant_id(
-            &route.cluster_id,
-            peer,
-            &|c| self.net.peer_labels(c),
-            &self.table,
-            labels,
-            announced,
-        );
-        let event = CollabEvent::Document {
-            envelope: Box::new(envelope),
-            from_user_id,
-            decrypted_payload: None,
-        };
-        // An unaddressed route is dropped rather than shown to every app.
-        self.table.fanout_to_route(&event, u64::MAX, route);
-    }
-
-    /// Late-arriving op via Iroh, already redacted: don't fan, push a
-    /// marker entry so the seq stream stays gapless — the
-    /// `OpAlreadyRedacted` arm of [`Self::drain_signed`]'s per-entry
-    /// match, split out to keep that match's arms short.
-    fn record_already_redacted(
-        &self,
-        envelope: collab_types::SignedOp,
-        artifact: ArtifactId,
-        target: collab_types::OpId,
-    ) {
-        tracing::warn!(
-            artifact = ?artifact,
-            target = ?target,
-            "collab_broker (net): late-arriving op already redacted",
-        );
-        if let Ok(mut ch) = self.channels.lock() {
-            let state = ch.state_for(artifact);
-            let mut marker_envelope = envelope.clone();
-            if let Ok(marker_bytes) = RedactedMarker::v1().canonical() {
-                marker_envelope.payload = marker_bytes;
-            }
-            state.record_validated_op(marker_envelope);
-            ch.audit.record(
-                artifact,
-                AuditEntry {
-                    envelope: Box::new(envelope),
-                    rejection: Some(ValidationError::OpAlreadyRedacted { target }),
-                    at: std::time::SystemTime::now(),
-                },
-            );
-        }
     }
 
     /// Drain inbound scrollback requests; publish a response only if
@@ -759,19 +613,6 @@ impl DrainQueues {
         }
         true
     }
-}
-
-fn validate_document_route(
-    route: &CrdtRoute,
-    envelope: &collab_types::SignedOp,
-) -> Result<collab_types::WholeDocumentPayload, ValidationError> {
-    collab_types::validate_whole_document_payload_route(
-        &route.app_id,
-        &route.cluster_id,
-        &route.record_id,
-        envelope,
-    )
-    .map_err(|_| ValidationError::DocumentRouteMismatch)
 }
 
 #[allow(

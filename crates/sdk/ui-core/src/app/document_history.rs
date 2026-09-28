@@ -173,14 +173,16 @@ impl App {
         {
             self.root_widget.handle_event(
                 event,
-                scale,
-                &self.input.modifiers,
-                &mut self.state.doc,
-                &self.state.root,
-                handled,
-                focus,
-                root,
-                &self.layout.taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: scale,
+                    modifiers: &self.input.modifiers,
+                    state: &mut self.state.doc,
+                    path: &self.state.root,
+                    handled,
+                    focus_target: focus,
+                    node_id: root,
+                    taffy: &self.layout.taffy,
+                },
             );
         }
         history_handled
@@ -648,14 +650,16 @@ impl App {
                     |widget, doc, path| {
                         widget.handle_event(
                             event,
-                            scale,
-                            &self.input.modifiers,
-                            doc,
-                            path,
-                            handled,
-                            focus,
-                            node,
-                            &self.layout.taffy,
+                            &mut crate::widget::EventCtx {
+                                scale_factor: scale,
+                                modifiers: &self.input.modifiers,
+                                state: doc,
+                                path,
+                                handled,
+                                focus_target: focus,
+                                node_id: node,
+                                taffy: &self.layout.taffy,
+                            },
                         );
                     },
                 )
@@ -665,14 +669,16 @@ impl App {
         if !keyboard || self.focused_node == Some(layout.toolbar) {
             self.document_history.toolbar_mut().handle_event(
                 event,
-                scale,
-                &self.input.modifiers,
-                &mut self.state.doc,
-                &self.state.root,
-                handled,
-                focus,
-                layout.toolbar,
-                &self.layout.taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: scale,
+                    modifiers: &self.input.modifiers,
+                    state: &mut self.state.doc,
+                    path: &self.state.root,
+                    handled,
+                    focus_target: focus,
+                    node_id: layout.toolbar,
+                    taffy: &self.layout.taffy,
+                },
             );
         }
         if !*handled
@@ -681,14 +687,16 @@ impl App {
         {
             search.handle_event(
                 event,
-                scale,
-                &self.input.modifiers,
-                &mut self.state.doc,
-                &self.state.root,
-                handled,
-                focus,
-                node,
-                &self.layout.taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: scale,
+                    modifiers: &self.input.modifiers,
+                    state: &mut self.state.doc,
+                    path: &self.state.root,
+                    handled,
+                    focus_target: focus,
+                    node_id: node,
+                    taffy: &self.layout.taffy,
+                },
             );
         }
         let pane_focused = self
@@ -701,14 +709,16 @@ impl App {
         {
             pane.handle_event(
                 event,
-                scale,
-                &self.input.modifiers,
-                &mut self.state.doc,
-                &self.state.root,
-                handled,
-                focus,
-                node,
-                &self.layout.taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: scale,
+                    modifiers: &self.input.modifiers,
+                    state: &mut self.state.doc,
+                    path: &self.state.root,
+                    handled,
+                    focus_target: focus,
+                    node_id: node,
+                    taffy: &self.layout.taffy,
+                },
             );
         }
         if !*handled
@@ -718,14 +728,16 @@ impl App {
         {
             preview.handle_event(
                 event,
-                scale,
-                &self.input.modifiers,
-                &mut self.state.doc,
-                &self.state.root,
-                handled,
-                focus,
-                node,
-                &self.layout.taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: scale,
+                    modifiers: &self.input.modifiers,
+                    state: &mut self.state.doc,
+                    path: &self.state.root,
+                    handled,
+                    focus_target: focus,
+                    node_id: node,
+                    taffy: &self.layout.taffy,
+                },
             );
         }
         if !layout.app_visible && !keyboard {
@@ -1602,7 +1614,6 @@ struct FrameworkPresentation<'a> {
     layout_root: taffy::NodeId,
 }
 impl Widget for FrameworkPresentation<'_> {
-    fn sync(&mut self, _: &mut automerge::AutoCommit, _: &automerge::ObjId) {}
     fn build_layout(
         &mut self,
         _: &mut taffy::TaffyTree<()>,
@@ -1620,19 +1631,6 @@ impl Widget for FrameworkPresentation<'_> {
         _: &mut crate::text_render::TextRenderer,
         _: &crate::Theme,
         _: &crate::presence::PresenceCtx,
-    ) {
-    }
-    fn handle_event(
-        &mut self,
-        _: &winit::event::WindowEvent,
-        _: f64,
-        _: &winit::event::Modifiers,
-        _: &mut automerge::AutoCommit,
-        _: &automerge::ObjId,
-        _: &mut bool,
-        _: &mut Option<taffy::NodeId>,
-        _: taffy::NodeId,
-        _: &taffy::TaffyTree<()>,
     ) {
     }
     fn children(&self) -> Vec<&dyn Widget> {

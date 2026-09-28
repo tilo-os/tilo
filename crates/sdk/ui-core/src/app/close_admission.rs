@@ -405,14 +405,16 @@ impl App {
             let mut focus = None;
             dialog.handle_event(
                 event,
-                scale,
-                &self.input.modifiers,
-                &mut self.state.doc,
-                &self.state.root,
-                &mut handled,
-                &mut focus,
-                root,
-                &self.layout.taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: scale,
+                    modifiers: &self.input.modifiers,
+                    state: &mut self.state.doc,
+                    path: &self.state.root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: root,
+                    taffy: &self.layout.taffy,
+                },
             );
             if let Some(focus) = focus {
                 self.set_focused_node(Some(focus));
@@ -463,7 +465,7 @@ mod tests {
         save_allowed: bool,
     }
     impl Widget for OwnedRoot {
-        fn sync(&mut self, doc: &mut automerge::AutoCommit, path: &automerge::ObjId) {
+        fn sync(&mut self, doc: &mut crate::widget::AppModel, path: &crate::widget::ModelPath) {
             self.text.sync(doc, path);
         }
         fn build_layout(
@@ -495,18 +497,9 @@ mod tests {
         fn handle_event(
             &mut self,
             event: &winit::event::WindowEvent,
-            scale: f64,
-            modifiers: &winit::event::Modifiers,
-            doc: &mut automerge::AutoCommit,
-            path: &automerge::ObjId,
-            handled: &mut bool,
-            focus: &mut Option<taffy::NodeId>,
-            node: taffy::NodeId,
-            taffy: &taffy::TaffyTree<()>,
+            ctx: &mut crate::widget::EventCtx<'_>,
         ) {
-            self.text.handle_event(
-                event, scale, modifiers, doc, path, handled, focus, node, taffy,
-            );
+            self.text.handle_event(event, ctx);
         }
         fn name(&self) -> &str {
             "OwnedRoot"

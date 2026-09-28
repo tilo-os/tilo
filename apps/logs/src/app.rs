@@ -35,6 +35,7 @@
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -2597,6 +2598,37 @@ fn line(scene: &mut Scene, t: Affine, x0: f64, y0: f64, x1: f64, y1: f64, c: Col
 // Widget impl
 // ===================================================================
 
+impl LogsApp {
+    fn answer_resource_operation(
+        &mut self,
+        kind: OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if !matches!(kind, OperationKind::Effect | OperationKind::View) {
+            return Ok(false);
+        }
+        let Some(operation) = actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
+        };
+        if kind == OperationKind::Effect && !self.allow_live {
+            return Err("live journal access is disabled".into());
+        }
+        // A resource-level entry selection is navigation, not merely a row
+        // highlight. Reveal the selected detail slab for an agent or palette
+        // invocation just as a pointer selection does on a narrow viewport.
+        let reveals_entry = matches!(operation, LogsOperation::SelectEntry { .. });
+        self.perform_effect(operation)?;
+        if reveals_entry && self.narrow_at(self.rect.width()) {
+            self.push.show_detail();
+            self.dirty = true;
+        }
+        Ok(true)
+    }
+}
+
 impl Widget for LogsApp {
     fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
         Some(&crate::framework_history::HISTORY)
@@ -2629,36 +2661,29 @@ impl Widget for LogsApp {
         actions::resources(&self.entries, &self.filter, self.live_tail, self.allow_live)
     }
 
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        if !matches!(kind, OperationKind::Effect | OperationKind::View) {
-            return Ok(false);
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
         }
-        let Some(operation) = actions::decode_operation(type_id, payload)? else {
-            return Ok(false);
+        let Some(request) = op.unscoped() else {
+            return Ok(None);
         };
-        if kind == OperationKind::Effect && !self.allow_live {
-            return Err("live journal access is disabled".into());
-        }
-        // A resource-level entry selection is navigation, not merely a row
-        // highlight. Reveal the selected detail slab for an agent or palette
-        // invocation just as a pointer selection does on a narrow viewport.
-        let reveals_entry = matches!(operation, LogsOperation::SelectEntry { .. });
-        self.perform_effect(operation)?;
-        if reveals_entry && self.narrow_at(self.rect.width()) {
-            self.push.show_detail();
-            self.dirty = true;
-        }
-        Ok(true)
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
     }
 
-    fn sync(&mut self, doc: &mut AutoCommit, root: &ObjId) {
+    fn sync(&mut self, doc: &mut AppModel, root: &ModelPath) {
+        let (doc, root) = ui::doc::document(doc, root);
         // Upgrade old shared documents by removing the transient keys written
         // by previous Logs versions. Nothing below reads or writes view state
         // in the document.
@@ -2818,29 +2843,8 @@ impl Widget for LogsApp {
         // windows share one result; do not paint a second copy here.
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        doc: &mut AutoCommit,
-        root: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        if self.route_search_field(
-            event,
-            scale_factor,
-            *modifiers,
-            doc,
-            root,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
-        ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        if self.route_search_field(event, ctx) {
             return;
         }
 
@@ -2865,7 +2869,7 @@ impl Widget for LogsApp {
                     self.scroll += dy;
                     self.clamp_scroll();
                     self.dirty = true;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseInput {
@@ -2874,12 +2878,12 @@ impl Widget for LogsApp {
                 ..
             } => {
                 self.focused = true;
-                self.on_click(self.cursor, handled);
+                self.on_click(self.cursor, ctx.handled);
             }
             WindowEvent::KeyboardInput {
                 event: key_event, ..
             } if key_event.state == ElementState::Pressed => {
-                self.on_key(key_event, *modifiers, handled);
+                self.on_key(key_event, *ctx.modifiers, ctx.handled);
             }
             _ => {}
         }
@@ -2925,8 +2929,8 @@ impl Widget for LogsApp {
         &mut self,
         target: &str,
         action: &AccessAction,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         if target == "logs.search" {
             return self.search_input.perform_action(action, state, path);
@@ -3076,21 +3080,10 @@ impl LogsApp {
     /// whether the caller should return immediately — either because
     /// Escape cleared the search here, or because the field consumed the
     /// event.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "mirrors Widget::handle_event's own signature, which it routes"
-    )]
     fn route_search_field(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        doc: &mut AutoCommit,
-        root: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
         let search_rect = self.regions().search;
         self.search_input.apply_layout_external(Rect::new(
@@ -3126,8 +3119,8 @@ impl LogsApp {
             event,
             WindowEvent::KeyboardInput { event: key, .. }
                 if key.state == ElementState::Pressed
-                    && !modifiers.state().control_key()
-                    && !modifiers.state().super_key()
+                    && !ctx.modifiers.state().control_key()
+                    && !ctx.modifiers.state().super_key()
                     && (matches!(key.logical_key, Key::Character(_))
                         || matches!(key.logical_key, Key::Named(NamedKey::Backspace)))
         );
@@ -3150,7 +3143,7 @@ impl LogsApp {
             });
             self.scroll = 0.0;
             self.dirty = true;
-            *handled = true;
+            *ctx.handled = true;
             return true;
         }
 
@@ -3161,14 +3154,10 @@ impl LogsApp {
             let mut input_handled = false;
             self.search_input.handle_event(
                 event,
-                scale_factor,
-                &modifiers,
-                doc,
-                root,
-                &mut input_handled,
-                focus_target,
-                node_id,
-                taffy,
+                &mut ui::widget::EventCtx {
+                    handled: &mut input_handled,
+                    ..ctx.reborrow(ctx.path, ctx.node_id)
+                },
             );
             if self.search_input.take_dirty().is_some() {
                 self.filter.search = self.search_input.value().to_owned();
@@ -3178,7 +3167,7 @@ impl LogsApp {
                 input_handled = true;
             }
             if input_handled && !matches!(event, WindowEvent::CursorMoved { .. }) {
-                *handled = true;
+                *ctx.handled = true;
                 return true;
             }
         }
@@ -3602,7 +3591,7 @@ mod tests {
         }
         // An agent filter view operation never changes the shared document.
         {
-            let (mut app, doc) = synced_app();
+            let (mut app, mut doc) = synced_app();
             let encoded = tilo_actions::EncodedAction::encode_operation(
                 actions::LOGS_OPERATION_TYPE,
                 &LogsOperation::SetUnit {
@@ -3612,13 +3601,17 @@ mod tests {
             .unwrap();
 
             assert!(
-                app.invoke_resource_operation(
-                    OperationKind::View,
-                    &encoded.type_id,
-                    &encoded.payload,
-                    &doc,
-                    &ROOT,
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        OperationKind::View,
+                        &encoded.type_id,
+                        &encoded.payload
+                    ),
+                    &mut doc,
+                    &ROOT
                 )
+                .map(|started| started.is_some())
                 .unwrap()
             );
             assert_eq!(app.filter.unit, "kernel");

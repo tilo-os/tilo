@@ -704,9 +704,51 @@ fn unplugging_hands_groups_on_and_replugging_takes_them_back() {
     }
 }
 
+/// The backend lists the primary chosen in Settings first, whatever its
+/// output number; the wheel disc, the full top bar and the partition's
+/// primary follow it there.
+#[test]
+fn the_primary_is_the_one_settings_chose() {
+    let mut outputs = with_monitors(output_fixture("docked-laptop").expect("fixture"));
+    outputs.reverse();
+    assert_eq!(
+        outputs[0].id,
+        OutputId(1),
+        "the monitor is the chosen primary"
+    );
+    let desk = Desk::with_tree(tree(), outputs);
+    let monitor = desk.display(1);
+    assert_eq!(
+        desk.fb.chrome().tree().desktop.outputs.primary(),
+        Some(1),
+        "the partition's primary"
+    );
+    let bars = desk.fb.host().top_bar_rects();
+    let full: Vec<u32> = bars.iter().filter(|b| b.2).map(|b| b.0).collect();
+    assert_eq!(
+        full,
+        vec![1],
+        "the full bar is on the chosen primary: {bars:?}"
+    );
+    let compact: Vec<u32> = bars.iter().filter(|b| !b.2).map(|b| b.0).collect();
+    assert_eq!(compact, vec![0], "{bars:?}");
+    let wheel = desk
+        .fb
+        .host()
+        .sidebar_rect_for_tests()
+        .expect("the desktop has a wheel disc");
+    assert!(
+        monitor.contains(Point::new(
+            f64::midpoint(wheel.x0, wheel.x1),
+            f64::midpoint(wheel.y0, wheel.y1)
+        )),
+        "the wheel disc {wheel:?} is on the chosen primary {monitor:?}"
+    );
+}
+
 #[test]
 fn the_wheel_disc_sits_on_the_primary_display() {
-    // The primary (`OutputId(0)`) is the right-hand monitor here, so the
+    // The primary (listed first) is the right-hand monitor here, so the
     // disc is not simply wherever x = 0 happens to be.
     let outputs = parse_output_spec("1920x1080@1+1280+0,2560x1600@2+0+0").expect("spec");
     let mut desk = Desk::across(outputs);

@@ -9,6 +9,7 @@ publish = false
 test-support = []
 
 [dependencies]
+atomic-file = { path = "../atomic-file" }
 web-time = { version = "1", features = ["serde"] }
 serde.workspace = true
 serde_json.workspace = true

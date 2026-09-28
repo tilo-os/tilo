@@ -24,6 +24,7 @@ use tilo_desktop::{
 };
 use tilo_desktop_model::apps::{AppCatalogue as _, OpenableApp};
 use tilo_desktop_model::*;
+use ui::widget::{AppModel, ModelPath};
 use ui::{TextRenderer, Theme, presence::PresenceCtx};
 use ui::{
     application::{
@@ -94,8 +95,39 @@ pub(crate) struct DesktopHandle {
     pub tab_records: Rc<RefCell<BTreeMap<u64, (String, String)>>>,
     /// Optimistic local reorders awaiting durable confirmation.
     pub(crate) speculation: Rc<RefCell<speculation::Speculations>>,
+    /// The page's own topology owner, for a desktop no peer replicates:
+    /// bound commands are reduced here instead of queued for a peer.
+    pub(crate) local: Option<Rc<RefCell<crate::local_desktop::LocalDesktop>>>,
 }
 impl DesktopHandle {
+    /// Hand a bound command to the room's topology owner: the local owner
+    /// reduces it into the next admission at once; otherwise it is
+    /// speculated and queued for the peer.
+    fn submit(
+        &self,
+        tree: Option<&DesktopTree>,
+        command: tilo_desktop_model::commands::BoundCommand,
+    ) -> Result<(uuid::Uuid, bool), String> {
+        let invocation = uuid::Uuid::new_v4();
+        if let Some(local) = &self.local {
+            let admission = {
+                let mut local = local.borrow_mut();
+                local.apply(&command)?;
+                local.admission()?
+            };
+            let permissions = self.permissions.borrow().clone();
+            *self.inbox.borrow_mut() = Some((admission, permissions));
+            return Ok((invocation, false));
+        }
+        let mut queue = self.session_requests.borrow_mut();
+        if queue.len() >= 32 {
+            return Err("desktop request queue is full".into());
+        }
+        let speculated =
+            tree.is_some_and(|tree| DesktopRoot::speculate(self, tree, invocation, &command));
+        queue.push((invocation, command));
+        Ok((invocation, speculated))
+    }
     pub(crate) fn check_local_activation(
         &self,
         frame: &ui::headless::FrameHarness,
@@ -306,6 +338,148 @@ struct Contexts {
     author: String,
     permissions: Rc<RefCell<ui::permissions::PermissionContext>>,
     handle: DesktopHandle,
+    /// The page's content store, which standalone mounts of the same
+    /// profile and device share (an EPUB Books opened, say).
+    content: Option<tilo_content::ContentStore>,
+}
+impl Contexts {
+    /// Prepare `definition`'s context for `request`: the record `target`
+    /// opens, or with `create` the new record it names.
+    fn context(
+        &mut self,
+        definition: &'static ApplicationDefinition,
+        request: &TileRequest<'_>,
+        target: &LaunchTarget,
+        create: Option<&RecordCheckout>,
+    ) -> Result<HostContext, ui::launch::LaunchError> {
+        let route_app_id = tilo_desktop_model::apps::canonical_app_id(&request.tab.tile)
+            .ok_or_else(|| {
+                ui::launch::LaunchError::Operation("application identity unavailable".into())
+            })?;
+        let app_id = desktop::definition(&route_app_id)
+            .ok_or_else(|| {
+                ui::launch::LaunchError::Operation("application is not installed".into())
+            })?
+            .app_id;
+        let store = self
+            .owners
+            .open(app_id, &self.room)
+            .map_err(|e| ui::launch::LaunchError::Operation(e.to_string()))?;
+        let checkout = self.checkout(definition, request)?;
+        let author = ui::permissions::UserId(self.author.clone());
+        let mut context = match create {
+            Some(new) if !new.id.is_package_primary() => HostContext::prepare_new_record(
+                definition,
+                store.clone(),
+                self.views.clone(),
+                self.device.clone(),
+                request.tab.id,
+                self.permissions.clone(),
+                author,
+                tilo_actions::ActionContext::default(),
+                new.id.clone(),
+            )?,
+            _ => HostContext::prepare(
+                definition,
+                store.clone(),
+                self.views.clone(),
+                self.device.clone(),
+                request.tab.id,
+                self.permissions.clone(),
+                author,
+                tilo_actions::ActionContext::default(),
+                target,
+            )?,
+        };
+        if let Some(content) = &self.content {
+            context.provide_content(content.clone());
+        }
+        self.handle
+            .tab_records
+            .borrow_mut()
+            .insert(request.tab.id, (app_id.into(), checkout.id.as_str().into()));
+        self.handle.records.borrow_mut().insert(
+            (app_id.into(), checkout.id.as_str().into()),
+            OwnedRecord {
+                app: app_id.into(),
+                store,
+                checkout,
+            },
+        );
+        Ok(context)
+    }
+    /// A window the local owner created and whose record does not exist
+    /// yet, launched through the app's own new-record path. `None` for
+    /// every other tile.
+    fn create(
+        &mut self,
+        catalog: &ui::application::ApplicationCatalog,
+        request: &TileRequest<'_>,
+    ) -> Option<tilo_desktop::resolver::TileResolution> {
+        use tilo_desktop::resolver::TileResolution;
+        let local = self.handle.local.clone()?;
+        if !local.borrow().is_fresh(request.tab.id) {
+            return None;
+        }
+        let app = tilo_desktop_model::apps::canonical_app_id(&request.tab.tile)?;
+        let definition = catalog.resolve(&app).ok()?;
+        let checkout = match self.checkout(definition, request) {
+            Ok(checkout) => checkout,
+            Err(error) => return Some(TileResolution::Failed(error)),
+        };
+        let exists = self
+            .owners
+            .open(definition.app_id, &self.room)
+            .is_ok_and(|store| store.is_ready(&checkout.id));
+        if exists {
+            local.borrow_mut().settle(request.tab.id);
+            return None;
+        }
+        let target = if checkout.id.is_package_primary() {
+            LaunchTarget::PrimaryNew
+        } else {
+            LaunchTarget::New
+        };
+        let launched = self
+            .context(definition, request, &target, Some(&checkout))
+            .and_then(|context| definition.instantiate(context, target, RestoreInput::None));
+        Some(match launched {
+            Ok(component) => {
+                local.borrow_mut().settle(request.tab.id);
+                TileResolution::Component(component)
+            }
+            Err(error) => TileResolution::Failed(error),
+        })
+    }
+}
+/// The desktop's tile resolver: the installed catalogue, and for a local
+/// owner's new windows the app's new-record launch.
+struct Tiles<'a> {
+    inner: &'a mut ApplicationCatalogTileResolver<Contexts>,
+}
+impl tilo_desktop::resolver::TileResolver for Tiles<'_> {
+    fn resolve(&mut self, request: TileRequest<'_>) -> tilo_desktop::resolver::TileResolution {
+        // A side module linked since the catalogue was taken (an app the
+        // page opened later) joins it.
+        if let Some(app) = tilo_desktop_model::apps::canonical_app_id(&request.tab.tile)
+            && self.inner.catalog.resolve(&app).is_err()
+            && desktop::definition(&app).is_some()
+            && let Ok(catalog) = crate::catalog::catalog()
+        {
+            self.inner.catalog = catalog;
+        }
+        let ApplicationCatalogTileResolver { catalog, host } = &mut *self.inner;
+        if let Some(created) = host.create(catalog, &request) {
+            return created;
+        }
+        self.inner.resolve(request)
+    }
+    fn ready_to_replace(&self, tab: &Tab) -> bool {
+        self.inner.ready_to_replace(tab)
+    }
+    fn creation_refusal(&self, tab: &Tab) -> Option<String> {
+        self.inner.creation_refusal(tab)
+    }
 }
 impl ComponentContextSource for Contexts {
     fn checkout(
@@ -322,49 +496,12 @@ impl ComponentContextSource for Contexts {
         request: &TileRequest<'_>,
         target: &LaunchTarget,
     ) -> Result<(HostContext, RestoreInput), ui::launch::LaunchError> {
-        let route_app_id = tilo_desktop_model::apps::canonical_app_id(&request.tab.tile)
-            .ok_or_else(|| {
-                ui::launch::LaunchError::Operation("application identity unavailable".into())
-            })?;
-        let app_id = desktop::definition(&route_app_id)
-            .ok_or_else(|| {
-                ui::launch::LaunchError::Operation("application is not installed".into())
-            })?
-            .app_id;
-        let store = self
-            .owners
-            .open(app_id, &self.room)
-            .map_err(|e| ui::launch::LaunchError::Operation(e.to_string()))?;
-        let checkout = self.checkout(definition, request)?;
         let restore = self
             .views
             .load(request.tab.id)
             .map_err(|e| ui::launch::LaunchError::Operation(e.to_string()))?
             .map_or(RestoreInput::None, RestoreInput::Local);
-        let context = HostContext::prepare(
-            definition,
-            store.clone(),
-            self.views.clone(),
-            self.device.clone(),
-            request.tab.id,
-            self.permissions.clone(),
-            ui::permissions::UserId(self.author.clone()),
-            tilo_actions::ActionContext::default(),
-            target,
-        )?;
-        self.handle
-            .tab_records
-            .borrow_mut()
-            .insert(request.tab.id, (app_id.into(), checkout.id.as_str().into()));
-        self.handle.records.borrow_mut().insert(
-            (app_id.into(), checkout.id.as_str().into()),
-            OwnedRecord {
-                app: app_id.into(),
-                store,
-                checkout,
-            },
-        );
-        Ok((context, restore))
+        Ok((self.context(definition, request, target, None)?, restore))
     }
 }
 /// An optimistic open's window before its committed record exists: drawn at
@@ -527,13 +664,20 @@ impl DesktopCommandSink for BrowserCommands<'_> {
     }
     fn source(
         &mut self,
-        _room: RoomId,
+        room: RoomId,
     ) -> Result<tilo_desktop_model::commands::CommandSource, String> {
         if self.heads.is_empty() {
             return Err("desktop command has no admitted source revision".into());
         }
+        // A peer's desktop is its one room; the local owner's has a room per
+        // workspace.
+        let room = if self.handle.local.is_some() {
+            room.to_string()
+        } else {
+            self.room.to_owned()
+        };
         Ok(tilo_desktop_model::commands::CommandSource {
-            room: self.room.to_owned(),
+            room,
             heads: self.heads.to_vec(),
         })
     }
@@ -544,14 +688,7 @@ impl DesktopCommandSink for BrowserCommands<'_> {
         &mut self,
         command: tilo_desktop_model::commands::BoundCommand,
     ) -> Result<(), String> {
-        let mut queue = self.handle.session_requests.borrow_mut();
-        if queue.len() >= 32 {
-            return Err("desktop request queue is full".into());
-        }
-        let invocation = uuid::Uuid::new_v4();
-        DesktopRoot::speculate(self.handle, self.tree, invocation, &command);
-        queue.push((invocation, command));
-        Ok(())
+        self.handle.submit(Some(self.tree), command).map(|_| ())
     }
 }
 pub(crate) struct DesktopRoot {
@@ -710,6 +847,8 @@ impl DesktopRoot {
         instance: u64,
         permissions: ui::permissions::PermissionContext,
         notify: Arc<dyn Fn() + Send + Sync>,
+        content: Option<tilo_content::ContentStore>,
+        local: Option<crate::local_desktop::LocalDesktop>,
     ) -> Result<(Self, DesktopHandle), String> {
         if !admission.complete() {
             return Err("required desktop records are not admitted".into());
@@ -721,7 +860,13 @@ impl DesktopRoot {
             workspace: format!("desktop:{room}"),
             instance,
         };
-        if let Some(saved) = storage.get(&view_key) {
+        let local = local.map(|local| Rc::new(RefCell::new(local)));
+        // A local desktop presents as its page seeds it, not as a saved view.
+        if let Some(local) = &local {
+            if let Some(tab) = local.borrow_mut().take_focus() {
+                crate::local_desktop::select(&mut tree, tab);
+            }
+        } else if let Some(saved) = storage.get(&view_key) {
             let view: LocalView = serde_json::from_slice(&saved.bytes)
                 .map_err(|e| format!("local desktop view: {e}"))?;
             view.apply(&mut tree);
@@ -747,6 +892,7 @@ impl DesktopRoot {
             live: Rc::default(),
             tab_records: Rc::default(),
             speculation: Rc::default(),
+            local,
         };
         let chrome_intents: Rc<RefCell<Vec<tilo_desktop::chrome::ChromeIntent>>> = Rc::default();
         let chrome = Rc::new(ChromeSource {
@@ -771,6 +917,7 @@ impl DesktopRoot {
                 author: author.into(),
                 permissions: handle.permissions.clone(),
                 handle: handle.clone(),
+                content,
             },
         };
         let tree = handle.tree.borrow();
@@ -780,7 +927,9 @@ impl DesktopRoot {
                 DesktopSurface::build(
                     &tree,
                     &fallback,
-                    &mut resolver,
+                    &mut Tiles {
+                        inner: &mut resolver,
+                    },
                     Self::chrome(&tree, chrome.clone(), notify.clone()),
                 )
             },
@@ -962,10 +1111,13 @@ impl DesktopRoot {
         {
             return Err("Workspace history access unavailable".into());
         }
-        activity::ActivitySnapshot::new(
-            self.handle.tree.borrow().clone(),
-            self.admitted_room.clone(),
-        )
+        let tree = self.handle.tree.borrow().clone();
+        // A local desktop admits one room per workspace.
+        let room = self.handle.local.as_ref().and_then(|local| {
+            let room = tree.active_workspace()?.room;
+            local.borrow().room(room).cloned()
+        });
+        activity::ActivitySnapshot::new(tree, room.unwrap_or_else(|| self.admitted_room.clone()))
     }
     fn close_activity(&mut self, reason: crate::desktop_activity::ActivityCloseReason) {
         if let Some(mut activity) = self.activity.take() {
@@ -980,21 +1132,16 @@ impl DesktopRoot {
         &mut self,
         command: tilo_desktop_model::commands::BoundCommand,
     ) -> Result<uuid::Uuid, String> {
-        let mut queue = self.handle.session_requests.borrow_mut();
-        if queue.len() >= 32 {
-            self.handle
-                .errors
-                .borrow_mut()
-                .push("desktop request queue is full".into());
-            return Err("desktop request queue is full".into());
-        }
-        let invocation = uuid::Uuid::new_v4();
-        if let Ok(tree) = self.handle.tree.try_borrow() {
-            // Render the reorder on the next frame; the durable command
-            // confirms (or snaps back) in the background.
-            self.view_changed |= Self::speculate(&self.handle, &tree, invocation, &command);
-        }
-        queue.push((invocation, command));
+        // Render the reorder on the next frame; the durable command
+        // confirms (or snaps back) in the background.
+        let submitted = match self.handle.tree.try_borrow() {
+            Ok(tree) => self.handle.submit(Some(&tree), command),
+            Err(_) => self.handle.submit(None, command),
+        };
+        let (invocation, speculated) = submitted.inspect_err(|error| {
+            self.handle.errors.borrow_mut().push(error.clone());
+        })?;
+        self.view_changed |= speculated;
         self.dirty = true;
         (self.notify)();
         Ok(invocation)
@@ -1258,7 +1405,7 @@ impl DesktopRoot {
                 .into_iter()
                 .map(|entry| json!({"id":entry.app_id,"label":entry.title}))
                 .collect::<Vec<_>>();
-            let next = json!({"version":1,"generation":self.handle.generation,"entries":entries,"workspaces":workspaces,"applications":applications,"activeWorkspace":tree.active.0.to_string(),"activeStrip":tree.active_workspace().and_then(|w| tree.active_strip.get(&w.id).copied().or_else(||w.strips.first().map(|s|s.id))).map(|s|s.0.to_string()),"active":active,"widthPermille":group.map(|g|g.width.permille()),"maximized":group.is_some_and(|g|g.maximized),"capabilities":{"select":true,"width":true,"maximize":true,"strips":true,"commands":true,"globalSearch":true,"close":true,"closeInactive":true},"history":snapshot.get("history").cloned().unwrap_or(serde_json::Value::Null),"scroll":snapshot.get("scroll").cloned().unwrap_or(serde_json::Value::Null),"desktopPan":snapshot.get("desktopPan").cloned().unwrap_or(serde_json::Value::Null)});
+            let next = json!({"version":1,"generation":self.handle.generation,"entries":entries,"workspaces":workspaces,"applications":applications,"activeWorkspace":tree.active.0.to_string(),"activeStrip":tree.active_workspace().and_then(|w| tree.active_strip.get(&w.id).copied().or_else(||w.strips.first().map(|s|s.id))).map(|s|s.0.to_string()),"active":active,"widthPermille":group.map(|g|g.width.permille()),"maximized":group.is_some_and(|g|g.maximized),"capabilities":{"select":true,"width":true,"maximize":true,"strips":true,"commands":true,"globalSearch":true,"close":true,"closeInactive":true,"open":true},"history":snapshot.get("history").cloned().unwrap_or(serde_json::Value::Null),"scroll":snapshot.get("scroll").cloned().unwrap_or(serde_json::Value::Null),"desktopPan":snapshot.get("desktopPan").cloned().unwrap_or(serde_json::Value::Null)});
             if *snapshot != next {
                 *snapshot = next;
                 changed = true;
@@ -1300,7 +1447,7 @@ impl DesktopRoot {
             changed = true;
         }
         let available = self.activity_snapshot().is_ok();
-        let capabilities = json!({"select":true,"width":true,"maximize":true,"strips":true,"commands":true,"globalSearch":true,"close":true,"closeInactive":true,
+        let capabilities = json!({"select":true,"width":true,"maximize":true,"strips":true,"commands":true,"globalSearch":true,"close":true,"closeInactive":true,"open":true,
             "workspaceSelect":!self.handle.tree.borrow().workspaces.is_empty(),"workspaceHistory":available,"workspaceReplay":available});
         let activity = self.activity.as_ref().filter(|_| available).map(|activity| json!({
             "workspace":activity.workspace.0.to_string(), "view":activity.pane.view(),
@@ -1313,9 +1460,19 @@ impl DesktopRoot {
             json!({"banners":log.active().len(),"retained":log.history().len(),
                 "centerOpen":self.notification_layer.center_open()})
         };
+        let settings = self
+            .overlays
+            .settings_tab()
+            .filter(|_| self.activity.is_none())
+            .map(|tab| {
+                json!({"workspace":self.handle.tree.borrow().active.0.to_string(),
+                    "tab":crate::desktop_navigation::SettingsTab::from(tab)})
+            })
+            .unwrap_or(serde_json::Value::Null);
         for (key, value) in [
             ("capabilities", capabilities),
             ("notifications", notifications),
+            ("workspaceSettings", settings),
             ("workspaceActivity", activity),
             (
                 "workspaceActivityCloseReason",
@@ -1416,6 +1573,44 @@ impl DesktopRoot {
                 .and_then(|value| value.as_str().map(str::to_owned))
                 .map(|invocation| (false, Some(invocation)))
                 .ok_or_else(|| "Close request identity unavailable".into());
+        }
+        if let Command::WorkspaceSettings { workspace, .. }
+        | Command::CloseWorkspaceSettings { workspace, .. } = &command
+        {
+            if self.handle.tree.borrow().active.0.to_string() != *workspace {
+                return Err("Workspace is no longer active".into());
+            }
+            match command {
+                Command::WorkspaceSettings { tab, .. } => {
+                    // The settings are drawn over the desktop, never over Activity.
+                    self.close_activity(crate::desktop_activity::ActivityCloseReason::Dismissed);
+                    self.overlays.open_settings(tab.into());
+                }
+                _ => self.overlays.close_settings(),
+            }
+            self.dirty = true;
+            (self.notify)();
+            return Ok((false, None));
+        }
+        if let Command::Open { app, .. } = &command {
+            let app = desktop::definition(app)
+                .ok_or("application cannot be opened here")?
+                .app_id;
+            let room = self
+                .handle
+                .tree
+                .borrow()
+                .active_workspace()
+                .map(|workspace| workspace.room.to_string())
+                .ok_or("No workspace is active")?;
+            let invocation = self.enqueue_command(tilo_desktop_model::commands::BoundCommand {
+                source: tilo_desktop_model::commands::CommandSource {
+                    room,
+                    heads: self.source_heads.clone(),
+                },
+                command: tilo_desktop_model::commands::DesktopCommand::OpenApp { app: app.into() },
+            })?;
+            return Ok((false, Some(invocation.to_string())));
         }
         let request = match &command {
             Command::Workspace { workspace, .. }
@@ -1782,6 +1977,19 @@ impl DesktopRoot {
                 ));
             }
             admitted_local = Some(local);
+            // The local owner's open selects its new window, as a shell's does.
+            if let Some(tab) = self
+                .handle
+                .local
+                .as_ref()
+                .and_then(|local| local.borrow_mut().take_focus())
+            {
+                let previous = active_route(&tree);
+                if let Some(strip) = crate::local_desktop::select(&mut tree, tab) {
+                    self.surface.reveal_on_next_layout(strip);
+                }
+                Self::queue_activation_after_route_change(&self.handle, &tree, previous);
+            }
         }
         changed |= self.rebase_speculation(&mut tree, admitted_local.as_ref());
         drop(tree);
@@ -1805,8 +2013,11 @@ impl DesktopRoot {
                     let _ = tilo_desktop::records::create_scratch_tab_record(&self.fallback, *tab);
                 }
             }
-            let mut resolver = PlaceholderTiles {
+            let mut tiles = Tiles {
                 inner: &mut self.resolver,
+            };
+            let mut resolver = PlaceholderTiles {
+                inner: &mut tiles,
                 placeholders: &placeholders,
             };
             let result =
@@ -1824,7 +2035,8 @@ impl DesktopRoot {
                 });
                 self.dirty = true;
             }
-            if let Ok(bytes) = serde_json::to_vec(&LocalView::from_tree(&tree))
+            if self.handle.local.is_none()
+                && let Ok(bytes) = serde_json::to_vec(&LocalView::from_tree(&tree))
                 && self
                     .storage
                     .get(&self.view_key)
@@ -2169,10 +2381,11 @@ impl Widget for DesktopRoot {
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
     }
-    fn sync(&mut self, doc: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
         self.surface.sync(doc, path);
     }
-    fn update(&mut self, doc: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, doc: &mut AppModel, path: &ModelPath) -> bool {
+        let (doc, path) = ui::doc::document(doc, path);
         // Process the current admission before validating a queued local view.
         let mut changed = self.reconcile();
         if let Some(request) = self.pending_view_request.take() {
@@ -2298,34 +2511,20 @@ impl Widget for DesktopRoot {
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        scale: f64,
-        modifiers: &winit::event::Modifiers,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus: &mut Option<NodeId>,
-        node: NodeId,
-        tree: &TaffyTree<()>,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) {
-        if self.route_window_switcher_event(event, scale, modifiers) {
-            *handled = true;
+        if self.route_window_switcher_event(event, ctx.scale_factor, ctx.modifiers) {
+            *ctx.handled = true;
             return;
         }
         if let Some(activity) = &mut self.activity {
             activity.handle_event(
                 event,
-                scale,
-                modifiers,
-                doc,
-                path,
-                handled,
-                focus,
-                self.activity_node.unwrap_or(node),
-                tree,
+                &mut ctx.reborrow(ctx.path, self.activity_node.unwrap_or(ctx.node_id)),
             );
             return;
         }
-        let (consumed, request) = self.overlays.handle_event(event, scale, || {
+        let (consumed, request) = self.overlays.handle_event(event, ctx.scale_factor, || {
             self.handle
                 .tree
                 .borrow()
@@ -2333,7 +2532,7 @@ impl Widget for DesktopRoot {
                 .map_or(0, |workspace| workspace.collaborators.len())
         });
         if consumed {
-            *handled = true;
+            *ctx.handled = true;
             if request == Some(crate::desktop_overlays::OverlayRequest::OpenActivity) {
                 let workspace = self.handle.tree.borrow().active;
                 if let Err(error) =
@@ -2349,21 +2548,12 @@ impl Widget for DesktopRoot {
         }
         self.notification_layer.handle_event(
             event,
-            scale,
-            modifiers,
-            doc,
-            path,
-            handled,
-            focus,
-            self.notification_node.unwrap_or(node),
-            tree,
+            &mut ctx.reborrow(ctx.path, self.notification_node.unwrap_or(ctx.node_id)),
         );
-        if *handled {
+        if *ctx.handled {
             return;
         }
-        self.surface.handle_event(
-            event, scale, modifiers, doc, path, handled, focus, node, tree,
-        );
+        self.surface.handle_event(event, ctx);
         if matches!(
             event,
             winit::event::WindowEvent::CursorMoved { .. }

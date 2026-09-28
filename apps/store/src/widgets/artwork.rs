@@ -1,12 +1,12 @@
 //! Catalogue artwork leaf with a useful monogram fallback.
 
-use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
 use taffy::style_helpers::length;
 use taffy::{NodeId, Size, Style, TaffyTree};
 use ui::a11y::{AccessNode, Role};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
+use ui::widget::{AppModel, ModelPath};
 use ui::widget::{TaffyTreeExt, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Point, Rect, RoundedRect};
@@ -106,7 +106,7 @@ impl Artwork {
 }
 
 impl Widget for Artwork {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
         if self.image.is_none()
             && !self.url.is_empty()
             && let Some(store) = &self.store
@@ -357,19 +357,6 @@ impl Widget for Artwork {
                 );
             }
         }
-    }
-    fn handle_event(
-        &mut self,
-        _: &winit::event::WindowEvent,
-        _: f64,
-        _: &winit::event::Modifiers,
-        _: &mut AutoCommit,
-        _: &ObjId,
-        _: &mut bool,
-        _: &mut Option<NodeId>,
-        _: NodeId,
-        _: &TaffyTree<()>,
-    ) {
     }
     fn accessibility(&self) -> Option<AccessNode> {
         Some(

@@ -4,6 +4,7 @@
 //! Automerge document on every change (see [`crate::doc`]).
 
 use std::collections::HashMap;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -1174,45 +1175,8 @@ fn key_accessible_name(key: &model::Key) -> String {
     }
 }
 
-impl Widget for CalculatorApp {
-    fn is_focusable(&self) -> bool {
-        true
-    }
-
-    fn set_focus(&mut self, focused: bool) {
-        self.dirty |= self.host_focused != focused;
-        self.host_focused = focused;
-    }
-
-    fn is_focused(&self) -> bool {
-        self.host_focused
-    }
-
-    fn ime_cursor_rect(&self) -> Option<Rect> {
-        if !self.host_focused {
-            return None;
-        }
-        match self.model.mode {
-            Mode::Calc => self.calc.expression_ime_rect(),
-            Mode::Graph2d => self.g2.field_rect(self.model.active_fn),
-            Mode::Graph3d => self.g3.field_rect(self.model.active_surface),
-        }
-    }
-
-    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
-        self.host_focused
-            .then_some(winit::window::ImePurpose::Normal)
-    }
-
-    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
-        Some(&crate::framework_history::HISTORY)
-    }
-
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[actions::CALCULATOR_OPERATION_TYPE]
-    }
-
-    fn invoke_resource_operation(
+impl CalculatorApp {
+    fn answer_resource_operation(
         &mut self,
         kind: tilo_actions::OperationKind,
         type_id: &str,
@@ -1260,9 +1224,70 @@ impl Widget for CalculatorApp {
         });
         Ok(true)
     }
+}
 
-    fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+impl Widget for CalculatorApp {
+    fn is_focusable(&self) -> bool {
+        true
+    }
+
+    fn set_focus(&mut self, focused: bool) {
+        self.dirty |= self.host_focused != focused;
+        self.host_focused = focused;
+    }
+
+    fn is_focused(&self) -> bool {
+        self.host_focused
+    }
+
+    fn ime_cursor_rect(&self) -> Option<Rect> {
+        if !self.host_focused {
+            return None;
+        }
+        match self.model.mode {
+            Mode::Calc => self.calc.expression_ime_rect(),
+            Mode::Graph2d => self.g2.field_rect(self.model.active_fn),
+            Mode::Graph3d => self.g3.field_rect(self.model.active_surface),
+        }
+    }
+
+    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+        self.host_focused
+            .then_some(winit::window::ImePurpose::Normal)
+    }
+
+    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
+        Some(&crate::framework_history::HISTORY)
+    }
+
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[actions::CALCULATOR_OPERATION_TYPE]
+    }
+
+    fn start_operation(
+        &mut self,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
+        }
+        let Some(request) = op.unscoped() else {
+            return Ok(None);
+        };
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
+    }
+
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         use automerge::transaction::Transactable as _;
+        let (state, _) = ui::doc::document(state, path);
         if !self.seeded {
             if crate::doc::is_seeded(state) {
                 let _ = crate::doc::load_into(state, &mut self.model);
@@ -1405,18 +1430,7 @@ impl Widget for CalculatorApp {
         self.draw(scene, transform, text_renderer, theme, presence);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         // Window groups offer an event to visible apps in presentation order.
         // Keyboard and IME input belongs to the host-selected Calculator only;
         // an unfocused instance must leave it unclaimed so that selected sibling
@@ -1435,7 +1449,7 @@ impl Widget for CalculatorApp {
 
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.mouse = p;
                 match self.model.mode {
                     Mode::Calc => {
@@ -1464,15 +1478,15 @@ impl Widget for CalculatorApp {
                     self.g2.hovered_row,
                     self.g3.hovered_row,
                 );
-                *handled = self.dragging || self.field_dragging || hover_now != hover_before;
+                *ctx.handled = self.dragging || self.field_dragging || hover_now != hover_before;
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
             } => {
-                self.on_press(self.mouse, state);
-                *handled = true;
+                self.on_press(self.mouse, ctx.state);
+                *ctx.handled = true;
             }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
@@ -1484,7 +1498,7 @@ impl Widget for CalculatorApp {
                 self.g2.release_fields();
                 self.g3.release_fields();
                 self.calc.pressed_key = None;
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let step = match delta {
@@ -1492,30 +1506,30 @@ impl Widget for CalculatorApp {
                     MouseScrollDelta::PixelDelta(pos) => pos.y / 40.0,
                 };
                 self.on_wheel(step);
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::KeyboardInput {
                 event: key_event, ..
             } if key_event.state == ElementState::Pressed => {
-                *handled = !self.escape_is_idle(&key_event.logical_key);
-                self.on_key(&key_event.logical_key, *modifiers, state);
+                *ctx.handled = !self.escape_is_idle(&key_event.logical_key);
+                self.on_key(&key_event.logical_key, *ctx.modifiers, ctx.state);
             }
             WindowEvent::Ime(winit::event::Ime::Commit(text)) => {
                 self.on_key(
                     &WKey::Character(text.clone().into()),
                     winit::event::Modifiers::default(),
-                    state,
+                    ctx.state,
                 );
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::Ime(_) => {
-                *handled = true;
+                *ctx.handled = true;
             }
             _ => {}
         }
 
         // Everything but inert pointer motion may have changed what is drawn.
-        if !matches!(event, WindowEvent::CursorMoved { .. }) || *handled || self.model_dirty {
+        if !matches!(event, WindowEvent::CursorMoved { .. }) || *ctx.handled || self.model_dirty {
             self.dirty = true;
         }
         if self.model_dirty {
@@ -1729,10 +1743,11 @@ impl Widget for CalculatorApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
-        _path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         use ui::a11y::Action;
+        let (state, _) = ui::doc::document(state, path);
         // Assistive actions bypass `handle_event`; they may change anything.
         self.dirty = true;
         match target {
@@ -2478,13 +2493,17 @@ mod tests {
             let heads = state.doc.get_heads();
             app.set_mode(Mode::Graph3d);
             assert!(
-                app.invoke_resource_operation(
-                    open.kind,
-                    &encoded.type_id,
-                    &encoded.payload,
-                    &state.doc,
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        open.kind,
+                        &encoded.type_id,
+                        &encoded.payload
+                    ),
+                    &mut state.doc,
                     &state.root
                 )
+                .map(|started| started.is_some())
                 .unwrap(),
                 "search recall: first invoke handled"
             );
@@ -2494,13 +2513,17 @@ mod tests {
             app.model_dirty = false;
             app.model.expr = "uncommitted input".into();
             assert!(
-                app.invoke_resource_operation(
-                    open.kind,
-                    &encoded.type_id,
-                    &encoded.payload,
-                    &state.doc,
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        open.kind,
+                        &encoded.type_id,
+                        &encoded.payload
+                    ),
+                    &mut state.doc,
                     &state.root
                 )
+                .map(|started| started.is_some())
                 .unwrap(),
                 "search recall: second invoke handled"
             );
@@ -2514,13 +2537,17 @@ mod tests {
             );
             app.perform_action(&mut state.doc, &actions::delete_history_entry_action(&id));
             assert!(
-                app.invoke_resource_operation(
-                    open.kind,
-                    &encoded.type_id,
-                    &encoded.payload,
-                    &state.doc,
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        open.kind,
+                        &encoded.type_id,
+                        &encoded.payload
+                    ),
+                    &mut state.doc,
                     &state.root
                 )
+                .map(|started| started.is_some())
                 .is_err(),
                 "search recall: deleted row is refused"
             );
@@ -3134,14 +3161,16 @@ mod tests {
         let mut focus = None;
         app.handle_event(
             ev,
-            1.0,
-            &mods,
-            &mut st.doc,
-            &st.root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: &mut st.doc,
+                path: &st.root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         handled
     }
@@ -3418,14 +3447,16 @@ mod tests {
                     device_id: dev,
                     position: winit::dpi::PhysicalPosition::new(toggle.x, toggle.y),
                 },
-                1.0,
-                &mods,
-                &mut st.doc,
-                &st.root,
-                &mut handled,
-                &mut focus,
-                node,
-                &taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &mods,
+                    state: &mut st.doc,
+                    path: &st.root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &taffy,
+                },
             );
             app.handle_event(
                 &WindowEvent::MouseInput {
@@ -3433,14 +3464,16 @@ mod tests {
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                 },
-                1.0,
-                &mods,
-                &mut st.doc,
-                &st.root,
-                &mut handled,
-                &mut focus,
-                node,
-                &taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &mods,
+                    state: &mut st.doc,
+                    path: &st.root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &taffy,
+                },
             );
             assert!(
                 app.g2.panel_open(),

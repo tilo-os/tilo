@@ -87,10 +87,6 @@ struct AuthorizedDocumentRoute {
     payload: collab_types::WholeDocumentPayload,
 }
 
-/// Launcher preambles are deliberately tiny: they only bind a socket to the
-/// shell's already-created process record. The cert presented by the
-/// app still decides workspace membership and delegated-agent authority.
-const MAX_COLLAB_LAUNCH_HANDOFF_BYTES: usize = 1024;
 const LAUNCH_RECORD_RACE_RETRIES: u8 = 30;
 const LAUNCH_RECORD_RACE_DELAY: Duration = Duration::from_millis(10);
 
@@ -433,17 +429,32 @@ impl VerifiedJoinIdentity {
     }
 }
 
-/// Whether `cert`'s device is held to the foreign-device cap in `room`, as
-/// far as `authority` knows who governs it.
+/// Whether a device is held to the foreign-device cap in `room`, as far as
+/// `authority` knows who governs it; `device` `None` is this host's own.
 fn cap_applies_in(
+    authority: Option<&dyn super::peer_actions::CertificateAuthority>,
+    room: &str,
+    foreign: bool,
+    device: Option<&[u8; 32]>,
+) -> bool {
+    let governs = authority
+        .zip(uuid::Uuid::parse_str(room).ok())
+        .is_some_and(|(authority, room)| authority.governs(room, device));
+    cap_applies(foreign, governs)
+}
+
+/// [`cap_applies_in`] for `cert`'s device.
+fn cert_capped_in(
     authority: Option<&dyn super::peer_actions::CertificateAuthority>,
     room: &str,
     cert: &tilo_user_identity::DeviceCert,
 ) -> bool {
-    let governs = authority
-        .zip(uuid::Uuid::parse_str(room).ok())
-        .is_some_and(|(authority, room)| authority.governs(room, cert));
-    cap_applies(cert.capabilities.foreign, governs)
+    cap_applies_in(
+        authority,
+        room,
+        cert.capabilities.foreign,
+        Some(&cert.device_public_key),
+    )
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -516,8 +527,12 @@ impl BrokerActor {
         if self.is_agent {
             workspace.actor_for_agent(self.id.strip_prefix("agent:").unwrap_or(&self.id))
         } else {
-            let person = workspace.actor_for_person_at(&self.id, now);
-            capped_if(person, self.capped, workspace, now)
+            crate::policy::WorkspacePolicy::actor_for_person_on_device_at(
+                workspace,
+                &self.id,
+                self.capped,
+                now,
+            )
         }
     }
 }
@@ -549,11 +564,16 @@ impl AdmittedJoinIdentity {
 
     /// The caller this admitted connection is, confined to its room.
     fn caller(&self, room: &str) -> tilo_actions::remote::Caller {
+        let foreign = self
+            .certificate
+            .as_ref()
+            .is_some_and(|cert| cert.capabilities.foreign);
         match &self.agent_id {
             Some(agent) => tilo_actions::remote::Caller::local_agent(agent.clone()),
             None => tilo_actions::remote::Caller::local_person(self.principal_id.clone()),
         }
         .in_room(room)
+        .from_foreign_device(foreign)
     }
 
     fn policy_actor(&self, workspace: &tilo_desktop_model::Workspace, now: u64) -> Actor {
@@ -912,7 +932,7 @@ fn verify_join_identity_with_host_scope(
     )?;
     let now_ns = policy_context::sample(registered.clone(), registered.as_ref())?.1;
     let verified = VerifiedJoinIdentity {
-        capped: cap_applies_in(authority, &route.cluster_id, &cert),
+        capped: cert_capped_in(authority, &route.cluster_id, &cert),
         ..verify_join_presentation(
             route,
             &presentation,
@@ -964,7 +984,7 @@ fn verify_enrolled_join_identity(
         .map_err(|error| format!("device certificate was rejected: {error}"))?;
     let verified = VerifiedJoinIdentity::of(
         &cert,
-        cap_applies_in(Some(authority), &route.cluster_id, &cert),
+        cert_capped_in(Some(authority), &route.cluster_id, &cert),
     );
     let membership = membership
         .ok_or_else(|| "certified join has no workspace membership authority".to_string())?;
@@ -1404,11 +1424,28 @@ impl CapnpBrokerState {
 
     /// Whether `cert`'s device is held to the foreign-device cap in `room`.
     fn capped_in(&self, room: &str, cert: &tilo_user_identity::DeviceCert) -> bool {
-        cap_applies_in(
+        cert_capped_in(
             self.certificate_authority.get().map(AsRef::as_ref),
             room,
             cert,
         )
+    }
+
+    /// The broker actor `caller` is in `room`.
+    pub(super) fn caller_actor(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        room: &str,
+    ) -> BrokerActor {
+        BrokerActor {
+            capped: cap_applies_in(
+                self.certificate_authority.get().map(AsRef::as_ref),
+                room,
+                caller.is_foreign_device(),
+                caller.device_public_key(),
+            ),
+            ..BrokerActor::for_caller(caller)
+        }
     }
 
     /// The person `cert` certifies, acting in `room` from that certificate's device.
@@ -4490,6 +4527,7 @@ impl CapnpBrokerState {
                 workspace,
                 now,
                 tilo_agent_control_protocol::InvokingActor::Person { id: &actor.id },
+                actor.capped,
                 None,
                 &offered.0,
                 &offered.1,
@@ -11138,26 +11176,27 @@ async fn authenticate_launcher_handoff(
             "collaboration launch marker changed while being read".into(),
         ));
     }
-    let mut length = [0_u8; 4];
-    stream.read_exact(&mut length).await.map_err(|error| {
-        capnp::Error::failed(format!(
-            "could not read collaboration launch handoff length: {error}"
-        ))
-    })?;
-    let length = usize::try_from(u32::from_le_bytes(length)).map_err(|_| {
-        capnp::Error::failed("collaboration launch handoff length overflows usize".into())
-    })?;
-    if length == 0 || length > MAX_COLLAB_LAUNCH_HANDOFF_BYTES {
-        return Err(capnp::Error::failed(
-            "collaboration launch handoff has an invalid length".into(),
-        ));
-    }
-    let mut bytes = vec![0_u8; length];
-    stream.read_exact(&mut bytes).await.map_err(|error| {
-        capnp::Error::failed(format!(
-            "could not read collaboration launch handoff: {error}"
-        ))
-    })?;
+    let bytes = match launcher::services::COLLAB_LAUNCH_FRAMING
+        .read_async(stream)
+        .await
+    {
+        Ok(Some(bytes)) => bytes,
+        Ok(None) => {
+            return Err(capnp::Error::failed(
+                "collaboration launch handoff is missing".into(),
+            ));
+        }
+        Err(wire_frame::FrameError::EmptyFrame | wire_frame::FrameError::TooLarge(_)) => {
+            return Err(capnp::Error::failed(
+                "collaboration launch handoff has an invalid length".into(),
+            ));
+        }
+        Err(error) => {
+            return Err(capnp::Error::failed(format!(
+                "could not read collaboration launch handoff: {error}"
+            )));
+        }
+    };
     let handoff: CollabLaunchHandoff = serde_json::from_slice(&bytes).map_err(|error| {
         capnp::Error::failed(format!("invalid collaboration launch handoff: {error}"))
     })?;
@@ -13367,8 +13406,8 @@ pub mod tests {
         ) -> Result<(), String> {
             Ok(())
         }
-        fn governs(&self, _room: uuid::Uuid, certificate: &tilo_user_identity::DeviceCert) -> bool {
-            certificate.device_public_key == self.0
+        fn governs(&self, _room: uuid::Uuid, device: Option<&[u8; 32]>) -> bool {
+            device == Some(&self.0)
         }
     }
 

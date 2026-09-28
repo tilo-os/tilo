@@ -32,6 +32,7 @@ use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 use ui::doc::read_str_or_text;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId, transaction::Transactable};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -40,7 +41,7 @@ use ui::theme::Theme;
 use ui::widget::{Dropdown, Toggle, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Line, Point, Rect, RoundedRect, Stroke};
-use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
+use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::region::{RegionSettings, TimeStyle};
 use crate::widgets::{caption, card, choice_row, rows, setting_row, value_row};
@@ -320,7 +321,8 @@ impl TimeZoneMap {
 }
 
 impl Widget for TimeZoneMap {
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+        let (state, root) = ui::doc::document(state, root);
         if self.action.is_some() {
             return;
         }
@@ -482,25 +484,15 @@ impl Widget for TimeZoneMap {
         );
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_cursor =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 let hover = self.point_at(self.last_cursor);
                 if hover != self.hover {
                     self.hover = hover;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseInput {
@@ -509,9 +501,9 @@ impl Widget for TimeZoneMap {
                 ..
             } => {
                 if let Some(index) = self.point_at(self.last_cursor) {
-                    self.commit(index, state, root);
-                    *focus_target = Some(node_id);
-                    *handled = true;
+                    self.commit(index, ctx.state, ctx.path);
+                    *ctx.focus_target = Some(ctx.node_id);
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::KeyboardInput { event, .. }
@@ -525,12 +517,12 @@ impl Widget for TimeZoneMap {
                     Key::Named(NamedKey::ArrowDown) => self.move_cursor(0.0, 1.0),
                     Key::Named(NamedKey::Enter | NamedKey::Space) => {
                         if let Some(index) = self.cursor {
-                            self.commit(index, state, root);
+                            self.commit(index, ctx.state, ctx.path);
                         }
                     }
                     _ => return,
                 }
-                *handled = true;
+                *ctx.handled = true;
             }
             _ => {}
         }
@@ -594,9 +586,10 @@ impl Widget for TimeZoneMap {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
-        root: &ObjId,
+        state: &mut AppModel,
+        root: &ModelPath,
     ) -> bool {
+        let (state, root) = ui::doc::document(state, root);
         match action {
             ui::a11y::Action::Activate => {
                 if let Some(index) = self.cursor.or_else(|| self.selected_index()) {
@@ -915,15 +908,6 @@ pub fn build() -> Box<dyn Widget> {
 }
 
 impl Widget for TimeDatePane {
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        // Time service and locale values are device-local effects. Do not
-        // seed, observe, or compensate them through Automerge: a remote
-        // replay must never change this machine's clock configuration.
-        if let Some(c) = &mut self.composed {
-            c.sync(state, root);
-        }
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -976,36 +960,15 @@ impl Widget for TimeDatePane {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        let was_handled = *handled;
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        let was_handled = *ctx.handled;
         if let Some(c) = &mut self.composed
-            && let Ok(children) = taffy.children(node_id)
+            && let Ok(children) = ctx.taffy.children(ctx.node_id)
             && let Some(&cn) = children.first()
         {
-            c.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                cn,
-                taffy,
-            );
+            c.handle_event(event, &mut ctx.reborrow(ctx.path, cn));
         }
-        self.commit_context_pending |= !was_handled && *handled;
+        self.commit_context_pending |= !was_handled && *ctx.handled;
     }
 
     fn children(&self) -> Vec<&dyn Widget> {

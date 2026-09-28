@@ -28,6 +28,7 @@ use ui::text_selection::{
     word_boundaries_chars,
 };
 use ui::theme::Theme;
+use ui::widget::{AppModel, ModelPath};
 use ui::widget::{EmptyState, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Line, Point, Rect, RoundedRect, Stroke};
@@ -2397,7 +2398,8 @@ impl EditorView {
 }
 
 impl Widget for EditorView {
-    fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, _) = ui::doc::document(state, path);
         // Pull remote/undo edits: if the buffer text differs from our cache,
         // rebuild. Cheap string compare on the hot path.
         if let Some(t) = self.text_obj.clone() {
@@ -2556,18 +2558,7 @@ impl Widget for EditorView {
         );
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if self.text_obj.is_none() {
             // Unbound: the only interactive thing is the zero-state's "Open
             // File" pill. Track the cursor for its hover (redrawing only when
@@ -2575,7 +2566,8 @@ impl Widget for EditorView {
             // fire the action on a click inside it.
             match event {
                 WindowEvent::CursorMoved { position, .. } => {
-                    let next = Point::new(position.x / scale_factor, position.y / scale_factor);
+                    let next =
+                        Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                     let was = self.empty_action_rect.contains(self.last_cursor);
                     let now = self.empty_action_rect.contains(next);
                     self.last_cursor = next;
@@ -2589,13 +2581,13 @@ impl Widget for EditorView {
                     ..
                 } if self.empty_action_rect.contains(self.last_cursor) => {
                     self.empty_action = true;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
                 _ => {}
             }
             return;
         }
-        let mods = modifiers.state();
+        let mods = ctx.modifiers.state();
         match event {
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -2604,31 +2596,31 @@ impl Widget for EditorView {
             } if self.horizontal_scroll_reset_rect.contains(self.last_cursor) => {
                 self.scroll_x = 0.0;
                 self.dirty = true;
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
-            } => self.handle_mouse_press(mods, handled),
+            } => self.handle_mouse_press(mods, ctx.handled),
             WindowEvent::MouseInput {
                 state: ElementState::Released,
                 button: MouseButton::Left,
                 ..
             } => {
                 if self.drag.release() {
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
-                let next = Point::new(position.x / scale_factor, position.y / scale_factor);
-                self.handle_cursor_moved(next, handled);
+                let next = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.handle_cursor_moved(next, ctx.handled);
             }
-            WindowEvent::MouseWheel { delta, .. } => self.handle_mouse_wheel(*delta, handled),
+            WindowEvent::MouseWheel { delta, .. } => self.handle_mouse_wheel(*delta, ctx.handled),
             WindowEvent::KeyboardInput {
                 event: key_event, ..
             } if key_event.state == ElementState::Pressed => {
-                self.handle_key_press(key_event, mods, state, handled);
+                self.handle_key_press(key_event, mods, ctx.state, ctx.handled);
             }
             _ => {}
         }
@@ -2928,14 +2920,16 @@ mod tests {
         };
         ev.handle_event(
             &win_ev,
-            1.0,
-            &m,
-            doc,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &m,
+                state: doc,
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
     }
 
@@ -2956,14 +2950,16 @@ mod tests {
         };
         ev.handle_event(
             &win_ev,
-            1.0,
-            &m,
-            doc,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &m,
+                state: doc,
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
     }
 
@@ -2987,14 +2983,16 @@ mod tests {
         };
         ev.handle_event(
             &win_ev,
-            1.0,
-            &m,
-            doc,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &m,
+                state: doc,
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
     }
 

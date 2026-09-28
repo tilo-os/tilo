@@ -1434,7 +1434,6 @@ mod tests {
     }
 
     impl Widget for Panel {
-        fn sync(&mut self, _: &mut automerge::AutoCommit, _: &automerge::ObjId) {}
         fn build_layout(
             &mut self,
             taffy: &mut TaffyTree<()>,
@@ -1472,7 +1471,7 @@ mod tests {
             _: &crate::presence::PresenceCtx,
         ) {
         }
-        fn handle_event_ctx(
+        fn handle_event(
             &mut self,
             _: &winit::event::WindowEvent,
             _: &mut crate::widget::EventCtx<'_>,
@@ -1627,7 +1626,6 @@ mod tests {
     fn a_widget_that_presents_a_resource_carries_its_reference_and_sensitivity() {
         struct Row;
         impl Widget for Row {
-            fn sync(&mut self, _: &mut automerge::AutoCommit, _: &automerge::ObjId) {}
             fn build_layout(
                 &mut self,
                 taffy: &mut TaffyTree<()>,
@@ -1654,7 +1652,7 @@ mod tests {
                 _: &crate::presence::PresenceCtx,
             ) {
             }
-            fn handle_event_ctx(
+            fn handle_event(
                 &mut self,
                 _: &winit::event::WindowEvent,
                 _: &mut crate::widget::EventCtx<'_>,

@@ -55,10 +55,8 @@
 //!   widget's own method, so an override of the derived-from method alone is
 //!   not what the host calls: override the entry point the host uses
 //!   (`draw_with_presence` for painting in a live frame, and `draw` for
-//!   callers that paint directly). Input is the exception: overriding either
-//!   [`handle_event`](Widget::handle_event) or
-//!   [`handle_event_ctx`](Widget::handle_event_ctx) works, because the
-//!   default `handle_event` goes through the decorator's `handle_event_ctx`.
+//!   callers that paint directly). Input has a single entry point,
+//!   [`handle_event`](Widget::handle_event).
 //! * **The inner widget owns its layout node.** The inner widget registers
 //!   itself in the node map during `build_layout`, so hooks the host reaches
 //!   by sweeping or hit-testing that map (`cursor_shape`, `tooltip`,
@@ -73,6 +71,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use super::{AppModel, ModelPath};
 use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, TaffyTree};
 use vello::Scene;
@@ -184,7 +183,11 @@ pub trait Decorator {
         self.inner().inactive_callback_boundary()
     }
 
-    fn native_input_snapshot(&self, state: &AutoCommit, path: &ObjId) -> Option<serde_json::Value> {
+    fn native_input_snapshot(
+        &self,
+        state: &AppModel,
+        path: &ModelPath,
+    ) -> Option<serde_json::Value> {
         self.inner().native_input_snapshot(state, path)
     }
 
@@ -301,7 +304,7 @@ pub trait Decorator {
         self.inner_mut().set_interaction_environment(environment);
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.inner_mut().sync(state, path);
     }
 
@@ -313,7 +316,7 @@ pub trait Decorator {
         self.inner_mut().continuable_mut()
     }
 
-    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         self.inner_mut().update(state, path)
     }
 
@@ -374,50 +377,8 @@ pub trait Decorator {
             .draw(scene, transform, text_renderer, theme, presence);
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "temporary compatibility adapter; implementations use EventCtx"
-    )]
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        Decorator::handle_event_ctx(
-            self,
-            event,
-            &mut EventCtx {
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
-            },
-        );
-    }
-
-    fn handle_event_ctx(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
-        self.inner_mut().handle_event(
-            event,
-            ctx.scale_factor,
-            ctx.modifiers,
-            ctx.state,
-            ctx.path,
-            ctx.handled,
-            ctx.focus_target,
-            ctx.node_id,
-            ctx.taffy,
-        );
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
+        self.inner_mut().handle_event(event, ctx);
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -546,8 +507,8 @@ pub trait Decorator {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         self.inner_mut().perform_action(action, state, path)
     }
@@ -556,8 +517,8 @@ pub trait Decorator {
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         self.inner_mut()
             .perform_action_at(action, key_path, state, path)
@@ -567,8 +528,8 @@ pub trait Decorator {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         self.inner_mut()
             .perform_semantic_action(target, action, state, path)
@@ -664,15 +625,15 @@ pub trait Decorator {
         self.inner().text_review()
     }
 
-    fn on_external_event(&mut self, payload: &str, state: &mut AutoCommit, root: &ObjId) {
+    fn on_external_event(&mut self, payload: &str, state: &mut AppModel, root: &ModelPath) {
         self.inner_mut().on_external_event(payload, state, root);
     }
 
     fn on_nav_gesture(
         &mut self,
         dir: crate::gesture::NavDirection,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         self.inner_mut().on_nav_gesture(dir, state, path)
     }
@@ -795,7 +756,7 @@ pub trait Decorator {
         self.inner().search_providers()
     }
 
-    fn activate_search_result(&mut self, action_id: &str, doc: &mut AutoCommit, path: &ObjId) {
+    fn activate_search_result(&mut self, action_id: &str, doc: &mut AppModel, path: &ModelPath) {
         self.inner_mut()
             .activate_search_result(action_id, doc, path);
     }
@@ -898,7 +859,7 @@ pub trait Decorator {
         self.inner().accepts_drop(payload)
     }
 
-    fn on_drop(&mut self, payload: DragPayload, state: &mut AutoCommit, path: &ObjId) {
+    fn on_drop(&mut self, payload: DragPayload, state: &mut AppModel, path: &ModelPath) {
         self.inner_mut().on_drop(payload, state, path);
     }
 
@@ -1198,7 +1159,11 @@ impl<T: Decorator> Widget for T {
         Decorator::inactive_callback_boundary(self)
     }
 
-    fn native_input_snapshot(&self, state: &AutoCommit, path: &ObjId) -> Option<serde_json::Value> {
+    fn native_input_snapshot(
+        &self,
+        state: &AppModel,
+        path: &ModelPath,
+    ) -> Option<serde_json::Value> {
         Decorator::native_input_snapshot(self, state, path)
     }
 
@@ -1315,7 +1280,7 @@ impl<T: Decorator> Widget for T {
         Decorator::set_interaction_environment(self, environment);
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         Decorator::sync(self, state, path);
     }
 
@@ -1327,7 +1292,7 @@ impl<T: Decorator> Widget for T {
         Decorator::continuable_mut(self)
     }
 
-    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         Decorator::update(self, state, path)
     }
 
@@ -1386,38 +1351,8 @@ impl<T: Decorator> Widget for T {
         Decorator::draw(self, scene, transform, text_renderer, theme, presence);
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "temporary compatibility adapter; implementations use EventCtx"
-    )]
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        Decorator::handle_event(
-            self,
-            event,
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
-        );
-    }
-
-    fn handle_event_ctx(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
-        Decorator::handle_event_ctx(self, event, ctx);
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
+        Decorator::handle_event(self, event, ctx);
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -1546,8 +1481,8 @@ impl<T: Decorator> Widget for T {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         Decorator::perform_action(self, action, state, path)
     }
@@ -1556,8 +1491,8 @@ impl<T: Decorator> Widget for T {
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         Decorator::perform_action_at(self, action, key_path, state, path)
     }
@@ -1566,8 +1501,8 @@ impl<T: Decorator> Widget for T {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         Decorator::perform_semantic_action(self, target, action, state, path)
     }
@@ -1659,15 +1594,15 @@ impl<T: Decorator> Widget for T {
         Decorator::text_review(self)
     }
 
-    fn on_external_event(&mut self, payload: &str, state: &mut AutoCommit, root: &ObjId) {
+    fn on_external_event(&mut self, payload: &str, state: &mut AppModel, root: &ModelPath) {
         Decorator::on_external_event(self, payload, state, root);
     }
 
     fn on_nav_gesture(
         &mut self,
         dir: crate::gesture::NavDirection,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         Decorator::on_nav_gesture(self, dir, state, path)
     }
@@ -1789,7 +1724,7 @@ impl<T: Decorator> Widget for T {
         Decorator::search_providers(self)
     }
 
-    fn activate_search_result(&mut self, action_id: &str, doc: &mut AutoCommit, path: &ObjId) {
+    fn activate_search_result(&mut self, action_id: &str, doc: &mut AppModel, path: &ModelPath) {
         Decorator::activate_search_result(self, action_id, doc, path);
     }
 
@@ -1888,7 +1823,7 @@ impl<T: Decorator> Widget for T {
         Decorator::accepts_drop(self, payload)
     }
 
-    fn on_drop(&mut self, payload: DragPayload, state: &mut AutoCommit, path: &ObjId) {
+    fn on_drop(&mut self, payload: DragPayload, state: &mut AppModel, path: &ModelPath) {
         Decorator::on_drop(self, payload, state, path);
     }
 

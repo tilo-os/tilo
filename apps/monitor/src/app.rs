@@ -16,6 +16,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use ui::search::{CatalogSearchProvider, SearchCatalog, SearchProvider, SearchResult};
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -5431,6 +5432,34 @@ impl MonitorApp {
     }
 }
 
+impl MonitorApp {
+    fn answer_resource_operation(
+        &mut self,
+        kind: OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if type_id != MONITOR_OPERATION_TYPE {
+            return Ok(false);
+        }
+        let operation: MonitorOperation =
+            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+        let expected_kind = match &operation {
+            MonitorOperation::Inspect { .. } => OperationKind::View,
+            MonitorOperation::Refresh
+            | MonitorOperation::CopyPid { .. }
+            | MonitorOperation::Signal { .. } => OperationKind::Effect,
+        };
+        if kind != expected_kind {
+            return Err("Monitor operation kind does not match its payload".into());
+        }
+        self.perform_operation(&operation, SignalConfirmation::ActionContract)?;
+        Ok(true)
+    }
+}
+
 impl Widget for MonitorApp {
     fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
         Some(&crate::framework_history::HISTORY)
@@ -5485,30 +5514,25 @@ impl Widget for MonitorApp {
             .map(monitor_process_resource)
     }
 
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        if type_id != MONITOR_OPERATION_TYPE {
-            return Ok(false);
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
         }
-        let operation: MonitorOperation =
-            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-        let expected_kind = match &operation {
-            MonitorOperation::Inspect { .. } => OperationKind::View,
-            MonitorOperation::Refresh
-            | MonitorOperation::CopyPid { .. }
-            | MonitorOperation::Signal { .. } => OperationKind::Effect,
+        let Some(request) = op.unscoped() else {
+            return Ok(None);
         };
-        if kind != expected_kind {
-            return Err("Monitor operation kind does not match its payload".into());
-        }
-        self.perform_operation(&operation, SignalConfirmation::ActionContract)?;
-        Ok(true)
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
     }
 
     fn search_providers(&self) -> Vec<Box<dyn SearchProvider>> {
@@ -5519,7 +5543,7 @@ impl Widget for MonitorApp {
         self.pending_control_invocation.take()
     }
 
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
         // Monitor's observation and safety preferences are device-local, so a
         // shared document sync must never overwrite this window's state.
         self.clear_selection_if_filtered_out();
@@ -5620,39 +5644,32 @@ impl Widget for MonitorApp {
         self.draw_overlays(scene, t, text_renderer, theme, presence);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         // A pending stop confirmation is modal: while it's up the shared
         // dialog captures every event (typing, clicks, Esc) and nothing leaks
         // to the process table behind the scrim.
         if self.confirm_stop.is_some() {
-            self.route_confirm_event(event, scale_factor, *modifiers, doc, path, handled);
+            self.route_confirm_event(
+                event,
+                ctx.scale_factor,
+                *ctx.modifiers,
+                ctx.state,
+                ctx.path,
+                ctx.handled,
+            );
             return;
         }
-        if self.route_search(
+        if self.route_search(event, ctx) {
+            return;
+        }
+        self.dispatch_event(
             event,
-            scale_factor,
-            *modifiers,
-            doc,
-            path,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
-        ) {
-            return;
-        }
-        self.dispatch_event(event, scale_factor, *modifiers, doc, path, handled);
+            ctx.scale_factor,
+            *ctx.modifiers,
+            ctx.state,
+            ctx.path,
+            ctx.handled,
+        );
     }
 
     fn name(&self) -> &'static str {
@@ -5712,10 +5729,11 @@ impl Widget for MonitorApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         use ui::a11y::Action;
+        let (state, path) = ui::doc::document(state, path);
 
         let activated = matches!(action, Action::Activate | Action::ToggleCheck);
         match target {
@@ -6158,22 +6176,7 @@ impl MonitorApp {
     /// should return immediately — either because the search box consumed
     /// the event, or because a reserved global chord is deliberately left
     /// unhandled so it bubbles to the host.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "threads the full event-dispatch context (event, modifiers, doc, focus, taffy) through one call, mirroring the Widget::handle_event signature it routes"
-    )]
-    fn route_search(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) -> bool {
+    fn route_search(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) -> bool {
         let search_rect = self.hit.search;
         self.search_input.apply_layout_external(Rect::new(
             search_rect.x0 + 34.0,
@@ -6197,7 +6200,7 @@ impl MonitorApp {
         if let WindowEvent::KeyboardInput { event: key, .. } = event
             && key.state == ElementState::Pressed
         {
-            let ctrl = modifiers.state().control_key();
+            let ctrl = ctx.modifiers.state().control_key();
             if ctrl
                 && matches!(&key.logical_key, Key::Character(s) if matches!(s.as_str(), "k" | "K" | "/"))
             {
@@ -6213,7 +6216,7 @@ impl MonitorApp {
                 )
             {
                 self.search_input.set_focus(false);
-                *handled = true;
+                *ctx.handled = true;
                 return true;
             }
         }
@@ -6227,14 +6230,10 @@ impl MonitorApp {
         let mut input_handled = false;
         self.search_input.handle_event(
             event,
-            scale_factor,
-            &modifiers,
-            doc,
-            path,
-            &mut input_handled,
-            focus_target,
-            node_id,
-            taffy,
+            &mut ui::widget::EventCtx {
+                handled: &mut input_handled,
+                ..ctx.reborrow(ctx.path, ctx.node_id)
+            },
         );
         if self.search_input.take_dirty().is_some() {
             self.scroll_off = 0.0;
@@ -6242,7 +6241,7 @@ impl MonitorApp {
             input_handled = true;
         }
         if input_handled && !matches!(event, WindowEvent::CursorMoved { .. }) {
-            *handled = true;
+            *ctx.handled = true;
             return true;
         }
         false
@@ -7859,14 +7858,16 @@ mod tests {
         let mut focus = None;
         a.handle_event(
             ev,
-            1.0,
-            &modifiers,
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &modifiers,
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         handled
     }
@@ -8539,16 +8540,20 @@ mod tests {
                 signal: MonitorSignal::Kill,
             })
             .expect("typed monitor operation serializes");
-            let doc = AutoCommit::new();
+            let mut doc = AutoCommit::new();
             assert!(
-                Widget::invoke_resource_operation(
+                Widget::start_operation(
                     &mut a,
-                    OperationKind::Effect,
-                    MONITOR_OPERATION_TYPE,
-                    &payload,
-                    &doc,
-                    &automerge::ROOT,
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        OperationKind::Effect,
+                        MONITOR_OPERATION_TYPE,
+                        &payload
+                    ),
+                    &mut doc,
+                    &automerge::ROOT
                 )
+                .map(|started| started.is_some())
                 .expect("the action-contract-confirmed signal executes")
             );
             assert!(
@@ -8713,14 +8718,18 @@ mod tests {
                 started_at: process.started_at,
             };
             assert!(
-                Widget::invoke_resource_operation(
+                Widget::start_operation(
                     &mut a,
-                    OperationKind::Effect,
-                    MONITOR_OPERATION_TYPE,
-                    &serde_json::to_vec(&operation).unwrap(),
-                    &AutoCommit::new(),
-                    &automerge::ROOT,
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        OperationKind::Effect,
+                        MONITOR_OPERATION_TYPE,
+                        &serde_json::to_vec(&operation).unwrap()
+                    ),
+                    &mut AutoCommit::new(),
+                    &automerge::ROOT
                 )
+                .map(|started| started.is_some())
                 .expect("copy invocation accepted")
             );
             assert_eq!(a.copied_pid, Some(pid), "copy recorded");
@@ -8730,14 +8739,18 @@ mod tests {
                 started_at: process.started_at.saturating_add(1),
             };
             assert!(
-                Widget::invoke_resource_operation(
+                Widget::start_operation(
                     &mut a,
-                    OperationKind::Effect,
-                    MONITOR_OPERATION_TYPE,
-                    &serde_json::to_vec(&stale).unwrap(),
-                    &AutoCommit::new(),
-                    &automerge::ROOT,
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        OperationKind::Effect,
+                        MONITOR_OPERATION_TYPE,
+                        &serde_json::to_vec(&stale).unwrap()
+                    ),
+                    &mut AutoCommit::new(),
+                    &automerge::ROOT
                 )
+                .map(|started| started.is_some())
                 .is_err(),
                 "a recycled PID cannot receive a stale copy action"
             );

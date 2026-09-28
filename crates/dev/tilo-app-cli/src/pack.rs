@@ -31,7 +31,7 @@ pub fn load_identity(path: &Path) -> Result<SigningIdentity> {
     Ok(SigningIdentity::from_seed(&seed))
 }
 
-/// What [`pack_payload`] produced.
+/// What [`pack_manifest`] produced.
 pub struct Packed {
     pub id: String,
     pub bytes: u64,
@@ -45,25 +45,6 @@ pub struct Packed {
 ///
 /// Returns an error when the manifest is invalid, packing or writing fails,
 /// the archive exceeds the application size ceiling, or it does not verify.
-pub fn pack_payload(
-    manifest_path: &Path,
-    resource_kinds: Vec<String>,
-    payload: &Path,
-    output: &Path,
-    identity: &SigningIdentity,
-) -> Result<Packed> {
-    let source = std::fs::read_to_string(manifest_path)
-        .with_context(|| format!("reading {}", manifest_path.display()))?;
-    let manifest = Manifest::from_toml_str(&source)
-        .with_context(|| format!("parsing {}", manifest_path.display()))?;
-    pack_manifest(manifest, resource_kinds, payload, output, identity)
-}
-
-/// [`pack_payload`] for a manifest already in memory, such as a desktop build's.
-///
-/// # Errors
-///
-/// As [`pack_payload`].
 pub fn pack_manifest(
     mut manifest: Manifest,
     resource_kinds: Vec<String>,

@@ -21,6 +21,7 @@ path = "src/main.rs"
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
+xdg-paths = { path = "../../crates/system/xdg-paths" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # OSC 8 links open through the desktop OpenURI portal.
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }

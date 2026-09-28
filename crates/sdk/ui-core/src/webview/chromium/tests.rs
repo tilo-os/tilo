@@ -1185,3 +1185,101 @@ fn poisoned_tab_state_never_panics_or_poisons_routes() {
         assert!(engine.take_new_tab_requests().is_empty());
     }
 }
+
+#[test]
+fn page_requests_are_encoded_bounded_and_always_answered() {
+    use crate::webview::{PageFailure, PageKey, PageReply, PageRequest};
+    // phase: page_requests_encode_to_the_host_page_op
+    {
+        let command = WebViewCommand::Page {
+            request_id: 4,
+            request: PageRequest::Fill {
+                element: "d2e7".into(),
+                text: "ada@example.test".into(),
+            },
+        };
+        assert!(command_within_limits(&command));
+        assert_eq!(
+            encode_command(command),
+            Some(
+                json!({"op":"page","request_id":4,"action":"fill","element":"d2e7","text":"ada@example.test"})
+            )
+        );
+        for invalid in [
+            WebViewCommand::Page {
+                request_id: 0,
+                request: PageRequest::Outline,
+            },
+            WebViewCommand::Page {
+                request_id: 5,
+                request: PageRequest::Click {
+                    element: "button[type=submit]".into(),
+                },
+            },
+            WebViewCommand::Page {
+                request_id: 6,
+                request: PageRequest::Press {
+                    element: None,
+                    key: PageKey {
+                        key: "NotAKey".into(),
+                        modifiers: crate::webview::KeyModifiers::default(),
+                    },
+                },
+            },
+        ] {
+            assert!(!command_within_limits(&invalid), "{invalid:?}");
+        }
+    }
+    // phase: page_results_validate_and_decode
+    {
+        let event = json!({"event":"page_result","tab":2,"request_id":9,"ok":true,
+            "url":"https://shop.test/cart","message":"Clicked","outline":null,"navigated":true,"loading":true});
+        assert!(validate_event(&event).is_ok());
+        assert_eq!(
+            decode_event(&event),
+            Some(WebViewEvent::PageResult {
+                request_id: 9,
+                result: Ok(PageReply {
+                    url: "https://shop.test/cart".into(),
+                    message: "Clicked".into(),
+                    outline: None,
+                    navigated: true,
+                    loading: true,
+                }),
+            })
+        );
+        let malformed = json!({"event":"page_result","request_id":9,"ok":true,"message":"x"});
+        assert!(validate_event(&malformed).is_err());
+    }
+    // phase: engines_that_cannot_run_page_requests_answer_them
+    {
+        let unavailable = UnavailableEngine::new("missing runtime".into());
+        unavailable.send(WebViewCommand::Page {
+            request_id: 3,
+            request: PageRequest::Outline,
+        });
+        assert_eq!(
+            unavailable.drain_events(),
+            vec![WebViewEvent::PageResult {
+                request_id: 3,
+                result: Err(PageFailure::new("unavailable", "missing runtime")),
+            }]
+        );
+        let (dir, host) = helper_fixture("exec cat >/dev/null");
+        let engine = ChromiumEngine::with_host(&host, &dir.path().join("profile")).unwrap();
+        engine.send(WebViewCommand::Page {
+            request_id: 8,
+            request: PageRequest::Submit {
+                element: "not a ref".into(),
+            },
+        });
+        let answered = engine.drain_events().into_iter().any(|event| {
+            matches!(
+                event,
+                WebViewEvent::PageResult { request_id: 8, result: Err(PageFailure { code, .. }) }
+                    if code == "invalid_request"
+            )
+        });
+        assert!(answered, "a refused page request must still be answered");
+    }
+}

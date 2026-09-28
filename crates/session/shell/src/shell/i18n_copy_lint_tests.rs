@@ -59,6 +59,8 @@ fn copy_builders_take_catalogue_strings_not_english_literals() {
             "test_control.rs",
             "test_control_socket.rs",
             "hosted_test_control.rs",
+            // A stand-in Mail window for shots and tests, never on the live path.
+            "fixture.rs",
         ])
         .min_files(100)
         .check();

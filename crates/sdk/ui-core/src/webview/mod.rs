@@ -22,6 +22,8 @@ pub use credentials::{
     AddressFields, CredentialAccount, CredentialAction, CredentialForm, CredentialReply,
     CredentialRequest,
 };
+pub mod page;
+pub use page::{PageFailure, PageKey, PageReply, PageRequest};
 pub mod profile;
 pub mod test_engine;
 
@@ -271,6 +273,13 @@ pub enum WebViewCommand {
         request_id: u64,
         element_id: String,
     },
+    /// Read or operate the current page's content. Exactly one
+    /// [`WebViewEvent::PageResult`] with the same id answers it; engines
+    /// without page automation answer [`PageFailure::unavailable`].
+    Page {
+        request_id: u32,
+        request: PageRequest,
+    },
     /// Clear all persistent website data (cookies, caches, storage,
     /// service workers). Backends without a data store ignore this.
     ClearWebsiteData,
@@ -420,6 +429,10 @@ pub enum WebViewEvent {
     },
     MediaElementUnavailable {
         request_id: u64,
+    },
+    PageResult {
+        request_id: u32,
+        result: Result<PageReply, PageFailure>,
     },
     /// `WebKit` received response metadata and is waiting for the host's file
     /// portal to grant an explicit destination.

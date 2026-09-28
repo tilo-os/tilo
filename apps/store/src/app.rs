@@ -34,6 +34,7 @@
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value};
@@ -4609,7 +4610,8 @@ impl Widget for StoreApp {
         Some(self.completed_invocations.remove(index))
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, path) = ui::doc::document(state, path);
         self.drain_report_export();
         for report in &self.reports {
             let _ = ensure_text_obj(state, path, &report_note_key(&report.app_id));
@@ -4746,34 +4748,18 @@ impl Widget for StoreApp {
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) {
         // Track the pointer so the bubble can reveal on hover of its
         // bottom-right zone (coords are window-space, unscaled).
         if let winit::event::WindowEvent::CursorMoved { position, .. } = event {
-            self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+            self.last_cursor =
+                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
         }
-        if let (Some(root), Ok(children)) = (self.root.as_mut(), taffy.children(node_id))
+        if let (Some(root), Ok(children)) = (self.root.as_mut(), ctx.taffy.children(ctx.node_id))
             && let Some(&child_node) = children.first()
         {
-            root.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                child_node,
-                taffy,
-            );
+            root.handle_event(event, &mut ctx.reborrow(ctx.path, child_node));
         }
     }
 
@@ -5265,9 +5251,8 @@ mod tests {
                     "Useful software with a description that wraps onto another line.".into();
             }
             app.set_layout_width_hint(480.0);
-            let mut list = app.compose(&Theme::dark());
-            layout_composition(list.as_mut(), 480.0);
-            check(list.as_ref());
+            let list = frame_composition(app.compose(&Theme::dark()), 480.0);
+            check(list.root_widget());
         }
 
         // Case `medium_short_viewport_uses_one_width_appropriate_source_summary`.
@@ -5286,13 +5271,13 @@ mod tests {
             let mut app = seeded_app();
             app.set_items(crate::shots::fixture_catalog());
             app.set_layout_width_hint(480.0);
-            let mut tree = app.compose(&Theme::dark());
-            layout_composition(tree.as_mut(), 480.0);
+            let frame = frame_composition(app.compose(&Theme::dark()), 480.0);
+            let tree = frame.root_widget();
 
-            let discover = accessible_rect(tree.as_ref(), "Discover more · 3")
+            let discover = accessible_rect(tree, "Discover more · 3")
                 .expect("discover heading in full catalogue");
             let mut grids = Vec::new();
-            card_grid_extents(tree.as_ref(), &mut grids);
+            card_grid_extents(tree, &mut grids);
             assert_eq!(grids.len(), 2, "ready and discover grids");
             assert!(
                 grids[0].1 <= discover.y0,
@@ -5310,7 +5295,18 @@ mod tests {
         }
     }
 
-    fn layout_composition(widget: &mut dyn Widget, width: f32) -> (TaffyTree<()>, NodeId) {
+    /// Mount a composed tree and run one frame at `width` × 900.
+    fn frame_composition(widget: Box<dyn Widget>, width: f32) -> ui::headless::FrameHarness {
+        ui::headless::FrameHarness::new(
+            ui::State::new(),
+            widget,
+            ui::headless::viewport((width, 900.0)),
+        )
+    }
+
+    /// The `CardGrid` control test drains `take_control_invocation`, which the
+    /// harness's control custody would take first, so it lays out by hand.
+    fn layout_card_grid(widget: &mut CardGrid, width: f32) -> (TaffyTree<()>, NodeId) {
         let mut tree = TaffyTree::new();
         let mut map = HashMap::new();
         let node = widget.build_layout(&mut tree, &Theme::dark(), &mut map);
@@ -5456,7 +5452,7 @@ mod tests {
                         busy,
                     );
                     let mut grid = CardGrid::content_sized(vec![card]);
-                    let (tree, node) = layout_composition(&mut grid, width);
+                    let (tree, node) = layout_card_grid(&mut grid, width);
                     let center = control_mut(&mut grid, "select.button")
                         .unwrap()
                         .get_rect()
@@ -5483,14 +5479,16 @@ mod tests {
                     for event in events {
                         grid.handle_event(
                             &event,
-                            1.0,
-                            &winit::event::Modifiers::default(),
-                            &mut doc,
-                            &automerge::ROOT,
-                            &mut false,
-                            &mut focus,
-                            node,
-                            &tree,
+                            &mut ui::widget::EventCtx {
+                                scale_factor: 1.0,
+                                modifiers: &winit::event::Modifiers::default(),
+                                state: &mut doc,
+                                path: &automerge::ROOT,
+                                handled: &mut false,
+                                focus_target: &mut focus,
+                                node_id: node,
+                                taffy: &tree,
+                            },
                         );
                     }
                     let details = grid.take_control_invocation().expect("pointer Details");
@@ -5557,9 +5555,11 @@ mod tests {
                 app.set_items(crate::shots::fixture_catalog());
                 app.set_layout_width_hint(width);
                 app.text_scale = scale;
-                let mut tree = app.compose(&Theme::dark().with_text_scale(scale));
-                layout_composition(tree.as_mut(), width as f32);
-                assert_finite_rects(tree.as_ref());
+                let frame = frame_composition(
+                    app.compose(&Theme::dark().with_text_scale(scale)),
+                    width as f32,
+                );
+                assert_finite_rects(frame.root_widget());
             }
         }
 
@@ -5596,10 +5596,9 @@ mod tests {
             let mut app = seeded_app();
             app.set_layout_width_hint(1200.0);
             app.items[0].description = "A useful app with a longer description. ".repeat(7);
-            let mut list = app.build_list(&Theme::dark());
-            layout_composition(list.as_mut(), 1200.0);
+            let list = frame_composition(app.build_list(&Theme::dark()), 1200.0);
             let mut found = 0;
-            check(list.as_ref(), &mut found);
+            check(list.root_widget(), &mut found);
             assert_eq!(found, 3);
         }
 

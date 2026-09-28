@@ -105,6 +105,8 @@ mod hardware_encode;
 mod hdr_capability_probe;
 #[path = "hdr_decode_pipeline.rs"]
 mod hdr_decode_pipeline;
+#[path = "hdr_layer_composite.rs"]
+mod hdr_layer_composite;
 #[path = "hdr_output_encode_shader.rs"]
 mod hdr_output_encode_shader;
 #[path = "hdr_output_pipeline.rs"]
@@ -205,6 +207,8 @@ mod shell_narration;
 mod shell_state_test;
 #[path = "sidebar_wheel_disc_snapshot.rs"]
 mod sidebar_wheel_disc_snapshot;
+#[path = "speaker_calibration_fabric.rs"]
+mod speaker_calibration_fabric;
 #[path = "speaker_clock_policy.rs"]
 mod speaker_clock_policy;
 #[path = "state_file_format.rs"]

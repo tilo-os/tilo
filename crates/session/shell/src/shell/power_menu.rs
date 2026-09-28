@@ -12,7 +12,7 @@ use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 
 use crate::shell::i18n::t;
 use crate::shell::overlay_host::layers::{
-    LayerCx, LayerId, LayerIntent, LayerPaint, Routed, ShellLayer,
+    LayerCx, LayerGeometry, LayerId, LayerIntent, LayerPaint, Routed, ShellLayer,
 };
 
 /// A Panel opens and closes over the motion token's `base` (HIG §9.7). The
@@ -619,7 +619,7 @@ impl ShellLayer for PowerMenu {
                 button: MouseButton::Left,
                 ..
             } => match cx.cursor {
-                Some(point) => self.click(cx.viewport, point),
+                Some(point) => self.click(cx.geometry.viewport, point),
                 None => return Routed::Pass,
             },
             _ => return Routed::Pass,
@@ -637,7 +637,7 @@ impl ShellLayer for PowerMenu {
 
     fn draw(&mut self, cx: &mut LayerPaint<'_>) {
         self.draw(
-            cx.viewport,
+            cx.geometry.viewport,
             cx.scene,
             cx.transform,
             cx.text_renderer,
@@ -645,12 +645,12 @@ impl ShellLayer for PowerMenu {
         );
     }
 
-    fn accessibility(&self, _viewport: Rect) -> Option<ui::a11y::AccessNode> {
+    fn accessibility(&self, _geometry: LayerGeometry<'_>) -> Option<ui::a11y::AccessNode> {
         self.accessibility_snapshot()
     }
 
-    fn accessibility_rect(&self, viewport: Rect, path: &[usize]) -> Option<Rect> {
-        self.accessibility_rect_for_path(viewport, path)
+    fn accessibility_rect(&self, geometry: LayerGeometry<'_>, path: &[usize]) -> Option<Rect> {
+        self.accessibility_rect_for_path(geometry.viewport, path)
     }
 
     fn focus_accessibility(&mut self, path: &[usize]) -> bool {

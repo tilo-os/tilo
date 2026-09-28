@@ -48,6 +48,8 @@ use crate::shell::state::{RoomId, WorkspaceTreeHandle};
 
 /// Roster id of the shell's record custody participant.
 pub const CUSTODY_AGENT: &str = "records";
+/// What the roster calls it.
+pub const CUSTODY_LABEL: &str = "Shared records";
 
 /// Signs the document ops this device authors, with the key its device
 /// certificate names. The key itself stays with the signer.
@@ -158,7 +160,7 @@ impl RecordCustody {
         let subscription = fanout.subscribe_rooms_holding(
             LocalParticipant {
                 agent: CUSTODY_AGENT.into(),
-                label: "Shared records".into(),
+                label: CUSTODY_LABEL.into(),
             },
             Vec::new(),
             Box::new(move |event, route| {
@@ -798,7 +800,7 @@ mod tests {
 
     impl DeviceSigner for Device {
         fn author(&self) -> collab_types::Ed25519PublicKey {
-            crate::shell::channel_encryption::tests::public(
+            tilo_action_broker::channel_encryption::testing::public(
                 crate::shell::participant_keys::tests::DEVICE,
             )
         }
@@ -806,7 +808,7 @@ mod tests {
             *self.author().as_bytes()
         }
         fn sign(&self, op: &mut SignedOp) -> Result<(), String> {
-            let key = crate::shell::channel_encryption::tests::key(
+            let key = tilo_action_broker::channel_encryption::testing::key(
                 crate::shell::participant_keys::tests::DEVICE,
             );
             collab_types::sign_op(op, &key).map_err(|error| error.to_string())

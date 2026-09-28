@@ -189,7 +189,6 @@ impl Widget for Probe {
         );
         self.applied.fetch_add(1, Ordering::SeqCst);
     }
-    fn sync(&mut self, _: &mut AutoCommit, _: &ObjId) {}
     fn build_layout(
         &mut self,
         tree: &mut ui::taffy::TaffyTree<()>,
@@ -214,19 +213,6 @@ impl Widget for Probe {
         _: &mut ui::TextRenderer,
         _: &ui::Theme,
         _: &ui::PresenceCtx,
-    ) {
-    }
-    fn handle_event(
-        &mut self,
-        _: &ui::winit::event::WindowEvent,
-        _: f64,
-        _: &ui::winit::event::Modifiers,
-        _: &mut AutoCommit,
-        _: &ObjId,
-        _: &mut bool,
-        _: &mut Option<ui::taffy::NodeId>,
-        _: ui::taffy::NodeId,
-        _: &ui::taffy::TaffyTree<()>,
     ) {
     }
     fn name(&self) -> &'static str {

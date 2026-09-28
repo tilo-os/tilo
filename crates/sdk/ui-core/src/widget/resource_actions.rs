@@ -4,6 +4,7 @@
 //! immediate or background operation closure. The host supplies the widget
 //! forwarding and invocation lifecycle; scaffolds do not need to copy that
 //! infrastructure into every new project.
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, TryRecvError};
 
@@ -396,11 +397,7 @@ impl ResourceActionHost {
 }
 
 impl Widget for ResourceActionHost {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
-        self.root.sync(state, path);
-    }
-
-    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         self.root.update(state, path)
     }
 
@@ -456,30 +453,17 @@ impl Widget for ResourceActionHost {
     fn handle_event(
         &mut self,
         event: &crate::winit::event::WindowEvent,
-        scale_factor: f64,
-        modifiers: &crate::winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
+        ctx: &mut crate::widget::EventCtx<'_>,
     ) {
-        self.root.handle_event(
-            event,
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            taffy
-                .children(node_id)
-                .ok()
-                .and_then(|children| children.first().copied())
-                .unwrap_or(node_id),
-            taffy,
-        );
+        let node_id = ctx
+            .taffy
+            .children(ctx.node_id)
+            .ok()
+            .and_then(|children| children.first().copied())
+            .unwrap_or(ctx.node_id);
+        let path = ctx.path;
+        self.root
+            .handle_event(event, &mut ctx.reborrow(path, node_id));
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -533,8 +517,8 @@ impl Widget for ResourceActionHost {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         self.root.perform_action(action, state, path)
     }
@@ -543,8 +527,8 @@ impl Widget for ResourceActionHost {
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         self.root.perform_action_at(action, key_path, state, path)
     }
@@ -553,8 +537,8 @@ impl Widget for ResourceActionHost {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         self.root
             .perform_semantic_action(target, action, state, path)

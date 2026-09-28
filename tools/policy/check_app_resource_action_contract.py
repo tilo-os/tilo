@@ -128,10 +128,6 @@ RATCHETS = {
         re.compile(r"\bfn\s+activate_search_result\s*\("),
         "opaque search activation bypass; return SearchResult::for_action with a published resource action",
     ),
-    "legacy_resource_operation_override": (
-        LEGACY_OPERATION_HANDLER,
-        "legacy resource-operation hook; implement Widget::start_operation, the single operation entry",
-    ),
 }
 
 
@@ -728,7 +724,12 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
                 and FRAMEWORK_RESOURCE.search(combined) is not None
             )
             toolkit_host = TOOLKIT_ACTION_HOST.search(combined) is not None
-            toolkit_resource = TOOLKIT_RESOURCE_VALUE.search(combined) is not None
+            # A host with several operations builds its descriptor directly;
+            # the toolkit helpers each describe a single operation.
+            toolkit_resource = TOOLKIT_RESOURCE_VALUE.search(combined) is not None or (
+                RESOURCE_VALUE.search(combined) is not None
+                and ACTION_SPEC.search(combined) is not None
+            )
             if toolkit_host and not toolkit_resource:
                 violations.append(
                     Violation(

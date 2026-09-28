@@ -27,7 +27,7 @@ impl NativeOwnerCommitService {
     ) -> Self {
         let opened = match network.as_ref() {
             Some(network) => network.native_owner(),
-            None => super::native_workspace_owner::NativeWorkspaceOwner::open(tree.clone()),
+            None => super::native_workspace_owner::open(tree.clone()),
         };
         let owner = match opened {
             Ok(owner) => Some(owner),
@@ -226,8 +226,8 @@ fn stage_launch_content(
     {
         return Err("launch content failed integrity validation".into());
     }
-    let dir = std::env::var_os("XDG_RUNTIME_DIR")
-        .map_or_else(std::env::temp_dir, std::path::PathBuf::from)
+    let dir = xdg_paths::xdg::runtime_dir()
+        .unwrap_or_else(std::env::temp_dir)
         .join("tilo-opened");
     std::fs::create_dir_all(&dir).map_err(|error| format!("create launch staging: {error}"))?;
     #[cfg(unix)]
@@ -288,7 +288,57 @@ fn stage_launch_content(
     Ok(Some(path))
 }
 
-pub struct NativeLauncher;
+/// Launches installed apps. With the session's workspace tree it can record
+/// a workspace author granting an app authorship before launching it.
+pub struct NativeLauncher(pub Option<WorkspaceTreeHandle>);
+
+impl NativeLauncher {
+    /// Record `person` granting `app` authorship of `workspace`'s space and
+    /// add the grant to the launch's copy, unless the app already holds it.
+    /// The tree checks `person`'s own authority; a refusal launches a viewer.
+    fn grant_authorship(
+        &self,
+        person: &str,
+        app: &str,
+        workspace: &mut tilo_desktop_model::Workspace,
+    ) {
+        use super::state::WorkspaceExt as _;
+        use collab_types::caps::{CapOverride, ResourceRef, Scope, Subject, Verb};
+        let Some(tree) = &self.0 else { return };
+        let actor = workspace.actor_for_app(app);
+        if workspace.allows(&actor, &ResourceRef::Workspace, Verb::Write) {
+            return;
+        }
+        let grant = CapOverride::grant(Subject::app(app), Scope::Workspace, Verb::Write);
+        let mut tree = tree.write();
+        let Some(id) = tree
+            .desktop
+            .workspaces
+            .iter()
+            .find(|candidate| candidate.room == workspace.room)
+            .map(|candidate| candidate.id)
+        else {
+            return;
+        };
+        let Some(recorded) = tree.grant_in_workspace(id, &person.to_string(), grant) else {
+            return;
+        };
+        let stored = tree
+            .desktop
+            .workspaces
+            .iter()
+            .find(|candidate| candidate.id == id)
+            .and_then(|candidate| candidate.capabilities.iter().find(|cap| cap.id == recorded))
+            .cloned();
+        tree.desktop.external_revision = tree.desktop.external_revision.wrapping_add(1);
+        tree.flush_to_disk();
+        drop(tree);
+        if let Some(stored) = stored {
+            workspace.capabilities.push(stored);
+        }
+    }
+}
+
 impl LauncherServices for NativeLauncher {
     fn launch_instance_for_descendant(
         &self,
@@ -323,6 +373,9 @@ impl LauncherServices for NativeLauncher {
         content: LaunchContent<'_>,
     ) -> Result<(), String> {
         let mut workspace = workspace.clone();
+        if let Some(person) = content.author {
+            self.grant_authorship(person, app, &mut workspace);
+        }
         let document = stage_launch_content(app, content, &mut workspace, &SessionContentStore)?;
         super::launcher::launch_document_in_workspace(app, &workspace, document.as_deref())
             .map(|_| ())
@@ -1012,6 +1065,7 @@ pub fn native_services(
         Arc::new(NativeDesktopRequests(tree.clone()))
             as Arc<dyn tilo_action_broker::services::DesktopRequestServices>
     });
+    let launcher = Arc::new(NativeLauncher(membership.clone()));
     HostServices {
         app_action_access: Some(super::app_action_access::installed_resolver()),
         app_action_grants,
@@ -1022,7 +1076,7 @@ pub fn native_services(
         legacy_workspace: membership.map(|tree| {
             Arc::new(NativeWorkspaceAuthority(tree)) as Arc<dyn LegacyWorkspaceProjection>
         }),
-        launcher: Some(Arc::new(NativeLauncher)),
+        launcher: Some(launcher),
         workspace_governance: governance,
         shortcut_library,
         keyboard_shortcuts: Some(Arc::new(NativeKeyboardShortcuts)),
@@ -1062,7 +1116,7 @@ pub(crate) fn test_broker_with_membership(
     let authority = Arc::new(NativeWorkspaceAuthority(membership.clone()));
     let services = HostServices {
         legacy_workspace: Some(authority.clone()),
-        launcher: Some(Arc::new(NativeLauncher)),
+        launcher: Some(Arc::new(NativeLauncher(Some(membership.clone())))),
         workspace_governance: Some(Arc::new(NativeWorkspaceGovernance::new(
             membership.clone(),
             None,
@@ -1519,6 +1573,44 @@ mod tests {
         }
     }
 
+    /// A workspace owner opening an app makes it an author of the space,
+    /// recorded once as their grant; someone without authority records
+    /// nothing, so the app launches a viewer.
+    #[test]
+    fn an_owner_opening_an_app_grants_it_authorship_once() {
+        use super::super::state::WorkspaceExt as _;
+        use collab_types::caps::{ResourceRef, Verb};
+        let mut tree = crate::shell::state::WorkspaceTree::default();
+        let mut workspace = crate::shell::state::Workspace::new(
+            crate::shell::state::WorkspaceId(7),
+            "authorship test",
+        );
+        workspace.set_owner("owner".to_string());
+        tree.desktop.workspaces.push(workspace.clone());
+        let handle = tree.shared();
+        let launcher = NativeLauncher(Some(handle.clone()));
+        let app = "so.tilo.word-processor";
+
+        let mut stranger_copy = workspace.clone();
+        launcher.grant_authorship("stranger", app, &mut stranger_copy);
+        let actor = stranger_copy.actor_for_app(app);
+        assert!(!stranger_copy.allows(&actor, &ResourceRef::Workspace, Verb::Write));
+
+        let mut launch_copy = workspace.clone();
+        launcher.grant_authorship("owner", app, &mut launch_copy);
+        let actor = launch_copy.actor_for_app(app);
+        assert!(launch_copy.allows(&actor, &ResourceRef::Workspace, Verb::Write));
+        let stored = handle.read().desktop.workspaces[0].capabilities.len();
+
+        let mut again = handle.read().desktop.workspaces[0].clone();
+        launcher.grant_authorship("owner", app, &mut again);
+        assert_eq!(
+            handle.read().desktop.workspaces[0].capabilities.len(),
+            stored,
+            "granted once"
+        );
+    }
+
     /// The shell stages content through the scope of the application that
     /// asked, never its own authority: a caller in another room holding the
     /// hash, or a launch no application asked for, stages nothing.
@@ -1550,6 +1642,7 @@ mod tests {
             LaunchContent {
                 hash: &hash,
                 caller: Some(&owner),
+                author: None,
             },
             &mut workspace,
             &content,
@@ -1570,6 +1663,7 @@ mod tests {
                     LaunchContent {
                         hash: &hash,
                         caller,
+                        author: None,
                     },
                     &mut workspace,
                     &content,

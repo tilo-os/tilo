@@ -136,7 +136,6 @@ mod tests {
     use super::prelude::*;
     // Implementing the toolkit's raw Widget contract is an escape hatch; the
     // document types it names are imported explicitly, not from the prelude.
-    use ui_core::automerge::{AutoCommit, ObjId};
 
     fn custom_event_handler(_event: &ui_core::winit::event::WindowEvent, ctx: &mut EventCtx<'_>) {
         // App-defined widgets receive the same event and CRDT context as
@@ -163,8 +162,8 @@ mod tests {
 
         fn native_input_snapshot(
             &self,
-            _doc: &AutoCommit,
-            _path: &ObjId,
+            _doc: &ui_core::widget::AppModel,
+            _path: &ui_core::widget::ModelPath,
         ) -> Option<serde_json::Value> {
             Some(serde_json::json!({ "width": self.inner.get_rect().width() }))
         }

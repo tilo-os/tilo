@@ -3747,14 +3747,16 @@ mod responsive_body_tests {
             let mut focus = None;
             self.w.handle_event(
                 ev,
-                1.0,
-                &winit::event::Modifiers::default(),
-                &mut self.state.doc,
-                &self.state.root,
-                &mut handled,
-                &mut focus,
-                self.node,
-                &self.taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &winit::event::Modifiers::default(),
+                    state: &mut self.state.doc,
+                    path: &self.state.root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: self.node,
+                    taffy: &self.taffy,
+                },
             );
         }
 
@@ -4028,14 +4030,18 @@ mod responsive_body_tests {
         assert_eq!(intent.address.resource, "tilo.control:files.retry");
         assert_eq!(intent.address.action, "invoke");
         assert!(
-            h.w.invoke_resource_operation(
-                tilo_actions::OperationKind::Effect,
-                "tilo.ui.control.invoke",
-                br#""files.retry""#,
-                &h.state.doc,
+            h.w.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::Effect,
+                    "tilo.ui.control.invoke",
+                    br#""files.retry""#,
+                ),
+                &mut h.state.doc,
                 &h.state.root,
             )
-            .unwrap(),
+            .unwrap()
+            .is_some(),
             "the resource action is accepted by the Files action boundary"
         );
         assert!(
@@ -4047,14 +4053,18 @@ mod responsive_body_tests {
     fn shared_toolbar_resource_action_opens_view_options() {
         let mut h = H::new(None, 1200.0, 720.0);
         assert!(
-            h.w.invoke_resource_operation(
-                tilo_actions::OperationKind::Effect,
-                "tilo.ui.control.invoke",
-                br#""files.view_menu""#,
-                &h.state.doc,
+            h.w.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::Effect,
+                    "tilo.ui.control.invoke",
+                    br#""files.view_menu""#,
+                ),
+                &mut h.state.doc,
                 &h.state.root,
             )
-            .unwrap(),
+            .unwrap()
+            .is_some(),
             "the same resource action an AT-SPI client discovers is handled"
         );
         assert!(

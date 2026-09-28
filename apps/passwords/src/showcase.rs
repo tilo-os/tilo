@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -1392,20 +1393,10 @@ impl PasswordsSurface {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "embedded shared widgets receive the standard Widget event context"
-    )]
     fn route_editor_inputs(
         &mut self,
         event: &WindowEvent,
-        scale: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        focus: &mut Option<NodeId>,
-        node: NodeId,
-        taffy: &TaffyTree<()>,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
         if self.mode != ShowcaseMode::Editor {
             return false;
@@ -1428,8 +1419,8 @@ impl PasswordsSurface {
                 ..
             } => Some(self.last_pointer),
             WindowEvent::Touch(touch) if touch.phase == TouchPhase::Started => Some(Point::new(
-                touch.location.x / scale,
-                touch.location.y / scale,
+                touch.location.x / ctx.scale_factor,
+                touch.location.y / ctx.scale_factor,
             )),
             _ => None,
         };
@@ -1453,14 +1444,10 @@ impl PasswordsSurface {
             self.editor_inputs.for_each_mut(|_, input| {
                 input.handle_event(
                     event,
-                    scale,
-                    &modifiers,
-                    state,
-                    path,
-                    &mut input_handled,
-                    focus,
-                    node,
-                    taffy,
+                    &mut ui::widget::EventCtx {
+                        handled: &mut input_handled,
+                        ..ctx.reborrow(ctx.path, ctx.node_id)
+                    },
                 );
             });
         } else if let Some(field) = active
@@ -1468,14 +1455,10 @@ impl PasswordsSurface {
         {
             input.handle_event(
                 event,
-                scale,
-                &modifiers,
-                state,
-                path,
-                &mut input_handled,
-                focus,
-                node,
-                taffy,
+                &mut ui::widget::EventCtx {
+                    handled: &mut input_handled,
+                    ..ctx.reborrow(ctx.path, ctx.node_id)
+                },
             );
         }
 
@@ -3947,27 +3930,8 @@ impl PasswordsSurface {
     }
 }
 
-impl Widget for PasswordsSurface {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {
-        self.transfer_poll_deadline.set(None);
-        self.poll_transfers();
-        if self
-            .revealed
-            .as_ref()
-            .is_some_and(|(_, _, until)| *until <= std::time::Instant::now())
-        {
-            self.revealed = None;
-        }
-    }
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &["tilo.passwords.operation"]
-    }
-    fn resources(&self, _doc: &AutoCommit) -> Vec<ui::tilo_actions::Resource> {
-        let mut out = vec![actions::vault_resource(self.mode == ShowcaseMode::Editor)];
-        out.extend(self.items.iter().map(actions::item_resource));
-        out
-    }
-    fn invoke_resource_operation(
+impl PasswordsSurface {
+    fn answer_resource_operation(
         &mut self,
         _kind: ui::tilo_actions::OperationKind,
         type_id: &str,
@@ -4010,6 +3974,48 @@ impl Widget for PasswordsSurface {
             crate::actions::PasswordOperation::ExportCsv => self.request_export_confirmation(),
         }
         Ok(true)
+    }
+}
+
+impl Widget for PasswordsSurface {
+    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
+        self.transfer_poll_deadline.set(None);
+        self.poll_transfers();
+        if self
+            .revealed
+            .as_ref()
+            .is_some_and(|(_, _, until)| *until <= std::time::Instant::now())
+        {
+            self.revealed = None;
+        }
+    }
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &["tilo.passwords.operation"]
+    }
+    fn resources(&self, _doc: &AutoCommit) -> Vec<ui::tilo_actions::Resource> {
+        let mut out = vec![actions::vault_resource(self.mode == ShowcaseMode::Editor)];
+        out.extend(self.items.iter().map(actions::item_resource));
+        out
+    }
+    fn start_operation(
+        &mut self,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
+        }
+        let Some(request) = op.unscoped() else {
+            return Ok(None);
+        };
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
     }
     #[allow(clippy::expect_used, reason = "a fresh taffy leaf cannot fail")]
     fn build_layout(
@@ -4149,18 +4155,7 @@ impl Widget for PasswordsSurface {
         clippy::too_many_lines,
         reason = "event routing is ordered by precedence (dialogs, editor, list); splitting it would hide that order"
     )]
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus: &mut Option<NodeId>,
-        node: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if matches!(event, WindowEvent::Focused(false)) {
             // A reveal is only for the actively attended window. Hiding it on
             // deactivation also avoids it surviving task switching or a
@@ -4168,7 +4163,8 @@ impl Widget for PasswordsSurface {
             self.clear_revealed();
         }
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_pointer = Point::new(position.x / scale, position.y / scale);
+            self.last_pointer =
+                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
         }
 
         // The vault search is a real shared text widget, so pointer selection,
@@ -4182,14 +4178,10 @@ impl Widget for PasswordsSurface {
             let mut search_handled = false;
             self.search_input.handle_event(
                 event,
-                scale,
-                modifiers,
-                state,
-                path,
-                &mut search_handled,
-                focus,
-                node,
-                taffy,
+                &mut ui::widget::EventCtx {
+                    handled: &mut search_handled,
+                    ..ctx.reborrow(ctx.path, ctx.node_id)
+                },
             );
             if self.search_input.is_focused() {
                 self.active_field = Some(ActiveField::Search);
@@ -4200,7 +4192,7 @@ impl Widget for PasswordsSurface {
                 self.refresh();
             }
             if search_handled {
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
         }
@@ -4217,33 +4209,25 @@ impl Widget for PasswordsSurface {
                 self.backup_focus = usize::from(self.backup_focus == 0);
                 self.backup_password.set_focus(self.backup_focus == 0);
                 self.backup_confirmation.set_focus(self.backup_focus == 1);
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
             let mut input_handled = false;
             if matches!(event, WindowEvent::CursorMoved { .. }) {
                 self.backup_password.handle_event(
                     event,
-                    scale,
-                    modifiers,
-                    state,
-                    path,
-                    &mut input_handled,
-                    focus,
-                    node,
-                    taffy,
+                    &mut ui::widget::EventCtx {
+                        handled: &mut input_handled,
+                        ..ctx.reborrow(ctx.path, ctx.node_id)
+                    },
                 );
                 if !restoring {
                     self.backup_confirmation.handle_event(
                         event,
-                        scale,
-                        modifiers,
-                        state,
-                        path,
-                        &mut input_handled,
-                        focus,
-                        node,
-                        taffy,
+                        &mut ui::widget::EventCtx {
+                            handled: &mut input_handled,
+                            ..ctx.reborrow(ctx.path, ctx.node_id)
+                        },
                     );
                 }
             } else {
@@ -4254,25 +4238,24 @@ impl Widget for PasswordsSurface {
                 };
                 input.handle_event(
                     event,
-                    scale,
-                    modifiers,
-                    state,
-                    path,
-                    &mut input_handled,
-                    focus,
-                    node,
-                    taffy,
+                    &mut ui::widget::EventCtx {
+                        handled: &mut input_handled,
+                        ..ctx.reborrow(ctx.path, ctx.node_id)
+                    },
                 );
             }
             if input_handled {
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
         }
         if self.mode == ShowcaseMode::Editor {
             match event {
                 WindowEvent::Touch(touch) if touch.phase == TouchPhase::Started => {
-                    let point = Point::new(touch.location.x / scale, touch.location.y / scale);
+                    let point = Point::new(
+                        touch.location.x / ctx.scale_factor,
+                        touch.location.y / ctx.scale_factor,
+                    );
                     self.resolve_drawer(Rect::new(
                         self.rect.x0 + 24.0,
                         self.rect.y0 + 24.0,
@@ -4288,12 +4271,15 @@ impl Widget for PasswordsSurface {
                     if let Some((id, start, initial_scroll)) = self.editor_touch
                         && id == touch.id
                     {
-                        let point = Point::new(touch.location.x / scale, touch.location.y / scale);
+                        let point = Point::new(
+                            touch.location.x / ctx.scale_factor,
+                            touch.location.y / ctx.scale_factor,
+                        );
                         if (start.y - point.y).abs() > 8.0 {
                             self.editor_scroll = initial_scroll;
                             let panel = self.current_panel_rect();
                             let _ = self.scroll_editor_by(panel, start.y - point.y);
-                            *handled = true;
+                            *ctx.handled = true;
                             return;
                         }
                     }
@@ -4304,10 +4290,13 @@ impl Widget for PasswordsSurface {
                     if let Some((id, start, _)) = self.editor_touch
                         && id == touch.id
                     {
-                        let point = Point::new(touch.location.x / scale, touch.location.y / scale);
+                        let point = Point::new(
+                            touch.location.x / ctx.scale_factor,
+                            touch.location.y / ctx.scale_factor,
+                        );
                         self.editor_touch = None;
                         if (start.y - point.y).abs() > 8.0 {
-                            *handled = true;
+                            *ctx.handled = true;
                             return;
                         }
                     }
@@ -4315,13 +4304,14 @@ impl Widget for PasswordsSurface {
                 _ => {}
             }
         }
-        if self.route_editor_inputs(event, scale, *modifiers, state, path, focus, node, taffy) {
-            *handled = true;
+        if self.route_editor_inputs(event, ctx) {
+            *ctx.handled = true;
             return;
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_pointer = Point::new(position.x / scale, position.y / scale);
+                self.last_pointer =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
@@ -4329,7 +4319,7 @@ impl Widget for PasswordsSurface {
                 ..
             } => {
                 if self.activate_transfer(self.last_pointer) {
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 let content = Rect::new(
@@ -4343,15 +4333,15 @@ impl Widget for PasswordsSurface {
                 self.resolve_drawer(content);
                 if self.drawer.is_overlay() && toggle.contains(self.last_pointer) {
                     self.drawer.toggle();
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 if self.activate_sidebar(self.last_pointer) {
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 if self.drawer.press_dismisses(self.last_pointer) {
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 let main = self.drawer.content_rect();
@@ -4366,7 +4356,7 @@ impl Widget for PasswordsSurface {
                     .contains(self.last_pointer)
                     {
                         self.mode = ShowcaseMode::Health;
-                        *handled = true;
+                        *ctx.handled = true;
                         return;
                     }
                 }
@@ -4387,7 +4377,7 @@ impl Widget for PasswordsSurface {
                     .contains(self.last_pointer)
                     {
                         self.begin_add();
-                        *handled = true;
+                        *ctx.handled = true;
                         return;
                     }
                     if Rect::new(list.x0, list.y0 + 50.0, list.x1, list.y0 + 104.0)
@@ -4395,7 +4385,7 @@ impl Widget for PasswordsSurface {
                     {
                         self.active_field = Some(ActiveField::Search);
                         Widget::set_focus(&mut self.search_input, true);
-                        *handled = true;
+                        *ctx.handled = true;
                         return;
                     }
                     let first_y = list.y0 + 168.0;
@@ -4417,14 +4407,14 @@ impl Widget for PasswordsSurface {
                                 .contains(self.last_pointer)
                             {
                                 self.toggle_favorite(item_index);
-                                *handled = true;
+                                *ctx.handled = true;
                                 return;
                             }
                             self.selected = item_index;
                             if self.drawer.is_overlay() {
                                 self.mobile_detail = true;
                             }
-                            *handled = true;
+                            *ctx.handled = true;
                             return;
                         }
                     }
@@ -4437,7 +4427,7 @@ impl Widget for PasswordsSurface {
                 match self.mode {
                     ShowcaseMode::AppAccess => {
                         if self.activate_app_access(panel, self.last_pointer) {
-                            *handled = true;
+                            *ctx.handled = true;
                         }
                     }
                     ShowcaseMode::Vault if self.drawer.is_overlay() && self.mobile_detail => {
@@ -4445,7 +4435,7 @@ impl Widget for PasswordsSurface {
                             .contains(self.last_pointer)
                         {
                             self.mobile_detail = false;
-                            *handled = true;
+                            *ctx.handled = true;
                             return;
                         }
                         if Rect::new(
@@ -4457,7 +4447,7 @@ impl Widget for PasswordsSurface {
                         .contains(self.last_pointer)
                         {
                             self.begin_edit();
-                            *handled = true;
+                            *ctx.handled = true;
                             return;
                         }
                         if self.last_pointer.x >= panel.x1 - 150.0 {
@@ -4469,7 +4459,7 @@ impl Widget for PasswordsSurface {
                                         self.last_pointer.x,
                                         panel.x1,
                                     );
-                                    *handled = true;
+                                    *ctx.handled = true;
                                     return;
                                 }
                             }
@@ -4485,7 +4475,7 @@ impl Widget for PasswordsSurface {
                         .contains(self.last_pointer)
                         {
                             self.begin_edit();
-                            *handled = true;
+                            *ctx.handled = true;
                             return;
                         }
                         let action_x = panel.x1 - 150.0;
@@ -4494,7 +4484,7 @@ impl Widget for PasswordsSurface {
                             && self.last_pointer.y < panel.y0 + 198.0
                         {
                             self.activate_detail_row_at(0, self.last_pointer.x, panel.x1);
-                            *handled = true;
+                            *ctx.handled = true;
                             return;
                         }
                         if self.last_pointer.x >= action_x
@@ -4502,7 +4492,7 @@ impl Widget for PasswordsSurface {
                             && self.last_pointer.y < panel.y0 + 354.0
                         {
                             self.activate_detail_row_at(2, self.last_pointer.x, panel.x1);
-                            *handled = true;
+                            *ctx.handled = true;
                             return;
                         }
                         if self.last_pointer.x >= action_x
@@ -4510,7 +4500,7 @@ impl Widget for PasswordsSurface {
                             && self.last_pointer.y < panel.y0 + 276.0
                         {
                             self.activate_detail_row_at(1, self.last_pointer.x, panel.x1);
-                            *handled = true;
+                            *ctx.handled = true;
                         }
                     }
                     ShowcaseMode::Editor => {
@@ -4524,7 +4514,7 @@ impl Widget for PasswordsSurface {
                         ]) {
                             if segment.contains(self.last_pointer) {
                                 self.select_kind(kind);
-                                *handled = true;
+                                *ctx.handled = true;
                                 return;
                             }
                         }
@@ -4549,7 +4539,7 @@ impl Widget for PasswordsSurface {
                                 .contains(self.last_pointer)
                             {
                                 self.active_field = Some(field);
-                                *handled = true;
+                                *ctx.handled = true;
                                 return;
                             }
                         }
@@ -4559,14 +4549,14 @@ impl Widget for PasswordsSurface {
                                 .contains(self.last_pointer)
                         {
                             self.generate_password();
-                            *handled = true;
+                            *ctx.handled = true;
                             return;
                         }
                         if Rect::new(x, note_y + 16.0, panel.x1 - 36.0, note_y + 92.0)
                             .contains(self.last_pointer)
                         {
                             self.active_field = Some(ActiveField::Notes);
-                            *handled = true;
+                            *ctx.handled = true;
                             return;
                         }
                         let tags_y = self.editor_tags_y(panel);
@@ -4574,7 +4564,7 @@ impl Widget for PasswordsSurface {
                             .contains(self.last_pointer)
                         {
                             self.active_field = Some(ActiveField::Tags);
-                            *handled = true;
+                            *ctx.handled = true;
                             return;
                         }
                         let custom_y = self.editor_custom_fields_y(panel);
@@ -4582,7 +4572,7 @@ impl Widget for PasswordsSurface {
                             .contains(self.last_pointer)
                         {
                             self.active_field = Some(ActiveField::CustomFields);
-                            *handled = true;
+                            *ctx.handled = true;
                             return;
                         }
                         let (delete, cancel, save) = self.editor_footer_rects(panel);
@@ -4590,17 +4580,17 @@ impl Widget for PasswordsSurface {
                             if let Some(id) = self.editing.clone() {
                                 self.request_delete(id);
                             }
-                            *handled = true;
+                            *ctx.handled = true;
                             return;
                         }
                         if cancel.contains(self.last_pointer) {
                             self.cancel_edit();
-                            *handled = true;
+                            *ctx.handled = true;
                             return;
                         }
                         if save.contains(self.last_pointer) {
                             self.save_draft();
-                            *handled = true;
+                            *ctx.handled = true;
                         }
                     }
                     _ => {}
@@ -4622,7 +4612,7 @@ impl Widget for PasswordsSurface {
                         MouseScrollDelta::PixelDelta(position) => -position.y,
                     };
                     if self.scroll_app_access_by(panel, dy) {
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                 } else if self.mode == ShowcaseMode::Editor
                     && self.editor_body_viewport(panel).contains(self.last_pointer)
@@ -4632,7 +4622,7 @@ impl Widget for PasswordsSurface {
                         MouseScrollDelta::PixelDelta(position) => -position.y,
                     };
                     if self.scroll_editor_by(panel, dy) {
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                 } else if self.drawer.sidebar_contains(self.last_pointer) {
                     let dy = match delta {
@@ -4640,7 +4630,7 @@ impl Widget for PasswordsSurface {
                         MouseScrollDelta::PixelDelta(position) => position.y,
                     };
                     if self.scroll_sidebar_by(-dy) {
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                 } else {
                     let list = self.current_list_rect();
@@ -4667,13 +4657,16 @@ impl Widget for PasswordsSurface {
                             self.list_scroll.saturating_add(rows)
                         };
                         if self.scroll_list_to(list, next) {
-                            *handled = true;
+                            *ctx.handled = true;
                         }
                     }
                 }
             }
             WindowEvent::Touch(touch) if touch.phase == TouchPhase::Started => {
-                let point = Point::new(touch.location.x / scale, touch.location.y / scale);
+                let point = Point::new(
+                    touch.location.x / ctx.scale_factor,
+                    touch.location.y / ctx.scale_factor,
+                );
                 self.resolve_drawer(Rect::new(
                     self.rect.x0 + 24.0,
                     self.rect.y0 + 24.0,
@@ -4682,21 +4675,21 @@ impl Widget for PasswordsSurface {
                 ));
                 if self.drawer.sidebar_contains(point) {
                     self.sidebar_touch = Some((touch.id, point, self.sidebar_scroll));
-                    *handled = true;
+                    *ctx.handled = true;
                 } else {
                     let panel = self.current_panel_rect();
                     if self.mode == ShowcaseMode::AppAccess
                         && Self::app_access_viewport(panel).contains(point)
                     {
                         self.app_access_touch = Some((touch.id, point, self.app_access_scroll));
-                        *handled = true;
+                        *ctx.handled = true;
                         return;
                     }
                     if self.mode == ShowcaseMode::Editor
                         && self.editor_body_viewport(panel).contains(point)
                     {
                         self.editor_touch = Some((touch.id, point, self.editor_scroll));
-                        *handled = true;
+                        *ctx.handled = true;
                         return;
                     }
                     let list = self.current_list_rect();
@@ -4704,7 +4697,7 @@ impl Widget for PasswordsSurface {
                         && Rect::new(list.x0, list.y0 + 150.0, list.x1, list.y1).contains(point)
                     {
                         self.list_touch = Some((touch.id, point, self.list_scroll));
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                 }
             }
@@ -4712,30 +4705,42 @@ impl Widget for PasswordsSurface {
                 if let Some((id, start, initial_scroll)) = self.sidebar_touch
                     && id == touch.id
                 {
-                    let point = Point::new(touch.location.x / scale, touch.location.y / scale);
+                    let point = Point::new(
+                        touch.location.x / ctx.scale_factor,
+                        touch.location.y / ctx.scale_factor,
+                    );
                     self.sidebar_scroll = initial_scroll;
                     let _ = self.scroll_sidebar_by(start.y - point.y);
-                    *handled = true;
+                    *ctx.handled = true;
                 } else if let Some((id, start, initial_scroll)) = self.editor_touch
                     && id == touch.id
                 {
-                    let point = Point::new(touch.location.x / scale, touch.location.y / scale);
+                    let point = Point::new(
+                        touch.location.x / ctx.scale_factor,
+                        touch.location.y / ctx.scale_factor,
+                    );
                     self.editor_scroll = initial_scroll;
                     let panel = self.current_panel_rect();
                     let _ = self.scroll_editor_by(panel, start.y - point.y);
-                    *handled = true;
+                    *ctx.handled = true;
                 } else if let Some((id, start, initial_scroll)) = self.app_access_touch
                     && id == touch.id
                 {
-                    let point = Point::new(touch.location.x / scale, touch.location.y / scale);
+                    let point = Point::new(
+                        touch.location.x / ctx.scale_factor,
+                        touch.location.y / ctx.scale_factor,
+                    );
                     self.app_access_scroll = initial_scroll;
                     let panel = self.current_panel_rect();
                     let _ = self.scroll_app_access_by(panel, start.y - point.y);
-                    *handled = true;
+                    *ctx.handled = true;
                 } else if let Some((id, start, initial_scroll)) = self.list_touch
                     && id == touch.id
                 {
-                    let point = Point::new(touch.location.x / scale, touch.location.y / scale);
+                    let point = Point::new(
+                        touch.location.x / ctx.scale_factor,
+                        touch.location.y / ctx.scale_factor,
+                    );
                     #[expect(
                         clippy::cast_possible_truncation,
                         reason = "a rounded drag distance in rows; the float-to-int cast saturates"
@@ -4744,13 +4749,16 @@ impl Widget for PasswordsSurface {
                     let next = initial_scroll.saturating_add_signed(rows);
                     let list = self.current_list_rect();
                     let _ = self.scroll_list_to(list, next);
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::Touch(touch)
                 if matches!(touch.phase, TouchPhase::Ended | TouchPhase::Cancelled) =>
             {
-                let point = Point::new(touch.location.x / scale, touch.location.y / scale);
+                let point = Point::new(
+                    touch.location.x / ctx.scale_factor,
+                    touch.location.y / ctx.scale_factor,
+                );
                 let sidebar_scroll = self.sidebar_touch.take().is_some_and(|(id, start, _)| {
                     id == touch.id && (start.y - point.y).abs() > 8.0
                 });
@@ -4769,10 +4777,10 @@ impl Widget for PasswordsSurface {
                 if touch.phase == TouchPhase::Ended && !was_scroll {
                     self.last_pointer = point;
                     if self.activate_touch(point) {
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                 } else if was_scroll {
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
@@ -4801,7 +4809,7 @@ impl Widget for PasswordsSurface {
                         },
                         _ => return,
                     }
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 if event.logical_key == Key::Named(NamedKey::Escape) {
@@ -4814,13 +4822,13 @@ impl Widget for PasswordsSurface {
                     } else {
                         self.active_field = None;
                     }
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 match &event.logical_key {
                     Key::Named(NamedKey::Tab) if self.mode == ShowcaseMode::Editor => {
                         let fields = self.editor_field_order();
-                        let backwards = modifiers.state().shift_key();
+                        let backwards = ctx.modifiers.state().shift_key();
                         let last = fields.len().saturating_sub(1);
                         let next = self
                             .active_field
@@ -4842,55 +4850,55 @@ impl Widget for PasswordsSurface {
                         if let Some(field) = self.active_field {
                             self.ensure_editor_field_visible(self.current_panel_rect(), field);
                         }
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                     Key::Named(NamedKey::Enter) if self.mode == ShowcaseMode::Editor => {
                         self.save_draft();
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                     Key::Named(NamedKey::ArrowDown)
                         if self.active_field.is_none() && !self.items.is_empty() =>
                     {
                         self.move_list_selection(true);
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                     Key::Named(NamedKey::ArrowUp) if self.active_field.is_none() => {
                         self.move_list_selection(false);
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                     Key::Character(text) if text == "/" => {
                         self.active_field = Some(ActiveField::Search);
                         Widget::set_focus(&mut self.search_input, true);
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                     Key::Character(text) if text.eq_ignore_ascii_case("n") => {
                         self.begin_add();
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                     Key::Character(text) if text.eq_ignore_ascii_case("e") => {
                         self.begin_edit();
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                     Key::Character(text) if text.eq_ignore_ascii_case("c") => {
                         self.copy_selected();
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                     Key::Character(text) if text.eq_ignore_ascii_case("r") => {
                         self.reveal_selected();
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                     Key::Character(text) if text.eq_ignore_ascii_case("p") => {
                         self.mode = ShowcaseMode::Health;
                         self.mobile_detail = false;
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                     Key::Character(text) if text.eq_ignore_ascii_case("i") => {
                         self.request_import();
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                     Key::Character(text) if text.eq_ignore_ascii_case("x") => {
                         self.request_export_confirmation();
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                     _ => {}
                 }
@@ -5317,8 +5325,8 @@ impl Widget for PasswordsSurface {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         use ui::a11y::Action;
         match (target, action) {
@@ -6188,13 +6196,17 @@ mod tests {
                 serde_json::to_vec(&crate::actions::PasswordOperation::RequestDelete { id: id.0 })
                     .unwrap();
             assert!(
-                app.invoke_resource_operation(
-                    ui::tilo_actions::OperationKind::Effect,
-                    "tilo.passwords.operation",
-                    &payload,
-                    &doc,
-                    &automerge::ROOT,
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        ui::tilo_actions::OperationKind::Effect,
+                        "tilo.passwords.operation",
+                        &payload
+                    ),
+                    &mut doc,
+                    &automerge::ROOT
                 )
+                .map(|started| started.is_some())
                 .unwrap()
             );
             assert_eq!(app.model.as_ref().unwrap().items().len(), 1);
@@ -6263,14 +6275,16 @@ mod tests {
             let node = taffy.new_leaf(Style::default()).unwrap();
             app.handle_event(
                 &WindowEvent::Focused(false),
-                1.0,
-                &winit::event::Modifiers::default(),
-                &mut doc,
-                &automerge::ROOT,
-                &mut handled,
-                &mut focus,
-                node,
-                &taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &winit::event::Modifiers::default(),
+                    state: &mut doc,
+                    path: &automerge::ROOT,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &taffy,
+                },
             );
             assert!(app.revealed.is_none());
         }

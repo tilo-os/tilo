@@ -67,6 +67,19 @@ crates, which sccache does not store. The
 standalone check only where the selector requires it), or when all were
 skipped because Rust is not applicable.
 
+A tested package too heavy for one test job (`TEST_PARTITION_WEIGHT` in
+`tools/ci/affected_packages.py`; in practice `shell`) runs as nextest
+partitions (`--partition count:K/N`) on dedicated jobs. `test-archive` builds
+its test binaries once, with the test shards' profile and flags, on
+`runner-large` for x86-64 (the build is the partitions' critical path), and
+uploads them as a `cargo nextest archive`. Each `test-partition` job downloads
+the archive, extracts it over its checkout's `target/` at the same workspace
+path, since compile-time paths such as `CARGO_BIN_EXE_*` point there, and runs
+its slice with the shards' environment, filters and JUnit report, without
+compiling. Before, every partition compiled the whole package itself, so a
+shell change compiled shell three times on contended hosts. The other test
+shards do not wait for the archive.
+
 When the selection includes an app with an Android host example (an
 `<app>-android` example; today calculator and notes, so every change to the SDK
 crates beneath them), a separate `android` job lints those examples with

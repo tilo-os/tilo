@@ -16,9 +16,9 @@
 //! the reader.
 
 use crate::time::SystemTime;
+use crate::widget::{AppModel, ModelPath};
 use std::collections::{HashMap, HashSet};
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stroke};
@@ -2843,11 +2843,6 @@ impl ActivityTimeline {
 }
 
 impl Widget for ActivityTimeline {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {
-        // Entries arrive via the producer's push API. The widget is a viewer —
-        // it does not pull from a CRDT path.
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -2910,21 +2905,10 @@ impl Widget for ActivityTimeline {
         self.dirty = false;
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _root: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         match event {
             WindowEvent::Ime(_) if self.naming.is_some() => {
-                self.handle_naming_ime(event, *modifiers, handled);
+                self.handle_naming_ime(event, *ctx.modifiers, ctx.handled);
             }
             // A name field owns the keyboard while it is up, so a version
             // called "edits" cannot accidentally re-filter the pane.
@@ -2936,10 +2920,10 @@ impl Widget for ActivityTimeline {
                     },
                 ..
             } if self.naming.is_some()
-                && !modifiers.state().control_key()
-                && !modifiers.state().super_key() =>
+                && !ctx.modifiers.state().control_key()
+                && !ctx.modifiers.state().super_key() =>
             {
-                self.handle_naming_key(event, *modifiers, handled);
+                self.handle_naming_key(event, *ctx.modifiers, ctx.handled);
             }
             // Author typeahead. Chorded keys are left alone so the host's
             // own shortcuts still work while the pane has the keyboard.
@@ -2951,31 +2935,31 @@ impl Widget for ActivityTimeline {
                         ..
                     },
                 ..
-            } if !modifiers.state().control_key()
-                && !modifiers.state().super_key()
-                && !modifiers.state().alt_key() =>
+            } if !ctx.modifiers.state().control_key()
+                && !ctx.modifiers.state().super_key()
+                && !ctx.modifiers.state().alt_key() =>
             {
                 self.handle_timeline_navigation_key(
                     logical_key,
-                    modifiers.state().shift_key(),
-                    handled,
+                    ctx.modifiers.state().shift_key(),
+                    ctx.handled,
                 );
-                if !*handled {
-                    self.handle_author_typeahead_key(logical_key, handled);
+                if !*ctx.handled {
+                    self.handle_author_typeahead_key(logical_key, ctx.handled);
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
-                self.handle_cursor_moved(position, scale_factor, handled);
+                self.handle_cursor_moved(position, ctx.scale_factor, ctx.handled);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
             } => {
-                self.handle_left_click(handled, focus_target, node_id, *modifiers);
+                self.handle_left_click(ctx.handled, ctx.focus_target, ctx.node_id, *ctx.modifiers);
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                self.handle_mouse_wheel(delta, handled);
+                self.handle_mouse_wheel(delta, ctx.handled);
             }
             _ => {}
         }
@@ -3104,8 +3088,8 @@ impl Widget for ActivityTimeline {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
         let row = if let Some(key) = target.strip_prefix("timeline-group:") {
@@ -3725,6 +3709,7 @@ mod tests {
     use super::*;
     use crate::time::Duration;
     use crate::widget::history::HistoryAuthor;
+    use automerge::AutoCommit;
     use collab_types::ArtifactKind;
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -4119,14 +4104,16 @@ mod tests {
         let root = automerge::ROOT;
         t.handle_event(
             event,
-            1.0,
-            &Modifiers::default(),
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus,
-            node,
-            &tree,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &Modifiers::default(),
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &tree,
+            },
         );
     }
 
@@ -4575,6 +4562,7 @@ mod group_tests {
     use crate::time::Duration;
     use crate::widget::history::HistoryAuthor;
     use crate::widget::history_group::NamedRange;
+    use automerge::AutoCommit;
     use collab_types::ArtifactKind;
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -4769,14 +4757,16 @@ mod group_tests {
         let root = automerge::ROOT;
         t.handle_event(
             event,
-            1.0,
-            &m,
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus,
-            node,
-            &tree,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &m,
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &tree,
+            },
         );
     }
 

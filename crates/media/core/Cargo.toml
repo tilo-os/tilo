@@ -35,6 +35,8 @@ pipewire = ["dep:pipewire"]
 test-support = ["dep:tilo-test-env"]
 
 [dependencies]
+xdg-paths = { path = "../../system/xdg-paths" }
+atomic-file = { path = "../../system/atomic-file" }
 web-time = { version = "1", features = ["serde"] }
 # Transport CRDT. A tiny automerge document carries follow-the-host playback
 # state (playing / position / rate / epoch) between peers so a joiner follows

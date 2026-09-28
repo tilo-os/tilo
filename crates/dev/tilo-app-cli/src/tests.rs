@@ -4198,8 +4198,14 @@ fn packaging_is_scoped_safe_and_never_clobbers_output() {
         let output = temp.path().join("reading-list.tapp");
         let kinds = resource_kinds::declared_in(&spec.app_dir).expect("resource kinds");
         assert_eq!(kinds, ["generated.profile"], "the starter's resource");
-        let packed = pack::pack_payload(&spec.manifest_path, kinds, &payload, &output, &identity)
-            .expect("pack");
+        let manifest = || {
+            tilo_app_package::Manifest::from_toml_str(
+                &std::fs::read_to_string(&spec.manifest_path).expect("manifest"),
+            )
+            .expect("parse manifest")
+        };
+        let packed =
+            pack::pack_manifest(manifest(), kinds, &payload, &output, &identity).expect("pack");
         assert_eq!(
             packed.bytes,
             std::fs::metadata(&output).expect("tapp").len()
@@ -4216,15 +4222,9 @@ fn packaging_is_scoped_safe_and_never_clobbers_output() {
         assert_eq!(tapp.meta.publisher(), identity.public_key_bytes());
         assert!(tapp.missing().is_empty(), "the package carries its payload");
 
-        let again = pack::pack_payload(
-            &spec.manifest_path,
-            Vec::new(),
-            &payload,
-            &output,
-            &identity,
-        )
-        .err()
-        .expect("an existing output is not overwritten");
+        let again = pack::pack_manifest(manifest(), Vec::new(), &payload, &output, &identity)
+            .err()
+            .expect("an existing output is not overwritten");
         assert!(format!("{again:#}").contains("creating"), "{again:#}");
     }
 

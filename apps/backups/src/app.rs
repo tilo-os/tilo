@@ -17,6 +17,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::Instant;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -4761,12 +4762,114 @@ impl BackupsApp {
     }
 }
 
+impl BackupsApp {
+    fn answer_resource_operation(
+        &mut self,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if !matches!(
+            kind,
+            tilo_actions::OperationKind::Effect | tilo_actions::OperationKind::View
+        ) {
+            return Ok(false);
+        }
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
+        };
+        if self.job.is_some() {
+            return Err("A backup operation is already running; wait for it to finish.".into());
+        }
+        match operation {
+            crate::actions::BackupOperation::Setup => self.pick_folder(PickPurpose::Source),
+            crate::actions::BackupOperation::BackupNow => {
+                if self.source_path.is_none() || self.destination_path.is_none() {
+                    return Err("Backups are not configured on this device.".into());
+                }
+                self.start_backup();
+            }
+            crate::actions::BackupOperation::Verify { snapshot_id } => {
+                if self.destination_path.is_none()
+                    || !self.catalog.snapshots.iter().any(|s| s.id == snapshot_id)
+                {
+                    return Err("That snapshot is unavailable in this local repository.".into());
+                }
+                self.ui.sel_snapshot = Some(snapshot_id);
+                self.start_verify();
+            }
+            crate::actions::BackupOperation::Restore { snapshot_id } => {
+                if self.destination_path.is_none()
+                    || !self.catalog.snapshots.iter().any(|s| s.id == snapshot_id)
+                {
+                    return Err("That snapshot is unavailable in this local repository.".into());
+                }
+                self.ui.sel_snapshot = Some(snapshot_id);
+                self.pick_folder(PickPurpose::Restore);
+            }
+            crate::actions::BackupOperation::OpenSource { source_id } => {
+                if !self
+                    .catalog
+                    .sources
+                    .iter()
+                    .any(|source| source.id == source_id)
+                {
+                    return Err("That source is unavailable on this device.".into());
+                }
+                self.ui.sel_source = Some(source_id);
+                self.ui.sel_snapshot = None;
+                self.ui.view = View::Sources;
+            }
+            crate::actions::BackupOperation::OpenDestination { destination_id } => {
+                if !self
+                    .catalog
+                    .destinations
+                    .iter()
+                    .any(|destination| destination.id == destination_id)
+                {
+                    return Err("That destination is unavailable on this device.".into());
+                }
+                self.ui.sel_dest = Some(destination_id);
+                self.ui.view = View::Destinations;
+            }
+            crate::actions::BackupOperation::OpenSnapshot { snapshot_id } => {
+                if !self
+                    .catalog
+                    .snapshots
+                    .iter()
+                    .any(|snapshot| snapshot.id == snapshot_id)
+                {
+                    return Err("That snapshot is unavailable in this local repository.".into());
+                }
+                self.ui.sel_snapshot = Some(snapshot_id);
+                self.ui.view = View::Timeline;
+            }
+            crate::actions::BackupOperation::OpenSchedule { source_id } => {
+                if !self
+                    .catalog
+                    .sources
+                    .iter()
+                    .any(|source| source.id == source_id)
+                {
+                    return Err("That schedule's source is unavailable on this device.".into());
+                }
+                self.ui.sel_source = Some(source_id);
+                self.ui.view = View::Schedules;
+            }
+        }
+        Ok(true)
+    }
+}
+
 impl Widget for BackupsApp {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::BACKUPS_OPERATION_TYPE]
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, path) = ui::doc::document(state, path);
         self.drain_effects();
         if !self.seeded {
             BackupsDoc::seed(state, path);
@@ -4869,25 +4972,15 @@ impl Widget for BackupsApp {
         self.render(scene, transform, text_renderer, theme);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_mouse = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_mouse =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 let new_hover = self.hit_at(self.last_mouse);
                 if new_hover != self.hover {
                     self.hover = new_hover;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseInput {
@@ -4896,12 +4989,12 @@ impl Widget for BackupsApp {
                 ..
             } => {
                 if let Some(hit) = self.hit_at(self.last_mouse) {
-                    self.dispatch(hit, state, path);
-                    *handled = true;
+                    self.dispatch(hit, ctx.state, ctx.path);
+                    *ctx.handled = true;
                 } else if self.ui.restore_open {
                     // The sheet's scrim swallows the press; nothing behind a
                     // modal may activate.
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseWheel { delta, .. } if self.ui.view == View::Timeline => {
@@ -4918,11 +5011,11 @@ impl Widget for BackupsApp {
                     && rail.contains(self.last_mouse)
                 {
                     self.rail_scroll = (self.rail_scroll + dy).clamp(0.0, self.rail_scroll_max);
-                    *handled = true;
+                    *ctx.handled = true;
                 } else if self.timeline_view.contains(self.last_mouse) {
                     let max = (self.timeline_content_h - self.timeline_view.height()).max(0.0);
                     self.timeline_scroll = (self.timeline_scroll + dy).clamp(0.0, max);
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::KeyboardInput {
@@ -4931,7 +5024,7 @@ impl Widget for BackupsApp {
                 if key_event.state != ElementState::Pressed {
                     return;
                 }
-                self.handle_key(&key_event.logical_key, state, path, handled);
+                self.handle_key(&key_event.logical_key, ctx.state, ctx.path, ctx.handled);
             }
             _ => {}
         }
@@ -4966,103 +5059,25 @@ impl Widget for BackupsApp {
         self.actions.take_committed()
     }
 
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        if !matches!(
-            kind,
-            tilo_actions::OperationKind::Effect | tilo_actions::OperationKind::View
-        ) {
-            return Ok(false);
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
         }
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(false);
+        let Some(request) = op.unscoped() else {
+            return Ok(None);
         };
-        if self.job.is_some() {
-            return Err("A backup operation is already running; wait for it to finish.".into());
-        }
-        match operation {
-            crate::actions::BackupOperation::Setup => self.pick_folder(PickPurpose::Source),
-            crate::actions::BackupOperation::BackupNow => {
-                if self.source_path.is_none() || self.destination_path.is_none() {
-                    return Err("Backups are not configured on this device.".into());
-                }
-                self.start_backup();
-            }
-            crate::actions::BackupOperation::Verify { snapshot_id } => {
-                if self.destination_path.is_none()
-                    || !self.catalog.snapshots.iter().any(|s| s.id == snapshot_id)
-                {
-                    return Err("That snapshot is unavailable in this local repository.".into());
-                }
-                self.ui.sel_snapshot = Some(snapshot_id);
-                self.start_verify();
-            }
-            crate::actions::BackupOperation::Restore { snapshot_id } => {
-                if self.destination_path.is_none()
-                    || !self.catalog.snapshots.iter().any(|s| s.id == snapshot_id)
-                {
-                    return Err("That snapshot is unavailable in this local repository.".into());
-                }
-                self.ui.sel_snapshot = Some(snapshot_id);
-                self.pick_folder(PickPurpose::Restore);
-            }
-            crate::actions::BackupOperation::OpenSource { source_id } => {
-                if !self
-                    .catalog
-                    .sources
-                    .iter()
-                    .any(|source| source.id == source_id)
-                {
-                    return Err("That source is unavailable on this device.".into());
-                }
-                self.ui.sel_source = Some(source_id);
-                self.ui.sel_snapshot = None;
-                self.ui.view = View::Sources;
-            }
-            crate::actions::BackupOperation::OpenDestination { destination_id } => {
-                if !self
-                    .catalog
-                    .destinations
-                    .iter()
-                    .any(|destination| destination.id == destination_id)
-                {
-                    return Err("That destination is unavailable on this device.".into());
-                }
-                self.ui.sel_dest = Some(destination_id);
-                self.ui.view = View::Destinations;
-            }
-            crate::actions::BackupOperation::OpenSnapshot { snapshot_id } => {
-                if !self
-                    .catalog
-                    .snapshots
-                    .iter()
-                    .any(|snapshot| snapshot.id == snapshot_id)
-                {
-                    return Err("That snapshot is unavailable in this local repository.".into());
-                }
-                self.ui.sel_snapshot = Some(snapshot_id);
-                self.ui.view = View::Timeline;
-            }
-            crate::actions::BackupOperation::OpenSchedule { source_id } => {
-                if !self
-                    .catalog
-                    .sources
-                    .iter()
-                    .any(|source| source.id == source_id)
-                {
-                    return Err("That schedule's source is unavailable on this device.".into());
-                }
-                self.ui.sel_source = Some(source_id);
-                self.ui.view = View::Schedules;
-            }
-        }
-        Ok(true)
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
     }
 
     fn get_rect(&self) -> Rect {
@@ -5195,9 +5210,10 @@ impl Widget for BackupsApp {
         &mut self,
         target: &str,
         action: &A11yAction,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
+        let (state, path) = ui::doc::document(state, path);
         if !matches!(action, A11yAction::Activate | A11yAction::ToggleCheck) {
             return false;
         }
@@ -5622,14 +5638,16 @@ mod tests {
                     device_id: DeviceId::dummy(),
                     position: PhysicalPosition::new(p.x, p.y),
                 },
-                1.0,
-                &m,
-                &mut self.state.doc,
-                &self.state.root,
-                &mut handled,
-                &mut focus,
-                self.node,
-                &self.taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &m,
+                    state: &mut self.state.doc,
+                    path: &self.state.root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: self.node,
+                    taffy: &self.taffy,
+                },
             );
             self.app.handle_event(
                 &WindowEvent::MouseInput {
@@ -5637,14 +5655,16 @@ mod tests {
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                 },
-                1.0,
-                &m,
-                &mut self.state.doc,
-                &self.state.root,
-                &mut handled,
-                &mut focus,
-                self.node,
-                &self.taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &m,
+                    state: &mut self.state.doc,
+                    path: &self.state.root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: self.node,
+                    taffy: &self.taffy,
+                },
             );
             self.draw();
         }
@@ -5676,14 +5696,16 @@ mod tests {
             ] {
                 self.app.handle_event(
                     &ev,
-                    1.0,
-                    &m,
-                    &mut self.state.doc,
-                    &self.state.root,
-                    &mut handled,
-                    &mut focus,
-                    self.node,
-                    &self.taffy,
+                    &mut ui::widget::EventCtx {
+                        scale_factor: 1.0,
+                        modifiers: &m,
+                        state: &mut self.state.doc,
+                        path: &self.state.root,
+                        handled: &mut handled,
+                        focus_target: &mut focus,
+                        node_id: self.node,
+                        taffy: &self.taffy,
+                    },
                 );
             }
             self.draw();

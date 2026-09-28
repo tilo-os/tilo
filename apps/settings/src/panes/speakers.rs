@@ -15,23 +15,26 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId, transaction::Transactable};
 use taffy::{NodeId, TaffyTree};
 use ui::collaboration::{
-    CalibrationMemberState, CalibrationPhaseInfo, SpeakerCommand, SpeakerReply, SpeakerRoleSpec,
-    SpeakerSnapshot, SpeakerTrimInfo,
+    CalibrationMemberState, CalibrationMicrophoneState, CalibrationPhaseInfo, SpeakerCommand,
+    SpeakerReply, SpeakerRoleSpec, SpeakerSnapshot, SpeakerTrimInfo,
 };
 use ui::doc::read_bool;
 use ui::theme::Theme;
 use ui::widget::{Button, Dropdown, Slider, TextInput, Toggle, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Line, Point, Rect, RoundedRect, Stroke};
-use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
+use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::actions::{LocalOperationStatus, SPEAKER_OPERATION_TYPE, SpeakerOperation};
+use crate::i18n::{t, t_args};
 use crate::speaker_setup::{
     Arrangement, BrokerSpeakers, ROOM_EXTENT_MM, SpeakerService, SpeakerSetup, Step,
+    member_status_text, playback_text, role_answer, role_text,
 };
 use crate::widgets::{
     StatusTone, caption, card, cards, choice_row_described, rows, semantic_status_pill,
@@ -51,6 +54,7 @@ const CALIBRATE_KEY: &str = "speakers.calibrate.edit";
 const APPLY_KEY: &str = "speakers.apply.edit";
 const REVERT_KEY: &str = "speakers.revert.edit";
 const DISMISS_KEY: &str = "speakers.dismiss.edit";
+const CANCEL_KEY: &str = "speakers.cancel.edit";
 const DONE_KEY: &str = "speakers.done.edit";
 
 fn role_key(role: SpeakerRoleSpec) -> String {
@@ -77,17 +81,62 @@ const fn role_slug(role: SpeakerRoleSpec) -> &'static str {
     }
 }
 
-/// "Left", "Subwoofer", …, as a button answers "Which one just played?".
-fn role_answer(role: SpeakerRoleSpec) -> String {
-    let text = role.describe().trim_end_matches(" speaker");
-    let mut characters = text.chars();
-    characters.next().map_or_else(String::new, |first| {
-        first.to_uppercase().chain(characters).collect()
-    })
-}
-
 fn trim_summary(trim: &SpeakerTrimInfo) -> String {
     format!("{:.1} ms · {:+.1} dB", trim.delay_ms, trim.gain_db)
+}
+
+/// Metres sound travels per millisecond at room temperature.
+const SOUND_METRES_PER_MS: f64 = 0.343;
+
+fn one_decimal(value: f64) -> String {
+    format!("{value:.1}")
+}
+
+/// "Arrives after 48.2 ms at your seat · its output takes 41.0 ms · about
+/// 2.4 m away".
+fn measured_text(
+    delay_ms: f64,
+    output_latency_ms: Option<f64>,
+    acoustic_ms: Option<f64>,
+) -> String {
+    let mut parts = vec![t_args(
+        "speakers-run-member-arrives",
+        &[("delay", one_decimal(delay_ms).into())],
+    )];
+    if let Some(latency) = output_latency_ms {
+        parts.push(t_args(
+            "speakers-run-member-output-latency",
+            &[("latency", one_decimal(latency).into())],
+        ));
+    }
+    if let Some(acoustic) = acoustic_ms {
+        parts.push(t_args(
+            "speakers-run-member-distance",
+            &[("metres", one_decimal(acoustic * SOUND_METRES_PER_MS).into())],
+        ));
+    }
+    parts.join(" · ")
+}
+
+fn microphone_run_text(state: &CalibrationMicrophoneState) -> String {
+    match state {
+        CalibrationMicrophoneState::AwaitingConsent => t("speakers-run-microphone-awaiting"),
+        CalibrationMicrophoneState::Declined => t("speakers-run-microphone-declined"),
+        CalibrationMicrophoneState::Listening => t("speakers-run-microphone-listening"),
+        CalibrationMicrophoneState::Used { heard, rejected } if *rejected > 0 => t_args(
+            "speakers-run-microphone-used-rejected",
+            &[("heard", (*heard).into()), ("rejected", (*rejected).into())],
+        ),
+        CalibrationMicrophoneState::Used { heard, .. } => t_args(
+            "speakers-run-microphone-used",
+            &[("heard", (*heard).into())],
+        ),
+        CalibrationMicrophoneState::NotHeard => t("speakers-run-microphone-not-heard"),
+        CalibrationMicrophoneState::Failed { reason } => t_args(
+            "speakers-run-microphone-failed",
+            &[("reason", reason.as_str().into())],
+        ),
+    }
 }
 
 /// What a finished background call was for.
@@ -116,7 +165,8 @@ pub struct SpeakersPane {
     delete_armed: HashSet<String>,
     arrangement_state: ui::LocalState<String>,
     name_state: ui::LocalState<String>,
-    microphone_state: ui::LocalState<String>,
+    listening_state: ui::LocalState<String>,
+    microphone_states: Vec<(String, ui::LocalState<bool>)>,
     chosen_states: Vec<(String, String, ui::LocalState<bool>)>,
     room_points: ui::LocalState<Vec<(i32, i32)>>,
     placement_states: Vec<(ui::LocalState<f64>, ui::LocalState<f64>)>,
@@ -152,9 +202,10 @@ impl SpeakersPane {
             refreshing: false,
             next_refresh: Instant::now(),
             delete_armed: HashSet::new(),
-            arrangement_state: ui::LocalState::new(Arrangement::Stereo.label().to_string()),
-            name_state: ui::LocalState::new("Speakers".into()),
-            microphone_state: ui::LocalState::new(String::new()),
+            arrangement_state: ui::LocalState::new(Arrangement::Stereo.label()),
+            name_state: ui::LocalState::new(t("speakers-default-name")),
+            listening_state: ui::LocalState::new(String::new()),
+            microphone_states: Vec::new(),
             chosen_states: Vec::new(),
             room_points: ui::LocalState::new(Vec::new()),
             placement_states: Vec::new(),
@@ -199,8 +250,9 @@ impl SpeakersPane {
             });
         if let Err(error) = spawned {
             self.in_flight = self.in_flight.saturating_sub(1);
-            self.setup.set_message(Some(format!(
-                "Could not reach the speaker service: {error}"
+            self.setup.set_message(Some(t_args(
+                "speakers-service-unreachable",
+                &[("error", error.to_string().into())],
             )));
             self.structure_dirty = true;
         }
@@ -265,9 +317,7 @@ impl SpeakersPane {
                     let outcome = match finished.result {
                         Ok(SpeakerReply::Done { group }) => Ok(group),
                         Ok(SpeakerReply::Rejected { reason }) | Err(reason) => Err(reason),
-                        Ok(SpeakerReply::Snapshot { .. }) => {
-                            Err("the speaker service answered unexpectedly".into())
-                        }
+                        Ok(SpeakerReply::Snapshot { .. }) => Err(t("speakers-service-unexpected")),
                     };
                     self.after_operation(&operation, &outcome);
                     self.refresh();
@@ -287,18 +337,20 @@ impl SpeakersPane {
                 if let Some(group) = group {
                     self.setup.saved(group.clone());
                 }
-                Ok(format!("Saved {name}"))
+                Ok(t_args(
+                    "speakers-done-saved",
+                    &[("name", name.as_str().into())],
+                ))
             }
-            (Ok(_), SpeakerOperation::Identify { .. }) => Ok("Playing a sound".into()),
-            (Ok(_), SpeakerOperation::Calibrate { .. }) => Ok("Calibrating".into()),
-            (Ok(_), SpeakerOperation::ApplyCalibration { .. }) => Ok("Calibration applied".into()),
-            (Ok(_), SpeakerOperation::RevertCalibration { .. }) => {
-                Ok("Previous calibration restored".into())
+            (Ok(_), SpeakerOperation::Identify { .. }) => Ok(t("speakers-done-identify")),
+            (Ok(_), SpeakerOperation::Calibrate { .. }) => Ok(t("speakers-done-calibrate")),
+            (Ok(_), SpeakerOperation::CancelCalibration { .. }) => {
+                Ok(t("speakers-calibration-cancelled"))
             }
-            (Ok(_), SpeakerOperation::DismissCalibration { .. }) => {
-                Ok("Calibration discarded".into())
-            }
-            (Ok(_), SpeakerOperation::Delete { .. }) => Ok("Speaker set deleted".into()),
+            (Ok(_), SpeakerOperation::ApplyCalibration { .. }) => Ok(t("speakers-done-apply")),
+            (Ok(_), SpeakerOperation::RevertCalibration { .. }) => Ok(t("speakers-done-revert")),
+            (Ok(_), SpeakerOperation::DismissCalibration { .. }) => Ok(t("speakers-done-dismiss")),
+            (Ok(_), SpeakerOperation::Delete { .. }) => Ok(t("speakers-done-delete")),
         };
         match &message {
             Err(reason) => self.setup.set_message(Some(reason.clone())),
@@ -335,6 +387,43 @@ impl SpeakersPane {
                     )
                 })
                 .collect();
+            self.structure_dirty = true;
+        }
+        let calibrating = match self.setup.step() {
+            Step::Calibrate { group } => Some(group.clone()),
+            _ => None,
+        };
+        let extras = calibrating
+            .as_deref()
+            .map(|group| self.setup.extra_microphones(group))
+            .unwrap_or_default();
+        let devices = extras
+            .iter()
+            .map(|microphone| microphone.device.clone())
+            .collect::<Vec<_>>();
+        let current = self
+            .microphone_states
+            .iter()
+            .map(|(device, _)| device.clone())
+            .collect::<Vec<_>>();
+        if devices != current {
+            self.microphone_states = extras
+                .iter()
+                .map(|microphone| {
+                    (
+                        microphone.device.clone(),
+                        ui::LocalState::new(self.setup.also_listens(microphone)),
+                    )
+                })
+                .collect();
+            self.structure_dirty = true;
+        }
+        if let Some(listening) = calibrating
+            .as_deref()
+            .and_then(|group| self.setup.listening(group))
+            && self.listening_state.with(Clone::clone) != listening.label
+        {
+            self.listening_state.set(listening.label);
             self.structure_dirty = true;
         }
         let points = self.setup.room_points();
@@ -378,6 +467,34 @@ impl SpeakersPane {
                 self.structure_dirty = true;
             }
         }
+        if let Step::Calibrate { group } = self.setup.step().clone() {
+            let chosen = self.listening_state.with(Clone::clone);
+            if let Some(microphone) = self
+                .setup
+                .listening_choices(&group)
+                .into_iter()
+                .find(|microphone| microphone.label == chosen)
+                && self
+                    .setup
+                    .listening(&group)
+                    .is_none_or(|listening| listening.device != microphone.device)
+            {
+                self.setup.set_listening(&microphone.device);
+                self.structure_dirty = true;
+            }
+            let extras = self.setup.extra_microphones(&group);
+            for (device, state) in &self.microphone_states {
+                let wanted = state.with(|value| *value);
+                if let Some(microphone) = extras
+                    .iter()
+                    .find(|microphone| &microphone.device == device)
+                    && self.setup.also_listens(microphone) != wanted
+                {
+                    self.setup.set_also_listens(device, wanted);
+                    self.structure_dirty = true;
+                }
+            }
+        }
         if self.setup.step() == &Step::Layout {
             let dragged = self.room_points.with(Clone::clone);
             for (index, point) in dragged.iter().enumerate() {
@@ -400,14 +517,65 @@ impl SpeakersPane {
         }
     }
 
-    fn microphone(&self) -> Option<crate::speaker_setup::Microphone> {
-        let chosen = self.microphone_state.with(Clone::clone);
-        let microphones = self.setup.microphones();
-        microphones
-            .iter()
-            .find(|microphone| microphone.label == chosen)
-            .or_else(|| microphones.first())
-            .cloned()
+    /// "Where you sit" and "Also listen with" for the calibrate step.
+    fn microphone_rows(&self, group: &str) -> Vec<Box<dyn Widget>> {
+        let mut body = Vec::new();
+        let choices = self.setup.listening_choices(group);
+        let Some(listening) = self.setup.listening(group) else {
+            return body;
+        };
+        let chooser = Dropdown::from_state(
+            choices
+                .iter()
+                .map(|microphone| microphone.label.clone())
+                .collect(),
+            &self.listening_state,
+        )
+        .with_id("speakers.listening")
+        .with_accessible_name(t("speakers-listening-title"))
+        .with_placeholder(&listening.label);
+        body.push(choice_row_described(
+            &t("speakers-listening-title"),
+            &t("speakers-listening-description"),
+            Box::new(chooser),
+        ));
+        let extras = self.setup.extra_microphones(group);
+        if !extras.is_empty() {
+            body.push(caption(&t("speakers-also-listen-caption")));
+        }
+        for microphone in &extras {
+            let title = if microphone.local {
+                t_args(
+                    "speakers-microphone-this-device-title",
+                    &[("label", microphone.label.as_str().into())],
+                )
+            } else {
+                microphone.label.clone()
+            };
+            let state = self
+                .microphone_states
+                .iter()
+                .find(|(device, _)| device == &microphone.device)
+                .map(|(_, state)| state);
+            match state {
+                Some(state) if microphone.status.usable() => {
+                    body.push(setting_row_described(
+                        &title,
+                        &microphone.status_text(),
+                        Box::new(
+                            Toggle::from_state(state)
+                                .with_id(&format!("speakers.microphone.{}", microphone.device))
+                                .with_accessible_name(&t_args(
+                                    "speakers-microphone-use",
+                                    &[("label", microphone.label.as_str().into())],
+                                )),
+                        ),
+                    ));
+                }
+                _ => body.push(value_row(&title, &microphone.status_text())),
+            }
+        }
+        body
     }
 
     #[allow(
@@ -424,8 +592,7 @@ impl SpeakersPane {
         };
         if take(BEGIN_KEY) {
             self.setup.begin();
-            self.arrangement_state
-                .set(Arrangement::Stereo.label().to_string());
+            self.arrangement_state.set(Arrangement::Stereo.label());
             self.name_state.set(self.setup.name().to_string());
             self.chosen_states.clear();
             self.structure_dirty = true;
@@ -508,20 +675,16 @@ impl SpeakersPane {
         };
         if let Some(group) = calibrating {
             if take(CALIBRATE_KEY) {
-                match self
-                    .microphone()
-                    .ok_or_else(|| "This device has no microphone to calibrate with".to_string())
-                    .and_then(|microphone| self.setup.calibrate_command(&group, &microphone))
-                {
+                match self.setup.calibrate_command(&group) {
                     Ok(SpeakerCommand::StartCalibration {
                         group,
-                        microphone_device,
-                        microphone,
+                        excluded,
+                        listening,
                     }) => self.run(
                         SpeakerOperation::Calibrate {
                             group,
-                            microphone_device,
-                            microphone,
+                            excluded,
+                            listening,
                         },
                         false,
                     ),
@@ -540,6 +703,12 @@ impl SpeakersPane {
                 (
                     REVERT_KEY,
                     SpeakerOperation::RevertCalibration {
+                        group: group.clone(),
+                    },
+                ),
+                (
+                    CANCEL_KEY,
+                    SpeakerOperation::CancelCalibration {
                         group: group.clone(),
                     },
                 ),
@@ -580,7 +749,7 @@ impl SpeakersPane {
         if back {
             row = row.push(Box::new(Button::new(
                 "speakers.back",
-                "Back",
+                &t("speakers-back"),
                 Some(BACK_KEY),
             )));
         }
@@ -603,92 +772,115 @@ impl SpeakersPane {
         self.setup.message().map(caption).into_iter().collect()
     }
 
+    /// One saved set: its members, readiness, playback and actions.
+    fn group_row(&self, group: &ui::collaboration::SpeakerGroupInfo) -> Box<dyn Widget> {
+        let ready = group
+            .members
+            .iter()
+            .filter(|member| member.status == ui::collaboration::SpeakerMemberStatus::Ready)
+            .count();
+        let summary = group
+            .members
+            .iter()
+            .map(|member| {
+                t_args(
+                    "speakers-member-summary",
+                    &[
+                        ("device", member.device_label.as_str().into()),
+                        ("role", role_text(member.role).into()),
+                    ],
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut actions = ui::widget::Row::new().push(semantic_status_pill(
+            &t_args(
+                "speakers-ready-count",
+                &[
+                    ("ready", ready.to_string().into()),
+                    ("total", group.members.len().to_string().into()),
+                ],
+            ),
+            if ready == group.members.len() {
+                StatusTone::Success
+            } else {
+                StatusTone::Warning
+            },
+        ));
+        if let Some(playback) = &group.playback {
+            actions = actions.push(semantic_status_pill(
+                &playback_text(playback),
+                match playback {
+                    ui::collaboration::SpeakerPlaybackInfo::Playing => StatusTone::Success,
+                    ui::collaboration::SpeakerPlaybackInfo::Connecting => StatusTone::Neutral,
+                    ui::collaboration::SpeakerPlaybackInfo::SyncingClocks
+                    | ui::collaboration::SpeakerPlaybackInfo::ClockFailed { .. } => {
+                        StatusTone::Warning
+                    }
+                },
+            ));
+        }
+        if group.led_here {
+            let calibrate = group_key("calibrate", &group.id);
+            actions = actions.push(Box::new(Button::new(
+                &calibrate,
+                &t("speakers-calibrate-button"),
+                Some(&calibrate),
+            )));
+            let delete = group_key("delete", &group.id);
+            if self.delete_armed.contains(&group.id) {
+                let keep = group_key("keep", &group.id);
+                actions = actions
+                    .push(Box::new(Button::new(
+                        &keep,
+                        &t("speakers-keep"),
+                        Some(&keep),
+                    )))
+                    .push(Box::new(
+                        Button::new(&delete, &t("speakers-delete"), Some(&delete)).danger(),
+                    ));
+            } else {
+                actions = actions.push(Box::new(Button::new(
+                    &delete,
+                    &t("speakers-delete-arm"),
+                    Some(&delete),
+                )));
+            }
+        }
+        let mut description = if group.led_here {
+            summary
+        } else {
+            t_args(
+                "speakers-set-up-elsewhere",
+                &[
+                    ("summary", summary.as_str().into()),
+                    ("leader", group.leader_label.as_str().into()),
+                ],
+            )
+        };
+        if let Some(ui::collaboration::SpeakerPlaybackInfo::ClockFailed { reason }) =
+            &group.playback
+        {
+            description = t_args(
+                "speakers-clock-failed-detail",
+                &[
+                    ("summary", description.as_str().into()),
+                    ("reason", reason.as_str().into()),
+                ],
+            );
+        }
+        setting_row_described(&group.name, &description, Box::new(actions))
+    }
+
     fn build_overview(&self) -> Vec<Box<dyn Widget>> {
         let mut sections = Vec::new();
         let group_rows = if self.setup.groups().is_empty() {
-            vec![caption(
-                "Use speakers on several of your devices together: a stereo pair, surround, or speakers around the room.",
-            )]
+            vec![caption(&t("speakers-overview-empty"))]
         } else {
             self.setup
                 .groups()
                 .iter()
-                .map(|group| {
-                    let ready = group
-                        .members
-                        .iter()
-                        .filter(|member| {
-                            member.status == ui::collaboration::SpeakerMemberStatus::Ready
-                        })
-                        .count();
-                    let summary = group
-                        .members
-                        .iter()
-                        .map(|member| {
-                            format!("{} ({})", member.device_label, member.role.describe())
-                        })
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    let mut actions = ui::widget::Row::new().push(semantic_status_pill(
-                        &format!("{ready} of {} ready", group.members.len()),
-                        if ready == group.members.len() {
-                            StatusTone::Success
-                        } else {
-                            StatusTone::Warning
-                        },
-                    ));
-                    if let Some(playback) = &group.playback {
-                        actions = actions.push(semantic_status_pill(
-                            playback.label(),
-                            match playback {
-                                ui::collaboration::SpeakerPlaybackInfo::Playing => {
-                                    StatusTone::Success
-                                }
-                                ui::collaboration::SpeakerPlaybackInfo::Connecting => {
-                                    StatusTone::Neutral
-                                }
-                                ui::collaboration::SpeakerPlaybackInfo::SyncingClocks
-                                | ui::collaboration::SpeakerPlaybackInfo::ClockFailed { .. } => {
-                                    StatusTone::Warning
-                                }
-                            },
-                        ));
-                    }
-                    if group.led_here {
-                        let calibrate = group_key("calibrate", &group.id);
-                        actions = actions.push(Box::new(Button::new(
-                            &calibrate,
-                            "Calibrate",
-                            Some(&calibrate),
-                        )));
-                        let delete = group_key("delete", &group.id);
-                        if self.delete_armed.contains(&group.id) {
-                            let keep = group_key("keep", &group.id);
-                            actions = actions
-                                .push(Box::new(Button::new(&keep, "Keep", Some(&keep))))
-                                .push(Box::new(
-                                    Button::new(&delete, "Delete", Some(&delete)).danger(),
-                                ));
-                        } else {
-                            actions = actions.push(Box::new(Button::new(
-                                &delete,
-                                "Delete…",
-                                Some(&delete),
-                            )));
-                        }
-                    }
-                    let mut description = if group.led_here {
-                        summary
-                    } else {
-                        format!("{summary} · set up on {}", group.leader_label)
-                    };
-                    if let Some(ui::collaboration::SpeakerPlaybackInfo::ClockFailed { reason }) =
-                        &group.playback
-                    {
-                        description = format!("{description} · can't play in time: {reason}");
-                    }
-                    setting_row_described(&group.name, &description, Box::new(actions))
-                })
+                .map(|group| self.group_row(group))
                 .collect()
         };
         let mut body = group_rows;
@@ -697,10 +889,10 @@ impl SpeakersPane {
             ui::widget::Row::new()
                 .push(Box::new(ui::widget::Spacer::new()))
                 .push(Box::new(
-                    Button::new("speakers.begin", "Set up speakers", Some(BEGIN_KEY)).primary(),
+                    Button::new("speakers.begin", &t("speakers-begin"), Some(BEGIN_KEY)).primary(),
                 )),
         ));
-        sections.push(card("Speakers across your devices", rows(body)));
+        sections.push(card(&t("speakers-overview-title"), rows(body)));
         sections
     }
 
@@ -708,42 +900,39 @@ impl SpeakersPane {
         let arrangement = Dropdown::from_state(
             Arrangement::ALL
                 .iter()
-                .map(|arrangement| arrangement.label().to_string())
+                .map(|arrangement| arrangement.label())
                 .collect(),
             &self.arrangement_state,
         )
         .with_id("speakers.arrangement")
-        .with_accessible_name("Arrangement");
+        .with_accessible_name(t("speakers-arrangement"));
         let candidates = self.setup.candidates();
         let mut body = vec![choice_row_described(
-            "Arrangement",
-            match self.setup.arrangement() {
-                Arrangement::Stereo => "Two speakers play left and right",
-                Arrangement::Surround => "Three to six speakers in named positions",
-                Arrangement::Room => "Speakers placed anywhere around you",
-            },
+            &t("speakers-arrangement"),
+            &self.setup.arrangement().description(),
             Box::new(arrangement),
         )];
         if candidates.is_empty() {
-            body.push(caption(
-                "No speakers are available. Turn on Media in Devices & Sync on each device you want to use.",
-            ));
+            body.push(caption(&t("speakers-no-outputs")));
         }
         for (candidate, (_, _, state)) in candidates.iter().zip(&self.chosen_states) {
             body.push(setting_row_described(
                 &candidate.label(),
-                if candidate.local {
-                    "This device"
+                &t(if candidate.local {
+                    "speakers-output-this-device"
                 } else {
-                    "Asks for approval on that device when you save"
-                },
+                    "speakers-output-asks"
+                }),
                 Box::new(
                     Toggle::from_state(state)
                         .with_id(&format!(
                             "speakers.choose.{}.{}",
                             candidate.device, candidate.output
                         ))
-                        .with_accessible_name(&format!("Use {}", candidate.label())),
+                        .with_accessible_name(&t_args(
+                            "speakers-output-use",
+                            &[("label", candidate.label().into())],
+                        )),
                 ),
             ));
         }
@@ -755,37 +944,39 @@ impl SpeakersPane {
             true,
             Some((
                 "speakers.next",
-                "Continue",
+                &t("speakers-continue"),
                 self.setup.outputs_problem().is_none(),
             )),
         ));
-        vec![card("Choose speakers", rows(body))]
+        vec![card(&t("speakers-choose-title"), rows(body))]
     }
 
     fn build_identify(&self, index: usize, played: bool) -> Vec<Box<dyn Widget>> {
         let count = self.setup.chosen().len();
-        let mut body = vec![caption(&format!(
-            "Speaker {} of {count}. Play a sound and listen for which speaker it comes from.",
-            index.saturating_add(1)
+        let mut body = vec![caption(&t_args(
+            "speakers-identify-intro",
+            &[
+                ("index", index.saturating_add(1).to_string().into()),
+                ("count", count.to_string().into()),
+            ],
         ))];
         body.push(Box::new(
             ui::widget::Row::new()
                 .push(Box::new(
-                    Button::new("speakers.play", "Play sound", Some(PLAY_KEY))
+                    Button::new("speakers.play", &t("speakers-play-sound"), Some(PLAY_KEY))
                         .with_icon(ui::icons::Icon::Volume2),
                 ))
                 .push(Box::new(ui::widget::Spacer::new())),
         ));
         if self.setup.arrangement() == Arrangement::Room {
-            body.push(caption(
-                "You will place it on the room layout next; each speaker starts on an arc in front of you.",
-            ));
+            body.push(caption(&t("speakers-identify-room-next")));
             body.push(Self::nav_buttons(true, None));
             body.push(Box::new(
                 ui::widget::Row::new()
                     .push(Box::new(ui::widget::Spacer::new()))
                     .push(Box::new(
-                        Button::new("speakers.skip", "Next speaker", Some(SKIP_KEY)).primary(),
+                        Button::new("speakers.skip", &t("speakers-next-speaker"), Some(SKIP_KEY))
+                            .primary(),
                     )),
             ));
         } else {
@@ -799,17 +990,23 @@ impl SpeakersPane {
                         Some(&key),
                     )
                     .with_enabled(played)
-                    .with_accessible_name(&format!("It was the {}", role.describe())),
+                    .with_accessible_name(&t_args(
+                        "speakers-identify-answer",
+                        &[("role", role_text(role).into())],
+                    )),
                 ));
             }
-            body.push(setting_row("Which one just played?", Box::new(answers)));
+            body.push(setting_row(
+                &t("speakers-identify-title"),
+                Box::new(answers),
+            ));
             if !played {
-                body.push(caption("Play the sound first."));
+                body.push(caption(&t("speakers-identify-play-first")));
             }
             body.extend(self.message_rows());
             body.push(Self::nav_buttons(true, None));
         }
-        vec![card("Which one just played?", rows(body))]
+        vec![card(&t("speakers-identify-title"), rows(body))]
     }
 
     fn build_layout(&self) -> Vec<Box<dyn Widget>> {
@@ -820,7 +1017,7 @@ impl SpeakersPane {
             .map(|candidate| candidate.device_label.clone())
             .collect::<Vec<_>>();
         let mut body = vec![
-            caption("Drag each speaker to where it stands. You sit at the marker."),
+            caption(&t("speakers-layout-intro")),
             Box::new(RoomCanvas::new(self.room_points.clone(), labels.clone())),
         ];
         for (index, ((x, y), label)) in self.placement_states.iter().zip(&labels).enumerate() {
@@ -832,16 +1029,25 @@ impl SpeakersPane {
                         .push(Box::new(
                             Slider::from_state(x)
                                 .with_id(&format!("speakers.layout.{index}.x"))
-                                .with_accessible_name(&format!("{label}: left to right")),
+                                .with_accessible_name(&t_args(
+                                    "speakers-layout-x",
+                                    &[("label", label.as_str().into())],
+                                )),
                         ))
                         .push(Box::new(
                             Slider::from_state(y)
                                 .with_id(&format!("speakers.layout.{index}.y"))
-                                .with_accessible_name(&format!("{label}: behind to in front")),
+                                .with_accessible_name(&t_args(
+                                    "speakers-layout-y",
+                                    &[("label", label.as_str().into())],
+                                )),
                         ))
                         .push(Box::new(
-                            Button::new(&play, "Play", Some(&play))
-                                .with_accessible_name(&format!("Play a sound on {label}")),
+                            Button::new(&play, &t("speakers-layout-play"), Some(&play))
+                                .with_accessible_name(&t_args(
+                                    "speakers-layout-play-on",
+                                    &[("label", label.as_str().into())],
+                                )),
                         )),
                 ),
             ));
@@ -853,38 +1059,36 @@ impl SpeakersPane {
             true,
             Some((
                 "speakers.next",
-                "Continue",
+                &t("speakers-continue"),
                 self.setup.layout_problem().is_none(),
             )),
         ));
-        vec![card("Room layout", rows(body))]
+        vec![card(&t("speakers-layout-title"), rows(body))]
     }
 
     fn build_name(&self) -> Vec<Box<dyn Widget>> {
         let name = TextInput::from_state(&self.name_state)
             .with_id("speakers.name")
-            .with_placeholder("Living room")
-            .with_accessible_name("Name");
+            .with_placeholder(&t("speakers-name-placeholder"))
+            .with_accessible_name(t("speakers-name"));
         let mut body = vec![choice_row_described(
-            "Name",
-            "Shown wherever you can play to these speakers",
+            &t("speakers-name"),
+            &t("speakers-name-description"),
             Box::new(name),
         )];
         for (candidate, role) in self.setup.chosen().iter().zip(self.setup.roles()) {
             body.push(value_row(
                 &candidate.label(),
-                role.map_or("—", SpeakerRoleSpec::describe),
+                &role.map_or_else(|| "—".to_string(), role_text),
             ));
         }
-        body.push(caption(
-            "Your other devices each ask once whether to join. Nothing plays there until you approve.",
-        ));
+        body.push(caption(&t("speakers-name-join-note")));
         body.extend(self.message_rows());
         body.push(Self::nav_buttons(
             true,
-            Some(("speakers.save", "Save", self.in_flight == 0)),
+            Some(("speakers.save", &t("speakers-save"), self.in_flight == 0)),
         ));
-        vec![card("Name your speakers", rows(body))]
+        vec![card(&t("speakers-name-title"), rows(body))]
     }
 
     #[expect(
@@ -894,29 +1098,31 @@ impl SpeakersPane {
     fn build_calibrate(&self, group: &str) -> Vec<Box<dyn Widget>> {
         let Some(known) = self.setup.group(group) else {
             let mut body = self.message_rows();
-            body.push(caption("Saving your speakers…"));
+            body.push(caption(&t("speakers-saving")));
             body.push(Box::new(
                 ui::widget::Row::new()
                     .push(Box::new(ui::widget::Spacer::new()))
                     .push(Box::new(Button::new(
                         "speakers.done",
-                        "Done",
+                        &t("speakers-done"),
                         Some(DONE_KEY),
                     ))),
             ));
-            return vec![card("Speakers saved", rows(body))];
+            return vec![card(&t("speakers-saved-title"), rows(body))];
         };
         let mut body = Vec::new();
         for member in &known.members {
             body.push(setting_row_described(
                 &member.device_label,
-                &format!(
-                    "{} · {}",
-                    member.role.describe(),
-                    trim_summary(&member.trim)
+                &t_args(
+                    "speakers-member-role-trim",
+                    &[
+                        ("role", role_text(member.role).into()),
+                        ("trim", trim_summary(&member.trim).into()),
+                    ],
                 ),
                 semantic_status_pill(
-                    member.status.label(),
+                    &member_status_text(member.status),
                     if member.status == ui::collaboration::SpeakerMemberStatus::Ready {
                         StatusTone::Success
                     } else {
@@ -927,53 +1133,62 @@ impl SpeakersPane {
         }
         let run = self.setup.calibration(group);
         let phase = run.map(|run| run.phase);
-        let microphones = self.setup.microphones();
         if !matches!(
             phase,
-            Some(CalibrationPhaseInfo::Measuring | CalibrationPhaseInfo::Proposed)
-        ) && !microphones.is_empty()
-        {
-            let chooser = Dropdown::from_state(
-                microphones
-                    .iter()
-                    .map(|microphone| microphone.label.clone())
-                    .collect(),
-                &self.microphone_state,
+            Some(
+                CalibrationPhaseInfo::WaitingForMicrophones
+                    | CalibrationPhaseInfo::Measuring
+                    | CalibrationPhaseInfo::Proposed
             )
-            .with_id("speakers.microphone")
-            .with_accessible_name("Microphone")
-            .with_placeholder(
-                microphones
-                    .first()
-                    .map_or("Microphone", |microphone| microphone.label.as_str()),
-            );
-            body.push(choice_row_described(
-                "Microphone",
-                "Put it where you usually sit",
-                Box::new(chooser),
-            ));
+        ) {
+            body.extend(self.microphone_rows(group));
         }
         if let Some(run) = run {
+            if let Some(label) = &run.listening_label {
+                body.push(caption(&t_args(
+                    "speakers-run-aligned-for",
+                    &[("label", label.as_str().into())],
+                )));
+            }
             for member in &run.members {
                 let status = match &member.state {
-                    CalibrationMemberState::Waiting => "Waiting".to_string(),
-                    CalibrationMemberState::Measuring => "Listening…".to_string(),
-                    CalibrationMemberState::Measured { delay_ms, level_db } => {
-                        format!("Heard after {delay_ms:.1} ms at {level_db:+.1} dB")
-                    }
+                    CalibrationMemberState::Waiting => t("speakers-run-member-waiting"),
+                    CalibrationMemberState::Measuring => t("speakers-run-member-measuring"),
+                    CalibrationMemberState::Measured {
+                        delay_ms,
+                        output_latency_ms,
+                        acoustic_ms,
+                        ..
+                    } => measured_text(*delay_ms, *output_latency_ms, *acoustic_ms),
                     CalibrationMemberState::Failed { reason } => reason.clone(),
                 };
                 let detail = member.after.as_ref().map_or_else(
                     || status.clone(),
                     |after| {
-                        format!(
-                            "Before {} → after {}",
-                            trim_summary(&member.before),
-                            trim_summary(after)
+                        t_args(
+                            "speakers-trim-change",
+                            &[
+                                ("before", trim_summary(&member.before).into()),
+                                ("after", trim_summary(after).into()),
+                            ],
                         )
                     },
                 );
                 body.push(value_row(&member.label, &detail));
+            }
+            for microphone in &run.microphones {
+                let label = if microphone.listening {
+                    t_args(
+                        "speakers-run-microphone-listening-position",
+                        &[("label", microphone.label.as_str().into())],
+                    )
+                } else {
+                    microphone.label.clone()
+                };
+                body.push(value_row(&label, &microphone_run_text(&microphone.state)));
+            }
+            if run.phase == CalibrationPhaseInfo::WaitingForMicrophones {
+                body.push(caption(&t("speakers-run-waiting-for-microphones")));
             }
             if let Some(message) = &run.message {
                 body.push(caption(message));
@@ -983,7 +1198,7 @@ impl SpeakersPane {
         let mut actions = ui::widget::Row::new()
             .push(Box::new(Button::new(
                 "speakers.done",
-                "Done",
+                &t("speakers-done"),
                 Some(DONE_KEY),
             )))
             .push(Box::new(ui::widget::Spacer::new()));
@@ -992,21 +1207,28 @@ impl SpeakersPane {
                 actions = actions
                     .push(Box::new(Button::new(
                         "speakers.dismiss",
-                        "Discard",
+                        &t("speakers-discard"),
                         Some(DISMISS_KEY),
                     )))
                     .push(Box::new(
-                        Button::new("speakers.apply", "Apply", Some(APPLY_KEY)).primary(),
+                        Button::new("speakers.apply", &t("speakers-apply"), Some(APPLY_KEY))
+                            .primary(),
                     ));
             }
             Some(CalibrationPhaseInfo::Applied) => {
                 actions = actions.push(Box::new(Button::new(
                     "speakers.revert",
-                    "Revert",
+                    &t("speakers-revert"),
                     Some(REVERT_KEY),
                 )));
             }
-            Some(CalibrationPhaseInfo::Measuring) => {}
+            Some(CalibrationPhaseInfo::Measuring | CalibrationPhaseInfo::WaitingForMicrophones) => {
+                actions = actions.push(Box::new(Button::new(
+                    "speakers.cancel",
+                    &t("speakers-calibration-cancel"),
+                    Some(CANCEL_KEY),
+                )));
+            }
             Some(CalibrationPhaseInfo::Failed) | None => {
                 let problem = self.setup.calibration_problem(group);
                 if let Some(problem) = &problem {
@@ -1015,11 +1237,11 @@ impl SpeakersPane {
                 actions = actions.push(Box::new(
                     Button::new(
                         "speakers.calibrate",
-                        if phase.is_some() {
-                            "Try again"
+                        &t(if phase.is_some() {
+                            "speakers-try-again"
                         } else {
-                            "Calibrate"
-                        },
+                            "speakers-calibrate-button"
+                        }),
                         Some(CALIBRATE_KEY),
                     )
                     .primary()
@@ -1028,16 +1250,20 @@ impl SpeakersPane {
             }
         }
         body.push(Box::new(actions));
-        vec![card(&format!("Calibrate {}", known.name), rows(body))]
+        vec![card(
+            &t_args(
+                "speakers-calibrate-title",
+                &[("name", known.name.as_str().into())],
+            ),
+            rows(body),
+        )]
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
         if !self.setup.snapshot().media_enabled && !self.refreshing {
             return cards(vec![card(
-                "Speakers across your devices",
-                rows(vec![caption(
-                    "Turn on Media in Devices & Sync to play through speakers on several of your devices.",
-                )]),
+                &t("speakers-overview-title"),
+                rows(vec![caption(&t("speakers-media-off"))]),
             )]);
         }
         cards(match self.setup.step().clone() {
@@ -1067,7 +1293,8 @@ fn from_unit(unit: f64) -> i32 {
 }
 
 impl Widget for SpeakersPane {
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+        let (state, root) = ui::doc::document(state, root);
         self.poll_finished();
         if let Some(command_state) = &self.command_state
             && let Some(operation) = command_state.get()
@@ -1142,33 +1369,12 @@ impl Widget for SpeakersPane {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let Some(composed) = &mut self.composed
-            && let Ok(children) = taffy.children(node_id)
+            && let Ok(children) = ctx.taffy.children(ctx.node_id)
             && let Some(child) = children.first()
         {
-            composed.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                *child,
-                taffy,
-            );
+            composed.handle_event(event, &mut ctx.reborrow(ctx.path, *child));
         }
     }
 
@@ -1279,8 +1485,6 @@ impl RoomCanvas {
 }
 
 impl Widget for RoomCanvas {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -1365,7 +1569,7 @@ impl Widget for RoomCanvas {
         );
         text_renderer.draw_text(
             scene,
-            "You",
+            &t("speakers-room-you"),
             theme.tokens.typography.scale.xs,
             colors.text_dim,
             transform.pre_translate((origin.x + 8.0, origin.y + 4.0).into()),
@@ -1404,21 +1608,11 @@ impl Widget for RoomCanvas {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.cursor =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 if let Some(index) = self.dragging {
                     let moved = self.to_room(self.cursor);
                     self.points.update(|points| {
@@ -1426,7 +1620,7 @@ impl Widget for RoomCanvas {
                             *point = moved;
                         }
                     });
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseInput {
@@ -1442,14 +1636,14 @@ impl Widget for RoomCanvas {
                     .filter(|(_, distance)| *distance <= DOT_RADIUS * 1.6)
                     .min_by(|left, right| left.1.total_cmp(&right.1))
                     .map(|(index, _)| index);
-                *handled |= self.dragging.is_some();
+                *ctx.handled |= self.dragging.is_some();
             }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
                 button: MouseButton::Left,
                 ..
             } => {
-                *handled |= self.dragging.take().is_some();
+                *ctx.handled |= self.dragging.take().is_some();
             }
             _ => {}
         }
@@ -1543,6 +1737,7 @@ mod tests {
                         trim: SpeakerTrimInfo::default(),
                     }],
                     playback: None,
+                    microphones: Vec::new(),
                 }],
                 calibrations: Vec::new(),
             }),
@@ -1689,17 +1884,45 @@ mod tests {
         );
     }
 
+    fn microphone_switch(pane: &SpeakersPane, device: &str) -> ui::LocalState<bool> {
+        pane.microphone_states
+            .iter()
+            .find(|(known, _)| known == device)
+            .map(|(_, state)| state.clone())
+            .unwrap()
+    }
+
+    /// The set's own shelf listens too by default; the phone is switched on,
+    /// the listening position moves to it, and the shelf is switched off.
+    fn sit_at_the_phone_without_the_shelf(pane: &mut SpeakersPane, doc: &mut AutoCommit) {
+        let phone = microphone_switch(pane, "phone");
+        assert!(!phone.with(|on| *on));
+        assert!(microphone_switch(pane, "shelf").with(|on| *on));
+        phone.set(true);
+        settle(pane, doc);
+        pane.listening_state.set("phone · Microphone".into());
+        settle(pane, doc);
+        microphone_switch(pane, "shelf").set(false);
+        settle(pane, doc);
+    }
+
     #[test]
     fn calibration_is_a_proposal_until_applied() {
         use ui::collaboration::{CalibrationInfo, CalibrationMemberInfo};
         let service = fake();
         {
             let mut snapshot = service.snapshot.lock().unwrap();
-            snapshot.devices[0].microphones.push(SpeakerEndpointInfo {
-                selector: "ee".repeat(16),
-                label: "Microphone".into(),
-                is_default: true,
-            });
+            for (device, local) in [("desk", true), ("shelf", false), ("phone", false)] {
+                snapshot.groups[0]
+                    .microphones
+                    .push(ui::collaboration::CalibrationMicrophoneInfo {
+                        device: device.into(),
+                        device_label: device.into(),
+                        label: "Microphone".into(),
+                        local,
+                        status: ui::collaboration::MicrophoneStatus::Ready,
+                    });
+            }
         }
         let mut pane = SpeakersPane::with_service(service.clone());
         let mut doc = AutoCommit::new();
@@ -1712,6 +1935,7 @@ mod tests {
                 group: group.clone()
             }
         );
+        sit_at_the_phone_without_the_shelf(&mut pane, &mut doc);
         press(&mut pane, &mut doc, CALIBRATE_KEY);
         assert!(
             service
@@ -1720,8 +1944,8 @@ mod tests {
                 .unwrap()
                 .contains(&SpeakerCommand::StartCalibration {
                     group: group.clone(),
-                    microphone_device: "desk".into(),
-                    microphone: "ee".repeat(16),
+                    excluded: vec!["desk".into(), "shelf".into()],
+                    listening: Some("phone".into()),
                 })
         );
         // The measurement finishes: the shell reports a proposal.
@@ -1739,6 +1963,8 @@ mod tests {
                     state: CalibrationMemberState::Measured {
                         delay_ms: 4.0,
                         level_db: -6.0,
+                        output_latency_ms: Some(1.0),
+                        acoustic_ms: Some(3.0),
                     },
                     before: SpeakerTrimInfo::default(),
                     after: Some(SpeakerTrimInfo {
@@ -1747,6 +1973,8 @@ mod tests {
                         eq_bands: 2,
                     }),
                 }],
+                microphones: Vec::new(),
+                listening_label: Some("phone".into()),
                 message: None,
             });
         pane.refresh();

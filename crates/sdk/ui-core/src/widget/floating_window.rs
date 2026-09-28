@@ -16,6 +16,7 @@
 )]
 
 use crate::time::{Duration, Instant};
+use crate::widget::{AppModel, ModelPath};
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -668,14 +669,16 @@ impl<C: Widget> FloatingWindow<C> {
         let mut inner_handled = false;
         self.content.handle_event(
             event,
-            scale_factor,
-            &modifiers,
-            state,
-            path,
-            &mut inner_handled,
-            focus_target,
-            node,
-            taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor,
+                modifiers: &modifiers,
+                state,
+                path,
+                handled: &mut inner_handled,
+                focus_target,
+                node_id: node,
+                taffy,
+            },
         );
     }
 
@@ -784,10 +787,6 @@ impl<C: Widget> FloatingWindow<C> {
 }
 
 impl<C: Widget + 'static> Widget for FloatingWindow<C> {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
-        self.content.sync(state, path);
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -1073,31 +1072,20 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
         clippy::too_many_lines,
         reason = "the floating surface routes pointer, keyboard, and touch ownership in one event boundary"
     )]
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if !self.open {
             return;
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let pt = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let pt = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 if let Some(drag) = self.drag {
                     self.update_pointer_presence(pt);
                     self.apply_drag(drag, pt);
                     self.last_cursor = pt;
                     let theme = self.layout_theme.clone();
                     self.place_content(&theme, &mut TextRenderer::new());
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 self.update_pointer_position(pt);
@@ -1106,11 +1094,11 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
                 if self.content_area().contains(pt) {
                     self.forward_to_content(
                         event,
-                        scale_factor,
-                        *modifiers,
-                        state,
-                        path,
-                        focus_target,
+                        ctx.scale_factor,
+                        *ctx.modifiers,
+                        ctx.state,
+                        ctx.path,
+                        ctx.focus_target,
                     );
                 }
             }
@@ -1129,7 +1117,7 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
                         start: self.rect,
                         from: pt,
                     });
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 if self.closable
@@ -1138,34 +1126,41 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
                         || self.overlay_chrome_alpha_at(crate::time::now(), false) > 0.2)
                 {
                     self.set_open(false);
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 if self.title_bar_rect().contains(pt) {
                     self.drag = Some(Drag::Move {
                         grab: Point::new(pt.x - self.rect.x0, pt.y - self.rect.y0),
                     });
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 if !self.rect.contains(pt) {
                     // A desktop PiP is click-through outside its own shape;
                     // dialogs retain the historical modal swallow.
-                    *handled = self.modal;
+                    *ctx.handled = self.modal;
                     return;
                 }
-                self.forward_to_content(event, scale_factor, *modifiers, state, path, focus_target);
-                *handled = true;
+                self.forward_to_content(
+                    event,
+                    ctx.scale_factor,
+                    *ctx.modifiers,
+                    ctx.state,
+                    ctx.path,
+                    ctx.focus_target,
+                );
+                *ctx.handled = true;
             }
             WindowEvent::Touch(touch) => {
-                *handled = self.handle_touch(
+                *ctx.handled = self.handle_touch(
                     touch,
                     event,
-                    scale_factor,
-                    *modifiers,
-                    state,
-                    path,
-                    focus_target,
+                    ctx.scale_factor,
+                    *ctx.modifiers,
+                    ctx.state,
+                    ctx.path,
+                    ctx.focus_target,
                 );
             }
             WindowEvent::MouseInput {
@@ -1176,7 +1171,7 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
                     self.drag = None;
                     self.update_pointer_position(self.last_cursor);
                 }
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -1188,7 +1183,7 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
                 ..
             } => {
                 self.set_open(false);
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -1198,12 +1193,19 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
                         ..
                     },
                 ..
-            } if self.focused && modifiers.state().alt_key() => {
-                *handled = self.nudge_with_keyboard(*key, modifiers.state().shift_key());
+            } if self.focused && ctx.modifiers.state().alt_key() => {
+                *ctx.handled = self.nudge_with_keyboard(*key, ctx.modifiers.state().shift_key());
             }
             WindowEvent::KeyboardInput { .. } => {
-                self.forward_to_content(event, scale_factor, *modifiers, state, path, focus_target);
-                *handled = true;
+                self.forward_to_content(
+                    event,
+                    ctx.scale_factor,
+                    *ctx.modifiers,
+                    ctx.state,
+                    ctx.path,
+                    ctx.focus_target,
+                );
+                *ctx.handled = true;
             }
             _ => {}
         }
@@ -1334,8 +1336,8 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         if target == "floating-window.close"
             && matches!(action, crate::a11y::Action::Activate)
@@ -1636,7 +1638,6 @@ mod tests {
         rect: Rect,
     }
     impl Widget for Probe {
-        fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
         fn build_layout(
             &mut self,
             taffy: &mut TaffyTree<()>,
@@ -1671,18 +1672,7 @@ mod tests {
             _p: &PresenceCtx,
         ) {
         }
-        fn handle_event(
-            &mut self,
-            _e: &WindowEvent,
-            _sf: f64,
-            _m: &winit::event::Modifiers,
-            _s: &mut AutoCommit,
-            _p: &ObjId,
-            _h: &mut bool,
-            _ft: &mut Option<NodeId>,
-            _n: NodeId,
-            _t: &TaffyTree<()>,
-        ) {
+        fn handle_event(&mut self, _e: &WindowEvent, _ctx: &mut crate::widget::EventCtx<'_>) {
             self.events.set(self.events.get().saturating_add(1));
         }
         fn name(&self) -> &'static str {
@@ -1758,14 +1748,16 @@ mod tests {
         let root = automerge::ROOT;
         w.handle_event(
             e,
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut ft,
-            node,
-            &taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &winit::event::Modifiers::default(),
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut ft,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         handled
     }

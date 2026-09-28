@@ -13,6 +13,7 @@
 use crate::shell::state::WorkspaceAuthority as _;
 use std::time::{Duration, Instant};
 use std::{collections::HashMap, sync::Arc};
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use settings_store::magnifier::MagnifierStep;
@@ -33,6 +34,7 @@ use crate::shell::quick_settings::actions::QsActions as _;
 mod controller;
 mod device_fabric;
 mod displays;
+mod emoji_layer;
 mod history;
 pub(crate) mod layers;
 mod now_playing;
@@ -43,7 +45,9 @@ mod shortcuts;
 mod tab_menu;
 
 pub use controller::{ControllerDelivery, ControllerKey};
-use layers::{LayerCx, LayerId, LayerIntent, LayerPaint, OverlayStack, ShellLayer as _};
+use layers::{
+    Band, LayerCx, LayerGeometry, LayerId, LayerIntent, LayerPaint, OverlayStack, ShellLayer as _,
+};
 use tab_menu::TabMenuTarget;
 
 pub use device_fabric::{
@@ -792,17 +796,12 @@ pub struct ShellOverlayHost {
     /// Numbered cards painted on every display when Settings asks which
     /// screen is which.
     display_identify: crate::shell::display_identify::DisplayIdentify,
-    /// Keep or revert a display change a layout tool made, on every display.
-    display_confirm: crate::shell::display_confirm::DisplayConfirmPrompt,
     /// Alt+Tab: which windows were used most recently, and the switcher
     /// while Alt is held.
     window_switcher: tilo_desktop::window_switcher::WindowSwitcher,
     /// Live window previews the switcher and the overview show, rendered
     /// by the compositor only while one of them is up.
     window_previews: crate::shell::window_previews::WindowPreviews,
-    /// The emoji picker. Its picks wait here for the compositor, which
-    /// commits them through the seat's input method.
-    emoji_picker: tilo_desktop::emoji_picker::EmojiPicker,
     /// The focused text field's caret in desktop coordinates, as the
     /// compositor last reported it; the emoji picker opens against it.
     text_caret: Option<Rect>,
@@ -1587,6 +1586,7 @@ impl ShellOverlayHost {
             .into_iter()
             .chain(self.strip_chrome_bounds(flags, quick_settings_transition_visible))
             .reduce(|current, rect| current.union(rect));
+        let outputs = self.layer_outputs();
         self.layers.draw(
             LayerId::PowerMenu,
             &mut LayerPaint {
@@ -1595,7 +1595,7 @@ impl ShellOverlayHost {
                 text_renderer,
                 theme,
                 presence,
-                viewport: self.rect,
+                geometry: self.layer_geometry(&outputs),
             },
         );
         self.draw_collaborators_dropdown(
@@ -1684,9 +1684,7 @@ impl ShellOverlayHost {
             return layer.is_open();
         }
         match id {
-            LayerId::DisplayConfirmation => self.display_confirm.visible(),
             LayerId::WindowSwitcher => self.window_switcher.is_revealed(Instant::now()),
-            LayerId::EmojiPicker => self.emoji_picker.is_open(),
             LayerId::DisplayLayouts => flags.projection,
             // The palette has a complete semantic tree (query, result list,
             // and focused result).  It is drawn as a top overlay, so publish
@@ -1717,7 +1715,10 @@ impl ShellOverlayHost {
             LayerId::NowPlaying => self.now_playing_published(),
             LayerId::ShortcutHelp => flags.shortcut_help,
             // Stacked; answered above.
-            LayerId::TabContextMenu | LayerId::PowerMenu => false,
+            LayerId::DisplayConfirmation
+            | LayerId::EmojiPicker
+            | LayerId::TabContextMenu
+            | LayerId::PowerMenu => false,
         }
     }
 
@@ -2129,10 +2130,8 @@ impl ShellOverlayHost {
             remark: remark::RemarkHost::default(),
             projection_overlay: inputs.projection_overlay,
             display_identify: crate::shell::display_identify::DisplayIdentify::default(),
-            display_confirm: crate::shell::display_confirm::DisplayConfirmPrompt::default(),
             window_switcher: tilo_desktop::window_switcher::WindowSwitcher::default(),
             window_previews: crate::shell::window_previews::WindowPreviews::default(),
-            emoji_picker: tilo_desktop::emoji_picker::EmojiPicker::new(),
             text_caret: None,
             pairing: crate::bluetooth_prompt::PairingOverlay::default(),
             followed_peer: None,
@@ -2697,21 +2696,10 @@ impl ShellOverlayHost {
         self.capture_mirrors.len()
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        clippy::trivially_copy_pass_by_ref,
-        reason = "Widget event-dispatch context plus the selected mirror node"
-    )]
     fn route_capture_mirror_event(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        taffy: &TaffyTree<()>,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
         let pointer = self.last_cursor.unwrap_or(Point::ZERO);
         if matches!(event, WindowEvent::CursorMoved { .. }) {
@@ -2738,18 +2726,8 @@ impl ShellOverlayHost {
         let Some((_, mirror)) = self.capture_mirrors.get_mut(index) else {
             return false;
         };
-        mirror.handle_event(
-            event,
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node,
-            taffy,
-        );
-        let consumed = *handled || mirror.wants_pointer_capture();
+        mirror.handle_event(event, &mut ctx.reborrow(ctx.path, node));
+        let consumed = *ctx.handled || mirror.wants_pointer_capture();
         if !mirror.is_open() {
             let (id, _) = self.capture_mirrors.remove(index);
             self.closed_capture_mirrors.push(id);
@@ -2888,13 +2866,17 @@ impl ShellOverlayHost {
     /// Open the emoji picker at the focused field's caret (centred on the
     /// display with focus when the field reports none), or close it.
     pub fn toggle_emoji_picker(&mut self) {
-        if self.emoji_picker.is_open() {
-            self.emoji_picker.close();
+        if self.layers.emoji_picker.is_open() {
+            self.layers.emoji_picker.close();
         } else {
             let caret = self.text_caret;
-            let viewport = self.emoji_picker_viewport_for(caret);
-            self.emoji_picker
-                .open_at(viewport, caret, &crate::shell::i18n::current_locale());
+            let outputs = self.layer_outputs();
+            let viewport = self.layer_geometry(&outputs).display_for(caret);
+            self.layers.emoji_picker.open_at(
+                viewport,
+                caret,
+                &crate::shell::i18n::current_locale(),
+            );
         }
         if let Some(chrome) = self.chrome.as_ref() {
             chrome.borrow_mut().bump();
@@ -2902,7 +2884,7 @@ impl ShellOverlayHost {
     }
 
     pub fn emoji_picker_open(&self) -> bool {
-        self.emoji_picker.is_open()
+        self.layers.emoji_picker.is_open()
     }
 
     /// Where the focused text field's caret is, in desktop coordinates, or
@@ -2914,13 +2896,13 @@ impl ShellOverlayHost {
     /// The emoji picked since the last call, for the compositor to commit
     /// into the focused field.
     pub fn take_emoji_commits(&mut self) -> Vec<String> {
-        self.emoji_picker.take_commits()
+        self.layers.emoji_picker.take_commits()
     }
 
     /// The compositor committed `text` into a field; a secret field's emoji
     /// stay out of the recents.
     pub fn note_emoji_delivered(&mut self, text: &str, sensitive: bool) {
-        self.emoji_picker.note_delivered(text, sensitive);
+        self.layers.emoji_picker.note_delivered(text, sensitive);
     }
 
     /// Keep the emoji recents in the user's private state.
@@ -2928,49 +2910,12 @@ impl ShellOverlayHost {
         &mut self,
         store: crate::shell::emoji_recents::FileRecentsStore,
     ) {
-        self.emoji_picker.attach_store(Box::new(store));
+        self.layers.emoji_picker.attach_store(Box::new(store));
     }
 
     /// The picker's state, for tests and the control socket's state dump.
     pub fn emoji_picker(&self) -> &tilo_desktop::emoji_picker::EmojiPicker {
-        &self.emoji_picker
-    }
-
-    /// The display the open picker is placed on.
-    fn emoji_picker_viewport(&self) -> Rect {
-        self.emoji_picker_viewport_for(self.emoji_picker.anchor())
-    }
-
-    /// The display holding `caret`, else the display with focus on a
-    /// partitioned desktop, else the desktop.
-    fn emoji_picker_viewport_for(&self, caret: Option<Rect>) -> Rect {
-        let output_rect = |output: &OutputGeometry| {
-            Rect::new(
-                output.x,
-                output.y,
-                output.x + output.width,
-                output.y + output.height,
-            )
-        };
-        if let Some(display) = caret.and_then(|caret| {
-            self.outputs
-                .iter()
-                .map(output_rect)
-                .find(|display| display.contains(caret.center()))
-        }) {
-            return display;
-        }
-        let focused = self
-            .is_partitioned()
-            .then(|| {
-                self.chrome
-                    .as_ref()
-                    .and_then(|chrome| chrome.borrow().tree().desktop.outputs.focused_display())
-            })
-            .flatten();
-        focused
-            .and_then(|id| self.outputs.iter().find(|output| output.id == id))
-            .map_or(self.rect, output_rect)
+        &self.layers.emoji_picker
     }
 
     /// Open global search, as a lone Super tap does.
@@ -3475,8 +3420,8 @@ impl ShellOverlayHost {
             .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok());
         let (Some(name), Some(key)) = (name, key) else {
             chrome.borrow_mut().push_notification(
-                "Invite unavailable",
-                "Their identity is not verified in any room you share, so an invite could not be bound to them.",
+                t("host-invite-unavailable-title"),
+                t("host-invite-unverified"),
             );
             return;
         };
@@ -3503,8 +3448,8 @@ impl ShellOverlayHost {
         };
         if workspaces.is_empty() {
             chrome.borrow_mut().push_notification(
-                "Invite unavailable",
-                "You have no workspace you may invite people into.",
+                t("host-invite-unavailable-title"),
+                t("host-invite-no-workspace"),
             );
             return;
         }
@@ -3768,7 +3713,9 @@ impl ShellOverlayHost {
         transaction: u64,
         tool: Option<settings_store::display_tools::DisplayTool>,
     ) {
-        self.display_confirm.show(transaction, tool, Instant::now());
+        self.layers
+            .display_confirm
+            .show(transaction, tool, Instant::now());
         if let Some(chrome) = self.chrome.as_ref() {
             chrome.borrow_mut().bump();
         }
@@ -3797,14 +3744,14 @@ impl ShellOverlayHost {
     /// Whether the keep-or-revert prompt for a tool's display change is up.
     /// It owns the keyboard and pointer while it is.
     pub fn display_confirmation_visible(&self) -> bool {
-        self.display_confirm.visible()
+        self.layers.display_confirm.visible()
     }
 
     /// Re-read the transaction the prompt asks about now: close it if it
     /// was answered elsewhere, revert it if its time ran out. Returns
     /// whether the prompt closed.
     pub fn poll_display_confirmation(&mut self) -> bool {
-        let closed = self.display_confirm.poll(Instant::now(), true);
+        let closed = self.layers.display_confirm.poll(Instant::now(), true);
         if closed && let Some(chrome) = self.chrome.as_ref() {
             chrome.borrow_mut().bump();
         }
@@ -3813,14 +3760,35 @@ impl ShellOverlayHost {
 
     /// Where the prompt's card sits on each display.
     pub fn display_confirmation_cards(&self) -> Vec<crate::shell::display_confirm::ConfirmCard> {
-        self.display_confirm.cards(&self.display_confirm_outputs())
+        self.layers.display_confirm.cards(&self.layer_outputs())
     }
 
-    fn display_confirm_outputs(&self) -> Vec<Rect> {
+    /// Every display's rect; the host's bounds alone before it knows of any.
+    fn layer_outputs(&self) -> Vec<Rect> {
         if self.outputs.is_empty() {
             vec![self.rect]
         } else {
             self.outputs.iter().map(OutputGeometry::rect).collect()
+        }
+    }
+
+    /// Where stacked layers may place themselves, over `outputs` from
+    /// [`Self::layer_outputs`].
+    fn layer_geometry<'a>(&self, outputs: &'a [Rect]) -> LayerGeometry<'a> {
+        let focused_output = self
+            .is_partitioned()
+            .then(|| {
+                self.chrome
+                    .as_ref()
+                    .and_then(|chrome| chrome.borrow().tree().desktop.outputs.focused_display())
+            })
+            .flatten()
+            .and_then(|id| self.outputs.iter().find(|output| output.id == id))
+            .map(OutputGeometry::rect);
+        LayerGeometry {
+            viewport: self.rect,
+            outputs,
+            focused_output,
         }
     }
 
@@ -6928,6 +6896,28 @@ impl ShellOverlayHost {
             }
         }
         None
+    }
+
+    /// Every tile laid out on this device, with the tab it shows, in
+    /// screen space: what peer pointers are anchored to and placed over
+    /// (see [`crate::shell::peer_presence::PointerAnchor`]).
+    ///
+    /// SAFETY mirrors [`Self::groups_per_strip`].
+    pub fn tab_tiles(&self) -> Vec<(u64, Rect)> {
+        let mut tiles = Vec::new();
+        for &ptr in self.group_row_ptrs.values() {
+            // SAFETY: see field doc on `group_row_ptrs`.
+            let row: &GroupRow = unsafe { &*ptr };
+            for group in &row.groups {
+                let Some(rect) = group.active_host().map(ui::Widget::get_rect) else {
+                    continue;
+                };
+                if rect.width() > 0.0 && rect.height() > 0.0 {
+                    tiles.push((group.active_tab_id(), rect));
+                }
+            }
+        }
+        tiles
     }
 
     /// SAFETY mirrors the rest of the `group_row_ptrs` accessors: pointers
@@ -10187,7 +10177,8 @@ impl ShellOverlayHost {
             || (f.ws_settings && self.ws_settings_rect().contains(p))
             || (f.room_activity && self.room_activity.rect().contains(p))
             || (f.projection && ProjectionOverlay::contains(self.rect, p))
-            || (self.emoji_picker.is_open() && self.emoji_picker.card_rect().contains(p))
+            || (self.layers.emoji_picker.is_open()
+                && self.layers.emoji_picker.card_rect().contains(p))
     }
 
     /// Route the modal component before application content and apply its
@@ -10274,19 +10265,10 @@ impl ShellOverlayHost {
     /// sees it: the file picker (genuinely modal — a D-Bus call is
     /// parked on the answer), an in-flight peer-sync token prompt, and
     /// the projection sheet.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Modal routing forwards event, scale, modifiers, CRDT document/path, and handled/focus outputs to the file picker and projection sheet."
-    )]
     fn route_modal_absorbing_overlays(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
         // Runs before everything and absorbs every event: genuinely
         // modal (a D-Bus method in another process is parked on the
@@ -10294,70 +10276,40 @@ impl ShellOverlayHost {
         if self.file_picker_overlay.handle_event(
             self.rect,
             event,
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
+            ctx.scale_factor,
+            *ctx.modifiers,
+            ctx.state,
+            ctx.path,
+            ctx.handled,
+            ctx.focus_target,
         ) {
             return true;
         }
 
         // Before every other overlay: a token prompt owns the keyboard
         // outright, since a token shares characters with chords.
-        if self.peer_sync_overlay.visible() && self.handle_peer_sync_event(event, modifiers) {
-            *handled = true;
+        if self.peer_sync_overlay.visible() && self.handle_peer_sync_event(event, *ctx.modifiers) {
+            *ctx.handled = true;
             return true;
         }
 
-        if self.route_emoji_picker_event(event, scale_factor, modifiers, handled) {
+        if self.route_layer_band(Band::Modal, event, ctx) {
             return true;
         }
 
-        if self.handle_projection_event(event, scale_factor, modifiers, state, path, focus_target) {
-            *handled = true;
+        if self.handle_projection_event(
+            event,
+            ctx.scale_factor,
+            *ctx.modifiers,
+            ctx.state,
+            ctx.path,
+            ctx.focus_target,
+        ) {
+            *ctx.handled = true;
             return true;
         }
 
         false
-    }
-
-    /// The emoji picker owns every key and pointer event while open. Its own
-    /// shortcut closes it again.
-    fn route_emoji_picker_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        handled: &mut bool,
-    ) -> bool {
-        if !self.emoji_picker.is_open() {
-            return false;
-        }
-        let toggles = matches!(
-            event,
-            WindowEvent::KeyboardInput { event: key, .. }
-                if key.state == ElementState::Pressed
-                    && self.configured_shortcut_action(&key.logical_key, modifiers)
-                        == Some(settings_store::hardware::ShortcutAction::EmojiPicker)
-        );
-        if toggles {
-            self.emoji_picker.close();
-        } else {
-            self.emoji_picker.handle_event(
-                event,
-                scale_factor,
-                modifiers.state(),
-                self.last_cursor,
-                Instant::now(),
-            );
-        }
-        if let Some(chrome) = self.chrome.as_ref() {
-            chrome.borrow_mut().bump();
-        }
-        *handled = true;
-        true
     }
 
     /// Routes an in-progress root-page slider drag before modal absorption.
@@ -10730,19 +10682,10 @@ impl ShellOverlayHost {
     /// `pump_permission_prompt` drains `pending_choice` next tick.
     /// Gated on the prompt's rect so its hit zone doesn't swallow
     /// clicks outside the bar.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Permission prompts receive event, scale, modifiers, CRDT document/path, and handled/focus outputs after the pointer bounds check."
-    )]
     fn route_permission_prompt_event(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
         let Some(prompt) = self.permission_prompt.as_mut() else {
             return false;
@@ -10764,16 +10707,12 @@ impl ShellOverlayHost {
         };
         prompt.handle_event(
             event,
-            scale_factor,
-            &modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            tmp_node,
-            &tmp_taffy,
+            &mut ui::widget::EventCtx {
+                taffy: &tmp_taffy,
+                ..ctx.reborrow(ctx.path, tmp_node)
+            },
         );
-        *handled
+        *ctx.handled
     }
 
     /// `DroppedFile` carries no coordinate, so route by `last_cursor`
@@ -13708,22 +13647,10 @@ impl ShellOverlayHost {
                 Some((
                     DeviceFabricUiAction::ResolveSpeakerGroupConsent {
                         group: consent.group,
+                        kind: consent.scope.kind(),
                         approved,
                     },
-                    if approved {
-                        t_args(
-                            "host-fabric-speaker-joined",
-                            &[
-                                ("group", consent.name.clone().into()),
-                                ("role", consent.role.describe().into()),
-                            ],
-                        )
-                    } else {
-                        t_args(
-                            "host-fabric-speaker-declined",
-                            &[("group", consent.name.into())],
-                        )
-                    },
+                    consent.outcome(approved),
                 ))
             }
             DeviceFabricPaneRow::SpeakerSession(session) => Some((
@@ -13771,11 +13698,9 @@ impl ShellOverlayHost {
             DeviceFabricPaneRow::SpeakerMembership(membership) => Some((
                 DeviceFabricUiAction::LeaveSpeakerGroup {
                     group: membership.group,
+                    kind: membership.scope.kind(),
                 },
-                t_args(
-                    "host-fabric-speaker-left",
-                    &[("group", membership.name.into())],
-                ),
+                membership.left(),
             )),
             DeviceFabricPaneRow::RemoteAudioRoute(route) => Some((
                 DeviceFabricUiAction::StopRemoteAudio {
@@ -15675,22 +15600,13 @@ impl ShellOverlayHost {
     /// Palette-owned input, ahead of the sidebar/content dispatch: kind
     /// chips, a click on a result row, keyboard Enter, then everything
     /// else the palette widget itself wants (typing, arrow selection).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Palette routing needs the Widget event context and CRDT path plus handled/focus outputs and the palette child/layout for forwarding."
-    )]
     fn route_palette_event(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
+        ctx: &mut ui::widget::EventCtx<'_>,
         palette_child: Option<NodeId>,
-        taffy: &TaffyTree<()>,
     ) -> bool {
+        let state = &mut *ctx.state;
         if !self.palette_visible {
             return false;
         }
@@ -15712,9 +15628,9 @@ impl ShellOverlayHost {
                 if !self.active_kind_filter.is_empty() {
                     self.active_kind_filter.clear();
                     self.last_search_query.clear(); // force a refresh
-                    self.refresh_search_results(state, path);
+                    self.refresh_search_results(state, ctx.path);
                 }
-                *handled = true;
+                *ctx.handled = true;
                 return true;
             }
             let kinds = self.search_registry.registered_kinds();
@@ -15723,9 +15639,9 @@ impl ShellOverlayHost {
                     if let Some(kind) = kinds.get(idx).cloned() {
                         toggle_kind(&mut self.active_kind_filter, kind);
                         self.last_search_query.clear(); // force a refresh
-                        self.refresh_search_results(state, path);
+                        self.refresh_search_results(state, ctx.path);
                     }
-                    *handled = true;
+                    *ctx.handled = true;
                     return true;
                 }
             }
@@ -15741,8 +15657,8 @@ impl ShellOverlayHost {
             && let Some(row) = self.palette.row_at(p)
         {
             self.palette.set_cursor(row);
-            self.activate_selected_result(state, path);
-            *handled = true;
+            self.activate_selected_result(state, ctx.path);
+            *ctx.handled = true;
             return true;
         }
         // Keyboard Enter: fire the cursor-selected action.
@@ -15756,8 +15672,8 @@ impl ShellOverlayHost {
             ..
         } = event
         {
-            self.activate_selected_result(state, path);
-            *handled = true;
+            self.activate_selected_result(state, ctx.path);
+            *ctx.handled = true;
             return true;
         }
         // Let the palette own the character/backspace/arrow keys.
@@ -15765,20 +15681,22 @@ impl ShellOverlayHost {
             let query_before = self.palette.query().to_string();
             self.palette.handle_event(
                 event,
-                scale_factor,
-                &modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                palette_child,
-                taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: ctx.scale_factor,
+                    modifiers: ctx.modifiers,
+                    state,
+                    path: ctx.path,
+                    handled: ctx.handled,
+                    focus_target: ctx.focus_target,
+                    node_id: palette_child,
+                    taffy: ctx.taffy,
+                },
             );
             // Recompute results when a character/backspace changes the query.
             if self.palette.query() != query_before && self.pending_palette_action.is_none() {
-                self.refresh_search_results(state, path);
+                self.refresh_search_results(state, ctx.path);
             }
-            if *handled {
+            if *ctx.handled {
                 return true;
             }
         }
@@ -15789,22 +15707,13 @@ impl ShellOverlayHost {
     /// horizontal strip navigation, then content dispatch. A horizontal
     /// gesture steps focus along the strip (the same step Super+Left/Right
     /// takes); 0.5 rejects trackpad noise.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Sidebar/content routing shares the Widget event context, CRDT path, handled/focus outputs, child nodes, and layout tree."
-    )]
     fn dispatch_pointer_and_content_event(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
+        ctx: &mut ui::widget::EventCtx<'_>,
         children: &[NodeId],
-        taffy: &TaffyTree<()>,
     ) {
+        let state = &mut *ctx.state;
         // First dibs so wheel-content precedes the desktop underneath.
         // Gated on the sidebar's rect for pointer events — otherwise it can
         // overlap the topbar band and swallow the overview-toggle click.
@@ -15821,16 +15730,18 @@ impl ShellOverlayHost {
             if forward_pointer_to_sidebar {
                 sidebar.handle_event(
                     event,
-                    scale_factor,
-                    &modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    sidebar_child,
-                    taffy,
+                    &mut ui::widget::EventCtx {
+                        scale_factor: ctx.scale_factor,
+                        modifiers: ctx.modifiers,
+                        state,
+                        path: ctx.path,
+                        handled: ctx.handled,
+                        focus_target: ctx.focus_target,
+                        node_id: sidebar_child,
+                        taffy: ctx.taffy,
+                    },
                 );
-                if *handled {
+                if *ctx.handled {
                     return;
                 }
             }
@@ -15860,7 +15771,7 @@ impl ShellOverlayHost {
             if dx.abs() > 0.5 && dx.abs() > dy.abs() {
                 let dir = if dx > 0.0 { 1 } else { -1 };
                 if self.step_focus_along_strip(dir) {
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
             }
@@ -15868,14 +15779,16 @@ impl ShellOverlayHost {
         if let Some(&content_child) = children.first() {
             self.content.handle_event(
                 event,
-                scale_factor,
-                &modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                content_child,
-                taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: ctx.scale_factor,
+                    modifiers: ctx.modifiers,
+                    state,
+                    path: ctx.path,
+                    handled: ctx.handled,
+                    focus_target: ctx.focus_target,
+                    node_id: content_child,
+                    taffy: ctx.taffy,
+                },
             );
             // A visible tab/maximized close button begins its animation in
             // the widget above. Commit that exact tab before this input
@@ -16030,15 +15943,27 @@ impl ShellOverlayHost {
         }
     }
 
-    /// Route `event` through the overlay stack and carry out what its
-    /// layers asked for before the event finishes dispatching.
-    fn route_overlay_layers(
+    /// Route `event` through the stacked layers in `band` and carry out
+    /// what they asked for before the event finishes dispatching.
+    fn route_layer_band(
         &mut self,
+        band: Band,
         event: &WindowEvent,
         ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
-        let mut cx = LayerCx::new(self.rect, self.last_cursor, ctx);
-        let consumed = self.layers.route(event, &mut cx);
+        if !self.layers.listens(band) {
+            return false;
+        }
+        let shortcut = match event {
+            WindowEvent::KeyboardInput { event: key, .. } if key.state == ElementState::Pressed => {
+                self.configured_shortcut_action(&key.logical_key, *ctx.modifiers)
+            }
+            _ => None,
+        };
+        let outputs = self.layer_outputs();
+        let mut cx = LayerCx::new(self.layer_geometry(&outputs), self.last_cursor, ctx)
+            .with_shortcut(shortcut);
+        let consumed = self.layers.route(band, event, &mut cx);
         for intent in cx.into_intents() {
             self.apply_layer_intent(intent);
         }
@@ -16057,6 +15982,12 @@ impl ShellOverlayHost {
             }
             LayerIntent::Session(action) => {
                 self.execute_session_action(action);
+                true
+            }
+            LayerIntent::Repaint => {
+                if let Some(chrome) = self.chrome.as_ref() {
+                    chrome.borrow_mut().bump();
+                }
                 true
             }
         }
@@ -16291,7 +16222,8 @@ impl Widget for ShellOverlayHost {
         }
     }
 
-    fn sync(&mut self, s: &mut AutoCommit, p: &ObjId) {
+    fn sync(&mut self, s: &mut AppModel, p: &ModelPath) {
+        let (s, p) = ui::doc::document(s, p);
         let open_desktop_tour = self.onboarding.is_none()
             && self
                 .chrome
@@ -16336,7 +16268,8 @@ impl Widget for ShellOverlayHost {
         clippy::too_many_lines,
         reason = "the compositor tick is deliberately ordered in one place so source refreshes precede palette input and every frame-side effect remains visible"
     )]
-    fn update(&mut self, doc: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, doc: &mut AppModel, path: &ModelPath) -> bool {
+        let (doc, path) = ui::doc::document(doc, path);
         if let Some(onboarding) = self.onboarding.as_mut() {
             return onboarding.update(doc, path);
         }
@@ -17017,32 +16950,21 @@ impl Widget for ShellOverlayHost {
         clippy::too_many_lines,
         reason = "event routing stays linear so modal gates retain their security-sensitive order"
     )]
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        self.window_scale = scale_factor;
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        let state = &mut *ctx.state;
         // MouseInput carries no coordinates. Keep the host's pointer cache
         // current before any modal can return early, because onboarding and
         // the other compositor-owned gates hit-test the following button edge
         // against this value. The normal desktop path used to do this only
         // below the onboarding return, making a real DRM pointer visibly move
         // while every onboarding click was evaluated without a position.
-        self.track_cursor_position(event, scale_factor);
+        self.track_cursor_position(event, ctx.scale_factor);
         self.observe_window_focus();
         // Print Screen has an explicit arbitration policy. It must run before
         // OOBE, portal and consent gates so Capture Studio can temporarily
         // own input above those preserved workflows instead of being consumed
         // by whichever modal was first in the dispatch chain.
-        if self.handle_print_screen_priority(event, modifiers.state(), handled) {
+        if self.handle_print_screen_priority(event, ctx.modifiers.state(), ctx.handled) {
             return;
         }
         // Capture Studio is deliberately above every ordinary session modal:
@@ -17052,14 +16974,16 @@ impl Widget for ShellOverlayHost {
             if let Some(capture_node) = self.capture_node {
                 self.capture_studio.handle_event(
                     event,
-                    scale_factor,
-                    modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    capture_node,
-                    taffy,
+                    &mut ui::widget::EventCtx {
+                        scale_factor: ctx.scale_factor,
+                        modifiers: ctx.modifiers,
+                        state,
+                        path: ctx.path,
+                        handled: ctx.handled,
+                        focus_target: ctx.focus_target,
+                        node_id: capture_node,
+                        taffy: ctx.taffy,
+                    },
                 );
             }
             if !self.capture_studio.is_open()
@@ -17067,7 +16991,7 @@ impl Widget for ShellOverlayHost {
             {
                 chrome.borrow_mut().overlays.capture = false;
             }
-            if *handled || self.capture_studio.modal_capture().is_some() {
+            if *ctx.handled || self.capture_studio.modal_capture().is_some() {
                 return;
             }
         }
@@ -17077,13 +17001,13 @@ impl Widget for ShellOverlayHost {
         if self.onboarding.is_none()
             && self.pairing.handle_event(
                 event,
-                scale_factor,
-                modifiers,
+                ctx.scale_factor,
+                ctx.modifiers,
                 state,
-                path,
-                handled,
-                focus_target,
-                taffy,
+                ctx.path,
+                ctx.handled,
+                ctx.focus_target,
+                ctx.taffy,
             )
         {
             if let Some(chrome) = self.chrome.as_ref() {
@@ -17093,32 +17017,37 @@ impl Widget for ShellOverlayHost {
         }
         // A display tool's change waits for Keep or Revert, possibly with a
         // screen blanked: the answer comes before any other surface.
-        if self.display_confirm.visible() {
-            let outputs = self.display_confirm_outputs();
-            if self
-                .display_confirm
-                .handle_event(event, self.last_cursor, &outputs)
-            {
-                *handled = true;
-                if let Some(chrome) = self.chrome.as_ref() {
-                    chrome.borrow_mut().bump();
-                }
-                return;
-            }
+        if self.route_layer_band(
+            Band::Session,
+            event,
+            &mut ui::widget::EventCtx {
+                scale_factor: ctx.scale_factor,
+                modifiers: ctx.modifiers,
+                state,
+                path: ctx.path,
+                handled: &mut *ctx.handled,
+                focus_target: &mut *ctx.focus_target,
+                node_id: ctx.node_id,
+                taffy: ctx.taffy,
+            },
+        ) {
+            return;
         }
         if let Some((_, display)) = self.personal_display.as_mut() {
             display.handle_event(
                 event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: ctx.scale_factor,
+                    modifiers: ctx.modifiers,
+                    state,
+                    path: ctx.path,
+                    handled: ctx.handled,
+                    focus_target: ctx.focus_target,
+                    node_id: ctx.node_id,
+                    taffy: ctx.taffy,
+                },
             );
-            if *handled {
+            if *ctx.handled {
                 return;
             }
         }
@@ -17129,17 +17058,19 @@ impl Widget for ShellOverlayHost {
             // Route against the node captured when onboarding was built;
             // using `children.first()` here sends contextual-tour pointer
             // events through the desktop's taffy subtree instead.
-            let child_node = self.onboarding_node.unwrap_or(node_id);
+            let child_node = self.onboarding_node.unwrap_or(ctx.node_id);
             onboarding.handle_event(
                 event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                child_node,
-                taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: ctx.scale_factor,
+                    modifiers: ctx.modifiers,
+                    state,
+                    path: ctx.path,
+                    handled: ctx.handled,
+                    focus_target: ctx.focus_target,
+                    node_id: child_node,
+                    taffy: ctx.taffy,
+                },
             );
             // First-login is a modal machine surface. Even an event the
             // current control does not consume must never fall through to
@@ -17157,9 +17088,9 @@ impl Widget for ShellOverlayHost {
                 WindowEvent::KeyboardInput { event, .. }
                     if event.state == ElementState::Pressed
                         && matches!(event.logical_key, Key::Named(NamedKey::Tab))
-                        && !modifiers.state().control_key()
-                        && !modifiers.state().alt_key()
-                        && !modifiers.state().super_key()
+                        && !ctx.modifiers.state().control_key()
+                        && !ctx.modifiers.state().alt_key()
+                        && !ctx.modifiers.state().super_key()
             );
             let is_unmodified_activation = matches!(
                 event,
@@ -17169,12 +17100,12 @@ impl Widget for ShellOverlayHost {
                             event.logical_key,
                             Key::Named(NamedKey::Enter | NamedKey::Space)
                         )
-                        && !modifiers.state().control_key()
-                        && !modifiers.state().alt_key()
-                        && !modifiers.state().super_key()
+                        && !ctx.modifiers.state().control_key()
+                        && !ctx.modifiers.state().alt_key()
+                        && !ctx.modifiers.state().super_key()
             );
             if !is_unmodified_tab && !is_unmodified_activation {
-                *handled = true;
+                *ctx.handled = true;
             }
             return;
         }
@@ -17182,12 +17113,16 @@ impl Widget for ShellOverlayHost {
         // composer owns what lands on it and its text field's keys.
         if self.handle_remark_event(
             event,
-            scale_factor,
-            *modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
+            &mut ui::widget::EventCtx {
+                scale_factor: ctx.scale_factor,
+                modifiers: ctx.modifiers,
+                state: &mut *state,
+                path: ctx.path,
+                handled: &mut *ctx.handled,
+                focus_target: &mut *ctx.focus_target,
+                node_id: ctx.node_id,
+                taffy: ctx.taffy,
+            },
         ) {
             return;
         }
@@ -17206,8 +17141,8 @@ impl Widget for ShellOverlayHost {
                 winit::event::TouchPhase::Cancelled => ui::gesture::GesturePhase::Cancel,
             };
             let point = Point::new(
-                touch.location.x / scale_factor,
-                touch.location.y / scale_factor,
+                touch.location.x / ctx.scale_factor,
+                touch.location.y / ctx.scale_factor,
             );
             if touch.phase == winit::event::TouchPhase::Started {
                 self.release_follow_for_local_press(point);
@@ -17267,7 +17202,7 @@ impl Widget for ShellOverlayHost {
                 }
             }
             if claimed || shell_owned {
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
         }
@@ -17277,18 +17212,20 @@ impl Widget for ShellOverlayHost {
         {
             markup.handle_event(
                 event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                markup_node,
-                taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: ctx.scale_factor,
+                    modifiers: ctx.modifiers,
+                    state,
+                    path: ctx.path,
+                    handled: ctx.handled,
+                    focus_target: ctx.focus_target,
+                    node_id: markup_node,
+                    taffy: ctx.taffy,
+                },
             );
             // This is a real editing workspace, not a translucent status
             // overlay: drawing and shortcuts must never leak to the app below.
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
 
@@ -17298,23 +17235,26 @@ impl Widget for ShellOverlayHost {
             .any(|(_, mirror)| mirror.wants_pointer_capture())
             && self.route_capture_mirror_event(
                 event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: ctx.scale_factor,
+                    modifiers: ctx.modifiers,
+                    state,
+                    path: ctx.path,
+                    handled: &mut *ctx.handled,
+                    focus_target: &mut *ctx.focus_target,
+                    node_id: ctx.node_id,
+                    taffy: ctx.taffy,
+                },
             )
         {
             return;
         }
 
-        if self.route_portal_dialog_event(event, *modifiers, handled) {
+        if self.route_portal_dialog_event(event, *ctx.modifiers, ctx.handled) {
             return;
         }
 
-        if self.route_window_switcher_event(event, *modifiers, handled) {
+        if self.route_window_switcher_event(event, *ctx.modifiers, ctx.handled) {
             return;
         }
 
@@ -17326,14 +17266,16 @@ impl Widget for ShellOverlayHost {
             if let Some(content_node) = self.content_node {
                 self.content.handle_event(
                     event,
-                    scale_factor,
-                    modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    content_node,
-                    taffy,
+                    &mut ui::widget::EventCtx {
+                        scale_factor: ctx.scale_factor,
+                        modifiers: ctx.modifiers,
+                        state,
+                        path: ctx.path,
+                        handled: ctx.handled,
+                        focus_target: ctx.focus_target,
+                        node_id: content_node,
+                        taffy: ctx.taffy,
+                    },
                 );
                 // A right-click that lands while a drag still owns the
                 // pointer is a request like any other; opened here, not on
@@ -17345,75 +17287,87 @@ impl Widget for ShellOverlayHost {
 
         if self.route_modal_absorbing_overlays(
             event,
-            scale_factor,
-            *modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
+            &mut ui::widget::EventCtx {
+                scale_factor: ctx.scale_factor,
+                modifiers: ctx.modifiers,
+                state,
+                path: ctx.path,
+                handled: &mut *ctx.handled,
+                focus_target: &mut *ctx.focus_target,
+                node_id: ctx.node_id,
+                taffy: ctx.taffy,
+            },
         ) {
             return;
         }
-        // Stacked layers sit below the genuinely modal sheets above (a
+        // Menus and flyouts sit below the genuinely modal sheets above (a
         // portal answer still wins) and above every other overlay and the
         // windows.
-        if self.route_overlay_layers(
+        if self.route_layer_band(
+            Band::Popover,
             event,
             &mut ui::widget::EventCtx {
-                scale_factor,
-                modifiers,
+                scale_factor: ctx.scale_factor,
+                modifiers: ctx.modifiers,
                 state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
+                path: ctx.path,
+                handled: &mut *ctx.handled,
+                focus_target: &mut *ctx.focus_target,
+                node_id: ctx.node_id,
+                taffy: ctx.taffy,
             },
         ) {
             return;
         }
         if self.route_capture_mirror_event(
             event,
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: ctx.scale_factor,
+                modifiers: ctx.modifiers,
+                state,
+                path: ctx.path,
+                handled: &mut *ctx.handled,
+                focus_target: &mut *ctx.focus_target,
+                node_id: ctx.node_id,
+                taffy: ctx.taffy,
+            },
         ) {
             return;
         }
-        if self.route_qs_slider_drag(event, handled) {
+        if self.route_qs_slider_drag(event, ctx.handled) {
             return;
         }
-        if self.route_room_activity_event(event, scale_factor, *modifiers, handled) {
+        if self.route_room_activity_event(event, ctx.scale_factor, *ctx.modifiers, ctx.handled) {
             return;
         }
         if let WindowEvent::MouseWheel { delta, .. } = event
-            && (self.handle_qs_drill_in_wheel(*delta, scale_factor)
-                || self.handle_qs_notification_wheel(*delta, scale_factor)
-                || self.handle_qs_clipboard_wheel(*delta, scale_factor)
-                || self.handle_qs_device_fabric_wheel(*delta, scale_factor))
+            && (self.handle_qs_drill_in_wheel(*delta, ctx.scale_factor)
+                || self.handle_qs_notification_wheel(*delta, ctx.scale_factor)
+                || self.handle_qs_clipboard_wheel(*delta, ctx.scale_factor)
+                || self.handle_qs_device_fabric_wheel(*delta, ctx.scale_factor))
         {
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
-        if self.route_absorbable_pointer_and_toast_click(event, handled) {
+        if self.route_absorbable_pointer_and_toast_click(event, ctx.handled) {
             return;
         }
         if self.route_permission_prompt_event(
             event,
-            scale_factor,
-            *modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
+            &mut ui::widget::EventCtx {
+                scale_factor: ctx.scale_factor,
+                modifiers: ctx.modifiers,
+                state,
+                path: ctx.path,
+                handled: &mut *ctx.handled,
+                focus_target: &mut *ctx.focus_target,
+                node_id: ctx.node_id,
+                taffy: ctx.taffy,
+            },
         ) {
             return;
         }
-        if self.route_dropped_file_event(event, handled) {
+        if self.route_dropped_file_event(event, ctx.handled) {
             return;
         }
         // An opening pointer/accessibility/search action can be followed by
@@ -17436,14 +17390,14 @@ impl Widget for ShellOverlayHost {
                 }
             )
         {
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
         // The first local key is the handoff edge out of Follow mode. Consume
         // that same event after releasing the peer so a shell chord (for
         // example Super+W) cannot also mutate the local desktop.
         if self.release_follow_for_local_key(event) {
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
         if let WindowEvent::KeyboardInput {
@@ -17458,11 +17412,11 @@ impl Widget for ShellOverlayHost {
         } = event
             && self.handle_shell_keyboard_event(
                 logical_key,
-                *modifiers,
+                *ctx.modifiers,
                 *repeat,
                 state,
-                path,
-                handled,
+                ctx.path,
+                ctx.handled,
             )
         {
             return;
@@ -17486,36 +17440,39 @@ impl Widget for ShellOverlayHost {
         {
             let grants = crate::portal::global_shortcuts::ShellGlobalShortcutsService::global();
             let claimed = match state {
-                ElementState::Pressed => grants.press(physical_key, *modifiers),
+                ElementState::Pressed => grants.press(physical_key, *ctx.modifiers),
                 ElementState::Released => grants.release(physical_key),
             };
             if claimed {
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
         }
-        if self.handle_shell_mouse_click_event(event, handled) {
+        if self.handle_shell_mouse_click_event(event, ctx.handled) {
             return;
         }
-        if self.handle_shell_overview_pointer_event(event, scale_factor, handled) {
+        if self.handle_shell_overview_pointer_event(event, ctx.scale_factor, ctx.handled) {
             return;
         }
 
         // No children means taffy never laid this node out this frame —
         // there is nothing to route the event to.
-        let Ok(children) = taffy.children(node_id) else {
+        let Ok(children) = ctx.taffy.children(ctx.node_id) else {
             return;
         };
         if self.route_palette_event(
             event,
-            scale_factor,
-            *modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
+            &mut ui::widget::EventCtx {
+                scale_factor: ctx.scale_factor,
+                modifiers: ctx.modifiers,
+                state,
+                path: ctx.path,
+                handled: &mut *ctx.handled,
+                focus_target: &mut *ctx.focus_target,
+                node_id: ctx.node_id,
+                taffy: ctx.taffy,
+            },
             children.get(1).copied(),
-            taffy,
         ) {
             return;
         }
@@ -17527,14 +17484,17 @@ impl Widget for ShellOverlayHost {
         }
         self.dispatch_pointer_and_content_event(
             event,
-            scale_factor,
-            *modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
+            &mut ui::widget::EventCtx {
+                scale_factor: ctx.scale_factor,
+                modifiers: ctx.modifiers,
+                state,
+                path: ctx.path,
+                handled: &mut *ctx.handled,
+                focus_target: &mut *ctx.focus_target,
+                node_id: ctx.node_id,
+                taffy: ctx.taffy,
+            },
             &children,
-            taffy,
         );
     }
 
@@ -17550,9 +17510,11 @@ impl Widget for ShellOverlayHost {
         use ui::a11y::{AccessNode, AccessState, Role};
 
         let mut root = AccessNode::new(Role::Group).with_name(t("a11y-workspace"));
+        let outputs = self.layer_outputs();
+        let geometry = self.layer_geometry(&outputs);
         for overlay in self.accessible_overlay_order() {
             if let Some(layer) = self.layers.layer(overlay) {
-                root.children.extend(layer.accessibility(self.rect));
+                root.children.extend(layer.accessibility(geometry));
                 continue;
             }
             match overlay {
@@ -17562,7 +17524,10 @@ impl Widget for ShellOverlayHost {
                     }
                 }
                 // Stacked; published above.
-                LayerId::TabContextMenu | LayerId::PowerMenu => {}
+                LayerId::DisplayConfirmation
+                | LayerId::EmojiPicker
+                | LayerId::TabContextMenu
+                | LayerId::PowerMenu => {}
                 LayerId::CommandPalette => {
                     if let Some(mut palette) = self.palette.accessibility() {
                         // The filter band is the host's, painted over the
@@ -17664,7 +17629,10 @@ impl Widget for ShellOverlayHost {
                             let enabled = state.can_rename_active_workspace();
                             settings.children.push(
                                 AccessNode::new(Role::Switch)
-                                    .with_name(t("workspace-settings-recording-toggle"))
+                                    .with_name(
+                                        tilo_desktop::workspace_settings::recording_delegates_label(
+                                        ),
+                                    )
                                     .with_state(AccessState {
                                         focusable: enabled,
                                         disabled: !enabled,
@@ -17993,22 +17961,13 @@ impl Widget for ShellOverlayHost {
                                             Vec::new(),
                                         ),
                                         DeviceFabricPaneRow::SpeakerConsent(consent) => (
-                                            t_args(
-                                                "a11y-speaker-join",
-                                                &[
-                                                    ("group", consent.name.as_str().into()),
-                                                    ("role", consent.role.describe().into()),
-                                                ],
-                                            ),
-                                            t_args(
-                                                "a11y-speaker-join-description",
-                                                &[("leader", consent.leader_label.as_str().into())],
-                                            ),
+                                            consent.accessible_name(),
+                                            consent.accessible_description(),
                                             vec![
                                                 AccessNode::new(Role::Button)
-                                                    .with_name(t("a11y-speaker-join-allow")),
+                                                    .with_name(consent.allow_label()),
                                                 AccessNode::new(Role::Button)
-                                                    .with_name(t("a11y-speaker-join-decline")),
+                                                    .with_name(consent.decline_label()),
                                             ],
                                         ),
                                         DeviceFabricPaneRow::SpeakerSession(session) => (
@@ -18033,14 +17992,8 @@ impl Widget for ShellOverlayHost {
                                             Vec::new(),
                                         ),
                                         DeviceFabricPaneRow::SpeakerMembership(membership) => (
-                                            t_args(
-                                                "a11y-speaker-membership",
-                                                &[
-                                                    ("role", sentence_case(&membership.role.describe()).into()),
-                                                    ("group", membership.name.as_str().into()),
-                                                ],
-                                            ),
-                                            t("a11y-speaker-membership-description"),
+                                            membership.title(sentence_case),
+                                            membership.accessible_description(),
                                             Vec::new(),
                                         ),
                                         DeviceFabricPaneRow::RemoteAudioConsent(consent) => (
@@ -18434,19 +18387,6 @@ impl Widget for ShellOverlayHost {
                 LayerId::DisplayLayouts => {
                     root.children.push(self.projection_overlay.accessibility());
                 }
-                LayerId::EmojiPicker => {
-                    if let Some(picker) = self.emoji_picker.accessibility() {
-                        root.children.push(picker);
-                    }
-                }
-                LayerId::DisplayConfirmation => {
-                    if let Some(prompt) = self
-                        .display_confirm
-                        .accessibility(&self.display_confirm_outputs())
-                    {
-                        root.children.push(prompt);
-                    }
-                }
                 LayerId::ShortcutHelp => {
                     use settings_store::hardware::ShortcutAction;
                     let shortcuts = &self.shortcut_config;
@@ -18511,8 +18451,8 @@ impl Widget for ShellOverlayHost {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         if !matches!(action, ui::a11y::Action::Activate) {
             return false;
@@ -18531,7 +18471,8 @@ impl Widget for ShellOverlayHost {
         let (&overlay_index, child_path) = path.split_first()?;
         let overlay = *self.accessible_overlay_order().get(overlay_index)?;
         if let Some(layer) = self.layers.layer(overlay) {
-            return layer.accessibility_rect(self.rect, child_path);
+            let outputs = self.layer_outputs();
+            return layer.accessibility_rect(self.layer_geometry(&outputs), child_path);
         }
         match overlay {
             LayerId::WindowSwitcher => match child_path {
@@ -18635,14 +18576,12 @@ impl Widget for ShellOverlayHost {
                 _ => None,
             },
             LayerId::NowPlaying => self.now_playing_accessibility_rect(child_path),
-            LayerId::EmojiPicker => {
-                self.emoji_picker.accessibility_rect_for_path(child_path)
-            }
             LayerId::MemberSheet
             | LayerId::ShortcutHelp
             | LayerId::DisplayLayouts
-            | LayerId::DisplayConfirmation
             // Stacked; answered above.
+            | LayerId::DisplayConfirmation
+            | LayerId::EmojiPicker
             | LayerId::TabContextMenu
             | LayerId::PowerMenu => None,
         }
@@ -18692,9 +18631,9 @@ impl Widget for ShellOverlayHost {
             | LayerId::MemberSheet
             | LayerId::ShortcutHelp
             | LayerId::DisplayLayouts
+            // Stacked; answered above.
             | LayerId::DisplayConfirmation
             | LayerId::EmojiPicker
-            // Stacked; answered above.
             | LayerId::TabContextMenu
             | LayerId::PowerMenu => false,
         }
@@ -18875,8 +18814,7 @@ impl ShellOverlayHost {
         let room_replay_in_flight = self.room_activity.replay_is_playing();
         let capture_in_flight = self.capture_studio.needs_animation_frame();
         let projection_needs_frame = self.projection_overlay.needs_animation_frame(now)
-            || self.display_identify.needs_frame(now)
-            || self.display_confirm.needs_frame();
+            || self.display_identify.needs_frame(now);
         let sidebar_frame = self
             .sidebar
             .as_ref()
@@ -19584,6 +19522,7 @@ impl ShellOverlayHost {
 
         let _ = self.draw_quick_settings_dropdown(scene, transform, text_renderer, theme);
 
+        let outputs = self.layer_outputs();
         self.layers.draw(
             LayerId::PowerMenu,
             &mut LayerPaint {
@@ -19592,32 +19531,42 @@ impl ShellOverlayHost {
                 text_renderer,
                 theme,
                 presence,
-                viewport: self.rect,
+                geometry: self.layer_geometry(&outputs),
             },
         );
 
         self.draw_collaborators_dropdown(scene, transform, text_renderer, theme, presence, flags);
         self.draw_room_activity_sheet(scene, transform, text_renderer, theme, presence, flags);
         self.draw_projection_sheet(scene, transform, text_renderer, theme, presence, flags);
-        let emoji_viewport = self.emoji_picker_viewport();
-        self.emoji_picker.draw(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-            emoji_viewport,
+        self.layers.draw(
+            LayerId::EmojiPicker,
+            &mut LayerPaint {
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+                geometry: self.layer_geometry(&outputs),
+            },
         );
         self.display_identify
             .draw(scene, transform, text_renderer, theme, Instant::now());
-        if self.display_confirm.poll(Instant::now(), false)
+        if self.layers.tick(Instant::now())
             && let Some(chrome) = self.chrome.as_ref()
         {
             chrome.borrow_mut().bump();
         }
-        let outputs = self.display_confirm_outputs();
-        self.display_confirm
-            .draw(scene, transform, text_renderer, theme, &outputs);
+        self.layers.draw(
+            LayerId::DisplayConfirmation,
+            &mut LayerPaint {
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+                geometry: self.layer_geometry(&outputs),
+            },
+        );
     }
 
     /// Ribbon and rail sit below Quick Settings and every popover.
@@ -20949,6 +20898,7 @@ impl ShellOverlayHost {
         // The tab menu: above the windows and the strip chrome it was
         // opened from, below the sheets that follow (a portal answer or a
         // token prompt is modal; a menu is not).
+        let outputs = self.layer_outputs();
         self.layers.draw(
             LayerId::TabContextMenu,
             &mut LayerPaint {
@@ -20957,7 +20907,7 @@ impl ShellOverlayHost {
                 text_renderer,
                 theme,
                 presence,
-                viewport: self.rect,
+                geometry: self.layer_geometry(&outputs),
             },
         );
 
@@ -22781,7 +22731,14 @@ impl ShellOverlayHost {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        let peers = self.workspace_peers(presence);
+        // A quiet peer's pointer fades out before it is retired; with
+        // reduced motion it simply goes.
+        let fade = if theme.reduce_motion {
+            std::time::Duration::ZERO
+        } else {
+            ui::presence::POINTER_FADE
+        };
+        let peers = self.workspace_peers(presence, fade);
         ui::presence::draw_peer_presence(scene, transform, self.rect, text_renderer, theme, &peers);
         self.draw_follow_cursor_affordances(scene, transform, presence);
     }
@@ -22976,13 +22933,19 @@ impl ShellOverlayHost {
     /// test, not just an empty screen both ways.
     #[cfg(test)]
     pub(crate) fn visible_peers(&self, presence: &PresenceCtx) -> Vec<ui::presence::PeerCursor> {
-        self.workspace_peers(presence)
+        self.workspace_peers(presence, ui::presence::POINTER_FADE)
             .into_iter()
             .filter(|peer| self.rect.contains(Point::new(peer.pos.0, peer.pos.1)))
             .collect()
     }
 
-    fn workspace_peers(&self, presence: &PresenceCtx) -> Vec<ui::presence::PeerCursor> {
+    /// The active workspace's peer pointers as painted, each at the
+    /// opacity its fade (over `fade`) has reached.
+    fn workspace_peers(
+        &self,
+        presence: &PresenceCtx,
+        fade: std::time::Duration,
+    ) -> Vec<ui::presence::PeerCursor> {
         let Some(chrome_rc) = self.chrome.as_ref() else {
             return Vec::new();
         };
@@ -23014,6 +22977,7 @@ impl ShellOverlayHost {
         room_ids.push(local.as_str());
         let reserved: Vec<(u8, u8, u8)> = presence.color_overrides.values().copied().collect();
         let assigned = ui::presence::assign_peer_colors(&room_ids, &reserved);
+        let now = std::time::Instant::now();
 
         peers
             .iter()
@@ -23031,6 +22995,13 @@ impl ShellOverlayHost {
                     label: presence.display_name(user),
                     color: Color::from_rgb8(r, g, b),
                     is_agent: presence.is_agent(user),
+                    opacity: presence.pointer_opacity(
+                        &key,
+                        user,
+                        now,
+                        ui::presence::POINTER_IDLE,
+                        fade,
+                    ),
                 }
             })
             .collect()
@@ -23713,31 +23684,16 @@ impl ShellOverlayHost {
                     true,
                 ),
                 DeviceFabricPaneRow::SpeakerConsent(consent) => (
-                    t_args(
-                        "qs-devices-speaker-join",
-                        &[
-                            ("group", consent.name.as_str().into()),
-                            ("role", consent.role.describe().into()),
-                        ],
-                    ),
-                    consent.output_label.as_ref().map_or_else(
-                        || {
-                            t_args(
-                                "qs-devices-speaker-join-note",
-                                &[("leader", consent.leader_label.as_str().into())],
-                            )
-                        },
-                        |label| {
-                            t_args(
-                                "qs-devices-speaker-join-note-output",
-                                &[
-                                    ("leader", consent.leader_label.as_str().into()),
-                                    ("output", label.as_str().into()),
-                                ],
-                            )
-                        },
-                    ),
-                    ui::icons::Icon::Volume2,
+                    consent.prompt(),
+                    consent.note(),
+                    match consent.scope {
+                        crate::shell::speaker_group_runtime::SpeakerConsentScope::Play(_) => {
+                            ui::icons::Icon::Volume2
+                        }
+                        crate::shell::speaker_group_runtime::SpeakerConsentScope::Listen => {
+                            ui::icons::Icon::Mic
+                        }
+                    },
                     false,
                     true,
                 ),
@@ -23813,17 +23769,8 @@ impl ShellOverlayHost {
                     true,
                 ),
                 DeviceFabricPaneRow::SpeakerMembership(membership) => (
-                    t_args(
-                        "a11y-speaker-membership",
-                        &[
-                            ("role", sentence_case(&membership.role.describe()).into()),
-                            ("group", membership.name.as_str().into()),
-                        ],
-                    ),
-                    t_args(
-                        "qs-devices-speaker-membership-note",
-                        &[("leader", membership.leader_label.as_str().into())],
-                    ),
+                    membership.title(sentence_case),
+                    membership.note(),
                     ui::icons::Icon::Volume2,
                     false,
                     true,
@@ -24427,7 +24374,7 @@ impl ShellOverlayHost {
                             DeviceFabricPaneRow::RemoteAudioConsent(_) => {
                                 t("a11y-remote-audio-allow")
                             }
-                            DeviceFabricPaneRow::SpeakerConsent(_) => t("a11y-speaker-join-allow"),
+                            DeviceFabricPaneRow::SpeakerConsent(consent) => consent.allow_label(),
                             DeviceFabricPaneRow::RemoteCaptureConsent(_) => {
                                 t("a11y-remote-capture-allow")
                             }
@@ -24458,9 +24405,7 @@ impl ShellOverlayHost {
                             DeviceFabricPaneRow::RemoteAudioConsent(_) => {
                                 t("a11y-remote-audio-decline")
                             }
-                            DeviceFabricPaneRow::SpeakerConsent(_) => {
-                                t("a11y-speaker-join-decline")
-                            }
+                            DeviceFabricPaneRow::SpeakerConsent(consent) => consent.decline_label(),
                             DeviceFabricPaneRow::RemoteCaptureConsent(_) => {
                                 t("a11y-remote-capture-decline")
                             }

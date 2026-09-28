@@ -85,8 +85,6 @@ fn peer_color_to_peniko(c: [f32; 4]) -> vello::peniko::Color {
 }
 
 impl ui::widget::Widget for RemoteCursorOverlay {
-    fn sync(&mut self, _state: &mut automerge::AutoCommit, _path: &automerge::ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut taffy::TaffyTree<()>,
@@ -247,21 +245,6 @@ impl ui::widget::Widget for RemoteCursorOverlay {
 
         text_renderer.set_text_scale(renderer_scale);
         scene.pop_layer();
-    }
-
-    fn handle_event(
-        &mut self,
-        _event: &winit::event::WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut automerge::AutoCommit,
-        _path: &automerge::ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<taffy::NodeId>,
-        _node_id: taffy::NodeId,
-        _taffy: &taffy::TaffyTree<()>,
-    ) {
-        // Purely visual: cursor motion is fed via `PresenceCtx`, not winit events.
     }
 
     fn name(&self) -> &'static str {

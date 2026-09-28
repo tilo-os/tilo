@@ -1515,27 +1515,7 @@ pub struct InboundDocument {
     pub history: bool,
 }
 
-/// One received piece of channel governance, addressed to a room this
-/// device is in. Every variant is signed by a device key and verified by
-/// the channel service before it changes any state.
-#[derive(Debug, Clone)]
-pub enum InboundChannelGovernance {
-    /// A frame from a channel's steward.
-    Frame {
-        room: RoomId,
-        frame: Box<collab_types::MlsGovernanceFrameV1>,
-    },
-    /// A device asking a channel's steward for membership.
-    AccessRequest {
-        room: RoomId,
-        request: Box<collab_types::MlsAccessRequestV1>,
-    },
-    /// A device's cumulative acknowledgement of a channel's frames.
-    Ack {
-        room: RoomId,
-        ack: Box<collab_types::MlsGovernanceAckV1>,
-    },
-}
+pub use tilo_action_broker::channel_encryption::InboundChannelGovernance;
 
 /// One received cooperative-scrollback request. The broker's drainer
 /// may answer with a `ScrollbackResponse` if its op log holds the range.
@@ -1569,7 +1549,9 @@ pub struct InboundPresence {
     /// Presence channel key (workspace, tab, widget path, …), JSON so
     /// the wire format stays opaque to the bridge.
     pub key: String,
-    /// Pointer position in the publisher's logical-pixel scene-space.
+    /// Pointer position in the space `key` names — for a person's desktop
+    /// pointer, logical pixels from the corner of a tab's tile
+    /// ([`crate::shell::peer_presence::PointerAnchor`]).
     pub point: (f64, f64),
     /// Wall-clock millisecond timestamp from the publisher.
     pub ts: u64,
@@ -2846,7 +2828,8 @@ impl ShellNetwork {
                     caller: tilo_actions::remote::Caller::authenticated(
                         identity.user_pubkey,
                         identity.device_pubkey,
-                    ),
+                    )
+                    .from_foreign_device(identity.capabilities.foreign),
                     message: frame.message,
                 });
             }
@@ -14162,6 +14145,11 @@ mod tests {
         tree.desktop.active = community;
         let tree = tree.shared();
         let dir = tempfile::tempdir().expect("scratch");
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))
+                .expect("owner-only broker directory");
+        }
         let socket = dir.path().join("broker.sock");
         let handle = crate::shell::collab_broker::spawn_native_harness(
             socket.clone(),
@@ -14372,6 +14360,11 @@ mod tests {
         );
 
         let dir = tempfile::tempdir().expect("scratch");
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))
+                .expect("owner-only broker directory");
+        }
         let broker = |name: &str, net: &Arc<ShellNetwork>, device: &ed25519_dalek::SigningKey| {
             let socket = dir.path().join(format!("{name}.sock"));
             let handle = crate::shell::collab_broker::spawn_networked_harness(

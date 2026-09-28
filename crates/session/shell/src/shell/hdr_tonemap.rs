@@ -15,7 +15,9 @@
 //! Hable over BT.2390 (the broadcast-HDR alternative): simpler math wins in
 //! a codepath that runs per-frame per-viewport.
 
-use crate::collab::colorimetry::{ColorRange, Colorimetry, TransferCharacteristics};
+use crate::collab::colorimetry::{
+    ColorPrimaries, ColorRange, Colorimetry, TransferCharacteristics,
+};
 use crate::collab::hdr_metadata::Hdr10Metadata;
 
 /// Compute-shader source, same math as [`tonemap_p010_to_rgba8`]. Tests in
@@ -173,17 +175,51 @@ pub fn tonemap_p010_to_rgba8(
 /// Tone-map one transfer-encoded RGB pixel (`[0,1]` signal in
 /// `colorimetry`'s primaries) to sRGB bytes. An HDR signal is linearised by
 /// its EOTF, gamut-mapped to BT.709 and compressed against the source peak;
-/// an SDR signal passes through at 8 bits.
+/// linear light clips at SDR white; an SDR signal passes through at 8 bits.
 pub fn tonemap_rgb_signal_to_srgb8(
     rgb: [f32; 3],
     colorimetry: Colorimetry,
     cfg: HdrTonemapConfig,
 ) -> [u8; 3] {
+    match colorimetry.transfer {
+        TransferCharacteristics::SmpteSt2084
+        | TransferCharacteristics::AribStdB67
+        | TransferCharacteristics::Linear => {
+            tonemap_rgb_signal_to_sdr_linear(rgb, colorimetry, cfg).map(to_srgb_u8)
+        }
+        TransferCharacteristics::Bt709
+        | TransferCharacteristics::Srgb
+        | TransferCharacteristics::Unspecified => {
+            rgb.map(|c| clamped_f32_to_u8((c * 255.0).round().clamp(0.0, 255.0)))
+        }
+    }
+}
+
+/// [`tonemap_rgb_signal_to_srgb8`] before the sRGB encode: linear BT.709
+/// light relative to SDR white, `[0,1]`. What an SDR output composites.
+pub fn tonemap_rgb_signal_to_sdr_linear(
+    rgb: [f32; 3],
+    colorimetry: Colorimetry,
+    cfg: HdrTonemapConfig,
+) -> [f32; 3] {
     let [r, g, b] = rgb;
     let eotf: fn(f32) -> f32 = match colorimetry.transfer {
         TransferCharacteristics::SmpteSt2084 => pq_eotf,
         TransferCharacteristics::AribStdB67 => hlg_eotf,
-        _ => return [r, g, b].map(|c| clamped_f32_to_u8((c * 255.0).round().clamp(0.0, 255.0))),
+        TransferCharacteristics::Linear => {
+            let linear = if colorimetry.primaries == ColorPrimaries::Bt2020 {
+                let (r, g, b) = bt2020_to_bt709(r, g, b);
+                [r, g, b]
+            } else {
+                [r, g, b]
+            };
+            return linear.map(|c| c.clamp(0.0, 1.0));
+        }
+        TransferCharacteristics::Bt709
+        | TransferCharacteristics::Srgb
+        | TransferCharacteristics::Unspecified => {
+            return [r, g, b].map(crate::shell::color_pipeline::srgb_eotf);
+        }
     };
     let (r709, g709, b709) = bt2020_to_bt709(eotf(r), eotf(g), eotf(b));
     let scale = if cfg.source_peak_nits > 0.0 {
@@ -191,7 +227,34 @@ pub fn tonemap_rgb_signal_to_srgb8(
     } else {
         1.0
     };
-    [r709, g709, b709].map(|c| to_srgb_u8(hable(c * scale)))
+    [r709, g709, b709].map(|c| hable(c * scale))
+}
+
+/// The normalised R'G'B' signal of P010 pixel `(col, row)`: BT.2020
+/// `Y'CbCr`, chroma subsampled nearest. `None` when the planes are too short.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "two planes, their strides, the position and the range are all independent"
+)]
+pub fn p010_signal_at(
+    y: &[u16],
+    uv: &[u16],
+    y_stride: u32,
+    uv_stride: u32,
+    col: u32,
+    row: u32,
+    limited: bool,
+) -> Option<[f32; 3]> {
+    let y_raw = *y.get(plane_index(row, y_stride, col))?;
+    let uv_pair = plane_index(row / 2, uv_stride, (col / 2).saturating_mul(2));
+    let u_raw = *uv.get(uv_pair)?;
+    let v_raw = *uv.get(uv_pair.saturating_add(1))?;
+    let (r, g, b) = bt2020_ycbcr_to_rgb(
+        unpack_p010_sample(y_raw, limited, true),
+        unpack_p010_sample(u_raw, limited, false),
+        unpack_p010_sample(v_raw, limited, false),
+    );
+    Some([r, g, b].map(|c| c.clamp(0.0, 1.0)))
 }
 
 /// Row-major linear index into a stride-`stride` plane at (`row`,

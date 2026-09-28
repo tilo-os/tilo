@@ -264,6 +264,10 @@ pub struct RunOptions {
     /// inside bwrap's mount namespace. Requires this binary bind-mounted at
     /// [`SHIM_MOUNT_PATH`]. Default on; off is a logged debug escape hatch.
     pub landlock_enforce: bool,
+    /// Accept Landlock not, or only partially, enforced by the kernel. Set
+    /// only for a system-store app on a provider-sandboxed machine
+    /// ([`crate::provider_sandbox`]).
+    pub landlock_best_effort: bool,
     /// Launch mode — GUI (default), an interactive CLI command, or a managed
     /// service. CLI and service modes pick `cli_bin()` (falling back to
     /// `bin`) and forward argv without requiring a Wayland surface.
@@ -326,6 +330,7 @@ impl Default for RunOptions {
             // convenience constructor must not accidentally remove one of the
             // kernel-enforced confinement layers.
             landlock_enforce: true,
+            landlock_best_effort: false,
             mode: LaunchMode::default(),
             allow_missing_runtime: false,
             allow_unsigned_runtime: false,
@@ -1567,6 +1572,8 @@ fn splice_sandbox_shim(
     argv.push(crate::landlock_shim::SANDBOX_EXEC_SUBCOMMAND.to_string());
     if !opts.landlock_enforce {
         argv.push("--no-landlock".to_string());
+    } else if opts.landlock_best_effort {
+        argv.push("--landlock-best-effort".to_string());
     }
     for fd in ctx.keep_fds {
         argv.push("--keep-fd".to_string());
@@ -1653,12 +1660,7 @@ fn splice_sandbox_shim(
         argv.push("--rw".to_string());
         argv.push(path.display().to_string());
     }
-    // Standard tmpfs mounts the app expects writable; --rw grants full FS
-    // access, and both vanish with the process (scratch, not hidden state).
-    for p in ["/tmp", "/dev"] {
-        argv.push("--rw".to_string());
-        argv.push(p.to_string());
-    }
+    push_scratch_and_engine_rules(argv, ctx.manifest);
     // Service sockets need no Landlock rule: they arrive as already-connected
     // descriptors dup2'd in, never mounted or opened by path.
     //
@@ -1677,6 +1679,20 @@ fn splice_sandbox_shim(
     argv.push("--".to_string());
     argv.push(entry);
     Ok(())
+}
+
+fn push_scratch_and_engine_rules(argv: &mut Vec<String>, manifest: &MinimalManifest) {
+    // Standard tmpfs mounts the app expects writable; --rw grants full FS
+    // access, and both vanish with the process (scratch, not hidden state).
+    for p in ["/tmp", "/dev"] {
+        argv.push("--rw".to_string());
+        argv.push(p.to_string());
+    }
+    let profile = manifest.sandbox.seccomp_profile(&manifest.package_id);
+    for path in crate::profile::landlock_rw_nested_sandbox_paths(profile) {
+        argv.push("--rw".to_string());
+        argv.push(path.display().to_string());
+    }
 }
 
 /// Finish building `argv` (seccomp prefix + passthrough tail), spawn `bwrap`

@@ -454,7 +454,9 @@ mod tests {
         // Phase `invoking_queues_for_the_executor_and_actuates_nothing_itself`.
         {
             let chrome = ChromeState::new(crate::shell::state::WorkspaceTree::bootstrap_default());
-            let policy = SessionActionPolicy::new(tilo_power_mgmt::InhibitRegistry::new());
+            // A shell that owns the machine; one that does not offers none.
+            let policy = SessionActionPolicy::new(tilo_power_mgmt::InhibitRegistry::new())
+                .with_surfaces(os_actions::SystemSurfaces::Owned);
             let mut doc = AutoCommit::new();
             let catalog = exact_catalog(&policy, &chrome, "restart");
             let restart = catalog
@@ -499,7 +501,8 @@ mod tests {
                 "Call is sharing the screen",
                 tilo_power_mgmt::inhibit::INHIBIT_USER_SWITCH,
             );
-            let policy = SessionActionPolicy::new(inhibitors);
+            let policy = SessionActionPolicy::new(inhibitors)
+                .with_surfaces(os_actions::SystemSurfaces::Owned);
             policy.set_user_switching(true);
             let error = exact_catalog(&policy, &chrome, "switch-user")
                 .select(&ResourceRef::new(PROVIDER_ID, "switch-user"))

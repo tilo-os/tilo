@@ -19,6 +19,15 @@ use crate::time::Instant;
 use std::collections::HashMap;
 use std::collections::HashSet;
 
+/// The app's model, lent to a widget pass. The toolkit only passes it on to
+/// children; the layer that owns the model reads it (the document runtime
+/// through [`crate::doc::document`]). A host passes its model by reference
+/// and it coerces: `widget.sync(&mut doc, &root)`.
+pub type AppModel = dyn std::any::Any;
+
+/// Where in the [`AppModel`] a widget is bound, forwarded alongside it.
+pub type ModelPath = dyn std::any::Any;
+
 /// Shared disabled-state opacity: wrap draw output in
 /// `scene.push_layer(.., DISABLED_ALPHA, ..)` / `pop_layer()`.
 pub const DISABLED_ALPHA: f32 = 0.45;
@@ -809,8 +818,8 @@ pub trait Widget {
     /// This verifies widget state, not rendered pixels or display presentation.
     fn native_input_snapshot(
         &self,
-        _state: &AutoCommit,
-        _path: &ObjId,
+        _state: &AppModel,
+        _path: &ModelPath,
     ) -> Option<serde_json::Value> {
         None
     }
@@ -1101,7 +1110,14 @@ pub trait Widget {
         }
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId);
+    /// Pull model state into this widget before layout. The default syncs the
+    /// children [`Widget::children_mut`] returns; a widget overrides it only to
+    /// read state of its own, or to sync children it does not expose there.
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        for child in self.children_mut() {
+            child.sync(state, path);
+        }
+    }
 
     /// Expose cross-device continuation for app roots that support it.
     fn continuable(&self) -> Option<&dyn Continuable> {
@@ -1113,7 +1129,7 @@ pub trait Widget {
         None
     }
 
-    fn update(&mut self, _state: &mut AutoCommit, _path: &ObjId) -> bool {
+    fn update(&mut self, _state: &mut AppModel, _path: &ModelPath) -> bool {
         false
     }
     fn build_layout(
@@ -1178,43 +1194,8 @@ pub trait Widget {
         presence: &PresenceCtx,
     );
 
-    /// Compatibility dispatcher for retained containers and host code.
-    ///
-    /// New widgets implement [`Widget::handle_event_ctx`]. Existing positional
-    /// implementations remain valid while call sites migrate independently.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "temporary compatibility adapter; implementations use EventCtx"
-    )]
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        self.handle_event_ctx(
-            event,
-            &mut EventCtx {
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
-            },
-        );
-    }
-
     /// Handle one input event with the runtime services for this retained node.
-    fn handle_event_ctx(&mut self, _event: &WindowEvent, _ctx: &mut EventCtx<'_>) {}
+    fn handle_event(&mut self, _event: &WindowEvent, _ctx: &mut EventCtx<'_>) {}
     fn children(&self) -> Vec<&dyn Widget> {
         vec![]
     }
@@ -1476,8 +1457,8 @@ pub trait Widget {
     fn perform_action(
         &mut self,
         _action: &crate::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         false
     }
@@ -1526,8 +1507,8 @@ pub trait Widget {
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         let _ = key_path;
         self.perform_action(action, state, path)
@@ -1545,8 +1526,8 @@ pub trait Widget {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         // `AccessNode::with_keyed_action_routes` publishes a custom-painted
         // control through the same semantic target that search and agents
@@ -1725,7 +1706,7 @@ pub trait Widget {
     /// [`crate::app::UserEvent::External`] (e.g. a worker thread streaming
     /// output into a status log). Default no-op; the App redraws and
     /// re-syncs after dispatch, so mutating state here is enough.
-    fn on_external_event(&mut self, _payload: &str, _state: &mut AutoCommit, _root: &ObjId) {}
+    fn on_external_event(&mut self, _payload: &str, _state: &mut AppModel, _root: &ModelPath) {}
 
     /// Global back/forward gesture (swipe/edge-pull), recognised by
     /// [`crate::gesture::NavGestureRecognizer`] and delivered to the whole
@@ -1734,8 +1715,8 @@ pub trait Widget {
     fn on_nav_gesture(
         &mut self,
         dir: crate::gesture::NavDirection,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         for child in self.children_mut() {
             if child.on_nav_gesture(dir, state, path) {
@@ -2073,7 +2054,8 @@ pub trait Widget {
 
     /// Presentation (navigation), not a CRDT action — mutate the doc only
     /// if selecting changes shared state.
-    fn activate_search_result(&mut self, _action_id: &str, _doc: &mut AutoCommit, _path: &ObjId) {}
+    fn activate_search_result(&mut self, _action_id: &str, _doc: &mut AppModel, _path: &ModelPath) {
+    }
 
     /// The affordance-driven twin of the Ctrl+K palette: when a widget's own
     /// control dispatches the same [`tilo_actions`] action its
@@ -2346,7 +2328,7 @@ pub trait Widget {
     fn accepts_drop(&self, _payload: &DragPayload) -> bool {
         false
     }
-    fn on_drop(&mut self, _payload: DragPayload, _state: &mut AutoCommit, _path: &ObjId) {}
+    fn on_drop(&mut self, _payload: DragPayload, _state: &mut AppModel, _path: &ModelPath) {}
     fn wants_pointer_capture(&self) -> bool {
         false
     }
@@ -2866,6 +2848,7 @@ impl TaffyTreeExt for TaffyTree<()> {
 
 pub type Element = Box<dyn Widget>;
 
+pub mod binding;
 pub mod decorator;
 pub use decorator::Decorator;
 
@@ -3310,7 +3293,7 @@ mod tests {
             Some(self)
         }
 
-        fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
+        fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {}
 
         fn build_layout(
             &mut self,
@@ -3330,20 +3313,6 @@ mod tests {
             _: &mut TextRenderer,
             _: &Theme,
             _: &PresenceCtx,
-        ) {
-        }
-
-        fn handle_event(
-            &mut self,
-            _: &WindowEvent,
-            _: f64,
-            _: &winit::event::Modifiers,
-            _: &mut AutoCommit,
-            _: &ObjId,
-            _: &mut bool,
-            _: &mut Option<NodeId>,
-            _: NodeId,
-            _: &TaffyTree<()>,
         ) {
         }
 
@@ -3389,14 +3358,14 @@ mod tests {
             impl Widget for Observed {
                 fn native_input_snapshot(
                     &self,
-                    doc: &AutoCommit,
-                    path: &ObjId,
+                    doc: &crate::widget::AppModel,
+                    path: &crate::widget::ModelPath,
                 ) -> Option<serde_json::Value> {
                     use automerge::ReadDoc;
+                    let (doc, path) = crate::doc::document_ref(doc, path);
                     self.0.set(self.0.get() + 1);
                     Some(serde_json::json!({"keys": doc.keys(path).collect::<Vec<_>>() }))
                 }
-                fn sync(&mut self, _: &mut AutoCommit, _: &ObjId) {}
                 fn build_layout(
                     &mut self,
                     _: &mut TaffyTree<()>,
@@ -3421,14 +3390,7 @@ mod tests {
                 fn handle_event(
                     &mut self,
                     _: &WindowEvent,
-                    _: f64,
-                    _: &winit::event::Modifiers,
-                    _: &mut AutoCommit,
-                    _: &ObjId,
-                    _: &mut bool,
-                    _: &mut Option<NodeId>,
-                    _: NodeId,
-                    _: &TaffyTree<()>,
+                    _ctx: &mut crate::widget::EventCtx<'_>,
                 ) {
                     unreachable!()
                 }
@@ -3675,7 +3637,6 @@ pub(crate) mod control_result_probe {
                 }
             })
         }
-        fn sync(&mut self, _: &mut AutoCommit, _: &ObjId) {}
         fn build_layout(
             &mut self,
             tree: &mut TaffyTree<()>,
@@ -3694,23 +3655,6 @@ pub(crate) mod control_result_probe {
             _: &mut TextRenderer,
             _: &Theme,
             _: &PresenceCtx,
-        ) {
-        }
-        #[allow(
-            clippy::too_many_arguments,
-            reason = "test probe implements the Widget event contract"
-        )]
-        fn handle_event(
-            &mut self,
-            _: &WindowEvent,
-            _: f64,
-            _: &winit::event::Modifiers,
-            _: &mut AutoCommit,
-            _: &ObjId,
-            _: &mut bool,
-            _: &mut Option<NodeId>,
-            _: NodeId,
-            _: &TaffyTree<()>,
         ) {
         }
         fn name(&self) -> &'static str {

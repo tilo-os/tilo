@@ -88,10 +88,12 @@ pub const CURRENT_CONNECTION_PEER_ID: u64 = u64::MAX;
 pub use collab_types::DocumentMutation;
 use collab_types::SignedOp;
 pub use runtime_collab::{
-    CalibrationInfo, CalibrationMemberInfo, CalibrationMemberState, CalibrationPhaseInfo,
-    MAX_SPEAKER_NAME_CHARS, SpeakerCommand, SpeakerDeviceInfo, SpeakerEndpointInfo,
-    SpeakerGroupInfo, SpeakerMemberInfo, SpeakerMemberSpec, SpeakerMemberStatus,
-    SpeakerPlaybackInfo, SpeakerReply, SpeakerRoleSpec, SpeakerSnapshot, SpeakerTrimInfo,
+    CalibrationInfo, CalibrationMemberInfo, CalibrationMemberState, CalibrationMicrophoneInfo,
+    CalibrationMicrophoneRun, CalibrationMicrophoneState, CalibrationPhaseInfo,
+    MAX_SPEAKER_NAME_CHARS, MicrophoneStatus, SpeakerCommand, SpeakerDeviceInfo,
+    SpeakerEndpointInfo, SpeakerGroupInfo, SpeakerMemberInfo, SpeakerMemberSpec,
+    SpeakerMemberStatus, SpeakerPlaybackInfo, SpeakerReply, SpeakerRoleSpec, SpeakerSnapshot,
+    SpeakerTrimInfo,
 };
 pub use runtime_collab::{
     NearbyDestinationHandle, NearbyTargetHandle, NearbyTransferCommand, NearbyTransferDestination,

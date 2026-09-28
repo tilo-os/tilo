@@ -72,7 +72,6 @@ fn tree(view: &str) -> Vec<Resource> {
 
 impl Widget for TwoViews {
     crate::testing::inert_widget_methods!(
-        sync,
         leaf_layout,
         apply_layout,
         draw,

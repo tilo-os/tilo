@@ -264,14 +264,16 @@ fn following_a_peer_tracks_their_tab_binds_views_and_releases_on_local_intent() 
         let node = taffy.new_leaf(taffy::Style::default()).unwrap();
         host.handle_event(
             &touch,
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &winit::event::Modifiers::default(),
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
 
         assert!(host.followed_peer.is_none(), "a local touch takes control");

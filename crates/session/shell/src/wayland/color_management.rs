@@ -8,10 +8,10 @@
 //! Advertises the *parametric* creator path only — primaries, transfer
 //! function, optional mastering-display/luminance hints, then `create`
 //! for an immutable `wp_image_description_v1` attached via
-//! `wp_color_management_surface_v1`. Deliberately unimplemented: ICC
-//! creators and Windows-scRGB (`unsupported_feature` error — the
-//! parametric path already unblocks HDR clients like `mpv --hdr`), and
-//! `get_information` on client-created descriptions (`no_information` —
+//! `wp_color_management_surface_v1`, plus the Windows-scRGB description
+//! (linear light, sRGB primaries, `1.0` at SDR white) that DirectX-style
+//! games render into. Deliberately unimplemented: ICC creators
+//! (`unsupported_feature` error), and `get_information` on client-created descriptions (`no_information` —
 //! they're surface-attach-only, not for round-tripping). Descriptions minted
 //! by output and surface-feedback requests are queryable and return the exact
 //! parametric values the compositor advertised.
@@ -116,11 +116,12 @@ impl Default for ColorManagerState {
             // physically covers each gamut: the output description below is
             // populated independently from that output's EDID/profile.
             supported_primaries: vec![1, 6, 9],
-            // BT.1886 (=1), gamma22 (=2), ST 2084 PQ (=11), HLG (=13).
-            // The v1 spec's `srgb` (=9) is deprecated since v2; we
-            // don't advertise it — clients get gamma22 or the sibling
-            // `ext_srgb` (=10) instead.
-            supported_transfers: vec![1, 2, 11, 13],
+            // BT.1886 (=1), gamma22 (=2), ext_linear (=5), ST 2084 PQ
+            // (=11), HLG (=13). The v1 spec's `srgb` (=9) is deprecated
+            // since v2; we don't advertise it — clients get gamma22 or the
+            // sibling `ext_srgb` (=10) instead. `ext_linear` is scRGB-style
+            // linear light, composited at full precision like PQ and HLG.
+            supported_transfers: vec![1, 2, 5, 11, 13],
             // Compositor's preferred matrix set: Identity (=0),
             // BT.709 (=1), BT.2020-non-constant (=9). These are the
             // CICP MatrixCoefficients numbers, not `color-management-v1`
@@ -134,7 +135,8 @@ impl Default for ColorManagerState {
             // set_luminances (=4) — primary volume min/max/reference.
             // set_mastering_display_primaries (=5) — SMPTE ST 2086
             //   mastering-display metadata for HDR pipelines.
-            supported_features: vec![1, 2, 3, 4, 5],
+            // windows_scrgb (=7) — the ready-made scRGB description.
+            supported_features: vec![1, 2, 3, 4, 5, 7],
             // Perceptual (=0), Relative colorimetric (=1),
             // Media-relative w/ BPC (=4). Saturation (=2) + Absolute
             // (=3) aren't yet plumbed into the wgpu shader.
@@ -427,6 +429,7 @@ fn transfer_named_to_color(t: TransferFunction) -> TransferCharacteristics {
         TransferFunction::St2084Pq => TransferCharacteristics::SmpteSt2084,
         TransferFunction::Hlg => TransferCharacteristics::AribStdB67,
         TransferFunction::Srgb | TransferFunction::ExtSrgb => TransferCharacteristics::Srgb,
+        TransferFunction::ExtLinear => TransferCharacteristics::Linear,
         _ => TransferCharacteristics::Unspecified,
     }
 }
@@ -493,6 +496,26 @@ pub struct ImageDescriptionData {
 /// BT.2408 reference white, the reference luminance unless an output says
 /// otherwise.
 pub const DEFAULT_REFERENCE_LUMINANCE: u32 = 203;
+
+impl ImageDescriptionData {
+    /// The Windows-scRGB description: linear light with sRGB primaries,
+    /// `1.0` at SDR white and values above it for HDR highlights, full
+    /// range RGB.
+    pub fn windows_scrgb() -> Self {
+        Self {
+            colorimetry: Colorimetry {
+                primaries: ColorPrimaries::Bt709,
+                transfer: TransferCharacteristics::Linear,
+                matrix: MatrixCoefficients::Identity,
+                range: ColorRange::Full,
+            },
+            hdr: None,
+            identity: mint_identity(),
+            queryable: false,
+            reference_luminance: DEFAULT_REFERENCE_LUMINANCE,
+        }
+    }
+}
 
 /// What the compositor tells clients one output displays.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -571,6 +594,7 @@ impl ImageDescriptionData {
             let transfer = match self.colorimetry.transfer {
                 TransferCharacteristics::Bt709 => Some(TransferCharacteristics::Bt709),
                 TransferCharacteristics::Srgb => Some(TransferCharacteristics::Srgb),
+                TransferCharacteristics::Linear => Some(TransferCharacteristics::Linear),
                 TransferCharacteristics::SmpteSt2084 => Some(TransferCharacteristics::SmpteSt2084),
                 TransferCharacteristics::AribStdB67 => Some(TransferCharacteristics::AribStdB67),
                 TransferCharacteristics::Unspecified => None,
@@ -592,6 +616,7 @@ impl ImageDescriptionData {
             transfer.and_then(|value| match value {
                 TransferCharacteristics::Bt709 => Some(TransferFunction::Bt1886),
                 TransferCharacteristics::Srgb => Some(TransferFunction::ExtSrgb),
+                TransferCharacteristics::Linear => Some(TransferFunction::ExtLinear),
                 TransferCharacteristics::SmpteSt2084 => Some(TransferFunction::St2084Pq),
                 TransferCharacteristics::AribStdB67 => Some(TransferFunction::Hlg),
                 TransferCharacteristics::Unspecified => None,
@@ -949,22 +974,12 @@ where
                 );
             }
             wp_color_manager_v1::Request::CreateWindowsScrgb { image_description } => {
-                // See `CreateIccCreator`: every request `new_id` must be
-                // initialised even when the request ends in a protocol error.
-                data_init.init(
-                    image_description,
-                    ImageDescriptionData {
-                        colorimetry: Colorimetry::sdr_bt709(),
-                        hdr: None,
-                        identity: 0,
-                        queryable: false,
-                        reference_luminance: DEFAULT_REFERENCE_LUMINANCE,
-                    },
-                );
-                manager.post_error(
-                    wp_color_manager_v1::Error::UnsupportedFeature,
-                    "Windows-scRGB image descriptions are not supported",
-                );
+                let data = ImageDescriptionData::windows_scrgb();
+                let identity = data.identity;
+                let obj = data_init.init(image_description, data);
+                // Version 1: `ready` is the only success event (see
+                // `create_image_description`).
+                let () = obj.ready((identity & 0xFFFF_FFFF) as u32);
             }
             wp_color_manager_v1::Request::GetOutput { id, output } => {
                 let data = ColorManagementOutputData::new(output);

@@ -20,7 +20,6 @@ struct Conversation {
 }
 
 impl Widget for Conversation {
-    fn sync(&mut self, _state: &mut automerge::AutoCommit, _path: &automerge::ObjId) {}
     fn build_layout(
         &mut self,
         taffy: &mut taffy::TaffyTree<()>,

@@ -4,7 +4,6 @@
 
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::color_compat::ColorCompat;
 use ui::presence::PresenceCtx;
@@ -452,8 +451,6 @@ impl ThemeRow {
 }
 
 impl Widget for ThemeRow {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -532,25 +529,14 @@ impl Widget for ThemeRow {
         self.paint(scene, t, tr, theme);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale: f64,
-        _m: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / scale, position.y / scale);
+                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 let h = self.rect.contains(p);
                 if h != self.view.hover {
                     self.view.hover = h;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseInput {
@@ -559,8 +545,8 @@ impl Widget for ThemeRow {
                 ..
             } if self.view.hover => {
                 self.select_requested = true;
-                *focus_target = Some(node_id);
-                *handled = true;
+                *ctx.focus_target = Some(ctx.node_id);
+                *ctx.handled = true;
             }
             _ => {}
         }

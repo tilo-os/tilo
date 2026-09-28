@@ -9,6 +9,7 @@ use taffy::{NodeId, TaffyTree};
 use ui::tilo_actions::{
     ControlInvocation, InvocationId, InvocationUpdate, OperationKind, Resource,
 };
+use ui::widget::{AppModel, ModelPath};
 use ui::widget::{ResourceOperationStart, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -105,7 +106,8 @@ impl Widget for LiveStore {
         clippy::too_many_lines,
         reason = "this is the single host sync point that drains worker snapshots and forwards every typed Store intent without optimistic state"
     )]
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, path) = ui::doc::document(state, path);
         while let Some(snap) = self.worker.try_snapshot() {
             if let Some(invocation) = snap.invocation {
                 self.inner
@@ -283,26 +285,9 @@ impl Widget for LiveStore {
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) {
-        self.inner.handle_event(
-            event,
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
-        );
+        self.inner.handle_event(event, ctx);
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
