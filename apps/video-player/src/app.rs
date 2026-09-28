@@ -4323,6 +4323,7 @@ impl Widget for PlayerApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui::headless::Framed;
 
     #[test]
     fn opening_sources_sets_identity_without_exposing_paths() {
@@ -4936,23 +4937,10 @@ mod tests {
             let mut app = synth_app();
             app.open_path(Path::new("/tmp/Clip.mp4"))
                 .expect("source identity available");
-            let theme = Theme::dark();
-            let mut taffy = TaffyTree::new();
-            let mut nodes: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-            let root = app.build_layout(&mut taffy, &theme, &mut nodes);
-            taffy
-                .compute_layout(
-                    root,
-                    taffy::Size {
-                        width: taffy::AvailableSpace::Definite(1280.0),
-                        height: taffy::AvailableSpace::Definite(720.0),
-                    },
-                )
-                .unwrap();
-            app.apply_layout(&taffy, root, Point::ZERO);
+            let mut app = lay_out(app, (1280.0, 720.0), 1.0);
             app.perform_resource_operation(PlayerOperation::OpenPictureInPicture);
             let request =
-                ui::widget::FloatingSurfaceWidgetExt::take_floating_surface_request(&mut app)
+                ui::widget::FloatingSurfaceWidgetExt::take_floating_surface_request(&mut *app)
                     .expect("PiP request");
             assert_eq!(request.id, "video-player.current-video");
             assert_eq!(
@@ -5051,43 +5039,13 @@ mod tests {
     /// Run the production layout passes (sync → build → compute → apply) for
     /// `app` at `viewport`, with the accessibility text scale applied the way
     /// the live host applies it.
-    fn lay_out(app: &mut PlayerApp, viewport: (f32, f32), text_scale: f32) {
-        let theme = Theme::dark().with_text_scale(text_scale);
-        let mut tr = TextRenderer::new();
-        tr.set_text_scale(theme.text_scale);
-        let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &root());
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let child = app.build_layout(&mut taffy, &theme, &mut node_map);
-        let root_node = parent_node(
-            &mut taffy,
-            Style {
-                size: Size {
-                    width: taffy::style_helpers::length(viewport.0),
-                    height: taffy::style_helpers::length(viewport.1),
-                },
-                ..Default::default()
-            },
-            &[child],
-        );
-        let measure_map = node_map.clone();
-        let trr = &mut tr;
-        taffy
-            .compute_layout_with_measure(
-                root_node,
-                taffy::Size {
-                    width: taffy::AvailableSpace::Definite(viewport.0),
-                    height: taffy::AvailableSpace::Definite(viewport.1),
-                },
-                |known, available, id, _, _| {
-                    measure_map.get(&id).map_or(taffy::Size::ZERO, |&p| unsafe {
-                        (*p).measure(known, available, trr)
-                    })
-                },
-            )
-            .expect("layout");
-        app.apply_layout(&taffy, child, Point::ORIGIN);
+    fn lay_out(app: PlayerApp, viewport: (f32, f32), text_scale: f32) -> Framed<PlayerApp> {
+        Framed::new(
+            ui::State::new(),
+            app,
+            ui::headless::viewport(viewport),
+            Theme::dark().with_text_scale(text_scale),
+        )
     }
 
     #[test]
@@ -5104,8 +5062,11 @@ mod tests {
         // line with the same margins — one geometry for hit-testing and paint.
         {
             for scale in [1.0_f32, 2.0] {
-                let mut app = PlayerApp::for_shot(None, Some("playing"));
-                lay_out(&mut app, (1200.0, 800.0), scale);
+                let mut app = lay_out(
+                    PlayerApp::for_shot(None, Some("playing")),
+                    (1200.0, 800.0),
+                    scale,
+                );
                 let estimated = (app.library_button_rect, app.open_button_rect);
                 let mut tr = TextRenderer::new();
                 tr.set_text_scale(scale);
@@ -5255,8 +5216,11 @@ mod tests {
             assert!(two.scrim_h >= two.button_h + 2.0 * OVERLAY_MARGIN);
 
             for scale in [1.0_f32, 2.0] {
-                let mut app = PlayerApp::for_shot(None, Some("playing"));
-                lay_out(&mut app, (1200.0, 800.0), scale);
+                let app = lay_out(
+                    PlayerApp::for_shot(None, Some("playing")),
+                    (1200.0, 800.0),
+                    scale,
+                );
                 let strip = app.top_strip();
                 let open = app.open_button_rect;
                 let library = app.library_button_rect;
@@ -5302,8 +5266,11 @@ mod tests {
                 "title never runs under the header buttons"
             );
 
-            let mut app = PlayerApp::for_shot(None, Some("library"));
-            lay_out(&mut app, (1200.0, 800.0), 1.0);
+            let app = lay_out(
+                PlayerApp::for_shot(None, Some("library")),
+                (1200.0, 800.0),
+                1.0,
+            );
             assert_eq!(app.library_close_rect, g.close);
             assert_eq!(app.library_queue_tab_rect, g.queue_tab);
             assert_eq!(app.library_recent_tab_rect, g.recent_tab);
