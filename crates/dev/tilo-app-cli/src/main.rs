@@ -71,9 +71,6 @@ enum Command {
     Inspect(InspectArgs),
     /// Create and edit validated serialized UI object graphs.
     Ui(UiArgs),
-    /// Build the app for a platform without packaging it (`--platform web`:
-    /// a page with the toolkit core and the app, ready to serve).
-    Build(BuildArgs),
     /// Build, assemble, sign, and verify an installable Tilo package.
     Package(PackageArgs),
     /// Create or show the publisher key that signs packages and entries.
@@ -611,11 +608,25 @@ struct BuildArgs {
     path: Option<PathBuf>,
 
     /// Target to build for.
-    #[arg(long, value_enum)]
-    target: TargetArg,
+    #[arg(long, value_enum, required_unless_present = "platform", conflicts_with = "platform")]
+    target: Option<TargetArg>,
 
     #[command(flatten)]
     options: TargetOptions,
+
+    /// The page build: the toolkit core and the app as a page ready to serve.
+    #[arg(long, value_enum)]
+    platform: Option<BuildPlatformArg>,
+
+    /// `--platform web` only: the page directory, relative to the app root
+    /// unless absolute [default: target/web].
+    #[arg(short, long, requires = "platform")]
+    output: Option<PathBuf>,
+
+    /// `--platform web` only: relink only the app against the toolkit core
+    /// already built.
+    #[arg(long, requires = "platform")]
+    app_only: bool,
 }
 
 #[derive(clap::Args)]
@@ -963,7 +974,6 @@ fn main() -> ExitCode {
         Command::Shot(args) => run_shot(args),
         Command::Inspect(args) => run_inspect(args),
         Command::Ui(args) => run_ui(args),
-        Command::Build(args) => run_build(args),
         Command::Package(args) => run_package(args),
         Command::Keys(args) => publishing::run_keys(args),
         Command::Apply(args) => publishing::run_apply(args),
@@ -1067,7 +1077,6 @@ impl Command {
             Self::Shot(_) => "shot",
             Self::Inspect(_) => "inspect",
             Self::Ui(_) => "ui",
-            Self::Build(_) => "build",
             Self::Package(_) => "package",
             Self::Keys(_) => "keys",
             Self::Apply(_) => "apply",
@@ -1582,8 +1591,11 @@ fn run_run(args: RunArgs) -> Result<Value> {
 }
 
 fn run_build(args: BuildArgs) -> Result<Value> {
-    let path = args.path.map_or_else(std::env::current_dir, Ok)?;
-    let outcome = tilo_app_cli::targets::build(&path, &args.options.request(args.target))?;
+    let path = args.path.clone().map_or_else(std::env::current_dir, Ok)?;
+    let Some(target) = args.target else {
+        return run_platform_build(path, args);
+    };
+    let outcome = tilo_app_cli::targets::build(&path, &args.options.request(target))?;
     println!("{}", outcome.artifact.display());
     Ok(json!({"artifact": outcome.artifact}))
 }
@@ -1640,9 +1652,10 @@ fn run_dev(args: DevArgs) -> Result<Value> {
     Ok(json!({"stopped": true}))
 }
 
-fn run_build(args: BuildArgs) -> Result<Value> {
-    let path = args.path.map_or_else(std::env::current_dir, Ok)?;
-    let BuildPlatformArg::Web = args.platform;
+fn run_platform_build(path: PathBuf, args: BuildArgs) -> Result<Value> {
+    let Some(BuildPlatformArg::Web) = args.platform else {
+        anyhow::bail!("name a --target or --platform to build for");
+    };
     let build = tilo_app_cli::web::build_web(
         &path,
         &tilo_app_cli::web::WebBuildRequest {
