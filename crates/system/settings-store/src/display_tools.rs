@@ -2,10 +2,12 @@
 //!
 //! An external layout tool (`kanshi`, `way-displays`, `wlr-randr`) changes
 //! the displays through the compositor's privileged output-management
-//! socket, and every change waits for the person to keep it. A tool they
-//! chose to trust is recorded here, keyed by the executable the compositor
-//! read from the connection's peer credentials, so its later changes are
-//! kept without a prompt. Settings › Displays lists and revokes them.
+//! socket. Its changes apply directly, except a risky one — a custom mode,
+//! or a display in use turned off or given a mode it never showed — which
+//! waits for the person to keep it. A tool they chose to trust is recorded
+//! here, keyed by the executable the compositor read from the connection's
+//! peer credentials, so even its risky changes are kept without a prompt.
+//! Settings › Displays lists and revokes them.
 
 use serde::{Deserialize, Serialize};
 
@@ -34,7 +36,7 @@ impl DisplayTool {
     }
 }
 
-/// Every tool whose display changes are kept without asking.
+/// Every tool whose risky display changes are kept without asking.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TrustedDisplayTools {
