@@ -146,6 +146,14 @@ pub enum DesktopCommand {
     DeleteShortcut {
         id: String,
     },
+    /// Register topology namespace `salt` to the calling device, so it can
+    /// publish its own windows (a session's legacy windows) into a room
+    /// another device governs. Only the governor writes the registry; a
+    /// namespace is never rebound. Placement-independent. Appended last:
+    /// existing encodings are unchanged.
+    ClaimNamespace {
+        salt: u16,
+    },
 }
 
 /// The shortcut a [`DesktopCommand::SaveShortcut`] carries.
@@ -821,25 +829,7 @@ pub fn apply_command(
             strip,
             group,
             before,
-        } => {
-            let strip = strip_index(workspace, *strip)?;
-            let groups = &mut strip_at_mut(workspace, strip)?.window_groups;
-            let at = groups
-                .iter()
-                .position(|window| window.id == *group)
-                .ok_or("group was removed")?;
-            if before == &Some(*group) {
-                return Err("group cannot be its own destination".into());
-            }
-            if before.is_some_and(|id| !groups.iter().any(|window| window.id == id)) {
-                return Err("destination group was removed".into());
-            }
-            let moved = groups.remove(at);
-            let destination = before
-                .and_then(|id| groups.iter().position(|window| window.id == id))
-                .unwrap_or(groups.len());
-            groups.insert(destination, moved);
-        }
+        } => reorder_group(workspace, *strip, *group, *before)?,
         DesktopCommand::MoveTab {
             location: at,
             placement,
@@ -868,7 +858,36 @@ pub fn apply_command(
             workspace.strips.remove(strip);
         }
         DesktopCommand::RenameWorkspace { name: label } => workspace.name = name(label)?,
+        DesktopCommand::ClaimNamespace { .. } => {
+            return Err("a namespace claim changes the room's registry, not a workspace".into());
+        }
     }
+    Ok(())
+}
+
+fn reorder_group(
+    workspace: &mut Workspace,
+    strip: u64,
+    group: u64,
+    before: Option<u64>,
+) -> Result<(), String> {
+    let strip = strip_index(workspace, strip)?;
+    let groups = &mut strip_at_mut(workspace, strip)?.window_groups;
+    let at = groups
+        .iter()
+        .position(|window| window.id == group)
+        .ok_or("group was removed")?;
+    if before == Some(group) {
+        return Err("group cannot be its own destination".into());
+    }
+    if before.is_some_and(|id| !groups.iter().any(|window| window.id == id)) {
+        return Err("destination group was removed".into());
+    }
+    let moved = groups.remove(at);
+    let destination = before
+        .and_then(|id| groups.iter().position(|window| window.id == id))
+        .unwrap_or(groups.len());
+    groups.insert(destination, moved);
     Ok(())
 }
 
