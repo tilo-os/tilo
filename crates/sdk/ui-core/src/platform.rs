@@ -111,6 +111,19 @@ impl Shortcut {
         self
     }
 
+    /// The key this shortcut is pressed with, as a keycap legend.
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
+    pub fn has_shift(&self) -> bool {
+        self.shift
+    }
+
+    pub fn has_alt(&self) -> bool {
+        self.alt
+    }
+
     pub fn label(&self, conventions: PlatformConventions) -> String {
         let parts = self.keycap_labels(conventions);
         if conventions.platform() == Platform::MacOs {
@@ -143,9 +156,88 @@ impl Shortcut {
     }
 }
 
+/// A host service every app answers by shortcut, whichever chrome shows it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostShortcut {
+    Search,
+    History,
+    Undo,
+    Redo,
+}
+
+impl HostShortcut {
+    /// The one shortcut table. Plain Ctrl+H stays with apps (Find and
+    /// Replace), so History takes Shift where ⌘Y is not the convention.
+    pub fn shortcut(self, conventions: PlatformConventions) -> Shortcut {
+        let mac = conventions.platform() == Platform::MacOs;
+        match self {
+            Self::Search => Shortcut::command("K"),
+            Self::History if mac => Shortcut::command("Y"),
+            Self::History => Shortcut::command("H").shift(),
+            Self::Undo => Shortcut::command("Z"),
+            Self::Redo if conventions.platform() == Platform::Windows => Shortcut::command("Y"),
+            Self::Redo => Shortcut::command("Z").shift(),
+        }
+    }
+
+    /// Which host service a command-modified character means. Besides each
+    /// platform's own spelling, Ctrl+Shift+Z and Ctrl+Y both redo off macOS.
+    pub fn resolve(conventions: PlatformConventions, character: &str, shift: bool) -> Option<Self> {
+        let mac = conventions.platform() == Platform::MacOs;
+        match (character.to_ascii_lowercase().as_str(), shift) {
+            ("k", false) => Some(Self::Search),
+            ("y", false) if mac => Some(Self::History),
+            ("h", true) if !mac => Some(Self::History),
+            ("z", false) => Some(Self::Undo),
+            ("z", true) | ("y", false) => Some(Self::Redo),
+            _ => None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn host_shortcuts_resolve_to_the_label_each_platform_shows() {
+        for platform in [Platform::MacOs, Platform::Windows, Platform::Linux] {
+            let conventions = PlatformConventions::new(platform);
+            for service in [
+                HostShortcut::Search,
+                HostShortcut::History,
+                HostShortcut::Undo,
+                HostShortcut::Redo,
+            ] {
+                let shortcut = service.shortcut(conventions);
+                assert_eq!(
+                    HostShortcut::resolve(conventions, shortcut.key(), shortcut.has_shift()),
+                    Some(service),
+                    "{platform:?} {service:?}"
+                );
+            }
+        }
+        let mac = PlatformConventions::new(Platform::MacOs);
+        let linux = PlatformConventions::new(Platform::Linux);
+        assert_eq!(HostShortcut::History.shortcut(mac).label(mac), "⌘Y");
+        assert_eq!(
+            HostShortcut::History.shortcut(linux).label(linux),
+            "Ctrl+Shift+H"
+        );
+        assert_eq!(
+            HostShortcut::resolve(linux, "y", false),
+            Some(HostShortcut::Redo)
+        );
+        assert_eq!(
+            HostShortcut::resolve(linux, "h", false),
+            None,
+            "Ctrl+H stays with apps"
+        );
+        assert_eq!(
+            HostShortcut::resolve(mac, "y", false),
+            Some(HostShortcut::History)
+        );
+    }
 
     #[test]
     fn shortcuts_modifiers_and_dialog_order_follow_each_platform_hig() {
