@@ -58,8 +58,7 @@ fi
 # non-writable group-readable directory; public certificates remain separate.
 if grep -Eq '^d[[:space:]]+/var/lib/tilo/device-private[[:space:]]+2750[[:space:]]+root[[:space:]]+tilo-identity' "$tmpfiles" \
    && exactly_once "$device_key_unit" 'Before=shell-firstboot.service greetd.service fs.service' \
-   && exactly_once "$device_key_unit" 'ConditionPathExists=|!/var/lib/tilo/device-private/keypair.bin' \
-   && exactly_once "$device_key_unit" 'ConditionPathExists=|/var/lib/tilo/device/keypair.bin' \
+   && exactly_once "$device_key_unit" 'ConditionPathExists=!/var/lib/tilo/device-private/keypair.bin' \
    && exactly_once "$device_key_unit" 'ReadWritePaths=/var/lib/tilo/device-private' \
    && exactly_once "$device_key_unit" 'PrivateNetwork=yes' \
    && exactly_once "$device_key_unit" 'ProtectProc=invisible' \
