@@ -1,0 +1,150 @@
+//! `registry-client`, as `tilo-app apply` and `tilo-app publish` drive it,
+//! against a running registry: apply for a namespace, get approved, publish
+//! a build into it, and find the upload where review reads it.
+
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
+use std::collections::BTreeMap;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::sync::{Arc, Mutex};
+
+use ed25519_dalek::SigningKey;
+use registry_client::RegistryClient;
+use registry_server::applications::{self, ProofSource};
+use registry_server::serve::ServeOptions;
+use registry_server::{AppState, ServerIdentity, Storage, bind_and_run};
+use registry_types::application::{NamespaceClaim, proof_token};
+
+#[derive(Clone, Default)]
+struct Proofs(Arc<Mutex<BTreeMap<String, Vec<String>>>>);
+
+impl ProofSource for Proofs {
+    fn txt_records(&self, name: &str) -> Result<Vec<String>, String> {
+        Ok(self
+            .0
+            .lock()
+            .unwrap()
+            .get(name)
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    fn https_text(&self, _url: &str) -> Result<String, String> {
+        Err("404".into())
+    }
+}
+
+fn package(dir: &std::path::Path, key: &SigningKey, id: &str) -> Vec<u8> {
+    let identity = tilo_app_package::SigningIdentity::from_signing_key(key.clone());
+    let payload = dir.join(id);
+    std::fs::create_dir_all(payload.join("bin")).unwrap();
+    std::fs::write(payload.join("bin/editor"), b"published binary").unwrap();
+    let manifest = tilo_app_package::Manifest::from_toml_str(&format!(
+        "[package]\nid = \"{id}\"\nversion = \"1.0.0\"\nkind = \"app\"\n\
+         [package.isa]\nx86_64 = \"v3\"\n\
+         [publisher]\nidentity = \"ed25519:{}\"\nsignature = \"\"\n\
+         [sandbox]\nnamespaces = [\"user\"]\nseccomp = \"tilo-default\"\nlandlock = \"strict\"\n\
+         [sandbox.net]\nmode = \"off\"\n\
+         [entrypoint]\nbin = \"bin/editor\"\ntype = \"gui\"\n",
+        hex::encode(identity.public_key_bytes())
+    ))
+    .unwrap();
+    let packed = tilo_app_package::pack(&payload, &manifest, &identity).unwrap();
+    tilo_app_package::tapp::to_bytes(&packed.meta, Some(&packed)).unwrap()
+}
+
+#[tokio::test]
+async fn an_outside_publisher_applies_is_approved_and_publishes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let storage = Storage::open(tmp.path().join("registry")).unwrap();
+    let identity = ServerIdentity {
+        owner_pubkey_hex: hex::encode(SigningKey::from_bytes(&[1; 32]).verifying_key().to_bytes()),
+        name: "test registry".into(),
+        description: "for tests".into(),
+        base_url: "https://apps.example".into(),
+    };
+    let proofs = Proofs::default();
+    let state = AppState::with_proof_source(
+        storage.clone(),
+        identity,
+        ServeOptions::default(),
+        Arc::new(proofs.clone()),
+    );
+    let addr = bind_and_run(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0), state)
+        .await
+        .unwrap();
+
+    let key = SigningKey::from_bytes(&[9; 32]);
+    let pubkey = hex::encode(key.verifying_key().to_bytes());
+    proofs.0.lock().unwrap().insert(
+        "_tilo-publisher.example.com".into(),
+        vec![proof_token(&pubkey)],
+    );
+    let dir = tmp.path().to_owned();
+    tokio::task::spawn_blocking(move || {
+        let client = RegistryClient::new(&format!("http://{addr}")).unwrap();
+        let editor = package(&dir, &key, "com.example.editor");
+        let refused = registry_client::publish(&client, &key, &editor, None, None).unwrap_err();
+        assert!(format!("{refused:#}").contains("403"), "{refused:#}");
+
+        let status = registry_client::apply(
+            &client,
+            &key,
+            vec![NamespaceClaim::Domain {
+                domain: "example.com".into(),
+            }],
+            "ada@example.com".into(),
+            String::new(),
+        )
+        .unwrap();
+        assert_eq!(status["status"], "pending");
+        applications::approve(&storage, &pubkey, "owner", unix_now(), &proofs).unwrap();
+        assert_eq!(
+            client.application(&pubkey).unwrap().unwrap()["status"],
+            "approved"
+        );
+
+        let outside = package(&dir, &key, "org.example.editor");
+        let rejected = registry_client::publish(&client, &key, &outside, None, None).unwrap_err();
+        assert!(
+            format!("{rejected:#}").contains("outside this publisher's verified namespaces"),
+            "{rejected:#}"
+        );
+
+        let published = registry_client::publish(&client, &key, &editor, None, None).unwrap();
+        assert_eq!(published.package_id, "com.example.editor");
+        assert_eq!(published.action, Some(registry_types::EntryAction::Add));
+        let digest = blake3::hash(&editor).to_hex().to_string();
+        assert_eq!(
+            published.url,
+            format!("https://apps.tilo.so/artifacts/{digest}.tapp")
+        );
+        let pending = storage.load_pending_submissions().unwrap();
+        let [submission] = pending.as_slice() else {
+            panic!("expected one pending submission, got {pending:?}");
+        };
+        let reviewed = registry_server::review_entry_bytes(
+            &storage,
+            &submission.change.entry,
+            registry_server::InspectionPolicy::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            reviewed.first().map(|(_, bytes)| bytes.as_slice()),
+            Some(editor.as_slice())
+        );
+    })
+    .await
+    .unwrap();
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+}

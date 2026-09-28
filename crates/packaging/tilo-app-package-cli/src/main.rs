@@ -65,17 +65,6 @@ enum TargetPlatform {
     Macos,
 }
 
-impl TargetPlatform {
-    fn wire(self) -> &'static str {
-        match self {
-            Self::TiloOs => registry_types::TILO_OS_PLATFORM,
-            Self::Web => registry_types::WEB_PLATFORM,
-            Self::Windows => registry_types::WINDOWS_PLATFORM,
-            Self::Macos => registry_types::MACOS_PLATFORM,
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum RegistryAction {
     Add,
@@ -83,21 +72,15 @@ enum RegistryAction {
     Delete,
 }
 
-/// Publisher-authored, localizable store presentation. JSON uses the same
-/// signed wire types as the registry entry, so no lossy conversion or locale
-/// normalization happens between authoring and signing.
-#[derive(Clone, Debug, Deserialize)]
-struct EntryMetadata {
-    name: registry_types::LocalizedText,
-    description: registry_types::LocalizedText,
-    tagline: registry_types::LocalizedText,
-    #[serde(default)]
-    images: registry_types::LocalizedImages,
-    supported_languages: Vec<String>,
-    #[serde(default)]
-    source_url: Option<String>,
-    #[serde(default)]
-    homepage: Option<String>,
+impl From<TargetPlatform> for registry_client::Platform {
+    fn from(value: TargetPlatform) -> Self {
+        match value {
+            TargetPlatform::TiloOs => Self::TiloOs,
+            TargetPlatform::Web => Self::Web,
+            TargetPlatform::Windows => Self::Windows,
+            TargetPlatform::Macos => Self::Macos,
+        }
+    }
 }
 
 impl From<RegistryAction> for registry_types::EntryAction {
@@ -235,13 +218,14 @@ enum Command {
         dest: PathBuf,
         file: PathBuf,
     },
-    /// Publish a signed .tapp to a registry: sign an index entry, upload
-    /// the blob to iroh-blobs, and emit the entry to the target registry.
+    /// Publish a signed .tapp to a registry directory: sign an index entry,
+    /// upload the blob to iroh-blobs, and re-sign the directory's index.
     ///
-    /// `--registry` is `file://`/local (self-hosted) or `https://`.
-    /// `--dry-run` prints the signed entry + content hash without uploading.
+    /// `--registry` is a local directory or `file://` URL; publish to an HTTP
+    /// registry with `tilo-app publish`. `--dry-run` prints the signed entry +
+    /// content hash without uploading.
     Publish {
-        /// Target registry: a local dir / `file://…` (self-hosted) or an `https://…` endpoint.
+        /// Target registry: a local dir or `file://…` (self-hosted).
         #[arg(long)]
         registry: String,
         /// Publisher identity JSON; required unless --dry-run, and must be the key that signed the package.
@@ -843,18 +827,10 @@ fn cmd_publish(
     })?;
     let publisher = load_identity(identity_path)?;
 
-    // HTTPS target: emit the signed entry to the registry endpoint, which
-    // ingests the blob out of band via the entry's ticket.
     if registry.starts_with("http://") || registry.starts_with("https://") {
-        let (entry, _package_id) = app_registry::build_entry(&tapp_bytes, &publisher, arch, None)
-            .map_err(|e| anyhow!("build entry: {e}"))?;
-        tilo_rt::block_on(app_registry::publish::emit_entry_https(registry, &entry))?
-            .map_err(|e| anyhow!("emit to registry: {e}"))?;
-        eprintln!(
-            "emitted signed entry for {}@{} to {registry}",
-            entry.app_id, entry.version
+        bail!(
+            "an HTTP registry takes uploads and reviewed entries; publish to it with `tilo-app publish --registry {registry}`"
         );
-        return Ok(());
     }
 
     // file:// / local directory registry (self-hosted reference).
@@ -1017,279 +993,6 @@ fn cmd_keygen(out: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Build the entry from the package's own manifest: id, name,
-/// category, version come from inside the signed package, so a
-/// registry row cannot describe a package as something it is not.
-#[allow(
-    clippy::too_many_lines,
-    reason = "registry entry assembly must bind package inspection, target selection, metadata, prior-entry continuity, validation, and signing in one auditable sequence"
-)]
-fn registry_entry_for(
-    tapp_bytes: &[u8],
-    url: &str,
-    signer: &SigningKey,
-    platform: TargetPlatform,
-    arch: Option<&str>,
-    previous: Option<&registry_types::RegistryEntry>,
-    metadata: Option<&EntryMetadata>,
-) -> Result<registry_types::RegistryEntry> {
-    let publisher = SigningIdentity::from_signing_key(signer.clone());
-    let binding = match platform {
-        TargetPlatform::TiloOs => native_binding(tapp_bytes, &publisher, arch)?,
-        TargetPlatform::Web | TargetPlatform::Windows | TargetPlatform::Macos => {
-            signed_target_binding(tapp_bytes, &publisher, platform, arch)?
-        }
-    };
-    let meta = app_registry::tapp::load(tapp_bytes).map_err(|e| anyhow!("load tapp: {e}"))?;
-    let package = &meta.manifest.package;
-    let now = std::env::var("SOURCE_DATE_EPOCH")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .unwrap_or_else(|| {
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |duration| duration.as_secs())
-        });
-    let version = registry_types::RegistryVersion {
-        version: package.version.clone(),
-        tapp_url: url.to_string(),
-        tapp_root_hash_hex: binding.package_id.to_hex(),
-        tapp_size_bytes: tapp_bytes.len() as u64,
-        released_at_unix: now,
-        tapp_blake3_hex: binding.tapp_blake3_hex,
-        target: binding.target,
-    };
-    let mut artifact_exists = false;
-    if let Some(previous) = previous {
-        if previous.package_id != package.id
-            || !previous
-                .publisher_pubkey_hex
-                .eq_ignore_ascii_case(&hex::encode(signer.verifying_key().to_bytes()))
-        {
-            bail!("--previous-entry does not belong to this package and publisher");
-        }
-        if let Some(existing) = previous
-            .versions
-            .iter()
-            .find(|existing| same_version_identity(existing, &version))
-        {
-            if !same_artifact(existing, &version) {
-                bail!(
-                    "version {} for target {}/{} already exists with different package bytes or metadata",
-                    version.version,
-                    version.target.platform,
-                    version.target.architecture,
-                );
-            }
-            if metadata.is_none() {
-                return Ok(previous.clone());
-            }
-            artifact_exists = true;
-        }
-        if candidate_is_older_than_published(previous, &version) {
-            // A slower CI run may finish after a newer per-target release.
-            // Preserve the already-published entry instead of allowing stale
-            // package bytes or metadata to race the registry transition.
-            return Ok(previous.clone());
-        }
-    }
-
-    let mut versions = previous.map_or_else(Vec::new, |entry| entry.versions.clone());
-    if !artifact_exists {
-        versions.push(version);
-    }
-    versions.sort_by(compare_registry_versions);
-    let display_name = package.name.clone().unwrap_or_else(|| package.id.clone());
-    let mut entry = registry_types::RegistryEntry {
-        package_id: package.id.clone(),
-        name: previous.map_or_else(|| display_name.clone().into(), |entry| entry.name.clone()),
-        description: previous.map_or_else(
-            || match platform {
-                TargetPlatform::TiloOs => {
-                    format!("{display_name} is a native Tilo OS application.").into()
-                }
-                TargetPlatform::Web | TargetPlatform::Windows | TargetPlatform::Macos => {
-                    format!("{display_name} is a Tilo application.").into()
-                }
-            },
-            |entry| entry.description.clone(),
-        ),
-        tagline: previous.map_or_else(
-            || match platform {
-                TargetPlatform::TiloOs => format!("{display_name} for Tilo OS").into(),
-                TargetPlatform::Web => format!("{display_name} on Tilo").into(),
-                TargetPlatform::Windows => format!("{display_name} for Windows").into(),
-                TargetPlatform::Macos => format!("{display_name} for macOS").into(),
-            },
-            |entry| entry.tagline.clone(),
-        ),
-        images: previous.map_or_else(Default::default, |entry| entry.images.clone()),
-        supported_languages: previous.map_or_else(
-            || vec!["en".into()],
-            |entry| entry.supported_languages.clone(),
-        ),
-        categories: package.category.clone().into_iter().collect(),
-        source_url: previous.and_then(|entry| entry.source_url.clone()),
-        homepage: previous.and_then(|entry| entry.homepage.clone()),
-        publisher_pubkey_hex: hex::encode(signer.verifying_key().to_bytes()),
-        versions,
-        updated_at_unix: previous.map_or(now, |entry| {
-            now.max(entry.updated_at_unix.saturating_add(1))
-        }),
-        signature_hex: String::new(),
-    };
-    if let Some(metadata) = metadata {
-        entry.name.clone_from(&metadata.name);
-        entry.description.clone_from(&metadata.description);
-        entry.tagline.clone_from(&metadata.tagline);
-        entry.images.clone_from(&metadata.images);
-        entry
-            .supported_languages
-            .clone_from(&metadata.supported_languages);
-        entry.source_url.clone_from(&metadata.source_url);
-        entry.homepage.clone_from(&metadata.homepage);
-    }
-    entry
-        .validate()
-        .map_err(|error| anyhow!("invalid registry metadata: {error}"))?;
-    registry_types::sign_entry(&mut entry, signer);
-    Ok(entry)
-}
-
-/// What a registry version binds from the final tapp bytes.
-struct ArtifactBinding {
-    package_id: tilo_app_package::PackageId,
-    tapp_blake3_hex: String,
-    target: registry_types::RegistryTarget,
-}
-
-fn native_binding(
-    tapp_bytes: &[u8],
-    publisher: &SigningIdentity,
-    arch: Option<&str>,
-) -> Result<ArtifactBinding> {
-    let arch = match arch {
-        None => None,
-        Some("x86_64") => Some(tilo_app_package::manifest::Arch::X86_64),
-        Some("aarch64") => Some(tilo_app_package::manifest::Arch::AArch64),
-        Some(other) => bail!("unknown --arch {other:?} for tilo-os (expected x86_64 or aarch64)"),
-    };
-    // Use the same trust-boundary path as `publish`: this verifies every
-    // signed blob, materialized payload limits and payload shape before any
-    // registry metadata is signed.
-    let (built, package_id) = app_registry::build_entry(tapp_bytes, publisher, arch, None)
-        .map_err(|error| anyhow!("verify tapp for registry entry: {error}"))?;
-    Ok(ArtifactBinding {
-        package_id,
-        tapp_blake3_hex: built.tapp_hash,
-        target: registry_types::RegistryTarget {
-            platform: registry_types::TILO_OS_PLATFORM.into(),
-            architecture: app_registry::index::arch_wire(built.arch).to_string(),
-            isa: built.isa,
-            runtime: built.runtime,
-        },
-    })
-}
-
-/// A web, Windows or macOS build binds the `[target]` its signed manifest
-/// records; the tapp passes the same verification a native one does before
-/// anything is signed.
-fn signed_target_binding(
-    tapp_bytes: &[u8],
-    publisher: &SigningIdentity,
-    platform: TargetPlatform,
-    arch: Option<&str>,
-) -> Result<ArtifactBinding> {
-    if platform == TargetPlatform::Web
-        && arch.is_some_and(|arch| arch != registry_types::WASM32_ARCHITECTURE)
-    {
-        bail!("web builds target --arch wasm32");
-    }
-    let meta = app_registry::tapp::load(tapp_bytes).map_err(|e| anyhow!("load tapp: {e}"))?;
-    app_registry::tapp::validate_payload_shape(&meta)
-        .map_err(|error| anyhow!("verify tapp for registry entry: {error}"))?;
-    app_registry::tapp::verify_bytes(tapp_bytes, meta.package_id, publisher.public_key_bytes())
-        .map_err(|error| anyhow!("verify tapp for registry entry: {error}"))?;
-    if let Some(limit) = tilo_app_package::app_size_limit(&meta.manifest)
-        && tapp_bytes.len() as u64 > limit
-    {
-        bail!(
-            "application .tapp is {} bytes; limit is {limit} bytes",
-            tapp_bytes.len()
-        );
-    }
-    let target = meta.manifest.target.as_ref().ok_or_else(|| {
-        anyhow!(
-            "the tapp has no [target]; it is a Tilo OS build, not a {} build",
-            platform.wire()
-        )
-    })?;
-    let target = registry_types::RegistryTarget {
-        platform: target.platform.clone(),
-        architecture: target.architecture.clone(),
-        isa: target.isa.clone(),
-        runtime: Some(target.runtime.clone()),
-    };
-    if target.platform != platform.wire() {
-        bail!(
-            "the tapp's target is {}, not {}",
-            target.platform,
-            platform.wire()
-        );
-    }
-    if let Some(arch) = arch
-        && arch != target.architecture
-    {
-        bail!(
-            "the tapp was built for {}, not --arch {arch}",
-            target.architecture
-        );
-    }
-    Ok(ArtifactBinding {
-        package_id: meta.package_id,
-        tapp_blake3_hex: blake3::hash(tapp_bytes).to_hex().to_string(),
-        target,
-    })
-}
-
-fn same_version_identity(
-    left: &registry_types::RegistryVersion,
-    right: &registry_types::RegistryVersion,
-) -> bool {
-    tilo_app_package::version::compare(&left.version, &right.version).is_eq()
-        && left.target.platform == right.target.platform
-        && left.target.architecture == right.target.architecture
-}
-
-fn same_artifact(
-    left: &registry_types::RegistryVersion,
-    right: &registry_types::RegistryVersion,
-) -> bool {
-    left.tapp_root_hash_hex == right.tapp_root_hash_hex
-        && left.tapp_size_bytes == right.tapp_size_bytes
-        && left.tapp_blake3_hex == right.tapp_blake3_hex
-        && left.target == right.target
-}
-
-fn candidate_is_older_than_published(
-    previous: &registry_types::RegistryEntry,
-    candidate: &registry_types::RegistryVersion,
-) -> bool {
-    previous.versions.iter().any(|existing| {
-        existing.target.platform == candidate.target.platform
-            && existing.target.architecture == candidate.target.architecture
-            && tilo_app_package::version::compare(&candidate.version, &existing.version).is_lt()
-    })
-}
-
-fn compare_registry_versions(
-    left: &registry_types::RegistryVersion,
-    right: &registry_types::RegistryVersion,
-) -> std::cmp::Ordering {
-    let semantic = tilo_app_package::version::compare(&right.version, &left.version);
-    semantic.then_with(|| left.target.architecture.cmp(&right.target.architecture))
-}
-
 #[allow(
     clippy::too_many_arguments,
     reason = "the entry subcommand's explicit CLI options are kept visible at the command boundary"
@@ -1325,14 +1028,15 @@ fn cmd_entry(
         .map(|path| {
             let bytes = std::fs::read(path)
                 .with_context(|| format!("read entry metadata {}", path.display()))?;
-            serde_json::from_slice::<EntryMetadata>(&bytes).context("decode entry metadata JSON")
+            serde_json::from_slice::<registry_client::EntryMetadata>(&bytes)
+                .context("decode entry metadata JSON")
         })
         .transpose()?;
-    let entry = registry_entry_for(
+    let entry = registry_client::build_entry(
         &tapp_bytes,
         url,
         &signer,
-        platform,
+        platform.into(),
         arch,
         previous.as_ref(),
         metadata.as_ref(),
@@ -1351,85 +1055,9 @@ fn cmd_entry(
         "{}",
         serde_json::to_string_pretty(&output).context("encode entry")?
     );
-    // `registry_entry_for` always builds exactly one version; `.first()`
+    // `build_entry` always builds exactly one version; `.first()`
     // avoids indexing so a future refactor there can't turn this into a panic.
     let version = entry.versions.first().map_or("?", |v| v.version.as_str());
     eprintln!("entry: {}@{version} -> {url}", entry.package_id);
     Ok(())
-}
-
-#[cfg(test)]
-mod version_identity_tests {
-    use super::*;
-
-    fn version(value: &str) -> registry_types::RegistryVersion {
-        registry_types::RegistryVersion {
-            version: value.into(),
-            tapp_url: String::new(),
-            tapp_root_hash_hex: String::new(),
-            tapp_size_bytes: 0,
-            released_at_unix: 0,
-            tapp_blake3_hex: String::new(),
-            target: registry_types::RegistryTarget {
-                platform: registry_types::TILO_OS_PLATFORM.into(),
-                architecture: "x86_64".into(),
-                isa: "x86_64-v3".into(),
-                runtime: None,
-            },
-        }
-    }
-
-    #[test]
-    fn version_identity_is_unique_per_precedence_and_target() {
-        // phase: source_hash_cannot_create_a_second_artifact_at_the_same_precedence
-        {
-            assert!(same_version_identity(
-                &version("0.1.1-dev.10+g111"),
-                &version("0.1.1-dev.10+g222")
-            ));
-            assert!(!same_version_identity(
-                &version("0.1.1-dev.10+g111"),
-                &version("0.1.1-dev.11+g000")
-            ));
-            assert!(
-                compare_registry_versions(
-                    &version("0.1.1-dev.10+g111"),
-                    &version("0.1.1-dev.9+gzzz")
-                )
-                .is_lt()
-            );
-        }
-        // phase: slower_release_is_stale_only_for_the_same_target
-        {
-            let current = version("0.1.42+gnew");
-            let entry = registry_types::RegistryEntry {
-                package_id: "so.tilo.browser".into(),
-                name: "Browser".into(),
-                description: "Browser".into(),
-                tagline: "Browse".into(),
-                images: registry_types::LocalizedImages::default(),
-                supported_languages: vec!["en".into()],
-                categories: Vec::new(),
-                source_url: None,
-                homepage: None,
-                publisher_pubkey_hex: String::new(),
-                versions: vec![current],
-                updated_at_unix: 0,
-                signature_hex: String::new(),
-            };
-
-            assert!(candidate_is_older_than_published(
-                &entry,
-                &version("0.1.41+gold")
-            ));
-            assert!(!candidate_is_older_than_published(
-                &entry,
-                &version("0.1.43+gnext")
-            ));
-            let mut arm = version("0.1.1+gold");
-            arm.target.architecture = "aarch64".into();
-            arm.target.isa = "aarch64-v8.2".into();
-            assert!(!candidate_is_older_than_published(&entry, &arm));
-        }
-    }
 }
