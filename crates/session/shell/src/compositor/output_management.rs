@@ -10,24 +10,31 @@
 //!
 //! A tool's `apply` does not touch KMS directly. It becomes a
 //! [`DisplayTransaction`] — exactly what the Settings display pane writes —
-//! so the DRM backend validates it against the connectors it owns, applies
-//! it temporarily and restores the previous layout unless the user keeps
-//! it. A tool that picks a mode the panel cannot show leaves a black screen
-//! for fifteen seconds, not for the rest of the session. `succeeded` is
-//! sent once the backend has applied the plan, `failed` when it rejects it.
+//! so the DRM backend validates it against the connectors it owns before
+//! applying it. `succeeded` is sent once the backend has applied the plan,
+//! `failed` when it rejects it.
 //!
-//! The shell asks the person to keep or revert each applied change (see
+//! Like every other compositor, Tilo keeps a tool's change as soon as it is
+//! applied — kanshi reacting to a dock is not something to confirm. Only a
+//! change that could leave the person unable to see or reach their screen
+//! ([`assess_change`]) waits for them to keep it, and is restored after
+//! fifteen seconds if they do not (see
 //! [`OutputManagementState::take_confirmation`]). A tool they chose to
-//! trust — keyed by the executable behind the connection — has its changes
-//! kept without asking, unless the change would leave no display on.
+//! trust — keyed by the executable behind the connection — skips even that,
+//! unless the change would leave no display on.
+//!
+//! A tool that answers a revert by applying the same layout again is
+//! refused for a while rather than asked again, so a revert cannot turn
+//! into a loop of prompts.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::{Duration, Instant};
 
 use settings_store::display_tools::{DisplayTool, TrustedDisplayTools};
 use settings_store::hardware::{
-    DisplayConfig, DisplaySet, DisplayTransaction, DisplayTransactionState, OutputMode,
-    OutputTransform,
+    DisplayConfig, DisplayProfiles, DisplaySet, DisplayTransaction, DisplayTransactionState,
+    OutputMode, OutputTransform,
 };
 use smithay::reexports::wayland_protocols_wlr::output_management::v1::server::{
     zwlr_output_configuration_head_v1::{self, ZwlrOutputConfigurationHeadV1},
@@ -48,13 +55,18 @@ use smithay::reexports::wayland_server::{
 
 use super::backend::OutputId;
 use super::output_heads::{
-    ArrangementError, HeadChanges, HeadRequest, ModeRequest, OutputHead, plan_arrangement,
+    ArrangementError, ChangeContext, ChangeRisk, HeadChanges, HeadRequest, ModeRequest, OutputHead,
+    assess_change, leaves_a_display_on, plan_arrangement,
 };
 use super::state::State;
 
 const MANAGER_VERSION: u32 = 4;
 const MODE_VERSION: u32 = 3;
 const POWER_MANAGER_VERSION: u32 = 1;
+
+/// How long after the person reverted a tool's layout the same layout from
+/// the same tool is refused instead of asked about again.
+pub const REAPPLY_AFTER_REVERT: Duration = Duration::from_secs(60);
 
 /// The head a `zwlr_output_head_v1` stands for.
 #[derive(Debug)]
@@ -116,10 +128,37 @@ struct PendingApply {
     configuration: ZwlrOutputConfigurationV1,
     transaction: u64,
     tool: Option<DisplayTool>,
+    risk: ChangeRisk,
 }
 
-/// A tool's display change the backend applied and the person has to keep
-/// or revert before the transaction's deadline.
+/// A tool's change the person was asked to keep.
+struct AskedChange {
+    transaction: u64,
+    tool: Option<DisplayTool>,
+    set: String,
+    plan: DisplayConfig,
+}
+
+/// A tool's change the person reverted, and whether they were already told
+/// the tool tried it again.
+struct RevertedChange {
+    tool: Option<DisplayTool>,
+    set: String,
+    plan: DisplayConfig,
+    at: Instant,
+    told: bool,
+}
+
+/// Something about a display tool the shell should tell the person.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DisplayToolNotice {
+    /// The tool applied a layout again right after the person reverted it,
+    /// and was refused.
+    ReappliedAfterRevert { tool: Option<DisplayTool> },
+}
+
+/// A risky display change from a tool that the backend applied and the
+/// person has to keep or revert before the transaction's deadline.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DisplayConfirmation {
     pub transaction: u64,
@@ -142,6 +181,9 @@ pub struct OutputManagementState {
     powered_off: BTreeSet<OutputId>,
     power_requests: Vec<(OutputId, bool)>,
     confirmation: Option<DisplayConfirmation>,
+    asked: Option<AskedChange>,
+    reverted: Option<RevertedChange>,
+    notices: Vec<DisplayToolNotice>,
 }
 
 impl OutputManagementState {
@@ -159,6 +201,9 @@ impl OutputManagementState {
             powered_off: BTreeSet::new(),
             power_requests: Vec::new(),
             confirmation: None,
+            asked: None,
+            reverted: None,
+            notices: Vec::new(),
         }
     }
 
@@ -210,20 +255,29 @@ impl OutputManagementState {
         std::mem::take(&mut self.power_requests)
     }
 
-    /// A tool's applied display change the person must now keep or
+    /// A tool's applied, risky display change the person must now keep or
     /// revert, once per change.
     pub fn take_confirmation(&mut self) -> Option<DisplayConfirmation> {
         self.confirmation.take()
     }
 
+    /// What the shell should tell the person about display tools since the
+    /// last call.
+    pub fn take_notices(&mut self) -> Vec<DisplayToolNotice> {
+        std::mem::take(&mut self.notices)
+    }
+
     /// Report the outcome of staged configurations from the current
     /// transaction. Called after the backend reconciled a settings change.
     ///
-    /// A change the backend applied is kept at once when it came from a
-    /// trusted tool and leaves a display on; otherwise the person is asked.
+    /// A change the backend applied is kept at once unless it is risky;
+    /// a risky one is kept at once only from a trusted tool, and only when
+    /// it leaves a display on. Otherwise the person is asked.
     pub fn resolve_transactions(&mut self, current: Option<&DisplayTransaction>) {
+        self.note_answer(current, Instant::now());
         let heads = &self.heads;
         let confirmation = &mut self.confirmation;
+        let asked = &mut self.asked;
         self.applies.retain(|apply| {
             let state = current
                 .filter(|transaction| transaction.id == apply.transaction)
@@ -233,7 +287,15 @@ impl OutputManagementState {
                 Some(DisplayTransactionState::AwaitingConfirmation) => {
                     apply.configuration.succeeded();
                     if let Some(transaction) = current {
-                        *confirmation = confirm_or_ask(transaction, apply.tool.as_ref(), heads);
+                        *confirmation = keep_or_ask(transaction, apply, heads);
+                        if confirmation.is_some() {
+                            *asked = Some(AskedChange {
+                                transaction: transaction.id,
+                                tool: apply.tool.clone(),
+                                set: transaction.set.key.clone(),
+                                plan: transaction.candidate.clone(),
+                            });
+                        }
                     }
                     false
                 }
@@ -258,6 +320,70 @@ impl OutputManagementState {
         });
     }
 
+    /// Follow the answer to the change the person was asked about: a
+    /// revert (or letting the countdown run out) is remembered so the tool
+    /// cannot put the same layout straight back.
+    fn note_answer(&mut self, current: Option<&DisplayTransaction>, now: Instant) {
+        let Some(asked) = self.asked.as_ref() else {
+            return;
+        };
+        let state = current
+            .filter(|transaction| transaction.id == asked.transaction)
+            .map(|transaction| transaction.state);
+        match state {
+            Some(DisplayTransactionState::AwaitingConfirmation) => {}
+            Some(DisplayTransactionState::RevertRequested | DisplayTransactionState::Reverted) => {
+                if let Some(asked) = self.asked.take() {
+                    tracing::info!(
+                        tool = asked.tool.as_ref().map(DisplayTool::name),
+                        "output management: the person reverted a tool's display change"
+                    );
+                    self.reverted = Some(RevertedChange {
+                        tool: asked.tool,
+                        set: asked.set,
+                        plan: asked.plan,
+                        at: now,
+                        told: false,
+                    });
+                }
+            }
+            _ => self.asked = None,
+        }
+    }
+
+    /// Whether `tool` applying `plan` repeats a layout the person just
+    /// reverted. The first repeat queues one notice for the shell.
+    fn refuses_reapply(
+        &mut self,
+        tool: Option<&DisplayTool>,
+        plan: &DisplayConfig,
+        now: Instant,
+    ) -> bool {
+        self.note_answer(DisplayTransaction::load().as_ref(), now);
+        let set = self.display_set().key;
+        let Some(reverted) = self.reverted.as_mut() else {
+            return false;
+        };
+        if now.duration_since(reverted.at) > REAPPLY_AFTER_REVERT {
+            self.reverted = None;
+            return false;
+        }
+        if reverted.tool.as_ref() != tool || reverted.set != set || reverted.plan != *plan {
+            return false;
+        }
+        tracing::info!(
+            tool = tool.map(DisplayTool::name),
+            "output management: refused a display layout the person just reverted"
+        );
+        if !reverted.told {
+            reverted.told = true;
+            self.notices.push(DisplayToolNotice::ReappliedAfterRevert {
+                tool: tool.cloned(),
+            });
+        }
+        true
+    }
+
     /// The monitor set the heads describe; display intent is remembered
     /// per set.
     fn display_set(&self) -> DisplaySet {
@@ -265,23 +391,62 @@ impl OutputManagementState {
         DisplaySet::of_descriptors(&descriptors)
     }
 
+    /// How risky `plan` is, given which heads the person is using and what
+    /// each monitor has shown before.
+    fn assess(
+        &self,
+        plan: &DisplayConfig,
+        requests: &BTreeMap<String, HeadRequest>,
+        watched_outputs: &BTreeSet<OutputId>,
+    ) -> ChangeRisk {
+        let set = self.display_set();
+        let profiles = DisplayProfiles::load();
+        let watched: BTreeSet<String> = self
+            .heads
+            .iter()
+            .filter(|head| head.output.is_some_and(|id| watched_outputs.contains(&id)))
+            .map(|head| head.name().to_owned())
+            .collect();
+        let history = self
+            .heads
+            .iter()
+            .filter_map(|head| {
+                profiles
+                    .history_for(&set, head.name())
+                    .map(|history| (head.name().to_owned(), history.clone()))
+            })
+            .collect();
+        assess_change(
+            plan,
+            &self.heads,
+            requests,
+            ChangeContext {
+                watched: &watched,
+                history: &history,
+            },
+        )
+    }
+
     fn stage(
         &mut self,
         configuration: ZwlrOutputConfigurationV1,
         plan: DisplayConfig,
         tool: Option<DisplayTool>,
+        risk: ChangeRisk,
     ) {
         match DisplayTransaction::request(self.display_set(), plan) {
             Ok(transaction) => {
                 tracing::info!(
                     transaction = transaction.id,
                     tool = tool.as_ref().map(DisplayTool::name),
+                    ?risk,
                     "output management: staged an external display configuration"
                 );
                 self.applies.push(PendingApply {
                     configuration,
                     transaction: transaction.id,
                     tool,
+                    risk,
                 });
             }
             Err(error) => {
@@ -307,43 +472,46 @@ impl OutputManagementState {
     }
 }
 
-/// Keep an applied change from a trusted tool, or hand it to the person.
+/// Keep an applied change, or hand it to the person when it is risky.
 ///
-/// A change that leaves every head off is never kept on the tool's word:
-/// with no display showing, nobody could see what was kept.
-fn confirm_or_ask(
+/// A risky change from a trusted tool is kept too, except one that leaves
+/// every head off: with no display showing, nobody could see what was kept.
+fn keep_or_ask(
     transaction: &DisplayTransaction,
-    tool: Option<&DisplayTool>,
+    apply: &PendingApply,
     heads: &[OutputHead],
 ) -> Option<DisplayConfirmation> {
-    let trusted = tool.is_some_and(|tool| TrustedDisplayTools::load().contains(tool));
-    if trusted && leaves_a_display_on(&transaction.candidate, heads) {
+    let tool = apply.tool.as_ref();
+    let risk = if leaves_a_display_on(&transaction.candidate, heads) {
+        apply.risk
+    } else {
+        ChangeRisk::NoDisplay
+    };
+    let keep = match risk {
+        ChangeRisk::Safe => true,
+        ChangeRisk::Risky => tool.is_some_and(|tool| TrustedDisplayTools::load().contains(tool)),
+        ChangeRisk::NoDisplay => false,
+    };
+    if keep {
         let mut transaction = transaction.clone();
         match transaction.request_confirmation() {
             Ok(()) => {
                 tracing::info!(
                     transaction = transaction.id,
                     tool = tool.map(DisplayTool::name),
-                    "output management: kept a trusted tool's display change"
+                    ?risk,
+                    "output management: kept a tool's display change"
                 );
                 return None;
             }
             Err(error) => {
-                tracing::warn!(%error, "output management: could not keep a trusted change");
+                tracing::warn!(%error, "output management: could not keep a tool's change");
             }
         }
     }
     Some(DisplayConfirmation {
         transaction: transaction.id,
         tool: tool.cloned(),
-    })
-}
-
-/// Whether `plan` keeps at least one of `heads` enabled.
-fn leaves_a_display_on(plan: &DisplayConfig, heads: &[OutputHead]) -> bool {
-    heads.iter().any(|head| {
-        plan.output_for(head.name())
-            .is_some_and(|output| output.enabled)
     })
 }
 
@@ -675,6 +843,11 @@ impl Dispatch<ZwlrOutputConfigurationV1, ConfigurationData> for State {
                 let requests = std::mem::take(&mut pending.heads);
                 let unsupported = pending.unsupported;
                 drop(pending);
+                let watched = if apply {
+                    state.watched_outputs()
+                } else {
+                    BTreeSet::new()
+                };
                 let management = &mut state.output_management;
                 if data.serial != management.serial {
                     configuration.cancelled();
@@ -694,7 +867,12 @@ impl Dispatch<ZwlrOutputConfigurationV1, ConfigurationData> for State {
                             .get_data::<super::state::ClientState>()
                             .and_then(|data| data.executable.clone())
                             .map(DisplayTool::new);
-                        management.stage(configuration.clone(), plan, tool);
+                        if management.refuses_reapply(tool.as_ref(), &plan, Instant::now()) {
+                            configuration.failed();
+                            return;
+                        }
+                        let risk = management.assess(&plan, &requests, &watched);
+                        management.stage(configuration.clone(), plan, tool, risk);
                     }
                     Ok(_) => configuration.succeeded(),
                     Err(error) => {

@@ -105,7 +105,7 @@ use crate::wayland::color_management::ColorManagerState;
 
 use crate::shell::state::{WorkspaceTree, WorkspaceTreeHandle};
 use smithay::backend::input::KeyState;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use vello::kurbo::Rect;
 
 /// Stable identity from `apps/osk/tilo-app.toml`. It is necessary but never
@@ -1568,6 +1568,27 @@ impl State {
             }
         }
         changed
+    }
+
+    /// Outputs the person is using right now: the one under the pointer and
+    /// the one showing the focused window.
+    pub fn watched_outputs(&self) -> BTreeSet<crate::compositor::backend::OutputId> {
+        let output_at = |point: vello::kurbo::Point| {
+            self.output_rects
+                .iter()
+                .find(|(_, rect)| rect.contains(point))
+                .map(|(id, _)| *id)
+        };
+        let pointer = self.seat.get_pointer().and_then(|pointer| {
+            let location = pointer.current_location();
+            output_at((location.x, location.y).into())
+        });
+        let focus = self
+            .client_input
+            .keyboard_focus()
+            .and_then(|surface| crate::compositor::foreign::store().placement(surface))
+            .and_then(|rect| output_at(rect.center()));
+        pointer.into_iter().chain(focus).collect()
     }
 
     /// Resolve the live output rectangle used for a fullscreen configure.

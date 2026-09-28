@@ -3478,6 +3478,26 @@ impl ShellOverlayHost {
         }
     }
 
+    /// Tell the person `tool` applied a display layout again right after
+    /// they reverted it, and was refused instead of asking them again.
+    pub fn report_refused_display_reapply(
+        &mut self,
+        tool: Option<&settings_store::display_tools::DisplayTool>,
+    ) {
+        let title = tool.map_or_else(
+            || t("display-tool-reapply-refused-unknown"),
+            |tool| {
+                t_args(
+                    "display-tool-reapply-refused",
+                    &[("tool", ui::i18n::ArgValue::from(tool.name().to_owned()))],
+                )
+            },
+        );
+        if let Some(chrome) = self.chrome.as_ref() {
+            chrome.borrow_mut().push_notification(title, String::new());
+        }
+    }
+
     /// Whether the keep-or-revert prompt for a tool's display change is up.
     /// It owns the keyboard and pointer while it is.
     pub fn display_confirmation_visible(&self) -> bool {

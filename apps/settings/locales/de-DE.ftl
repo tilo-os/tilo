@@ -12,9 +12,9 @@ display-identify-row = Die Nummer jedes Bildschirms darauf anzeigen
 
 # Displays pane: layout tools trusted to change displays without asking
 display-tools-title = Bildschirmwerkzeuge
-display-tools-caption = Diese Programme ordnen Ihre Bildschirme neu an, ohne jede Änderung bestätigen zu lassen.
+display-tools-caption = Diese Programme dürfen riskante Bildschirmänderungen vornehmen, ohne sie bestätigen zu lassen.
 display-tools-forget = Wieder nachfragen
-display-tools-forgotten = Bildschirmänderungen dieses Werkzeugs müssen wieder bestätigt werden.
+display-tools-forgotten = Riskante Bildschirmänderungen dieses Werkzeugs müssen wieder bestätigt werden.
 
 # Displays pane: HDR
 display-hdr = HDR
