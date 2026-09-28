@@ -1915,7 +1915,7 @@ impl ui::resources::PublishesResources for MusicApp {
     /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
     /// [`crate::actions`].
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+        self.publish_resources(doc)
     }
 }
 

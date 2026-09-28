@@ -3471,10 +3471,10 @@ impl ui::resources::PublishesResources for CameraApp {
         // Their typed launch operation is attached only to the one current
         // capture resource, so search and agents cannot mistake Camera for a
         // second media library.
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+        self.publish_resources(doc)
     }
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
+        self.publish_resource(doc, id)
     }
 }
 

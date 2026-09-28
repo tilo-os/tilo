@@ -5747,7 +5747,7 @@ impl ui::resources::PublishesResources for MapsApp {
     /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
     /// [`crate::actions`].
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        let mut resources = <Self as tilo_actions::ResourceProvider>::resources(self, doc);
+        let mut resources = self.publish_resources(doc);
         if resources.is_empty() {
             resources.push(Resource::new("maps.workspace", "maps.workspace", "Maps"));
         }
@@ -5791,7 +5791,8 @@ impl ui::resources::PublishesResources for MapsApp {
         })
     }
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
-        let mut resource = <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
+        let mut resource = self
+            .publish_resource(doc, id)
             .or_else(|| {
                 (id == "maps.workspace")
                     .then(|| Resource::new("maps.workspace", "maps.workspace", "Maps"))

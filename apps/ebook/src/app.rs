@@ -5838,7 +5838,7 @@ impl ui::resources::PublishesResources for BooksApp {
     /// palette scopes to them, via [`crate::actions`]'s
     /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl.
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+        self.publish_resources(doc)
     }
     fn action_directory_resource_page(
         &self,
@@ -5860,7 +5860,7 @@ impl ui::resources::PublishesResources for BooksApp {
         let resources = roots
             .get(offset..next_offset)?
             .iter()
-            .filter_map(|id| <Self as tilo_actions::ResourceProvider>::resource(self, doc, id))
+            .filter_map(|id| self.publish_resource(doc, id))
             .collect();
         Some(ui::widget::ActionDirectoryResourcePage {
             resources,
@@ -5876,7 +5876,7 @@ impl ui::resources::PublishesResources for BooksApp {
         Some(format!("ebook-search:{}", self.search_revision))
     }
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
+        self.publish_resource(doc, id)
     }
 }
 

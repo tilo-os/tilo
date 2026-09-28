@@ -2026,7 +2026,7 @@ impl ui::resources::PublishesResources for FirewallApp {
                 ),
             ];
         }
-        let mut resources = <Self as tilo_actions::ResourceProvider>::resources(self, doc);
+        let mut resources = self.publish_resources(doc);
         if let Some(root) = resources.first_mut() {
             root.actions.push(
                 tilo_actions::ActionSpec::operation(

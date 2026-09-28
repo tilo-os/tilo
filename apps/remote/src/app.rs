@@ -3605,7 +3605,7 @@ impl ui::resources::PublishesResources for RemoteApp {
     /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
     /// [`crate::actions`].
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        let mut resources = <Self as tilo_actions::ResourceProvider>::resources(self, doc);
+        let mut resources = self.publish_resources(doc);
         if let Some(id) = self.session_for
             && let Some(connection) = self.workspace.get(id)
         {
