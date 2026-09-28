@@ -455,12 +455,14 @@ mod tests {
             let mut rows = second.downloads(&second_engine);
             assert!(contains(rows.as_ref(), "browser.download.cancel.7"));
             let result = rows
-                .start_resource_operation(
-                    ui::tilo_actions::InvocationId::new(),
-                    ui::tilo_actions::OperationKind::Effect,
-                    "tilo.ui.control.invoke",
-                    &serde_json::to_vec("browser.download.cancel.7").unwrap(),
-                    &automerge::AutoCommit::new(),
+                .start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        ui::tilo_actions::OperationKind::Effect,
+                        "tilo.ui.control.invoke",
+                        &serde_json::to_vec("browser.download.cancel.7").unwrap(),
+                    ),
+                    &mut automerge::AutoCommit::new(),
                     &automerge::ROOT,
                 )
                 .unwrap();
@@ -621,12 +623,14 @@ mod tests {
             let mut rows = capabilities.downloads(&engine);
             assert!(contains(rows.as_ref(), "browser.download.retry.41"));
             let result = rows
-                .start_resource_operation(
-                    ui::tilo_actions::InvocationId::new(),
-                    ui::tilo_actions::OperationKind::Effect,
-                    "tilo.ui.control.invoke",
-                    &serde_json::to_vec("browser.download.retry.41").unwrap(),
-                    &automerge::AutoCommit::new(),
+                .start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        ui::tilo_actions::OperationKind::Effect,
+                        "tilo.ui.control.invoke",
+                        &serde_json::to_vec("browser.download.retry.41").unwrap(),
+                    ),
+                    &mut automerge::AutoCommit::new(),
                     &automerge::ROOT,
                 )
                 .unwrap();
