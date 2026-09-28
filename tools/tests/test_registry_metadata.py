@@ -37,7 +37,7 @@ class RegistryMetadataTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 entries = sorted(output.glob("*.json"))
                 self.assertEqual(len(entries), 56)
-                self.assertEqual(len(list(media.glob("*"))), 79)
+                self.assertEqual(len(list(media.glob("*"))), 80)
                 for path in entries:
                     entry = json.loads(path.read_text(encoding="utf-8"))
                     with self.subTest(app=path.stem):
