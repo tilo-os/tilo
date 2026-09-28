@@ -1090,6 +1090,32 @@ impl Button {
     }
 }
 
+impl Button {
+    /// Run the native handler for a `tilo.ui.control.invoke` addressed to
+    /// this button. `Ok(false)` when the operation is not this button's.
+    fn invoke_native_control(
+        &mut self,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+    ) -> Result<bool, String> {
+        if kind == tilo_actions::OperationKind::Document
+            || type_id != "tilo.ui.control.invoke"
+            || self.native_handler.is_none()
+        {
+            return Ok(false);
+        }
+        let control: String = serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+        if control != self.id {
+            return Ok(false);
+        }
+        if let Some(handler) = &mut self.native_handler {
+            handler();
+        }
+        Ok(true)
+    }
+}
+
 impl Widget for Button {
     fn set_interaction_environment(
         &mut self,
@@ -1581,23 +1607,26 @@ impl Widget for Button {
         let Some(request) = op.unscoped() else {
             return Ok(None);
         };
-        if request.kind == tilo_actions::OperationKind::Document
-            || request.type_id != "tilo.ui.control.invoke"
-            || self.native_handler.is_none()
-        {
-            return Ok(None);
-        }
-        let control: String =
-            serde_json::from_slice(request.payload).map_err(|error| error.to_string())?;
-        if control != self.id {
-            return Ok(None);
-        }
-        if let Some(handler) = &mut self.native_handler {
-            handler();
-        }
-        Ok(Some(super::ResourceOperationStart::Completed(
-            tilo_actions::ActionOutput::default(),
-        )))
+        Ok(self
+            .invoke_native_control(request.kind, request.type_id, request.payload)?
+            .then(|| {
+                super::ResourceOperationStart::Completed(tilo_actions::ActionOutput::default())
+            }))
+    }
+
+    /// Legacy adapter: apps not yet on [`Widget::start_operation`] still reach
+    /// a shared button through their read-only routing.
+    fn invoke_resource_operation_v2(
+        &mut self,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<Option<tilo_actions::ActionOutput>, String> {
+        Ok(self
+            .invoke_native_control(kind, type_id, payload)?
+            .then(tilo_actions::ActionOutput::default))
     }
 
     fn refresh_control_action_availability(
@@ -1794,6 +1823,63 @@ mod tests {
     use crate::widget::Widget;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn a_shared_button_answers_both_the_single_entry_and_legacy_routing() {
+        let clicks = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&clicks);
+        let mut column = crate::widget::Column::new().push(Box::new(
+            Button::new("files.retry", "Retry", None).on_view(move || {
+                counted.fetch_add(1, Ordering::SeqCst);
+            }),
+        ));
+        let mut doc = AutoCommit::new();
+        let kind = tilo_actions::OperationKind::View;
+        let payload = br#""files.retry""#;
+
+        let started = crate::widget::ResourceOperation::local(
+            tilo_actions::InvocationId::new(),
+            kind,
+            "tilo.ui.control.invoke",
+            payload,
+        )
+        .start(&mut column, &mut doc, &automerge::ROOT)
+        .unwrap();
+        assert!(
+            started
+                .and_then(super::super::ResourceOperationStart::completed)
+                .is_some()
+        );
+
+        // An app still routing through the read-only hooks reaches the button
+        // through an ordinary container, as it did before the single entry.
+        let legacy = column
+            .start_resource_operation(
+                tilo_actions::InvocationId::new(),
+                kind,
+                "tilo.ui.control.invoke",
+                payload,
+                &doc,
+                &automerge::ROOT,
+            )
+            .unwrap();
+        assert!(legacy.is_some(), "legacy start reaches the shared button");
+        let child = &mut column.children_mut()[0];
+        assert!(
+            child
+                .invoke_resource_operation_v2(
+                    kind,
+                    "tilo.ui.control.invoke",
+                    payload,
+                    &doc,
+                    &automerge::ROOT
+                )
+                .unwrap()
+                .is_some(),
+            "a direct legacy call on the button is answered"
+        );
+        assert_eq!(clicks.load(Ordering::SeqCst), 3);
+    }
 
     fn layout_fit_host(
         host: &mut dyn Widget,
