@@ -503,29 +503,52 @@ impl WordProcessor {
         sheet
     }
 
-    /// Persist the stylesheet into the **CRDT styles container** — one sub-map per
-    /// style, each property a scalar register (so it field-level merges and
-    /// round-trips to ODF named styles). Styles dropped from `sheet` are removed
-    /// from the container.
+    /// Persist the stylesheet into the **CRDT styles container** — one property
+    /// per [`crate::actions::RichTextAction::SetStyleProperty`], so replicas
+    /// merge fields. A custom style dropped from `sheet` is deleted. Built-in
+    /// styles stay; they are the default layer under the container.
     pub fn set_stylesheet(&mut self, state: &mut AutoCommit, sheet: &StyleSheet) {
         let Some(containers) = self.containers.clone() else {
             return;
         };
+        if self.ids.is_none() {
+            return;
+        }
         let existing = tilo_doc::model::style_ids(state, &containers);
-        if let Some(ids) = self.ids.as_mut() {
-            let mut dm = DocMut {
-                doc: state,
-                c: &containers,
-                ids,
+        for (id, props) in &sheet.styles {
+            for (key, value) in props.to_attrs() {
+                let value = match value {
+                    tilo_doc::AttrVal::Bool(v) => crate::actions::AttrVal::Bool(v),
+                    tilo_doc::AttrVal::Int(v) => crate::actions::AttrVal::Int(v),
+                    tilo_doc::AttrVal::Float(v) => crate::actions::AttrVal::Float(v),
+                    tilo_doc::AttrVal::Str(v) => crate::actions::AttrVal::Str(v),
+                };
+                let action = crate::actions::RichTextAction::SetStyleProperty {
+                    style: id.clone(),
+                    key,
+                    value,
+                };
+                let _ = self.apply_rich(state, action);
+            }
+        }
+        let snap = tilo_doc::model::materialize(state, &containers);
+        for id in existing {
+            if sheet.styles.contains_key(&id) || StyleSheet::is_builtin(&id) {
+                continue;
+            }
+            let fallback_blocks = snap
+                .blocks
+                .iter()
+                .filter(|block| {
+                    matches!(block.attrs.get("style"), Some(tilo_doc::AttrVal::Str(style)) if style == &id)
+                })
+                .map(|block| block.id.clone())
+                .collect();
+            let action = crate::actions::RichTextAction::DeleteStyle {
+                style: id,
+                fallback_blocks,
             };
-            for (id, props) in &sheet.styles {
-                dm.set_style(id, &props.to_attrs());
-            }
-            for id in existing {
-                if !sheet.styles.contains_key(&id) {
-                    dm.remove_style(&id);
-                }
-            }
+            let _ = self.apply_rich(state, action);
         }
     }
 
