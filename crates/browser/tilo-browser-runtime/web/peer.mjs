@@ -18,6 +18,7 @@
 import {createPresencePublisher, createRemotePresence} from './live-presence.mjs';
 import {createLiveCarriers} from './live-fallback.mjs';
 import {createLiveTransport, LIVE_PATH, LIVE_ROOT} from './live-transport.mjs';
+import {WEBKIT_WEBGPU_REFUSAL} from './webgpu-safety.mjs';
 
 const CERTIFICATE = 'certificate';
 /** A member's cursor colour, from its device key: the same on every page. */
@@ -65,6 +66,7 @@ export function rendererFailureCode(error) {
   const text = String(error ?? '');
   if (/device lost/i.test(text)) return 'gpu-device-lost';
   if (/WebGPU (unavailable|is required)/i.test(text)) return 'gpu-unavailable';
+  if (text.includes(WEBKIT_WEBGPU_REFUSAL)) return 'gpu-unavailable';
   return 'renderer-initialization-failed';
 }
 /** The `FailureCode` of a failed durable commit. */

@@ -10,6 +10,7 @@ import {semanticBridge} from './semantics.mjs';
 import {recoverableClose} from './close-recovery.mjs';
 import {createDesktopNavigation} from './desktop-navigation.mjs';
 import {createLiveCursors} from './live-cursors.mjs';
+import {webgpuRefusal} from './webgpu-safety.mjs';
 // Page host for the Tilo browser runtime. Ported from the Tilo browser runtime
 // (PR 541) without its desktop host and action palette.
 // `mountDesktop` mounts the session desktop (tilo-desktop-surface over the
@@ -236,6 +237,7 @@ export async function mountDesktop(target,options={}) {
     else on(options.signal,'abort',()=>registry.remove(token),{once:true});
   }
   try{
+    const refusal=webgpuRefusal();if(refusal)throw Error(refusal);
     if(!navigator.gpu)throw Error('WebGPU is required for the Tilo Vello compute renderer');
     const startupFonts=fonts();void startupFonts.catch(()=>{});
     await ready();if(!registry.current(token))throw Error('mount disposed');
