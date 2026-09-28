@@ -322,18 +322,27 @@ fn lock_animation_park_deadline(now: Instant, deadline: Option<Instant>) -> Opti
     deadline.filter(|deadline| *deadline > now)
 }
 
-/// The lock backdrop animates only while it can be seen. Behind a blanked
-/// panel the backend drops every frame, so building them would keep an
-/// unattended, locked machine awake at the backdrop's cadence.
+/// How long after the last input a visible lock backdrop keeps moving. It
+/// then holds still until someone touches the machine: a locked laptop left
+/// on the desk must not repaint at the backdrop's cadence until it blanks.
+const LOCK_BACKDROP_MOTION: Duration = Duration::from_secs(20);
+
+/// The lock backdrop animates only while it can be seen and someone is
+/// there. Behind a blanked panel the backend drops every frame, so building
+/// them would keep an unattended, locked machine awake at the backdrop's
+/// cadence.
 fn lock_animation_deadline(
     theme: &ui::theme::Theme,
     session: &SessionManager,
     has_wallpaper: bool,
     last_frame: Instant,
+    now: Instant,
 ) -> Option<Instant> {
     lock_screen::animation_deadline(
         theme,
-        session.is_locked() && !session.is_blanked(),
+        session.is_locked()
+            && !session.is_blanked()
+            && session.idle_for(now) < LOCK_BACKDROP_MOTION,
         has_wallpaper,
         last_frame,
     )
@@ -8976,6 +8985,7 @@ pub fn run() {
                 &session,
                 lock_has_wallpaper,
                 last_lock_animation_frame,
+                iter_t0,
             )
             .is_some_and(|deadline| iter_t0 >= deadline),
             lock_osd: lock_screen::lock_osd_frame_due(frame_builder.chrome().osd, iter_t0),
@@ -9808,6 +9818,7 @@ pub fn run() {
                         &session,
                         lock_has_wallpaper,
                         last_lock_animation_frame,
+                        park_now,
                     ),
                 ),
                 lock_clock_deadline,
@@ -10553,21 +10564,47 @@ mod tests {
                 suspend_timeout: None,
             };
             let mut session = SessionManager::new(config, t0);
-            session.tick(t0 + Duration::from_secs(6));
+            let at = |secs| t0 + Duration::from_secs(secs);
+            session.tick(at(6));
             assert!(session.is_locked() && !session.is_blanked());
             assert!(
-                lock_animation_deadline(&theme, &session, false, t0).is_some(),
+                lock_animation_deadline(&theme, &session, false, t0, at(6)).is_some(),
                 "a visible lock animates its backdrop"
             );
-            session.tick(t0 + Duration::from_secs(11));
+            session.tick(at(11));
             assert!(session.is_locked() && session.is_blanked());
             assert!(
-                lock_animation_deadline(&theme, &session, false, t0).is_none(),
+                lock_animation_deadline(&theme, &session, false, t0, at(11)).is_none(),
                 "a blanked panel must not keep the loop building lock frames"
             );
-            session.note_activity(t0 + Duration::from_secs(12));
+            session.note_activity(at(12));
             assert!(session.is_locked() && !session.is_blanked());
-            assert!(lock_animation_deadline(&theme, &session, false, t0).is_some());
+            assert!(lock_animation_deadline(&theme, &session, false, t0, at(12)).is_some());
+        }
+        // Phase `an_untouched_visible_lock_stops_animating`.
+        {
+            let theme = ui::theme::Theme::dark();
+            let t0 = Instant::now();
+            let config = IdleConfig {
+                blank_timeout: None,
+                lock_timeout: Some(Duration::from_secs(5)),
+                suspend_timeout: None,
+            };
+            let mut session = SessionManager::new(config, t0);
+            let at = |secs| t0 + Duration::from_secs(secs);
+            session.tick(at(6));
+            assert!(session.is_locked() && !session.is_blanked());
+            assert!(lock_animation_deadline(&theme, &session, false, t0, at(6)).is_some());
+            session.tick(at(21));
+            assert!(
+                lock_animation_deadline(&theme, &session, false, t0, at(21)).is_none(),
+                "a lock nobody has touched for {LOCK_BACKDROP_MOTION:?} holds still"
+            );
+            session.note_activity(at(30));
+            assert!(
+                lock_animation_deadline(&theme, &session, false, t0, at(30)).is_some(),
+                "input moves it again"
+            );
         }
         // Phase `lock_osd_fade_repaints_only_while_the_lock_is_visible`.
         {
