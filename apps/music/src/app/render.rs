@@ -2001,7 +2001,7 @@ impl MusicApp {
                     for id in tracks {
                         self.request_offline_download(&id)?;
                     }
-                    self.toast = Some(("Preparing offline download".into(), Instant::now()));
+                    self.toast = Some(("Preparing offline download".into(), ui::time::now()));
                     self.dirty = true;
                     return Ok(true);
                 }
@@ -2076,7 +2076,7 @@ impl MusicApp {
                 self.revealed_membership = Some((playlist, track));
                 self.toast = Some((
                     format!("Opened “{track_label}” in “{playlist_name}”"),
-                    Instant::now(),
+                    ui::time::now(),
                 ));
             }
             _ => return Ok(false),
