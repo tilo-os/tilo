@@ -446,6 +446,9 @@ pub struct DisplayPane {
     /// composition is rebuilt between frames.
     arrangement_drag: ui::LocalState<Option<super::display_arrangement::ArrangementDrag>>,
     composed: Option<Box<dyn Widget>>,
+    /// Hardware facts changed under the retained composition. The host holds
+    /// raw pointers into it until the next build, so it must not be dropped.
+    structure_dirty: bool,
     rect: Rect,
 }
 
@@ -513,6 +516,7 @@ impl DisplayPane {
             needs_seed: true,
             arrangement_drag: ui::LocalState::new(None),
             composed: None,
+            structure_dirty: false,
             rect: Rect::ZERO,
         }
     }
@@ -575,6 +579,7 @@ impl DisplayPane {
             needs_seed: true,
             arrangement_drag: ui::LocalState::new(None),
             composed: None,
+            structure_dirty: false,
             rect: Rect::ZERO,
         }
     }
@@ -1782,6 +1787,14 @@ impl Widget for DisplayPane {
     fn get_rect(&self) -> Rect {
         self.rect
     }
+
+    fn take_structure_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.structure_dirty)
+            || self
+                .composed
+                .as_mut()
+                .is_some_and(|c| c.take_structure_dirty())
+    }
 }
 
 /// `sync` helper methods, split out of the trait method above (which must
@@ -1804,7 +1817,7 @@ impl DisplayPane {
                     automerge::ScalarValue::F64(f64::from(brightness)),
                 );
                 self.hardware_probe = None;
-                self.composed = None;
+                self.structure_dirty = true;
             }
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.hardware_probe = None;
@@ -1827,7 +1840,7 @@ impl DisplayPane {
             self.outputs = read_outputs();
             self.output_config = DisplayConfig::load_for(&self.display_set());
             self.needs_seed = true;
-            self.composed = None;
+            self.structure_dirty = true;
         }
         // Monitor probing finishes in the background; a monitor that turns
         // out to speak DDC/CI gains its slider once the probe lands.
@@ -1835,7 +1848,7 @@ impl DisplayPane {
         if controllable.keys().ne(self.output_brightness.keys()) {
             self.output_brightness = controllable;
             self.needs_seed = true;
-            self.composed = None;
+            self.structure_dirty = true;
         }
     }
 
@@ -2592,6 +2605,65 @@ impl DisplayPane {
 mod tests {
     use super::*;
     use crate::dispatcher::testing::RecordingDispatcher;
+
+    fn probed_pane() -> (DisplayPane, std::sync::mpsc::Sender<(f32, bool)>) {
+        let rec = Arc::new(RecordingDispatcher::default());
+        let mut pane = DisplayPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, 0.5);
+        let (probe_tx, probe_rx) = std::sync::mpsc::channel();
+        pane.hardware_probe = Some(probe_rx);
+        (pane, probe_tx)
+    }
+
+    /// A brightness probe that lands after the pane was composed keeps the
+    /// widgets the host's layout tree points into, and asks for a rebuild.
+    #[test]
+    fn late_hardware_probe_keeps_the_retained_tree_and_requests_a_rebuild() {
+        let (mut pane, probe_tx) = probed_pane();
+        let mut taffy = TaffyTree::new();
+        let mut node_map = HashMap::new();
+        pane.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
+        let composed = |pane: &DisplayPane| {
+            pane.children()
+                .first()
+                .map(|c| std::ptr::from_ref(*c).cast::<()>())
+        };
+        let before = composed(&pane);
+        assert!(before.is_some(), "build_layout composes the pane");
+
+        probe_tx
+            .send((0.8, false))
+            .expect("probe receiver is alive");
+        let mut doc = AutoCommit::new();
+        pane.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(
+            composed(&pane),
+            before,
+            "the host still holds layout pointers into this composition"
+        );
+        assert!(
+            pane.take_structure_dirty(),
+            "the landed probe requests a rebuild"
+        );
+        assert!(!pane.take_structure_dirty(), "and reports it once");
+        let brightness = doc
+            .get(&automerge::ROOT, BRIGHTNESS_KEY)
+            .ok()
+            .flatten()
+            .and_then(|(value, _)| value.as_f64());
+        assert_eq!(brightness, Some(f64::from(0.8_f32)));
+
+        let (pane, probe_tx) = probed_pane();
+        let mut harness =
+            ui::headless::FrameHarness::new(ui::State::new(), Box::new(pane), (900, 700));
+        probe_tx
+            .send((0.8, false))
+            .expect("probe receiver is alive");
+        harness.relayout();
+        assert!(
+            harness.last_relayout().rebuilt,
+            "the headless host recomposes the pane after the probe lands"
+        );
+    }
 
     #[test]
     fn sdr_brightness_slider_round_trips_whole_nits_and_reasons_have_copy() {
