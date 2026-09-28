@@ -663,6 +663,11 @@ impl CloudService {
             Route::LiveGrant => self.respond(request, |service, request| {
                 service.live_grant(request).map(Some)
             }),
+            // Legacy windows stream only from a device host beside a session.
+            Route::LegacyInput => {
+                let _ = request.respond(StatusCode::NOT_FOUND, b"unsupported".to_vec());
+                None
+            }
             Route::Onboarding(_) | Route::OnboardingChunk => {
                 self.onboarding
                     .handle(&self.source, &self.pool, &self.pins, request)
