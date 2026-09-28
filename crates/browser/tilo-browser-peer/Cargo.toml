@@ -45,6 +45,8 @@ toolkit = ["dep:ui"]
 net = ["dep:tilo-net"]
 
 [dev-dependencies]
+automerge.workspace = true
+tilo-automerge.workspace = true
 test-http = { path = "../../dev/test-http" }
 tilo-relay = { path = "../../hosting/tilo-relay", features = ["web"] }
 tilo-moq = { path = "../../hosting/tilo-moq", features = ["relay"] }

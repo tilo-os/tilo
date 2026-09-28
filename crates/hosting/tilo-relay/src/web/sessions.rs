@@ -24,7 +24,8 @@ use crate::auth::{self, AuthenticatedPeer, Hello, HelloAck2};
 use crate::daemon::WebContext;
 use crate::transport::Envelope;
 use crate::web::protocol::{
-    Cursor, EventsPage, MAX_PAGE_ENVELOPES, SessionChallenge, SessionGrant,
+    Cursor, EventsPage, MAX_PAGE_BYTES, MAX_PAGE_ENVELOPES, SessionChallenge, SessionGrant,
+    envelope_bytes,
 };
 
 /// A handshake must be finished within this.
@@ -332,11 +333,21 @@ impl Sessions {
                 let start = after.saturating_add(1).max(log.first_seq);
                 let skip =
                     usize::try_from(start.saturating_sub(log.first_seq)).unwrap_or(usize::MAX);
+                let mut page_bytes = 0usize;
                 let available: Vec<Envelope> = log
                     .items
                     .iter()
                     .skip(skip)
                     .take(MAX_PAGE_ENVELOPES)
+                    .take_while(|envelope| {
+                        let size = envelope_bytes(envelope);
+                        let fits =
+                            page_bytes == 0 || page_bytes.saturating_add(size) <= MAX_PAGE_BYTES;
+                        if fits {
+                            page_bytes = page_bytes.saturating_add(size);
+                        }
+                        fits
+                    })
                     .cloned()
                     .collect();
                 if !available.is_empty() {
