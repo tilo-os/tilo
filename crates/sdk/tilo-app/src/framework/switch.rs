@@ -128,6 +128,23 @@ impl<K: Clone + PartialEq + 'static> Widget for Switch<K> {
         ui_core::widget::start_in_children(self, op, doc, path)
     }
 
+    /// Legacy adapter: offered through [`Widget::start_operation`].
+    fn start_resource_operation_with_document(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui_core::widget::ResourceOperationStart>, String> {
+        self.start_operation(
+            &ui_core::widget::ResourceOperation::local(invocation, kind, type_id, payload),
+            doc,
+            path,
+        )
+    }
+
     fn children(&self) -> Vec<&dyn Widget> {
         vec![self.part.as_ref()]
     }

@@ -721,6 +721,37 @@ impl ToggleGroup {
     }
 }
 
+impl ToggleGroup {
+    /// Apply a `tilo.ui.segmented.select` addressed to this control.
+    /// `Ok(false)` when the operation is not this control's.
+    fn select_segment_operation(
+        &mut self,
+        kind: crate::tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+    ) -> Result<bool, String> {
+        if kind != crate::tilo_actions::OperationKind::View
+            || type_id != "tilo.ui.segmented.select"
+            || self.action.is_none()
+        {
+            return Ok(false);
+        }
+        let value: serde_json::Value =
+            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+        if value.get("control").and_then(serde_json::Value::as_str) != self.id.as_deref() {
+            return Ok(false);
+        }
+        let index = value
+            .get("index")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|value| usize::try_from(value).ok())
+            .filter(|index| *index < self.segments.len())
+            .ok_or_else(|| "segmented action index is out of range".to_owned())?;
+        self.apply_selection(index);
+        Ok(true)
+    }
+}
+
 impl Widget for ToggleGroup {
     fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
 
@@ -956,27 +987,28 @@ impl Widget for ToggleGroup {
         let Some(request) = op.unscoped() else {
             return Ok(None);
         };
-        if request.kind != crate::tilo_actions::OperationKind::View
-            || request.type_id != "tilo.ui.segmented.select"
-            || self.action.is_none()
-        {
-            return Ok(None);
-        }
-        let value: serde_json::Value =
-            serde_json::from_slice(request.payload).map_err(|error| error.to_string())?;
-        if value.get("control").and_then(serde_json::Value::as_str) != self.id.as_deref() {
-            return Ok(None);
-        }
-        let index = value
-            .get("index")
-            .and_then(serde_json::Value::as_u64)
-            .and_then(|value| usize::try_from(value).ok())
-            .filter(|index| *index < self.segments.len())
-            .ok_or_else(|| "segmented action index is out of range".to_owned())?;
-        self.apply_selection(index);
-        Ok(Some(super::ResourceOperationStart::Completed(
-            crate::tilo_actions::ActionOutput::default(),
-        )))
+        Ok(self
+            .select_segment_operation(request.kind, request.type_id, request.payload)?
+            .then(|| {
+                super::ResourceOperationStart::Completed(
+                    crate::tilo_actions::ActionOutput::default(),
+                )
+            }))
+    }
+
+    /// Legacy adapter: apps not yet on [`Widget::start_operation`] still reach
+    /// a shared segmented control through their read-only routing.
+    fn invoke_resource_operation_v2(
+        &mut self,
+        kind: crate::tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<Option<crate::tilo_actions::ActionOutput>, String> {
+        Ok(self
+            .select_segment_operation(kind, type_id, payload)?
+            .then(crate::tilo_actions::ActionOutput::default))
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
