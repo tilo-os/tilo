@@ -12,9 +12,9 @@ display-identify-row = Show each display's number on it
 
 # Displays pane: layout tools trusted to change displays without asking
 display-tools-title = Display tools
-display-tools-caption = These programs rearrange your displays without asking you to keep each change.
+display-tools-caption = These programs can make risky display changes without asking you to keep them.
 display-tools-forget = Ask again
-display-tools-forgotten = This tool's display changes will ask to be kept again.
+display-tools-forgotten = Risky display changes from this tool will ask to be kept again.
 
 # Displays pane: HDR
 display-hdr = HDR

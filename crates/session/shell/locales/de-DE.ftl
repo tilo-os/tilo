@@ -42,11 +42,14 @@ display-confirm-keep = Behalten
 display-confirm-revert = Zurücksetzen
 display-rejected = Diese Anordnung konnte nicht angewendet werden: { $reason }
 
-# Eine Änderung eines Anzeigewerkzeugs (kanshi, wlr-randr) behalten oder zurücksetzen
-display-confirm-tool-title = Die von { $tool } angewendeten Anzeigeeinstellungen behalten?
-display-confirm-tool-unknown-title = Die von einem Werkzeug angewendeten Anzeigeeinstellungen behalten?
-display-confirm-always = Änderungen von { $tool } immer behalten
-display-confirm-a11y-description = Ein Anzeigewerkzeug hat deine Bildschirme geändert. Eingabe behält die Änderung, Escape stellt die vorherige Anordnung wieder her.
+# Eine riskante Änderung eines Anzeigewerkzeugs (kanshi, wlr-randr) behalten oder
+# zurücksetzen: eine, die einen Bildschirm schwarz lassen oder den benutzten ausschalten kann
+display-confirm-tool-title = Die Anzeigeänderung von { $tool } behalten?
+display-confirm-tool-unknown-title = Diese Anzeigeänderung behalten?
+display-confirm-always = Behalten und bei { $tool } nicht mehr fragen
+display-confirm-a11y-description = Ein Anzeigewerkzeug hat einen Bildschirm geändert, den du gerade benutzt, oder einen Modus gewählt, den er noch nie gezeigt hat – dabei kann er schwarz bleiben. Eingabe behält die Änderung; Escape oder Abwarten stellt die vorherige Anordnung wieder her.
+display-tool-reapply-refused = { $tool } wollte eine Anzeigeanordnung erneut anwenden, die du zurückgesetzt hast
+display-tool-reapply-refused-unknown = Ein Anzeigewerkzeug wollte eine Anzeigeanordnung erneut anwenden, die du zurückgesetzt hast
 
 # Drahtlose Empfänger, der untere Bereich desselben Blatts
 wireless-heading = Drahtlose Bildschirme
