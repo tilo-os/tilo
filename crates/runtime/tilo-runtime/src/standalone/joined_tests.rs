@@ -28,6 +28,9 @@ use tilo_workspace_host::{
 
 type Authority = Arc<std::sync::Mutex<(SessionOwner, CollaborationService)>>;
 
+/// What a sealed write says, which no file outside its key holders may hold.
+const SECRET: &str = "only the room's key holders read this";
+
 #[derive(Clone)]
 struct JoinService(Authority);
 impl std::fmt::Debug for JoinService {
@@ -365,9 +368,101 @@ async fn a_foreign_runtime_joins_a_hosted_room_as_an_editor_and_syncs_both_ways(
         }
     })
     .await;
+
+    // A sealed write, as an SDK app seals it under a key only the room's
+    // key holders have: this member's owner and the host keep only its
+    // ciphertext, and the governor receives it sealed.
+    let channel = collab_types::document_channel_id("so.tilo.chat", &room.to_string(), "");
+    let content = channel_crypto::ChannelGroup::create(
+        channel,
+        channel_crypto::MemberKey::generate("steward").unwrap(),
+    )
+    .unwrap()
+    .content_keys()
+    .unwrap();
+    let mut doc = AutoCommit::load(&chat).unwrap();
+    let heads = doc.get_heads();
+    doc.put(ROOT, "secret", SECRET).unwrap();
+    doc.commit();
+    let message = joined
+        .owner
+        .with_current(room, |view| {
+            view.peer().clone().publish_incremental(
+                "so.tilo.chat",
+                "",
+                doc.save_after(&heads),
+                &device_key,
+                SystemTime::now(),
+            )
+        })
+        .unwrap();
+    let NeighbourMsg::AppDocument { mut envelope, .. } = message else {
+        panic!("a signed document write")
+    };
+    let (metadata, sealed) = content
+        .seal_content(
+            envelope.artifact,
+            collab_types::ContentRetention::Delta,
+            &envelope.payload,
+        )
+        .unwrap();
+    envelope.payload = sealed;
+    envelope.encryption = Some(metadata);
+    collab_types::sign_op(&mut envelope, &device_key).unwrap();
+    joined
+        .commit(OwnerCommitRequest {
+            room: room.to_string(),
+            operation: CommitOperation::Document {
+                app: "so.tilo.chat".into(),
+                record: String::new(),
+                envelope,
+            },
+        })
+        .await
+        .expect("a keyless member keeps a sealed write as ciphertext");
+    tilo_test_env::within("the sealed write at the governor", async {
+        loop {
+            if let Some(Inbound::Delta { author, data }) = publisher.recv().await
+                && author == device.device_public_key
+                && let Ok(NeighbourMsg::AppDocument { envelope, .. }) = postcard::from_bytes(&data)
+                && envelope.encryption.is_some()
+            {
+                break;
+            }
+        }
+    })
+    .await;
+    for file in files_under(directory.path()) {
+        let bytes = std::fs::read(&file).unwrap();
+        assert!(
+            !bytes
+                .windows(SECRET.len())
+                .any(|window| window == SECRET.as_bytes()),
+            "{} holds the plaintext",
+            file.display()
+        );
+    }
     publisher.close().await;
     publisher_endpoint.close().await;
     relay.shutdown().await;
+}
+
+/// Every file under `root`: the host's relay store, the runtime's record.
+fn files_under(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut files = Vec::new();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(dir).unwrap().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                pending.push(path);
+            } else {
+                files.push(path);
+            }
+        }
+    }
+    assert!(!files.is_empty());
+    files
 }
 
 #[test]
