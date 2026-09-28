@@ -1700,13 +1700,16 @@ impl RecordSet {
         self.open.get(id).and_then(|p| p.doc.as_ref())
     }
 
-    /// Primary stays `record=None` on every host.
+    /// Primary stays `record=None` on every host. A record travels in its
+    /// home room, or in the room it is viewed in ([`RecordStore::view_in`]):
+    /// every route this set names, whether joined, published or admitted
+    /// before a component is built, is the same one.
     fn wire_route(
         &self,
         id: &RecordId,
     ) -> Result<crate::collaboration::RouteSpec, RecordOpenError> {
-        let room =
-            uuid::Uuid::parse_str(&self.home).map_err(|_| RecordOpenError::IdentityMismatch)?;
+        let room = uuid::Uuid::parse_str(self.route_room.as_deref().unwrap_or(&self.home))
+            .map_err(|_| RecordOpenError::IdentityMismatch)?;
         Ok(if id.is_package_primary() {
             crate::collaboration::RouteSpec::app(&self.package_id, room)
         } else {
@@ -3035,6 +3038,14 @@ impl RecordStore {
         self.0.borrow_mut().route_room = Some(room.to_owned());
     }
 
+    /// Whether these records are a view shown in another room
+    /// ([`Self::view_in`]): read-only, kept in memory, published nowhere.
+    pub(crate) fn is_view(&self) -> bool {
+        self.0
+            .try_borrow()
+            .is_ok_and(|set| set.route_room.is_some())
+    }
+
     /// Show `status` as a record view's durability: the status the app it
     /// replays showed. Ignored by a store that is not a view.
     pub(crate) fn show_status(&self, status: Option<RecordSaveStatus>) {
@@ -3953,6 +3964,33 @@ mod identity_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A record viewed in a replay room keeps its home but travels in the
+    /// replay room: the route admitted before its component is built, the
+    /// one reserved for a New record and the one it is opened on are the
+    /// same.
+    #[test]
+    fn a_viewed_record_travels_in_the_room_it_is_viewed_in() {
+        const HOME: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        const REPLAY: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+        let replay = uuid::Uuid::parse_str(REPLAY).unwrap();
+        let checkout = RecordCheckout::new(RecordId::for_tab(7), RecordKind::new("notebook"));
+        let temp = tempfile::tempdir().unwrap();
+        let mut owners = RecordOwners::new(temp.path().to_path_buf());
+        let store = owners.open("so.tilo.test", HOME).unwrap();
+        store.view_in(REPLAY);
+        let mut reservation = store.reserve_record(&checkout).unwrap();
+        assert_eq!(
+            store.admission_route(&checkout).unwrap().cluster_id,
+            replay,
+            "a New record is admitted in the replay room"
+        );
+        reservation.initialize(|_| Ok(())).unwrap();
+        let route = store.route(&checkout).unwrap();
+        assert_eq!(route.cluster_id, replay);
+        assert_eq!(store.admission_route(&checkout).unwrap(), route);
+        assert_eq!(store.canonical_namespace().unwrap().2, HOME);
+    }
 
     /// Two members of a room each create the record the room derives for
     /// them, before either has heard of the other's: the same record, from

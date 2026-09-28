@@ -256,6 +256,30 @@ mod tests {
     }
 
     #[test]
+    fn a_record_view_publishes_no_document_but_still_asks_for_one() {
+        let (transport, peer) = LoopbackTransport::new();
+        let mut manager = CollaborationManager::with_transport(Box::new(transport));
+        let route = RouteSpec::record("so.tilo.notes", uuid::Uuid::new_v4(), "a");
+        manager.show_record_view();
+        assert!(
+            manager
+                .try_send(CollabRequest::document_incremental(vec![1]))
+                .is_ok()
+        );
+        assert!(
+            manager
+                .try_send_to_route(route.clone(), CollabRequest::document_snapshot(vec![2]))
+                .is_ok()
+        );
+        manager.send_to_route(route.clone(), CollabRequest::RequestDocumentSnapshot);
+        assert!(matches!(
+            peer.take_submitted().as_slice(),
+            [TransportCommand::ToRoute(target, CollabRequest::RequestDocumentSnapshot)]
+                if target == &route
+        ));
+    }
+
+    #[test]
     fn loopback_delivery_sheds_presence_and_publishes_directories_once() {
         // Case `presence_is_shed_and_durable_overflow_disconnects`.
         {

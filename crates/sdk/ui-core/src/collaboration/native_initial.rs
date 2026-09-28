@@ -120,6 +120,9 @@ impl NativeConstruction {
             }
         }
         manager.switch_native_record(&binding.checkout)?;
+        if binding.records.is_view() {
+            manager.show_record_view();
+        }
         if manager
             .primary_route()
             .is_none_or(|witness| binding.admission_route().as_ref() != Some(&witness.route))

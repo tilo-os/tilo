@@ -444,6 +444,15 @@ impl CollabRequest {
             authorization: None,
         }
     }
+
+    /// Whether this request publishes document content under this
+    /// participant's name.
+    pub(crate) const fn publishes_document(&self) -> bool {
+        matches!(
+            self,
+            Self::Document { .. } | Self::CommentReferences { .. } | Self::SignedOperation { .. }
+        )
+    }
 }
 
 /// A broker directory request awaiting main-thread authority.  This crosses
@@ -1086,6 +1095,10 @@ pub struct CollaborationManager {
     /// The participant handle the latest `Hello` announced, repeated when the
     /// primary route moves to a record over this same connection.
     hello_handle: Option<String>,
+    /// Set for an app showing a record view ([`crate::record::RecordStore`]
+    /// viewed in a replay room): it receives what the replay serves and
+    /// publishes no document of its own.
+    record_view: bool,
 }
 
 impl CollaborationManager {
@@ -1109,6 +1122,7 @@ impl CollaborationManager {
             identity: None,
             action_directory_published: false,
             hello_handle: None,
+            record_view: false,
         };
         manager.reported_state = Some(manager.state());
         manager
@@ -1144,6 +1158,12 @@ impl CollaborationManager {
         _checkout: &crate::record::RecordCheckout,
     ) -> Result<(), String> {
         Err("native document routes need the broker transport".into())
+    }
+
+    /// Mark this connection as carrying a record view: from now on it
+    /// publishes no document.
+    pub(crate) fn show_record_view(&mut self) {
+        self.record_view = true;
     }
 
     pub(crate) fn has_native_committed_primary(&self) -> bool {
@@ -1275,6 +1295,7 @@ impl CollaborationManager {
             identity: None,
             action_directory_published: false,
             hello_handle: None,
+            record_view: false,
         }
     }
 
@@ -1451,6 +1472,11 @@ impl CollaborationManager {
     /// [`CollabSendError::Unavailable`] for anything but a `Hello` while the
     /// manager is still connecting.
     pub fn try_send(&mut self, req: CollabRequest) -> Result<(), CollabSendError> {
+        if self.record_view && req.publishes_document() {
+            // A record view changes, keeps and publishes none of the
+            // records it shows; there is nothing of its own to send.
+            return Ok(());
+        }
         if self.missing_required_document_custody(&req) {
             return Err(CollabSendError::Unavailable);
         }
@@ -1664,6 +1690,11 @@ impl CollaborationManager {
         route: RouteSpec,
         req: CollabRequest,
     ) -> Result<(), CollabSendError> {
+        if self.record_view && req.publishes_document() {
+            // A record view changes, keeps and publishes none of the
+            // records it shows; there is nothing of its own to send.
+            return Ok(());
+        }
         if self.missing_required_document_custody(&req) {
             return Err(CollabSendError::Unavailable);
         }
