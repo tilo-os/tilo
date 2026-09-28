@@ -938,6 +938,7 @@ impl CardHandle {
         connectors: &[ConnectorSnapshot],
         profiles: &BTreeMap<String, String>,
         signal_status: &BTreeMap<String, OutputSignalStatus>,
+        scale_override: Option<f64>,
     ) -> Vec<settings_store::hardware::DisplayOutputSnapshot> {
         use settings_store::hardware::{DisplayOutputSnapshot, OutputDescriptor, OutputMode};
 
@@ -994,6 +995,13 @@ impl CardHandle {
                     monitor: snapshot.monitor.clone(),
                 },
                 current_mode,
+                // What the compositor picks with no saved entry; the
+                // runtime puts a live output's actual scale over it.
+                scale: super::scale::resolve_scale(
+                    (u32::from(width), u32::from(height)),
+                    snapshot.physical_mm,
+                    scale_override,
+                ),
                 builtin,
                 sink_hdr,
                 hdr_unavailable_reason,

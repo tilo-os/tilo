@@ -229,6 +229,7 @@ mod tests {
                 monitor: None,
             },
             current_mode: mode(1024, 768, 60_004),
+            scale: 1.0,
             builtin: false,
             sink_hdr: false,
             hdr_unavailable_reason: None,
