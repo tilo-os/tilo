@@ -1,8 +1,9 @@
-use super::{
-    Arc, NativeCommittedView, NativeWorkspaceOwner, RoomId, SharedOwner, SystemTime, Weak,
-    enrollment, record,
-};
+use crate::{NativeCommittedView, NativeWorkspaceOwner, RoomId, SharedOwner, enrollment, record};
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
+use std::{
+    sync::{Arc, Weak},
+    time::SystemTime,
+};
 use tilo_delivery_protocol::delivery_v3::{
     auth::Carrier,
     descriptor::{self, DescriptorAuthority, VerifiedDescriptor},
@@ -11,7 +12,7 @@ use tilo_delivery_protocol::delivery_v3::{
 use tilo_peer_state::join::TransportHint;
 
 /// One actual owner and continuity retain the exact typed request across HTTP.
-pub(crate) struct NativeBootstrap {
+pub struct NativeBootstrap {
     owner: Weak<SharedOwner>,
     room: RoomId,
     continuity: u64,
@@ -21,10 +22,12 @@ pub(crate) struct NativeBootstrap {
     hint_bytes: Vec<u8>,
 }
 impl NativeBootstrap {
-    pub(crate) fn request(&self) -> &media_wire::BootstrapRequest {
+    #[must_use]
+    pub fn request(&self) -> &media_wire::BootstrapRequest {
         &self.request
     }
-    pub(crate) fn origin(&self) -> &str {
+    #[must_use]
+    pub fn origin(&self) -> &str {
         self.descriptor.origin()
     }
 }
@@ -45,7 +48,12 @@ impl NativeCommittedView {
     }
 }
 impl NativeWorkspaceOwner {
-    pub(crate) fn begin_bootstrap(
+    /// Start authenticating a delivery descriptor for `room` with the host.
+    ///
+    /// # Errors
+    /// `key` is not the enrolled device, or the descriptor does not verify
+    /// against the pinned governor and host.
+    pub fn begin_bootstrap(
         &self,
         room: RoomId,
         candidate: &TransportHint,
@@ -102,7 +110,12 @@ impl NativeWorkspaceOwner {
             })
         })
     }
-    pub(crate) fn finish_bootstrap(
+    /// Record the host's signed acknowledgement of `pending` as the room's
+    /// descriptor floor.
+    ///
+    /// # Errors
+    /// The response does not bind exactly to `pending` and the current room.
+    pub fn finish_bootstrap(
         &self,
         pending: NativeBootstrap,
         response: &media_wire::BootstrapResponse,

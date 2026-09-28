@@ -27,7 +27,7 @@ impl NativeOwnerCommitService {
     ) -> Self {
         let opened = match network.as_ref() {
             Some(network) => network.native_owner(),
-            None => super::native_workspace_owner::NativeWorkspaceOwner::open(tree.clone()),
+            None => super::native_workspace_owner::open(tree.clone()),
         };
         let owner = match opened {
             Ok(owner) => Some(owner),
