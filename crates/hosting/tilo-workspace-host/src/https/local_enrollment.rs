@@ -15,7 +15,11 @@ impl LocalEnrollment {
         authorization: Arc<Authorization>,
         commands: mpsc::Sender<EnrollmentCommand>,
     ) -> io::Result<Self> {
-        Origin::parse(origin)?;
+        if !Origin::parse(origin)?.loopback {
+            return Err(io::Error::other(
+                "local owner enrollment requires a loopback origin",
+            ));
+        }
         Ok(Self {
             origin: origin.into(),
             authorization,

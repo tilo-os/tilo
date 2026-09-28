@@ -36,7 +36,8 @@ impl RunningTransport {
             config.certificates.clone(),
             config.key.clone_key(),
             ingress.clone(),
-        )?;
+        )?
+        .with_frame_ancestors(&config.frame_ancestors)?;
         let adapter = if let Some(gateway) = config.local_enrollment {
             adapter.with_local_enrollment(gateway)?
         } else {
