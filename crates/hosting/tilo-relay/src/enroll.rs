@@ -436,7 +436,7 @@ fn bounded_home_peer_registry(
             let entries: Vec<HomePeerRegistration> = serde_json::from_slice(&bytes)?;
             if entries.len() > 128
                 || entries.iter().any(|entry| {
-                    entry.schema_version > HomePeerRegistration::CURRENT_SCHEMA
+                    entry.schema_version != HomePeerRegistration::CURRENT_SCHEMA
                         || !valid_relay_endpoint_hint(entry)
                         || entry.device_cert.as_ref().is_none_or(|cert| {
                             verify_device_cert(cert).is_err()
@@ -535,7 +535,7 @@ fn validate_public_identity(bytes: &[u8], user: [u8; 32]) -> anyhow::Result<()> 
 }
 
 fn valid_home_peer_registration(entry: &HomePeerRegistration) -> bool {
-    entry.schema_version <= HomePeerRegistration::CURRENT_SCHEMA
+    entry.schema_version == HomePeerRegistration::CURRENT_SCHEMA
         && entry.relay_workspace_ids.len() <= 4096
         && tilo_relay::valid_home_peer_label(&entry.label)
         && hex::decode(&entry.device_node_id)
