@@ -421,7 +421,7 @@ pub(crate) fn mount(
     apps: Option<&[String]>,
     notify: Arc<dyn Fn() + Send + Sync>,
 ) -> Result<(DesktopSurface, DesktopHandle, Shared, Persistence), String> {
-    let key = StorageKey::package_record(DESKTOP_PACKAGE, inputs.room.clone());
+    let key = StorageKey::record(DESKTOP_PACKAGE, inputs.room.clone(), "desktop");
     let salt = peer_salt(&inputs.salt);
     let shared = Shared::default();
     let tree = if let Some(stored) = load_stored(store.as_ref(), &key) {
