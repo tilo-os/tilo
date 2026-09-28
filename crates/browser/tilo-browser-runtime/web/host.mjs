@@ -247,6 +247,11 @@ export async function mountDesktop(target,options={}) {
     // Apps' own files (OPFS) are mirrored before any app reads them.
     const [assets,entries]=await Promise.all([startupFonts,storage.hydrate(),runtime.mirror_files(config.profile)]);
     if(!registry.current(token))throw Error('mount disposed');
+    // WebKit's GPU process holds the page's load-time surfaces for a moment;
+    // starting the renderer (and its pipeline compilation) on top of them
+    // stacks two peaks under Safari's 600 MB limit.
+    if(config.conservativeGpu)await settleBeforeGpu();
+    if(!registry.current(token))throw Error('mount disposed');
     id=runtime.mount(canvas,JSON.stringify(config),assets,entries,raw=>queueMicrotask(()=>update(raw)));
     inputScope.capture();
     const publishModifiers=event=>{if(inputScope.capture())runtime.modifiers(id,...modifierSnapshot(event));};
@@ -349,6 +354,11 @@ export async function mountDesktop(target,options={}) {
       durableState:()=>storage?.hydrate(),failNextWrite:()=>{storage.lease.abortNext=true;},recover:()=>runtime.recover(id),
       semantic:(...args)=>runtime.semantic(id,...args),};
   }catch(error){registry.remove(token);await cleanup();throw error;}
+}
+async function settleBeforeGpu(){
+  if(document.readyState!=='complete')await new Promise(resolve=>addEventListener('load',resolve,{once:true}));
+  await new Promise(resolve=>setTimeout(resolve,1500));
+  await new Promise(resolve=>(globalThis.requestIdleCallback??(f=>setTimeout(f,0)))(resolve,{timeout:1500}));
 }
 // Members' carets and selections, with their names, into the mount's
 // editors. Only a changed selection or participant crosses into the runtime.
