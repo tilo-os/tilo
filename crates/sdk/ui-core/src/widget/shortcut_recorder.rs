@@ -7,7 +7,7 @@
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
+use crate::widget::binding::{BoxedBinding, Pulled};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
@@ -30,7 +30,10 @@ const RESET_SIZE: f64 = 26.0;
 
 pub struct ShortcutRecorder {
     id: String,
-    path: String,
+    /// The chord text, as a document key.
+    stored: BoxedBinding<String>,
+    /// Whether the model rejected the chord (`<key>.error`).
+    rejected: BoxedBinding<bool>,
     default: String,
     value: String,
     invalid: bool,
@@ -46,7 +49,8 @@ impl ShortcutRecorder {
     pub fn new(id: &str, path: &str, value: &str, default: &str) -> Self {
         Self {
             id: id.into(),
-            path: path.into(),
+            stored: crate::doc_binding::str_key(path),
+            rejected: crate::doc_binding::bool_key(&format!("{path}.error")),
             default: default.into(),
             value: value.into(),
             invalid: false,
@@ -79,8 +83,8 @@ impl ShortcutRecorder {
         binding_from_text(&self.value)
     }
 
-    fn write(&mut self, state: &mut AutoCommit, root: &ObjId, value: String) {
-        let _ = state.put(root, self.path.as_str(), value.clone());
+    fn write(&mut self, state: &mut AppModel, root: &ModelPath, value: String) {
+        self.stored.push(state, root, &value);
         self.value = value;
         self.capturing = false;
     }
@@ -102,18 +106,10 @@ impl Widget for ShortcutRecorder {
     }
 
     fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
-        let (state, root) = crate::doc::document(state, root);
-        if let Ok(Some((Value::Scalar(value), _))) = state.get(root, self.path.as_str())
-            && let automerge::ScalarValue::Str(value) = value.as_ref()
-        {
-            self.value = value.to_string();
+        if let Pulled::Value(value) = self.stored.pull(state, root) {
+            self.value = value;
         }
-        let error_path = format!("{}.error", self.path);
-        self.invalid = matches!(
-            state.get(root, error_path.as_str()),
-            Ok(Some((Value::Scalar(value), _)))
-                if matches!(value.as_ref(), automerge::ScalarValue::Boolean(true))
-        );
+        self.invalid = matches!(self.rejected.pull(state, root), Pulled::Value(true));
     }
 
     fn build_layout(
