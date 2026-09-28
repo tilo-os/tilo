@@ -3,7 +3,7 @@
 // correlation: the runtime admits every command synchronously, and a close
 // settles once its route is gone from a published snapshot.
 /** Mount-owned projection: no DOM lookup, transport mutation or polling timer. */
-export function createDesktopNavigation({snapshot,revision,dispatch,active}) {
+export function createDesktopNavigation({snapshot,revision,dispatch,active,install=async app=>app}) {
  const sameRoute=(a,b)=>a?.workspace===b?.workspace&&a?.strip===b?.strip&&a?.group===b?.group&&a?.tab===b?.tab;
  const routeKey=route=>JSON.stringify([route?.workspace,route?.strip,route?.group,route?.tab]);
  let closed=false,serial=revision(),value=JSON.parse(snapshot());
@@ -36,6 +36,11 @@ export function createDesktopNavigation({snapshot,revision,dispatch,active}) {
      dispatch(JSON.stringify(command));
      pendingCloses.set(key,{route:{...command.route},promise,resolve,reject});
      refresh();return promise;
+    }
+    if(command.kind==='open'){
+     if(typeof command.app!=='string'||!command.app)throw Error('Invalid application');
+     // An app the page's core lacks is linked first; it opens under the id the link names.
+     return Promise.resolve(install(command.app)).then(app=>{check();if(command.generation!==value.generation)throw Error('Stale desktop surface');dispatch(JSON.stringify({kind:'open',generation:command.generation,app}));refresh();});
     }
     dispatch(JSON.stringify(command));refresh();return Promise.resolve();
    }catch(error){return Promise.reject(error);}

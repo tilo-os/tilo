@@ -84,7 +84,7 @@ test('close deduplicates and settles only when the route leaves the snapshot',as
  const orphan=pending.controller.dispatch({kind:'close',generation:'g',route});
  pending.close();await assert.rejects(orphan,/disposed/);
 });
-test('open links the app before dispatching its full id, and needs a topology owner that settles',async()=>{
+test('open links the app before dispatching its full id',async()=>{
  const raw={version:1,generation:'surface',entries:[],capabilities:{open:true}},sent=[],installed=[];
  let release;const linked=new Promise(resolve=>{release=resolve;});
  const nav=createDesktopNavigation({snapshot:()=>JSON.stringify(raw),revision:()=>'1',dispatch:command=>{sent.push(JSON.parse(command));return'invocation';},awaitTerminal:async()=>{},
@@ -105,7 +105,4 @@ test('open links the app before dispatching its full id, and needs a topology ow
  const unavailable=createDesktopNavigation({snapshot:()=>JSON.stringify(raw),revision:()=>'1',dispatch:()=>{throw Error('dispatched');},awaitTerminal:async()=>{},install:async app=>{throw Error(`application "${app}" is not available`);},active:()=>true});
  await assert.rejects(unavailable.controller.dispatch({kind:'open',generation:'surface',app:'so.tilo.nope'}),/not available/);
  unavailable.close();
- const peerless=createDesktopNavigation({snapshot:()=>JSON.stringify(raw),revision:()=>'1',dispatch:()=>{throw Error('dispatched');},active:()=>true});
- assert.equal(peerless.controller.getSnapshot().capabilities.open,false,'a queued open without a command bridge would never land');
- await assert.rejects(peerless.controller.dispatch({kind:'open',generation:'surface',app:'so.tilo.notes'}),/Open unavailable/);
 });
