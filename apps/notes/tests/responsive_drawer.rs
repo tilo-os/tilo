@@ -18,16 +18,12 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use std::collections::HashMap;
+use ui::headless::{FrameOptions, Framed};
 
 use notes::NotesApp;
 use notes::sidebar::OutEvent;
-use taffy::prelude::*;
 use tempfile::TempDir;
-use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::Widget;
-use vello::kurbo::Point;
 use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
 
 fn cursor_moved(x: f64, y: f64) -> WindowEvent {
@@ -45,98 +41,33 @@ fn mouse_press() -> WindowEvent {
     }
 }
 
-/// Build + lay out `app` at `w`x`h`, looping until the responsive
-/// structure settles, and return the final taffy tree + child node so
-/// the caller can dispatch pointer events against a live layout.
-fn settle_layout(
-    app: &mut NotesApp,
-    state: &mut ui::State,
-    w: u16,
-    h: u16,
-) -> Result<(TaffyTree<()>, NodeId), String> {
+/// Mount `app` over `state` and run the production frame at `w`x`h`.
+fn settle_layout(app: NotesApp, state: ui::State, w: u16, h: u16) -> Framed<NotesApp> {
     settle_layout_with_theme(app, state, w, h, &Theme::dark())
 }
 
 /// [`settle_layout`] under an explicit theme, so a test can lay the app out
 /// at an accessibility text scale.
 fn settle_layout_with_theme(
-    app: &mut NotesApp,
-    state: &mut ui::State,
+    app: NotesApp,
+    state: ui::State,
     w: u16,
     h: u16,
     theme: &Theme,
-) -> Result<(TaffyTree<()>, NodeId), String> {
-    let mut text_renderer = TextRenderer::new();
-    text_renderer.set_text_scale(theme.text_scale);
-    app.sync(&mut state.doc, &state.root);
-    let mut result: Option<(TaffyTree<()>, NodeId)> = None;
-    for _ in 0..5 {
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let child = app.build_layout(&mut taffy, &theme, &mut node_map);
-        let root = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::length(f32::from(w)),
-                        height: Dimension::length(f32::from(h)),
-                    },
-                    ..Default::default()
-                },
-                &[child],
-            )
-            .map_err(|e| e.to_string())?;
-        {
-            let measure_map = node_map.clone();
-            let tr = &mut text_renderer;
-            taffy
-                .compute_layout_with_measure(
-                    root,
-                    taffy::Size {
-                        width: AvailableSpace::Definite(f32::from(w)),
-                        height: AvailableSpace::Definite(f32::from(h)),
-                    },
-                    |known, avail, node_id, _, _| {
-                        if let Some(&ptr) = measure_map.get(&node_id) {
-                            unsafe { (*ptr).measure(known, avail, tr) }
-                        } else {
-                            taffy::Size::ZERO
-                        }
-                    },
-                )
-                .map_err(|e| e.to_string())?;
-        }
-        app.apply_layout(&taffy, child, Point::ORIGIN);
-        let settled = !app.take_structure_dirty();
-        result = Some((taffy, child));
-        if settled {
-            break;
-        }
-    }
-    result.ok_or_else(|| "layout never settled".to_string())
+) -> Framed<NotesApp> {
+    Framed::with_options(
+        state,
+        app,
+        (u32::from(w), u32::from(h)),
+        FrameOptions {
+            theme: Some(theme.clone()),
+            ..FrameOptions::default()
+        },
+    )
 }
 
-fn dispatch(
-    app: &mut NotesApp,
-    state: &mut ui::State,
-    taffy: &TaffyTree<()>,
-    child: NodeId,
-    event: &WindowEvent,
-) {
-    let modifiers = Modifiers::default();
-    let mut handled = false;
-    let mut focus_target = None;
-    app.handle_event(
-        event,
-        1.0,
-        &modifiers,
-        &mut state.doc,
-        &state.root,
-        &mut handled,
-        &mut focus_target,
-        child,
-        taffy,
-    );
+fn dispatch(app: &mut Framed<NotesApp>, event: &WindowEvent) -> bool {
+    Framed::harness_mut(app).dispatch_to_root_with(event, &Modifiers::default())
 }
 
 #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
@@ -153,17 +84,19 @@ fn narrow_windows_collapse_the_sidebar_into_a_bounded_drawer() {
         assert_ne!(welcome, other);
         app.sync_sidebar_for_test();
 
-        let mut state = ui::State::new();
+        let state = ui::State::new();
 
         // Wide window: the sidebar stays inline; no top bar / drawer.
-        let _ = settle_layout(&mut app, &mut state, 1280, 720).unwrap();
+        let mut app = settle_layout(app, state, 1280, 720);
         assert!(
             !app.built_narrow_for_test(),
             "1280px window should keep the sidebar inline"
         );
 
         // Narrow window: collapses to a closed overlay drawer.
-        let (taffy, child) = settle_layout(&mut app, &mut state, 560, 720).unwrap();
+        Framed::harness_mut(&mut app)
+            .relayout_at((560, 720))
+            .unwrap();
         assert!(
             app.built_narrow_for_test(),
             "560px window should collapse the sidebar into the drawer"
@@ -175,14 +108,8 @@ fn narrow_windows_collapse_the_sidebar_into_a_bounded_drawer() {
 
         // The top-bar toggle opens the drawer.
         let btn = app.menu_btn_center_for_test();
-        dispatch(
-            &mut app,
-            &mut state,
-            &taffy,
-            child,
-            &cursor_moved(btn.x, btn.y),
-        );
-        dispatch(&mut app, &mut state, &taffy, child, &mouse_press());
+        dispatch(&mut app, &cursor_moved(btn.x, btn.y));
+        dispatch(&mut app, &mouse_press());
         assert!(
             app.drawer_open_for_test(),
             "clicking the top-bar button must open the drawer"
@@ -193,14 +120,8 @@ fn narrow_windows_collapse_the_sidebar_into_a_bounded_drawer() {
         let row = app
             .sidebar_row_center_for_test(0)
             .expect("row 0 should be laid out");
-        dispatch(
-            &mut app,
-            &mut state,
-            &taffy,
-            child,
-            &cursor_moved(row.x, row.y),
-        );
-        dispatch(&mut app, &mut state, &taffy, child, &mouse_press());
+        dispatch(&mut app, &cursor_moved(row.x, row.y));
+        dispatch(&mut app, &mouse_press());
         assert_eq!(
             app.selected_for_test(),
             Some(welcome),
@@ -220,28 +141,23 @@ fn narrow_windows_collapse_the_sidebar_into_a_bounded_drawer() {
         let tmp = TempDir::new().unwrap();
         let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
         app.sync_sidebar_for_test();
-        let mut state = ui::State::new();
+        let state = ui::State::new();
         let theme = Theme::dark().with_text_scale(2.0);
         let window_w: u16 = 480;
 
-        let (taffy, child) =
-            settle_layout_with_theme(&mut app, &mut state, window_w, 900, &theme).unwrap();
+        let mut app = settle_layout_with_theme(app, state, window_w, 900, &theme);
         assert!(
             app.built_narrow_for_test(),
             "480px at 2× is a drawer layout"
         );
         let btn = app.menu_btn_center_for_test();
-        dispatch(
-            &mut app,
-            &mut state,
-            &taffy,
-            child,
-            &cursor_moved(btn.x, btn.y),
-        );
-        dispatch(&mut app, &mut state, &taffy, child, &mouse_press());
+        dispatch(&mut app, &cursor_moved(btn.x, btn.y));
+        dispatch(&mut app, &mouse_press());
         assert!(app.drawer_open_for_test(), "the toggle opens the drawer");
         // The open drawer's structure is laid out on the next settled pass.
-        let _ = settle_layout_with_theme(&mut app, &mut state, window_w, 900, &theme).unwrap();
+        Framed::harness_mut(&mut app)
+            .relayout_themed((u32::from(window_w), 900), theme.clone())
+            .unwrap();
 
         let drawer = app.sidebar_rect_for_test();
         let reveal = f64::from(theme.tokens.spacing.s12);
