@@ -9,7 +9,8 @@ use crate::shell::input_policy::{
 pub use crate::shell::session_policy::*;
 use crate::shell::state::WorkspaceAuthority as _;
 pub use crate::shell::test_control::{
-    ReadLineError, TEST_CONTROL_MAX_LINE_BYTES, keyboard_input_event, read_bounded_line,
+    AGENT_CONTROL_NOT_PERMITTED, ReadLineError, TEST_CONTROL_MAX_LINE_BYTES, keyboard_input_event,
+    read_bounded_line,
 };
 use std::collections::{HashMap, HashSet};
 use std::io::{BufReader, Write};
@@ -3353,8 +3354,7 @@ fn pump_test_control_conn(
                     Ok(cmd) if conn.agent && !cmd.agent_permitted() => (
                         test_control::Response::Err {
                             code: "not_permitted".to_string(),
-                            message: "the agent-control socket serves input and screenshots only"
-                                .to_string(),
+                            message: AGENT_CONTROL_NOT_PERMITTED.to_string(),
                         },
                         Vec::new(),
                     ),
