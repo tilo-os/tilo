@@ -338,7 +338,7 @@ grep -Fq 'cron: "0 2 * * *"' "$os" \
 
 grep -Fq 'refs/tags/v*) with_browser=1 ;;' "$os" \
   && grep -Fq 'if [[ -n ${WPE_BUILDROOT_X86_64_REF:-} && -n ${WPE_BUILDROOT_AARCH64_REF:-} ]]; then' "$os" \
-  && grep -Fq "no digest-pinned WPE buildroot for %s; run snapshot-wpe-buildroot" "$os" \
+  && grep -Fq "no digest-pinned WPE buildroot for %s; run build-buildroots" "$os" \
   && ok 'tags always ship the browser; the nightly ships it once both WPE buildroots are promoted' \
   || bad 'the nightly browser profile can fail on a missing WPE pin, or a tag can omit the browser'
 
