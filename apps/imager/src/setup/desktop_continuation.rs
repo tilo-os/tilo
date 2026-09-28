@@ -773,11 +773,18 @@ mod tests {
                     |progress| {
                         if progress.current_relative_path == Path::new("zzz") && !edited {
                             edited = true;
-                            fs::write(
-                                source.join(if edit_already_copied { "aaa" } else { "zzz" }),
-                                b"edited",
-                            )
-                            .unwrap();
+                            let path = source.join(if edit_already_copied { "aaa" } else { "zzz" });
+                            let reviewed_at = fs::metadata(&path).unwrap().modified().unwrap();
+                            fs::write(&path, b"edited").unwrap();
+                            // A same-size rewrite within one tick of the kernel's coarse
+                            // file clock keeps the reviewed mtime; stamp the edit a second
+                            // later, as a real later edit would be.
+                            fs::File::options()
+                                .write(true)
+                                .open(&path)
+                                .unwrap()
+                                .set_modified(reviewed_at + std::time::Duration::from_secs(1))
+                                .unwrap();
                         }
                     },
                 )
