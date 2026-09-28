@@ -3,7 +3,7 @@
 //! grid rasterises non-empty pixels (icons + labels + a selection fill).
 //!
 //! Skips gracefully when no wgpu adapter is available, matching the other
-//! offscreen tests. Set `QUICK_UI_SCREENSHOT_DIR=<path>` to dump a PNG.
+//! offscreen tests. Set `TILO_UI_SCREENSHOT_DIR=<path>` to dump a PNG.
 
 #![allow(
     clippy::unwrap_used,
@@ -107,7 +107,7 @@ fn icon_grid_renders_cells_and_selection() {
         "expected substantial painted content, got {non_bg} px"
     );
 
-    if let Ok(dir) = std::env::var("QUICK_UI_SCREENSHOT_DIR") {
+    if let Ok(dir) = tilo_ui::env::var("TILO_UI_SCREENSHOT_DIR") {
         let _ = std::fs::create_dir_all(&dir);
         let path = format!("{dir}/icon_grid.png");
         tilo_ui::png::write_rgba8(&path, w, h, &rgba).unwrap();

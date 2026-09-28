@@ -63,11 +63,11 @@ const DAMAGE_TEXTURE_GRANULARITY: u32 = 32;
 const DAMAGE_TEXTURE_HEIGHT_GRANULARITY: u32 = 16;
 
 fn env_enabled_by_default(name: &str) -> bool {
-    !matches!(std::env::var(name).as_deref(), Ok("0"))
+    !matches!(crate::env::var(name).as_deref(), Ok("0"))
 }
 
 pub(crate) fn damage_geometric_capacity_enabled() -> bool {
-    env_enabled_by_default("QUICK_UI_DAMAGE_GEOMETRIC")
+    env_enabled_by_default("TILO_UI_DAMAGE_GEOMETRIC")
 }
 
 pub(crate) fn damage_texture_extent(required: u32, device_limit: u32) -> u32 {
@@ -1120,7 +1120,7 @@ impl OffscreenRenderer {
         Self::try_new_with_preprocessing(
             width,
             height,
-            std::env::var_os("QUICK_UI_VELLO_CPU").is_some(),
+            crate::env::var_os("TILO_UI_VELLO_CPU").is_some(),
         )
     }
 
@@ -2953,7 +2953,7 @@ mod tests {
             if !retained.sparse_fine_supported() {
                 let requested = env_enabled_by_default("VELLO_SPARSE_FINE");
                 assert!(
-                    !requested || std::env::var_os("QUICK_UI_VELLO_CPU").is_some(),
+                    !requested || std::env::var_os("TILO_UI_VELLO_CPU").is_some(),
                     "default sparse fine must be available unless the explicit CPU fallback is selected",
                 );
                 eprintln!("skipping sparse GPU mask test: sparse fine is unavailable");
@@ -3050,7 +3050,7 @@ mod tests {
             if !retained.sparse_coarse_supported() {
                 let sparse_fine_requested = env_enabled_by_default("VELLO_SPARSE_FINE");
                 assert!(
-                    !sparse_fine_requested || std::env::var_os("QUICK_UI_VELLO_CPU").is_some(),
+                    !sparse_fine_requested || std::env::var_os("TILO_UI_VELLO_CPU").is_some(),
                     "coarse support is required only for the requested GPU sparse-fine path"
                 );
                 break 'sparse_coarse_matches_dense_oracle_across_disjoint_masked_frames;
@@ -3888,7 +3888,7 @@ mod tests {
             let mut retained = OffscreenRenderer::new(W, H);
             if !retained.cpu_pathtag_enabled() {
                 assert!(
-                    std::env::var_os("QUICK_UI_VELLO_CPU").is_some(),
+                    std::env::var_os("TILO_UI_VELLO_CPU").is_some(),
                     "default selective CPU path tags must activate on a GPU renderer"
                 );
                 break 'cpu_pathtag_matches_gpu_oracle_and_restores_gpu_stages_when_disabled;
@@ -4250,7 +4250,7 @@ mod tests {
             let mut retained = OffscreenRenderer::new(W, H);
             if !retained.direct_path_dispatch_enabled() {
                 assert!(
-                    std::env::var_os("QUICK_UI_VELLO_CPU").is_some(),
+                    std::env::var_os("TILO_UI_VELLO_CPU").is_some(),
                     "default direct GPU path dispatch must activate"
                 );
                 break 'direct_path_dispatch_matches_an_indirect_gpu_oracle_and_restores_stages;
@@ -4404,7 +4404,7 @@ mod tests {
             const H: u32 = 256;
             let mut retained = OffscreenRenderer::new(W, H);
             if !retained.defer_bump_readback_enabled() && !retained.direct_path_dispatch_enabled() {
-                assert!(std::env::var_os("QUICK_UI_VELLO_CPU").is_some());
+                assert!(std::env::var_os("TILO_UI_VELLO_CPU").is_some());
                 eprintln!("skipping GPU path recovery test: global CPU rendering is active");
                 break 'gpu_path_experiments_keep_overflow_recovery_complete;
             }

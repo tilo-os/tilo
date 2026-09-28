@@ -513,7 +513,7 @@ fn pick_shot_theme(args: &LaunchArgs) -> Theme {
 
 /// Headless benchmark: render the current view (`TILO_MUSIC_VIEW`) `n` times
 /// offscreen, timing the full per-frame CPU path (sync → layout → draw) that
-/// `QUICK_UI_PERF` reports live. No GPU submit, no display — reproducible.
+/// `TILO_UI_PERF` reports live. No GPU submit, no display — reproducible.
 fn run_bench(n: usize, viewport: (u32, u32)) {
     let mut frame = ShotFrame::new(viewport, Theme::dark());
     let mut widget = music::app_root_for_shot(""); // offline sample, hermetic
