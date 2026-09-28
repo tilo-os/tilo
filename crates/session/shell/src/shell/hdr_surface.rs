@@ -40,9 +40,9 @@ use vello::peniko::ImageData;
 
 use crate::collab::colorimetry::{ColorPrimaries, Colorimetry, TransferCharacteristics};
 use crate::shell::color_pipeline::{
-    BT709_PRIMARIES, BT2020_PRIMARIES, DISPLAY_P3_PRIMARIES, Mat3, bt709_to_bt2020_matrix,
-    gamut_matrix, hlg_inverse_oetf, pack_xbgr2101010, pq_eotf, pq10_from_nits, srgb_eotf,
-    srgb_oetf,
+    BT709_PRIMARIES, BT2020_PRIMARIES, DISPLAY_P3_PRIMARIES, Mat3, SDR_REFERENCE_WHITE_NITS,
+    bt709_to_bt2020_matrix, gamut_matrix, hlg_inverse_oetf, pack_xbgr2101010, pq_eotf,
+    pq10_from_nits, srgb_eotf, srgb_oetf,
 };
 use crate::shell::hdr_tonemap::{HdrTonemapConfig, tonemap_rgb_signal_to_sdr_linear};
 
@@ -53,11 +53,12 @@ pub const COMPOSITE_SHADER_SOURCE: &str = include_str!("hdr_composite.wgsl");
 pub const MAX_HDR_LAYERS: usize = 3;
 
 /// The BT.2100 HLG nominal display peak the OOTF is defined against.
-const HLG_NOMINAL_PEAK_NITS: f32 = 1000.0;
+const HLG_NOMINAL_PEAK_NITS: f32 = 1000.0; // a luminance in cd/m², not a length
 /// The HLG system gamma at [`HLG_NOMINAL_PEAK_NITS`].
 const HLG_SYSTEM_GAMMA: f32 = 1.2;
-/// Where BT.2408 puts HLG reference white on a 1000 cd/m² display.
-const HLG_REFERENCE_WHITE_NITS: f32 = 203.0;
+/// Where BT.2408 puts HLG reference white on a 1000 cd/m² display: the same
+/// diffuse white as SDR content in PQ.
+const HLG_REFERENCE_WHITE_NITS: f32 = SDR_REFERENCE_WHITE_NITS;
 /// BT.2020 luminance weights, for the HLG OOTF.
 const BT2020_LUMA: [f32; 3] = [0.2627, 0.6780, 0.0593];
 
