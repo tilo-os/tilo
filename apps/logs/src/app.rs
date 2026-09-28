@@ -54,7 +54,6 @@ use ui::tilo_actions::{ActionAddress, ControlInvocation, OperationKind, Resource
 use ui::widget::{TextInput, Widget};
 
 use crate::actions::{self, LogsOperation};
-use crate::doc::LogsDoc;
 use crate::model::{Filter, LogEntry, Priority};
 use crate::theme_ext::{ThemeColors, tint};
 use ui::paint::{PaintCtx, fill_rect, fill_round, stroke_round};
@@ -2465,9 +2464,11 @@ impl LogsApp {
 }
 
 impl Widget for LogsApp {
-    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
-        Some(&crate::framework_history::HISTORY)
-    }
+    ui::provides!(
+        dyn ui::history_mode::capability::DocumentHistory,
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::resources::PublishesResources
+    );
 
     fn measure(
         &mut self,
@@ -2484,16 +2485,6 @@ impl Widget for LogsApp {
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[actions::LOGS_OPERATION_TYPE]
-    }
-
-    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
-        self.pending_control_invocation
-            .take()
-            .or_else(|| self.search_input.take_control_invocation())
-    }
-
-    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
-        actions::resources(&self.entries, &self.filter, self.live_tail, self.allow_live)
     }
 
     fn start_operation(
@@ -2519,10 +2510,6 @@ impl Widget for LogsApp {
 
     fn sync(&mut self, doc: &mut AppModel, root: &ModelPath) {
         let (doc, root) = ui::doc::document(doc, root);
-        // Upgrade old shared documents by removing the transient keys written
-        // by previous Logs versions. Nothing below reads or writes view state
-        // in the document.
-        LogsDoc::prune_legacy_view_state(doc, root);
         self.drain_export_portal();
         if let Some(filter) = self.shot_filter.take() {
             self.filter = filter;
@@ -2884,6 +2871,26 @@ impl Widget for LogsApp {
         // Keep pumping frames while the push slide eases into place, or
         // while live tail is on.
         self.push.is_animating() || (self.allow_live && self.live_tail) || self.export_rx.is_some()
+    }
+}
+
+impl ui::resources::PublishesResources for LogsApp {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
+        actions::resources(&self.entries, &self.filter, self.live_tail, self.allow_live)
+    }
+}
+
+impl ui::widget::controls::ActionControls for LogsApp {
+    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
+        self.pending_control_invocation
+            .take()
+            .or_else(|| self.search_input.take_control_invocation())
+    }
+}
+
+impl ui::history_mode::capability::DocumentHistory for LogsApp {
+    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
+        Some(&crate::framework_history::HISTORY)
     }
 }
 
@@ -3622,8 +3629,7 @@ mod tests {
         {
             let mut app = LogsApp::new(sample_entries(), true);
             app.request_journal_operation("refresh");
-            let invocation = app
-                .take_control_invocation()
+            let invocation = ui::widget::controls::take_control_invocation(&mut app)
                 .expect("refresh queues an inert control invocation");
             assert_eq!(invocation.address.resource, actions::JOURNAL_RESOURCE_ID);
             assert_eq!(invocation.address.action, "refresh");

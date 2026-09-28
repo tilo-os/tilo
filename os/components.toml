@@ -109,7 +109,6 @@ scope = "session"
 packages = ["shell"]
 bins = ["shell"]
 dev_features = ["dev-overrides"]
-user_units = ["tilo-identity.service"]
 layer = "desktop-binaries"
 files = [
   { from = "shell", to = "/usr/bin/shell", mode = "0755" },

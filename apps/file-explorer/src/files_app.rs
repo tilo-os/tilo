@@ -7265,7 +7265,7 @@ impl FileExplorerWidget {
         let mut found = false;
         self.for_each_child(&mut |child| {
             if !found {
-                found = child.has_action_control_bindings();
+                found = ui::widget::controls::has_action_control_bindings(child);
             }
         });
         found
@@ -7386,20 +7386,12 @@ impl Collaborative for FileExplorerWidget {
 }
 
 impl Widget for FileExplorerWidget {
-    ui::provides!(dyn ui::widget::Collaborative);
-
-    fn history_registration(
-        &self,
-    ) -> Result<
-        Option<ui::history_mode::HistoryRegistration>,
-        ui::history_mode::HistoryRegistrationError,
-    > {
-        self.history_registration_impl()
-    }
-
-    fn has_action_control_bindings(&self) -> bool {
-        self.has_action_control_bindings_impl()
-    }
+    ui::provides!(
+        dyn ui::widget::Collaborative,
+        dyn ui::history_mode::capability::DocumentHistory,
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::resources::PublishesResources
+    );
 
     fn native_input_snapshot(&self, doc: &AppModel, path: &ModelPath) -> Option<serde_json::Value> {
         let (doc, path) = ui::doc::document_ref(doc, path);
@@ -7429,411 +7421,6 @@ impl Widget for FileExplorerWidget {
             // resource back to the retained widget.
             "tilo.ui.control.invoke",
         ]
-    }
-
-    #[allow(
-        clippy::expect_used,
-        reason = "JSON serialization of owned strings and static command payloads is infallible"
-    )]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the resource catalogue mirrors the folder/entry protocol in one auditable tree; splitting it would separate action contracts from their resources"
-    )]
-    fn resources(&self, doc: &automerge::AutoCommit) -> Vec<Resource> {
-        let mut folder = self.action_directory_folder_root();
-        // The recovery affordance is a real action resource, not a painted
-        // click region. Publish it only while its error surface is visible,
-        // where its deterministic Refresh effect is meaningful.
-        if self.error.is_some() {
-            folder.children.extend(self.state_retry.resources(doc));
-        }
-        if !self.is_trash_view()
-            && let Some(template_dir) = templates::templates_dir()
-        {
-            // Each resource is an existing regular template, not an arbitrary
-            // local source path supplied by a caller. Invocation rechecks this
-            // bounded catalogue before copying, so a stale action cannot turn
-            // into an ambient file-read capability.
-            for template in templates::list_templates(&template_dir) {
-                let template_path = template.to_string_lossy().into_owned();
-                let template_id = template_resource_id(&template_path);
-                let mut template_resource = Resource::new(
-                    template_id.clone(),
-                    "files.template",
-                    templates::menu_label(&template),
-                );
-                template_resource.actions.push(
-                    ActionSpec::operation(
-                        "create",
-                        templates::menu_label(&template),
-                        OperationKind::Effect,
-                        "files.new-from-template",
-                        &template_id,
-                    )
-                    .expect("template path is serializable")
-                    .with_contract(ActionContract {
-                        availability: if self.current_path.is_dir() {
-                            Availability::Available
-                        } else {
-                            Availability::Unavailable {
-                                code: "location_unavailable".into(),
-                                reason: "The current location cannot contain a new file".into(),
-                            }
-                        },
-                        permission: PermissionRequirement::Write,
-                        retry: RetryPolicy::AtMostOnce,
-                        ..ActionContract::default()
-                    }),
-                );
-                folder.children.push(template_resource);
-            }
-        }
-        // Search, the sidebar, assistive technology and headless agents all
-        // address the same View operation for a place. These children are not
-        // limited to the currently visible directory.
-        for favorite in &self.favs.borrow().favorites {
-            let resource_id = crate::search_provider::place_resource_id(&favorite.path);
-            let resource =
-                Resource::new(resource_id.clone(), "files.place", favorite.label.clone())
-                    .with_action(
-                        ActionSpec::operation(
-                            crate::search_provider::OPEN_ACTION,
-                            "Open",
-                            OperationKind::View,
-                            "files.open",
-                            &resource_id,
-                        )
-                        .expect("place path is serializable")
-                        .with_contract(ActionContract::view()),
-                    );
-            folder.children.push(resource);
-        }
-        // External file accounts are the folders the storage daemon's cloud
-        // service mounts under `~/Remote`. Files never talks to the server or
-        // opens the vault: it opens the folder like any other place and shows
-        // the account's reported health as a badge.
-        for account in self.remote_account_snapshot() {
-            let resource_id = crate::remote_accounts::resource_id(&account.id);
-            let availability = remote_folder_availability(&account);
-            let mut resource =
-                Resource::new(resource_id, "files.remote-account", account.label.clone());
-            resource.presentation = Some(tilo_actions::ResourcePresentation {
-                detail: Some(format!("{} · {}", account.kind.label(), account.host)),
-                badge: account.health.badge().map(str::to_owned),
-                preview: None,
-            });
-            let open_payload = vec!["open".to_string(), account.id.to_string()];
-            resource.actions.push(
-                ActionSpec::operation(
-                    crate::search_provider::REMOTE_ACCOUNT_OPEN_ACTION,
-                    "Open",
-                    OperationKind::View,
-                    "files.remote-account",
-                    &open_payload,
-                )
-                .expect("remote account open payload is serializable")
-                .with_contract(ActionContract {
-                    availability,
-                    ..ActionContract::view()
-                }),
-            );
-            let details_payload = vec!["details".to_string(), account.id.to_string()];
-            resource.actions.push(
-                ActionSpec::operation(
-                    "details",
-                    "Show account status",
-                    OperationKind::View,
-                    "files.remote-account",
-                    &details_payload,
-                )
-                .expect("remote account detail payload is serializable")
-                .with_contract(ActionContract::view()),
-            );
-            let reauth_payload = vec!["reauthenticate".to_string(), account.id.to_string()];
-            resource.actions.push(
-                ActionSpec::operation(
-                    "reauthenticate",
-                    "How to sign in again",
-                    OperationKind::View,
-                    "files.remote-account",
-                    &reauth_payload,
-                )
-                .expect("remote account reauthentication payload is serializable")
-                .with_contract(ActionContract::view()),
-            );
-            folder.children.push(resource);
-        }
-        // Keep the context catalogue bounded. The visible directory can still
-        // paint every loaded row; only the cross-process resource projection is
-        // capped, and `resource(id)` below resolves any exact row lazily.
-        for entry in self.entries.iter().take(MAX_EAGER_ENTRY_RESOURCES) {
-            let resource_id = Self::entry_resource_id(entry);
-            let record_id = entry.record_id.map(uuid::Uuid::from_bytes);
-            let mut resource = Resource::new(
-                resource_id.clone(),
-                if record_id.is_some() {
-                    "files.record"
-                } else {
-                    "files.entry"
-                },
-                entry.name.clone(),
-            );
-            if let Some(record_id) = record_id {
-                resource.actions.push(
-                    ActionSpec::operation(
-                        crate::search_provider::REVEAL_ACTION,
-                        t("files-action-reveal"),
-                        OperationKind::View,
-                        "files.reveal-record",
-                        &record_id.to_string(),
-                    )
-                    .expect("record id is serializable")
-                    .with_contract(ActionContract::view()),
-                );
-            }
-            if let Ok(spec) = ActionSpec::operation(
-                "open",
-                t("files-menu-open"),
-                OperationKind::View,
-                "files.open",
-                &resource_id,
-            ) {
-                resource
-                    .actions
-                    .push(spec.with_contract(ActionContract::view()));
-            }
-            self.append_open_with_actions(entry, &resource_id, &mut resource);
-            if !self.is_trash_view() {
-                let rename_resource_id = resource_id.clone();
-                resource.actions.push(
-                    ActionSpec::prompted_operation(
-                        "rename",
-                        t("files-menu-rename"),
-                        t("files-action-rename-prompt"),
-                        &entry.name,
-                        OperationKind::Effect,
-                        "files.rename",
-                        move |name| {
-                            EncodedAction::encode_operation(
-                                "files.rename",
-                                &vec![rename_resource_id.as_str(), name],
-                            )
-                            .expect("rename payload is serializable")
-                        },
-                    )
-                    .with_contract(ActionContract {
-                        permission: PermissionRequirement::Write,
-                        retry: RetryPolicy::AtMostOnce,
-                        // The FUSE/host filesystem owns durable history. This
-                        // external effect has no Tilo action inverse, so never
-                        // advertise an undo boundary we cannot honor.
-                        ..ActionContract::default()
-                    }),
-                );
-            }
-            let mut entry_commands: Vec<(&str, String, &str, bool)> = if self.is_trash_view() {
-                vec![
-                    ("restore", t("files-menu-restore"), "restore", false),
-                    (
-                        "delete-permanently",
-                        t("files-menu-delete-permanently"),
-                        "purge",
-                        true,
-                    ),
-                    (
-                        "properties",
-                        t("files-menu-properties"),
-                        "properties",
-                        false,
-                    ),
-                ]
-            } else {
-                vec![
-                    ("copy", t("files-menu-copy"), "copy", false),
-                    ("cut", t("files-menu-cut"), "cut", false),
-                    ("trash", t("files-menu-move-trash"), "trash", true),
-                    (
-                        "properties",
-                        t("files-menu-properties"),
-                        "properties",
-                        false,
-                    ),
-                    ("sharing", t("files-sharing-access"), "sharing", false),
-                    ("history", t("files-version-history"), "history", false),
-                ]
-            };
-            if !self.is_trash_view() {
-                entry_commands.push(("compress", t("files-archive-compress"), "compress", false));
-                if crate::archive::is_supported(&entry.path) {
-                    entry_commands.push((
-                        "extract",
-                        t("files-archive-extract-here"),
-                        "extract",
-                        false,
-                    ));
-                }
-            }
-            for (id, label, verb, destructive) in entry_commands {
-                let mut spec = ActionSpec::operation(
-                    id,
-                    label,
-                    if matches!(verb, "properties" | "sharing" | "history") {
-                        OperationKind::View
-                    } else {
-                        OperationKind::Effect
-                    },
-                    "files.entry-command",
-                    &vec![verb.to_string(), resource_id.clone()],
-                )
-                .expect("entry command is serializable");
-                if destructive {
-                    spec = spec.destructive();
-                }
-                resource.actions.push(spec);
-            }
-            if let Some(availability) = entry.availability.as_ref() {
-                resource.actions.push(
-                    ActionSpec::operation(
-                        "availability",
-                        t("files-availability-title-short"),
-                        OperationKind::View,
-                        "files.entry-command",
-                        &vec!["availability".to_string(), resource_id.clone()],
-                    )
-                    .expect("availability payload is serializable")
-                    .with_contract(ActionContract::view()),
-                );
-                let mut availability_command =
-                    |id: &str, label: String, verb: &str, destructive: bool| {
-                        let mut spec = ActionSpec::operation(
-                            id,
-                            label,
-                            OperationKind::Effect,
-                            "files.entry-command",
-                            &vec![verb.to_string(), resource_id.clone()],
-                        )
-                        .expect("availability command payload is serializable")
-                        .with_contract(ActionContract {
-                            permission: PermissionRequirement::Write,
-                            retry: RetryPolicy::AtMostOnce,
-                            ..ActionContract::default()
-                        });
-                        if destructive {
-                            spec = spec.destructive();
-                        }
-                        resource.actions.push(spec);
-                    };
-                if availability.policy == crate::model::AvailabilityPolicy::Automatic {
-                    availability_command(
-                        "keep-offline",
-                        t("files-keep-offline"),
-                        "keep-offline",
-                        false,
-                    );
-                }
-                if availability.policy == crate::model::AvailabilityPolicy::Pinned
-                    && !availability.policy_inherited
-                {
-                    availability_command(
-                        "automatic-storage",
-                        t("files-use-automatic-storage"),
-                        "automatic-storage",
-                        false,
-                    );
-                }
-                let releasable = !entry.is_dir
-                    && availability.policy == crate::model::AvailabilityPolicy::Automatic
-                    && !availability.policy_inherited
-                    && availability.transfer.phase == crate::model::TransferPhase::Idle
-                    && matches!(
-                        availability.residency,
-                        crate::model::Residency::Partial { .. }
-                            | crate::model::Residency::Resident { .. }
-                    );
-                if releasable {
-                    availability_command(
-                        "free-local-space",
-                        t("files-free-local-space"),
-                        "free-local-space",
-                        false,
-                    );
-                }
-                let retryable = !matches!(
-                    availability.residency,
-                    crate::model::Residency::Resident { .. }
-                ) && availability.transfer.phase
-                    == crate::model::TransferPhase::Idle;
-                if retryable {
-                    availability_command(
-                        "retry-download",
-                        t("files-retry-download"),
-                        "retry-transfer",
-                        false,
-                    );
-                }
-            }
-            if entry.record_id.is_some() {
-                resource.actions.push(
-                    ActionSpec::operation(
-                        "share-link",
-                        "Create one-time share link",
-                        OperationKind::Effect,
-                        "files.share-link",
-                        &resource_id,
-                    )
-                    .expect("share path is serializable")
-                    .execution(ExecutionMode::Background { cancellable: false })
-                    .returns(ResultSpec::Job),
-                );
-            }
-            folder.children.push(resource);
-        }
-        vec![folder]
-    }
-
-    fn action_directory_resource_page(
-        &self,
-        _doc: &automerge::AutoCommit,
-        cursor: &[u8],
-        max_results: usize,
-    ) -> Option<ui::widget::ActionDirectoryResourcePage> {
-        Some(ui::widget::ActionDirectoryResourcePage {
-            resources: (cursor.is_empty() && max_results > 0)
-                .then(|| self.action_directory_folder_root())
-                .into_iter()
-                .collect(),
-            next_cursor: Vec::new(),
-            exhausted: true,
-        })
-    }
-
-    /// Materialise an exact search-addressed row only when the action host is
-    /// about to resolve it. This keeps the open resource tree bounded to the
-    /// actual folder while preserving canonical action equivalence for Places,
-    /// remote accounts, and late collaborative records.
-    fn resource(&self, doc: &automerge::AutoCommit, id: &str) -> Option<Resource> {
-        (id == crate::search_provider::folder_resource_id(&self.current_path))
-            .then(|| self.action_directory_folder_root())
-            .or_else(|| {
-                self.entries
-                    .iter()
-                    .find(|entry| Self::entry_resource_id(entry) == id)
-                    .map(|entry| self.entry_resource(entry))
-            })
-            .or_else(|| {
-                self.places_search
-                    .resource(id)
-                    .or_else(|| self.collaborative_search.resource(id))
-                    .or_else(|| self.remote_accounts_search.resource(id))
-            })
-            .or_else(|| {
-                self.error.is_some().then(|| {
-                    self.state_retry
-                        .resources(doc)
-                        .into_iter()
-                        .find(|resource| resource.id.as_str() == id)
-                })?
-            })
     }
 
     #[allow(
@@ -8413,17 +8000,6 @@ impl Widget for FileExplorerWidget {
         v
     }
 
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        if let Some(invocation) = self.app_chooser.take_control_invocation() {
-            return Some(invocation);
-        }
-        self.state_retry.take_control_invocation().or_else(|| {
-            self.children_mut()
-                .into_iter()
-                .find_map(Widget::take_control_invocation)
-        })
-    }
-
     fn name(&self) -> &'static str {
         "FileExplorerWidget"
     }
@@ -8571,6 +8147,438 @@ impl Widget for FileExplorerWidget {
             return false;
         }
         false
+    }
+}
+
+impl ui::resources::PublishesResources for FileExplorerWidget {
+    #[allow(
+        clippy::expect_used,
+        reason = "JSON serialization of owned strings and static command payloads is infallible"
+    )]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the resource catalogue mirrors the folder/entry protocol in one auditable tree; splitting it would separate action contracts from their resources"
+    )]
+    fn resources(&self, doc: &automerge::AutoCommit) -> Vec<Resource> {
+        let mut folder = self.action_directory_folder_root();
+        // The recovery affordance is a real action resource, not a painted
+        // click region. Publish it only while its error surface is visible,
+        // where its deterministic Refresh effect is meaningful.
+        if self.error.is_some() {
+            folder.children.extend(self.state_retry.resources(doc));
+        }
+        if !self.is_trash_view()
+            && let Some(template_dir) = templates::templates_dir()
+        {
+            // Each resource is an existing regular template, not an arbitrary
+            // local source path supplied by a caller. Invocation rechecks this
+            // bounded catalogue before copying, so a stale action cannot turn
+            // into an ambient file-read capability.
+            for template in templates::list_templates(&template_dir) {
+                let template_path = template.to_string_lossy().into_owned();
+                let template_id = template_resource_id(&template_path);
+                let mut template_resource = Resource::new(
+                    template_id.clone(),
+                    "files.template",
+                    templates::menu_label(&template),
+                );
+                template_resource.actions.push(
+                    ActionSpec::operation(
+                        "create",
+                        templates::menu_label(&template),
+                        OperationKind::Effect,
+                        "files.new-from-template",
+                        &template_id,
+                    )
+                    .expect("template path is serializable")
+                    .with_contract(ActionContract {
+                        availability: if self.current_path.is_dir() {
+                            Availability::Available
+                        } else {
+                            Availability::Unavailable {
+                                code: "location_unavailable".into(),
+                                reason: "The current location cannot contain a new file".into(),
+                            }
+                        },
+                        permission: PermissionRequirement::Write,
+                        retry: RetryPolicy::AtMostOnce,
+                        ..ActionContract::default()
+                    }),
+                );
+                folder.children.push(template_resource);
+            }
+        }
+        // Search, the sidebar, assistive technology and headless agents all
+        // address the same View operation for a place. These children are not
+        // limited to the currently visible directory.
+        for favorite in &self.favs.borrow().favorites {
+            let resource_id = crate::search_provider::place_resource_id(&favorite.path);
+            let resource =
+                Resource::new(resource_id.clone(), "files.place", favorite.label.clone())
+                    .with_action(
+                        ActionSpec::operation(
+                            crate::search_provider::OPEN_ACTION,
+                            "Open",
+                            OperationKind::View,
+                            "files.open",
+                            &resource_id,
+                        )
+                        .expect("place path is serializable")
+                        .with_contract(ActionContract::view()),
+                    );
+            folder.children.push(resource);
+        }
+        // External file accounts are the folders the storage daemon's cloud
+        // service mounts under `~/Remote`. Files never talks to the server or
+        // opens the vault: it opens the folder like any other place and shows
+        // the account's reported health as a badge.
+        for account in self.remote_account_snapshot() {
+            let resource_id = crate::remote_accounts::resource_id(&account.id);
+            let availability = remote_folder_availability(&account);
+            let mut resource =
+                Resource::new(resource_id, "files.remote-account", account.label.clone());
+            resource.presentation = Some(tilo_actions::ResourcePresentation {
+                detail: Some(format!("{} · {}", account.kind.label(), account.host)),
+                badge: account.health.badge().map(str::to_owned),
+                preview: None,
+            });
+            let open_payload = vec!["open".to_string(), account.id.to_string()];
+            resource.actions.push(
+                ActionSpec::operation(
+                    crate::search_provider::REMOTE_ACCOUNT_OPEN_ACTION,
+                    "Open",
+                    OperationKind::View,
+                    "files.remote-account",
+                    &open_payload,
+                )
+                .expect("remote account open payload is serializable")
+                .with_contract(ActionContract {
+                    availability,
+                    ..ActionContract::view()
+                }),
+            );
+            let details_payload = vec!["details".to_string(), account.id.to_string()];
+            resource.actions.push(
+                ActionSpec::operation(
+                    "details",
+                    "Show account status",
+                    OperationKind::View,
+                    "files.remote-account",
+                    &details_payload,
+                )
+                .expect("remote account detail payload is serializable")
+                .with_contract(ActionContract::view()),
+            );
+            let reauth_payload = vec!["reauthenticate".to_string(), account.id.to_string()];
+            resource.actions.push(
+                ActionSpec::operation(
+                    "reauthenticate",
+                    "How to sign in again",
+                    OperationKind::View,
+                    "files.remote-account",
+                    &reauth_payload,
+                )
+                .expect("remote account reauthentication payload is serializable")
+                .with_contract(ActionContract::view()),
+            );
+            folder.children.push(resource);
+        }
+        // Keep the context catalogue bounded. The visible directory can still
+        // paint every loaded row; only the cross-process resource projection is
+        // capped, and `resource(id)` below resolves any exact row lazily.
+        for entry in self.entries.iter().take(MAX_EAGER_ENTRY_RESOURCES) {
+            let resource_id = Self::entry_resource_id(entry);
+            let record_id = entry.record_id.map(uuid::Uuid::from_bytes);
+            let mut resource = Resource::new(
+                resource_id.clone(),
+                if record_id.is_some() {
+                    "files.record"
+                } else {
+                    "files.entry"
+                },
+                entry.name.clone(),
+            );
+            if let Some(record_id) = record_id {
+                resource.actions.push(
+                    ActionSpec::operation(
+                        crate::search_provider::REVEAL_ACTION,
+                        t("files-action-reveal"),
+                        OperationKind::View,
+                        "files.reveal-record",
+                        &record_id.to_string(),
+                    )
+                    .expect("record id is serializable")
+                    .with_contract(ActionContract::view()),
+                );
+            }
+            if let Ok(spec) = ActionSpec::operation(
+                "open",
+                t("files-menu-open"),
+                OperationKind::View,
+                "files.open",
+                &resource_id,
+            ) {
+                resource
+                    .actions
+                    .push(spec.with_contract(ActionContract::view()));
+            }
+            self.append_open_with_actions(entry, &resource_id, &mut resource);
+            if !self.is_trash_view() {
+                let rename_resource_id = resource_id.clone();
+                resource.actions.push(
+                    ActionSpec::prompted_operation(
+                        "rename",
+                        t("files-menu-rename"),
+                        t("files-action-rename-prompt"),
+                        &entry.name,
+                        OperationKind::Effect,
+                        "files.rename",
+                        move |name| {
+                            EncodedAction::encode_operation(
+                                "files.rename",
+                                &vec![rename_resource_id.as_str(), name],
+                            )
+                            .expect("rename payload is serializable")
+                        },
+                    )
+                    .with_contract(ActionContract {
+                        permission: PermissionRequirement::Write,
+                        retry: RetryPolicy::AtMostOnce,
+                        // The FUSE/host filesystem owns durable history. This
+                        // external effect has no Tilo action inverse, so never
+                        // advertise an undo boundary we cannot honor.
+                        ..ActionContract::default()
+                    }),
+                );
+            }
+            let mut entry_commands: Vec<(&str, String, &str, bool)> = if self.is_trash_view() {
+                vec![
+                    ("restore", t("files-menu-restore"), "restore", false),
+                    (
+                        "delete-permanently",
+                        t("files-menu-delete-permanently"),
+                        "purge",
+                        true,
+                    ),
+                    (
+                        "properties",
+                        t("files-menu-properties"),
+                        "properties",
+                        false,
+                    ),
+                ]
+            } else {
+                vec![
+                    ("copy", t("files-menu-copy"), "copy", false),
+                    ("cut", t("files-menu-cut"), "cut", false),
+                    ("trash", t("files-menu-move-trash"), "trash", true),
+                    (
+                        "properties",
+                        t("files-menu-properties"),
+                        "properties",
+                        false,
+                    ),
+                    ("sharing", t("files-sharing-access"), "sharing", false),
+                    ("history", t("files-version-history"), "history", false),
+                ]
+            };
+            if !self.is_trash_view() {
+                entry_commands.push(("compress", t("files-archive-compress"), "compress", false));
+                if crate::archive::is_supported(&entry.path) {
+                    entry_commands.push((
+                        "extract",
+                        t("files-archive-extract-here"),
+                        "extract",
+                        false,
+                    ));
+                }
+            }
+            for (id, label, verb, destructive) in entry_commands {
+                let mut spec = ActionSpec::operation(
+                    id,
+                    label,
+                    if matches!(verb, "properties" | "sharing" | "history") {
+                        OperationKind::View
+                    } else {
+                        OperationKind::Effect
+                    },
+                    "files.entry-command",
+                    &vec![verb.to_string(), resource_id.clone()],
+                )
+                .expect("entry command is serializable");
+                if destructive {
+                    spec = spec.destructive();
+                }
+                resource.actions.push(spec);
+            }
+            if let Some(availability) = entry.availability.as_ref() {
+                resource.actions.push(
+                    ActionSpec::operation(
+                        "availability",
+                        t("files-availability-title-short"),
+                        OperationKind::View,
+                        "files.entry-command",
+                        &vec!["availability".to_string(), resource_id.clone()],
+                    )
+                    .expect("availability payload is serializable")
+                    .with_contract(ActionContract::view()),
+                );
+                let mut availability_command =
+                    |id: &str, label: String, verb: &str, destructive: bool| {
+                        let mut spec = ActionSpec::operation(
+                            id,
+                            label,
+                            OperationKind::Effect,
+                            "files.entry-command",
+                            &vec![verb.to_string(), resource_id.clone()],
+                        )
+                        .expect("availability command payload is serializable")
+                        .with_contract(ActionContract {
+                            permission: PermissionRequirement::Write,
+                            retry: RetryPolicy::AtMostOnce,
+                            ..ActionContract::default()
+                        });
+                        if destructive {
+                            spec = spec.destructive();
+                        }
+                        resource.actions.push(spec);
+                    };
+                if availability.policy == crate::model::AvailabilityPolicy::Automatic {
+                    availability_command(
+                        "keep-offline",
+                        t("files-keep-offline"),
+                        "keep-offline",
+                        false,
+                    );
+                }
+                if availability.policy == crate::model::AvailabilityPolicy::Pinned
+                    && !availability.policy_inherited
+                {
+                    availability_command(
+                        "automatic-storage",
+                        t("files-use-automatic-storage"),
+                        "automatic-storage",
+                        false,
+                    );
+                }
+                let releasable = !entry.is_dir
+                    && availability.policy == crate::model::AvailabilityPolicy::Automatic
+                    && !availability.policy_inherited
+                    && availability.transfer.phase == crate::model::TransferPhase::Idle
+                    && matches!(
+                        availability.residency,
+                        crate::model::Residency::Partial { .. }
+                            | crate::model::Residency::Resident { .. }
+                    );
+                if releasable {
+                    availability_command(
+                        "free-local-space",
+                        t("files-free-local-space"),
+                        "free-local-space",
+                        false,
+                    );
+                }
+                let retryable = !matches!(
+                    availability.residency,
+                    crate::model::Residency::Resident { .. }
+                ) && availability.transfer.phase
+                    == crate::model::TransferPhase::Idle;
+                if retryable {
+                    availability_command(
+                        "retry-download",
+                        t("files-retry-download"),
+                        "retry-transfer",
+                        false,
+                    );
+                }
+            }
+            if entry.record_id.is_some() {
+                resource.actions.push(
+                    ActionSpec::operation(
+                        "share-link",
+                        "Create one-time share link",
+                        OperationKind::Effect,
+                        "files.share-link",
+                        &resource_id,
+                    )
+                    .expect("share path is serializable")
+                    .execution(ExecutionMode::Background { cancellable: false })
+                    .returns(ResultSpec::Job),
+                );
+            }
+            folder.children.push(resource);
+        }
+        vec![folder]
+    }
+    fn action_directory_resource_page(
+        &self,
+        _doc: &automerge::AutoCommit,
+        cursor: &[u8],
+        max_results: usize,
+    ) -> Option<ui::widget::ActionDirectoryResourcePage> {
+        Some(ui::widget::ActionDirectoryResourcePage {
+            resources: (cursor.is_empty() && max_results > 0)
+                .then(|| self.action_directory_folder_root())
+                .into_iter()
+                .collect(),
+            next_cursor: Vec::new(),
+            exhausted: true,
+        })
+    }
+    /// Materialise an exact search-addressed row only when the action host is
+    /// about to resolve it. This keeps the open resource tree bounded to the
+    /// actual folder while preserving canonical action equivalence for Places,
+    /// remote accounts, and late collaborative records.
+    fn resource(&self, doc: &automerge::AutoCommit, id: &str) -> Option<Resource> {
+        (id == crate::search_provider::folder_resource_id(&self.current_path))
+            .then(|| self.action_directory_folder_root())
+            .or_else(|| {
+                self.entries
+                    .iter()
+                    .find(|entry| Self::entry_resource_id(entry) == id)
+                    .map(|entry| self.entry_resource(entry))
+            })
+            .or_else(|| {
+                self.places_search
+                    .resource(id)
+                    .or_else(|| self.collaborative_search.resource(id))
+                    .or_else(|| self.remote_accounts_search.resource(id))
+            })
+            .or_else(|| {
+                self.error.is_some().then(|| {
+                    self.state_retry
+                        .resources(doc)
+                        .into_iter()
+                        .find(|resource| resource.id.as_str() == id)
+                })?
+            })
+    }
+}
+
+impl ui::widget::controls::ActionControls for FileExplorerWidget {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        if let Some(invocation) = self.app_chooser.take_control_invocation() {
+            return Some(invocation);
+        }
+        self.state_retry.take_control_invocation().or_else(|| {
+            self.children_mut()
+                .into_iter()
+                .find_map(ui::widget::controls::take_control_invocation)
+        })
+    }
+    fn has_action_control_bindings(&self) -> bool {
+        self.has_action_control_bindings_impl()
+    }
+}
+
+impl ui::history_mode::capability::DocumentHistory for FileExplorerWidget {
+    fn history_registration(
+        &self,
+    ) -> Result<
+        Option<ui::history_mode::HistoryRegistration>,
+        ui::history_mode::HistoryRegistrationError,
+    > {
+        self.history_registration_impl()
     }
 }
 

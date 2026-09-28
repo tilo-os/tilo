@@ -2430,42 +2430,11 @@ impl TerminalWidget {
 }
 
 impl Widget for TerminalWidget {
-    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
-        self.gesture_effects.pop_front().or_else(|| {
-            self.menu_effects
-                .values_mut()
-                .find_map(ui::widget::ActionEmitter::take)
-        })
-    }
-
-    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
-        let mut bindings = ui::widget::semantic_action_bindings(self.accessibility());
-        for (index, emitter) in &self.menu_effects {
-            let id = format!("terminal.menu:{}:{index}", self.pane_id);
-            bindings.retain(|binding| binding.control_id != id);
-            bindings.push(emitter.metadata(id));
-        }
-        bindings
-    }
-
-    fn refresh_control_action_availability(
-        &mut self,
-        allowed: &std::collections::HashSet<ui::tilo_actions::ActionAddress>,
-    ) {
-        self.allowed_menu_actions = Some(allowed.clone());
-        let mut availability = Vec::with_capacity(self.menu_effects.len());
-        for (index, emitter) in &mut self.menu_effects {
-            emitter.refresh_availability(allowed);
-            availability.push((*index, emitter.is_available()));
-        }
-        for (index, available) in availability {
-            self.context_menu.set_item_enabled(index, available);
-        }
-    }
-
-    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
-        Some(&crate::framework_history::HISTORY)
-    }
+    ui::provides!(
+        dyn ui::history_mode::capability::DocumentHistory,
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::resources::PublishesResources
+    );
 
     fn test_id(&self) -> Option<&str> {
         Some("terminal")
@@ -2479,58 +2448,6 @@ impl Widget for TerminalWidget {
             "terminal.control",
             "terminal.open-link",
         ]
-    }
-
-    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
-        vec![self.session_resource()]
-    }
-
-    fn action_directory_resource_page(
-        &self,
-        _doc: &AutoCommit,
-        cursor: &[u8],
-        max_results: usize,
-    ) -> Option<ui::widget::ActionDirectoryResourcePage> {
-        let resources = (cursor.is_empty() && max_results > 0)
-            .then(|| self.session_resource())
-            .into_iter()
-            .collect();
-        Some(ui::widget::ActionDirectoryResourcePage {
-            resources,
-            next_cursor: Vec::new(),
-            exhausted: true,
-        })
-    }
-
-    fn action_directory_revision(&self, _doc: &AutoCommit) -> Option<String> {
-        use std::hash::{Hash, Hasher};
-
-        let mut revision = std::collections::hash_map::DefaultHasher::new();
-        self.pane_id.hash(&mut revision);
-        self.title.hash(&mut revision);
-        self.grid.len().hash(&mut revision);
-        self.current_visible_rows().hash(&mut revision);
-        self.scroll_offset.hash(&mut revision);
-        self.is_disconnected().hash(&mut revision);
-        for link_id in self.visible_link_ids() {
-            link_id.hash(&mut revision);
-            self.links.get(&link_id).hash(&mut revision);
-        }
-        Some(format!("{:016x}", revision.finish()))
-    }
-
-    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<Resource> {
-        if id == self.terminal_resource_id() {
-            return Some(self.session_resource());
-        }
-        if id == self.terminal_transcript_target() {
-            return Some(self.transcript_resource());
-        }
-        let prefix = format!("terminal.link:{}:", self.pane_id);
-        let link_id = id.strip_prefix(&prefix)?.parse::<u16>().ok()?;
-        self.links
-            .get(&link_id)
-            .map(|url| self.link_resource(link_id, url))
     }
 
     fn start_operation(
@@ -3289,6 +3206,96 @@ impl Widget for TerminalWidget {
                 }
             }
         }
+    }
+}
+
+impl ui::resources::PublishesResources for TerminalWidget {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
+        vec![self.session_resource()]
+    }
+    fn action_directory_resource_page(
+        &self,
+        _doc: &AutoCommit,
+        cursor: &[u8],
+        max_results: usize,
+    ) -> Option<ui::widget::ActionDirectoryResourcePage> {
+        let resources = (cursor.is_empty() && max_results > 0)
+            .then(|| self.session_resource())
+            .into_iter()
+            .collect();
+        Some(ui::widget::ActionDirectoryResourcePage {
+            resources,
+            next_cursor: Vec::new(),
+            exhausted: true,
+        })
+    }
+    fn action_directory_revision(&self, _doc: &AutoCommit) -> Option<String> {
+        use std::hash::{Hash, Hasher};
+
+        let mut revision = std::collections::hash_map::DefaultHasher::new();
+        self.pane_id.hash(&mut revision);
+        self.title.hash(&mut revision);
+        self.grid.len().hash(&mut revision);
+        self.current_visible_rows().hash(&mut revision);
+        self.scroll_offset.hash(&mut revision);
+        self.is_disconnected().hash(&mut revision);
+        for link_id in self.visible_link_ids() {
+            link_id.hash(&mut revision);
+            self.links.get(&link_id).hash(&mut revision);
+        }
+        Some(format!("{:016x}", revision.finish()))
+    }
+    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<Resource> {
+        if id == self.terminal_resource_id() {
+            return Some(self.session_resource());
+        }
+        if id == self.terminal_transcript_target() {
+            return Some(self.transcript_resource());
+        }
+        let prefix = format!("terminal.link:{}:", self.pane_id);
+        let link_id = id.strip_prefix(&prefix)?.parse::<u16>().ok()?;
+        self.links
+            .get(&link_id)
+            .map(|url| self.link_resource(link_id, url))
+    }
+}
+
+impl ui::widget::controls::ActionControls for TerminalWidget {
+    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
+        self.gesture_effects.pop_front().or_else(|| {
+            self.menu_effects
+                .values_mut()
+                .find_map(ui::widget::ActionEmitter::take)
+        })
+    }
+    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
+        let mut bindings = ui::widget::semantic_action_bindings(self.accessibility());
+        for (index, emitter) in &self.menu_effects {
+            let id = format!("terminal.menu:{}:{index}", self.pane_id);
+            bindings.retain(|binding| binding.control_id != id);
+            bindings.push(emitter.metadata(id));
+        }
+        bindings
+    }
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<ui::tilo_actions::ActionAddress>,
+    ) {
+        self.allowed_menu_actions = Some(allowed.clone());
+        let mut availability = Vec::with_capacity(self.menu_effects.len());
+        for (index, emitter) in &mut self.menu_effects {
+            emitter.refresh_availability(allowed);
+            availability.push((*index, emitter.is_available()));
+        }
+        for (index, available) in availability {
+            self.context_menu.set_item_enabled(index, available);
+        }
+    }
+}
+
+impl ui::history_mode::capability::DocumentHistory for TerminalWidget {
+    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
+        Some(&crate::framework_history::HISTORY)
     }
 }
 

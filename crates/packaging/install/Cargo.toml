@@ -17,6 +17,7 @@ name = "install"
 path = "src/lib.rs"
 
 [dependencies]
+tilo-clock = { path = "../../system/tilo-clock" }
 fnv.workspace = true
 xdg-paths = { path = "../../system/xdg-paths" }
 tilo-app-package = { path = "../tilo-app-package" }

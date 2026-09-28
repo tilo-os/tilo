@@ -1002,7 +1002,11 @@ mod tests {
                 )
             },
         );
-        view.install_control_custody(&domain, CustodyAttachment::Initial);
+        crate::widget::controls::install_control_custody(
+            &mut view,
+            &domain,
+            CustodyAttachment::Initial,
+        );
         let (lease, saved) = domain.suspend();
         assert!(saved.is_empty());
         let mut doc = automerge::AutoCommit::new();
@@ -1052,7 +1056,11 @@ mod lifecycle_tests {
                 Box::new(crate::widget::Text::new("passive"))
             },
         );
-        model.install_control_custody(&domain, CustodyAttachment::Initial);
+        crate::widget::controls::install_control_custody(
+            &mut model,
+            &domain,
+            CustodyAttachment::Initial,
+        );
         let c = domain.producer(ControlProducerDiscipline::ReplaceOne);
         let mut doc = automerge::AutoCommit::new();
         for revision in 0..128 {

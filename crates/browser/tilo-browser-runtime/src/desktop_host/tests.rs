@@ -161,7 +161,7 @@ fn workspace_activity_actions_are_local_and_select_empty_workspaces() {
         .borrow_mut()
         .workspaces
         .push(Workspace::new(other, "Work"));
-    let actions = root.caller_view_resources(&AutoCommit::new());
+    let actions = ui::resources::caller_view_resources(&root, &AutoCommit::new());
     assert!(actions.iter().any(|r| r.id.0 == RESOURCE_ID));
     let mut doc = AutoCommit::new();
     for view in [
@@ -235,7 +235,11 @@ fn workspace_activity_capture_never_settles_pending_edits_and_filters_stale_owne
     writer.store.with(&writer.checkout.id, |doc| {
         doc.commit();
     });
-    assert!(capture_records(&required, &owners)[0].document.is_some());
+    assert!(
+        capture_records(&required, &owners, "author")[0]
+            .document
+            .is_some()
+    );
     writer.store.with(&writer.checkout.id, |doc| {
         doc.put(automerge::ROOT, "pending-history-test", "unfinished")
             .unwrap();
@@ -249,7 +253,11 @@ fn workspace_activity_capture_never_settles_pending_edits_and_filters_stale_owne
     assert!(pending.0 > 0);
     let generation = writer.store.action_generation(&writer.checkout.id).unwrap();
     let writes = storage.pending_writes().len();
-    assert!(capture_records(&required, &owners)[0].document.is_none());
+    assert!(
+        capture_records(&required, &owners, "author")[0]
+            .document
+            .is_none()
+    );
     assert_eq!(
         writer
             .store
@@ -266,14 +274,18 @@ fn workspace_activity_capture_never_settles_pending_edits_and_filters_stale_owne
     );
     assert_eq!(storage.pending_writes().len(), writes);
     assert!(
-        capture_records(&[], &owners).is_empty(),
+        capture_records(&[], &owners, "author").is_empty(),
         "obsolete owners cannot enter a newer admission"
     );
     let missing = vec![desktop::Requirement {
         app_id: writer.app.clone(),
         record_id: ui::record::RecordId::for_tab(98765).as_str().into(),
     }];
-    assert!(capture_records(&missing, &owners)[0].document.is_none());
+    assert!(
+        capture_records(&missing, &owners, "author")[0]
+            .document
+            .is_none()
+    );
 }
 
 #[test]

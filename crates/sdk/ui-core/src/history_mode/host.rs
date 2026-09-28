@@ -507,7 +507,7 @@ impl HistoryHost {
                 .into_iter()
                 .map(|error| format!("document capture refused: {error}")),
         );
-        while let Some(invocation) = live.take_control_invocation() {
+        while let Some(invocation) = crate::widget::controls::take_control_invocation(live) {
             let (origin, witness) = match self.enclosing_owner.clone() {
                 Some(owner) => match &owner.0 {
                     super::owner::OwnerKind::Component(binding) => {
@@ -590,7 +590,7 @@ impl HistoryHost {
     pub(crate) fn discard_pending_output(&mut self, live: &mut dyn Widget) {
         let _ = crate::bound_dispatch::drain_control_invocations(live);
         crate::bound_dispatch::legacy_document::discard_legacy_controls(live);
-        while live.take_control_invocation().is_some() {}
+        while crate::widget::controls::take_control_invocation(live).is_some() {}
         // Entry observed these exact queues even if mutable traversal failed.
         // Clear after every take: a component's fallback take may transfer a
         // request into its binding queue while returning None. Neither the

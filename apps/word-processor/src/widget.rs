@@ -10172,66 +10172,16 @@ impl Widget for WordProcessorWidget {
     ui::provides!(
         dyn ui::collaboration::participants::Participants,
         dyn ui::undo::CommittedActions,
-        dyn ui::undo::LocalUndo
+        dyn ui::undo::LocalUndo,
+        dyn ui::history_mode::capability::DocumentHistory,
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::resources::PublishesResources
     );
-
-    fn action_directory_invocation_domain(
-        &self,
-        _doc: &AutoCommit,
-    ) -> ui::widget::ActionDirectoryInvocationDomain {
-        // A file-choice-only surface has one immutable, privately retained offer.
-        // Ordinary Writer also offers place-image; its replaceable process blob
-        // resolver has no inert identity yet, so the whole domain stays unknown.
-        self.file_choice.as_ref().map_or(
-            ui::widget::ActionDirectoryInvocationDomain::Unsupported,
-            |offer| offer.continuation_domain,
-        )
-    }
 
     fn semantic_readers(&self) -> &'static [ui::semantic_document_read::RegisteredSemanticReader] {
         &crate::semantic_read::action::READERS
     }
 
-    fn install_control_custody(
-        &mut self,
-        domain: &ui::ControlDomain,
-        attachment: ui::control_custody::CustodyAttachment,
-    ) {
-        self.file_choice_domain = Some(domain.clone());
-        if let Some(offer) = &mut self.file_choice {
-            offer.install_custody(domain, attachment);
-        }
-        for child in self.children_mut() {
-            child.install_control_custody(domain, attachment);
-        }
-    }
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        if let Some(offer) = &mut self.file_choice {
-            return offer.take();
-        }
-        self.children_mut()
-            .into_iter()
-            .find_map(Widget::take_control_invocation)
-    }
-    fn refresh_control_action_availability(
-        &mut self,
-        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
-    ) {
-        if let Some(offer) = &mut self.file_choice {
-            offer.refresh(allowed);
-        }
-        for child in self.children_mut() {
-            child.refresh_control_action_availability(allowed);
-        }
-    }
-    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
-        if let Some(offer) = &self.file_choice {
-            return offer.bindings();
-        }
-        let mut bindings = ui::widget::semantic_action_bindings(self.accessibility());
-        self.for_each_child(&mut |child| bindings.extend(child.control_action_bindings()));
-        bindings
-    }
     fn unsaved_documents(&self, doc: &AutoCommit) -> Vec<ui::close_admission::UnsavedDocument> {
         // A canonical or hosted document is saved as it is edited.
         if self.canonical || self.hosted() {
@@ -11179,12 +11129,6 @@ impl Widget for WordProcessorWidget {
         "WordProcessor"
     }
 
-    /// The version strip under the page is this document's History; the
-    /// shared standalone control would be a second, weaker copy of it.
-    fn provides_document_history(&self) -> bool {
-        true
-    }
-
     /// The word processor's local accessibility semantics: the editable
     /// `Role::Document` root. Blocks render directly, not as child widgets, so
     /// the full subtree comes from [`WordProcessorWidget::accessibility_tree`]
@@ -11411,6 +11355,21 @@ impl Widget for WordProcessorWidget {
     fn take_action_palette_request(&mut self) -> Option<tilo_actions::ActionAddress> {
         self.action_palette_request.take()
     }
+    fn needs_redraw(&self) -> bool {
+        self.lifecycle.dirty
+    }
+    fn mark_drawn(&mut self) {
+        self.lifecycle.dirty = false;
+    }
+    /// One self-drawn taffy leaf filling its tile: its size follows the
+    /// parent alone, so only the first layout is a size change. Pages,
+    /// toolbars and panels are positioned inside `self.rect` by hand.
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == Rect::ZERO
+    }
+}
+
+impl ui::resources::PublishesResources for WordProcessorWidget {
     /// Publish the resource tree Ctrl+K walks (delegates to the
     /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
     /// [`crate::actions`]).
@@ -11438,6 +11397,18 @@ impl Widget for WordProcessorWidget {
         }
         <Self as tilo_actions::ResourceProvider>::resources(self, doc)
     }
+    fn action_directory_invocation_domain(
+        &self,
+        _doc: &AutoCommit,
+    ) -> ui::widget::ActionDirectoryInvocationDomain {
+        // A file-choice-only surface has one immutable, privately retained offer.
+        // Ordinary Writer also offers place-image; its replaceable process blob
+        // resolver has no inert identity yet, so the whole domain stays unknown.
+        self.file_choice.as_ref().map_or(
+            ui::widget::ActionDirectoryInvocationDomain::Unsupported,
+            |offer| offer.continuation_domain,
+        )
+    }
     /// A delivered invocation's tree, rebuilt for its invoker's own view.
     fn resources_for(
         &self,
@@ -11445,7 +11416,7 @@ impl Widget for WordProcessorWidget {
         doc: &AutoCommit,
     ) -> Vec<tilo_actions::Resource> {
         match participant {
-            None => Widget::resources(self, doc),
+            None => ui::resources::resources(self, doc),
             Some(participant) => self.participant_resources(Some(participant), doc),
         }
     }
@@ -11468,21 +11439,62 @@ impl Widget for WordProcessorWidget {
             })
         }
         let Some(participant) = participant else {
-            return Widget::resource(self, doc, id);
+            return ui::resources::resource(self, doc, id);
         };
         find(self.participant_resources(Some(participant), doc), id)
     }
-    fn needs_redraw(&self) -> bool {
-        self.lifecycle.dirty
+}
+
+impl ui::widget::controls::ActionControls for WordProcessorWidget {
+    fn install_control_custody(
+        &mut self,
+        domain: &ui::ControlDomain,
+        attachment: ui::control_custody::CustodyAttachment,
+    ) {
+        self.file_choice_domain = Some(domain.clone());
+        if let Some(offer) = &mut self.file_choice {
+            offer.install_custody(domain, attachment);
+        }
+        for child in self.children_mut() {
+            ui::widget::controls::install_control_custody(child, domain, attachment);
+        }
     }
-    fn mark_drawn(&mut self) {
-        self.lifecycle.dirty = false;
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        if let Some(offer) = &mut self.file_choice {
+            return offer.take();
+        }
+        self.children_mut()
+            .into_iter()
+            .find_map(ui::widget::controls::take_control_invocation)
     }
-    /// One self-drawn taffy leaf filling its tile: its size follows the
-    /// parent alone, so only the first layout is a size change. Pages,
-    /// toolbars and panels are positioned inside `self.rect` by hand.
-    fn is_layout_dirty(&self) -> bool {
-        self.rect == Rect::ZERO
+    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
+        if let Some(offer) = &self.file_choice {
+            return offer.bindings();
+        }
+        let mut bindings = ui::widget::semantic_action_bindings(self.accessibility());
+        self.for_each_child(&mut |child| {
+            bindings.extend(ui::widget::controls::control_action_bindings(child));
+        });
+        bindings
+    }
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
+    ) {
+        if let Some(offer) = &mut self.file_choice {
+            offer.refresh(allowed);
+        }
+        for child in self.children_mut() {
+            ui::widget::controls::refresh_control_action_availability(child, allowed);
+        }
+    }
+}
+
+impl ui::history_mode::capability::DocumentHistory for WordProcessorWidget {
+    /// The version strip under the page is this document's History; the
+    /// shared standalone control would be a second, weaker copy of it.
+    fn provides_document_history(&self) -> bool {
+        true
     }
 }
 

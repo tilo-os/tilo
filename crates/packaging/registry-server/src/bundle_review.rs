@@ -398,7 +398,9 @@ pub fn inspect_bytes(
     match version.target.platform.as_str() {
         registry_types::TILO_OS_PLATFORM => check_native_target(version, &meta.manifest)?,
         registry_types::WEB_PLATFORM => check_web_target(version, &meta.manifest, bytes.len())?,
-        registry_types::WINDOWS_PLATFORM | registry_types::MACOS_PLATFORM => {
+        registry_types::LINUX_PLATFORM
+        | registry_types::WINDOWS_PLATFORM
+        | registry_types::MACOS_PLATFORM => {
             check_desktop_target(version, &meta.manifest, bytes.len())?;
         }
         _ => {
@@ -433,7 +435,7 @@ fn check_web_target(
     Ok(())
 }
 
-/// A Windows or macOS build is a self-contained executable: its signed
+/// A Linux, Windows or macOS build is a self-contained executable: its signed
 /// `[target]` names the version exactly, under the desktop size limit.
 fn check_desktop_target(
     version: &RegistryVersion,
@@ -779,12 +781,17 @@ mod tests {
         };
         assert!(inspect_bytes(&entry, &entry.versions[0], &bytes).is_ok());
 
-        let mut as_windows = entry.versions[0].clone();
-        as_windows.target.platform = registry_types::WINDOWS_PLATFORM.into();
-        assert!(matches!(
-            inspect_bytes(&entry, &as_windows, &bytes),
-            Err(BundleReviewError::TargetMismatch { .. })
-        ));
+        for other in [
+            registry_types::WINDOWS_PLATFORM,
+            registry_types::LINUX_PLATFORM,
+        ] {
+            let mut relabelled = entry.versions[0].clone();
+            relabelled.target.platform = other.into();
+            assert!(matches!(
+                inspect_bytes(&entry, &relabelled, &bytes),
+                Err(BundleReviewError::TargetMismatch { .. })
+            ));
+        }
         let mut as_intel = entry.versions[0].clone();
         as_intel.target.architecture = "x86_64".into();
         as_intel.target.isa = "x86_64".into();

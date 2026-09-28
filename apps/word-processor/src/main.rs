@@ -442,9 +442,7 @@ fn seed_revisions(state: &mut State, wp: &mut WordProcessorWidget) -> Result<(),
         .insert_str(&mut state.doc, "Revenue held steady through the quarter.");
     state.commit_action(None, None);
 
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs() as i64);
+    let now = tilo_clock::unix_now_i64();
     let base = now - 5 * 3600;
 
     // Session one: five more sentences, half a minute apart.

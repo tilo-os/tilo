@@ -191,14 +191,15 @@ impl App {
                 })
             })
             .collect();
-        self.document_history
-            .toolbar_mut()
-            .refresh_control_action_availability(&allowed);
+        crate::widget::controls::refresh_control_action_availability(
+            self.document_history.toolbar_mut(),
+            &allowed,
+        );
         if let Some(search) = self.document_history.search_mut() {
-            search.refresh_control_action_availability(&allowed);
+            crate::widget::controls::refresh_control_action_availability(search, &allowed);
         }
         if let Some(pane) = self.document_history.pane_mut() {
-            pane.refresh_control_action_availability(&allowed);
+            crate::widget::controls::refresh_control_action_availability(pane, &allowed);
         }
     }
 
@@ -393,20 +394,18 @@ impl App {
             return 0;
         }
         let mut pending = Vec::new();
-        while let Some(intent) = self
-            .document_history
-            .toolbar_mut()
-            .take_control_invocation()
+        while let Some(intent) =
+            crate::widget::controls::take_control_invocation(self.document_history.toolbar_mut())
         {
             pending.push(intent);
         }
         if let Some(search) = self.document_history.search_mut() {
-            while let Some(intent) = search.take_control_invocation() {
+            while let Some(intent) = crate::widget::controls::take_control_invocation(search) {
                 pending.push(intent);
             }
         }
         if let Some(pane) = self.document_history.pane_mut() {
-            while let Some(intent) = pane.take_control_invocation() {
+            while let Some(intent) = crate::widget::controls::take_control_invocation(pane) {
                 pending.push(intent);
             }
         }
@@ -420,14 +419,24 @@ impl App {
             let result = self
                 .invoke_history_address_local(&intent.address, Some(&argument))
                 .unwrap_or_else(|| Err(tilo_actions::DoorError::Unknown(intent.address.clone())));
-            self.document_history
-                .toolbar_mut()
-                .on_control_invocation_result(&intent.address, &result);
+            crate::widget::controls::on_control_invocation_result(
+                self.document_history.toolbar_mut(),
+                &intent.address,
+                &result,
+            );
             if let Some(search) = self.document_history.search_mut() {
-                search.on_control_invocation_result(&intent.address, &result);
+                crate::widget::controls::on_control_invocation_result(
+                    search,
+                    &intent.address,
+                    &result,
+                );
             }
             if let Some(pane) = self.document_history.pane_mut() {
-                pane.on_control_invocation_result(&intent.address, &result);
+                crate::widget::controls::on_control_invocation_result(
+                    pane,
+                    &intent.address,
+                    &result,
+                );
             }
             if result.is_ok() {
                 count = count.saturating_add(1);
@@ -856,7 +865,7 @@ impl App {
         // surface and custody. The standalone adapter serves unregistered roots.
         if self.history.is_some()
             || crate::history_mode::embedded::has_surfaces(self.root_widget.as_ref())
-            || self.root_widget.provides_document_history()
+            || crate::history_mode::capability::provides_document_history(self.root_widget.as_ref())
         {
             return;
         }

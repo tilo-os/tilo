@@ -497,6 +497,8 @@ impl Leaf {
     }
 }
 impl Widget for Leaf {
+    tilo_ui::provides!(dyn tilo_ui::resources::PublishesResources);
+
     fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
         let (doc, _) = tilo_ui::doc::document(doc, path);
         self.edit(doc, "sync");
@@ -614,14 +616,6 @@ impl Widget for Leaf {
         self.edit(doc, "synthetic-action");
         true
     }
-    fn resource(&self, doc: &AutoCommit, _: &str) -> Option<tilo_actions::Resource> {
-        assert_eq!(
-            doc.get(ROOT, "marker").unwrap().unwrap().0.as_str(),
-            Some(self.record.as_str())
-        );
-        self.capture("resource-resolve");
-        None
-    }
     #[allow(
         clippy::panic_in_result_fn,
         reason = "callback probe asserts its actual canonical record before returning the toolkit result"
@@ -680,6 +674,9 @@ impl Widget for Leaf {
                 })
         }
     }
+}
+
+impl tilo_ui::resources::PublishesResources for Leaf {
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
         assert_eq!(
             doc.get(ROOT, "marker").unwrap().unwrap().0.as_str(),
@@ -687,6 +684,14 @@ impl Widget for Leaf {
         );
         self.capture("resources");
         vec![]
+    }
+    fn resource(&self, doc: &AutoCommit, _: &str) -> Option<tilo_actions::Resource> {
+        assert_eq!(
+            doc.get(ROOT, "marker").unwrap().unwrap().0.as_str(),
+            Some(self.record.as_str())
+        );
+        self.capture("resource-resolve");
+        None
     }
 }
 impl Drop for Leaf {
@@ -713,6 +718,8 @@ impl Root {
     }
 }
 impl Widget for Root {
+    tilo_ui::provides!(dyn tilo_ui::widget::controls::ActionControls);
+
     fn record_intent(&self) -> Option<tilo_ui::record::RecordCheckout> {
         LEGACY_INTENT.with_borrow(Clone::clone)
     }
@@ -830,10 +837,6 @@ impl Widget for Root {
         );
         self.mark("external");
     }
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.mark("control-drain");
-        QUEUED_CONTROL.with_borrow_mut(Option::take)
-    }
     fn view_state(&self) -> Option<tilo_ui::view::ViewContribution> {
         assert!(!PANIC_VIEW.replace(false), "controlled capture unwind");
         self.mark("capture-view");
@@ -867,6 +870,13 @@ impl Widget for Root {
         } else {
             self.0.children_mut()
         }
+    }
+}
+
+impl tilo_ui::widget::controls::ActionControls for Root {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.mark("control-drain");
+        QUEUED_CONTROL.with_borrow_mut(Option::take)
     }
 }
 impl AppWidget for Root {
@@ -1276,7 +1286,9 @@ fn driver_tiles_route_root_callbacks_and_paint_with_current_permissions() {
                 Callback::Control => {
                     // A tile with its own document owner is drained through that
                     // owner's control custody, never by the generic outer drain.
-                    assert!(tile.take_control_invocation().is_none());
+                    assert!(
+                        tilo_ui::widget::controls::take_control_invocation(&mut tile).is_none()
+                    );
                     assert!(CAPTURES.with_borrow_mut(std::mem::take).is_empty());
                     continue;
                 }

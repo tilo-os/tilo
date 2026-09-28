@@ -1677,7 +1677,9 @@ impl FloatingSurfaceProvider for WindowGroup {
 impl Widget for WindowGroup {
     crate::provides!(
         dyn crate::widget::FloatingSurfaceProvider,
-        dyn crate::collaboration::participants::CollaborationTopology
+        dyn crate::collaboration::participants::CollaborationTopology,
+        dyn crate::history_mode::capability::FrameworkHistoryTopology,
+        dyn crate::widget::controls::ActionControls
     );
 
     fn keyboard_input_scope(&self) -> Option<crate::application::InstanceId> {
@@ -1719,11 +1721,6 @@ impl Widget for WindowGroup {
             .flat_map(|(_, host)| host.finish_admitted_close())
             .collect()
     }
-    fn has_pending_control_invocation(&self) -> bool {
-        self.hosts
-            .iter()
-            .any(|(_, host)| host.has_pending_control_invocation())
-    }
     #[allow(
         private_interfaces,
         reason = "finite toolkit resource ownership requests"
@@ -1736,22 +1733,6 @@ impl Widget for WindowGroup {
             request.visit(host)?;
         }
         Ok(())
-    }
-    fn visit_framework_history(
-        &self,
-        visitor: &mut dyn FnMut(&crate::history_mode::FrameworkHistorySurface, &dyn Widget),
-    ) {
-        for (_, host) in &self.hosts {
-            host.visit_framework_history(visitor);
-        }
-    }
-    fn visit_framework_history_mut(
-        &mut self,
-        visitor: &mut dyn FnMut(&mut crate::history_mode::FrameworkHistorySurface, &mut dyn Widget),
-    ) {
-        for (_, host) in &mut self.hosts {
-            host.visit_framework_history_mut(visitor);
-        }
     }
 
     // Modal capture and presentation polling follow visible content, never inactive tabs.
@@ -2255,6 +2236,33 @@ impl Widget for WindowGroup {
     }
 }
 
+impl crate::widget::controls::ActionControls for WindowGroup {
+    fn has_pending_control_invocation(&self) -> bool {
+        self.hosts
+            .iter()
+            .any(|(_, host)| host.has_pending_control_invocation())
+    }
+}
+
+impl crate::history_mode::capability::FrameworkHistoryTopology for WindowGroup {
+    fn visit_framework_history(
+        &self,
+        visitor: &mut dyn FnMut(&crate::history_mode::FrameworkHistorySurface, &dyn Widget),
+    ) {
+        for (_, host) in &self.hosts {
+            host.visit_framework_history(visitor);
+        }
+    }
+    fn visit_framework_history_mut(
+        &mut self,
+        visitor: &mut dyn FnMut(&mut crate::history_mode::FrameworkHistorySurface, &mut dyn Widget),
+    ) {
+        for (_, host) in &mut self.hosts {
+            host.visit_framework_history_mut(visitor);
+        }
+    }
+}
+
 impl crate::collaboration::participants::CollaborationTopology for WindowGroup {
     fn collaboration_children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         self.hosts
@@ -2374,6 +2382,11 @@ mod tests {
     }
 
     impl Widget for RetainedTraversalProbe {
+        crate::provides!(
+            dyn crate::history_mode::capability::FrameworkHistoryTopology,
+            dyn crate::widget::controls::ActionControls
+        );
+
         crate::testing::inert_widget_methods!(
             apply_layout,
             draw,
@@ -2395,21 +2408,6 @@ mod tests {
             self.hits.finish.set(self.hits.finish.get() + 1);
             vec![]
         }
-        fn has_pending_control_invocation(&self) -> bool {
-            self.pending_control
-        }
-        fn visit_framework_history(
-            &self,
-            _: &mut dyn FnMut(&crate::history_mode::FrameworkHistorySurface, &dyn Widget),
-        ) {
-            self.hits.history.set(self.hits.history.get() + 1);
-        }
-        fn visit_framework_history_mut(
-            &mut self,
-            _: &mut dyn FnMut(&mut crate::history_mode::FrameworkHistorySurface, &mut dyn Widget),
-        ) {
-            self.hits.history_mut.set(self.hits.history_mut.get() + 1);
-        }
         #[allow(
             private_interfaces,
             reason = "focused retained-owner traversal regression"
@@ -2430,6 +2428,27 @@ mod tests {
             _: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
             taffy.leaf_node(Style::default())
+        }
+    }
+
+    impl crate::widget::controls::ActionControls for RetainedTraversalProbe {
+        fn has_pending_control_invocation(&self) -> bool {
+            self.pending_control
+        }
+    }
+
+    impl crate::history_mode::capability::FrameworkHistoryTopology for RetainedTraversalProbe {
+        fn visit_framework_history(
+            &self,
+            _: &mut dyn FnMut(&crate::history_mode::FrameworkHistorySurface, &dyn Widget),
+        ) {
+            self.hits.history.set(self.hits.history.get() + 1);
+        }
+        fn visit_framework_history_mut(
+            &mut self,
+            _: &mut dyn FnMut(&mut crate::history_mode::FrameworkHistorySurface, &mut dyn Widget),
+        ) {
+            self.hits.history_mut.set(self.hits.history_mut.get() + 1);
         }
     }
 
@@ -2498,9 +2517,11 @@ mod tests {
         group.unsaved_documents(&doc);
         group.checkpoint_components();
         group.finish_admitted_close();
-        group.visit_framework_history(&mut |_, _| {});
-        group.visit_framework_history_mut(&mut |_, _| {});
-        assert!(group.has_pending_control_invocation());
+        crate::history_mode::capability::visit_framework_history(&group, &mut |_, _| {});
+        crate::history_mode::capability::visit_framework_history_mut(&mut group, &mut |_, _| {});
+        assert!(crate::widget::controls::has_pending_control_invocation(
+            &group
+        ));
         group
             .visit_resource_owners_mut(
                 &mut crate::bound_dispatch::legacy_document::ResourceRequest::Discard,

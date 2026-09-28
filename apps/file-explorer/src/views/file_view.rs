@@ -1335,10 +1335,7 @@ thread_local! {
 }
 
 impl Widget for FileView {
-    fn has_action_control_bindings(&self) -> bool {
-        // This custom-painted leaf exposes semantic actions, not ActionEmitters.
-        false
-    }
+    ui::provides!(dyn ui::widget::controls::ActionControls);
 
     fn is_layout_dirty(&self) -> bool {
         // Entries, mode and zoom are construction inputs: the host replaces
@@ -1685,6 +1682,13 @@ impl Widget for FileView {
             node = node.with_position(i + 1, self.entries.len());
         }
         Some(node)
+    }
+}
+
+impl ui::widget::controls::ActionControls for FileView {
+    fn has_action_control_bindings(&self) -> bool {
+        // This custom-painted leaf exposes semantic actions, not ActionEmitters.
+        false
     }
 }
 

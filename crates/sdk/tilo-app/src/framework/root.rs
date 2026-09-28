@@ -186,7 +186,7 @@ impl SearchProvider for ResourceSearch {
 // Everything else — layout, input, traversal, operation admission — is the
 // view's own, forwarded by the decorator.
 impl<R: Resource> Decorator for ResourceRoot<R> {
-    ui_core::provides!(dyn ui_core::undo::CommittedActions; inner = content);
+    ui_core::provides!(dyn ui_core::undo::CommittedActions, dyn ui_core::widget::controls::ActionControls, dyn ui_core::resources::PublishesResources; inner = content);
 
     type Inner = dyn Widget;
 
@@ -249,56 +249,14 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
         Some(self)
     }
 
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        Decorator::resources_for(self, None, doc)
-    }
-
     // The resource is the same for every participant (an agent task sees and
     // invokes the same actions); only the content's tree is per participant.
-    fn resources_for(
-        &self,
-        participant: Option<&tilo_actions::ParticipantId>,
-        doc: &AutoCommit,
-    ) -> Vec<tilo_actions::Resource> {
-        let mut resources = vec![tilo_resource::publish::<R>(
-            self.dispatch.resource_id(),
-            &self.label,
-            &self.live.get(),
-        )];
-        resources.extend(self.content.resources_for(participant, doc));
-        resources
-    }
 
     // The undo boundary of a surface's immediate actions this event; the
     // host records one step per event and author.
 
     // A surface's step stays open for the actions that continue it (the
     // letters of a word), which report no boundary of their own.
-
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.dispatch
-            .take()
-            .or_else(|| self.content.take_control_invocation())
-    }
-
-    /// An edit this resource's dispatcher submitted was refused, or is held
-    /// for the user's confirmation. Nothing changed in the document, so a
-    /// surface that previewed the edit is re-presented the stored state; a
-    /// confirmed edit then arrives as an ordinary document change.
-    fn on_control_invocation_result(
-        &mut self,
-        address: &tilo_actions::ActionAddress,
-        result: &Result<ui_core::widget::ResourceOperationStart, tilo_actions::DoorError>,
-    ) {
-        if result.is_err() && address.resource == self.dispatch.resource_id() {
-            self.live.represent();
-        }
-        self.content.on_control_invocation_result(address, result);
-    }
-
-    fn has_pending_control_invocation(&self) -> bool {
-        self.dispatch.has_pending() || self.content.has_pending_control_invocation()
-    }
 
     fn search_providers(&self) -> Vec<Box<dyn SearchProvider>> {
         let revision = self.live.revision();
@@ -319,6 +277,59 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
         })];
         providers.extend(self.content.search_providers());
         providers
+    }
+}
+
+impl<R: Resource> ui_core::resources::PublishesResources for ResourceRoot<R> {
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        ui_core::resources::PublishesResources::resources_for(self, None, doc)
+    }
+    fn resources_for(
+        &self,
+        participant: Option<&tilo_actions::ParticipantId>,
+        doc: &AutoCommit,
+    ) -> Vec<tilo_actions::Resource> {
+        let mut resources = vec![tilo_resource::publish::<R>(
+            self.dispatch.resource_id(),
+            &self.label,
+            &self.live.get(),
+        )];
+        resources.extend(ui_core::resources::resources_for(
+            self.content.as_ref(),
+            participant,
+            doc,
+        ));
+        resources
+    }
+}
+
+impl<R: Resource> ui_core::widget::controls::ActionControls for ResourceRoot<R> {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.dispatch
+            .take()
+            .or_else(|| ui_core::widget::controls::take_control_invocation(self.content.as_mut()))
+    }
+    /// An edit this resource's dispatcher submitted was refused, or is held
+    /// for the user's confirmation. Nothing changed in the document, so a
+    /// surface that previewed the edit is re-presented the stored state; a
+    /// confirmed edit then arrives as an ordinary document change.
+    fn on_control_invocation_result(
+        &mut self,
+        address: &tilo_actions::ActionAddress,
+        result: &Result<ui_core::widget::ResourceOperationStart, tilo_actions::DoorError>,
+    ) {
+        if result.is_err() && address.resource == self.dispatch.resource_id() {
+            self.live.represent();
+        }
+        ui_core::widget::controls::on_control_invocation_result(
+            self.content.as_mut(),
+            address,
+            result,
+        );
+    }
+    fn has_pending_control_invocation(&self) -> bool {
+        self.dispatch.has_pending()
+            || ui_core::widget::controls::has_pending_control_invocation(self.content.as_ref())
     }
 }
 

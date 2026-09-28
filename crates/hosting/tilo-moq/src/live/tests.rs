@@ -442,6 +442,129 @@ async fn host_injection_reaches_current_subscribers_without_a_client() {
     drop(b);
 }
 
+async fn group_frames(subscriber: &mut moq_net::track::Subscriber) -> Vec<Vec<u8>> {
+    tokio::time::timeout(tilo_test_env::hang_bound(), async {
+        loop {
+            let mut group = subscriber.recv_group().await.unwrap().unwrap();
+            let mut frames = Vec::new();
+            while let Ok(Some(frame)) = group.read_frame().await {
+                if !frame.payload.is_empty() {
+                    frames.push(frame.payload.to_vec());
+                }
+            }
+            if !frames.is_empty() {
+                return frames;
+            }
+        }
+    })
+    .await
+    .expect("a stream group")
+}
+
+/// A host stream keeps one group open per sequence, so a subscriber that
+/// joins mid-sequence starts at its first frame (a video keyframe).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn host_streams_group_by_sequence_and_late_subscribers_start_at_its_head() {
+    let f = fixture();
+    let frames = |names: &[&'static str]| {
+        names
+            .iter()
+            .map(|name| bytes::Bytes::from_static(name.as_bytes()))
+            .collect::<Vec<_>>()
+    };
+    let b = connect(&f, b"grant-b", B).await;
+    let viewer = connect(&f, b"grant-viewer", C).await;
+    assert!(
+        !f.live
+            .relay
+            .inject_stream(ROOM, A, RECORD, true, &frames(&["unread"])),
+        "no subscriber yet"
+    );
+    let mut first = ops_subscriber(&b, A).await;
+    // The egress track and this subscriber's view attach asynchronously, and
+    // a view starts at the latest group: open sequences until one arrives.
+    let mut open = tokio::time::timeout(tilo_test_env::hang_bound(), async {
+        let mut attempt = 0u32;
+        loop {
+            attempt = attempt.wrapping_add(1);
+            let key = format!("key-1.{attempt}");
+            let started = f.live.relay.inject_stream(
+                ROOM,
+                A,
+                RECORD,
+                true,
+                &[bytes::Bytes::from(key.clone())],
+            );
+            if started
+                && let Ok(Ok(Some(mut group))) =
+                    tokio::time::timeout(Duration::from_millis(50), first.recv_group()).await
+                && group
+                    .read_frame()
+                    .await
+                    .ok()
+                    .flatten()
+                    .is_some_and(|frame| frame.payload == key.as_bytes())
+            {
+                return group;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("a stream group reaches the subscriber");
+    assert!(
+        f.live
+            .relay
+            .inject_stream(ROOM, A, RECORD, false, &frames(&["delta-1"]))
+    );
+    async fn next(group: &mut moq_net::group::Consumer) -> Option<Vec<u8>> {
+        tokio::time::timeout(tilo_test_env::hang_bound(), group.read_frame())
+            .await
+            .unwrap()
+            .unwrap()
+            .map(|frame| frame.payload.to_vec())
+    }
+    assert_eq!(
+        next(&mut open).await,
+        Some(b"delta-1".to_vec()),
+        "a later frame joins the open group"
+    );
+    assert!(
+        f.live
+            .relay
+            .inject_stream(ROOM, A, RECORD, true, &frames(&["key-2"]))
+    );
+    assert_eq!(
+        next(&mut open).await,
+        None,
+        "a new sequence finishes the group"
+    );
+    let mut late = ops_subscriber(&viewer, A).await;
+    assert!(
+        f.live
+            .relay
+            .inject_stream(ROOM, A, RECORD, false, &frames(&["delta-2"]))
+    );
+    assert!(f.live.relay.stream_open(ROOM, A, RECORD));
+    f.live.relay.end_stream(ROOM, A, RECORD);
+    assert!(!f.live.relay.stream_open(ROOM, A, RECORD));
+    let expected = vec![b"key-2".to_vec(), b"delta-2".to_vec()];
+    assert_eq!(group_frames(&mut first).await, expected);
+    assert_eq!(
+        group_frames(&mut late).await,
+        expected,
+        "a late subscriber starts at the keyframe"
+    );
+    assert!(
+        !f.live
+            .relay
+            .inject_stream(ROOM, A, RECORD, false, &frames(&["after-end"])),
+        "an ended stream takes nothing until the next sequence starts"
+    );
+    drop(b);
+    drop(viewer);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn revocation_resets_only_the_revoked_publishers_tracks() {
     let f = fixture();

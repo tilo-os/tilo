@@ -36,13 +36,13 @@ fn canonical_component_starts_empty_projects_existing_records_read_only() {
             doc: &AutoCommit,
             resources: &mut Vec<tilo_actions::Resource>,
         ) {
-            resources.extend(widget.resources(doc));
+            resources.extend(ui::resources::resources(widget, doc));
             for child in widget.children() {
                 collect(child, doc, resources);
             }
         }
         fn has_resource(widget: &dyn Widget, doc: &AutoCommit, id: &str) -> bool {
-            widget.resource(doc, id).is_some()
+            ui::resources::resource(widget, doc, id).is_some()
                 || widget
                     .children()
                     .iter()

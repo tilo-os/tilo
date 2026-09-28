@@ -22,6 +22,7 @@ path = "src/main.rs"
 dev-overrides = []
 
 [dependencies]
+tilo-clock = { path = "../../system/tilo-clock" }
 advisory-lock = { path = "../../system/advisory-lock" }
 atomic-file = { path = "../../system/atomic-file" }
 bounded-command = { path = "../../system/bounded-command" }

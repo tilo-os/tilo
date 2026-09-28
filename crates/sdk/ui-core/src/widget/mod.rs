@@ -165,11 +165,13 @@ pub(crate) fn collect_widget_resources(
         // declaration once, and release its document borrow before descending.
         if boundary.is_none() {
             if let Some(binding) = &binding {
-                if let Ok(found) = binding.read_document(doc, |doc, _| widget.resources(doc)) {
+                if let Ok(found) =
+                    binding.read_document(doc, |doc, _| crate::resources::resources(widget, doc))
+                {
                     resources.extend(found);
                 }
             } else {
-                resources.extend(widget.resources(doc));
+                resources.extend(crate::resources::resources(widget, doc));
             }
         }
         widget.for_each_child(&mut |child| visit(child, doc, binding.clone(), resources));
@@ -185,7 +187,7 @@ pub(crate) fn resolve_widget_resource(
     id: &str,
 ) -> Option<tilo_actions::Resource> {
     resolve_bound_resource(widget, doc, None, &mut |widget, doc| {
-        widget.resource(doc, id)
+        crate::resources::resource(widget, doc, id)
     })
 }
 
@@ -278,12 +280,22 @@ pub(crate) fn action_directory_page_at(
                 (if let Some(binding) = &binding {
                     binding
                         .read_document(doc, |doc, _| {
-                            widget.action_directory_resource_page(doc, cursor, max_results)
+                            crate::resources::action_directory_resource_page(
+                                widget,
+                                doc,
+                                cursor,
+                                max_results,
+                            )
                         })
                         .ok()
                         .flatten()
                 } else {
-                    widget.action_directory_resource_page(doc, cursor, max_results)
+                    crate::resources::action_directory_resource_page(
+                        widget,
+                        doc,
+                        cursor,
+                        max_results,
+                    )
                 })
                 .map(|page| (page, binding)),
             );
@@ -722,76 +734,6 @@ pub trait Widget {
         std::any::type_name::<Self>()
     }
 
-    /// A successful, locally applied resource Document action on this exact owner.
-    /// Immutable document access permits cache reconciliation only. Not called for
-    /// submissions, failed execution, replay, remote merge, or History restore.
-    fn document_action_applied(
-        &mut self,
-        _action: &tilo_actions::EncodedAction,
-        _before: &[automerge::ChangeHash],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) {
-    }
-
-    /// Explicit root-owned History custody, including selected external resources.
-    /// Runners consume this bundle; preview renderers never receive the root.
-    ///
-    /// # Errors
-    /// Returns a registration error when the root cannot provide valid History custody.
-    fn history_registration(
-        &self,
-    ) -> Result<
-        Option<crate::history_mode::HistoryRegistration>,
-        crate::history_mode::HistoryRegistrationError,
-    > {
-        Ok(None)
-    }
-    /// Additional read-only veto for uncommitted app-local drafts in this scope.
-    /// This does not confer authority or recursively consult independent owners.
-    ///
-    /// # Errors
-    /// Returns a reason when this exact root is not ready to restore the scope.
-    fn history_restore_readiness(&self, _scope: &str) -> Result<(), String> {
-        Ok(())
-    }
-    /// Presentation declaration for a legacy tile's eventual checked record.
-    /// The `TileHost` resolves custody after binding; this grants no authority.
-    fn document_history_definition(
-        &self,
-    ) -> Option<&'static crate::history_mode::HistoryDefinition> {
-        None
-    }
-
-    /// Whether this widget presents its document's History itself, so the
-    /// host must not add the shared standalone History control beside it —
-    /// one document gets one History surface.
-    fn provides_document_history(&self) -> bool {
-        self.children()
-            .into_iter()
-            .any(|child| child.provides_document_history())
-    }
-
-    /// Framework lifecycle traversal, independent of visible presentation children.
-    /// Borrowed surfaces and retained children cannot escape this callback.
-    #[doc(hidden)]
-    fn visit_framework_history(
-        &self,
-        visitor: &mut dyn FnMut(&crate::history_mode::FrameworkHistorySurface, &dyn Widget),
-    ) {
-        for child in self.children() {
-            child.visit_framework_history(visitor);
-        }
-    }
-    #[doc(hidden)]
-    fn visit_framework_history_mut(
-        &mut self,
-        visitor: &mut dyn FnMut(&mut crate::history_mode::FrameworkHistorySurface, &mut dyn Widget),
-    ) {
-        for child in self.children_mut() {
-            child.visit_framework_history_mut(visitor);
-        }
-    }
     /// Structural chrome can explicitly leave an inherited document callback.
     #[doc(hidden)]
     fn resets_callback_binding(&self) -> bool {
@@ -877,13 +819,6 @@ pub trait Widget {
         None
     }
 
-    /// Local control intent queued behind asynchronous startup preparation.
-    /// This is a scheduling hint only; the host still checks live authority.
-    fn has_pending_control_invocation(&self) -> bool {
-        self.children()
-            .iter()
-            .any(|child| child.has_pending_control_invocation())
-    }
     /// Owning lifecycle path: capture and close nested components before removing
     /// their live trees, transferring all recovery reports to the caller.
     fn close_components(&mut self) -> Vec<crate::application::ComponentCloseReport> {
@@ -1506,69 +1441,6 @@ pub trait Widget {
             .into_iter()
             .find_map(Widget::take_commit_context)
     }
-    /// Bind retained producers before their first callback. Private holders must
-    /// override this hook; child traversal alone never certifies full coverage.
-    fn install_control_custody(
-        &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
-    ) {
-        for child in self.children_mut() {
-            child.install_control_custody(domain, attachment);
-        }
-    }
-    /// Drain one queued action-bound control intent from this subtree.
-    /// Custom-painted widgets can own an [`ActionEmitter`] and override this
-    /// method; they do not need to use the toolkit's [`Button`].
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.children_mut()
-            .into_iter()
-            .find_map(Widget::take_control_invocation)
-    }
-    /// Report the admission result of one queued local control invocation.
-    /// `Accepted` means queued, not completed; confirmation remains an error
-    /// while the host offers its normal confirmation UI. This notification
-    /// grants no document authority and must not retry the invocation itself.
-    fn on_control_invocation_result(
-        &mut self,
-        address: &tilo_actions::ActionAddress,
-        result: &Result<ResourceOperationStart, tilo_actions::DoorError>,
-    ) {
-        for child in self.children_mut() {
-            if !child.has_separate_document_owner() {
-                child.on_control_invocation_result(address, result);
-            }
-        }
-    }
-    /// Recursively inventory action-native and explicitly legacy controls.
-    /// Custom widgets that own an [`ActionEmitter`] should prepend its
-    /// [`metadata`](ActionEmitter::metadata) to their descendants' inventory.
-    fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
-        let mut bindings = semantic_action_bindings(self.accessibility());
-        self.for_each_child(&mut |child| bindings.extend(child.control_action_bindings()));
-        bindings
-    }
-    /// Whether this exposed subtree contains controls consuming action availability.
-    /// The inventory fallback preserves custom widgets that publish their own emitters.
-    /// Overrides must match whether `control_action_bindings` contains an `Action`,
-    /// including the same modal child exposure, regardless of current availability.
-    /// Transparent containers may query their children without building semantics.
-    fn has_action_control_bindings(&self) -> bool {
-        self.control_action_bindings()
-            .iter()
-            .any(|binding| matches!(binding.kind, ControlBindingKind::Action(_)))
-    }
-    /// Push the fresh local permission-filtered action surface into every
-    /// retained control. Custom widgets should refresh their own emitter and
-    /// then recurse into children.
-    fn refresh_control_action_availability(
-        &mut self,
-        allowed: &HashSet<tilo_actions::ActionAddress>,
-    ) {
-        for child in self.children_mut() {
-            child.refresh_control_action_availability(allowed);
-        }
-    }
     fn on_commit(&mut self) {
         for child in self.children_mut() {
             child.on_commit();
@@ -1726,103 +1598,6 @@ pub trait Widget {
     }
     /// Which permission scope, if any, gates this widget. Default: no gating.
     fn permission_scope(&self) -> Option<PermissionScope> {
-        None
-    }
-
-    /// The tree of [`tilo_actions::Resource`]s this widget currently has
-    /// open, each with the actions it exports to Ctrl+K — e.g. a playing
-    /// video plus its comments. `doc` lets a provider enumerate resources
-    /// living in the CRDT.
-    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        Vec::new()
-    }
-
-    /// Explicit host-local presentation/request controls for the portable caller
-    /// palette. Only View operations are accepted; shared effects remain broker-owned.
-    fn caller_view_resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        Vec::new()
-    }
-
-    /// One cursor-addressable page of resource roots safe to expose through
-    /// the broker pull directory. `max_results` is a hard ceiling; a live
-    /// provider must return a non-empty opaque cursor when it has a tail.
-    /// `None` is intentionally the default: a legacy
-    /// [`Self::resources`] implementation may build an unbounded contextual
-    /// snapshot, which must not be reached from a remote query or revision.
-    fn action_directory_resource_page(
-        &self,
-        _doc: &AutoCommit,
-        _cursor: &[u8],
-        _max_results: usize,
-    ) -> Option<ActionDirectoryResourcePage> {
-        None
-    }
-
-    /// Revision of non-CRDT bounded directory roots. Return `None` when this
-    /// widget has no independently mutable remote directory state; callers
-    /// combine provided values with document heads and search generations.
-    fn action_directory_revision(&self, _doc: &AutoCommit) -> Option<String> {
-        None
-    }
-
-    /// Continuity coverage for this owning subtree's effective invocation domain.
-    /// Independent component/provider owners are checked separately. Returning a
-    /// value is a semantic promise, not authority; unknown coverage stays closed.
-    fn action_directory_invocation_domain(
-        &self,
-        _doc: &AutoCommit,
-    ) -> ActionDirectoryInvocationDomain {
-        ActionDirectoryInvocationDomain::Unsupported
-    }
-
-    /// Resolve an addressable resource omitted from the contextual snapshot.
-    /// Large apps override this through their `ResourceProvider` index.
-    fn resource(&self, _doc: &AutoCommit, _id: &str) -> Option<tilo_actions::Resource> {
-        None
-    }
-
-    /// The tree as one participant (an agent task) sees it, built from that
-    /// participant's own view state (caret, selection, Find). A delivered
-    /// invocation resolves against this, rebuilt at invoke time, for the
-    /// host-set invoker ([`crate::invocation_scope::current_participant`]).
-    ///
-    /// `None` is this widget's own view. Single-view widgets keep the
-    /// default, which is the same tree for everybody. Multi-participant
-    /// widgets (Writer) override this and [`Self::resource_for`], and must
-    /// never put one participant's selection or Find text into another's
-    /// tree.
-    fn resources_for(
-        &self,
-        participant: Option<&tilo_actions::ParticipantId>,
-        doc: &AutoCommit,
-    ) -> Vec<tilo_actions::Resource> {
-        let _ = participant;
-        self.resources(doc)
-    }
-
-    /// [`Self::resource`] in `participant`'s tree.
-    fn resource_for(
-        &self,
-        participant: Option<&tilo_actions::ParticipantId>,
-        doc: &AutoCommit,
-        id: &str,
-    ) -> Option<tilo_actions::Resource> {
-        let _ = participant;
-        self.resource(doc, id)
-    }
-
-    /// Explicit disclosure authority for an actionless resource container in
-    /// the broker pull directory. Returning `None` means its label and
-    /// hierarchy are not remotely discoverable unless the resource itself has
-    /// a safe view action. This is intentionally separate from `resources`:
-    /// selecting an arbitrary mutating action as a visibility proxy could
-    /// leak a container name to someone who may only perform that action in a
-    /// different context.
-    fn action_directory_visibility(
-        &self,
-        _doc: &AutoCommit,
-        _resource_id: &str,
-    ) -> Option<tilo_actions::ActionAddress> {
         None
     }
 
@@ -2431,6 +2206,7 @@ pub type Element = Box<dyn Widget>;
 
 pub mod binding;
 pub mod capability;
+pub mod controls;
 pub mod decorator;
 pub use decorator::Decorator;
 
@@ -3151,6 +2927,11 @@ pub(crate) mod control_result_probe {
         }
     }
     impl Widget for Probe {
+        crate::provides!(
+            dyn crate::widget::controls::ActionControls,
+            dyn crate::resources::PublishesResources
+        );
+
         fn try_flush_owned_persistence(&mut self) -> Option<Result<(), String>> {
             self.observed
                 .flushes
@@ -3222,6 +3003,33 @@ pub(crate) mod control_result_probe {
         fn get_rect(&self) -> vello::kurbo::Rect {
             vello::kurbo::Rect::ZERO
         }
+        fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+            &["test.control-result.run"]
+        }
+        fn start_operation(
+            &mut self,
+            op: &ResourceOperation<'_>,
+            _: &mut AutoCommit,
+            _: &ObjId,
+        ) -> Result<Option<ResourceOperationStart>, String> {
+            let Some(request) = op.unscoped() else {
+                return Ok(None);
+            };
+            if let Ok(text) = serde_json::from_slice::<String>(request.payload) {
+                self.observed.payloads.borrow_mut().push(text);
+            }
+            self.observed
+                .calls
+                .set(self.observed.calls.get().saturating_add(1));
+            Ok(Some(if self.accepted {
+                ResourceOperationStart::Accepted
+            } else {
+                ResourceOperationStart::Completed(tilo_actions::ActionOutput::default())
+            }))
+        }
+    }
+
+    impl crate::resources::PublishesResources for Probe {
         fn resources(&self, _: &AutoCommit) -> Vec<tilo_actions::Resource> {
             let mut contract = tilo_actions::ActionContract::default();
             if self.accepted {
@@ -3266,9 +3074,9 @@ pub(crate) mod control_result_probe {
                     .with_action(action.with_contract(contract)),
             ]
         }
-        fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-            &["test.control-result.run"]
-        }
+    }
+
+    impl crate::widget::controls::ActionControls for Probe {
         fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
             self.observed.pending.borrow_mut().pop_front()
         }
@@ -3278,27 +3086,6 @@ pub(crate) mod control_result_probe {
             result: &Result<ResourceOperationStart, tilo_actions::DoorError>,
         ) {
             self.observed.results.borrow_mut().push(result.clone());
-        }
-        fn start_operation(
-            &mut self,
-            op: &ResourceOperation<'_>,
-            _: &mut AutoCommit,
-            _: &ObjId,
-        ) -> Result<Option<ResourceOperationStart>, String> {
-            let Some(request) = op.unscoped() else {
-                return Ok(None);
-            };
-            if let Ok(text) = serde_json::from_slice::<String>(request.payload) {
-                self.observed.payloads.borrow_mut().push(text);
-            }
-            self.observed
-                .calls
-                .set(self.observed.calls.get().saturating_add(1));
-            Ok(Some(if self.accepted {
-                ResourceOperationStart::Accepted
-            } else {
-                ResourceOperationStart::Completed(tilo_actions::ActionOutput::default())
-            }))
         }
     }
     thread_local! { static NEXT: RefCell<Option<Probe>> = const { RefCell::new(None) }; }

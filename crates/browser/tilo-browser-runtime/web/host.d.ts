@@ -234,9 +234,11 @@ export interface DesktopMount {
   /**
    * A desktop's `navigation.dispatch({kind: 'open', app})` for the current
    * generation: link `app` if the core lacks it, then open it in a new window
-   * of the active workspace, which a local desktop selects.
+   * of the active workspace, which a local desktop selects. With `record`, on
+   * that existing record (a local desktop only). The window, its app and
+   * record are then among `navigation.getSnapshot().entries`.
    */
-  openApp(app: Application): Promise<void>;
+  openApp(app: Application, options?: {record?: string}): Promise<void>;
   cleanup(): Promise<void>;
   flush(): Promise<void>;
   state(): RuntimeStatus | undefined;
