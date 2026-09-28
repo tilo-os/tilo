@@ -95,6 +95,8 @@ def place_crate(name: str, version: str, checksum: str, out: pathlib.Path) -> No
         if source.is_file():
             try:
                 os.link(source, target)
+            except FileExistsError:
+                pass
             except OSError:
                 shutil.copyfile(source, target)
             return
@@ -246,6 +248,9 @@ def main() -> int:
                 chosen.append(versions[max(candidates, key=version_key)])
         else:
             raise SystemExit(f"{name} {version} is locked but not on crates.io")
+    # An exact lock entry and a patch's compatible pick can name the same
+    # release; placing it twice races two threads onto one file.
+    chosen = list({(entry["name"], entry["vers"]): entry for entry in chosen}.values())
     with concurrent.futures.ThreadPoolExecutor(16) as pool:
         list(
             pool.map(
