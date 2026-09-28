@@ -135,7 +135,7 @@ fn capture_epochs_hash_whole_trees_and_only_changed_extents() {
             .1;
         assert_eq!(small.mode, 0o755);
         let manifest = small.manifest.as_ref().unwrap();
-        assert_eq!(manifest.tier(), Some(fs_content::ChunkTier::Inline));
+        assert_eq!(manifest.tier(), fs_content::ChunkTier::Inline);
         assert_eq!(manifest.chunks().len(), 1);
         assert_eq!(
             &manifest.chunks()[0].hash,
