@@ -699,12 +699,13 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
             .map_err(error)?,
     );
     let size = window.inner_size();
-    let dpr = window.scale_factor();
-    let viewport = Viewport {
+    let observed = Viewport {
         width: size.width,
         height: size.height,
-        dpr,
+        dpr: window.scale_factor(),
     };
+    let viewport = observed.bounded();
+    let dpr = viewport.dpr;
     let text_renderer = ui::TextRenderer::with_browser_font_system(system);
     let mut frame = match root {
         Root::Component(component) => {
@@ -786,7 +787,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         desktop,
         gpu: None,
         pending: true,
-        viewport: ViewportState::new(viewport),
+        viewport: ViewportState::new(observed),
         hidden: false,
         generation: 1,
         frames: 0,
@@ -808,6 +809,12 @@ fn initialize_gpu(id: u64, generation: u64, window: Arc<Window>) {
     wasm_bindgen_futures::spawn_local(async move {
         let result = async {
             let size = window.inner_size();
+            let size = Viewport {
+                width: size.width,
+                height: size.height,
+                dpr: window.scale_factor(),
+            }
+            .bounded();
             let mut cx = ui::gpu::RenderContext::new();
             let surface = cx
                 .create_surface(
