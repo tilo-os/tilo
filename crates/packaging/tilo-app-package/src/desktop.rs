@@ -111,7 +111,7 @@ mod tests {
             Err(ManifestError::BadTarget(_))
         ));
         assert!(matches!(
-            desktop_manifest(&authored(), "linux", "x86_64", "x86_64", "bin/books"),
+            desktop_manifest(&authored(), "freebsd", "x86_64", "x86_64", "bin/books"),
             Err(ManifestError::BadTarget(_))
         ));
         assert!(matches!(

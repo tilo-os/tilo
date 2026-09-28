@@ -72,6 +72,7 @@ Build and sign each platform you ship, then publish everything in `dist/`:
 ```bash
 tilo-app package                                   # Tilo OS, this machine's CPU
 tilo-app package --arch aarch64                    # Tilo OS on ARM
+tilo-app package --platform linux --arch x86_64    # other Linux desktops
 tilo-app package --platform macos --arch aarch64   # macOS
 tilo-app package --platform windows --arch x86_64  # Windows
 tilo-app package --platform web                    # the browser
@@ -121,7 +122,7 @@ Add one secret, `TILO_PUBLISHER_KEY`, holding the contents of your
 signed with a throwaway key and are never published. Set the variable
 `TILO_REGISTRY` to publish to another registry.
 
-On GitHub the matrix covers Tilo OS, Windows and macOS, each on x86_64 and
+On GitHub the matrix covers Tilo OS, Linux, Windows and macOS, each on x86_64 and
 aarch64, and the web, using GitHub's hosted runners. Forgejo and Gitea hosts
 provide Linux runners, so their workflow builds Tilo OS for x86_64 and the web
 and lists the other builds commented out: enable each one you have a runner

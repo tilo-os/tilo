@@ -74,6 +74,20 @@ const GITHUB_BUILDS: &[Build] = &[
         runner: "ubuntu-24.04-arm",
         builder: true,
     },
+    // Built outside the builder, whose Fedora glibc is newer than most
+    // desktops': the oldest supported Ubuntu sets the floor instead.
+    Build {
+        platform: "linux",
+        arch: "x86_64",
+        runner: "ubuntu-22.04",
+        builder: false,
+    },
+    Build {
+        platform: "linux",
+        arch: "aarch64",
+        runner: "ubuntu-22.04-arm",
+        builder: false,
+    },
     Build {
         platform: "windows",
         arch: "x86_64",
@@ -285,8 +299,10 @@ fn workflow(forge: Forge, runner: &str, working_directory: &str, lock: &str) -> 
                 }
             }
             out.push_str(
-                "          # Windows and macOS need runners on those systems; register\n          \
-                 # them and add entries here as above, with container: \"\".\n",
+                "          # Windows and macOS need runners on those systems, and Linux\n          \
+                 # for other desktops a runner with Rust and an older glibc than\n          \
+                 # the builder's; register them and add entries here as above,\n          \
+                 # with container: \"\".\n",
             );
             out.push_str("    runs-on: ${{ matrix.runner }}\n");
             let _ = writeln!(out, "    container: {BUILDER_IMAGE}");
@@ -403,6 +419,8 @@ mod tests {
             [
                 "tilo-x86_64",
                 "tilo-aarch64",
+                "linux-x86_64",
+                "linux-aarch64",
                 "windows-x86_64",
                 "windows-aarch64",
                 "macos-aarch64",
@@ -456,6 +474,7 @@ mod tests {
             "the Linux x86_64 builds are on"
         );
         assert!(text.contains("# - { platform: tilo, arch: aarch64"));
+        assert!(text.contains("# Windows and macOS need runners on those systems, and Linux"));
         assert!(text.contains("https://code.forgejo.org/forgejo/upload-artifact@v4"));
         assert!(!text.contains("actions/upload-artifact"));
         assert_eq!(

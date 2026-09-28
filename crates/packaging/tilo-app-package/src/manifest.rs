@@ -95,9 +95,9 @@ impl Platform {
     }
 }
 
-/// `[target]` — a WebAssembly, Windows or macOS build of the package.
+/// `[target]` — a WebAssembly, Linux, Windows or macOS build of the package.
 ///
-/// For `windows` and `macos`, `architecture` is `x86_64` or `aarch64`,
+/// For `linux`, `windows` and `macos`, `architecture` is `x86_64` or `aarch64`,
 /// `module` is the executable the GUI entrypoint names, and `runtime` is the
 /// toolkit release linked into it (`[package].runtime`).
 ///
