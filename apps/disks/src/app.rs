@@ -4738,6 +4738,7 @@ fn parse_pending(s: &str) -> Option<Pending> {
 #[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests {
     use super::*;
+    use ui::headless::Framed;
 
     fn seeded_app() -> (DisksApp, AutoCommit) {
         let mut app = DisksApp::new();
@@ -4931,17 +4932,18 @@ mod tests {
     fn accessibility_names_and_routes_canvas_controls() {
         // --- phase: accessibility_exposes_and_routes_canvas_controls ---
         {
-            let (mut app, mut doc) = seeded_app();
-            layout_at(&mut app, 1280.0);
+            let mut framed = framed(seeded_app(), 1280.0, 800.0);
+            let (app, state) = Framed::split(&mut framed);
+            let doc = &mut state.doc;
             let node = app.accessibility().expect("disks accessibility tree");
             assert!(target_exists(&node, "disks.rescan"));
             assert!(target_exists(&node, "disks.drive:nvme0n1"));
             assert!(target_exists(&node, "disks.action:format"));
             assert!(Widget::perform_semantic_action(
-                &mut app,
+                app,
                 "disks.tab:smart",
                 &A11yAction::Activate,
-                &mut doc,
+                doc,
                 &ui::automerge::ROOT,
             ));
             assert_eq!(app.tab, Tab::Smart);
@@ -5006,27 +5008,22 @@ mod tests {
     /// `apply_layout` passes, so these tests exercise the production
     /// responsiveness path (reconcile + first-frame settle) rather than a
     /// synthetic shortcut.
-    fn at_width(width: f64) -> DisksApp {
-        let (mut app, _doc) = seeded_app();
-        layout_at(&mut app, width);
-        app
+    fn at_width(width: f64) -> Framed<DisksApp> {
+        framed(seeded_app(), width, 800.0)
     }
 
-    fn layout_at(app: &mut DisksApp, width: f64) {
-        let theme = Theme::dark();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let node = app.build_layout(&mut taffy, &theme, &mut node_map);
-        taffy
-            .compute_layout(
-                node,
-                ui::taffy::Size {
-                    width: ui::taffy::AvailableSpace::Definite(width as f32),
-                    height: ui::taffy::AvailableSpace::Definite(800.0),
-                },
-            )
-            .unwrap();
-        app.apply_layout(&taffy, node, Point::ZERO);
+    /// Mount a seeded app over its document in the shared frame harness and
+    /// run its first frame at `w`x`h`.
+    fn framed((app, doc): (DisksApp, AutoCommit), w: f64, h: f64) -> Framed<DisksApp> {
+        let mut state = ui::State::new();
+        assert!(state.adopt_doc(doc));
+        Framed::new(state, app, ui::headless::viewport((w, h)), Theme::dark())
+    }
+
+    fn layout_at(app: &mut Framed<DisksApp>, width: f64) {
+        Framed::harness_mut(app)
+            .relayout_at(ui::headless::viewport((width, 800.0)))
+            .expect("layout settles");
     }
 
     /// The drive list docks beside the detail when wide, collapses to an overlay flap when narrow, restores across breakpoints and scrolls.
@@ -5158,61 +5155,35 @@ mod tests {
     /// populates the scroll extents (`content_h` / `list_h`) exactly as the
     /// live renderer does each frame.
     struct Harness {
-        app: DisksApp,
-        doc: AutoCommit,
-        taffy: TaffyTree<()>,
-        node: NodeId,
+        app: Framed<DisksApp>,
         w: f64,
         h: f64,
     }
 
     impl Harness {
         fn new(w: f64, h: f64) -> Self {
-            let (app, doc) = seeded_app();
-            let mut hn = Harness {
-                app,
-                doc,
-                taffy: TaffyTree::new(),
-                node: NodeId::new(0),
+            Harness {
+                app: framed(seeded_app(), w, h),
                 w,
                 h,
-            };
-            hn.relayout();
-            hn
+            }
         }
 
         fn relayout(&mut self) {
-            let theme = Theme::dark();
-            self.taffy = TaffyTree::new();
-            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-            let child = self
-                .app
-                .build_layout(&mut self.taffy, &theme, &mut node_map);
-            self.node = child;
-            let root = self
-                .taffy
-                .new_with_children(
-                    Style {
-                        size: ui::taffy::Size {
-                            width: ui::taffy::Dimension::length(self.w as f32),
-                            height: ui::taffy::Dimension::length(self.h as f32),
-                        },
-                        ..Default::default()
-                    },
-                    &[child],
-                )
-                .unwrap();
-            self.taffy
-                .compute_layout(
-                    root,
-                    ui::taffy::Size {
-                        width: ui::taffy::AvailableSpace::Definite(self.w as f32),
-                        height: ui::taffy::AvailableSpace::Definite(self.h as f32),
-                    },
-                )
-                .unwrap();
-            self.app.apply_layout(&self.taffy, child, Point::ORIGIN);
-            self.draw();
+            Framed::harness_mut(&mut self.app)
+                .relayout_at(ui::headless::viewport((self.w, self.h)))
+                .expect("layout settles");
+        }
+
+        /// The app's live document.
+        fn doc(&self) -> &AutoCommit {
+            &Framed::harness(&self.app).state().doc
+        }
+
+        /// The app and its live document, for calls that take both.
+        fn app_and_doc(&mut self) -> (&mut DisksApp, &mut AutoCommit) {
+            let (app, state) = Framed::split(&mut self.app);
+            (app, &mut state.doc)
         }
 
         /// A real draw pass — settles `content_h` / `list_h` for scroll clamps.
@@ -5237,20 +5208,7 @@ mod tests {
         }
 
         fn dispatch_with_modifiers(&mut self, event: &WindowEvent, mods: Modifiers) -> bool {
-            let mut handled = false;
-            let mut focus = None;
-            self.app.handle_event(
-                event,
-                1.0,
-                &mods,
-                &mut self.doc,
-                &ui::automerge::ROOT,
-                &mut handled,
-                &mut focus,
-                self.node,
-                &self.taffy,
-            );
-            handled
+            Framed::harness_mut(&mut self.app).dispatch_to_root_with(event, &mods)
         }
 
         fn move_to(&mut self, p: Point) {
@@ -5324,7 +5282,7 @@ mod tests {
                 "a fresh drive resets to whole-disk"
             );
             assert_eq!(
-                DisksDoc::selected(&h.doc),
+                DisksDoc::selected(h.doc()),
                 2,
                 "selection persisted to the CRDT"
             );
@@ -5344,7 +5302,7 @@ mod tests {
 
             assert!(h.click(center(smart_tab)), "the SMART tab claims its click");
             assert_eq!(h.app.tab, Tab::Smart);
-            assert_eq!(DisksDoc::tab(&h.doc), Tab::Smart.key());
+            assert_eq!(DisksDoc::tab(h.doc()), Tab::Smart.key());
             assert_eq!(
                 h.app.selected, selected_before,
                 "changing detail tabs must not retarget the selected drive"
@@ -5380,7 +5338,7 @@ mod tests {
                 "the segment becomes the partition selection"
             );
             assert_eq!(
-                DisksDoc::selected_part(&h.doc),
+                DisksDoc::selected_part(h.doc()),
                 Some(1),
                 "persisted to the CRDT"
             );
@@ -5399,7 +5357,8 @@ mod tests {
         // --- phase: clicking_a_partition_row_in_the_table_selects_it ---
         {
             let mut h = Harness::new(1280.0, 800.0);
-            h.app.set_tab(&mut h.doc, Tab::Partitions);
+            let (app, doc) = h.app_and_doc();
+            app.set_tab(doc, Tab::Partitions);
             h.relayout();
             let row = h
                 .lay()
@@ -5508,7 +5467,7 @@ mod tests {
                 Some(2),
                 "the confirmation targets the selected partition"
             );
-            assert_eq!(DisksDoc::pending(&h.doc), "format:0:2");
+            assert_eq!(DisksDoc::pending(h.doc()), "format:0:2");
             // The modal is now part of the layout and blocks the app.
             assert!(h.lay().modal.is_some());
         }
@@ -5551,7 +5510,7 @@ mod tests {
             drop(lay);
             h.click(center(mount.0));
             assert!(
-                DisksDoc::status(&h.doc).is_empty(),
+                DisksDoc::status(h.doc()).is_empty(),
                 "a disabled button reports nothing"
             );
             assert!(h.app.pending.is_none());
@@ -5560,7 +5519,8 @@ mod tests {
         // --- phase: modal_confirm_face_and_hit_target_share_the_type_gate ---
         {
             let mut h = Harness::new(1280.0, 800.0);
-            h.app.trigger_action(&mut h.doc, ActionKind::Format);
+            let (app, doc) = h.app_and_doc();
+            app.trigger_action(doc, ActionKind::Format);
             h.relayout();
             let confirm = h.lay().modal.unwrap().confirm;
 
@@ -5583,7 +5543,8 @@ mod tests {
         // --- phase: format_modal_routes_pointer_selection_and_ime_through_shared_input ---
         {
             let mut h = Harness::new(1280.0, 800.0);
-            h.app.trigger_action(&mut h.doc, ActionKind::Format);
+            let (app, doc) = h.app_and_doc();
+            app.trigger_action(doc, ActionKind::Format);
             h.relayout();
             let modal = h.lay().modal.unwrap();
 
@@ -5592,7 +5553,8 @@ mod tests {
             assert!(h.click(center(modal.cancel)));
             assert!(h.app.pending.is_none());
 
-            h.app.trigger_action(&mut h.doc, ActionKind::Format);
+            let (app, doc) = h.app_and_doc();
+            app.trigger_action(doc, ActionKind::Format);
             h.relayout();
             let modal = h.lay().modal.unwrap();
             let expected = h.app.pending_target_leaf(h.app.pending.unwrap());
@@ -5628,8 +5590,9 @@ mod tests {
     fn real_or_sample_harness() -> (Harness, bool) {
         let mut h = Harness::new(1280.0, 800.0);
         let live = if let Some(topo) = crate::probe::probe() {
-            DisksDoc::write_topology(&mut h.doc, &topo);
-            h.app.sync(&mut h.doc, &ui::automerge::ROOT);
+            DisksDoc::write_topology(h.app_and_doc().1, &topo);
+            let (app, doc) = h.app_and_doc();
+            app.sync(doc, &ui::automerge::ROOT);
             h.relayout();
             true
         } else {
@@ -5663,9 +5626,11 @@ mod tests {
             }
 
             // Inspect each tab on the first device — real render passes must not panic.
-            h.app.select(&mut h.doc, 0);
+            let (app, doc) = h.app_and_doc();
+            app.select(doc, 0);
             for tab in [Tab::Overview, Tab::Smart, Tab::Partitions] {
-                h.app.set_tab(&mut h.doc, tab);
+                let (app, doc) = h.app_and_doc();
+                app.set_tab(doc, tab);
                 h.relayout(); // includes a full draw pass
                 assert_eq!(h.app.tab, tab);
             }
@@ -5673,7 +5638,8 @@ mod tests {
             // Mount/Unmount enablement must mirror the real mount state, and Eject
             // only where the device is genuinely removable.
             for i in 0..h.app.topo.drives.len() {
-                h.app.select(&mut h.doc, i);
+                let (app, doc) = h.app_and_doc();
+                app.select(doc, i);
                 let d = h.app.drive().unwrap().clone();
                 if d.partitions.len() == 1 {
                     let mounted = d.partitions[0].mountpoint.is_some();
