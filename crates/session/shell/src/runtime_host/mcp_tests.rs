@@ -585,7 +585,9 @@ async fn invocation_targets_queue_limits_and_results_are_honest() {
                 .starts_with("TimedOut")
         );
     }
-    // Phase `confirmation_is_not_invented_and_terminal_content_survives_the_broker`.
+    // Phase `the_admitted_call_is_the_confirmation_and_terminal_content_survives_the_broker`.
+    // The MCP client's allow/deny decision admitted the call, so an action
+    // whose contract asks for confirmation runs.
     tokio::task::LocalSet::new().run_until(async {
         let (fixture,room,actor)=fixture();
         let actor_name=actor.clone();
@@ -594,7 +596,9 @@ async fn invocation_targets_queue_limits_and_results_are_honest() {
         let args=json!({"peer_id":71,"revision":"directory-r1","resource":"workspace:atlas","action":"open","arguments":{}});
         let invoke=server.handle(call("tilo_invoke",&args));
         let (reply,())=tokio::join!(invoke,async {tokio::task::yield_now().await;drain_directory_bridge(&fixture).await;});
-        assert_eq!(reply.unwrap()["result"]["content"][0]["text"],"the action requires confirmation");
+        let reply=reply.unwrap();
+        assert_eq!(reply["result"]["isError"],false,"{reply}");
+        assert_eq!(reply["result"]["structuredContent"]["update"]["state"],"accepted");
         fixture.set_confirmation_required(false);
         fixture.set_result_spec(tilo_actions::ResultSpec::Json {schema:json!({"type":"object"})});
         let invoke=server.handle(call("tilo_invoke",&args));

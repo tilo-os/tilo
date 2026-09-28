@@ -1,20 +1,17 @@
 //! Original caller custody belongs to each accepted file operation.
-use super::{AutoCommit, ObjId, Widget, WordProcessorWidget, WpFormat};
+use super::{AutoCommit, WordProcessorWidget, WpFormat};
 use ui::invocation_scope::ResourceInvocationScope;
 
 impl WordProcessorWidget {
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "mirrors the widget's resource-operation entry point plus the caller's invocation scope"
-    )]
     pub(super) fn start_file_operation(
         &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
+        ui::widget::OperationRequest {
+            invocation,
+            kind,
+            type_id,
+            payload,
+        }: ui::widget::OperationRequest<'_>,
         doc: &AutoCommit,
-        widget_path: &ObjId,
         scope: Option<&ResourceInvocationScope>,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
         use crate::actions::WordProcessorOperation;
@@ -78,9 +75,13 @@ impl WordProcessorWidget {
             WordProcessorOperation::SaveAs { path } => (path, true),
             other => {
                 let encoded = serde_json::to_vec(&other).map_err(|error| error.to_string())?;
-                return self
-                    .invoke_resource_operation_v2(kind, type_id, &encoded, doc, widget_path)
-                    .map(|result| result.map(ui::widget::ResourceOperationStart::Completed));
+                return Ok(self
+                    .apply_operation(kind, type_id, &encoded, doc)?
+                    .then(|| {
+                        ui::widget::ResourceOperationStart::Completed(
+                            tilo_actions::ActionOutput::default(),
+                        )
+                    }));
             }
         };
 

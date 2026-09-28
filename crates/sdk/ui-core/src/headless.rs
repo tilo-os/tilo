@@ -11446,19 +11446,19 @@ pub(crate) mod legacy_control_feedback_tests {
         fn has_pending_control_invocation(&self) -> bool {
             !self.observed.pending.borrow().is_empty()
         }
-        fn start_resource_operation_with_document(
+        fn start_operation(
             &mut self,
-            invocation: tilo_actions::InvocationId,
-            _: tilo_actions::OperationKind,
-            type_id: &str,
-            _: &[u8],
+            op: &crate::widget::ResourceOperation<'_>,
             _: &mut automerge::AutoCommit,
             _: &automerge::ObjId,
         ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-            if type_id != "feedback.begin" {
+            let Some(request) = op
+                .unscoped()
+                .filter(|request| request.type_id == "feedback.begin")
+            else {
                 return Ok(None);
-            }
-            self.observed.original.set(Some(invocation));
+            };
+            self.observed.original.set(Some(request.invocation));
             self.observed
                 .pending
                 .borrow_mut()

@@ -14,3 +14,63 @@
 # without lowering this table fails as stale; new callbacks fail at the zero
 # default.
 [ratchets.opaque_search_activation]
+
+# Apps still answering operations through the legacy hooks that
+# `Widget::start_operation` replaces. Migrating a file lowers its ceiling; the
+# adapters are deleted once this table is empty.
+[ratchets.legacy_resource_operation_override]
+"apps/api-tester/src/app.rs" = 2
+"apps/backups/src/app.rs" = 1
+"apps/browser/src/browser_widget.rs" = 2
+"apps/calculator/src/app.rs" = 1
+"apps/calendar/src/app.rs" = 4
+"apps/camera/src/app.rs" = 2
+"apps/chat/src/app.rs" = 1
+"apps/clocks/src/app.rs" = 1
+"apps/code-editor/src/app.rs" = 2
+"apps/contacts/src/app.rs" = 2
+"apps/containers/src/app.rs" = 1
+"apps/db-client/src/app.rs" = 2
+"apps/diffmerge/src/app.rs" = 2
+"apps/disk-usage/src/app.rs" = 1
+"apps/disks/src/app.rs" = 2
+"apps/ebook/src/app.rs" = 2
+"apps/feeds/src/app.rs" = 2
+"apps/file-explorer/src/files_app.rs" = 2
+"apps/firewall/src/app.rs" = 2
+"apps/git-client/src/app.rs" = 2
+"apps/hex-editor/src/view.rs" = 2
+"apps/image-editor/src/app.rs" = 2
+"apps/imager/src/app.rs" = 2
+"apps/imager/src/setup/import_view.rs" = 2
+"apps/imager/src/setup/view.rs" = 1
+"apps/logs/src/app.rs" = 1
+"apps/mail/src/app.rs" = 3
+"apps/maps/src/app.rs" = 2
+"apps/monitor/src/app.rs" = 1
+"apps/music/src/app/render.rs" = 2
+"apps/osk/src/framework_history_tests.rs" = 1
+"apps/osk/src/main.rs" = 1
+"apps/osk/src/widget.rs" = 1
+"apps/passwords/src/showcase.rs" = 1
+"apps/pdf-viewer/src/app.rs" = 2
+"apps/photos/src/app.rs" = 4
+"apps/print-centre/src/surface.rs" = 1
+"apps/remote/src/app.rs" = 2
+"apps/settings/src/settings_app.rs" = 2
+"apps/sheets/src/app.rs" = 2
+"apps/slides/src/app.rs" = 2
+"apps/snippets/src/app.rs" = 1
+"apps/speed-test/src/app.rs" = 1
+"apps/store/src/app.rs" = 2
+"apps/store/src/live.rs" = 2
+"apps/terminal/src/main_body.rs" = 1
+"apps/themes/src/app.rs" = 2
+"apps/totp/src/app.rs" = 1
+"apps/tube/src/app.rs" = 1
+"apps/typst-editor/src/app.rs" = 2
+"apps/video-editor/src/app.rs" = 2
+"apps/video-player/src/app.rs" = 2
+"apps/vpn/src/app.rs" = 2
+"apps/weather/src/app.rs" = 2
+"apps/windows/src/app.rs" = 2

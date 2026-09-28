@@ -27,8 +27,10 @@ use std::{
 
 mod apps;
 pub mod cli;
+pub mod computer;
 mod daemon;
 pub mod mcp;
+pub mod mcp_http;
 pub mod mcp_process;
 pub mod profile;
 pub mod standalone;

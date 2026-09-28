@@ -1333,11 +1333,36 @@ impl DesktopRoot {
                 .set(self.handle.navigation_revision.get().wrapping_add(1));
         }
     }
+    fn run_desktop_operation(
+        &mut self,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+    ) -> Result<Option<tilo_actions::ActionOutput>, String> {
+        if kind == tilo_actions::OperationKind::View
+            && type_id == activity::view_actions::OPERATION_TYPE
+        {
+            let request = serde_json::from_slice(payload)
+                .map_err(|e| format!("Invalid workspace view request: {e}"))?;
+            self.queue_view_request(request)?;
+            return Ok(Some(Default::default()));
+        }
+        if kind != tilo_actions::OperationKind::View || type_id != "tilo.desktop.request" {
+            return Ok(None);
+        }
+        let command: tilo_desktop_model::commands::BoundCommand =
+            serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+        let invocation = self.enqueue_command(command)?;
+        Ok(Some(tilo_actions::ActionOutput {
+            value: Some(serde_json::Value::String(invocation.to_string())),
+            resources: vec![],
+        }))
+    }
     fn navigate(
         &mut self,
         command: crate::desktop_navigation::Command,
         doc: &AutoCommit,
-        path: &ObjId,
+        _path: &ObjId,
     ) -> Result<(bool, Option<String>), String> {
         use crate::desktop_navigation::Command;
         if command.generation() != self.handle.generation {
@@ -1380,12 +1405,10 @@ impl DesktopRoot {
             let encoded = tilo_actions::door::encode(&resources, &address, None)
                 .map_err(|error| error.to_string())?;
             let output = self
-                .invoke_resource_operation_v2(
+                .run_desktop_operation(
                     tilo_actions::OperationKind::View,
                     &encoded.type_id,
                     &encoded.payload,
-                    doc,
-                    path,
                 )?
                 .ok_or("Close action unavailable")?;
             return output
@@ -2112,32 +2135,21 @@ impl Widget for DesktopRoot {
         self.resources_for_close(doc, None)
     }
 
-    fn invoke_resource_operation_v2(
+    fn start_operation(
         &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<Option<tilo_actions::ActionOutput>, String> {
-        if kind == tilo_actions::OperationKind::View
-            && type_id == activity::view_actions::OPERATION_TYPE
-        {
-            let request = serde_json::from_slice(payload)
-                .map_err(|e| format!("Invalid workspace view request: {e}"))?;
-            self.queue_view_request(request)?;
-            return Ok(Some(Default::default()));
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
         }
-        if kind != tilo_actions::OperationKind::View || type_id != "tilo.desktop.request" {
+        let Some(request) = op.unscoped() else {
             return Ok(None);
-        }
-        let command: tilo_desktop_model::commands::BoundCommand =
-            serde_json::from_slice(payload).map_err(|e| e.to_string())?;
-        let invocation = self.enqueue_command(command)?;
-        Ok(Some(tilo_actions::ActionOutput {
-            value: Some(serde_json::Value::String(invocation.to_string())),
-            resources: vec![],
-        }))
+        };
+        Ok(self
+            .run_desktop_operation(request.kind, request.type_id, request.payload)?
+            .map(ui::widget::ResourceOperationStart::Completed))
     }
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)

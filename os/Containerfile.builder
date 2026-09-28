@@ -84,6 +84,8 @@ RUN --mount=type=bind,source=tools/ci/install-android-ndk.sh,target=/tmp/install
       TILO_RUST_TOOLCHAIN="${RUST_CHANNEL}" bash /tmp/install-android-ndk.sh \
       && dnf clean all && rm -rf /var/cache/dnf; \
     fi
+# The browser target for check.yml's wasm lane.
+RUN rustup target add --toolchain "${RUST_CHANNEL}" wasm32-unknown-unknown
 ENV ANDROID_NDK_HOME=/opt/android-ndk \
     ANDROID_NDK_ROOT=/opt/android-ndk \
     CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=/opt/android-ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang \
