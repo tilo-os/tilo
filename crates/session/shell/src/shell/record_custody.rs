@@ -773,7 +773,7 @@ mod tests {
 
     impl DeviceSigner for Device {
         fn author(&self) -> collab_types::Ed25519PublicKey {
-            crate::shell::channel_encryption::tests::public(
+            tilo_action_broker::channel_encryption::testing::public(
                 crate::shell::participant_keys::tests::DEVICE,
             )
         }
@@ -781,7 +781,7 @@ mod tests {
             *self.author().as_bytes()
         }
         fn sign(&self, op: &mut SignedOp) -> Result<(), String> {
-            let key = crate::shell::channel_encryption::tests::key(
+            let key = tilo_action_broker::channel_encryption::testing::key(
                 crate::shell::participant_keys::tests::DEVICE,
             );
             collab_types::sign_op(op, &key).map_err(|error| error.to_string())

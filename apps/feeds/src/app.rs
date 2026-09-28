@@ -16,6 +16,7 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Instant;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -4512,7 +4513,8 @@ impl Widget for FeedsApp {
         &[crate::actions::FEEDS_OPERATION_TYPE]
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, _) = ui::doc::document(state, path);
         self.background_poll_deadline.set(None);
         self.now = chrono::Utc::now().timestamp();
         if !self.synced {
@@ -4804,28 +4806,25 @@ impl Widget for FeedsApp {
         self.paint(scene, transform, text_renderer, theme);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         // Persist anything the live drain queued since the last doc-holding
         // pass (keeps the CRDT current without waiting for `sync`).
-        self.flush_doc_writes(state);
+        self.flush_doc_writes(ctx.state);
         // Track the pointer everywhere so it's current when a modal closes.
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_mouse = Point::new(position.x / scale_factor, position.y / scale_factor);
+            self.last_mouse =
+                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
         }
         // An open dialog captures all input while it's up.
         if self.modal.is_some() {
-            self.handle_modal_event(event, scale_factor, *modifiers, state, path, handled);
+            self.handle_modal_event(
+                event,
+                ctx.scale_factor,
+                *ctx.modifiers,
+                ctx.state,
+                ctx.path,
+                ctx.handled,
+            );
             return;
         }
         // The popover owns input while open. Right-click still reaches the
@@ -4842,25 +4841,15 @@ impl Widget for FeedsApp {
         {
             if matches!(event, WindowEvent::Focused(false)) {
                 self.close_feed_menu();
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
-            self.feed_menu.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
-            );
+            self.feed_menu.handle_event(event, ctx);
             if let Some(selection) = self.feed_menu.take_selection()
                 && let Some(action) = self.feed_menu_actions.get(selection).copied()
                 && let Some(feed_id) = self.feed_menu_target
             {
-                self.apply_feed_menu_action(action, feed_id, state);
+                self.apply_feed_menu_action(action, feed_id, ctx.state);
             }
             if !self.feed_menu.is_open() {
                 self.feed_menu_target = None;
@@ -4872,13 +4861,14 @@ impl Widget for FeedsApp {
                     | WindowEvent::MouseWheel { .. }
                     | WindowEvent::CursorMoved { .. }
             ) {
-                *handled = true;
+                *ctx.handled = true;
             }
             return;
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_mouse = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_mouse =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -4886,8 +4876,8 @@ impl Widget for FeedsApp {
                 ..
             } => {
                 let p = self.last_mouse;
-                if self.click(p, state) {
-                    *handled = true;
+                if self.click(p, ctx.state) {
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseInput {
@@ -4900,24 +4890,24 @@ impl Widget for FeedsApp {
                 let p = self.last_mouse;
                 if let Some(id) = self.feed_at(p) {
                     self.open_feed_menu(id, p);
-                    *handled = true;
+                    *ctx.handled = true;
                 } else if self.feed_menu.is_open() {
                     self.close_feed_menu();
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let dy = match delta {
                     MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * 48.0,
-                    MouseScrollDelta::PixelDelta(p) => p.y / scale_factor,
+                    MouseScrollDelta::PixelDelta(p) => p.y / ctx.scale_factor,
                 };
                 self.scroll_pane_under_pointer(dy);
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::KeyboardInput {
                 event: key_event, ..
             } if key_event.state == ElementState::Pressed => {
-                self.handle_key(key_event, *modifiers, state, handled);
+                self.handle_key(key_event, *ctx.modifiers, ctx.state, ctx.handled);
             }
             _ => {}
         }
@@ -5291,9 +5281,10 @@ impl Widget for FeedsApp {
         &mut self,
         target: &str,
         action: &A11yAction,
-        state: &mut AutoCommit,
-        _path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
+        let (state, _) = ui::doc::document(state, path);
         if matches!(action, A11yAction::Focus | A11yAction::ScrollIntoView) {
             return true;
         }
@@ -5827,14 +5818,16 @@ mod tests {
                 let t = Instant::now();
                 a.handle_event(
                     &synth_event(),
-                    1.0,
-                    &winit::event::Modifiers::default(),
-                    doc,
-                    &automerge::ROOT,
-                    &mut handled,
-                    &mut focus,
-                    node,
-                    &TaffyTree::new(),
+                    &mut ui::widget::EventCtx {
+                        scale_factor: 1.0,
+                        modifiers: &winit::event::Modifiers::default(),
+                        state: doc,
+                        path: &automerge::ROOT,
+                        handled: &mut handled,
+                        focus_target: &mut focus,
+                        node_id: node,
+                        taffy: &TaffyTree::new(),
+                    },
                 );
                 t.elapsed()
             };
@@ -7102,14 +7095,16 @@ mod tests {
         let mut focus_target = None;
         a.handle_event(
             event,
-            1.0,
-            &mods,
-            doc,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: doc,
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         handled
     }
@@ -7122,14 +7117,16 @@ mod tests {
         let mut focus_target = None;
         a.handle_event(
             event,
-            1.0,
-            &winit::event::Modifiers::default(),
-            doc,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &winit::event::Modifiers::default(),
+                state: doc,
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         handled
     }

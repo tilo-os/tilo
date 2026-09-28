@@ -13,6 +13,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use ui::widget::{AppModel, ModelPath};
 
 use agent_provider_config::assign::{Layer, Preset, ResolveError, preset_plan};
 use agent_provider_config::local::{
@@ -26,7 +27,7 @@ use agent_provider_config::tasks::{self, PrivacyClass, TaskSpec};
 use agent_provider_config::{
     Credential, EndpointLocation, ModelCapability, ProviderProfile, ProviderProtocol,
 };
-use automerge::{AutoCommit, ObjId};
+
 use taffy::{NodeId, TaffyTree};
 use tilo_actions::{ActionBinding, Resource, ResourcePresentation};
 use tilo_model_gateway::{CredentialState, ProviderHealth, Reachability};
@@ -37,7 +38,7 @@ use ui::widget::{
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use winit::event::{Modifiers, WindowEvent};
+use winit::event::WindowEvent;
 use zeroize::Zeroize;
 
 use crate::ai_settings::{AccountSignIn, AiState, target_value};
@@ -2046,7 +2047,7 @@ fn choice_dropdown(
 }
 
 impl Widget for AiPane {
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
         if let Some(crate::actions::LocalPaneCommand::AgentModel(operation)) =
             self.command_state.get()
         {
@@ -2058,7 +2059,7 @@ impl Widget for AiPane {
         }
     }
 
-    fn update(&mut self, _state: &mut AutoCommit, _path: &ObjId) -> bool {
+    fn update(&mut self, _state: &mut AppModel, _path: &ModelPath) -> bool {
         let accounts_changed = self.account_store_changed();
         let revision = REVISION.load(Ordering::Relaxed);
         if revision != self.revision {
@@ -2161,37 +2162,12 @@ impl Widget for AiPane {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "The Widget event contract forwards input, CRDT state, focus/handled outputs, and layout to the composed settings pane."
-    )]
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let Some(composed) = &mut self.composed
-            && let Ok(children) = taffy.children(node_id)
+            && let Ok(children) = ctx.taffy.children(ctx.node_id)
             && let Some(&child) = children.first()
         {
-            composed.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                child,
-                taffy,
-            );
+            composed.handle_event(event, &mut ctx.reborrow(ctx.path, child));
         }
     }
 
@@ -2898,7 +2874,7 @@ mod tests {
         // and then exactly that one removal does.
         let control = Arc::new(RecordingControl::default());
         let mut pane = AiPane::from_parts(control.clone(), lifecycle_state(), true);
-        let mut doc = AutoCommit::new();
+        let mut doc = automerge::AutoCommit::new();
         pane.sync(&mut doc, &automerge::ROOT);
         assert!(control.calls().is_empty());
         let commands = ui::LocalState::new(None);
@@ -2934,7 +2910,7 @@ mod tests {
         let mut pane = AiPane::from_parts(control.clone(), lifecycle_state(), true)
             .with_operation_status(&status)
             .with_command_state(&commands);
-        let mut doc = AutoCommit::new();
+        let mut doc = automerge::AutoCommit::new();
 
         status.set(crate::actions::LocalOperationStatus::Running {
             token: token(&start),
@@ -3002,7 +2978,7 @@ mod tests {
         commands.set(Some(crate::actions::LocalPaneCommand::AgentModel(
             crate::actions::AgentModelOperation::StageAccelerator,
         )));
-        pane.sync(&mut AutoCommit::new(), &automerge::ROOT);
+        pane.sync(&mut automerge::AutoCommit::new(), &automerge::ROOT);
         assert_eq!(control.calls(), ["stage-accelerator"]);
     }
 

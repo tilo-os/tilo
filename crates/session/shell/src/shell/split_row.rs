@@ -3,8 +3,8 @@
 //! `ui::Row` doesn't serve — it's opinionated toward wrapping toolbar layouts.
 
 use std::collections::HashMap;
+use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, FlexDirection, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -32,12 +32,12 @@ impl SplitRow {
 }
 
 impl Widget for SplitRow {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.left.sync(state, path);
         self.right.sync(state, path);
     }
 
-    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         let a = self.left.update(state, path);
         let b = self.right.update(state, path);
         a || b
@@ -127,49 +127,20 @@ impl Widget for SplitRow {
             .draw(scene, transform, text_renderer, theme, presence);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        let Ok(children) = taffy.children(node_id) else {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        let Ok(children) = ctx.taffy.children(ctx.node_id) else {
             return;
         };
         if let Some(&left_child) = children.first() {
-            self.left.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                left_child,
-                taffy,
-            );
+            self.left
+                .handle_event(event, &mut ctx.reborrow(ctx.path, left_child));
         }
-        if *handled {
+        if *ctx.handled {
             return;
         }
         if let Some(&right_child) = children.get(1) {
-            self.right.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                right_child,
-                taffy,
-            );
+            self.right
+                .handle_event(event, &mut ctx.reborrow(ctx.path, right_child));
         }
     }
 

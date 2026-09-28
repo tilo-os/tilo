@@ -5,6 +5,7 @@ use tilo_automerge::ApplyIncoming as _;
 use ui::headless::test_support::{a11y_node_labelled, find_semantic};
 use ui::history_mode::pending_controls::PendingControlStatus;
 use ui::widget::Widget;
+use ui::widget::{AppModel, ModelPath};
 
 type ArmedReplacement = (
     std::sync::mpsc::Receiver<crate::app::ControlledRuntimeRequest>,
@@ -564,7 +565,7 @@ impl Widget for CustodyDeniedContainersRoot {
     fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
         self.child.document_history_definition()
     }
-    fn sync(&mut self, doc: &mut automerge::AutoCommit, path: &automerge::ObjId) {
+    fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
         self.child.sync(doc, path);
     }
     fn build_layout(
@@ -599,18 +600,9 @@ impl Widget for CustodyDeniedContainersRoot {
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        scale: f64,
-        modifiers: &winit::event::Modifiers,
-        doc: &mut automerge::AutoCommit,
-        path: &automerge::ObjId,
-        handled: &mut bool,
-        focus: &mut Option<taffy::NodeId>,
-        node: taffy::NodeId,
-        tree: &taffy::TaffyTree<()>,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) {
-        self.child.handle_event(
-            event, scale, modifiers, doc, path, handled, focus, node, tree,
-        );
+        self.child.handle_event(event, ctx);
     }
     fn children(&self) -> Vec<&dyn Widget> {
         vec![self.child.as_ref()]

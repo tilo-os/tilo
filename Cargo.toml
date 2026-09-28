@@ -87,6 +87,7 @@ members = [
     "apps/pdf-viewer",
     "apps/photos",
     "apps/print-centre",
+    "apps/publisher",
     "apps/remote",
     "apps/scratchpad",
     "apps/speed-test",
@@ -135,6 +136,7 @@ members = [
     "crates/collab/session-trace",
     "crates/collab/threshold-identity",
     "crates/collab/tilo-callstream",
+    "crates/collab/tilo-joined-room",
     "crates/collab/tilo-user-identity",
 
     # Dev
@@ -191,6 +193,7 @@ members = [
     "crates/packaging/package-store",
     "crates/packaging/tilo-app-package",
     "crates/packaging/tilo-app-package-cli",
+    "crates/packaging/registry-client",
     "crates/packaging/registry-server",
     "crates/packaging/registry-types",
     "crates/packaging/registry-web",

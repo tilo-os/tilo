@@ -6,15 +6,12 @@
 //! entry into the target registry's index and (for a self-hosted
 //! `file://` registry) re-sign the index with the operator key.
 //!
-//! The `file://` path is fully implemented + tested here. The
-//! `https://` path emits the signed entry to a registry server's
-//! `/publish` endpoint; the server-side blob ingest + index re-sign is
-//! the registry service's job (a `file://` directory is the reference
-//! for what that server does).
+//! This is the `file://` registry directory. An HTTP registry server takes
+//! uploads and owner-reviewed entries instead; `registry-client` speaks that.
 
 use std::path::Path;
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Result, anyhow, bail};
 
 use tilo_app_package::PackageId;
 use tilo_app_package::manifest::Arch;
@@ -197,47 +194,6 @@ pub async fn publish_to_dir(
         tapp_hash,
         registry_id: registry_id.to_string(),
     })
-}
-
-/// Serialise a signed entry as the JSON body a registry server's
-/// `/publish` endpoint accepts. The publisher signature in the entry
-/// IS the authentication — no separate password.
-///
-/// # Errors
-///
-/// Returns an error if `entry` fails to serialise.
-pub fn entry_publish_body(entry: &IndexEntry) -> Result<Vec<u8>> {
-    serde_json::to_vec_pretty(entry).map_err(|e| anyhow!("encode entry: {e}"))
-}
-
-/// POST a signed entry to an `https://` registry's `/publish`
-/// endpoint. The registry authenticates by verifying the entry's
-/// publisher signature and ingests the blob out of band from the
-/// entry's ticket. Not exercised in-tree (needs a live server); the
-/// `file://` path is the tested reference.
-///
-/// # Errors
-///
-/// Returns an error if `entry` fails to serialise, the request fails,
-/// or the registry responds with a non-success status.
-pub async fn emit_entry_https(base_url: &str, entry: &IndexEntry) -> Result<()> {
-    let url = format!("{}/publish", base_url.trim_end_matches('/'));
-    let body = entry_publish_body(entry)?;
-    let client = tilo_net::http::client()
-        .build()
-        .context("build registry HTTP client")?;
-    let resp = client
-        .post(&url)
-        .header("content-type", "application/json")
-        .header("x-tilo-publisher", &entry.publisher_identity)
-        .body(body)
-        .send()
-        .await
-        .map_err(|e| anyhow!("POST {url}: {e}"))?;
-    if !resp.status().is_success() {
-        bail!("registry rejected publish: HTTP {}", resp.status());
-    }
-    Ok(())
 }
 
 /// Convenience for a signed index built off a fresh (non-directory)

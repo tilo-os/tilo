@@ -173,21 +173,10 @@ impl<T, M: TreeModel> TreeView<T, M> {
     /// falls through to the tree; `Enter` commits and `Escape` cancels; every
     /// other key belongs to the field. Returns whether the event was
     /// consumed.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "forwards the Widget event contract to the embedded field"
-    )]
     pub(super) fn route_rename(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut automerge::AutoCommit,
-        path: &automerge::ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<taffy::NodeId>,
-        node_id: taffy::NodeId,
-        taffy: &taffy::TaffyTree<()>,
+        ctx: &mut crate::widget::EventCtx<'_>,
     ) -> bool {
         if self.rename.is_none() {
             return false;
@@ -223,12 +212,12 @@ impl<T, M: TreeModel> TreeView<T, M> {
             match logical_key {
                 Key::Named(NamedKey::Enter) => {
                     self.commit_rename();
-                    *handled = true;
+                    *ctx.handled = true;
                     return true;
                 }
                 Key::Named(NamedKey::Escape) => {
                     self.cancel_rename();
-                    *handled = true;
+                    *ctx.handled = true;
                     return true;
                 }
                 _ => {}
@@ -237,23 +226,13 @@ impl<T, M: TreeModel> TreeView<T, M> {
         let Some(field) = self.rename.as_mut() else {
             return false;
         };
-        field.input.handle_event(
-            event,
-            scale_factor,
-            &modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
-        );
+        field.input.handle_event(event, ctx);
         let _ = field.input.take_dirty();
         if keyboard {
             // Keys typed into the field never reach tree navigation.
-            *handled = true;
+            *ctx.handled = true;
         }
-        *handled
+        *ctx.handled
     }
 
     /// The drop target that performs `movement` on `id`, if the hierarchy

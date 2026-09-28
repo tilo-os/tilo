@@ -85,6 +85,7 @@ pub struct Caller {
     device_public_key: Option<[u8; 32]>,
     room: Option<String>,
     audience: crate::Audience,
+    foreign: bool,
 }
 
 impl Caller {
@@ -98,6 +99,7 @@ impl Caller {
             device_public_key: Some(device_public_key),
             room: None,
             audience: crate::Audience::BeyondDevice,
+            foreign: false,
         }
     }
 
@@ -111,6 +113,7 @@ impl Caller {
             device_public_key: None,
             room: None,
             audience: crate::Audience::LocalSession,
+            foreign: false,
         }
     }
 
@@ -124,6 +127,7 @@ impl Caller {
             room: None,
             // What an agent reads it hands to a model, which may not run here.
             audience: crate::Audience::BeyondDevice,
+            foreign: false,
         }
     }
 
@@ -140,7 +144,17 @@ impl Caller {
             // An app may carry what it reads off the device; nothing in its
             // admission says it will not.
             audience: crate::Audience::BeyondDevice,
+            foreign: false,
         }
+    }
+
+    /// Mark whether the caller acts from a foreign device: a Tilo runtime on
+    /// an operating system Tilo does not control, as its certificate says.
+    /// Workspaces it does not govern cap such a caller's role.
+    #[must_use]
+    pub fn from_foreign_device(mut self, foreign: bool) -> Self {
+        self.foreign = foreign;
+        self
     }
 
     /// Confine the caller to one room: the connection was admitted to that
@@ -181,6 +195,12 @@ impl Caller {
     #[must_use]
     pub const fn user_public_key(&self) -> Option<&[u8; 32]> {
         self.user_public_key.as_ref()
+    }
+
+    /// Whether the caller acts from a foreign device.
+    #[must_use]
+    pub const fn is_foreign_device(&self) -> bool {
+        self.foreign
     }
 
     /// The remote device that sent the request.

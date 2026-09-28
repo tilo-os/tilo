@@ -87,6 +87,16 @@ class AppResourceActionContractTests(unittest.TestCase):
             violations, apps = contract.audit(root)
             self.assertEqual(violations, [])
             self.assertEqual(apps, 1)
+        with self.subTest(phase='toolkit host with a hand-built multi-operation descriptor passes'):
+            root = self.fixture(
+                "pub fn app_root() {\n"
+                " let mut resource = tilo_actions::Resource::new(\"k:root\", \"k\", \"K\");\n"
+                " resource.actions.push(ActionSpec::operation(\"a\", \"A\", OperationKind::Effect, T, &()).unwrap());\n"
+                " ui::widget::resource_actions::background(root, resource, |_| {});\n"
+                "}\n"
+            )
+            violations, _ = contract.audit(root)
+            self.assertEqual(violations, [])
         with self.subTest(phase='toolkit host without resource descriptor fails'):
             root = self.fixture(
                 "pub fn app_root() {\n"
@@ -256,39 +266,6 @@ class AppResourceActionContractTests(unittest.TestCase):
             )
             violations, _ = contract.audit(root)
             self.assertFalse(any("not reachable" in item.reason for item in violations))
-
-    def test_legacy_operation_hooks_ratchet_to_the_single_entry(self):
-        source = (
-            "use tilo_actions::ActionSpec;\n"
-            "impl Widget for App { fn resources(&self, _: &Doc) -> Vec<Resource> {\n"
-            " vec![Resource::new(\"app\", \"app\", \"App\").with_action(\n"
-            " ActionSpec::operation(\"open\", \"Open\", OperationKind::View, \"app.open\", &()).unwrap())] }\n"
-            " fn local_resource_operation_handlers(&self) -> &'static [&'static str] { &[\"app.open\"] }\n"
-            " fn invoke_resource_operation_v2(&mut self, type_id: &str) { if type_id == \"app.open\" { open() } }\n"
-            " fn start_resource_operation(&mut self, type_id: &str) { if type_id == \"app.open\" { open() } } }\n"
-        )
-        rule = "legacy_resource_operation_override"
-
-        def with_ceiling(root: Path, ceiling: int) -> None:
-            baseline = root / contract.BASELINE
-            baseline.parent.mkdir(parents=True, exist_ok=True)
-            baseline.write_text(
-                f'[ratchets.{rule}]\n"apps/sample/src/lib.rs" = {ceiling}\n', encoding="utf-8"
-            )
-
-        with self.subTest(phase="a new legacy hook fails at the zero default"):
-            violations, _ = contract.audit(self.fixture(source))
-            self.assertTrue(any("start_operation" in item.reason for item in violations))
-        with self.subTest(phase="an audited ceiling admits the remaining hooks"):
-            root = self.fixture(source)
-            with_ceiling(root, 2)
-            violations, _ = contract.audit(root)
-            self.assertEqual(violations, [])
-        with self.subTest(phase="a migrated hook leaves a stale ceiling"):
-            root = self.fixture(source)
-            with_ceiling(root, 3)
-            violations, _ = contract.audit(root)
-            self.assertTrue(any(f"stale {rule} ceiling" in item.reason for item in violations))
 
     def test_agent_uses_generic_broker_catalogue_and_receipts(self):
         with self.subTest(phase='agent must use generic broker catalogue and receipts'):

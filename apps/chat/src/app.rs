@@ -16,6 +16,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{Receiver, SyncSender};
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::percent;
@@ -3679,7 +3680,8 @@ impl Widget for ChatApp {
     fn floating_surface_provider_mut(&mut self) -> Option<&mut dyn FloatingSurfaceProvider> {
         Some(self)
     }
-    fn sync(&mut self, doc: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
+        let (doc, _) = ui::doc::document(doc, path);
         while let Some(action) = self.feedback.pending.pop_front() {
             self.perform_action(doc, &action);
         }
@@ -4068,30 +4070,25 @@ impl Widget for ChatApp {
         self.draw(scene, tf, tr, theme, presence);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         // Embedded inputs request focus with a temporary layout node. Map
         // that actual request to Chat's retained keyboard/IME owner.
-        let was_handled = *handled;
-        let requested = self.dispatch_event(event, scale_factor, *modifiers, state, handled);
+        let was_handled = *ctx.handled;
+        let requested = self.dispatch_event(
+            event,
+            ctx.scale_factor,
+            *ctx.modifiers,
+            ctx.state,
+            ctx.handled,
+        );
         // Pointer motion that neither Chat nor its inputs consumed changes
         // nothing visible; every other event may. Marking every event dirty
         // made each pointer move anywhere on the desktop repaint everything.
-        if !matches!(event, WindowEvent::CursorMoved { .. }) || *handled || requested {
+        if !matches!(event, WindowEvent::CursorMoved { .. }) || *ctx.handled || requested {
             self.canonical_dirty = true;
         }
-        if !was_handled && requested && focus_target.is_none() {
-            *focus_target = Some(node_id);
+        if !was_handled && requested && ctx.focus_target.is_none() {
+            *ctx.focus_target = Some(ctx.node_id);
         }
     }
 
@@ -4263,9 +4260,10 @@ impl Widget for ChatApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
+        let (state, path) = ui::doc::document(state, path);
         if target.starts_with("context-menu:item:") {
             let Some(mut menu) = self.menu.take() else {
                 return false;
@@ -4694,7 +4692,7 @@ impl Widget for ChatApp {
     /// decoding in the background. A live-but-static call does **not** force
     /// continuous redraws (the roster/rings are static), so an idle call
     /// no longer pins a core.
-    fn update(&mut self, _doc: &mut AutoCommit, _path: &ObjId) -> bool {
+    fn update(&mut self, _doc: &mut AppModel, _path: &ModelPath) -> bool {
         // A bound media endpoint wakes the event loop; sync adopts it.
         let media_bound = self.media.poll_binding();
         // Re-run `sync` once after the first layout so the channel already in

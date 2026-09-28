@@ -20,14 +20,16 @@ fn send_key(editor: &mut BlockEditor, doc: &mut AutoCommit, key: &Key, modifiers
             event,
             is_synthetic: false,
         },
-        1.0,
-        &Modifiers::from(modifiers),
-        doc,
-        &ROOT,
-        &mut handled,
-        &mut None,
-        NodeId::new(0),
-        &TaffyTree::new(),
+        &mut crate::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &Modifiers::from(modifiers),
+            state: doc,
+            path: &ROOT,
+            handled: &mut handled,
+            focus_target: &mut None,
+            node_id: NodeId::new(0),
+            taffy: &TaffyTree::new(),
+        },
     );
     assert!(handled, "{key:?} must remain owned by the code editor");
     editor.sync(doc, &ROOT);

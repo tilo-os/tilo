@@ -169,14 +169,18 @@ pub enum DeviceFabricUiAction {
     StopRemoteAudio {
         session_id: [u8; 16],
     },
-    /// Answer "Join this speaker group?" on this device.
+    /// Answer "Join this speaker group?" or "Let it use this microphone?"
+    /// on this device.
     ResolveSpeakerGroupConsent {
         group: crate::shell::speaker_group::SpeakerGroupId,
+        kind: crate::shell::speaker_group_runtime::SpeakerConsentKind,
         approved: bool,
     },
-    /// Withdraw this device from a group led by another device.
+    /// Withdraw this device from a group led by another device, or stop
+    /// letting it listen with this device's microphone.
     LeaveSpeakerGroup {
         group: crate::shell::speaker_group::SpeakerGroupId,
+        kind: crate::shell::speaker_group_runtime::SpeakerConsentKind,
     },
     StartSpeakerGroupAudio {
         source_token: u64,

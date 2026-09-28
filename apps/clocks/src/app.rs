@@ -10,6 +10,7 @@ use std::{
 use taffy::{NodeId, TaffyTree};
 use ui::icons::Icon;
 use ui::widget::toggle_group::Segment;
+use ui::widget::{AppModel, ModelPath};
 use ui::widget::{
     Button, Card, CardGrid, Column, Container, Element, ModelView, ProgressBar, Row, Scrollable,
     Spacer, Text, TextInput, TextInputKind, TimePicker, TimeValue, ToggleGroup, Widget,
@@ -1346,7 +1347,7 @@ impl Widget for ClocksApp {
         self.state
             .with(|state| find(crate::actions::provide_resources(state), id))
     }
-    fn sync(&mut self, d: &mut AutoCommit, p: &ObjId) {
+    fn sync(&mut self, d: &mut AppModel, p: &ModelPath) {
         let tick_base = std::time::Instant::now();
         self.next_clock_tick = tick_base
             .checked_add(Duration::from_secs(1))
@@ -1452,26 +1453,9 @@ impl Widget for ClocksApp {
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus: &mut Option<NodeId>,
-        node: NodeId,
-        tree: &TaffyTree<()>,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) {
-        self.inner.handle_event(
-            event,
-            scale_factor,
-            modifiers,
-            doc,
-            path,
-            handled,
-            focus,
-            node,
-            tree,
-        );
+        self.inner.handle_event(event, ctx);
     }
     fn children(&self) -> Vec<&dyn Widget> {
         vec![self.inner.as_ref()]

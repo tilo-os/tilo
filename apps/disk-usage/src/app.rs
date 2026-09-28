@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::{Duration, Instant};
+use ui::widget::{AppModel, ModelPath};
 
 use ui::a11y::{AccessNode, AccessState, Role};
 use ui::automerge::{AutoCommit, ObjId};
@@ -329,12 +330,14 @@ impl Drop for DiskUsageApp {
 }
 
 impl Widget for DiskUsageApp {
-    fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, _) = ui::doc::document(state, path);
         if !self.shot_mode {
             self.recent = DiskUsageDoc::recent(state);
         }
     }
-    fn update(&mut self, state: &mut AutoCommit, _path: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+        let (state, _) = ui::doc::document(state, path);
         if let Some(outcome) = self
             .picker_rx
             .as_ref()
@@ -699,20 +702,9 @@ impl Widget for DiskUsageApp {
             }
         }
     }
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &ui::winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.pointer = Point::new(position.x / scale_factor, position.y / scale_factor);
+            self.pointer = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
         }
         if matches!(
             event,
@@ -736,13 +728,13 @@ impl Widget for DiskUsageApp {
                         } else {
                             self.start_scan(place.path, false);
                         }
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                 }
                 _ => {
                     if self.back_rect().contains(self.pointer) {
                         self.go_back();
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                 }
             }
@@ -786,8 +778,8 @@ impl Widget for DiskUsageApp {
         &mut self,
         action: &ui::a11y::Action,
         key_path: &[u64],
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         if !matches!(action, ui::a11y::Action::Activate) {
             return false;

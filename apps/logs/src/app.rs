@@ -35,6 +35,7 @@
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -2658,7 +2659,8 @@ impl Widget for LogsApp {
         Ok(true)
     }
 
-    fn sync(&mut self, doc: &mut AutoCommit, root: &ObjId) {
+    fn sync(&mut self, doc: &mut AppModel, root: &ModelPath) {
+        let (doc, root) = ui::doc::document(doc, root);
         // Upgrade old shared documents by removing the transient keys written
         // by previous Logs versions. Nothing below reads or writes view state
         // in the document.
@@ -2818,29 +2820,8 @@ impl Widget for LogsApp {
         // windows share one result; do not paint a second copy here.
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        doc: &mut AutoCommit,
-        root: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        if self.route_search_field(
-            event,
-            scale_factor,
-            *modifiers,
-            doc,
-            root,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
-        ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        if self.route_search_field(event, ctx) {
             return;
         }
 
@@ -2865,7 +2846,7 @@ impl Widget for LogsApp {
                     self.scroll += dy;
                     self.clamp_scroll();
                     self.dirty = true;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseInput {
@@ -2874,12 +2855,12 @@ impl Widget for LogsApp {
                 ..
             } => {
                 self.focused = true;
-                self.on_click(self.cursor, handled);
+                self.on_click(self.cursor, ctx.handled);
             }
             WindowEvent::KeyboardInput {
                 event: key_event, ..
             } if key_event.state == ElementState::Pressed => {
-                self.on_key(key_event, *modifiers, handled);
+                self.on_key(key_event, *ctx.modifiers, ctx.handled);
             }
             _ => {}
         }
@@ -2925,8 +2906,8 @@ impl Widget for LogsApp {
         &mut self,
         target: &str,
         action: &AccessAction,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         if target == "logs.search" {
             return self.search_input.perform_action(action, state, path);
@@ -3076,21 +3057,10 @@ impl LogsApp {
     /// whether the caller should return immediately — either because
     /// Escape cleared the search here, or because the field consumed the
     /// event.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "mirrors Widget::handle_event's own signature, which it routes"
-    )]
     fn route_search_field(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        doc: &mut AutoCommit,
-        root: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
         let search_rect = self.regions().search;
         self.search_input.apply_layout_external(Rect::new(
@@ -3126,8 +3096,8 @@ impl LogsApp {
             event,
             WindowEvent::KeyboardInput { event: key, .. }
                 if key.state == ElementState::Pressed
-                    && !modifiers.state().control_key()
-                    && !modifiers.state().super_key()
+                    && !ctx.modifiers.state().control_key()
+                    && !ctx.modifiers.state().super_key()
                     && (matches!(key.logical_key, Key::Character(_))
                         || matches!(key.logical_key, Key::Named(NamedKey::Backspace)))
         );
@@ -3150,7 +3120,7 @@ impl LogsApp {
             });
             self.scroll = 0.0;
             self.dirty = true;
-            *handled = true;
+            *ctx.handled = true;
             return true;
         }
 
@@ -3161,14 +3131,10 @@ impl LogsApp {
             let mut input_handled = false;
             self.search_input.handle_event(
                 event,
-                scale_factor,
-                &modifiers,
-                doc,
-                root,
-                &mut input_handled,
-                focus_target,
-                node_id,
-                taffy,
+                &mut ui::widget::EventCtx {
+                    handled: &mut input_handled,
+                    ..ctx.reborrow(ctx.path, ctx.node_id)
+                },
             );
             if self.search_input.take_dirty().is_some() {
                 self.filter.search = self.search_input.value().to_owned();
@@ -3178,7 +3144,7 @@ impl LogsApp {
                 input_handled = true;
             }
             if input_handled && !matches!(event, WindowEvent::CursorMoved { .. }) {
-                *handled = true;
+                *ctx.handled = true;
                 return true;
             }
         }

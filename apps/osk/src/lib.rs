@@ -17,8 +17,8 @@
 //!   typed with the keys, skin tones — and emoji chips for words that name one.
 //!
 //! ## Swipe-to-type + prediction (shipped here)
-//! * [`dict`] — a compact, embedded, offline English word-frequency
-//!   dictionary (~30k words).
+//! * [`dict`] — compact, embedded, offline word-frequency dictionaries
+//!   (English ~40k words, French ~50k), picked by the letter layout.
 //! * [`swipe`] — a SHARK²-style geometric + dictionary swipe decoder
 //!   ([`swipe::GeometricSwipeModel`]). The preferred FUTO/ExecuTorch model is
 //!   left as the clean [`swipe::SwipeModel`] trait seam (see that module for
@@ -101,7 +101,7 @@ pub mod touch_model;
 pub mod widget;
 
 pub use autocorrect::{Autocorrector, KeyAdjacency};
-pub use dict::{Dictionary, Entry};
+pub use dict::{Dictionary, Entry, Language};
 pub use emoji_panel::{EmojiPanel, PanelHit, PanelMode};
 pub use futo::FutoSwipeModel;
 pub use imclient::{

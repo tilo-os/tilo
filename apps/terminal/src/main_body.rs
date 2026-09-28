@@ -1,4 +1,5 @@
 use ui::ColorCompat;
+use ui::widget::{AppModel, ModelPath};
 use ui::{
     Theme,
     text_render::{FontChoice, TextRenderer, TextStyle, TextWeight},
@@ -2561,7 +2562,8 @@ impl Widget for TerminalWidget {
         taffy::Size::ZERO
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+        let (state, root) = ui::doc::document(state, root);
         self.reset_stale_local_session(state, root);
         self.find_input.sync(state, root);
         // Drain any bytes the PTY reader thread has queued and replay them
@@ -2616,7 +2618,8 @@ impl Widget for TerminalWidget {
         }
     }
 
-    fn update(&mut self, state: &mut AutoCommit, root: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, root: &ModelPath) -> bool {
+        let (state, root) = ui::doc::document(state, root);
         self.pump(state, root)
     }
 
@@ -2643,7 +2646,7 @@ impl Widget for TerminalWidget {
     /// flag so the reader can request the next one; the App's redraw drives
     /// `sync`, which drains the queued PTY bytes. The payload is unused — the
     /// wake itself is the signal.
-    fn on_external_event(&mut self, _payload: &str, _state: &mut AutoCommit, _root: &ObjId) {
+    fn on_external_event(&mut self, _payload: &str, _state: &mut AppModel, _root: &ModelPath) {
         self.wake_pending.store(false, Ordering::Release);
     }
 
@@ -2889,19 +2892,8 @@ impl Widget for TerminalWidget {
         self.draw_find_overlay(scene, transform, text_renderer, theme, presence);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        self.init_crdt(state, root);
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        self.init_crdt(ctx.state, ctx.path);
 
         // The menu is app-owned overlay content, so route every event to the
         // shared primitive while it is open and do not let keys/clicks fall
@@ -2912,19 +2904,15 @@ impl Widget for TerminalWidget {
             Widget::handle_event(
                 &mut self.context_menu,
                 event,
-                scale_factor,
-                modifiers,
-                state,
-                root,
-                &mut menu_handled,
-                focus_target,
-                node_id,
-                taffy,
+                &mut ui::widget::EventCtx {
+                    handled: &mut menu_handled,
+                    ..ctx.reborrow(ctx.path, ctx.node_id)
+                },
             );
             if let Some(index) = self.context_menu.take_selection() {
                 self.activate_context_menu_item(index);
             }
-            *handled |= menu_handled;
+            *ctx.handled |= menu_handled;
             return;
         }
 
@@ -2937,44 +2925,46 @@ impl Widget for TerminalWidget {
                 },
             ..
         } = event
-            && self.find_shortcut_matches(modifiers.state())
+            && self.find_shortcut_matches(ctx.modifiers.state())
             && matches!(logical_key, Key::Character(key) if key.eq_ignore_ascii_case("f"))
         {
             self.open_find();
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
 
         if self.find_open {
-            self.handle_find_event(
-                event,
-                scale_factor,
-                *modifiers,
-                state,
-                root,
-                focus_target,
-                node_id,
-                taffy,
-                handled,
-            );
+            self.handle_find_event(event, ctx);
             return;
         }
 
         match event {
             WindowEvent::MouseWheel { delta, .. } => {
-                self.handle_wheel_event(delta, *modifiers, handled);
+                self.handle_wheel_event(delta, *ctx.modifiers, ctx.handled);
             }
             WindowEvent::CursorMoved { position, .. } => {
-                self.handle_cursor_moved_event(*position, scale_factor, *modifiers, handled);
+                self.handle_cursor_moved_event(
+                    *position,
+                    ctx.scale_factor,
+                    *ctx.modifiers,
+                    ctx.handled,
+                );
             }
             WindowEvent::MouseInput {
                 state: element_state,
                 button,
                 ..
-            } => self.handle_mouse_button_event(*element_state, *button, *modifiers, handled),
+            } => {
+                self.handle_mouse_button_event(
+                    *element_state,
+                    *button,
+                    *ctx.modifiers,
+                    ctx.handled,
+                );
+            }
             WindowEvent::Focused(focused) if self.modes.focus_report => {
                 self.write_input(if *focused { b"\x1b[I" } else { b"\x1b[O" });
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -2986,7 +2976,12 @@ impl Widget for TerminalWidget {
                     },
                 ..
             } if *element_state == ElementState::Pressed => {
-                self.handle_key_press_event(logical_key, text.as_deref(), *modifiers, handled);
+                self.handle_key_press_event(
+                    logical_key,
+                    text.as_deref(),
+                    *ctx.modifiers,
+                    ctx.handled,
+                );
             }
             // Preedit is owned by the platform IME and must not be sent to a
             // terminal process. Once it commits, however, it is ordinary
@@ -2996,7 +2991,7 @@ impl Widget for TerminalWidget {
             {
                 self.write_input(text.as_bytes());
                 self.scroll_offset = 0;
-                *handled = true;
+                *ctx.handled = true;
             }
             _ => {}
         }
@@ -3140,8 +3135,8 @@ impl Widget for TerminalWidget {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         match action {
             ui::a11y::Action::ShowContextMenu => {
@@ -3163,8 +3158,8 @@ impl Widget for TerminalWidget {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         if target == self.terminal_transcript_target() {
             return self.perform_action(action, state, path);
@@ -3301,24 +3296,10 @@ impl TerminalWidget {
     /// keystrokes must not leak into the foreground process: the query is a
     /// private viewport aid, not shell input. Enter cycles matches, Shift
     /// Enter reverses, and Escape restores direct terminal typing.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Widget event forwarding requires the framework context for the embedded shared TextInput"
-    )]
-    fn handle_find_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-        handled: &mut bool,
-    ) {
+    fn handle_find_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_cursor_pos = Point::new(position.x / scale_factor, position.y / scale_factor);
+            self.last_cursor_pos =
+                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
         }
         if let WindowEvent::KeyboardInput {
             event:
@@ -3333,12 +3314,12 @@ impl TerminalWidget {
             match logical_key {
                 Key::Named(NamedKey::Escape) => {
                     self.close_find();
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 Key::Named(NamedKey::Enter) => {
-                    self.step_find_match(modifiers.state().shift_key());
-                    *handled = true;
+                    self.step_find_match(ctx.modifiers.state().shift_key());
+                    *ctx.handled = true;
                     return;
                 }
                 _ => {}
@@ -3352,17 +3333,17 @@ impl TerminalWidget {
         {
             if self.find_previous_rect.contains(self.last_cursor_pos) {
                 self.step_find_match(true);
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
             if self.find_next_rect.contains(self.last_cursor_pos) {
                 self.step_find_match(false);
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
             if self.find_close_rect.contains(self.last_cursor_pos) {
                 self.close_find();
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
         }
@@ -3371,21 +3352,17 @@ impl TerminalWidget {
         Widget::handle_event(
             &mut self.find_input,
             event,
-            scale_factor,
-            &modifiers,
-            state,
-            root,
-            &mut input_handled,
-            focus_target,
-            node_id,
-            taffy,
+            &mut ui::widget::EventCtx {
+                handled: &mut input_handled,
+                ..ctx.reborrow(ctx.path, ctx.node_id)
+            },
         );
         if self.find_input.value() != before {
             self.refresh_find_matches();
         }
         // A find overlay is a focus boundary. Even navigation keys and clicks
         // outside its panel must not reach a running shell behind it.
-        *handled = true;
+        *ctx.handled = true;
     }
 
     /// Helper for [`Widget::handle_event`]'s `WindowEvent::MouseWheel` arm.

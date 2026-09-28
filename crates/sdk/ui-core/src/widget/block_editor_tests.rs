@@ -347,14 +347,16 @@ fn image_attachments_size_reserve_and_guard_their_source() {
             let mut handled = false;
             editor.handle_event(
                 &event,
-                1.0,
-                &Modifiers::default(),
-                &mut doc,
-                &automerge::ROOT,
-                &mut handled,
-                &mut None,
-                NodeId::new(0),
-                &tree,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &Modifiers::default(),
+                    state: &mut doc,
+                    path: &automerge::ROOT,
+                    handled: &mut handled,
+                    focus_target: &mut None,
+                    node_id: NodeId::new(0),
+                    taffy: &tree,
+                },
             );
             assert!(handled);
             assert_eq!(editor.blocks[0].text(), source);
@@ -375,14 +377,16 @@ fn image_attachments_size_reserve_and_guard_their_source() {
         editor.begin_action_intercept();
         editor.handle_event(
             &event,
-            1.0,
-            &Modifiers::default(),
-            &mut doc,
-            &automerge::ROOT,
-            &mut false,
-            &mut None,
-            NodeId::new(0),
-            &tree,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &Modifiers::default(),
+                state: &mut doc,
+                path: &automerge::ROOT,
+                handled: &mut false,
+                focus_target: &mut None,
+                node_id: NodeId::new(0),
+                taffy: &tree,
+            },
         );
         assert_eq!(
             editor.blocks[0].text(),
@@ -569,14 +573,16 @@ fn pointer_and_keyboard_move_focus_and_selection_across_blocks() {
             let mut focus_target = None;
             e.handle_event(
                 ev,
-                1.0,
-                &mods,
-                &mut state,
-                &root,
-                &mut handled,
-                &mut focus_target,
-                NodeId::new(0),
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &mods,
+                    state: &mut state,
+                    path: &root,
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: NodeId::new(0),
+                    taffy: &taffy,
+                },
             );
         }
         assert_eq!(
@@ -625,14 +631,16 @@ fn pointer_and_keyboard_move_focus_and_selection_across_blocks() {
             let mut ft = None;
             e.handle_event(
                 ev,
-                1.0,
-                &ctrl_shift,
-                &mut state,
-                &root,
-                &mut handled,
-                &mut ft,
-                NodeId::new(0),
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &ctrl_shift,
+                    state: &mut state,
+                    path: &root,
+                    handled: &mut handled,
+                    focus_target: &mut ft,
+                    node_id: NodeId::new(0),
+                    taffy: &taffy,
+                },
             );
         };
 
@@ -690,14 +698,16 @@ fn pointer_and_keyboard_move_focus_and_selection_across_blocks() {
             let mut focus_target = None;
             editor.handle_event(
                 event,
-                1.0,
-                &Modifiers::default(),
-                &mut state,
-                &root,
-                &mut handled,
-                &mut focus_target,
-                NodeId::new(0),
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &Modifiers::default(),
+                    state: &mut state,
+                    path: &root,
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: NodeId::new(0),
+                    taffy: &taffy,
+                },
             );
             assert!(handled);
         };
@@ -997,14 +1007,16 @@ fn cross_block_selection_copies_deletes_pastes_and_replaces_coherently() {
             let mut focus_target = None;
             editor.handle_event(
                 event,
-                1.0,
-                &modifiers,
-                state,
-                &automerge::ROOT,
-                &mut handled,
-                &mut focus_target,
-                NodeId::new(0),
-                taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state,
+                    path: &automerge::ROOT,
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: NodeId::new(0),
+                    taffy,
+                },
             );
             assert!(handled);
         }
@@ -2360,14 +2372,16 @@ fn focused_block_ime_repaints_after_an_idle_paint() {
     let mut handled = false;
     editor.handle_event(
         &WindowEvent::Ime(winit::event::Ime::Preedit("candidate".into(), Some((0, 9)))),
-        1.0,
-        &Modifiers::default(),
-        &mut AutoCommit::new(),
-        &automerge::ROOT,
-        &mut handled,
-        &mut None,
-        NodeId::new(0),
-        &TaffyTree::new(),
+        &mut crate::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &Modifiers::default(),
+            state: &mut AutoCommit::new(),
+            path: &automerge::ROOT,
+            handled: &mut handled,
+            focus_target: &mut None,
+            node_id: NodeId::new(0),
+            taffy: &TaffyTree::new(),
+        },
     );
     assert!(handled);
     assert!(

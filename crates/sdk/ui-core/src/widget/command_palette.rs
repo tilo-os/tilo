@@ -4,6 +4,7 @@
 //! root path directly — there is no message layer.
 
 use crate::search::ListIndex;
+use crate::widget::{AppModel, ModelPath};
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -2096,8 +2097,6 @@ impl Widget for CommandPalette {
         self.platform = conventions;
     }
 
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -2217,22 +2216,11 @@ impl Widget for CommandPalette {
         text_renderer.set_text_scale(renderer_scale);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if !self.is_focused {
             return;
         }
-        if self.handle_pointer_event(event, scale_factor, state, path, handled) {
+        if self.handle_pointer_event(event, ctx.scale_factor, ctx.state, ctx.path, ctx.handled) {
             return;
         }
         if matches!(event, WindowEvent::Ime(_)) {
@@ -2256,7 +2244,7 @@ impl Widget for CommandPalette {
             if self.arg_state.is_none() && change == QueryEventChange::Edited {
                 self.rebuild();
             }
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
         if let WindowEvent::KeyboardInput {
@@ -2272,11 +2260,19 @@ impl Widget for CommandPalette {
             if *element_state != ElementState::Pressed {
                 return;
             }
-            let mods = modifiers.state();
+            let mods = ctx.modifiers.state();
             let shift = mods.shift_key();
             let ctrl = mods.control_key() || mods.super_key();
             if self.arg_state.is_some() {
-                self.handle_arg_key(event, logical_key, shift, ctrl, state, path, handled);
+                self.handle_arg_key(
+                    event,
+                    logical_key,
+                    shift,
+                    ctrl,
+                    ctx.state,
+                    ctx.path,
+                    ctx.handled,
+                );
                 return;
             }
             match logical_key {
@@ -2288,19 +2284,19 @@ impl Widget for CommandPalette {
                             .min(self.visible.len().saturating_sub(1));
                     }
                     // Consume even at the list end so it never scrolls the app.
-                    *handled = true;
+                    *ctx.handled = true;
                 }
                 Key::Named(NamedKey::ArrowUp) => {
                     self.cursor = self.cursor.saturating_sub(1);
-                    *handled = true;
+                    *ctx.handled = true;
                 }
                 Key::Named(NamedKey::Enter) => {
-                    self.activate_selected(state, path);
-                    *handled = true;
+                    self.activate_selected(ctx.state, ctx.path);
+                    *ctx.handled = true;
                 }
                 Key::Named(NamedKey::Escape) => {
                     self.is_focused = false;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
                 _ => {
                     let change = self.query_composition.handle_event(
@@ -2314,7 +2310,7 @@ impl Widget for CommandPalette {
                         self.rebuild();
                     }
                     if change != QueryEventChange::Ignored {
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                 }
             }
@@ -2510,8 +2506,8 @@ impl Widget for CommandPalette {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         match action {
             crate::a11y::Action::Focus | crate::a11y::Action::Activate => {
@@ -2526,10 +2522,11 @@ impl Widget for CommandPalette {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
+        let (state, path) = crate::doc::document(state, path);
 
         if target == "command-palette:query" {
             return match action {
@@ -2578,14 +2575,16 @@ impl CommandPalette {
         <Self as Widget>::handle_event(
             self,
             event,
-            1.0,
-            modifiers,
-            state,
-            path,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers,
+                state,
+                path,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         handled
     }
@@ -2793,14 +2792,16 @@ mod tests {
 
             p.handle_event(
                 &event,
-                1.0,
-                &modifiers,
-                &mut doc,
-                &doc_root,
-                &mut handled,
-                &mut focus,
-                node,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state: &mut doc,
+                    path: &doc_root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &taffy,
+                },
             );
 
             assert_eq!(p.query(), "h", "typing must update the query string");
@@ -3297,14 +3298,16 @@ mod tests {
         let node = taffy.leaf_node(Style::default());
         p.handle_event(
             event,
-            1.0,
-            &modifiers,
-            &mut doc,
-            &doc_root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &modifiers,
+                state: &mut doc,
+                path: &doc_root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
     }
 
@@ -3451,14 +3454,16 @@ mod tests {
                 let node = taffy.leaf_node(Style::default());
                 p.handle_event(
                     &key_press(Key::Named(NamedKey::ArrowDown)),
-                    1.0,
-                    &Modifiers::default(),
-                    &mut doc,
-                    &root,
-                    &mut handled,
-                    &mut focus,
-                    node,
-                    &taffy,
+                    &mut crate::widget::EventCtx {
+                        scale_factor: 1.0,
+                        modifiers: &Modifiers::default(),
+                        state: &mut doc,
+                        path: &root,
+                        handled: &mut handled,
+                        focus_target: &mut focus,
+                        node_id: node,
+                        taffy: &taffy,
+                    },
                 );
                 assert!(handled, "ArrowDown must be consumed by the palette");
             }
@@ -3811,7 +3816,17 @@ mod tests {
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let node = taffy.leaf_node(Style::default());
         p.handle_event(
-            event, 1.0, &modifiers, &mut doc, &root, handled, &mut focus, node, &taffy,
+            event,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &modifiers,
+                state: &mut doc,
+                path: &root,
+                handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
     }
 }

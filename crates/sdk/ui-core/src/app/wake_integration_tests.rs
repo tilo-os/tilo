@@ -1,6 +1,7 @@
 use super::*;
 use crate::view::{FreezeThaw, ViewContribution};
 use crate::wake::{WakeEvent, WakeHandle, WakeScope};
+use crate::widget::{AppModel, ModelPath};
 use crate::{LatestRequest, LocalState};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -38,7 +39,7 @@ impl Drop for CaptureRoot {
 }
 
 impl Widget for CaptureRoot {
-    fn sync(&mut self, _: &mut automerge::AutoCommit, _: &automerge::ObjId) {
+    fn sync(&mut self, _: &mut AppModel, _: &ModelPath) {
         self.capture("sync");
     }
 
@@ -66,22 +67,7 @@ impl Widget for CaptureRoot {
     ) {
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "signature is fixed by the Widget trait"
-    )]
-    fn handle_event(
-        &mut self,
-        _: &WindowEvent,
-        _: f64,
-        _: &winit::event::Modifiers,
-        _: &mut automerge::AutoCommit,
-        _: &automerge::ObjId,
-        _: &mut bool,
-        _: &mut Option<NodeId>,
-        _: NodeId,
-        _: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, _: &WindowEvent, _ctx: &mut crate::widget::EventCtx<'_>) {
         self.capture("event");
     }
 

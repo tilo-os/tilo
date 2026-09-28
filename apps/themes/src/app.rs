@@ -17,6 +17,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Instant;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::length;
@@ -1333,52 +1334,19 @@ impl ThemesApp {
 
     /// Forward the event into each top-bar button (part of
     /// [`Widget::handle_event`]).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "forwards the same independently-meaningful parameters Widget::handle_event receives; a context struct would just be destructured back apart at every child dispatch"
-    )]
-    fn handle_topbar_buttons(
-        &mut self,
-        event: &WindowEvent,
-        scale: f64,
-        m: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_topbar_buttons(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let Some(n) = self.topbar_toggle_node {
-            self.gallery_toggle.handle_event(
-                event,
-                scale,
-                &m,
-                state,
-                path,
-                handled,
-                focus_target,
-                n,
-                taffy,
-            );
+            self.gallery_toggle
+                .handle_event(event, &mut ctx.reborrow(ctx.path, n));
         }
         for (b, c) in self.topbar_buttons.iter_mut().zip(
             self.topbar_actions_node
-                .and_then(|n| taffy.children(n).ok())
+                .and_then(|n| ctx.taffy.children(n).ok())
                 .unwrap_or_default()
                 .iter(),
         ) {
-            b.handle_event(
-                event,
-                scale,
-                &m,
-                state,
-                path,
-                handled,
-                focus_target,
-                *c,
-                taffy,
-            );
-            if *handled {
+            b.handle_event(event, &mut ctx.reborrow(ctx.path, *c));
+            if *ctx.handled {
                 return;
             }
         }
@@ -1389,20 +1357,10 @@ impl ThemesApp {
     /// `true` if the caller should stop dispatching — either the gallery
     /// consumed the event, or a pointer press inside the open flap is
     /// swallowed so it can't fall through to the content beneath.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "forwards the same independently-meaningful parameters Widget::handle_event receives; a context struct would just be destructured back apart at every child dispatch"
-    )]
     fn handle_gallery_event(
         &mut self,
         event: &WindowEvent,
-        scale: f64,
-        m: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        taffy: &TaffyTree<()>,
+        ctx: &mut ui::widget::EventCtx<'_>,
         overlay: bool,
         gallery_open: bool,
     ) -> bool {
@@ -1415,18 +1373,9 @@ impl ThemesApp {
         let Some(n) = self.gallery_node else {
             return false;
         };
-        self.gallery.handle_event(
-            event,
-            scale,
-            &m,
-            state,
-            path,
-            handled,
-            focus_target,
-            n,
-            taffy,
-        );
-        if *handled {
+        self.gallery
+            .handle_event(event, &mut ctx.reborrow(ctx.path, n));
+        if *ctx.handled {
             // Selecting a theme from the open flap dismisses it so the
             // narrow window returns to the preview + customizer (the
             // master→detail return).
@@ -1443,7 +1392,7 @@ impl ThemesApp {
             } = event
             && self.gallery_overlay_rect.contains(self.last_cursor)
         {
-            *handled = true;
+            *ctx.handled = true;
             return true;
         }
         false
@@ -1568,7 +1517,8 @@ impl Widget for ThemesApp {
         self.actions.take_committed()
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, path) = ui::doc::document(state, path);
         if let Some(preview) = self.narrow_view_request.take() {
             self.narrow_view_chosen = true;
             self.set_narrow_preview(preview);
@@ -1832,48 +1782,21 @@ impl Widget for ThemesApp {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Widget event routing forwards the event, scale, modifiers, CRDT state, focus outputs and layout context"
-    )]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one event dispatch covering every region of the app, in hit-test order"
-    )]
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale: f64,
-        m: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        _node: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         // Pointer-capture priority: a live picker / slider drag in the
         // customizer must keep receiving events wherever the cursor goes.
         if self.customizer.wants_pointer_capture() {
             if let Some(n) = self.customizer_node {
-                self.customizer.handle_event(
-                    event,
-                    scale,
-                    m,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    n,
-                    taffy,
-                );
+                self.customizer
+                    .handle_event(event, &mut ctx.reborrow(ctx.path, n));
             }
             return;
         }
 
         // Track the cursor for the toggle + scrim hit tests.
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_cursor = Point::new(position.x / scale, position.y / scale);
+            self.last_cursor =
+                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
         }
 
         let overlay = self.layout_class() == SplitLayout::Overlay;
@@ -1889,82 +1812,44 @@ impl Widget for ThemesApp {
             self.narrow_view_chosen = true;
             self.set_narrow_preview(false);
             self.narrow_tabs.set_focus(true);
-            *focus_target = self.narrow_tabs_node;
-            *handled = true;
+            *ctx.focus_target = self.narrow_tabs_node;
+            *ctx.handled = true;
             return;
         }
         if overlay
             && !gallery_open
             && let Some(node) = self.narrow_tabs_node
         {
-            self.narrow_tabs.handle_event(
-                event,
-                scale,
-                m,
-                state,
-                path,
-                handled,
-                focus_target,
-                node,
-                taffy,
-            );
-            if *handled {
+            self.narrow_tabs
+                .handle_event(event, &mut ctx.reborrow(ctx.path, node));
+            if *ctx.handled {
                 return;
             }
         }
 
-        if self.handle_overlay_shortcuts(event, overlay, gallery_open, handled) {
+        if self.handle_overlay_shortcuts(event, overlay, gallery_open, ctx.handled) {
             return;
         }
 
-        self.handle_topbar_buttons(event, scale, *m, state, path, handled, focus_target, taffy);
-        if *handled {
+        self.handle_topbar_buttons(event, ctx);
+        if *ctx.handled {
             return;
         }
 
-        if self.handle_gallery_event(
-            event,
-            scale,
-            *m,
-            state,
-            path,
-            handled,
-            focus_target,
-            taffy,
-            overlay,
-            gallery_open,
-        ) {
+        if self.handle_gallery_event(event, ctx, overlay, gallery_open) {
             return;
         }
 
         if let Some(n) = self.customizer_node {
-            self.customizer.handle_event(
-                event,
-                scale,
-                m,
-                state,
-                path,
-                handled,
-                focus_target,
-                n,
-                taffy,
-            );
-            if *handled {
+            self.customizer
+                .handle_event(event, &mut ctx.reborrow(ctx.path, n));
+            if *ctx.handled {
                 return;
             }
         }
         if let Some(n) = self.preview_node {
-            self.preview.handle_event(
-                event,
-                scale,
-                m,
-                state,
-                path,
-                handled,
-                focus_target,
-                n,
-                taffy,
-            );
+            self.preview
+                .handle_event(event, &mut ctx.reborrow(ctx.path, n));
         }
     }
 
@@ -2211,17 +2096,45 @@ mod tests {
         .unwrap();
         assert!(
             app.narrow_tabs
-                .invoke_resource_operation_v2(
-                    tilo_actions::OperationKind::View,
-                    "tilo.ui.segmented.select",
-                    &payload,
-                    &state.doc,
+                .start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        tilo_actions::InvocationId::new(),
+                        tilo_actions::OperationKind::View,
+                        "tilo.ui.segmented.select",
+                        &payload,
+                    ),
+                    &mut state.doc,
                     &state.root,
                 )
                 .unwrap()
                 .is_some()
         );
         app.sync(&mut state.doc, &state.root);
+    }
+
+    /// Deliver one event at `node` with default modifiers; returns whether it was handled.
+    fn send(
+        app: &mut ThemesApp,
+        event: &WindowEvent,
+        state: &mut ui::State,
+        (node, tree): (NodeId, &TaffyTree<()>),
+        focus: &mut Option<NodeId>,
+    ) -> bool {
+        let mut handled = false;
+        app.handle_event(
+            event,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &winit::event::Modifiers::default(),
+                state: &mut state.doc,
+                path: &state.root,
+                handled: &mut handled,
+                focus_target: focus,
+                node_id: node,
+                taffy: tree,
+            },
+        );
+        handled
     }
 
     fn key_press(logical_key: Key) -> WindowEvent {
@@ -2358,19 +2271,7 @@ mod tests {
             button: MouseButton::Left,
         };
         for event in [&cursor, &click] {
-            let mut handled = false;
-            let mut focus = None;
-            app.handle_event(
-                event,
-                1.0,
-                &winit::event::Modifiers::default(),
-                &mut state.doc,
-                &state.root,
-                &mut handled,
-                &mut focus,
-                node,
-                &tree,
-            );
+            send(&mut app, event, &mut state, (node, &tree), &mut None);
         }
         route_narrow_view_invocation(&mut app, &mut state);
         assert!(app.narrow_preview);
@@ -2387,19 +2288,8 @@ mod tests {
         assert!(app.narrow_preview);
         (tree, node) = layout_narrow(&mut app, 480.0);
         let event = key_press(Key::Named(NamedKey::Escape));
-        let mut handled = false;
         let mut focus = None;
-        app.handle_event(
-            &event,
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut state.doc,
-            &state.root,
-            &mut handled,
-            &mut focus,
-            node,
-            &tree,
-        );
+        let handled = send(&mut app, &event, &mut state, (node, &tree), &mut focus);
         assert!(handled && !app.narrow_preview);
         assert_eq!(focus, app.narrow_tabs_node);
         assert!(app.narrow_tabs.is_focused());
@@ -2411,18 +2301,7 @@ mod tests {
         // Focus stays on the compound selector, so ArrowRight can re-open
         // Full preview without exposing or focusing the hidden customizer.
         let event = key_press(Key::Named(NamedKey::ArrowRight));
-        let mut handled = false;
-        app.handle_event(
-            &event,
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut state.doc,
-            &state.root,
-            &mut handled,
-            &mut focus,
-            node,
-            &tree,
-        );
+        let handled = send(&mut app, &event, &mut state, (node, &tree), &mut focus);
         assert!(handled);
         route_narrow_view_invocation(&mut app, &mut state);
         assert!(app.narrow_preview);

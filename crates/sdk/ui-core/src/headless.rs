@@ -47,7 +47,7 @@ use crate::state::State;
 use crate::synthetic_input::key_event;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::widget::{TaffyTreeExt, Widget};
+use crate::widget::{EventCtx, TaffyTreeExt, Widget};
 
 /// Viewport the driver lays out at unless a spec overrides it. Matches the
 /// default `--shots` viewport so a driven frame and a screenshot agree.
@@ -1451,6 +1451,16 @@ impl FrameHarness {
         self.try_relayout()
     }
 
+    /// Run one frame that rebuilds the whole layout tree, as a structural
+    /// change does, even when no widget reported one.
+    ///
+    /// # Errors
+    /// As [`Self::resize`].
+    pub fn recompose(&mut self) -> Result<(), crate::widget::WidgetLayoutError> {
+        self.invalidate_layout_tree();
+        self.try_relayout()
+    }
+
     /// [`Self::relayout_at`] under `theme`, which later frames keep.
     ///
     /// # Errors
@@ -1496,14 +1506,16 @@ impl FrameHarness {
         let mut focus_target = None;
         self.root.handle_event(
             event,
-            self.input_scale,
-            modifiers,
-            &mut self.state.doc,
-            &self.state.root,
-            &mut handled,
-            &mut focus_target,
-            self.child_node,
-            &self.taffy,
+            &mut EventCtx {
+                scale_factor: self.input_scale,
+                modifiers,
+                state: &mut self.state.doc,
+                path: &self.state.root,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: self.child_node,
+                taffy: &self.taffy,
+            },
         );
         RootDispatch {
             handled,
@@ -3163,14 +3175,16 @@ impl FrameHarness {
                 |widget, doc, path| {
                     widget.handle_event(
                         event,
-                        self.input_scale,
-                        &self.modifiers,
-                        doc,
-                        path,
-                        &mut handled,
-                        &mut focus,
-                        target,
-                        &self.taffy,
+                        &mut EventCtx {
+                            scale_factor: self.input_scale,
+                            modifiers: &self.modifiers,
+                            state: doc,
+                            path,
+                            handled: &mut handled,
+                            focus_target: &mut focus,
+                            node_id: target,
+                            taffy: &self.taffy,
+                        },
                     )
                 },
             )
@@ -4547,14 +4561,16 @@ impl FrameHarness {
             if let Some(palette) = self.action_palette.as_deref_mut() {
                 palette.handle_event(
                     event,
-                    self.input_scale,
-                    &self.modifiers,
-                    &mut self.state.doc,
-                    &self.state.root,
-                    &mut false,
-                    &mut None,
-                    NodeId::from(0usize),
-                    &self.taffy,
+                    &mut EventCtx {
+                        scale_factor: self.input_scale,
+                        modifiers: &self.modifiers,
+                        state: &mut self.state.doc,
+                        path: &self.state.root,
+                        handled: &mut false,
+                        focus_target: &mut None,
+                        node_id: NodeId::from(0usize),
+                        taffy: &self.taffy,
+                    },
                 );
             }
             self.finish_action_palette_input();
@@ -4655,14 +4671,16 @@ impl FrameHarness {
         } else if !history_handled && self.history_layout.is_none_or(|layout| layout.app_visible) {
             self.root.handle_event(
                 event,
-                self.input_scale,
-                &self.modifiers,
-                &mut self.state.doc,
-                &self.state.root,
-                &mut handled,
-                &mut focus_target,
-                self.child_node,
-                &self.taffy,
+                &mut EventCtx {
+                    scale_factor: self.input_scale,
+                    modifiers: &self.modifiers,
+                    state: &mut self.state.doc,
+                    path: &self.state.root,
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: self.child_node,
+                    taffy: &self.taffy,
+                },
             );
         }
         if let Some(p) = self.profiler.as_mut() {
@@ -8326,7 +8344,7 @@ mod tests {
             "StructureReplacingEditor"
         }
 
-        fn sync(&mut self, state: &mut automerge::AutoCommit, path: &automerge::ObjId) {
+        fn sync(&mut self, state: &mut crate::widget::AppModel, path: &crate::widget::ModelPath) {
             if std::mem::take(&mut self.replace_during_sync) {
                 let value = self.current.accessibility().unwrap().value.unwrap();
                 let current = std::mem::replace(&mut self.current, Self::editor(&value));
@@ -8336,18 +8354,7 @@ mod tests {
             self.current.sync(state, path);
         }
 
-        fn handle_event(
-            &mut self,
-            event: &WindowEvent,
-            scale: f64,
-            modifiers: &winit::event::Modifiers,
-            state: &mut automerge::AutoCommit,
-            path: &automerge::ObjId,
-            handled: &mut bool,
-            focus: &mut Option<NodeId>,
-            node: NodeId,
-            tree: &TaffyTree<()>,
-        ) {
+        fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
             let replace = matches!(
                 event,
                 WindowEvent::KeyboardInput {
@@ -8359,12 +8366,10 @@ mod tests {
                     ..
                 }
             );
-            self.current.handle_event(
-                event, scale, modifiers, state, path, handled, focus, node, tree,
-            );
+            self.current.handle_event(event, ctx);
             if replace {
                 self.replace_before_relayout();
-                *handled = true;
+                *ctx.handled = true;
             }
         }
 
@@ -8446,8 +8451,6 @@ mod tests {
             true
         }
 
-        fn sync(&mut self, _state: &mut automerge::AutoCommit, _path: &automerge::ObjId) {}
-
         fn build_layout(
             &mut self,
             taffy: &mut TaffyTree<()>,
@@ -8487,18 +8490,7 @@ mod tests {
         ) {
         }
 
-        fn handle_event(
-            &mut self,
-            event: &WindowEvent,
-            _scale_factor: f64,
-            _modifiers: &winit::event::Modifiers,
-            _state: &mut automerge::AutoCommit,
-            _path: &automerge::ObjId,
-            handled: &mut bool,
-            _focus_target: &mut Option<NodeId>,
-            _node_id: NodeId,
-            _taffy: &TaffyTree<()>,
-        ) {
+        fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
             if self.focused
                 && matches!(
                     event,
@@ -8514,15 +8506,15 @@ mod tests {
             {
                 self.activations
                     .set(self.activations.get().saturating_add(1));
-                *handled = true;
+                *ctx.handled = true;
             }
         }
 
         fn perform_action(
             &mut self,
             action: &crate::a11y::Action,
-            _state: &mut automerge::AutoCommit,
-            _path: &automerge::ObjId,
+            _state: &mut crate::widget::AppModel,
+            _path: &crate::widget::ModelPath,
         ) -> bool {
             if matches!(action, crate::a11y::Action::Activate) {
                 self.activations
@@ -9603,7 +9595,12 @@ mod tests {
         ready: bool,
     }
     impl Widget for LateRecordProbe {
-        fn update(&mut self, doc: &mut automerge::AutoCommit, _: &automerge::ObjId) -> bool {
+        fn update(
+            &mut self,
+            doc: &mut crate::widget::AppModel,
+            path: &crate::widget::ModelPath,
+        ) -> bool {
+            let (doc, _) = crate::doc::document(doc, path);
             self.frames = self.frames.saturating_add(1);
             if self.frames == 2 {
                 doc.put(automerge::ROOT, "loaded", "initial content")
@@ -9614,7 +9611,8 @@ mod tests {
         fn record_intent(&self) -> Option<crate::record::RecordCheckout> {
             (self.frames >= 2).then(|| self.checkout.clone())
         }
-        fn sync(&mut self, doc: &mut automerge::AutoCommit, _: &automerge::ObjId) {
+        fn sync(&mut self, doc: &mut crate::widget::AppModel, path: &crate::widget::ModelPath) {
+            let (doc, _) = crate::doc::document(doc, path);
             self.ready =
                 crate::record::identity(doc).is_some_and(|record| record.id == self.checkout.id);
         }
@@ -9641,23 +9639,6 @@ mod tests {
             _: &PresenceCtx,
         ) {
         }
-        #[allow(
-            clippy::too_many_arguments,
-            reason = "the probe implements the fixed Widget event signature"
-        )]
-        fn handle_event(
-            &mut self,
-            _: &WindowEvent,
-            _: f64,
-            _: &winit::event::Modifiers,
-            _: &mut automerge::AutoCommit,
-            _: &automerge::ObjId,
-            _: &mut bool,
-            _: &mut Option<NodeId>,
-            _: NodeId,
-            _: &TaffyTree<()>,
-        ) {
-        }
         fn name(&self) -> &'static str {
             "LateRecordProbe"
         }
@@ -9667,10 +9648,11 @@ mod tests {
         fn perform_action(
             &mut self,
             action: &crate::a11y::Action,
-            doc: &mut automerge::AutoCommit,
-            _: &automerge::ObjId,
+            doc: &mut crate::widget::AppModel,
+            path: &crate::widget::ModelPath,
         ) -> bool {
             use automerge::ReadDoc;
+            let (doc, _) = crate::doc::document(doc, path);
 
             if self.ready && matches!(action, crate::a11y::Action::Activate) {
                 doc.put(automerge::ROOT, "payload", "late record content")
@@ -9695,7 +9677,6 @@ mod tests {
     }
     impl Widget for RecordRootProbe {
         crate::testing::inert_widget_methods!(
-            sync,
             leaf_layout,
             apply_layout,
             draw,
@@ -10371,7 +10352,6 @@ mod a11y_driver_tests {
     }
 
     impl Widget for Strip {
-        fn sync(&mut self, _s: &mut automerge::AutoCommit, _p: &automerge::ObjId) {}
         fn build_layout(
             &mut self,
             taffy: &mut TaffyTree<()>,
@@ -10390,12 +10370,6 @@ mod a11y_driver_tests {
             _tx: &mut crate::text_render::TextRenderer,
             _th: &crate::theme::Theme,
             _pr: &PresenceCtx,
-        ) {
-        }
-        fn handle_event_ctx(
-            &mut self,
-            _event: &WindowEvent,
-            _ctx: &mut crate::widget::EventCtx<'_>,
         ) {
         }
         fn name(&self) -> &'static str {
@@ -10445,8 +10419,8 @@ mod a11y_driver_tests {
             &mut self,
             action: &Action,
             key_path: &[u64],
-            _s: &mut automerge::AutoCommit,
-            _p: &automerge::ObjId,
+            _s: &mut crate::widget::AppModel,
+            _p: &crate::widget::ModelPath,
         ) -> bool {
             let Some(&key) = key_path.first() else {
                 return false;
@@ -10669,8 +10643,6 @@ mod undo_driver_tests {
     }
 
     impl crate::widget::Widget for Typer {
-        fn sync(&mut self, _s: &mut automerge::AutoCommit, _p: &automerge::ObjId) {}
-
         fn build_layout(
             &mut self,
             taffy: &mut TaffyTree<()>,
@@ -10712,11 +10684,10 @@ mod undo_driver_tests {
         ) {
         }
 
-        fn handle_event_ctx(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
             use automerge::{ReadDoc, transaction::Transactable};
 
             let doc = &mut *ctx.state;
-            let handled = &mut *ctx.handled;
             let WindowEvent::KeyboardInput { event: ke, .. } = event else {
                 return;
             };
@@ -10735,7 +10706,7 @@ mod undo_driver_tests {
             let len = doc.length(&obj);
             doc.splice_text(&obj, len, 0, c.as_str()).unwrap();
             self.pending = true;
-            *handled = true;
+            *ctx.handled = true;
         }
 
         fn name(&self) -> &'static str {
@@ -10953,8 +10924,6 @@ mod dispatched_action_driver_tests {
     }
 
     impl crate::widget::Widget for ActionEditor {
-        fn sync(&mut self, _s: &mut automerge::AutoCommit, _p: &automerge::ObjId) {}
-
         fn build_layout(
             &mut self,
             taffy: &mut TaffyTree<()>,
@@ -10996,7 +10965,7 @@ mod dispatched_action_driver_tests {
         ) {
         }
 
-        fn handle_event_ctx(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
             let doc = &mut *ctx.state;
             let handled = &mut *ctx.handled;
             let text = match event {
@@ -11039,9 +11008,10 @@ mod dispatched_action_driver_tests {
             &mut self,
             action: &crate::a11y::Action,
             _key_path: &[u64],
-            doc: &mut automerge::AutoCommit,
-            _path: &automerge::ObjId,
+            doc: &mut crate::widget::AppModel,
+            path: &crate::widget::ModelPath,
         ) -> bool {
+            let (doc, _) = crate::doc::document(doc, path);
             if !matches!(action, crate::a11y::Action::Activate) {
                 return false;
             }
@@ -11394,7 +11364,7 @@ mod prepared_driver_tests {
                 local.writer().set("initial callback".into());
             }
         }
-        fn sync(&mut self, _: &mut automerge::AutoCommit, _: &automerge::ObjId) {
+        fn sync(&mut self, _: &mut crate::widget::AppModel, _: &crate::widget::ModelPath) {
             self.observed
                 .syncs
                 .set(self.observed.syncs.get().saturating_add(1));
@@ -11438,24 +11408,14 @@ mod prepared_driver_tests {
             _: &PresenceCtx,
         ) {
         }
-        fn handle_event(
-            &mut self,
-            event: &WindowEvent,
-            _: f64,
-            _: &winit::event::Modifiers,
-            doc: &mut automerge::AutoCommit,
-            _: &automerge::ObjId,
-            handled: &mut bool,
-            _: &mut Option<NodeId>,
-            _: NodeId,
-            _: &TaffyTree<()>,
-        ) {
+        fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
             if let WindowEvent::KeyboardInput { event, .. } = event
                 && self.focused
                 && event.state == ElementState::Pressed
                 && let Some(text) = event.text.as_deref()
             {
-                let before = doc
+                let before = ctx
+                    .state
                     .get(ROOT, "body")
                     .unwrap()
                     .unwrap()
@@ -11463,8 +11423,10 @@ mod prepared_driver_tests {
                     .as_str()
                     .unwrap()
                     .to_owned();
-                doc.put(ROOT, "body", format!("{before}{text}")).unwrap();
-                *handled = true;
+                ctx.state
+                    .put(ROOT, "body", format!("{before}{text}"))
+                    .unwrap();
+                *ctx.handled = true;
             }
         }
         fn set_undo_status(&mut self, status: &mut dyn FnMut() -> crate::undo::UndoStatus) {
@@ -12056,7 +12018,7 @@ mod framed_tests {
     }
 
     impl Widget for Probe {
-        fn sync(&mut self, _state: &mut automerge::AutoCommit, _path: &automerge::ObjId) {
+        fn sync(&mut self, _state: &mut crate::widget::AppModel, _path: &crate::widget::ModelPath) {
             self.syncs = self.syncs.saturating_add(1);
         }
 
@@ -12099,18 +12061,7 @@ mod framed_tests {
         ) {
         }
 
-        fn handle_event(
-            &mut self,
-            event: &WindowEvent,
-            _scale_factor: f64,
-            _modifiers: &winit::event::Modifiers,
-            _state: &mut automerge::AutoCommit,
-            _path: &automerge::ObjId,
-            handled: &mut bool,
-            _focus_target: &mut Option<NodeId>,
-            _node_id: NodeId,
-            _taffy: &TaffyTree<()>,
-        ) {
+        fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
             if matches!(
                 event,
                 WindowEvent::MouseInput {
@@ -12119,7 +12070,7 @@ mod framed_tests {
                 }
             ) {
                 self.presses = self.presses.saturating_add(1);
-                *handled = true;
+                *ctx.handled = true;
             }
         }
 
@@ -12156,6 +12107,14 @@ mod framed_tests {
         Framed::harness_mut(&mut probe).relayout();
         assert!(Framed::harness(&probe).last_relayout().rebuilt);
         assert!((probe.rect.width() - 200.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn recompose_rebuilds_an_unchanged_tree() {
+        let mut probe = Framed::new(State::new(), Probe::new(120.0), (400, 200), Theme::dark());
+        Framed::harness_mut(&mut probe).recompose().unwrap();
+        assert!(Framed::harness(&probe).last_relayout().rebuilt);
+        assert!((probe.rect.width() - 120.0).abs() < f64::EPSILON);
     }
 
     #[test]

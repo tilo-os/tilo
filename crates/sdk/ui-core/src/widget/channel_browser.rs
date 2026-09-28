@@ -13,7 +13,6 @@ use crate::time::SystemTime;
 use std::collections::HashMap;
 use tilo_search::FieldWeight;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
@@ -1084,8 +1083,6 @@ fn px(v: f64) -> f32 {
 }
 
 impl Widget for ChannelBrowser {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -1221,21 +1218,10 @@ impl Widget for ChannelBrowser {
         self.dirty = false;
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         // Mouse branches go first so click-to-select on pills/rows
         // works even when the input has focus.
-        self.handle_pointer_event(event, scale_factor, handled);
+        self.handle_pointer_event(event, ctx.scale_factor, ctx.handled);
 
         if !self.is_focused {
             return;
@@ -1253,7 +1239,7 @@ impl Widget for ChannelBrowser {
             } else {
                 self.dirty = true;
             }
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
         let WindowEvent::KeyboardInput {
@@ -1271,10 +1257,10 @@ impl Widget for ChannelBrowser {
         if *element_state != ElementState::Pressed {
             return;
         }
-        let mods = modifiers.state();
+        let mods = ctx.modifiers.state();
         let shift = mods.shift_key();
         let ctrl = mods.control_key() || mods.super_key();
-        self.handle_key_press(event, logical_key, shift, ctrl, handled);
+        self.handle_key_press(event, logical_key, shift, ctrl, ctx.handled);
     }
 
     fn name(&self) -> &'static str {
@@ -1336,6 +1322,7 @@ impl Widget for ChannelBrowser {
 mod tests {
     use super::*;
     use crate::time::Duration;
+    use automerge::AutoCommit;
     use std::cell::RefCell;
     use std::rc::Rc;
     use winit::event::Modifiers;
@@ -1613,14 +1600,16 @@ mod tests {
         let root = automerge::ROOT;
         b.handle_event(
             event,
-            1.0,
-            &mods,
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus,
-            node,
-            &tree,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &tree,
+            },
         );
     }
 

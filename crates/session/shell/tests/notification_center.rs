@@ -115,14 +115,16 @@ fn deliver(host: &mut ShellOverlayHost, taffy: &TaffyTree<()>, node: NodeId, eve
     let mut focus_target = None;
     host.handle_event(
         event,
-        1.0,
-        &Modifiers::default(),
-        &mut state,
-        &automerge::ROOT,
-        &mut handled,
-        &mut focus_target,
-        node,
-        taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &Modifiers::default(),
+            state: &mut state,
+            path: &automerge::ROOT,
+            handled: &mut handled,
+            focus_target: &mut focus_target,
+            node_id: node,
+            taffy,
+        },
     );
 }
 

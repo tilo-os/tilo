@@ -132,7 +132,7 @@ impl ui::widget::Decorator for SendFailure {
         &mut self.banner
     }
 
-    fn update(&mut self, _state: &mut automerge::AutoCommit, _path: &automerge::ObjId) -> bool {
+    fn update(&mut self, _state: &mut ui::widget::AppModel, _path: &ui::widget::ModelPath) -> bool {
         if self.sent.get() && self.banner.is_dismissed() {
             self.banner.set_shown(true);
             return true;

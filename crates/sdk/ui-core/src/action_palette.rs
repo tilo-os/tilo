@@ -28,6 +28,7 @@
 //! [`take_navigation`](ActionPalette::take_navigation) (content).
 
 use crate::bound_dispatch::{DeferredIntent, PreparedActionIntent};
+use crate::widget::{AppModel, ModelPath};
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
@@ -639,14 +640,16 @@ impl ActionPalette {
         if let Some(node) = self.controls_node {
             self.controls.handle_event(
                 event,
-                scale,
-                &modifiers,
-                doc,
-                path,
-                &mut handled,
-                &mut focus,
-                node,
-                &self.field_taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: scale,
+                    modifiers: &modifiers,
+                    state: doc,
+                    path,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &self.field_taffy,
+                },
             );
             if let Some(focus) = focus {
                 if let Some(index) = self
@@ -664,14 +667,16 @@ impl ActionPalette {
                 let mut focus = None;
                 self.field.handle_event(
                     event,
-                    scale,
-                    &modifiers,
-                    doc,
-                    path,
-                    &mut handled,
-                    &mut focus,
-                    node,
-                    &self.field_taffy,
+                    &mut crate::widget::EventCtx {
+                        scale_factor: scale,
+                        modifiers: &modifiers,
+                        state: doc,
+                        path,
+                        handled: &mut handled,
+                        focus_target: &mut focus,
+                        node_id: node,
+                        taffy: &self.field_taffy,
+                    },
                 );
                 if focus.is_some() {
                     self.focus_part(0);
@@ -2455,14 +2460,16 @@ impl ActionPalette {
         let mut ft = None;
         self.field.handle_event(
             event,
-            1.0,
-            &modifiers,
-            doc,
-            path,
-            &mut handled,
-            &mut ft,
-            node,
-            &self.field_taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &modifiers,
+                state: doc,
+                path,
+                handled: &mut handled,
+                focus_target: &mut ft,
+                node_id: node,
+                taffy: &self.field_taffy,
+            },
         );
     }
 
@@ -2484,14 +2491,16 @@ impl ActionPalette {
         let mut ft = None;
         self.results.handle_event(
             event,
-            1.0,
-            &modifiers,
-            doc,
-            path,
-            &mut handled,
-            &mut ft,
-            node,
-            &taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &modifiers,
+                state: doc,
+                path,
+                handled: &mut handled,
+                focus_target: &mut ft,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
     }
 }
@@ -2568,7 +2577,6 @@ impl Widget for ActionPalette {
     fn modal_capture(&self) -> Option<Rect> {
         self.is_presented().then_some(self.rect)
     }
-    fn sync(&mut self, _: &mut AutoCommit, _: &ObjId) {}
     fn build_layout(
         &mut self,
         tree: &mut TaffyTree<()>,
@@ -2597,19 +2605,9 @@ impl Widget for ActionPalette {
     ) {
         ActionPalette::draw(self, scene, transform, text, theme, presence);
     }
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale: f64,
-        modifiers: &Modifiers,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        _: &mut Option<NodeId>,
-        _: NodeId,
-        _: &TaffyTree<()>,
-    ) {
-        *handled |= self.route_event(event, scale, *modifiers, doc, path);
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        *ctx.handled |=
+            self.route_event(event, ctx.scale_factor, *ctx.modifiers, ctx.state, ctx.path);
     }
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         if !self.is_presented() {
@@ -2661,8 +2659,8 @@ impl Widget for ActionPalette {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        doc: &mut AutoCommit,
-        path: &ObjId,
+        doc: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         if !self.is_presented() {
             return false;
@@ -2682,6 +2680,7 @@ impl Widget for ActionPalette {
                     self.focus_part(index + 1);
                 }
                 let handled = self.controls.children_mut()[index].perform_action(action, doc, path);
+                let (doc, path) = crate::doc::document(doc, path);
                 self.drain_command(doc, path);
                 return handled;
             }

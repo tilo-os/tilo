@@ -3,11 +3,22 @@
     reason = "test fixtures transitively own long-lived permits and lock guards by design"
 )]
 use super::*;
+use crate::network::actor::HostIdentity;
+use crate::shell::native_workspace_owner::NativeWorkspaceOwner;
 use std::sync::{Arc, Mutex};
-use tilo_delivery_protocol::workspace_join::{WORKSPACE_JOIN_ALPN, WorkspaceJoinService};
+use std::time::SystemTime;
+use tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1;
+use tilo_delivery_protocol::workspace_join::{
+    WORKSPACE_JOIN_ALPN, WorkspaceHostMode, WorkspaceJoinService,
+};
+use tilo_joined_room::enroll::prepare_and_complete;
+use tilo_joined_room::testing::ns as now_ns;
 use tilo_peer_state::NeighbourMsg;
+use tilo_peer_state::join::{self, JoinTransportRequest};
 use tilo_peer_state::join::{JoinTransportResponse, MemberRole};
+use tilo_relay::workspace_join::WorkspaceJoinClient;
 use tilo_relay::workspace_join::WorkspaceJoinProtocol;
+use tilo_user_identity::RevocationList;
 use tilo_workspace_host::{
     SessionOwner,
     collaboration::{CollaborationService, IssueInvitationRequest},
@@ -179,7 +190,7 @@ async fn actual_exchange(restart: bool) {
     let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
     let local = tree.desktop.active;
     tree.persist_path = Some(directory.path().join("state.json"));
-    let receiving_owner = NativeWorkspaceOwner::open(tree.shared()).unwrap();
+    let receiving_owner = crate::shell::native_workspace_owner::open(tree.shared()).unwrap();
     let saw = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let actual = ActualService {
         authority: Arc::new(Mutex::new(Some((remote_owner, service)))),
@@ -263,7 +274,7 @@ async fn actual_exchange(restart: bool) {
         WorkspaceJoinClient::new(endpoint.clone()),
         identity.clone(),
         topic,
-        local,
+        Some(local),
         join::encode_invitation_text(&issued.signed_invitation),
         receiving_owner.clone(),
     )

@@ -1,9 +1,9 @@
 //! Shared direct-manipulation crop editor for scanner, Photos, and image tools.
 
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
@@ -342,8 +342,6 @@ impl ImageCropEditor {
 }
 
 impl Widget for ImageCropEditor {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -385,23 +383,12 @@ impl Widget for ImageCropEditor {
         self.paint_crop_overlay(scene, transform, theme);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        focus: &mut Option<NodeId>,
-        node: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
-        if self.handle_event_at(event, scale) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        if self.handle_event_at(event, ctx.scale_factor) {
             if self.drag.is_some() {
-                *focus = Some(node);
+                *ctx.focus_target = Some(ctx.node_id);
             }
-            *handled = true;
+            *ctx.handled = true;
         }
     }
 
@@ -438,8 +425,8 @@ impl Widget for ImageCropEditor {
         &mut self,
         target: &str,
         action: &Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         match action {
             Action::Increment => self.adjust_boundary(target, 0.01),
@@ -490,6 +477,7 @@ impl Widget for ImageCropEditor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::AutoCommit;
 
     #[test]
     fn crop_handles_normalize_and_are_touch_and_assistive_targets() {

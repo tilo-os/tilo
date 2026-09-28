@@ -116,7 +116,7 @@ pub fn plan_layout(
         let config = next
             .outputs
             .entry(output.descriptor.connector.clone())
-            .or_default();
+            .or_insert_with(|| output.unconfigured());
         config.mirror_of = None;
         // A mirror pins every participant to a shared extent. Leaving the
         // mirror hands each display back to its own preferred timing.
@@ -480,6 +480,7 @@ mod tests {
                 monitor: None,
             },
             current_mode: modes[0],
+            scale: 1.0,
             builtin,
             sink_hdr: false,
             hdr_unavailable_reason: None,
@@ -616,6 +617,32 @@ mod tests {
         assert_eq!(
             output_at(&plan, &outputs, 1280, 400).as_deref(),
             Some("HDMI-A-1")
+        );
+    }
+
+    #[test]
+    fn extend_keeps_the_scale_the_compositor_chose_for_an_unconfigured_display() {
+        // Nothing saved yet: the compositor runs the HiDPI panel at the 2x
+        // it chose itself. Writing the panel's first entry must keep that
+        // scale, not drop it to 1x, and place the monitor beside it.
+        let mut panel = output("eDP-1", true, &[mode(2560, 1600, 60_000)]);
+        panel.scale = 2.0;
+        let outputs = vec![
+            panel,
+            output("HDMI-A-1", false, &[mode(1920, 1080, 60_000)]),
+        ];
+        let plan = plan_layout(
+            DisplayLayoutMode::Extend,
+            &outputs,
+            &DisplayConfig::default(),
+        )
+        .unwrap();
+        assert!((plan.outputs["eDP-1"].scale - 2.0).abs() < f64::EPSILON);
+        assert!((plan.outputs["HDMI-A-1"].scale - 1.0).abs() < f64::EPSILON);
+        assert_eq!(
+            (plan.outputs["HDMI-A-1"].x, plan.outputs["HDMI-A-1"].y),
+            (1280, 0),
+            "beside the panel's 1280 logical pixels"
         );
     }
 

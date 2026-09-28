@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::{Duration, Instant};
+use ui::widget::{AppModel, ModelPath};
 
 use ui::ColorCompat;
 use ui::a11y::{AccessNode, AccessState, Role};
@@ -271,9 +272,7 @@ impl Default for SpeedTestApp {
 }
 
 impl Widget for SpeedTestApp {
-    fn sync(&mut self, _doc: &mut AutoCommit, _path: &ObjId) {}
-
-    fn update(&mut self, _doc: &mut AutoCommit, _path: &ObjId) -> bool {
+    fn update(&mut self, _doc: &mut AppModel, _path: &ModelPath) -> bool {
         let mut changed = false;
         if let Some(rx) = &self.worker {
             while let Ok(message) = rx.try_recv() {
@@ -661,20 +660,9 @@ impl Widget for SpeedTestApp {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &ui::winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.pointer = Point::new(position.x / scale_factor, position.y / scale_factor);
+            self.pointer = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
         }
         if matches!(
             event,
@@ -686,10 +674,10 @@ impl Widget for SpeedTestApp {
         ) {
             if self.primary_rect().contains(self.pointer) {
                 self.toggle_test();
-                *handled = true;
+                *ctx.handled = true;
             } else if self.region_rect().contains(self.pointer) {
                 self.cycle_region();
-                *handled = true;
+                *ctx.handled = true;
             }
         }
     }
@@ -719,8 +707,8 @@ impl Widget for SpeedTestApp {
         &mut self,
         action: &ui::a11y::Action,
         key_path: &[u64],
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         if !matches!(action, ui::a11y::Action::Activate) {
             return false;

@@ -154,6 +154,7 @@ fn readback_encodes_a_rendered_scene_into_pq_words() {
         (width as usize, height as usize),
         OutputTransform::Normal,
         &encoder,
+        None,
     );
     let word = |buffer: &[u8], x: usize, y: usize| {
         let at = y * pitch + x * 4;
@@ -189,6 +190,7 @@ fn readback_encodes_a_rendered_scene_into_pq_words() {
         (width as usize, height as usize),
         OutputTransform::Rotate180,
         &encoder,
+        None,
     );
     assert_eq!(word(&rotated, 7, 3), word(&hdr, 0, 0));
     assert_eq!(word(&rotated, 0, 0), word(&hdr, 7, 3));

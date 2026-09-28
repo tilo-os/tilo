@@ -30,9 +30,10 @@ use ui::tilo_actions::{
     OperationKind, PermissionRequirement, Resource, ResultSpec, RetryPolicy, RiskLevel,
 };
 use ui::widget::context_menu::{ContextMenu, MenuItem};
+use ui::widget::{AppModel, ModelPath};
 use ui::widget::{
-    Button, Collaborative, Column, EmptyState, NavShell, ScrollAxis, Scrollable, ShellMode, Spacer,
-    Spinner, Text, TextInput, Widget,
+    Button, Collaborative, Column, EmptyState, NavShell, ResourceOperation, ScrollAxis, Scrollable,
+    ShellMode, Spacer, Spinner, Text, TextInput, Widget,
 };
 use ui::{AppKind, AppWidget, IconDescriptor, SelectionModel};
 use vello::kurbo::Point;
@@ -108,29 +109,6 @@ fn build_thumb_service(config_dir: Option<&Path>) -> Option<ThumbnailService> {
 /// v2-only native handler through an arbitrary container.  Keeping this small
 /// recursive router at the app action boundary makes a screen-reader/agent
 /// action reach precisely the same callback as pointer and keyboard input.
-fn invoke_native_control_in_subtree(
-    widget: &mut dyn Widget,
-    kind: OperationKind,
-    type_id: &str,
-    payload: &[u8],
-    doc: &automerge::AutoCommit,
-    path: &automerge::ObjId,
-) -> Result<bool, String> {
-    if widget.resource_operation_handlers().contains(type_id)
-        && widget
-            .invoke_resource_operation_v2(kind, type_id, payload, doc, path)?
-            .is_some()
-    {
-        return Ok(true);
-    }
-    for child in widget.children_mut() {
-        if invoke_native_control_in_subtree(child, kind, type_id, payload, doc, path)? {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct CollabPanel {
     title: String,
@@ -4782,21 +4760,6 @@ fn ask_host_to_open(path: &std::path::Path) -> Option<Result<(), String>> {
     DOCUMENT_OPENER.with(|slot| slot.borrow_mut().as_mut().map(|open| open(path)))
 }
 
-/// The full `Widget::handle_event` parameter set, bundled so the
-/// event-routing helpers `handle_event` delegates to stay under clippy's
-/// argument-count limit instead of threading nine parameters through each.
-struct EventCtx<'a> {
-    event: &'a winit::event::WindowEvent,
-    scale_factor: f64,
-    modifiers: winit::event::Modifiers,
-    state: &'a mut automerge::AutoCommit,
-    path: &'a automerge::ObjId,
-    handled: &'a mut bool,
-    focus_target: &'a mut Option<taffy::NodeId>,
-    node_id: taffy::NodeId,
-    taffy: &'a taffy::TaffyTree<()>,
-}
-
 impl FileExplorerWidget {
     /// Launch a terminal rooted at the current directory.
     ///
@@ -5829,20 +5792,10 @@ impl FileExplorerWidget {
     /// its selected row back into the app command bus. The menu is painted as
     /// an overlay rather than installed in the taffy tree, so normal child
     /// event propagation cannot reach it.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "overlay menu routing forwards the toolkit event contract plus its explicit layout node"
-    )]
     fn route_menu_keyboard(
         &mut self,
         event: &winit::event::WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut automerge::AutoCommit,
-        path: &automerge::ObjId,
-        focus_target: &mut Option<taffy::NodeId>,
-        node_id: taffy::NodeId,
-        taffy: &taffy::TaffyTree<()>,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
         let submenu = self.submenu.is_open();
         let mut menu_handled = false;
@@ -5854,14 +5807,10 @@ impl FileExplorerWidget {
             };
             menu.handle_event(
                 event,
-                scale_factor,
-                &modifiers,
-                state,
-                path,
-                &mut menu_handled,
-                focus_target,
-                node_id,
-                taffy,
+                &mut ui::widget::EventCtx {
+                    handled: &mut menu_handled,
+                    ..ctx.reborrow(ctx.path, ctx.node_id)
+                },
             );
             menu.take_selection()
         };
@@ -6191,53 +6140,24 @@ impl FileExplorerWidget {
     /// above, the responsive `nav` body, chrome below — stopping at the first
     /// that consumes it. `node_id`'s taffy children are `[above, nav, below]`
     /// (see `build_layout`).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "body forwarding preserves the toolkit event contract across responsive child nodes"
-    )]
     fn forward_to_body(
         &mut self,
         event: &winit::event::WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut automerge::AutoCommit,
-        path: &automerge::ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<taffy::NodeId>,
-        node_id: taffy::NodeId,
-        taffy: &taffy::TaffyTree<()>,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) {
-        let Ok(children) = taffy.children(node_id) else {
+        let Ok(children) = ctx.taffy.children(ctx.node_id) else {
             return;
         };
         let (Some(&above_n), Some(&nav_n)) = (children.first(), children.get(1)) else {
             return;
         };
-        if !*handled {
-            self.toolbar.handle_event(
-                event,
-                scale_factor,
-                &modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                above_n,
-                taffy,
-            );
+        if !*ctx.handled {
+            self.toolbar
+                .handle_event(event, &mut ctx.reborrow(ctx.path, above_n));
         }
-        if !*handled {
-            self.nav.handle_event(
-                event,
-                scale_factor,
-                &modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                nav_n,
-                taffy,
-            );
+        if !*ctx.handled {
+            self.nav
+                .handle_event(event, &mut ctx.reborrow(ctx.path, nav_n));
         }
     }
 
@@ -6388,12 +6308,16 @@ impl FileExplorerWidget {
     /// moving the carried row(s) into a folder (or the parent), or pinning a
     /// folder to the sidebar. Returns whether the event was consumed (the
     /// caller should stop routing it further).
-    fn handle_live_drag_event(&mut self, ctx: &mut EventCtx) -> bool {
+    fn handle_live_drag_event(
+        &mut self,
+        event: &winit::event::WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+    ) -> bool {
         use winit::event::{ElementState, MouseButton, WindowEvent};
         if self.pin_drag.is_none() {
             return false;
         }
-        match ctx.event {
+        match event {
             WindowEvent::CursorMoved { .. } => {
                 // Once the host has carried the drag to another
                 // application, no folder here is a target any more.
@@ -6430,7 +6354,11 @@ impl FileExplorerWidget {
     /// strip is deliberately a dismiss backdrop, never a transparent route to
     /// the file view: right-clicks, wheel input, and selection gestures must
     /// not reach the list behind the scrim.
-    fn handle_places_drawer_modal_event(&mut self, ctx: &mut EventCtx) -> bool {
+    fn handle_places_drawer_modal_event(
+        &mut self,
+        event: &winit::event::WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+    ) -> bool {
         if self.nav.mode() != ShellMode::Narrow || !self.nav.is_sidebar_open() {
             return false;
         }
@@ -6441,17 +6369,8 @@ impl FileExplorerWidget {
             return false;
         };
         let path_before = self.current_path.clone();
-        self.nav.handle_event(
-            ctx.event,
-            ctx.scale_factor,
-            &ctx.modifiers,
-            ctx.state,
-            ctx.path,
-            ctx.handled,
-            ctx.focus_target,
-            nav_node,
-            ctx.taffy,
-        );
+        self.nav
+            .handle_event(event, &mut ctx.reborrow(ctx.path, nav_node));
         if self.drain_commands() {
             self.structure_dirty = true;
         }
@@ -6467,23 +6386,18 @@ impl FileExplorerWidget {
 
     /// The open context menu (or its flyout) gets first dibs on clicks +
     /// Escape. Returns whether the event was consumed.
-    fn handle_open_menu_event(&mut self, ctx: &mut EventCtx) -> bool {
+    fn handle_open_menu_event(
+        &mut self,
+        event: &winit::event::WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+    ) -> bool {
         use winit::event::{ElementState, MouseButton, WindowEvent};
         if !(self.context_menu.is_open() || self.submenu.is_open()) {
             return false;
         }
-        match ctx.event {
+        match event {
             WindowEvent::KeyboardInput { .. } => {
-                if self.route_menu_keyboard(
-                    ctx.event,
-                    ctx.scale_factor,
-                    ctx.modifiers,
-                    ctx.state,
-                    ctx.path,
-                    ctx.focus_target,
-                    ctx.node_id,
-                    ctx.taffy,
-                ) {
+                if self.route_menu_keyboard(event, ctx) {
                     *ctx.handled = true;
                     self.structure_dirty = true;
                     let _ = self.drain_commands();
@@ -6514,27 +6428,27 @@ impl FileExplorerWidget {
     /// makes the menu's actions target what was actually clicked rather
     /// than a stale selection from an earlier click. Returns whether the
     /// event was consumed.
-    fn handle_right_click_open_menu(&mut self, ctx: &mut EventCtx) -> bool {
+    fn handle_right_click_open_menu(
+        &mut self,
+        event: &winit::event::WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+    ) -> bool {
         use winit::event::{ElementState, MouseButton, WindowEvent};
         let WindowEvent::MouseInput {
             state: ElementState::Pressed,
             button: MouseButton::Right,
             ..
-        } = ctx.event
+        } = event
         else {
             return false;
         };
         let mut child_handled = false;
         self.forward_to_body(
-            ctx.event,
-            ctx.scale_factor,
-            ctx.modifiers,
-            ctx.state,
-            ctx.path,
-            &mut child_handled,
-            ctx.focus_target,
-            ctx.node_id,
-            ctx.taffy,
+            event,
+            &mut ui::widget::EventCtx {
+                handled: &mut child_handled,
+                ..ctx.reborrow(ctx.path, ctx.node_id)
+            },
         );
         self.drain_commands();
         // A right-press over a sidebar favourite pushes `OpenFavoriteMenu`,
@@ -6553,8 +6467,12 @@ impl FileExplorerWidget {
     /// Ctrl + mouse-wheel zooms the icon/row size (before the wheel reaches
     /// the Scrollable, which would otherwise consume it for scrolling).
     /// Returns whether the event was consumed.
-    fn handle_zoom_wheel(&mut self, ctx: &mut EventCtx) -> bool {
-        let winit::event::WindowEvent::MouseWheel { delta, .. } = ctx.event else {
+    fn handle_zoom_wheel(
+        &mut self,
+        event: &winit::event::WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+    ) -> bool {
+        let winit::event::WindowEvent::MouseWheel { delta, .. } = event else {
             return false;
         };
         if !(ctx.modifiers.state().control_key() || ctx.modifiers.state().super_key()) {
@@ -6580,7 +6498,11 @@ impl FileExplorerWidget {
     /// commits. Handled before the event reaches app-level nav / the file
     /// view so typing never leaks into list navigation or Enter-opens a
     /// row. Returns whether the event was consumed.
-    fn handle_rename_mode_event(&mut self, ctx: &mut EventCtx) -> bool {
+    fn handle_rename_mode_event(
+        &mut self,
+        event: &winit::event::WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+    ) -> bool {
         use winit::event::{ElementState, MouseButton, WindowEvent};
         if self.renaming.is_none() {
             return false;
@@ -6588,7 +6510,7 @@ impl FileExplorerWidget {
         if let Some(rect) = self.rename_rect.get() {
             self.rename_input.apply_layout_external(rect);
         }
-        match ctx.event {
+        match event {
             WindowEvent::KeyboardInput { event: ke, .. } => {
                 use winit::keyboard::{Key, NamedKey};
                 if ke.state == ElementState::Pressed {
@@ -6613,17 +6535,7 @@ impl FileExplorerWidget {
                     }
                 }
                 // Typing / editing keys go to the field (it splices the CRDT).
-                self.rename_input.handle_event(
-                    ctx.event,
-                    ctx.scale_factor,
-                    &ctx.modifiers,
-                    ctx.state,
-                    ctx.path,
-                    ctx.handled,
-                    ctx.focus_target,
-                    ctx.node_id,
-                    ctx.taffy,
-                );
+                self.rename_input.handle_event(event, ctx);
                 if let Some(value) = self.rename_input.take_dirty() {
                     self.rename_buffer = value;
                 }
@@ -6642,17 +6554,7 @@ impl FileExplorerWidget {
                     .is_some_and(|r| r.contains(self.last_cursor));
                 if inside {
                     // Reposition the caret within the field.
-                    self.rename_input.handle_event(
-                        ctx.event,
-                        ctx.scale_factor,
-                        &ctx.modifiers,
-                        ctx.state,
-                        ctx.path,
-                        ctx.handled,
-                        ctx.focus_target,
-                        ctx.node_id,
-                        ctx.taffy,
-                    );
+                    self.rename_input.handle_event(event, ctx);
                     if let Some(value) = self.rename_input.take_dirty() {
                         self.rename_buffer = value;
                     }
@@ -6673,22 +6575,16 @@ impl FileExplorerWidget {
     /// view), stopping at the first that consumes it; then app-level
     /// keyboard nav, queued commands, and the narrow-drawer dismissal that
     /// follows a place navigation.
-    fn finish_event(&mut self, ctx: &mut EventCtx) {
+    fn finish_event(
+        &mut self,
+        event: &winit::event::WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+    ) {
         let path_before = self.current_path.clone();
-        self.forward_to_body(
-            ctx.event,
-            ctx.scale_factor,
-            ctx.modifiers,
-            ctx.state,
-            ctx.path,
-            ctx.handled,
-            ctx.focus_target,
-            ctx.node_id,
-            ctx.taffy,
-        );
+        self.forward_to_body(event, ctx);
         if !*ctx.handled
-            && let winit::event::WindowEvent::KeyboardInput { event: ke, .. } = ctx.event
-            && self.handle_app_key(ke, ctx.modifiers)
+            && let winit::event::WindowEvent::KeyboardInput { event: ke, .. } = event
+            && self.handle_app_key(ke, *ctx.modifiers)
         {
             *ctx.handled = true;
             self.structure_dirty = true;
@@ -7626,11 +7522,8 @@ impl Widget for FileExplorerWidget {
         self.has_action_control_bindings_impl()
     }
 
-    fn native_input_snapshot(
-        &self,
-        doc: &automerge::AutoCommit,
-        path: &automerge::ObjId,
-    ) -> Option<serde_json::Value> {
+    fn native_input_snapshot(&self, doc: &AppModel, path: &ModelPath) -> Option<serde_json::Value> {
+        let (doc, path) = ui::doc::document_ref(doc, path);
         Some(self.native_input_snapshot_impl(doc, path))
     }
 
@@ -8077,46 +7970,11 @@ impl Widget for FileExplorerWidget {
         kind: OperationKind,
         type_id: &str,
         payload: &[u8],
-        doc: &automerge::AutoCommit,
-        path: &automerge::ObjId,
+        _doc: &automerge::AutoCommit,
+        _path: &automerge::ObjId,
     ) -> Result<bool, String> {
         match (kind, type_id) {
             (OperationKind::Effect, "files.refresh") => self.refresh(),
-            (_, "tilo.ui.control.invoke") => {
-                // A shared Button publishes its own canonical resource.  This
-                // root also publishes the contained toolbar/menu controls, so
-                // intercepting the type here and trying only the error-state
-                // retry button made an external AT-SPI/resource invocation of
-                // every ordinary toolbar button falsely succeed at discovery
-                // and then be refused at execution. Route the exact payload
-                // through the retained tree (including the separately-painted
-                // retry control) just as a pointer/keyboard activation does.
-                let mut handled = invoke_native_control_in_subtree(
-                    &mut self.state_retry,
-                    kind,
-                    type_id,
-                    payload,
-                    doc,
-                    path,
-                )?;
-                if !handled {
-                    for child in self.children_mut() {
-                        if invoke_native_control_in_subtree(
-                            child, kind, type_id, payload, doc, path,
-                        )? {
-                            handled = true;
-                            break;
-                        }
-                    }
-                }
-                if !handled {
-                    return Ok(false);
-                }
-                // Control handlers queue the same commands their painted
-                // counterparts do. Apply them at this resource boundary,
-                // never through a document write or widget-local click flag.
-                self.drain_commands();
-            }
             (OperationKind::Effect, "files.new-folder") => {
                 let name: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
                 fileops::new_folder(&self.current_path, &name)?;
@@ -8482,6 +8340,47 @@ impl Widget for FileExplorerWidget {
         clippy::too_many_lines,
         reason = "the resource dispatcher keeps every typed Files operation at one auditable authorization boundary"
     )]
+    fn start_operation(
+        &mut self,
+        op: &ResourceOperation<'_>,
+        doc: &mut automerge::AutoCommit,
+        path: &automerge::ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        let Some(request) = op.unscoped() else {
+            return ui::widget::start_in_children(self, op, doc, path);
+        };
+        if request.type_id == "tilo.ui.control.invoke" {
+            // A shared Button publishes its own canonical resource. This root
+            // also publishes the contained toolbar/menu controls, so route the
+            // exact payload through the retained tree (including the
+            // separately-painted retry control) just as a pointer/keyboard
+            // activation does.
+            if self.state_retry.start_operation(op, doc, path)?.is_none()
+                && ui::widget::start_in_children(self, op, doc, path)?.is_none()
+            {
+                return Ok(None);
+            }
+            // Control handlers queue the same commands their painted
+            // counterparts do. Apply them at this resource boundary,
+            // never through a document write or widget-local click flag.
+            self.drain_commands();
+            return Ok(Some(ui::widget::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            )));
+        }
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
+        }
+        self.start_resource_operation(
+            request.invocation,
+            request.kind,
+            request.type_id,
+            request.payload,
+            doc,
+            path,
+        )
+    }
+
     fn start_resource_operation(
         &mut self,
         invocation: tilo_actions::InvocationId,
@@ -8527,13 +8426,13 @@ impl Widget for FileExplorerWidget {
         }
     }
 
-    fn update(&mut self, _state: &mut automerge::AutoCommit, _path: &automerge::ObjId) -> bool {
+    fn update(&mut self, _state: &mut AppModel, _path: &ModelPath) -> bool {
         // Service calls finishing on the app runtime wake the event loop.
         let received = self.poll_received_share();
         self.poll_share_result() | received
     }
 
-    fn sync(&mut self, state: &mut automerge::AutoCommit, path: &automerge::ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.poll_deferred_document_open();
         self.refresh_framework_history_target();
         self.refresh_metadata_if_due(Instant::now());
@@ -8813,34 +8712,30 @@ impl Widget for FileExplorerWidget {
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut automerge::AutoCommit,
-        path: &automerge::ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<taffy::NodeId>,
-        node_id: taffy::NodeId,
-        taffy: &taffy::TaffyTree<()>,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) {
         use winit::event::{ElementState, MouseButton, WindowEvent};
+        let state = &mut *ctx.state;
+        let path = ctx.path;
         self.poll_share_result();
         self.poll_history_result();
         if self.app_chooser_open() {
             self.route_app_chooser_event(
                 event,
-                scale_factor,
-                *modifiers,
+                ctx.scale_factor,
+                *ctx.modifiers,
                 state,
                 path,
-                focus_target,
+                ctx.focus_target,
             );
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
         let panel_was_open = self.collab_panel.is_some();
         // Track the cursor for menu placement + hit-testing.
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+            self.last_cursor =
+                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
             // An armed press that has travelled far enough becomes a drag.
             if let Some((start, path, is_dir)) = self.armed_drag.clone()
                 && self.pin_drag.is_none()
@@ -8857,16 +8752,18 @@ impl Widget for FileExplorerWidget {
         if self.error.is_some() {
             self.state_retry.handle_event(
                 event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: ctx.scale_factor,
+                    modifiers: ctx.modifiers,
+                    state,
+                    path,
+                    handled: ctx.handled,
+                    focus_target: ctx.focus_target,
+                    node_id: ctx.node_id,
+                    taffy: ctx.taffy,
+                },
             );
-            if *handled {
+            if *ctx.handled {
                 self.structure_dirty |= self.drain_commands();
                 return;
             }
@@ -8883,7 +8780,7 @@ impl Widget for FileExplorerWidget {
                         )
             ) {
                 self.structure_dirty |= self.apply_command(FileCommand::Refresh);
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
         }
@@ -8911,7 +8808,7 @@ impl Widget for FileExplorerWidget {
             if let Some(command) = activate {
                 self.close_collab_panel();
                 self.apply_command(command);
-                *handled = true;
+                *ctx.handled = true;
                 self.structure_dirty = true;
                 return;
             }
@@ -8941,7 +8838,7 @@ impl Widget for FileExplorerWidget {
             if close {
                 self.close_collab_panel();
             }
-            *handled = true;
+            *ctx.handled = true;
             self.structure_dirty = true;
             return;
         }
@@ -8955,32 +8852,20 @@ impl Widget for FileExplorerWidget {
             self.armed_drag = None;
         }
 
-        let mut ctx = EventCtx {
-            event,
-            scale_factor,
-            modifiers: *modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
-        };
-
         // A live drag, the open context menu, a right-click, a zoom wheel,
         // and an in-place rename all get first dibs on the event, in that
         // priority order; the first that consumes it stops routing.
-        if self.handle_live_drag_event(&mut ctx)
-            || self.handle_places_drawer_modal_event(&mut ctx)
-            || self.handle_open_menu_event(&mut ctx)
-            || self.handle_right_click_open_menu(&mut ctx)
-            || self.handle_zoom_wheel(&mut ctx)
-            || self.handle_rename_mode_event(&mut ctx)
+        if self.handle_live_drag_event(event, ctx)
+            || self.handle_places_drawer_modal_event(event, ctx)
+            || self.handle_open_menu_event(event, ctx)
+            || self.handle_right_click_open_menu(event, ctx)
+            || self.handle_zoom_wheel(event, ctx)
+            || self.handle_rename_mode_event(event, ctx)
         {
             return;
         }
 
-        self.finish_event(&mut ctx);
+        self.finish_event(event, ctx);
         if !panel_was_open && self.collab_panel.is_some() {
             // The dialog replaced the semantic subtree during this event.
             // Focus its real backing widget so AccessKit never points at a
@@ -9184,8 +9069,8 @@ impl Widget for FileExplorerWidget {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        _state: &mut automerge::AutoCommit,
-        _path: &automerge::ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         use ui::a11y::Action;
         if target == "files-retry-folder" && matches!(action, Action::Activate) {

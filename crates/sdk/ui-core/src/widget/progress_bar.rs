@@ -14,11 +14,9 @@
 //! frame-derived state the widget keeps.
 use crate::time::Instant;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
-use winit::event::WindowEvent;
 
 use crate::permissions::PermissionScope;
 use crate::presence::{PathSegment, PresenceKey};
@@ -187,8 +185,6 @@ fn pct_to_i64(pct: f32) -> i64 {
 }
 
 impl Widget for ProgressBar {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -317,20 +313,6 @@ impl Widget for ProgressBar {
                 &fill_shape,
             );
         }
-    }
-
-    fn handle_event(
-        &mut self,
-        _event: &WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
     }
 
     fn name(&self) -> &'static str {

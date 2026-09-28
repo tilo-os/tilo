@@ -27,6 +27,7 @@
 
 use std::collections::HashMap;
 use ui::doc::read_bool;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId, transaction::Transactable};
 use taffy::{NodeId, TaffyTree};
@@ -35,7 +36,7 @@ use ui::theme::Theme;
 use ui::widget::{Button, Column, Row, Spacer, Text, TextInput, TextInputKind, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use winit::event::{Modifiers, WindowEvent};
+use winit::event::WindowEvent;
 
 use crate::accounts::{AccountConfig, AccountDirectory, AccountKind, AccountRoot, AccountView};
 use crate::widgets::{
@@ -2073,7 +2074,7 @@ pub fn build_with(dir: &AccountDirectory) -> Box<dyn Widget> {
 impl Widget for AccountsPane {
     /// An account added or removed elsewhere (the AI hub, a resource action,
     /// another Settings window) shows here while the pane is open.
-    fn update(&mut self, _state: &mut AutoCommit, _path: &ObjId) -> bool {
+    fn update(&mut self, _state: &mut AppModel, _path: &ModelPath) -> bool {
         if !self
             .store_watch
             .as_mut()
@@ -2098,7 +2099,8 @@ impl Widget for AccountsPane {
         own.into_iter().chain(composed).min()
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+        let (state, root) = ui::doc::document(state, root);
         self.handle_local_command();
         self.handle_add(state, root);
         self.handle_edit_triggers(state, root);
@@ -2178,33 +2180,12 @@ impl Widget for AccountsPane {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let Some(c) = &mut self.composed
-            && let Ok(children) = taffy.children(node_id)
+            && let Ok(children) = ctx.taffy.children(ctx.node_id)
             && let Some(&cn) = children.first()
         {
-            c.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                cn,
-                taffy,
-            );
+            c.handle_event(event, &mut ctx.reborrow(ctx.path, cn));
         }
     }
 

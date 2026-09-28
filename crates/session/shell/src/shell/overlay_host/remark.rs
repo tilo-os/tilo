@@ -1640,12 +1640,7 @@ impl ShellOverlayHost {
     pub(super) fn handle_remark_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        doc: &mut automerge::AutoCommit,
-        path: &automerge::ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<taffy::NodeId>,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
         use winit::event::{ElementState, MouseButton, WindowEvent};
         use winit::keyboard::{Key, NamedKey};
@@ -1678,7 +1673,7 @@ impl ShellOverlayHost {
                 if *state == ElementState::Released {
                     self.run_remark_target(&target);
                 }
-                *handled = true;
+                *ctx.handled = true;
                 return true;
             }
             return false;
@@ -1690,7 +1685,7 @@ impl ShellOverlayHost {
                 if stage == Stage::Picking && !self.remark.view.pick_bar_rect().contains(point) {
                     chrome.borrow_mut().pick.hover(point);
                 }
-                *handled = true;
+                *ctx.handled = true;
                 return true;
             }
             WindowEvent::MouseInput {
@@ -1710,12 +1705,12 @@ impl ShellOverlayHost {
                     } else if *state == ElementState::Pressed {
                         chrome.borrow_mut().pick.drag = Some((point, point));
                     } else {
-                        let additive = modifiers.state().shift_key();
+                        let additive = ctx.modifiers.state().shift_key();
                         let mut st = chrome.borrow_mut();
                         st.pick.release(point, additive);
                         st.bump();
                     }
-                    *handled = true;
+                    *ctx.handled = true;
                     return true;
                 }
                 // Outside the composer, a click passes through to the
@@ -1733,8 +1728,8 @@ impl ShellOverlayHost {
                 }
             }
             WindowEvent::KeyboardInput { event: key, .. } if key.state == ElementState::Pressed => {
-                let shift = modifiers.state().shift_key();
-                let ctrl = modifiers.state().control_key();
+                let shift = ctx.modifiers.state().shift_key();
+                let ctrl = ctx.modifiers.state().control_key();
                 if stage == Stage::Picking {
                     let run = |id: &str, args: serde_json::Value| {
                         if let serde_json::Value::Object(args) = args {
@@ -1774,7 +1769,7 @@ impl ShellOverlayHost {
                         }
                         _ => {}
                     }
-                    *handled = true;
+                    *ctx.handled = true;
                     return true;
                 }
                 let text_focused = ui::widget::Widget::is_focused(&self.remark.view.text);
@@ -1787,25 +1782,25 @@ impl ShellOverlayHost {
                         } else {
                             self.run_remark_target(&crate::shell::remark::view::Target::Discard);
                         }
-                        *handled = true;
+                        *ctx.handled = true;
                         return true;
                     }
                     Key::Named(NamedKey::Enter) if ctrl => {
                         self.run_remark_target(&crate::shell::remark::view::Target::Send);
-                        *handled = true;
+                        *ctx.handled = true;
                         return true;
                     }
                     Key::Named(NamedKey::Tab) if !text_focused || shift => {
                         ui::widget::Widget::set_focus(&mut self.remark.view.text, false);
                         self.remark.view.move_focus(shift);
-                        *handled = true;
+                        *ctx.handled = true;
                         return true;
                     }
                     Key::Named(NamedKey::Enter | NamedKey::Space) if !text_focused => {
                         if let Some(target) = self.remark.view.focused_target() {
                             self.run_remark_target(&target);
                         }
-                        *handled = true;
+                        *ctx.handled = true;
                         return true;
                     }
                     _ => {}
@@ -1829,14 +1824,16 @@ impl ShellOverlayHost {
                 ui::widget::Widget::handle_event(
                     &mut self.remark.view.text,
                     event,
-                    scale_factor,
-                    &modifiers,
-                    doc,
-                    path,
-                    &mut text_handled,
-                    focus_target,
-                    node,
-                    &taffy,
+                    &mut ui::widget::EventCtx {
+                        scale_factor: ctx.scale_factor,
+                        modifiers: ctx.modifiers,
+                        state: &mut *ctx.state,
+                        path: ctx.path,
+                        handled: &mut text_handled,
+                        focus_target: &mut *ctx.focus_target,
+                        node_id: node,
+                        taffy: &taffy,
+                    },
                 );
                 if let Some(value) = self.remark.view.text.take_dirty() {
                     let _ = crate::shell::search::providers::actions::apply(
@@ -1850,7 +1847,7 @@ impl ShellOverlayHost {
                 }
             }
         }
-        *handled = true;
+        *ctx.handled = true;
         true
     }
 }

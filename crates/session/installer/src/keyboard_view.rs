@@ -19,13 +19,12 @@
 
 use std::collections::HashMap;
 use ui::doc::read_str_or_text;
+use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::Fill;
-use winit::event::WindowEvent;
 
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -122,7 +121,8 @@ impl KeyboardView {
 }
 
 impl Widget for KeyboardView {
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+        let (state, root) = ui::doc::document(state, root);
         // Re-resolve every sync so the preview tracks the dropdown live.
         if let Some(name) = read_str_or_text(state, root, self.value_path.as_str())
             && let Some(l) = layouts::by_display_name(&name)
@@ -232,20 +232,6 @@ impl Widget for KeyboardView {
         Self::draw_key(scene, transform, text_renderer, theme, sb, "", None);
     }
 
-    fn handle_event(
-        &mut self,
-        _event: &WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _root: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
-    }
-
     fn name(&self) -> &'static str {
         "KeyboardView"
     }
@@ -263,7 +249,7 @@ impl Widget for KeyboardView {
 mod tests {
     use super::*;
     use automerge::transaction::Transactable;
-    use automerge::{ObjType, ReadDoc};
+    use automerge::{AutoCommit, ObjId, ObjType, ReadDoc};
 
     fn doc_with_keymap(value: &str) -> (AutoCommit, ObjId) {
         let mut doc = AutoCommit::new();

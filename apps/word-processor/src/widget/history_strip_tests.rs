@@ -15,14 +15,16 @@ fn click(wp: &mut WordProcessorWidget, state: &mut ui::State, pt: Point) {
     let mut send = |wp: &mut WordProcessorWidget, ev: WindowEvent| {
         wp.handle_event(
             &ev,
-            1.0,
-            &mods,
-            &mut state.doc,
-            &state.root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: &mut state.doc,
+                path: &state.root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
     };
     send(

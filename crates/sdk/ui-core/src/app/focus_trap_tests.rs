@@ -1,5 +1,6 @@
 use super::*;
 use crate::widget::modal_dialog::ModalDialog;
+use crate::widget::{AppModel, ModelPath};
 use crate::widget::{Button, Widget};
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -19,11 +20,6 @@ impl TwoKids {
     }
 }
 impl Widget for TwoKids {
-    fn sync(&mut self, s: &mut automerge::AutoCommit, p: &automerge::ObjId) {
-        for c in &mut self.kids {
-            c.sync(s, p);
-        }
-    }
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -51,7 +47,6 @@ impl Widget for TwoKids {
         _p: &PresenceCtx,
     ) {
     }
-    fn handle_event_ctx(&mut self, _event: &WindowEvent, _ctx: &mut crate::widget::EventCtx<'_>) {}
     fn children(&self) -> Vec<&dyn Widget> {
         self.kids.iter().map(Box::as_ref).collect()
     }
@@ -89,7 +84,7 @@ impl ModalHost {
     }
 }
 impl Widget for ModalHost {
-    fn sync(&mut self, s: &mut automerge::AutoCommit, p: &automerge::ObjId) {
+    fn sync(&mut self, s: &mut AppModel, p: &ModelPath) {
         self.modal.set_open(self.want_open.get());
         for c in &mut self.outer {
             c.sync(s, p);
@@ -125,7 +120,6 @@ impl Widget for ModalHost {
         _p: &PresenceCtx,
     ) {
     }
-    fn handle_event_ctx(&mut self, _event: &WindowEvent, _ctx: &mut crate::widget::EventCtx<'_>) {}
     fn children(&self) -> Vec<&dyn Widget> {
         let mut v: Vec<&dyn Widget> = self.outer.iter().map(Box::as_ref).collect();
         v.push(&self.modal);

@@ -18,6 +18,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{SyncSender, TrySendError, sync_channel};
 use std::sync::{Mutex, PoisonError};
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use iroh_base::{EndpointId, SecretKey};
@@ -1980,14 +1981,16 @@ impl RemoteApp {
         let (mut handled, mut focus_target) = (false, None);
         input.handle_event(
             event,
-            ctx.scale_factor,
-            &ctx.modifiers,
-            state,
-            ctx.path,
-            &mut handled,
-            &mut focus_target,
-            ctx.node_id,
-            ctx.taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: ctx.scale_factor,
+                modifiers: &ctx.modifiers,
+                state,
+                path: ctx.path,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: ctx.node_id,
+                taffy: ctx.taffy,
+            },
         );
         if self.inputs.get(f).value() != before {
             self.commit_field(f);
@@ -2755,7 +2758,8 @@ impl Widget for RemoteApp {
         Some(update)
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, _) = ui::doc::document(state, path);
         // Publish our own connection list into the shared document the first
         // time we run, then adopt any remote additions. The live app's list
         // is empty on a fresh machine, so nothing fabricated is ever written
@@ -3011,31 +3015,24 @@ impl Widget for RemoteApp {
         clippy::too_many_lines,
         reason = "the widget trait requires one exhaustive event router so pointer, keyboard, IME, and accessibility routing share one ordering contract"
     )]
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, event_ctx: &mut ui::widget::EventCtx<'_>) {
+        let state = &mut *event_ctx.state;
         if !matches!(event, WindowEvent::CursorMoved { .. }) && self.tooltips.dismiss() {
             self.dirty = true;
         }
         let ctx = EventRouteCtx {
-            scale_factor,
-            modifiers: *modifiers,
-            path,
-            node_id,
-            taffy,
+            scale_factor: event_ctx.scale_factor,
+            modifiers: *event_ctx.modifiers,
+            path: event_ctx.path,
+            node_id: event_ctx.node_id,
+            taffy: event_ctx.taffy,
         };
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let p = Point::new(
+                    position.x / event_ctx.scale_factor,
+                    position.y / event_ctx.scale_factor,
+                );
                 self.handle_cursor_moved_pos(p, event, state, &ctx);
             }
             WindowEvent::MouseWheel { delta, .. }
@@ -3043,14 +3040,14 @@ impl Widget for RemoteApp {
             {
                 let dy = match delta {
                     MouseScrollDelta::LineDelta(_, y) => -f64::from(*y) * 48.0,
-                    MouseScrollDelta::PixelDelta(position) => -position.y / scale_factor,
+                    MouseScrollDelta::PixelDelta(position) => -position.y / event_ctx.scale_factor,
                 };
                 let next = (self.list_scroll + dy).clamp(0.0, self.list_scroll_max);
                 if (next - self.list_scroll).abs() > f64::EPSILON {
                     self.list_scroll = next;
                     self.dirty = true;
                 }
-                *handled = true;
+                *event_ctx.handled = true;
             }
             WindowEvent::MouseInput { state, button, .. }
                 if self.pending_confirmation.is_none()
@@ -3073,7 +3070,7 @@ impl Widget for RemoteApp {
                         pressed: *state == ElementState::Pressed,
                     });
                 }
-                *handled = true;
+                *event_ctx.handled = true;
             }
             // A press/release over the live VNC canvas is injected into the
             // remote desktop rather than hit-testing the local chrome.
@@ -3082,14 +3079,14 @@ impl Widget for RemoteApp {
                     && self.vnc_pointer_target(self.pointer).is_some() =>
             {
                 self.handle_vnc_mouse_input(*state, *button);
-                *handled = true;
+                *event_ctx.handled = true;
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
             } => {
-                self.handle_left_press_event(event, state, handled, &ctx);
+                self.handle_left_press_event(event, state, event_ctx.handled, &ctx);
             }
             // Ending a drag has to reach the field that started it, or the
             // selection keeps extending after the button is up.
@@ -3117,7 +3114,7 @@ impl Widget for RemoteApp {
                         pressed: *key_state == ElementState::Pressed,
                         modifiers: 0,
                     });
-                    *handled = true;
+                    *event_ctx.handled = true;
                 }
             }
             WindowEvent::KeyboardInput {
@@ -3135,7 +3132,7 @@ impl Widget for RemoteApp {
                     logical_key,
                     text.as_ref().map(winit::keyboard::SmolStr::as_str),
                     state,
-                    handled,
+                    event_ctx.handled,
                     &ctx,
                 );
             }
@@ -3634,10 +3631,11 @@ impl Widget for RemoteApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
-        _path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         use ui::a11y::Action as A11yAction;
+        let (state, _) = ui::doc::document(state, path);
         if self.pending_confirmation.is_some() {
             let routed = match (target, action) {
                 ("remote.confirmation.cancel", A11yAction::Activate) => Action::CancelPending,
@@ -6734,14 +6732,16 @@ mod tests {
         let (mut h, mut ft) = (false, None);
         app.handle_event(
             ev,
-            1.0,
-            &m,
-            state,
-            &automerge::ROOT,
-            &mut h,
-            &mut ft,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &m,
+                state,
+                path: &automerge::ROOT,
+                handled: &mut h,
+                focus_target: &mut ft,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
     }
 

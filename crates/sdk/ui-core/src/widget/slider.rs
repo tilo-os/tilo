@@ -5,6 +5,7 @@ use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::{ActionEmitter, ControlBindingKind, ControlBindingMetadata};
+use crate::widget::{AppModel, ModelPath};
 use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -468,7 +469,8 @@ impl Widget for Slider {
         clippy::cast_precision_loss,
         reason = "Automerge integer values are normalized into this f64 slider model"
     )]
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+        let (state, root) = crate::doc::document(state, root);
         if let Some(value) = self
             .local_state
             .as_mut()
@@ -539,36 +541,25 @@ impl Widget for Slider {
         );
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         // Disabled: reject all input — no drag, no value change, no hover.
         if !self.effectively_enabled() {
             return;
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.last_cursor = p;
                 let hover = self.rect.contains(p);
                 if hover != self.is_hovered {
                     self.is_hovered = hover;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
 
                 if self.is_dragging {
                     let new_value = self.value_from_cursor_x(p.x);
-                    if self.commit_value(new_value, state, root) {
-                        *handled = true;
+                    if self.commit_value(new_value, ctx.state, ctx.path) {
+                        *ctx.handled = true;
                     }
                 }
             }
@@ -585,13 +576,13 @@ impl Widget for Slider {
                 // "press on track to jump" affordance.
                 if *element_state == ElementState::Pressed && self.rect.contains(self.last_cursor) {
                     self.is_dragging = true;
-                    *focus_target = Some(node_id);
-                    *handled = true;
+                    *ctx.focus_target = Some(ctx.node_id);
+                    *ctx.handled = true;
                     let new_value = self.value_from_cursor_x(self.last_cursor.x);
-                    self.commit_value(new_value, state, root);
+                    self.commit_value(new_value, ctx.state, ctx.path);
                 } else if *element_state == ElementState::Released && self.is_dragging {
                     self.is_dragging = false;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             _ => {}
@@ -673,10 +664,11 @@ impl Widget for Slider {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
+        let (state, path) = crate::doc::document(state, path);
         const STEP: f64 = 0.05;
         if !self.effectively_enabled() {
             return false;
@@ -847,14 +839,16 @@ mod tests {
         let root = automerge::ROOT;
         s.handle_event(
             event,
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &tree,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &winit::event::Modifiers::default(),
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &tree,
+            },
         );
     }
 

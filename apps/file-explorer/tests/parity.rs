@@ -561,52 +561,29 @@ fn loading_state_shown_during_navigation() {
 }
 
 fn draw_composition_exercises_the_five_pass_pipeline() {
-    // Drives the composed widget through build_layout → apply_layout → draw.
+    // Drives the composed widget through the host's full frame
+    // (sync → build_layout → compute → apply_layout → draw).
     // Assertion: the widget's `rect` is non-empty after the pipeline runs and
     // the child widget tree is non-empty.
-    use std::collections::HashMap;
-    use taffy::{AvailableSpace, TaffyTree};
-    use ui::presence::PresenceCtx;
-    use ui::text_render::TextRenderer;
+    use ui::headless::Framed;
     use ui::theme::Theme;
     use ui::widget::Widget;
-    use vello::Scene;
-    use vello::kurbo::Point;
 
-    let mut w = FileExplorerWidget::new();
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let theme = Theme::dark();
-    let mut node_map: HashMap<taffy::NodeId, *mut dyn Widget> = HashMap::new();
-    let mut text_renderer = TextRenderer::new();
-
-    let root = w.build_layout(&mut taffy, &theme, &mut node_map);
+    let w = Framed::new(
+        ui::State::new(),
+        FileExplorerWidget::new(),
+        (1024, 768),
+        Theme::dark(),
+    );
 
     // The composition registers many taffy nodes (toolbar, breadcrumbs,
     // sidebar, view, footer, plus the intermediate Rows/Columns). A plain
     // leaf-only widget would register exactly one.
+    let nodes = Framed::harness(&w).layout_node_ids().len();
     assert!(
-        node_map.len() > 1,
-        "draw composition must register multiple layout nodes; got {}",
-        node_map.len()
+        nodes > 1,
+        "draw composition must register multiple layout nodes; got {nodes}"
     );
-
-    taffy
-        .compute_layout_with_measure(
-            root,
-            taffy::Size {
-                width: AvailableSpace::Definite(1024.0),
-                height: AvailableSpace::Definite(768.0),
-            },
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = node_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, &mut text_renderer) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
-        )
-        .unwrap();
-    w.apply_layout(&taffy, root, Point::new(0.0, 0.0));
 
     let rect = w.get_rect();
     assert!(
@@ -615,19 +592,10 @@ fn draw_composition_exercises_the_five_pass_pipeline() {
     );
 
     // draw must not panic and must fill a non-empty scene.
-    let mut scene = Scene::new();
-    let presence = PresenceCtx::empty();
-    w.draw(
-        &mut scene,
-        vello::kurbo::Affine::IDENTITY,
-        &mut text_renderer,
-        &theme,
-        &presence,
-    );
     // Scene should have encoded *something* from the composition — at a
     // minimum the toolbar's buttons produce fill/stroke commands.
     assert!(
-        !scene.encoding().is_empty(),
+        !Framed::harness(&w).scene().encoding().is_empty(),
         "draw composition must emit draw commands from the subtree"
     );
 }

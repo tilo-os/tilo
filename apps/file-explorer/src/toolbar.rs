@@ -28,6 +28,7 @@
 //! body shell), and its stateless button children are rebuilt each layout.
 
 use std::collections::HashMap;
+use ui::widget::{AppModel, ModelPath};
 
 use taffy::{
     AlignItems, Dimension, Display, FlexDirection, LengthPercentage, NodeId, Rect as TaffyRect,
@@ -342,7 +343,7 @@ impl FileToolbar {
 }
 
 impl Widget for FileToolbar {
-    fn sync(&mut self, state: &mut automerge::AutoCommit, path: &automerge::ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.path_bar.sync(state, path);
     }
 
@@ -483,64 +484,28 @@ impl Widget for FileToolbar {
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut automerge::AutoCommit,
-        path: &automerge::ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) {
-        let Ok(children) = taffy.children(node_id) else {
+        let Ok(children) = ctx.taffy.children(ctx.node_id) else {
             return;
         };
         let Some((left_ns, path_n, right_ns)) = self.child_groups(&children) else {
             return;
         };
         // Path bar first, so it captures the keyboard while editing.
-        self.path_bar.handle_event(
-            event,
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            path_n,
-            taffy,
-        );
+        self.path_bar
+            .handle_event(event, &mut ctx.reborrow(ctx.path, path_n));
         for (c, &n) in self.left.iter_mut().zip(left_ns.iter()) {
-            if *handled {
+            if *ctx.handled {
                 break;
             }
-            c.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                n,
-                taffy,
-            );
+            c.handle_event(event, &mut ctx.reborrow(ctx.path, n));
         }
         for (c, &n) in self.right.iter_mut().zip(right_ns.iter()) {
-            if *handled {
+            if *ctx.handled {
                 break;
             }
-            c.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                n,
-                taffy,
-            );
+            c.handle_event(event, &mut ctx.reborrow(ctx.path, n));
         }
     }
 

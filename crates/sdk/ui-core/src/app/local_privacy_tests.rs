@@ -19,8 +19,6 @@ struct LocalEffectProbe {
 }
 
 impl Widget for LocalEffectProbe {
-    fn sync(&mut self, _: &mut automerge::AutoCommit, _: &automerge::ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -42,21 +40,6 @@ impl Widget for LocalEffectProbe {
         _: &mut TextRenderer,
         _: &Theme,
         _: &PresenceCtx,
-    ) {
-    }
-
-    #[allow(clippy::too_many_arguments, reason = "Widget callback signature")]
-    fn handle_event(
-        &mut self,
-        _: &WindowEvent,
-        _: f64,
-        _: &winit::event::Modifiers,
-        _: &mut automerge::AutoCommit,
-        _: &automerge::ObjId,
-        _: &mut bool,
-        _: &mut Option<NodeId>,
-        _: NodeId,
-        _: &TaffyTree<()>,
     ) {
     }
 

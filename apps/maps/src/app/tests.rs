@@ -984,14 +984,16 @@ fn search_field_overlay_keys_and_history_dispatch() {
                 event: ev,
                 is_synthetic: false,
             },
-            1.0,
-            &ctrl,
-            &mut state,
-            &root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &ctrl,
+                state: &mut state,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
 
         assert_eq!(
@@ -2504,14 +2506,16 @@ fn feed(a: &mut MapsApp, ev: &WindowEvent) -> bool {
     let node = taffy.new_leaf(Style::default()).unwrap();
     a.handle_event(
         ev,
-        1.0,
-        &modifiers,
-        &mut state,
-        &root,
-        &mut handled,
-        &mut focus,
-        node,
-        &taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &modifiers,
+            state: &mut state,
+            path: &root,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: node,
+            taffy: &taffy,
+        },
     );
     handled
 }

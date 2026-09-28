@@ -10,10 +10,9 @@
 use std::collections::HashMap;
 
 use automerge::{AutoCommit, ObjId};
-use taffy::{NodeId, TaffyTree};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{Button, ButtonFace, TextInput, Widget};
+use ui::widget::{Button, ButtonFace, EventCtx, TextInput, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
@@ -392,21 +391,11 @@ impl ExpandModal {
     }
 
     /// Route a window event. Returns the modal's lifecycle outcome.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Snippet fields forward event, scale, pointer, modifiers, CRDT path, focus output, node, and layout into their shared text inputs."
-    )]
     pub fn handle_event(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f64,
+        ctx: &mut EventCtx<'_>,
         mouse: Point,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
     ) -> ExpandOutcome {
         if let WindowEvent::KeyboardInput { event: key, .. } = event
             && key.state == ElementState::Pressed
@@ -419,7 +408,7 @@ impl ExpandModal {
                 Key::Named(NamedKey::Tab) => {
                     if !self.fields.is_empty() {
                         let count = self.fields.len();
-                        self.focused = if modifiers.state().shift_key() {
+                        self.focused = if ctx.modifiers.state().shift_key() {
                             (self.focused + count - 1) % count
                         } else {
                             (self.focused + 1) % count
@@ -471,14 +460,10 @@ impl ExpandModal {
                 let mut child_handled = false;
                 field.input.handle_event(
                     event,
-                    scale_factor,
-                    modifiers,
-                    state,
-                    path,
-                    &mut child_handled,
-                    focus_target,
-                    node_id,
-                    taffy,
+                    &mut EventCtx {
+                        handled: &mut child_handled,
+                        ..ctx.reborrow(ctx.path, ctx.node_id)
+                    },
                 );
             }
         } else if let Some(index) = pointed.or_else(|| {
@@ -491,14 +476,10 @@ impl ExpandModal {
             let mut child_handled = false;
             field.input.handle_event(
                 event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                &mut child_handled,
-                focus_target,
-                node_id,
-                taffy,
+                &mut EventCtx {
+                    handled: &mut child_handled,
+                    ..ctx.reborrow(ctx.path, ctx.node_id)
+                },
             );
             let _ = field.input.take_dirty();
         }
@@ -642,6 +623,7 @@ impl ExpandModal {
 mod tests {
     use super::*;
     use crate::model::{Language, Snippet};
+    use taffy::TaffyTree;
 
     fn key(named: NamedKey) -> WindowEvent {
         // `KeyEvent`'s platform field is private; initialize the same minimal
@@ -666,16 +648,20 @@ mod tests {
         let mut taffy = TaffyTree::new();
         let node = taffy.new_leaf(taffy::Style::default()).unwrap();
         let mut focus = None;
+        let mut handled = false;
         modal.handle_event(
             event,
-            1.0,
+            &mut EventCtx {
+                scale_factor: 1.0,
+                modifiers: &winit::event::Modifiers::default(),
+                state: doc,
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
             Point::ZERO,
-            &winit::event::Modifiers::default(),
-            doc,
-            &automerge::ROOT,
-            &mut focus,
-            node,
-            &taffy,
         )
     }
 

@@ -15,6 +15,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ChangeHash, ObjId, ObjType, ReadDoc, Value};
 use taffy::{NodeId, TaffyTree};
@@ -2549,7 +2550,8 @@ impl Widget for TubeApp {
         Ok(true)
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, path) = ui::doc::document(state, path);
         #[cfg(feature = "grayjay-sync")]
         {
             // Reconcile existing canonical state before comparing imports. A
@@ -2747,18 +2749,7 @@ impl Widget for TubeApp {
         reason = "the Widget::handle_event trait method fans out on WindowEvent kind; each \
                   branch is a short, independent dispatch to an already-extracted helper"
     )]
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         // Ctrl+K toggles the global command palette, regardless of focus. This
         // is intercepted before children so a focused text field can't swallow
         // it. `Ctrl+K` opens; a second `Ctrl+K` (or Esc, below) closes.
@@ -2771,7 +2762,7 @@ impl Widget for TubeApp {
                 },
             ..
         } = event
-            && modifiers.state().control_key()
+            && ctx.modifiers.state().control_key()
             && c.eq_ignore_ascii_case("k")
         {
             action::push(
@@ -2782,7 +2773,7 @@ impl Widget for TubeApp {
                     Action::OpenPalette
                 },
             );
-            *handled = true;
+            *ctx.handled = true;
         }
 
         // Enter submits a search regardless of which field has focus.
@@ -2814,11 +2805,11 @@ impl Widget for TubeApp {
             } = event
         {
             let is_back = matches!(logical_key, Key::Named(NamedKey::BrowserBack))
-                || (modifiers.state().alt_key()
+                || (ctx.modifiers.state().alt_key()
                     && matches!(logical_key, Key::Named(NamedKey::ArrowLeft)));
             if is_back && self.nav.can_go_back() {
                 action::push(&self.bus, Action::Back);
-                *handled = true;
+                *ctx.handled = true;
             }
         }
 
@@ -2829,7 +2820,7 @@ impl Widget for TubeApp {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_pointer =
-                    Point::new(position.x / scale_factor, position.y / scale_factor);
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 if let Some(ui::NavAction::Back) = self.back_gesture.pointer_move(self.last_pointer)
                     && self.nav.can_go_back()
                 {
@@ -2854,17 +2845,7 @@ impl Widget for TubeApp {
         }
 
         if let Some(c) = &mut self.root_child {
-            c.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
-            );
+            c.handle_event(event, ctx);
         }
 
         // Esc dismisses an open overlay flap. The live split closes itself on
@@ -2885,12 +2866,12 @@ impl Widget for TubeApp {
             // then an open overlay flap, then finally acts as Back.
             if self.model.palette_open {
                 action::push(&self.bus, Action::ClosePalette);
-                *handled = true;
+                *ctx.handled = true;
             } else if self.nav_is_overlay() && self.sidebar_currently_open() {
                 self.sidebar_open = Some(false);
             } else if self.nav.can_go_back() {
                 action::push(&self.bus, Action::Back);
-                *handled = true;
+                *ctx.handled = true;
             }
         }
 
@@ -2943,13 +2924,13 @@ impl Widget for TubeApp {
                 // boundary used by search, agents and replay. Owner history
                 // is intentionally absent from this public dispatcher.
                 self.actions.dispatch_with_context(
-                    state,
+                    ctx.state,
                     crate::actions::TUBE_ACTION_TYPE,
                     &operation,
                     tilo_actions::ActionContext::for_action("so.tilo.tube", "Tube", &operation),
                 );
             }
-            changed |= self.apply(a, state, path);
+            changed |= self.apply(a, ctx.state, ctx.path);
         }
         // If a just-applied action opened a watch page, kick off real playback
         // (resolve + decode) for it — once. No-op off the watch route / offline.
@@ -2962,7 +2943,7 @@ impl Widget for TubeApp {
         }
     }
 
-    fn on_external_event(&mut self, _payload: &str, _state: &mut AutoCommit, _root: &ObjId) {}
+    fn on_external_event(&mut self, _payload: &str, _state: &mut AppModel, _root: &ModelPath) {}
 
     fn take_structure_dirty(&mut self) -> bool {
         let mut dirty = std::mem::take(&mut self.structure_dirty);

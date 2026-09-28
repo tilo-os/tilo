@@ -1097,39 +1097,11 @@ impl App {
         }
 
         let mut rows = Vec::new();
-        let mut estimated_bytes = 0usize;
+        let mut estimated_bytes = DIRECTORY_PAGE_WIRE_BYTES.saturating_add(revision.len());
         let add = |row: runtime_collab::ActionDirectoryRow,
                    rows: &mut Vec<runtime_collab::ActionDirectoryRow>,
                    bytes: &mut usize| {
-            let descriptor_bytes = row.descriptor.as_ref().map_or(0, |descriptor| {
-                let input_bytes = match &descriptor.input {
-                    runtime_collab::ExportedInput::None => 0,
-                    runtime_collab::ExportedInput::Text {
-                        prompt,
-                        placeholder,
-                        ..
-                    } => prompt.len() + placeholder.len() + 8,
-                };
-                descriptor.resource.len()
-                    + descriptor.action.len()
-                    + descriptor.resource_kind.len()
-                    + descriptor.resource_label.len()
-                    + descriptor.action_label.len()
-                    + descriptor.description.as_ref().map_or(0, String::len)
-                    + descriptor.params_json.len()
-                    + descriptor.contract_json.len()
-                    + input_bytes
-            });
-            *bytes += row.parent_resource.len()
-                + row.resource.len()
-                + row.resource_kind.len()
-                + row.resource_label.len()
-                + row.resource_presentation_json.len()
-                + row.action.as_ref().map_or(0, String::len)
-                + row.visibility_action.as_ref().map_or(0, String::len)
-                + row.visibility_contract_json.len()
-                + descriptor_bytes
-                + 64;
+            *bytes = bytes.saturating_add(directory_row_wire_bytes(&row));
             rows.push(row);
         };
 
@@ -4323,4 +4295,50 @@ impl App {
         self.rebuild_action_palette_admission();
         consumed
     }
+}
+
+/// Room for a directory page's own fields (revision, cursor, flags and the
+/// row list) beyond its rows, on the wire.
+const DIRECTORY_PAGE_WIRE_BYTES: usize = 512;
+
+/// An upper bound on `row`'s Cap'n Proto size, which the broker checks the
+/// page against: every text field costs its bytes, a NUL, padding to a word
+/// and an 8-byte pointer; every struct a fixed allowance for its data words,
+/// pointer and list tag.
+pub(crate) fn directory_row_wire_bytes(row: &runtime_collab::ActionDirectoryRow) -> usize {
+    const STRUCT: usize = 64;
+    fn text(value: &str) -> usize {
+        value.len().saturating_add(8) / 8 * 8 + 8
+    }
+    let descriptor = row.descriptor.as_ref().map_or(0, |descriptor| {
+        let input = match &descriptor.input {
+            runtime_collab::ExportedInput::None => 0,
+            runtime_collab::ExportedInput::Text {
+                prompt,
+                placeholder,
+                ..
+            } => STRUCT + text(prompt) + text(placeholder),
+        };
+        STRUCT
+            + text(&descriptor.resource)
+            + text(&descriptor.action)
+            + text(&descriptor.resource_kind)
+            + text(&descriptor.resource_label)
+            + text(&descriptor.action_label)
+            + text(descriptor.description.as_deref().unwrap_or(""))
+            + text(&descriptor.operation_kind)
+            + text(&descriptor.params_json)
+            + text(&descriptor.contract_json)
+            + input
+    });
+    STRUCT
+        + text(&row.parent_resource)
+        + text(&row.resource)
+        + text(&row.resource_kind)
+        + text(&row.resource_label)
+        + text(&row.resource_presentation_json)
+        + text(row.action.as_deref().unwrap_or(""))
+        + text(row.visibility_action.as_deref().unwrap_or(""))
+        + text(&row.visibility_contract_json)
+        + descriptor
 }

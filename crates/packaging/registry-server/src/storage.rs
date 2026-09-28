@@ -69,6 +69,7 @@ impl Storage {
         for name in [
             "entries",
             "pending",
+            "publisher-applications",
             "deferred-pending",
             "reviews",
             "quarantined",
@@ -869,6 +870,62 @@ impl Storage {
     /// Returns an error when the submission cannot be encoded or persisted.
     pub fn save_pending(&self, submission: &PendingSubmission) -> Result<(), StorageError> {
         save_json(&self.pending_path(&submission.submission_id), submission)
+    }
+
+    /// The publisher application from `pubkey_hex`, if any.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the key is not hex or the record cannot be read.
+    pub fn load_publisher_application(
+        &self,
+        pubkey_hex: &str,
+    ) -> Result<Option<crate::applications::StoredApplication>, StorageError> {
+        load_json(
+            &self.publisher_application_path(pubkey_hex)?,
+            "publisher application",
+        )
+    }
+
+    /// Every publisher application, in no particular order.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a record cannot be read.
+    pub fn load_publisher_applications(
+        &self,
+    ) -> Result<Vec<crate::applications::StoredApplication>, StorageError> {
+        load_json_dir(
+            &self.root.join("publisher-applications"),
+            "publisher application",
+        )
+    }
+
+    /// Atomically create or replace a publisher application.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the record cannot be encoded or persisted.
+    pub fn save_publisher_application(
+        &self,
+        application: &crate::applications::StoredApplication,
+    ) -> Result<(), StorageError> {
+        save_json(
+            &self.publisher_application_path(&application.application.pubkey_hex)?,
+            application,
+        )
+    }
+
+    fn publisher_application_path(&self, pubkey_hex: &str) -> Result<PathBuf, StorageError> {
+        if !is_hex_digest(pubkey_hex) {
+            return Err(StorageError::Parse(format!(
+                "{pubkey_hex:?} is not a 32-byte hex public key"
+            )));
+        }
+        Ok(self
+            .root
+            .join("publisher-applications")
+            .join(format!("{}.json", pubkey_hex.to_ascii_lowercase())))
     }
 
     /// Remove a pending submission after its terminal review record is durable.

@@ -1131,7 +1131,6 @@ mod tests {
         }
     }
     impl Widget for TW {
-        fn sync(&mut self, _s: &mut automerge::AutoCommit, _p: &automerge::ObjId) {}
         fn build_layout(
             &mut self,
             taffy: &mut TaffyTree<()>,
@@ -1158,12 +1157,6 @@ mod tests {
             _tr: &mut crate::text_render::TextRenderer,
             _th: &Theme,
             _p: &crate::presence::PresenceCtx,
-        ) {
-        }
-        fn handle_event_ctx(
-            &mut self,
-            _event: &winit::event::WindowEvent,
-            _ctx: &mut crate::widget::EventCtx<'_>,
         ) {
         }
         fn children(&self) -> Vec<&dyn Widget> {

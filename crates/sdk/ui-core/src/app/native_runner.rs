@@ -1303,14 +1303,16 @@ impl AppHandler {
         app.refresh_control_action_availability();
         app.root_widget.handle_event(
             &event,
-            scale,
-            &app.input.modifiers,
-            &mut app.state.doc,
-            &app.state.root,
-            &mut handled,
-            &mut focus_target,
-            root_node,
-            &app.layout.taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor: scale,
+                modifiers: &app.input.modifiers,
+                state: &mut app.state.doc,
+                path: &app.state.root,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: root_node,
+                taffy: &app.layout.taffy,
+            },
         );
         // `handle_event` may change presentation-only resource declarations
         // without touching the CRDT (selected tab, open media, local mode).

@@ -7,6 +7,7 @@
 //! caller persists a choice into its own (e.g. CRDT-backed) storage.
 
 use crate::time::{Duration, Instant};
+use crate::widget::{AppModel, ModelPath};
 use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
 
@@ -2642,14 +2643,16 @@ impl<T, M: TreeModel> TreeView<T, M> {
         {
             row.widget.handle_event(
                 event,
-                scale_factor,
-                &modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node,
-                taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor,
+                    modifiers: &modifiers,
+                    state,
+                    path,
+                    handled,
+                    focus_target,
+                    node_id: node,
+                    taffy,
+                },
             );
             return;
         }
@@ -2659,14 +2662,16 @@ impl<T, M: TreeModel> TreeView<T, M> {
             };
             row.widget.handle_event(
                 event,
-                scale_factor,
-                &modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node,
-                taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor,
+                    modifiers: &modifiers,
+                    state,
+                    path,
+                    handled,
+                    focus_target,
+                    node_id: node,
+                    taffy,
+                },
             );
             if *handled {
                 break;
@@ -2773,14 +2778,14 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
         self.paint_dirty = true;
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.reconcile_mounted_rows();
         for row in &mut self.mounted_rows {
             row.widget.sync(state, path);
         }
     }
 
-    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         let model_changes = self.model.poll_changes();
         let received_changes = !model_changes.is_empty();
         if received_changes {
@@ -3381,7 +3386,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
         self.paint_context_menu(scene, transform, text_renderer, theme, presence);
     }
 
-    fn handle_event_ctx(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
         self.route_event(event, ctx);
         // Pointer motion repaints only through what the view signature sees
         // (hover, affordance hover, drags), so a resting pointer stays inert.
@@ -3729,10 +3734,11 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
+        let (state, path) = crate::doc::document(state, path);
 
         self.paint_dirty = true;
         if let Some(performed) = self.perform_affordance_action(target, action, state, path) {
@@ -3838,27 +3844,31 @@ impl<T: 'static, M: TreeModel + 'static> TreeView<T, M> {
         }
         if self.route_context_menu(
             event,
-            scale_factor,
-            *modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                node_id,
+                taffy,
+            },
         ) {
             return;
         }
         if self.route_rename(
             event,
-            scale_factor,
-            *modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                node_id,
+                taffy,
+            },
         ) {
             return;
         }
@@ -4737,8 +4747,6 @@ mod tests {
     }
 
     impl Widget for DelegateProbe {
-        fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
         fn build_layout(
             &mut self,
             taffy: &mut TaffyTree<()>,
@@ -4776,7 +4784,7 @@ mod tests {
         ) {
         }
 
-        fn handle_event_ctx(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
+        fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
             if let WindowEvent::CursorMoved { position, .. } = event {
                 self.cursor = Some(Point::new(position.x, position.y));
             }
@@ -4881,14 +4889,16 @@ mod tests {
         let root = automerge::ROOT;
         view.handle_event(
             event,
-            1.0,
-            &Modifiers::default(),
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &tree,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &Modifiers::default(),
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &tree,
+            },
         );
     }
 
@@ -4903,14 +4913,16 @@ mod tests {
         let mut doc = AutoCommit::new();
         view.handle_event(
             event,
-            1.0,
-            &Modifiers::default(),
-            &mut doc,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus_target,
-            node,
-            taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &Modifiers::default(),
+                state: &mut doc,
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy,
+            },
         );
         handled
     }

@@ -219,9 +219,7 @@ pub(crate) fn note(root: &Path, agent: &str, mut note: StepNote) {
                 .filter_map(|n| serde_json::to_string(n).ok())
                 .map(|line| line + "\n")
                 .collect();
-            let temporary = path.with_extension("jsonl.tmp");
-            std::fs::write(&temporary, text)?;
-            return std::fs::rename(temporary, &path);
+            return atomic_file::write(&path, text.as_bytes());
         }
         let mut file = std::fs::OpenOptions::new()
             .create(true)

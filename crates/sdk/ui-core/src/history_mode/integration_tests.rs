@@ -3,6 +3,7 @@ use crate::application::{LaunchTarget, RestoreInput};
 use crate::application_test_support::{
     APP, ProbeHost, runner_permissions, runner_probe_definition,
 };
+use crate::widget::{AppModel, ModelPath};
 use crate::{
     State,
     headless::Driver,
@@ -1005,7 +1006,7 @@ impl<T: Widget> Widget for TileEditor<T> {
     fn children_mut(&mut self) -> Vec<&mut dyn Widget> {
         vec![&mut self.0]
     }
-    fn update(&mut self, doc: &mut automerge::AutoCommit, path: &automerge::ObjId) -> bool {
+    fn update(&mut self, doc: &mut AppModel, path: &ModelPath) -> bool {
         self.0.update(doc, path)
     }
     fn record_intent(&self) -> Option<crate::record::RecordCheckout> {
@@ -1060,25 +1061,11 @@ impl<T: Widget> Widget for TileEditor<T> {
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        scale: f64,
-        mods: &winit::event::Modifiers,
-        doc: &mut automerge::AutoCommit,
-        path: &automerge::ObjId,
-        handled: &mut bool,
-        focus: &mut Option<taffy::NodeId>,
-        node: taffy::NodeId,
-        tree: &taffy::TaffyTree<()>,
+        ctx: &mut crate::widget::EventCtx<'_>,
     ) {
         self.0.handle_event(
             event,
-            scale,
-            mods,
-            doc,
-            path,
-            handled,
-            focus,
-            tree.children(node).unwrap()[0],
-            tree,
+            &mut ctx.reborrow(ctx.path, ctx.taffy.children(ctx.node_id).unwrap()[0]),
         );
     }
 }
@@ -2098,8 +2085,9 @@ impl Widget for RetainedLifecycleProbe {
     fn test_id(&self) -> Option<&str> {
         Some(self.id)
     }
-    fn sync(&mut self, doc: &mut automerge::AutoCommit, path: &automerge::ObjId) {
+    fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
         use automerge::ReadDoc;
+        let (doc, path) = crate::doc::document(doc, path);
         increment(&self.handles.syncs);
         self.observed = doc
             .get(path, "body")
@@ -2129,7 +2117,7 @@ impl Widget for RetainedLifecycleProbe {
         self.ready = true;
         self.dirty = true;
     }
-    fn update(&mut self, _: &mut automerge::AutoCommit, _: &automerge::ObjId) -> bool {
+    fn update(&mut self, _: &mut AppModel, _: &ModelPath) -> bool {
         increment(&self.handles.updates);
         false
     }
@@ -2159,18 +2147,11 @@ impl Widget for RetainedLifecycleProbe {
     fn handle_event(
         &mut self,
         _: &winit::event::WindowEvent,
-        _: f64,
-        _: &winit::event::Modifiers,
-        doc: &mut automerge::AutoCommit,
-        path: &automerge::ObjId,
-        _: &mut bool,
-        _: &mut Option<taffy::NodeId>,
-        _: taffy::NodeId,
-        _: &taffy::TaffyTree<()>,
+        ctx: &mut crate::widget::EventCtx<'_>,
     ) {
         increment(&self.handles.events);
         if let Some(value) = self.handles.event_value.borrow().as_deref() {
-            doc.put(path, "body", value).unwrap();
+            ctx.state.put(ctx.path, "body", value).unwrap();
         }
     }
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
@@ -2306,8 +2287,9 @@ impl Widget for ReleasableLifecycleProbe {
     fn name(&self) -> &'static str {
         "ReleasableLifecycleProbe"
     }
-    fn sync(&mut self, doc: &mut automerge::AutoCommit, path: &automerge::ObjId) {
+    fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
         use automerge::ReadDoc;
+        let (doc, path) = crate::doc::document(doc, path);
         self.handles.last_owner.replace(
             doc.get(path, "owner")
                 .unwrap()
@@ -2326,7 +2308,7 @@ impl Widget for ReleasableLifecycleProbe {
         self.dirty = true;
         increment(&self.handles.accepts);
     }
-    fn update(&mut self, _: &mut automerge::AutoCommit, _: &automerge::ObjId) -> bool {
+    fn update(&mut self, _: &mut AppModel, _: &ModelPath) -> bool {
         false
     }
     fn record_intent(&self) -> Option<crate::record::RecordCheckout> {

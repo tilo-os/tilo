@@ -12,7 +12,6 @@
 
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::color_compat::ColorCompat;
 use ui::presence::PresenceCtx;
@@ -22,7 +21,6 @@ use ui::widget::Widget;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Stroke};
 use vello::peniko::Color;
-use winit::event::WindowEvent;
 
 use crate::draw;
 use crate::model::{self, ThemeSpec};
@@ -350,8 +348,6 @@ impl PreviewPane {
 }
 
 impl Widget for PreviewPane {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -403,24 +399,6 @@ impl Widget for PreviewPane {
     }
     fn test_id(&self) -> Option<&str> {
         Some("preview_pane")
-    }
-
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "The read-only preview implements the full Widget event contract even though it consumes no input."
-    )]
-    fn handle_event(
-        &mut self,
-        _e: &WindowEvent,
-        _s: f64,
-        _m: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _p: &ObjId,
-        _h: &mut bool,
-        _f: &mut Option<NodeId>,
-        _n: NodeId,
-        _t: &TaffyTree<()>,
-    ) {
     }
 }
 

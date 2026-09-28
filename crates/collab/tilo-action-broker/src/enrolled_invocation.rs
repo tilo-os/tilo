@@ -77,6 +77,7 @@ impl CapnpBrokerState {
                 agent: &connection.facts().binding.agent,
                 delegator: &delegator,
             },
+            self.capped_in(&surface.route.cluster_id, connection.caller()),
             Some(&scopes),
             surface,
             action,
@@ -1142,7 +1143,8 @@ mod tests {
                 .iter()
                 .flat_map(|s| s.actions.iter().map(move |a| (s, a)))
                 .filter(|(s, a)| {
-                    authorize_published(&workspace, 10, agent, Some(&scopes), s, a, None).is_ok()
+                    authorize_published(&workspace, 10, agent, false, Some(&scopes), s, a, None)
+                        .is_ok()
                 })
                 .map(|(s, a)| {
                     (

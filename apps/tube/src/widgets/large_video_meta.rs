@@ -9,7 +9,6 @@
 
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::percent;
 use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -89,8 +88,6 @@ impl LargeVideoMeta {
 }
 
 impl Widget for LargeVideoMeta {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -180,20 +177,6 @@ impl Widget for LargeVideoMeta {
             Some(width),
             &meta_style,
         );
-    }
-
-    fn handle_event(
-        &mut self,
-        _event: &winit::event::WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
     }
 
     fn name(&self) -> &'static str {

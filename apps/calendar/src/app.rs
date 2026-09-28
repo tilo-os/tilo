@@ -24,6 +24,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::path::PathBuf;
 use tilo_automerge::ApplyIncoming;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ChangeHash, ObjId};
 use chrono::{Datelike, Duration, Local, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
@@ -6478,14 +6479,16 @@ impl CalendarApp {
             self.title_input.set_focus(true);
             self.title_input.handle_event(
                 input.event,
-                input.scale_factor,
-                &input.modifiers,
-                input.state,
-                input.path,
-                input.handled,
-                input.focus_target,
-                input.node_id,
-                input.taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: input.scale_factor,
+                    modifiers: &input.modifiers,
+                    state: input.state,
+                    path: input.path,
+                    handled: input.handled,
+                    focus_target: input.focus_target,
+                    node_id: input.node_id,
+                    taffy: input.taffy,
+                },
             );
             *input.handled = true;
             self.dirty = true;
@@ -6498,14 +6501,16 @@ impl CalendarApp {
             self.location_input.set_focus(true);
             self.location_input.handle_event(
                 input.event,
-                input.scale_factor,
-                &input.modifiers,
-                input.state,
-                input.path,
-                input.handled,
-                input.focus_target,
-                input.node_id,
-                input.taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: input.scale_factor,
+                    modifiers: &input.modifiers,
+                    state: input.state,
+                    path: input.path,
+                    handled: input.handled,
+                    focus_target: input.focus_target,
+                    node_id: input.node_id,
+                    taffy: input.taffy,
+                },
             );
             *input.handled = true;
             self.dirty = true;
@@ -6518,14 +6523,16 @@ impl CalendarApp {
             self.invite_input.set_focus(true);
             self.invite_input.handle_event(
                 input.event,
-                input.scale_factor,
-                &input.modifiers,
-                input.state,
-                input.path,
-                input.handled,
-                input.focus_target,
-                input.node_id,
-                input.taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: input.scale_factor,
+                    modifiers: &input.modifiers,
+                    state: input.state,
+                    path: input.path,
+                    handled: input.handled,
+                    focus_target: input.focus_target,
+                    node_id: input.node_id,
+                    taffy: input.taffy,
+                },
             );
             *input.handled = true;
             self.dirty = true;
@@ -6539,14 +6546,16 @@ impl CalendarApp {
             if let Some(n) = self.editor_node {
                 self.notes_editor.handle_event(
                     input.event,
-                    input.scale_factor,
-                    &input.modifiers,
-                    input.state,
-                    input.path,
-                    input.handled,
-                    input.focus_target,
-                    n,
-                    input.taffy,
+                    &mut ui::widget::EventCtx {
+                        scale_factor: input.scale_factor,
+                        modifiers: &input.modifiers,
+                        state: input.state,
+                        path: input.path,
+                        handled: input.handled,
+                        focus_target: input.focus_target,
+                        node_id: n,
+                        taffy: input.taffy,
+                    },
                 );
             }
             self.dirty = true;
@@ -6573,14 +6582,16 @@ impl CalendarApp {
         if self.title_input.is_focused() {
             self.title_input.handle_event(
                 input.event,
-                input.scale_factor,
-                &input.modifiers,
-                input.state,
-                input.path,
-                input.handled,
-                input.focus_target,
-                input.node_id,
-                input.taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: input.scale_factor,
+                    modifiers: &input.modifiers,
+                    state: input.state,
+                    path: input.path,
+                    handled: input.handled,
+                    focus_target: input.focus_target,
+                    node_id: input.node_id,
+                    taffy: input.taffy,
+                },
             );
             self.flush_form_edits(input.state);
             self.dirty = true;
@@ -6588,14 +6599,16 @@ impl CalendarApp {
         } else if self.location_input.is_focused() {
             self.location_input.handle_event(
                 input.event,
-                input.scale_factor,
-                &input.modifiers,
-                input.state,
-                input.path,
-                input.handled,
-                input.focus_target,
-                input.node_id,
-                input.taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: input.scale_factor,
+                    modifiers: &input.modifiers,
+                    state: input.state,
+                    path: input.path,
+                    handled: input.handled,
+                    focus_target: input.focus_target,
+                    node_id: input.node_id,
+                    taffy: input.taffy,
+                },
             );
             self.flush_form_edits(input.state);
             self.dirty = true;
@@ -6603,14 +6616,16 @@ impl CalendarApp {
         } else if self.invite_input.is_focused() {
             self.invite_input.handle_event(
                 input.event,
-                input.scale_factor,
-                &input.modifiers,
-                input.state,
-                input.path,
-                input.handled,
-                input.focus_target,
-                input.node_id,
-                input.taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: input.scale_factor,
+                    modifiers: &input.modifiers,
+                    state: input.state,
+                    path: input.path,
+                    handled: input.handled,
+                    focus_target: input.focus_target,
+                    node_id: input.node_id,
+                    taffy: input.taffy,
+                },
             );
             self.submit_invite(input.state);
             self.dirty = true;
@@ -7106,7 +7121,8 @@ impl Widget for CalendarApp {
         vec![Box::new(self.search_provider.clone())]
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, path) = ui::doc::document(state, path);
         if !self.seeded {
             // Live app: adopt the user's persisted calendar (empty on a fresh
             // machine). Demo/test builds pass no path and stay in-memory.
@@ -7494,28 +7510,14 @@ impl Widget for CalendarApp {
     // event, scaling, modifiers, CRDT handle+path, two out-params, and the
     // node's own identity/layout).
     #[allow(
-        clippy::too_many_arguments,
-        reason = "implements the shared Widget event contract with input, document, focus and layout parameters"
-    )]
-    #[allow(
         clippy::too_many_lines,
         reason = "the widget-system dispatcher deliberately keeps input precedence visible: modal popovers, shared task controls, timeline, keyboard, hit map, fields, then notes"
     )]
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         // Track the pointer in logical coordinates.
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_mouse = Point::new(position.x / scale_factor, position.y / scale_factor);
+            self.last_mouse =
+                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
             self.dirty = true;
         }
 
@@ -7533,60 +7535,38 @@ impl Widget for CalendarApp {
         if popover_open {
             self.handle_popover_priority(&mut InputContext {
                 event,
-                scale_factor,
-                modifiers: *modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
+                scale_factor: ctx.scale_factor,
+                modifiers: *ctx.modifiers,
+                state: ctx.state,
+                path: ctx.path,
+                handled: ctx.handled,
+                focus_target: ctx.focus_target,
+                node_id: ctx.node_id,
+                taffy: ctx.taffy,
             });
             return;
         }
 
         if self.task_popover == Some(TaskPopover::Project) {
-            Widget::handle_event(
-                &mut self.task_project_dropdown,
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
-            );
-            self.commit_task_project_dropdown(state, path);
-            if *handled {
+            Widget::handle_event(&mut self.task_project_dropdown, event, ctx);
+            self.commit_task_project_dropdown(ctx.state, ctx.path);
+            if *ctx.handled {
                 self.dirty = true;
                 return;
             }
         }
 
         if self.task_popover == Some(TaskPopover::Priority) {
-            Widget::handle_event(
-                &mut self.task_priority_dropdown,
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
-            );
-            self.commit_task_priority_dropdown(state, path);
-            if *handled {
+            Widget::handle_event(&mut self.task_priority_dropdown, event, ctx);
+            self.commit_task_priority_dropdown(ctx.state, ctx.path);
+            if *ctx.handled {
                 self.dirty = true;
                 return;
             }
         }
 
-        if editor_active && self.handle_detail_scroll(event, scale_factor, taffy) {
-            *handled = true;
+        if editor_active && self.handle_detail_scroll(event, ctx.scale_factor, ctx.taffy) {
+            *ctx.handled = true;
             return;
         }
 
@@ -7595,35 +7575,35 @@ impl Widget for CalendarApp {
         // drag-to-create / drag-to-move) before the generic hit-map path.
         let timeline_handled = self.handle_timeline_input(&mut InputContext {
             event,
-            scale_factor,
-            modifiers: *modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
+            scale_factor: ctx.scale_factor,
+            modifiers: *ctx.modifiers,
+            state: ctx.state,
+            path: ctx.path,
+            handled: ctx.handled,
+            focus_target: ctx.focus_target,
+            node_id: ctx.node_id,
+            taffy: ctx.taffy,
         });
         if timeline_handled {
             self.dirty = true;
             return;
         }
 
-        if self.handle_keyboard(event, *modifiers, state, handled) {
+        if self.handle_keyboard(event, *ctx.modifiers, ctx.state, ctx.handled) {
             return;
         }
 
         if self.handle_mouse_click(
             &mut InputContext {
                 event,
-                scale_factor,
-                modifiers: *modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
+                scale_factor: ctx.scale_factor,
+                modifiers: *ctx.modifiers,
+                state: ctx.state,
+                path: ctx.path,
+                handled: ctx.handled,
+                focus_target: ctx.focus_target,
+                node_id: ctx.node_id,
+                taffy: ctx.taffy,
             },
             form_active,
             in_notes,
@@ -7635,14 +7615,14 @@ impl Widget for CalendarApp {
         // edits land, mirroring the change into the event via `flush_form_edits`.
         if self.handle_form_field_input(&mut InputContext {
             event,
-            scale_factor,
-            modifiers: *modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
+            scale_factor: ctx.scale_factor,
+            modifiers: *ctx.modifiers,
+            state: ctx.state,
+            path: ctx.path,
+            handled: ctx.handled,
+            focus_target: ctx.focus_target,
+            node_id: ctx.node_id,
+            taffy: ctx.taffy,
         }) {
             return;
         }
@@ -7650,17 +7630,8 @@ impl Widget for CalendarApp {
         // Forward remaining events (key typing, mouse move) to the editor
         // when the notes panel is active so editing works.
         if editor_active && let Some(n) = self.editor_node {
-            self.notes_editor.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                n,
-                taffy,
-            );
+            self.notes_editor
+                .handle_event(event, &mut ctx.reborrow(ctx.path, n));
         }
         self.dirty = true;
     }
@@ -7724,9 +7695,10 @@ impl Widget for CalendarApp {
         &mut self,
         target: &str,
         action: &A11yAction,
-        state: &mut AutoCommit,
-        _path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
+        let (state, _) = ui::doc::document(state, path);
         if !matches!(action, A11yAction::Activate | A11yAction::ToggleCheck) {
             return false;
         }

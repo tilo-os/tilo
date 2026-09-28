@@ -12,6 +12,7 @@
 //! widget on demand.
 
 use std::collections::HashMap;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::length;
@@ -387,7 +388,7 @@ impl Customizer {
 }
 
 impl Widget for Customizer {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.color_picker.sync(state, path);
         self.radius_slider.sync(state, path);
         self.spacing_slider.sync(state, path);
@@ -575,61 +576,27 @@ impl Widget for Customizer {
         self.font_dropdown.draw_overlay(scene, t, tr, theme, p);
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the Widget event signature carries input, CRDT location, handled/focus outputs and layout context to child controls"
-    )]
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale: f64,
-        m: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        _node: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.cursor = Some(Point::new(position.x / scale, position.y / scale));
+            self.cursor = Some(Point::new(
+                position.x / ctx.scale_factor,
+                position.y / ctx.scale_factor,
+            ));
         }
 
-        if self.editable
-            && self.handle_pointer_capture(
-                event,
-                scale,
-                *m,
-                state,
-                path,
-                handled,
-                focus_target,
-                taffy,
-            )
-        {
+        if self.editable && self.handle_pointer_capture(event, ctx) {
             return;
         }
 
-        if self.handle_chip_selection(event, state, path, handled) {
+        if self.handle_chip_selection(event, ctx.state, ctx.path, ctx.handled) {
             return;
         }
 
-        if self.editable
-            && self.handle_control_events(
-                event,
-                scale,
-                *m,
-                state,
-                path,
-                handled,
-                focus_target,
-                taffy,
-            )
-        {
+        if self.editable && self.handle_control_events(event, ctx) {
             return;
         }
 
-        self.handle_button_events(event, scale, *m, state, path, handled, focus_target, taffy);
+        self.handle_button_events(event, ctx);
     }
 
     fn name(&self) -> &'static str {
@@ -874,66 +841,29 @@ impl Customizer {
     /// captured control owns the event, in which case the caller must stop
     /// dispatching regardless of `*handled` (a capture still claims the
     /// event even while the pointer strays outside the control's rect).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "forwards the same independently-meaningful parameters Widget::handle_event receives; a context struct would just be destructured back apart at every child dispatch"
-    )]
     fn handle_pointer_capture(
         &mut self,
         event: &WindowEvent,
-        scale: f64,
-        m: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        taffy: &TaffyTree<()>,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
         if self.color_picker.wants_pointer_capture() {
             if let Some(n) = self.picker_node {
-                self.color_picker.handle_event(
-                    event,
-                    scale,
-                    &m,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    n,
-                    taffy,
-                );
+                self.color_picker
+                    .handle_event(event, &mut ctx.reborrow(ctx.path, n));
             }
             return true;
         }
         if self.radius_slider.wants_pointer_capture() {
             if let Some(n) = self.radius_node {
-                self.radius_slider.handle_event(
-                    event,
-                    scale,
-                    &m,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    n,
-                    taffy,
-                );
+                self.radius_slider
+                    .handle_event(event, &mut ctx.reborrow(ctx.path, n));
             }
             return true;
         }
         if self.spacing_slider.wants_pointer_capture() {
             if let Some(n) = self.spacing_node {
-                self.spacing_slider.handle_event(
-                    event,
-                    scale,
-                    &m,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    n,
-                    taffy,
-                );
+                self.spacing_slider
+                    .handle_event(event, &mut ctx.reborrow(ctx.path, n));
             }
             return true;
         }
@@ -976,82 +906,36 @@ impl Customizer {
     /// Forward the event into the picker / sliders / dropdown, in order
     /// (part of [`Widget::handle_event`], editable only). Returns `true`
     /// once one of them sets `*handled`.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "forwards the same independently-meaningful parameters Widget::handle_event receives; a context struct would just be destructured back apart at every child dispatch"
-    )]
     fn handle_control_events(
         &mut self,
         event: &WindowEvent,
-        scale: f64,
-        m: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        taffy: &TaffyTree<()>,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
         if let Some(n) = self.picker_node {
-            self.color_picker.handle_event(
-                event,
-                scale,
-                &m,
-                state,
-                path,
-                handled,
-                focus_target,
-                n,
-                taffy,
-            );
-            if *handled {
+            self.color_picker
+                .handle_event(event, &mut ctx.reborrow(ctx.path, n));
+            if *ctx.handled {
                 return true;
             }
         }
         if let Some(n) = self.radius_node {
-            self.radius_slider.handle_event(
-                event,
-                scale,
-                &m,
-                state,
-                path,
-                handled,
-                focus_target,
-                n,
-                taffy,
-            );
-            if *handled {
+            self.radius_slider
+                .handle_event(event, &mut ctx.reborrow(ctx.path, n));
+            if *ctx.handled {
                 return true;
             }
         }
         if let Some(n) = self.spacing_node {
-            self.spacing_slider.handle_event(
-                event,
-                scale,
-                &m,
-                state,
-                path,
-                handled,
-                focus_target,
-                n,
-                taffy,
-            );
-            if *handled {
+            self.spacing_slider
+                .handle_event(event, &mut ctx.reborrow(ctx.path, n));
+            if *ctx.handled {
                 return true;
             }
         }
         if let Some(n) = self.font_node {
-            self.font_dropdown.handle_event(
-                event,
-                scale,
-                &m,
-                state,
-                path,
-                handled,
-                focus_target,
-                n,
-                taffy,
-            );
-            if *handled {
+            self.font_dropdown
+                .handle_event(event, &mut ctx.reborrow(ctx.path, n));
+            if *ctx.handled {
                 return true;
             }
         }
@@ -1061,40 +945,16 @@ impl Customizer {
     /// Forward the event into the action buttons, always active so
     /// Duplicate works on a read-only preset too (part of
     /// [`Widget::handle_event`]).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "forwards the same independently-meaningful parameters Widget::handle_event receives; a context struct would just be destructured back apart at every child dispatch"
-    )]
-    fn handle_button_events(
-        &mut self,
-        event: &WindowEvent,
-        scale: f64,
-        m: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_button_events(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         let Some(an) = self.actions_node else {
             return;
         };
-        let Ok(bchildren) = taffy.children(an) else {
+        let Ok(bchildren) = ctx.taffy.children(an) else {
             return;
         };
         for (b, c) in self.buttons.iter_mut().zip(bchildren.iter()) {
-            b.handle_event(
-                event,
-                scale,
-                &m,
-                state,
-                path,
-                handled,
-                focus_target,
-                *c,
-                taffy,
-            );
-            if *handled {
+            b.handle_event(event, &mut ctx.reborrow(ctx.path, *c));
+            if *ctx.handled {
                 break;
             }
         }

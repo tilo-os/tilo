@@ -29,6 +29,7 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::mpsc::TryRecvError;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size as TSize, Style, TaffyTree};
@@ -4303,14 +4304,16 @@ impl MailApp {
             if let Some(first_run_node) = self.first_run_node {
                 self.first_run.handle_event(
                     event,
-                    ctx.scale_factor,
-                    &ctx.modifiers,
-                    ctx.state,
-                    ctx.path,
-                    ctx.handled,
-                    ctx.focus_target,
-                    first_run_node,
-                    ctx.taffy,
+                    &mut ui::widget::EventCtx {
+                        scale_factor: ctx.scale_factor,
+                        modifiers: &ctx.modifiers,
+                        state: ctx.state,
+                        path: ctx.path,
+                        handled: ctx.handled,
+                        focus_target: ctx.focus_target,
+                        node_id: first_run_node,
+                        taffy: ctx.taffy,
+                    },
                 );
             }
             if self.first_run.take_action() {
@@ -4912,7 +4915,8 @@ impl Widget for MailApp {
         &[crate::actions::MAIL_OPERATION_TYPE]
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, path) = ui::doc::document(state, path);
         self.background_poll_deadline.set(None);
         if self.first_run.take_action() {
             self.open_setup_edit(None);
@@ -5292,42 +5296,31 @@ impl Widget for MailApp {
         self.shortcuts.draw(scene, t, tr, theme);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            let point = Point::new(position.x / scale_factor, position.y / scale_factor);
+            let point = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
             self.shared.borrow_mut().last_mouse = point;
             self.dirty = true;
         }
 
         // The shortcut sheet is a genuine modal first-responder.  It must
         // consume all input before any Mail command can observe it.
-        if self.shortcuts.handle_event(event, scale_factor) {
-            *handled = true;
+        if self.shortcuts.handle_event(event, ctx.scale_factor) {
+            *ctx.handled = true;
             self.dirty = true;
             return;
         }
 
         let modal_consumed = {
             let mut context = EventContext {
-                scale_factor,
-                modifiers: *modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
+                scale_factor: ctx.scale_factor,
+                modifiers: *ctx.modifiers,
+                state: ctx.state,
+                path: ctx.path,
+                handled: ctx.handled,
+                focus_target: ctx.focus_target,
+                node_id: ctx.node_id,
+                taffy: ctx.taffy,
             };
             self.handle_app_modal_event(event, &mut context)
         };
@@ -5335,21 +5328,11 @@ impl Widget for MailApp {
             return;
         }
 
-        self.nav.handle_event(
-            event,
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
-        );
+        self.nav.handle_event(event, ctx);
         self.process_intents();
 
-        if !*handled {
-            self.global_shortcuts(event, *modifiers, state, handled);
+        if !*ctx.handled {
+            self.global_shortcuts(event, *ctx.modifiers, ctx.state, ctx.handled);
         }
 
         self.dirty = true;
@@ -5492,9 +5475,10 @@ impl Widget for MailApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
-        _path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
+        let (state, _) = ui::doc::document(state, path);
         if let Some(raw) = target.strip_prefix("mail.context:") {
             let Some((message_raw, index_raw)) = raw.rsplit_once(':') else {
                 return false;
@@ -6038,14 +6022,16 @@ impl MailApp {
             if let Some(i) = focused.and_then(|i| self.setup_inputs.get_mut(i)) {
                 i.handle_event(
                     event,
-                    ctx.scale_factor,
-                    &ctx.modifiers,
-                    ctx.state,
-                    ctx.path,
-                    ctx.handled,
-                    ctx.focus_target,
-                    ctx.node_id,
-                    ctx.taffy,
+                    &mut ui::widget::EventCtx {
+                        scale_factor: ctx.scale_factor,
+                        modifiers: &ctx.modifiers,
+                        state: ctx.state,
+                        path: ctx.path,
+                        handled: ctx.handled,
+                        focus_target: ctx.focus_target,
+                        node_id: ctx.node_id,
+                        taffy: ctx.taffy,
+                    },
                 );
             }
             // Typing in the email field pre-fills the server settings from the
@@ -6387,14 +6373,16 @@ mod tests {
         let mut focus = None;
         app.handle_event(
             ev,
-            1.0,
-            &Modifiers::default(),
-            doc,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &Modifiers::default(),
+                state: doc,
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         handled
     }

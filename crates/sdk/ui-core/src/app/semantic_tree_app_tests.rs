@@ -9,6 +9,7 @@ include!("deferred_remote_tests.rs");
 use super::*;
 use crate::a11y_tree::{SemanticActionKind, SemanticId};
 use crate::state::State;
+use crate::widget::{AppModel, ModelPath};
 use crate::widget::{Button, Widget};
 use automerge::transaction::Transactable;
 use automerge::{ROOT, ReadDoc, ScalarValue, Value};
@@ -323,7 +324,8 @@ impl CounterCard {
     }
 }
 impl Widget for CounterCard {
-    fn sync(&mut self, s: &mut automerge::AutoCommit, p: &automerge::ObjId) {
+    fn sync(&mut self, s: &mut AppModel, p: &ModelPath) {
+        let (s, p) = crate::doc::document(s, p);
         self.button.sync(s, p);
         for scope in std::mem::take(&mut self.scoped_jobs) {
             let invocation = scope.invocation();
@@ -377,7 +379,6 @@ impl Widget for CounterCard {
         _p: &PresenceCtx,
     ) {
     }
-    fn handle_event_ctx(&mut self, _event: &WindowEvent, _ctx: &mut crate::widget::EventCtx<'_>) {}
     fn children(&self) -> Vec<&dyn Widget> {
         vec![&self.button]
     }

@@ -155,6 +155,10 @@ pub struct LaunchScope {
 pub struct LaunchContent<'a> {
     pub hash: &'a str,
     pub caller: Option<&'a LaunchScope>,
+    /// The person who opened the app, when they may change the workspace:
+    /// the host records them granting it authorship, so it launches as an
+    /// author of the space rather than a viewer. `None` launches a viewer.
+    pub author: Option<&'a str>,
 }
 
 pub trait LauncherServices: Send + Sync {

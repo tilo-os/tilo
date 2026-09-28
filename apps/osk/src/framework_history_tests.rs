@@ -1,5 +1,6 @@
 use super::*;
 use tilo_automerge::ApplyIncoming as _;
+use ui::widget::{AppModel, ModelPath};
 
 fn keyboard() -> OskWidget {
     OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()))
@@ -110,10 +111,11 @@ impl Widget for LiveFixture {
     fn history_restore_readiness(&self, scope: &str) -> Result<(), String> {
         self.keyboard.borrow().history_restore_readiness(scope)
     }
-    fn sync(&mut self, d: &mut AutoCommit, p: &ObjId) {
+    fn sync(&mut self, d: &mut AppModel, p: &ModelPath) {
         self.keyboard.borrow_mut().sync(d, p);
     }
-    fn update(&mut self, d: &mut AutoCommit, p: &ObjId) -> bool {
+    fn update(&mut self, d: &mut AppModel, p: &ModelPath) -> bool {
+        let (d, p) = ui::doc::document(d, p);
         while let Some(event) = self.events.borrow_mut().pop_front() {
             self.keyboard.borrow_mut().on_external_event(&event, d, p);
             self.event_count.set(self.event_count.get() + 1);
@@ -203,21 +205,8 @@ impl Widget for LiveFixture {
             .borrow_mut()
             .draw(scene, transform, text, theme, presence);
     }
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale: f64,
-        modifiers: &winit::event::Modifiers,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus: &mut Option<NodeId>,
-        node: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        self.keyboard.borrow_mut().handle_event(
-            event, scale, modifiers, doc, path, handled, focus, node, taffy,
-        );
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        self.keyboard.borrow_mut().handle_event(event, ctx);
     }
     fn name(&self) -> &'static str {
         "live-osk-fixture"

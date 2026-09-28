@@ -5278,14 +5278,16 @@ impl RoomActivityPane {
         let root = automerge::ROOT;
         self.timeline.handle_event(
             event,
-            scale_factor,
-            modifiers,
-            tree.document_mut(),
-            &root,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &scratch,
+            &mut ui::widget::EventCtx {
+                scale_factor,
+                modifiers,
+                state: tree.document_mut(),
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &scratch,
+            },
         );
         if focus_target.is_some() {
             self.timeline.set_focus(true);

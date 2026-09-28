@@ -10,6 +10,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use serde_json::{Value, json};
 
 mod json_stdout;
+mod publishing;
 
 #[derive(Parser)]
 #[command(
@@ -62,6 +63,12 @@ enum Command {
     Ui(UiArgs),
     /// Build, assemble, sign, and verify an installable Tilo package.
     Package(PackageArgs),
+    /// Create or show the publisher key that signs packages and entries.
+    Keys(publishing::KeysArgs),
+    /// Ask a registry to let your key publish under namespaces you prove.
+    Apply(publishing::ApplyArgs),
+    /// Upload packages and ask the registry to list them.
+    Publish(publishing::PublishArgs),
 }
 
 #[derive(clap::Args)]
@@ -95,6 +102,18 @@ enum AddCommand {
         /// Derive actions from a registered graph screen reachable from main.
         #[arg(long)]
         screen: Option<String>,
+        #[command(flatten)]
+        options: AddOptions,
+    },
+    /// Add a workflow that checks, packages and publishes the app from CI.
+    Ci {
+        /// The forge the repository is hosted on; Codeberg is forgejo.
+        #[arg(long, value_enum)]
+        forge: ForgeArg,
+        /// Linux runner label. Defaults to `ubuntu-latest`, or `docker` on
+        /// Forgejo (`codeberg-small` on Codeberg).
+        #[arg(long)]
+        runs_on: Option<String>,
         #[command(flatten)]
         options: AddOptions,
     },
@@ -672,6 +691,9 @@ fn main() -> ExitCode {
         Command::Inspect(args) => run_inspect(args),
         Command::Ui(args) => run_ui(args),
         Command::Package(args) => run_package(args),
+        Command::Keys(args) => publishing::run_keys(args),
+        Command::Apply(args) => publishing::run_apply(args),
+        Command::Publish(args) => publishing::run_publish(args),
     };
     let code = match &result {
         Ok(_) => ExitCode::SUCCESS,
@@ -769,6 +791,9 @@ impl Command {
             Self::Inspect(_) => "inspect",
             Self::Ui(_) => "ui",
             Self::Package(_) => "package",
+            Self::Keys(_) => "keys",
+            Self::Apply(_) => "apply",
+            Self::Publish(_) => "publish",
         }
     }
 }
@@ -886,6 +911,13 @@ fn run_add(args: AddArgs, interactive: bool) -> Result<Value> {
         return Ok(outcome.to_json());
     };
     let (artifact, options) = match command {
+        AddCommand::Ci {
+            forge,
+            runs_on,
+            options,
+        } => {
+            return run_add_ci(forge, runs_on.as_deref(), &options);
+        }
         AddCommand::Screen {
             name,
             title,
@@ -927,14 +959,7 @@ fn run_add(args: AddArgs, interactive: bool) -> Result<Value> {
             props,
             options,
         } => {
-            let template = match template {
-                ComponentTemplateArg::Display => tilo_app_cli::ComponentTemplate::Display,
-                ComponentTemplateArg::Form => tilo_app_cli::ComponentTemplate::Form,
-                ComponentTemplateArg::Tree => tilo_app_cli::ComponentTemplate::Tree,
-                ComponentTemplateArg::List => tilo_app_cli::ComponentTemplate::List,
-                ComponentTemplateArg::Table => tilo_app_cli::ComponentTemplate::Table,
-                ComponentTemplateArg::Text => tilo_app_cli::ComponentTemplate::Text,
-            };
+            let template = component_template(template);
             let artifact = if let Some(screen) = mount {
                 let mut mount = match template {
                     tilo_app_cli::ComponentTemplate::Display => {
@@ -972,6 +997,37 @@ fn run_add(args: AddArgs, interactive: bool) -> Result<Value> {
         dry_run: options.dry_run,
     })?;
     print_add_outcome(&outcome);
+    Ok(outcome.to_json())
+}
+
+fn component_template(template: ComponentTemplateArg) -> tilo_app_cli::ComponentTemplate {
+    match template {
+        ComponentTemplateArg::Display => tilo_app_cli::ComponentTemplate::Display,
+        ComponentTemplateArg::Form => tilo_app_cli::ComponentTemplate::Form,
+        ComponentTemplateArg::Tree => tilo_app_cli::ComponentTemplate::Tree,
+        ComponentTemplateArg::List => tilo_app_cli::ComponentTemplate::List,
+        ComponentTemplateArg::Table => tilo_app_cli::ComponentTemplate::Table,
+        ComponentTemplateArg::Text => tilo_app_cli::ComponentTemplate::Text,
+    }
+}
+
+fn run_add_ci(forge: ForgeArg, runs_on: Option<&str>, options: &AddOptions) -> Result<Value> {
+    let start = options.app.clone().map_or_else(std::env::current_dir, Ok)?;
+    let forge = match forge {
+        ForgeArg::Github => tilo_app_cli::ci::Forge::Github,
+        ForgeArg::Forgejo => tilo_app_cli::ci::Forge::Forgejo,
+        ForgeArg::Gitea => tilo_app_cli::ci::Forge::Gitea,
+    };
+    let outcome = tilo_app_cli::ci::add_ci(&start, forge, runs_on, options.force, options.dry_run)?;
+    let verb = if outcome.written {
+        "Created"
+    } else {
+        "Would create"
+    };
+    println!("{verb} {}", outcome.path.display());
+    println!(
+        "Next: add the TILO_PUBLISHER_KEY secret (the file `tilo-app keys new` wrote), then push a v* tag to publish"
+    );
     Ok(outcome.to_json())
 }
 
@@ -1133,6 +1189,13 @@ enum PlatformArg {
     Tilo,
     Windows,
     Macos,
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum ForgeArg {
+    Github,
+    Forgejo,
+    Gitea,
 }
 
 #[derive(Clone, Copy, clap::ValueEnum)]

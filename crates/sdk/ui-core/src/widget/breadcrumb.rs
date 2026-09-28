@@ -5,7 +5,6 @@
 //! the middle with `...`: keeps the first segment, inserts `...`, keeps the
 //! last two. A trail of 4 or fewer segments never truncates (the truncated
 //! form wouldn't be shorter).
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -215,12 +214,6 @@ fn translated(transform: Affine, x: f64, y: f64) -> Affine {
 }
 
 impl Widget for Breadcrumb {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {
-        // Breadcrumb segments are pushed in by the host (file explorer,
-        // settings page, etc.) rather than mirrored from a CRDT path.
-        // Sync is intentionally a no-op.
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -323,21 +316,11 @@ impl Widget for Breadcrumb {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _root: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let logical = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let logical =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 let mut new_hover: Option<usize> = None;
                 let active_origin = self.segments.len().saturating_sub(1);
                 for (i, r) in self.segment_rects.iter().enumerate() {
@@ -356,7 +339,7 @@ impl Widget for Breadcrumb {
                 }
                 if new_hover != self.hover_idx {
                     self.hover_idx = new_hover;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseInput {
@@ -370,7 +353,7 @@ impl Widget for Breadcrumb {
                     if let Some(cb) = self.on_navigate.as_mut() {
                         cb(orig);
                     }
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             _ => {}
@@ -402,6 +385,7 @@ impl Widget for Breadcrumb {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::AutoCommit;
     use std::cell::RefCell;
     use std::rc::Rc;
     use winit::event::{DeviceId, ElementState, Modifiers, MouseButton};
@@ -438,14 +422,16 @@ mod tests {
         let root = automerge::ROOT;
         bc.handle_event(
             event,
-            1.0,
-            &Modifiers::default(),
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &tree,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &Modifiers::default(),
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &tree,
+            },
         );
     }
 

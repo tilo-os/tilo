@@ -28,6 +28,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::thread;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -5040,7 +5041,8 @@ impl Widget for BooksApp {
         clippy::too_many_lines,
         reason = "sync owns the ordered UI-thread handoff for document, portal, and lifecycle state"
     )]
-    fn sync(&mut self, doc: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
+        let (doc, path) = ui::doc::document(doc, path);
         // Hydrate the persisted library on the first frame (when the document is
         // finally available), then pull in any book the host picker returned.
         self.ensure_library_loaded(doc);
@@ -5436,27 +5438,16 @@ impl Widget for BooksApp {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         let mut input_ctx = InputEventCtx {
             event,
-            scale_factor,
-            modifiers: *modifiers,
-            state: doc,
-            root: path,
-            node_id,
-            taffy,
-            handled,
+            scale_factor: ctx.scale_factor,
+            modifiers: *ctx.modifiers,
+            state: ctx.state,
+            root: ctx.path,
+            node_id: ctx.node_id,
+            taffy: ctx.taffy,
+            handled: ctx.handled,
         };
         // The colour sheet is modal: while open every event is its own.
         if let Some(response) = self.color_picker.handle_event(&mut input_ctx) {
@@ -5478,35 +5469,35 @@ impl Widget for BooksApp {
             // Regaining focus is a natural moment to notice books that appeared
             // in a watched folder while the reader was elsewhere — no manual
             // "reload". A no-op when nothing is watched or nothing is new.
-            WindowEvent::Focused(true) => self.rescan_watched(doc),
+            WindowEvent::Focused(true) => self.rescan_watched(ctx.state),
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / scale_factor, position.y / scale_factor);
-                self.handle_cursor_moved(p, doc, handled);
+                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.handle_cursor_moved(p, ctx.state, ctx.handled);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
             } => {
-                self.handle_left_press(*modifiers, doc, handled);
+                self.handle_left_press(*ctx.modifiers, ctx.state, ctx.handled);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
                 button: MouseButton::Left,
                 ..
             } => {
-                self.handle_left_release(doc, handled);
+                self.handle_left_release(ctx.state, ctx.handled);
             }
             WindowEvent::KeyboardInput { event: ke, .. } if ke.state == ElementState::Pressed => {
-                if self.handle_key(&ke.logical_key, modifiers.state(), doc) {
-                    self.refresh_from_doc(doc);
-                    self.persist_progress(doc);
+                if self.handle_key(&ke.logical_key, ctx.modifiers.state(), ctx.state) {
+                    self.refresh_from_doc(ctx.state);
+                    self.persist_progress(ctx.state);
                     self.dirty = true;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                self.handle_mouse_wheel(*delta, doc, handled);
+                self.handle_mouse_wheel(*delta, ctx.state, ctx.handled);
             }
             _ => {}
         }
@@ -5660,9 +5651,10 @@ impl Widget for BooksApp {
         &mut self,
         target: &str,
         action: &A11yAction,
-        doc: &mut AutoCommit,
-        path: &ObjId,
+        doc: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
+        let (doc, path) = ui::doc::document(doc, path);
         if target == "books.reader.progress" {
             self.semantic_focus = Some(target.to_string());
             let value = match action {
@@ -5977,14 +5969,16 @@ impl BooksApp {
         if let Some(rn) = self.renaming.as_mut() {
             rn.field.handle_event(
                 ctx.event,
-                ctx.scale_factor,
-                &ctx.modifiers,
-                ctx.state,
-                ctx.root,
-                &mut field_handled,
-                &mut field_focus,
-                ctx.node_id,
-                ctx.taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: ctx.scale_factor,
+                    modifiers: &ctx.modifiers,
+                    state: ctx.state,
+                    path: ctx.root,
+                    handled: &mut field_handled,
+                    focus_target: &mut field_focus,
+                    node_id: ctx.node_id,
+                    taffy: ctx.taffy,
+                },
             );
         }
         self.poll_rename_outcome(ctx.state);

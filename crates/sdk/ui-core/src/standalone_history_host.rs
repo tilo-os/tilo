@@ -918,7 +918,6 @@ struct PresentationRoots<'a> {
 }
 
 impl Widget for PresentationRoots<'_> {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
     fn build_layout(
         &mut self,
         _taffy: &mut TaffyTree<()>,
@@ -935,19 +934,6 @@ impl Widget for PresentationRoots<'_> {
         _text: &mut TextRenderer,
         _theme: &Theme,
         _presence: &PresenceCtx,
-    ) {
-    }
-    fn handle_event(
-        &mut self,
-        _event: &winit::event::WindowEvent,
-        _scale: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node: NodeId,
-        _taffy: &TaffyTree<()>,
     ) {
     }
     fn children(&self) -> Vec<&dyn Widget> {

@@ -24,6 +24,7 @@ use tilo_desktop::{
 };
 use tilo_desktop_model::apps::{AppCatalogue as _, OpenableApp};
 use tilo_desktop_model::*;
+use ui::widget::{AppModel, ModelPath};
 use ui::{TextRenderer, Theme, presence::PresenceCtx};
 use ui::{
     application::{
@@ -2169,10 +2170,11 @@ impl Widget for DesktopRoot {
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
     }
-    fn sync(&mut self, doc: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
         self.surface.sync(doc, path);
     }
-    fn update(&mut self, doc: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, doc: &mut AppModel, path: &ModelPath) -> bool {
+        let (doc, path) = ui::doc::document(doc, path);
         // Process the current admission before validating a queued local view.
         let mut changed = self.reconcile();
         if let Some(request) = self.pending_view_request.take() {
@@ -2298,34 +2300,20 @@ impl Widget for DesktopRoot {
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        scale: f64,
-        modifiers: &winit::event::Modifiers,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus: &mut Option<NodeId>,
-        node: NodeId,
-        tree: &TaffyTree<()>,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) {
-        if self.route_window_switcher_event(event, scale, modifiers) {
-            *handled = true;
+        if self.route_window_switcher_event(event, ctx.scale_factor, ctx.modifiers) {
+            *ctx.handled = true;
             return;
         }
         if let Some(activity) = &mut self.activity {
             activity.handle_event(
                 event,
-                scale,
-                modifiers,
-                doc,
-                path,
-                handled,
-                focus,
-                self.activity_node.unwrap_or(node),
-                tree,
+                &mut ctx.reborrow(ctx.path, self.activity_node.unwrap_or(ctx.node_id)),
             );
             return;
         }
-        let (consumed, request) = self.overlays.handle_event(event, scale, || {
+        let (consumed, request) = self.overlays.handle_event(event, ctx.scale_factor, || {
             self.handle
                 .tree
                 .borrow()
@@ -2333,7 +2321,7 @@ impl Widget for DesktopRoot {
                 .map_or(0, |workspace| workspace.collaborators.len())
         });
         if consumed {
-            *handled = true;
+            *ctx.handled = true;
             if request == Some(crate::desktop_overlays::OverlayRequest::OpenActivity) {
                 let workspace = self.handle.tree.borrow().active;
                 if let Err(error) =
@@ -2349,21 +2337,12 @@ impl Widget for DesktopRoot {
         }
         self.notification_layer.handle_event(
             event,
-            scale,
-            modifiers,
-            doc,
-            path,
-            handled,
-            focus,
-            self.notification_node.unwrap_or(node),
-            tree,
+            &mut ctx.reborrow(ctx.path, self.notification_node.unwrap_or(ctx.node_id)),
         );
-        if *handled {
+        if *ctx.handled {
             return;
         }
-        self.surface.handle_event(
-            event, scale, modifiers, doc, path, handled, focus, node, tree,
-        );
+        self.surface.handle_event(event, ctx);
         if matches!(
             event,
             winit::event::WindowEvent::CursorMoved { .. }

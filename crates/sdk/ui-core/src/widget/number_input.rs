@@ -25,6 +25,7 @@ use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::{ActionEmitter, ControlBindingKind, ControlBindingMetadata};
+use crate::widget::{AppModel, ModelPath};
 use crate::widget::{TextInput, TextInputKind};
 use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -524,7 +525,8 @@ impl Widget for NumberInput {
         self.plus_hover &= environment.supports_hover();
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+        let (state, root) = crate::doc::document(state, root);
         // Flush a value committed while we lacked the state handle (blur).
         self.flush_crdt(state, root);
         if self.local_state.is_some() {
@@ -702,18 +704,7 @@ impl Widget for NumberInput {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if !self.effectively_enabled() {
             return;
         }
@@ -721,32 +712,22 @@ impl Widget for NumberInput {
         // Forward to the embedded field first (click-to-focus, typing, IME).
         // The field isn't in the parent's node_map, so a focus request it
         // makes sets *our* node id — redirect it onto the field in set_focus.
-        let prev_focus = *focus_target;
-        self.field.handle_event(
-            event,
-            scale_factor,
-            modifiers,
-            state,
-            root,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
-        );
-        if *focus_target != prev_focus && self.field_rect.contains(self.last_cursor) {
+        let prev_focus = *ctx.focus_target;
+        self.field.handle_event(event, ctx);
+        if *ctx.focus_target != prev_focus && self.field_rect.contains(self.last_cursor) {
             self.field_focus_pending = true;
         }
 
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.last_cursor = p;
                 let mh = self.minus_rect.contains(p);
                 let ph = self.plus_rect.contains(p);
                 if mh != self.minus_hover || ph != self.plus_hover {
                     self.minus_hover = mh;
                     self.plus_hover = ph;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseInput {
@@ -762,23 +743,23 @@ impl Widget for NumberInput {
                         self.field.set_focus(false);
                     }
                     self.step_by(-self.step);
-                    self.flush_crdt(state, root);
-                    *focus_target = Some(node_id);
-                    *handled = true;
+                    self.flush_crdt(ctx.state, ctx.path);
+                    *ctx.focus_target = Some(ctx.node_id);
+                    *ctx.handled = true;
                 } else if self.plus_rect.contains(self.last_cursor) {
                     if self.field.is_focused() {
                         self.commit_local();
                         self.field.set_focus(false);
                     }
                     self.step_by(self.step);
-                    self.flush_crdt(state, root);
-                    *focus_target = Some(node_id);
-                    *handled = true;
+                    self.flush_crdt(ctx.state, ctx.path);
+                    *ctx.focus_target = Some(ctx.node_id);
+                    *ctx.handled = true;
                 } else if !self.field_rect.contains(self.last_cursor) && self.field.is_focused() {
                     // Press landed outside the field while it was focused —
                     // commit the typed value and release focus.
                     self.commit_local();
-                    self.flush_crdt(state, root);
+                    self.flush_crdt(ctx.state, ctx.path);
                     self.field.set_focus(false);
                 }
             }
@@ -788,20 +769,20 @@ impl Widget for NumberInput {
                 match &key_event.logical_key {
                     Key::Named(NamedKey::Enter) => {
                         self.commit_local();
-                        self.flush_crdt(state, root);
-                        *handled = true;
+                        self.flush_crdt(ctx.state, ctx.path);
+                        *ctx.handled = true;
                     }
                     Key::Named(NamedKey::ArrowUp) => {
                         self.commit_local();
                         self.step_by(self.step);
-                        self.flush_crdt(state, root);
-                        *handled = true;
+                        self.flush_crdt(ctx.state, ctx.path);
+                        *ctx.handled = true;
                     }
                     Key::Named(NamedKey::ArrowDown) => {
                         self.commit_local();
                         self.step_by(-self.step);
-                        self.flush_crdt(state, root);
-                        *handled = true;
+                        self.flush_crdt(ctx.state, ctx.path);
+                        *ctx.handled = true;
                     }
                     _ => {}
                 }
@@ -951,10 +932,11 @@ impl Widget for NumberInput {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut AutoCommit,
-        root: &ObjId,
+        state: &mut AppModel,
+        root: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
+        let (state, root) = crate::doc::document(state, root);
         if !self.effectively_enabled() {
             return false;
         }
@@ -1184,14 +1166,16 @@ mod tests {
         let root = automerge::ROOT;
         n.handle_event(
             event,
-            1.0,
-            &Modifiers::default(),
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &tree,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &Modifiers::default(),
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &tree,
+            },
         );
     }
 

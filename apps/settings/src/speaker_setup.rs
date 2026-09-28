@@ -3,16 +3,23 @@
 //! Choose outputs on any of your devices, tell which one is which by
 //! listening to each in turn, optionally place them around the room, name
 //! the set and save it. Saving asks each other device to join; once every
-//! speaker is ready the set can be calibrated with a microphone, and a
-//! calibration is only a proposal until it is applied.
+//! speaker is ready the set can be calibrated: a microphone where the person
+//! sits hears each speaker's sweep, the set's own devices' microphones and
+//! any others switched on listen too, and a calibration is only a proposal
+//! until it is applied.
 //!
 //! The shell owns speaker groups; this module only builds the commands the
 //! Speakers pane sends and interprets the snapshots it gets back.
 
+use std::collections::BTreeMap;
+
 use ui::collaboration::{
-    CalibrationInfo, CalibrationPhaseInfo, SpeakerCommand, SpeakerDeviceInfo, SpeakerGroupInfo,
-    SpeakerMemberSpec, SpeakerMemberStatus, SpeakerRoleSpec, SpeakerSnapshot,
+    CalibrationInfo, CalibrationPhaseInfo, MicrophoneStatus, SpeakerCommand, SpeakerDeviceInfo,
+    SpeakerGroupInfo, SpeakerMemberSpec, SpeakerMemberStatus, SpeakerPlaybackInfo, SpeakerRoleSpec,
+    SpeakerSnapshot,
 };
+
+use crate::i18n::{t, t_args};
 
 /// Default distance of a new room point from the listening position.
 pub const ROOM_RADIUS_MM: i32 = 2_000;
@@ -33,13 +40,24 @@ pub enum Arrangement {
 impl Arrangement {
     pub const ALL: [Self; 3] = [Self::Stereo, Self::Surround, Self::Room];
 
+    /// The arrangement's name, as the chooser lists it.
     #[must_use]
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Stereo => "Stereo pair",
-            Self::Surround => "Surround",
-            Self::Room => "Around the room",
-        }
+    pub fn label(self) -> String {
+        t(match self {
+            Self::Stereo => "speakers-arrangement-stereo",
+            Self::Surround => "speakers-arrangement-surround",
+            Self::Room => "speakers-arrangement-room",
+        })
+    }
+
+    /// What the arrangement means, beside the chooser.
+    #[must_use]
+    pub fn description(self) -> String {
+        t(match self {
+            Self::Stereo => "speakers-arrangement-stereo-description",
+            Self::Surround => "speakers-arrangement-surround-description",
+            Self::Room => "speakers-arrangement-room-description",
+        })
     }
 
     #[must_use]
@@ -56,6 +74,58 @@ impl Arrangement {
             Self::Room => (1, 8),
         }
     }
+}
+
+/// A speaker's role as a phrase inside a sentence: "left speaker".
+#[must_use]
+pub fn role_text(role: SpeakerRoleSpec) -> String {
+    t(match role {
+        SpeakerRoleSpec::Left => "speakers-role-left",
+        SpeakerRoleSpec::Right => "speakers-role-right",
+        SpeakerRoleSpec::Center => "speakers-role-center",
+        SpeakerRoleSpec::Lfe => "speakers-role-lfe",
+        SpeakerRoleSpec::SurroundLeft => "speakers-role-surround-left",
+        SpeakerRoleSpec::SurroundRight => "speakers-role-surround-right",
+        SpeakerRoleSpec::Room { .. } => "speakers-role-room",
+    })
+}
+
+/// A role as a button answers "Which one just played?": "Left".
+#[must_use]
+pub fn role_answer(role: SpeakerRoleSpec) -> String {
+    t(match role {
+        SpeakerRoleSpec::Left => "speakers-answer-left",
+        SpeakerRoleSpec::Right => "speakers-answer-right",
+        SpeakerRoleSpec::Center => "speakers-answer-center",
+        SpeakerRoleSpec::Lfe => "speakers-answer-lfe",
+        SpeakerRoleSpec::SurroundLeft => "speakers-answer-surround-left",
+        SpeakerRoleSpec::SurroundRight => "speakers-answer-surround-right",
+        SpeakerRoleSpec::Room { .. } => "speakers-answer-room",
+    })
+}
+
+/// Where one member of a set stands.
+#[must_use]
+pub fn member_status_text(status: SpeakerMemberStatus) -> String {
+    t(match status {
+        SpeakerMemberStatus::Ready => "speakers-member-ready",
+        SpeakerMemberStatus::AwaitingConsent => "speakers-member-awaiting-consent",
+        SpeakerMemberStatus::Offline => "speakers-member-offline",
+        SpeakerMemberStatus::OutputMissing => "speakers-member-output-missing",
+        SpeakerMemberStatus::Unavailable => "speakers-member-unavailable",
+        SpeakerMemberStatus::NotCertified => "speakers-member-not-certified",
+    })
+}
+
+/// A session playing on a set, as its status pill reads.
+#[must_use]
+pub fn playback_text(playback: &SpeakerPlaybackInfo) -> String {
+    t(match playback {
+        SpeakerPlaybackInfo::Playing => "speakers-playback-playing",
+        SpeakerPlaybackInfo::Connecting => "speakers-playback-connecting",
+        SpeakerPlaybackInfo::SyncingClocks => "speakers-playback-syncing",
+        SpeakerPlaybackInfo::ClockFailed { .. } => "speakers-playback-clock-failed",
+    })
 }
 
 /// One output that can join a speaker set.
@@ -76,12 +146,45 @@ impl Candidate {
     }
 }
 
-/// A microphone that can listen during calibration.
+/// One device's microphone that can listen while a set is calibrated.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Microphone {
     pub device: String,
-    pub selector: String,
+    pub device_label: String,
+    /// "Phone · Microphone".
     pub label: String,
+    pub local: bool,
+    pub status: MicrophoneStatus,
+    /// The device also plays in the set, so its microphone hears that
+    /// speaker up close and measures its own output latency.
+    pub member: bool,
+}
+
+impl Microphone {
+    /// What this microphone would add, or why it cannot, as its row
+    /// describes it.
+    #[must_use]
+    pub fn status_text(&self) -> String {
+        let role = t(if self.member {
+            "speakers-microphone-role-member"
+        } else {
+            "speakers-microphone-role-cross-check"
+        });
+        let status = t(match self.status {
+            MicrophoneStatus::Ready if self.local => "speakers-microphone-this-device",
+            MicrophoneStatus::Ready => "speakers-microphone-ready",
+            MicrophoneStatus::NotAsked => "speakers-microphone-not-asked",
+            MicrophoneStatus::AwaitingConsent => "speakers-microphone-awaiting",
+            MicrophoneStatus::Declined => "speakers-microphone-declined",
+            MicrophoneStatus::Offline => "speakers-microphone-offline",
+            MicrophoneStatus::Unavailable => "speakers-microphone-unavailable",
+        });
+        if self.status.usable() {
+            format!("{role} · {status}")
+        } else {
+            status
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -117,6 +220,11 @@ pub struct SpeakerSetup {
     /// reaches the fabric a moment after the save returns, so only a group
     /// that was seen and then vanished closes the calibration step.
     calibrate_seen: bool,
+    /// Extra microphones the person switched on or off, overriding the
+    /// default (on for the set's own devices that already allowed it).
+    microphone_choices: BTreeMap<String, bool>,
+    /// The device at the listening position the person picked, if any.
+    listening: Option<String>,
 }
 
 impl Default for SpeakerSetup {
@@ -126,10 +234,12 @@ impl Default for SpeakerSetup {
             arrangement: Arrangement::Stereo,
             chosen: Vec::new(),
             roles: Vec::new(),
-            name: "Speakers".into(),
+            name: t("speakers-default-name"),
             snapshot: SpeakerSnapshot::default(),
             message: None,
             calibrate_seen: false,
+            microphone_choices: BTreeMap::new(),
+            listening: None,
         }
     }
 }
@@ -253,20 +363,89 @@ impl SpeakerSetup {
             .collect()
     }
 
-    /// Every microphone on an online device.
+    /// Every device's microphone the shell offers for calibrating `group`.
     #[must_use]
-    pub fn microphones(&self) -> Vec<Microphone> {
-        self.snapshot
-            .devices
+    pub fn microphones(&self, group: &str) -> Vec<Microphone> {
+        let Some(known) = self.group(group) else {
+            return Vec::new();
+        };
+        known
+            .microphones
             .iter()
-            .filter(|device| device.online)
-            .flat_map(|device| {
-                device.microphones.iter().map(|microphone| Microphone {
-                    device: device.id.clone(),
-                    selector: microphone.selector.clone(),
-                    label: format!("{} · {}", device.label, microphone.label),
-                })
+            .map(|microphone| Microphone {
+                device: microphone.device.clone(),
+                device_label: microphone.device_label.clone(),
+                label: format!("{} · {}", microphone.device_label, microphone.label),
+                local: microphone.local,
+                status: microphone.status,
+                member: known
+                    .members
+                    .iter()
+                    .any(|member| member.device == microphone.device),
             })
+            .collect()
+    }
+
+    /// Microphones that can hear at the listening position: every usable one.
+    #[must_use]
+    pub fn listening_choices(&self, group: &str) -> Vec<Microphone> {
+        self.microphones(group)
+            .into_iter()
+            .filter(|microphone| microphone.status.usable())
+            .collect()
+    }
+
+    /// Pick the device whose microphone sits where the person listens.
+    pub fn set_listening(&mut self, device: &str) {
+        self.listening = Some(device.to_string());
+    }
+
+    /// The microphone at the listening position: the picked one while it is
+    /// usable, otherwise this device's, otherwise the first that is ready.
+    #[must_use]
+    pub fn listening(&self, group: &str) -> Option<Microphone> {
+        let choices = self.listening_choices(group);
+        self.listening
+            .as_ref()
+            .and_then(|device| {
+                choices
+                    .iter()
+                    .find(|microphone| &microphone.device == device)
+            })
+            .or_else(|| choices.iter().find(|microphone| microphone.local))
+            .or_else(|| {
+                choices
+                    .iter()
+                    .find(|microphone| microphone.status == MicrophoneStatus::Ready)
+            })
+            .cloned()
+    }
+
+    /// Whether `microphone` also listens, besides the one where the person
+    /// sits. Unless switched, the set's own devices that already allowed it
+    /// do: they measure their own speaker's output latency.
+    #[must_use]
+    pub fn also_listens(&self, microphone: &Microphone) -> bool {
+        microphone.status.usable()
+            && self
+                .microphone_choices
+                .get(&microphone.device)
+                .copied()
+                .unwrap_or(microphone.member && microphone.status == MicrophoneStatus::Ready)
+    }
+
+    /// Switch `device`'s microphone on or off as an extra listener.
+    pub fn set_also_listens(&mut self, device: &str, on: bool) {
+        self.microphone_choices.insert(device.to_string(), on);
+    }
+
+    /// The microphones besides the listening one, in the shell's order.
+    #[must_use]
+    pub fn extra_microphones(&self, group: &str) -> Vec<Microphone> {
+        let listening = self.listening(group).map(|microphone| microphone.device);
+        self.microphones(group)
+            .into_iter()
+            .filter(|microphone| Some(&microphone.device) != listening.as_ref())
             .collect()
     }
 
@@ -327,16 +506,18 @@ impl SpeakerSetup {
         let (low, high) = self.arrangement.member_range();
         let count = self.chosen.len();
         if count < low {
-            return Some(match self.arrangement {
-                Arrangement::Stereo => "Choose two speakers for a stereo pair".into(),
-                Arrangement::Surround => "Choose at least three speakers for surround".into(),
-                Arrangement::Room => "Choose at least one speaker".into(),
-            });
+            return Some(t(match self.arrangement {
+                Arrangement::Stereo => "speakers-problem-stereo-too-few",
+                Arrangement::Surround => "speakers-problem-surround-too-few",
+                Arrangement::Room => "speakers-problem-room-too-few",
+            }));
         }
-        (count > high).then(|| match self.arrangement {
-            Arrangement::Stereo => "A stereo pair has exactly two speakers".into(),
-            Arrangement::Surround => "Surround uses at most six speakers".into(),
-            Arrangement::Room => "Use at most eight speakers".into(),
+        (count > high).then(|| {
+            t(match self.arrangement {
+                Arrangement::Stereo => "speakers-problem-stereo-too-many",
+                Arrangement::Surround => "speakers-problem-surround-too-many",
+                Arrangement::Room => "speakers-problem-room-too-many",
+            })
         })
     }
 
@@ -416,16 +597,16 @@ impl SpeakerSetup {
     /// When the role is taken or does not fit the arrangement.
     pub fn assign(&mut self, role: SpeakerRoleSpec) -> Result<(), String> {
         let Step::Identify { index, .. } = self.step else {
-            return Err("listen to a speaker first".into());
+            return Err(t("speakers-assign-listen-first"));
         };
         if self.arrangement == Arrangement::Room {
             if !matches!(role, SpeakerRoleSpec::Room { .. }) {
-                return Err("place room speakers on the layout".into());
+                return Err(t("speakers-assign-room-on-layout"));
             }
         } else if !self.remaining_roles().contains(&role) {
-            return Err(format!(
-                "another speaker is already the {}",
-                role.describe()
+            return Err(t_args(
+                "speakers-assign-taken",
+                &[("role", role_text(role).into())],
             ));
         }
         if let Some(slot) = self.roles.get_mut(index) {
@@ -511,7 +692,7 @@ impl SpeakerSetup {
                 .skip(index.saturating_add(1))
                 .any(|other| other == point)
         });
-        crowded.then(|| "Two speakers cannot stand in exactly the same spot".into())
+        crowded.then(|| t("speakers-layout-crowded"))
     }
 
     pub fn finish_layout(&mut self) {
@@ -532,10 +713,10 @@ impl SpeakerSetup {
     pub fn save_command(&self) -> Result<SpeakerCommand, String> {
         let name = self.name.trim();
         if name.is_empty() {
-            return Err("Give the speakers a name".into());
+            return Err(t("speakers-name-empty"));
         }
         if name.chars().count() > ui::collaboration::MAX_SPEAKER_NAME_CHARS {
-            return Err("Use a shorter name".into());
+            return Err(t("speakers-name-too-long"));
         }
         let members = self
             .chosen
@@ -547,7 +728,12 @@ impl SpeakerSetup {
                     output: candidate.output.clone(),
                     role,
                 })
-                .ok_or_else(|| format!("Tell which speaker {} is", candidate.label()))
+                .ok_or_else(|| {
+                    t_args(
+                        "speakers-name-unidentified",
+                        &[("speaker", candidate.label().into())],
+                    )
+                })
             })
             .collect::<Result<Vec<_>, _>>()?;
         Ok(SpeakerCommand::Create {
@@ -560,10 +746,7 @@ impl SpeakerSetup {
     pub fn saved(&mut self, group: String) {
         self.calibrate_seen = self.group(&group).is_some();
         self.step = Step::Calibrate { group };
-        self.message = Some(
-            "Saved. Your other devices ask once whether to join; approve there, then calibrate here."
-                .into(),
-        );
+        self.message = Some(t("speakers-saved-message"));
     }
 
     pub fn open_calibration(&mut self, group: &str) {
@@ -580,12 +763,15 @@ impl SpeakerSetup {
     #[must_use]
     pub fn calibration_problem(&self, group: &str) -> Option<String> {
         let Some(known) = self.group(group) else {
-            return Some("That speaker set is gone".into());
+            return Some(t("speakers-calibrate-gone"));
         };
         if !known.led_here {
-            return Some(format!(
-                "Calibrate {} on {}, where it was set up",
-                known.name, known.leader_label
+            return Some(t_args(
+                "speakers-calibrate-elsewhere",
+                &[
+                    ("name", known.name.as_str().into()),
+                    ("leader", known.leader_label.as_str().into()),
+                ],
             ));
         }
         if let Some(member) = known
@@ -593,40 +779,48 @@ impl SpeakerSetup {
             .iter()
             .find(|member| member.status != SpeakerMemberStatus::Ready)
         {
-            return Some(format!(
-                "{}: {}",
-                member.device_label,
-                member.status.label()
+            return Some(t_args(
+                "speakers-calibrate-member-not-ready",
+                &[
+                    ("device", member.device_label.as_str().into()),
+                    ("status", member_status_text(member.status).into()),
+                ],
             ));
         }
-        self.microphones()
-            .is_empty()
-            .then(|| "This device has no microphone to calibrate with".into())
+        self.listening(group)
+            .is_none()
+            .then(|| t("speakers-calibrate-no-microphone"))
     }
 
-    /// Start measuring `group` with `microphone`.
+    /// Start measuring `group` from where the person sits, with every extra
+    /// microphone that is switched on.
     ///
     /// # Errors
     ///
     /// The reason calibration cannot start.
-    pub fn calibrate_command(
-        &self,
-        group: &str,
-        microphone: &Microphone,
-    ) -> Result<SpeakerCommand, String> {
+    pub fn calibrate_command(&self, group: &str) -> Result<SpeakerCommand, String> {
         if let Some(problem) = self.calibration_problem(group) {
             return Err(problem);
         }
-        if self
-            .calibration(group)
-            .is_some_and(|run| run.phase == CalibrationPhaseInfo::Measuring)
-        {
-            return Err("Calibration is already measuring".into());
+        if self.calibration(group).is_some_and(|run| {
+            matches!(
+                run.phase,
+                CalibrationPhaseInfo::Measuring | CalibrationPhaseInfo::WaitingForMicrophones
+            )
+        }) {
+            return Err(t("speakers-calibrate-already-running"));
         }
+        let listening = self.listening(group).map(|microphone| microphone.device);
+        let excluded = self
+            .extra_microphones(group)
+            .into_iter()
+            .filter(|microphone| !self.also_listens(microphone))
+            .map(|microphone| microphone.device)
+            .collect();
         Ok(SpeakerCommand::StartCalibration {
             group: group.to_string(),
-            microphone_device: microphone.device.clone(),
-            microphone: microphone.selector.clone(),
+            excluded,
+            listening,
         })
     }
 
@@ -891,7 +1085,77 @@ mod tests {
                 trim: SpeakerTrimInfo::default(),
             }],
             playback: None,
+            microphones: vec![
+                microphone("desk", true, MicrophoneStatus::Ready),
+                microphone("shelf", false, MicrophoneStatus::Ready),
+                microphone("phone", false, MicrophoneStatus::NotAsked),
+                microphone("attic", false, MicrophoneStatus::Declined),
+            ],
         }
+    }
+
+    fn microphone(
+        device: &str,
+        local: bool,
+        status: MicrophoneStatus,
+    ) -> ui::collaboration::CalibrationMicrophoneInfo {
+        ui::collaboration::CalibrationMicrophoneInfo {
+            device: device.into(),
+            device_label: device.into(),
+            label: "Microphone".into(),
+            local,
+            status,
+        }
+    }
+
+    #[test]
+    fn calibration_listens_where_you_sit_with_the_set_s_own_microphones() {
+        let mut setup = SpeakerSetup::default();
+        let mut snap = snapshot();
+        snap.groups
+            .push(saved_group(SpeakerMemberStatus::Ready, true));
+        setup.update(snap);
+        let group = "ab".repeat(16);
+        assert_eq!(
+            setup.listening(&group).map(|microphone| microphone.device),
+            Some("desk".into()),
+            "this device is where you sit by default"
+        );
+        let extras = setup.extra_microphones(&group);
+        let listens = extras
+            .iter()
+            .map(|microphone| (microphone.device.as_str(), setup.also_listens(microphone)))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            listens,
+            [("shelf", true), ("phone", false), ("attic", false)],
+            "only the set's own devices listen too unless switched"
+        );
+        assert_eq!(
+            setup.calibrate_command(&group),
+            Ok(SpeakerCommand::StartCalibration {
+                group: group.clone(),
+                excluded: vec!["phone".into(), "attic".into()],
+                listening: Some("desk".into()),
+            })
+        );
+        setup.set_listening("phone");
+        setup.set_also_listens("shelf", false);
+        setup.set_also_listens("desk", true);
+        assert_eq!(
+            setup.calibrate_command(&group),
+            Ok(SpeakerCommand::StartCalibration {
+                group: group.clone(),
+                excluded: vec!["shelf".into(), "attic".into()],
+                listening: Some("phone".into()),
+            })
+        );
+        setup.set_listening("attic");
+        assert_eq!(
+            setup.listening(&group).map(|microphone| microphone.device),
+            Some("desk".into()),
+            "a declined microphone cannot be where you sit"
+        );
     }
 
     #[test]
@@ -902,9 +1166,8 @@ mod tests {
             .push(saved_group(SpeakerMemberStatus::AwaitingConsent, true));
         setup.update(snap.clone());
         let group = "ab".repeat(16);
-        let microphone = setup.microphones().remove(0);
         assert_eq!(
-            setup.calibrate_command(&group, &microphone),
+            setup.calibrate_command(&group),
             Err("Shelf: Waiting for approval on that device".into())
         );
         snap.groups[0] = saved_group(SpeakerMemberStatus::Ready, false);
@@ -915,28 +1178,30 @@ mod tests {
         );
         snap.groups[0] = saved_group(SpeakerMemberStatus::Ready, true);
         setup.update(snap.clone());
-        assert_eq!(
-            setup.calibrate_command(&group, &microphone),
-            Ok(SpeakerCommand::StartCalibration {
-                group: group.clone(),
-                microphone_device: "desk".into(),
-                microphone: "ee".repeat(16),
-            })
-        );
+        assert!(setup.calibrate_command(&group).is_ok());
         snap.calibrations.push(CalibrationInfo {
             group: group.clone(),
-            phase: CalibrationPhaseInfo::Measuring,
+            phase: CalibrationPhaseInfo::WaitingForMicrophones,
             members: vec![CalibrationMemberInfo {
                 device: "shelf".into(),
                 label: "Shelf".into(),
-                state: CalibrationMemberState::Measuring,
+                state: CalibrationMemberState::Waiting,
                 before: SpeakerTrimInfo::default(),
                 after: None,
             }],
+            microphones: Vec::new(),
+            listening_label: None,
             message: None,
         });
+        setup.update(snap.clone());
+        assert!(setup.calibrate_command(&group).is_err());
+        snap.calibrations.clear();
+        snap.groups[0].microphones.clear();
         setup.update(snap);
-        assert!(setup.calibrate_command(&group, &microphone).is_err());
+        assert_eq!(
+            setup.calibrate_command(&group),
+            Err("None of your devices offers a microphone to calibrate with".into())
+        );
     }
 
     #[test]

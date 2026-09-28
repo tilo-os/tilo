@@ -12,6 +12,7 @@
 use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::Instant;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -5184,7 +5185,8 @@ impl Widget for MapsApp {
         ]
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, _) = ui::doc::document(state, path);
         // Pull any background network results into the model first.
         self.drain_net(Some(state));
         // Fold in a device-location fix if the portal worker has one.
@@ -5309,25 +5311,14 @@ impl Widget for MapsApp {
         reason = "the Widget::handle_event trait method fans out on WindowEvent kind; each \
                   branch is a short, independent dispatch to an already-extracted helper"
     )]
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         // The shared information dialog is modal and owns its event routing.
         // Covered map controls must never observe the same event.
         if self
             .info_sheet
-            .handle_event(event, scale_factor, *modifiers, state)
+            .handle_event(event, ctx.scale_factor, *ctx.modifiers, ctx.state)
         {
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
         // A click, scroll or keypress dismisses any shown control tooltip.
@@ -5343,7 +5334,7 @@ impl Widget for MapsApp {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.last_mouse = p;
                 if self.navigation_placement.is_dragging() {
                     let source_region = self.navigation_rect().inflate(8.0, 8.0);
@@ -5355,27 +5346,27 @@ impl Widget for MapsApp {
                     if handoff == ui::floating_surface::Handoff::Detached {
                         self.pending_floating = self.active_navigation_request_from(source_region);
                     }
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 let end_hovered =
                     self.model.route.is_some() && self.navigation_end_rect.contains(p);
                 if self.navigation_end_hovered != end_hovered {
                     self.navigation_end_hovered = end_hovered;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
                 // Keep the field inputs' hover state current so a click lands a
                 // caret and a press-drag extends a selection.
-                self.forward_move_to_field_inputs(event, scale_factor, *modifiers);
+                self.forward_move_to_field_inputs(event, ctx.scale_factor, *ctx.modifiers);
                 // Track hover in the open overflow menu / offline city dropdown.
                 if self.overflow.is_open() {
-                    self.drive_overflow(event, scale_factor, *modifiers);
+                    self.drive_overflow(event, ctx.scale_factor, *ctx.modifiers);
                 }
                 if self.offline_panel.is_open() {
                     self.offline_panel.route_field_event(
                         event,
-                        scale_factor,
-                        *modifiers,
+                        ctx.scale_factor,
+                        *ctx.modifiers,
                         self.last_mouse,
                     );
                 }
@@ -5392,7 +5383,7 @@ impl Widget for MapsApp {
                         // updates but the screen never repaints — drag-to-pan
                         // reads as frozen. This mirrors the wheel-zoom path, which
                         // already marks its events handled for the same reason.
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                     self.drag_last = p;
                 }
@@ -5409,7 +5400,7 @@ impl Widget for MapsApp {
                     .map_controls
                     .on_pointer(p, self.left_down, extra_targets, Instant::now())
                 {
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseInput {
@@ -5419,9 +5410,9 @@ impl Widget for MapsApp {
             } => {
                 let p = self.last_mouse;
                 if self.model.route.is_some() && self.navigation_end_rect.contains(p) {
-                    self.clear_route(state);
+                    self.clear_route(ctx.state);
                     self.navigation_end_hovered = false;
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 if self.model.route.is_some() && self.navigation_drag_handle.contains(p) {
@@ -5432,7 +5423,7 @@ impl Widget for MapsApp {
                         self.rect,
                         self.desktop_floating_bounds(),
                     );
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 self.left_down = true;
@@ -5440,11 +5431,11 @@ impl Widget for MapsApp {
                 // The open ⋯ overflow menu owns the pointer: a row press selects,
                 // an outside press dismisses. Route to it before the map/chrome.
                 if self.overflow.is_open() {
-                    self.drive_overflow(event, scale_factor, *modifiers);
+                    self.drive_overflow(event, ctx.scale_factor, *ctx.modifiers);
                     if let Some(idx) = self.overflow.take_selection() {
                         self.overflow_select(idx);
                     }
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 // The offline dialog's city field / dropdown takes its own clicks
@@ -5453,27 +5444,27 @@ impl Widget for MapsApp {
                 if self.offline_panel.is_open() {
                     if self.offline_panel.route_field_event(
                         event,
-                        scale_factor,
-                        *modifiers,
+                        ctx.scale_factor,
+                        *ctx.modifiers,
                         self.last_mouse,
                     ) {
-                        *handled = true;
+                        *ctx.handled = true;
                         return;
                     }
                     if let Some(action) = self.offline_panel.action_at(p) {
-                        self.dispatch_offline(action, state);
-                        *handled = true;
+                        self.dispatch_offline(action, ctx.state);
+                        *ctx.handled = true;
                         return;
                     }
                 }
                 if matches!(self.model.panel, Panel::Directions)
                     && let Some(effect) =
                         self.endpoints
-                            .pointer_press(p, event, scale_factor, *modifiers)
+                            .pointer_press(p, event, ctx.scale_factor, *ctx.modifiers)
                 {
                     self.search.dismiss();
                     self.apply_endpoint_effect(effect);
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 // Hit-test recorded UI targets (topmost = last drawn).
@@ -5491,15 +5482,15 @@ impl Widget for MapsApp {
                         self.search.dismiss();
                     }
                     self.endpoints.dismiss();
-                    self.dispatch(&hit, state);
+                    self.dispatch(&hit, ctx.state);
                     // A click that focused a text field forwards the press so the
                     // shared TextInput places its caret at the click point (the
                     // preceding CursorMoved already set its hover flag).
                     if matches!(hit, Hit::Search(SearchHit::Field)) {
-                        self.forward_press_to_field(&hit, event, scale_factor, *modifiers);
+                        self.forward_press_to_field(&hit, event, ctx.scale_factor, *ctx.modifiers);
                     }
                     consumed = true;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
                 if !consumed {
                     self.search.dismiss();
@@ -5508,14 +5499,14 @@ impl Widget for MapsApp {
                     // above, but above the actual map surface.
                     if let Some(action) = self.map_controls.hit_test(p) {
                         self.dispatch_map_control(action);
-                        *handled = true;
+                        *ctx.handled = true;
                     } else if let Some(id) = self.marker_at(p) {
                         // Map interaction: marker select, POI select, or begin pan.
                         self.select_place(&id);
-                        *handled = true;
+                        *ctx.handled = true;
                     } else if let Some(pid) = self.poi_at(p) {
                         self.select_poi(&pid);
-                        *handled = true;
+                        *ctx.handled = true;
                     } else {
                         // Empty map: close any open POI card and begin a pan.
                         // Claim the press so the compositor/ui App treats the map
@@ -5523,7 +5514,7 @@ impl Widget for MapsApp {
                         self.selected_poi.take();
                         self.dragging = true;
                         self.drag_last = p;
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                 }
             }
@@ -5538,7 +5529,7 @@ impl Widget for MapsApp {
                 self.left_down = false;
                 self.dragging = false;
                 if navigation_dragging {
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
@@ -5555,7 +5546,7 @@ impl Widget for MapsApp {
                 } else {
                     self.zoom_by(dy * 0.35, self.last_mouse);
                 }
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::KeyboardInput {
                 event: key_event, ..
@@ -5566,11 +5557,11 @@ impl Widget for MapsApp {
                 // The open ⋯ overflow menu takes keyboard nav (arrows / Enter /
                 // Esc) via its own handling before the map shortcuts.
                 if self.overflow.is_open() {
-                    self.drive_overflow(event, scale_factor, *modifiers);
+                    self.drive_overflow(event, ctx.scale_factor, *ctx.modifiers);
                     if let Some(idx) = self.overflow.take_selection() {
                         self.overflow_select(idx);
                     }
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 // While the offline dialog is open, Escape closes it and every
@@ -5581,12 +5572,12 @@ impl Widget for MapsApp {
                     } else {
                         self.offline_panel.route_field_event(
                             event,
-                            scale_factor,
-                            *modifiers,
+                            ctx.scale_factor,
+                            *ctx.modifiers,
                             self.last_mouse,
                         );
                     }
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 // A focused text field (search or an endpoint) owns the
@@ -5594,11 +5585,11 @@ impl Widget for MapsApp {
                 // shortcuts apply.
                 let field_focused = self.endpoints.is_focused() || self.search.is_focused();
                 if field_focused {
-                    if self.route_field_key(event, scale_factor, *modifiers, state) {
-                        *handled = true;
+                    if self.route_field_key(event, ctx.scale_factor, *ctx.modifiers, ctx.state) {
+                        *ctx.handled = true;
                     }
-                } else if self.handle_key(&key_event.logical_key, *modifiers, state) {
-                    *handled = true;
+                } else if self.handle_key(&key_event.logical_key, *ctx.modifiers, ctx.state) {
+                    *ctx.handled = true;
                 }
             }
             _ => {}
@@ -5847,9 +5838,10 @@ impl Widget for MapsApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
-        _path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
+        let (state, _) = ui::doc::document(state, path);
         if self.offline_panel.is_open() {
             // Text input needs the framework's exact-rectangle pointer
             // fallback so it can place its caret. All buttons dispatch through

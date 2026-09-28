@@ -10,6 +10,7 @@
 //! (rising-edge), exactly like `ui::Button`'s `on_click_path`.
 
 use std::collections::HashMap;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId, transaction::Transactable};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -111,8 +112,6 @@ impl DiskRow {
 }
 
 impl Widget for DiskRow {
-    fn sync(&mut self, _state: &mut AutoCommit, _root: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -232,25 +231,15 @@ impl Widget for DiskRow {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let logical = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let logical =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 let hover = self.rect.contains(logical);
                 if hover != self.is_hovered {
                     self.is_hovered = hover;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseInput {
@@ -259,8 +248,8 @@ impl Widget for DiskRow {
                 ..
             } => {
                 if self.is_hovered && !self.disabled() {
-                    *focus_target = Some(node_id);
-                    *handled = true;
+                    *ctx.focus_target = Some(ctx.node_id);
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseInput {
@@ -269,8 +258,8 @@ impl Widget for DiskRow {
                 ..
             } => {
                 if self.is_hovered && !self.disabled() {
-                    self.fire(state, root);
-                    *handled = true;
+                    self.fire(ctx.state, ctx.path);
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::KeyboardInput {
@@ -287,8 +276,8 @@ impl Widget for DiskRow {
                 // app-level Enter shortcut tries to advance the page before a
                 // disk has been selected.
                 if matches!(logical_key, Key::Named(NamedKey::Enter | NamedKey::Space)) {
-                    self.fire(state, root);
-                    *handled = true;
+                    self.fire(ctx.state, ctx.path);
+                    *ctx.handled = true;
                 }
             }
             _ => {}
@@ -331,9 +320,10 @@ impl Widget for DiskRow {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
-        root: &ObjId,
+        state: &mut AppModel,
+        root: &ModelPath,
     ) -> bool {
+        let (state, root) = ui::doc::document(state, root);
         if self.disabled()
             || !matches!(
                 action,
@@ -424,14 +414,16 @@ mod tests {
         let mut focus_target = None;
         row.handle_event(
             &press(key),
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut doc,
-            &ROOT,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &winit::event::Modifiers::default(),
+                state: &mut doc,
+                path: &ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         assert!(handled);
         assert_eq!(

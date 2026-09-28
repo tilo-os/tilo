@@ -33,6 +33,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::mpsc::{Receiver, Sender};
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -3366,7 +3367,8 @@ impl Widget for ApiTesterApp {
         &[crate::actions::API_TESTER_OPERATION_TYPE]
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, path) = ui::doc::document(state, path);
         if !self.adopted {
             if ApiDoc::is_empty(state, path) {
                 if !self.seeded {
@@ -3625,23 +3627,13 @@ impl Widget for ApiTesterApp {
         clippy::too_many_lines,
         reason = "event routing is ordered by precedence (escape, overlays, sidebar, editors); splitting it would hide that order"
     )]
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+            self.last_cursor =
+                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
         }
 
-        let child_nodes = taffy.children(node_id).unwrap_or_default();
+        let child_nodes = ctx.taffy.children(ctx.node_id).unwrap_or_default();
         if matches!(
             event,
             WindowEvent::KeyboardInput {
@@ -3678,9 +3670,9 @@ impl Widget for ApiTesterApp {
                     .iter()
                     .position(|child| child.test_id() == Some(target))
                 {
-                    *focus_target = child_nodes.get(index).copied();
+                    *ctx.focus_target = child_nodes.get(index).copied();
                 }
-                *handled = true;
+                *ctx.handled = true;
                 self.dirty = true;
                 return;
             }
@@ -3700,16 +3692,16 @@ impl Widget for ApiTesterApp {
                     .iter()
                     .position(|child| child.test_id() == Some("api.request-divider"))
                 {
-                    *focus_target = child_nodes.get(index).copied();
+                    *ctx.focus_target = child_nodes.get(index).copied();
                 }
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::CursorMoved { .. } if self.request_drag.is_some() => {
                 if let Some((start, height)) = self.request_drag {
                     self.request_height_override =
                         Some((height + self.last_cursor.y - start).max(0.0));
                 }
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
@@ -3717,7 +3709,7 @@ impl Widget for ApiTesterApp {
                 ..
             } if self.request_drag.is_some() => {
                 self.request_drag = None;
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::MouseWheel { delta, .. }
                 if self.layout.nav_viewport.contains(self.last_cursor) =>
@@ -3732,11 +3724,11 @@ impl Widget for ApiTesterApp {
                 } else if dy > 0.0 {
                     self.nav_start = self.nav_start.saturating_sub(1);
                 }
-                *handled = true;
+                *ctx.handled = true;
             }
             _ => {}
         }
-        if *handled {
+        if *ctx.handled {
             self.dirty = true;
             return;
         }
@@ -3759,7 +3751,7 @@ impl Widget for ApiTesterApp {
             && !self.layout.sidebar.contains(self.last_cursor)
         {
             self.rail.snap(false);
-            *handled = true;
+            *ctx.handled = true;
             self.dirty = true;
             return;
         }
@@ -3771,24 +3763,14 @@ impl Widget for ApiTesterApp {
             });
         // Route the event through the child widgets (pointer-capture aware),
         // exactly like a `Column`.
-        let child_nodes = taffy.children(node_id).unwrap_or_default();
+        let child_nodes = ctx.taffy.children(ctx.node_id).unwrap_or_default();
         {
             let mut kids = self.children_mut_ref();
             if let Some(idx) = kids.iter().position(|k| k.wants_pointer_capture()) {
                 if let Some(&cnode) = child_nodes.get(idx)
                     && let Some(k) = kids.get_mut(idx)
                 {
-                    k.handle_event(
-                        event,
-                        scale_factor,
-                        modifiers,
-                        state,
-                        path,
-                        handled,
-                        focus_target,
-                        cnode,
-                        taffy,
-                    );
+                    k.handle_event(event, &mut ctx.reborrow(ctx.path, cnode));
                 }
             } else {
                 let sidebar_start = kids.len().saturating_sub(sidebar_count);
@@ -3799,35 +3781,25 @@ impl Widget for ApiTesterApp {
                         continue;
                     }
                     if cursor_move {
-                        *handled = false;
+                        *ctx.handled = false;
                     }
-                    k.handle_event(
-                        event,
-                        scale_factor,
-                        modifiers,
-                        state,
-                        path,
-                        handled,
-                        focus_target,
-                        cn,
-                        taffy,
-                    );
-                    any_handled |= *handled;
-                    if *handled && !cursor_move {
+                    k.handle_event(event, &mut ctx.reborrow(ctx.path, cn));
+                    any_handled |= *ctx.handled;
+                    if *ctx.handled && !cursor_move {
                         break;
                     }
                 }
-                *handled |= any_handled;
+                *ctx.handled |= any_handled;
             }
         }
 
         // Apply any commands the children queued, then reconcile the pickers.
-        let did = self.drain_commands(state, path);
-        self.reconcile_pickers(state, path);
-        if did || *handled {
+        let did = self.drain_commands(ctx.state, ctx.path);
+        self.reconcile_pickers(ctx.state, ctx.path);
+        if did || *ctx.handled {
             self.dirty = true;
         }
-        if *handled {
+        if *ctx.handled {
             return;
         }
 
@@ -3845,7 +3817,7 @@ impl Widget for ApiTesterApp {
                 if self.rail.layout() == SplitLayout::Overlay && self.rail.is_open() {
                     self.rail.close();
                     self.dirty = true;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
@@ -3859,11 +3831,11 @@ impl Widget for ApiTesterApp {
                     // runaway wheel event cannot hide it indefinitely.
                     self.sidebar_scroll = (self.sidebar_scroll + dy).clamp(0.0, 1200.0);
                     self.dirty = true;
-                    *handled = true;
+                    *ctx.handled = true;
                 } else if self.layout.body_region.contains(self.last_cursor) {
                     self.body_scroll = (self.body_scroll + dy).max(0.0);
                     self.dirty = true;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseInput {

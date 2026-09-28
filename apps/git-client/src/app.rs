@@ -10,6 +10,7 @@
 use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::Instant;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, Style, TaffyTree};
@@ -2814,7 +2815,8 @@ impl Widget for GitClientApp {
         &[crate::actions::GIT_CLIENT_OPERATION_TYPE]
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, _) = ui::doc::document(state, path);
         self.drain_remote();
         if self.settings_seeded {
             // Adopt document changes: remote collaborators, and this app's own
@@ -2926,21 +2928,11 @@ impl Widget for GitClientApp {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_mouse = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_mouse =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 // Hover state for hunk buttons + remote actions.
                 self.hover_hunk =
                     diffview::hunk_button_at(&self.diff_hunk_buttons, self.last_mouse);
@@ -2954,11 +2946,11 @@ impl Widget for GitClientApp {
                 // Keep an in-flight text-selection drag updating.
                 self.forward_to_inputs(&mut InputEventCtx {
                     event,
-                    scale_factor,
-                    modifiers: *modifiers,
-                    state,
-                    path,
-                    taffy,
+                    scale_factor: ctx.scale_factor,
+                    modifiers: *ctx.modifiers,
+                    state: ctx.state,
+                    path: ctx.path,
+                    taffy: ctx.taffy,
                 });
             }
             WindowEvent::MouseInput {
@@ -2968,13 +2960,13 @@ impl Widget for GitClientApp {
             } => {
                 self.handle_press(&mut InputEventCtx {
                     event,
-                    scale_factor,
-                    modifiers: *modifiers,
-                    state,
-                    path,
-                    taffy,
+                    scale_factor: ctx.scale_factor,
+                    modifiers: *ctx.modifiers,
+                    state: ctx.state,
+                    path: ctx.path,
+                    taffy: ctx.taffy,
                 });
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
@@ -2982,23 +2974,30 @@ impl Widget for GitClientApp {
             } => {
                 self.forward_to_inputs(&mut InputEventCtx {
                     event,
-                    scale_factor,
-                    modifiers: *modifiers,
-                    state,
-                    path,
-                    taffy,
+                    scale_factor: ctx.scale_factor,
+                    modifiers: *ctx.modifiers,
+                    state: ctx.state,
+                    path: ctx.path,
+                    taffy: ctx.taffy,
                 });
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let dy = match delta {
                     MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * 36.0,
-                    MouseScrollDelta::PixelDelta(p) => p.y / scale_factor,
+                    MouseScrollDelta::PixelDelta(p) => p.y / ctx.scale_factor,
                 };
                 self.scroll_active(dy, self.last_mouse);
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::KeyboardInput { .. } => {
-                self.handle_key(event, *modifiers, state, path, taffy, handled);
+                self.handle_key(
+                    event,
+                    *ctx.modifiers,
+                    ctx.state,
+                    ctx.path,
+                    ctx.taffy,
+                    ctx.handled,
+                );
             }
             _ => {}
         }
@@ -3052,10 +3051,11 @@ impl Widget for GitClientApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         use ui::a11y::Action;
+        let (state, path) = ui::doc::document(state, path);
 
         let field = match target {
             "git.open-path" => Some(Field::Open),
@@ -3441,14 +3441,16 @@ impl GitClientApp {
         let mut ft: Option<NodeId> = None;
         input.handle_event(
             event,
-            scale_factor,
-            &modifiers,
-            state,
-            path,
-            &mut handled,
-            &mut ft,
-            NodeId::new(0),
-            taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor,
+                modifiers: &modifiers,
+                state,
+                path,
+                handled: &mut handled,
+                focus_target: &mut ft,
+                node_id: NodeId::new(0),
+                taffy,
+            },
         );
         handled
     }

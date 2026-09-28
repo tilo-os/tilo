@@ -10,8 +10,8 @@
 
 use taffy::NodeId;
 use ui::a11y::AccessNode;
-use ui::widget::Widget as _;
 use ui::widget::context_menu::ContextMenu;
+use ui::widget::{EventCtx, Widget as _};
 use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 
@@ -211,14 +211,11 @@ impl ShellLayer for TabMenuLayer {
         let mut widget_focus: Option<NodeId> = None;
         self.menu.handle_event(
             event,
-            cx.event.scale_factor,
-            cx.event.modifiers,
-            cx.event.state,
-            cx.event.path,
-            &mut widget_handled,
-            &mut widget_focus,
-            cx.event.node_id,
-            cx.event.taffy,
+            &mut EventCtx {
+                handled: &mut widget_handled,
+                focus_target: &mut widget_focus,
+                ..cx.event.reborrow(cx.event.path, cx.event.node_id)
+            },
         );
         if let Some(intent) = self.take_selected_intent() {
             cx.request(intent);

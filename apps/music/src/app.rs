@@ -2196,14 +2196,16 @@ impl MusicApp {
             let mut ft = None;
             nd.dialog.handle_event(
                 event,
-                scale_factor,
-                &modifiers,
-                state,
-                &automerge::ROOT,
-                handled,
-                &mut ft,
-                node,
-                &taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor,
+                    modifiers: &modifiers,
+                    state,
+                    path: &automerge::ROOT,
+                    handled,
+                    focus_target: &mut ft,
+                    node_id: node,
+                    taffy: &taffy,
+                },
             );
             (nd.submit.replace(false), nd.cancel.replace(false))
         };

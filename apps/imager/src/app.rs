@@ -29,6 +29,7 @@
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::percent;
@@ -5008,7 +5009,8 @@ impl Widget for ImagerApp {
         &[crate::actions::IMAGER_OPERATION_TYPE]
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, _) = ui::doc::document(state, path);
         if !self.seeded {
             if ImagerDoc::is_empty(state) {
                 // Start genuinely blank. In the live app a real `lsblk` probe
@@ -5224,35 +5226,27 @@ impl Widget for ImagerApp {
         clippy::too_many_lines,
         reason = "the canvas wizard routes modal, text-field, profile-panel, pointer, scroll and keyboard capture in one explicitly ordered event transaction"
     )]
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         use winit::event::{ElementState, KeyEvent, MouseButton};
 
         let lay = self.compute_layout();
 
         // The detached shared modal owns capture and dismissal before any
         // wizard field or shortcut sees the event.
-        if self
-            .export_dialog
-            .handle_detached(event, scale_factor, *modifiers, state, path)
-        {
-            *handled = true;
+        if self.export_dialog.handle_detached(
+            event,
+            ctx.scale_factor,
+            *ctx.modifiers,
+            ctx.state,
+            ctx.path,
+        ) {
+            *ctx.handled = true;
             self.dirty = true;
             return;
         }
 
-        if self.handle_tab_event(event, *modifiers, &lay) {
-            *handled = true;
+        if self.handle_tab_event(event, *ctx.modifiers, &lay) {
+            *ctx.handled = true;
             self.dirty = true;
             return;
         }
@@ -5264,14 +5258,11 @@ impl Widget for ImagerApp {
             let mut focus_target = None;
             self.confirm_input.handle_event(
                 event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                &mut input_handled,
-                &mut focus_target,
-                node_id,
-                taffy,
+                &mut ui::widget::EventCtx {
+                    handled: &mut input_handled,
+                    focus_target: &mut focus_target,
+                    ..ctx.reborrow(ctx.path, ctx.node_id)
+                },
             );
             if focus_target.is_some() {
                 self.confirm_input.set_focus(true);
@@ -5281,15 +5272,15 @@ impl Widget for ImagerApp {
             }
             if self.confirm_input.take_submit() {
                 if self.can_advance(Step::Confirm) {
-                    self.start_write(state);
+                    self.start_write(ctx.state);
                 }
                 self.confirm_input.set_focus(false);
-                *handled = true;
+                *ctx.handled = true;
                 self.dirty = true;
                 return;
             }
             if input_handled {
-                *handled = true;
+                *ctx.handled = true;
                 self.dirty = true;
                 return;
             }
@@ -5299,32 +5290,23 @@ impl Widget for ImagerApp {
         // panel, which owns its fields, toggles and export affordance. Only
         // events it does not consume (footer clicks, global keys) fall through
         // to the wizard chrome below.
-        let consumed = self.handle_customize_event(
-            event,
-            scale_factor,
-            *modifiers,
-            state,
-            path,
-            &lay,
-            node_id,
-            taffy,
-        );
+        let consumed = self.handle_customize_event(event, ctx, &lay);
         if consumed {
-            *handled = true;
+            *ctx.handled = true;
             self.dirty = true;
             return;
         }
 
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.handle_cursor_moved(position.x, position.y, scale_factor, &lay);
+                self.handle_cursor_moved(position.x, position.y, ctx.scale_factor, &lay);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
             } => {
-                self.handle_left_click(state, &lay, handled);
+                self.handle_left_click(ctx.state, &lay, ctx.handled);
             }
             WindowEvent::MouseWheel { delta, .. }
                 if lay.viewport_content.contains(self.last_mouse) =>
@@ -5332,14 +5314,14 @@ impl Widget for ImagerApp {
                 use winit::event::MouseScrollDelta;
                 let dy = match delta {
                     MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * 52.0,
-                    MouseScrollDelta::PixelDelta(point) => point.y / scale_factor,
+                    MouseScrollDelta::PixelDelta(point) => point.y / ctx.scale_factor,
                 };
                 let next = (self.scroll_y - dy).clamp(0.0, self.max_scroll());
                 if (next - self.scroll_y).abs() > f64::EPSILON {
                     self.scroll_y = next;
                     self.dirty = true;
                 }
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -5350,7 +5332,7 @@ impl Widget for ImagerApp {
                     },
                 ..
             } => {
-                self.handle_key_pressed(logical_key, state, handled);
+                self.handle_key_pressed(logical_key, ctx.state, ctx.handled);
             }
             _ => {}
         }
@@ -5493,10 +5475,11 @@ impl Widget for ImagerApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
-        _path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         use ui::a11y::Action as AccessAction;
+        let (state, _) = ui::doc::document(state, path);
 
         if self.export_dialog.is_open() {
             return false;
@@ -5659,20 +5642,11 @@ impl ImagerApp {
     /// The Customize step's delegated handling. Returns `true` when the panel
     /// consumed the event, so the caller stops before the wizard chrome below
     /// ever sees it.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Customize routing forwards input, CRDT state, wizard layout, and the widget node/tree to the shared panel."
-    )]
     fn handle_customize_event(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        ctx: &mut ui::widget::EventCtx<'_>,
         lay: &Layout,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
     ) -> bool {
         if !(self.step == Step::Customize && self.customizable() && !self.export_dialog.is_open()) {
             return false;
@@ -5681,19 +5655,14 @@ impl ImagerApp {
         let profile = self.profile.clone();
         let resp = self.customize.handle_event(
             event,
-            scale_factor,
-            &modifiers,
-            state,
-            path,
+            ctx,
             &mut self.actions,
             &profile,
             removable,
             lay.content,
-            node_id,
-            taffy,
         );
         if resp.export_requested {
-            self.export_config(state);
+            self.export_config(ctx.state);
         }
         resp.handled
     }
@@ -6121,14 +6090,16 @@ mod tests {
         let (mut h, mut ft) = (false, None);
         app.handle_event(
             ev,
-            1.0,
-            &m,
-            doc,
-            &automerge::ROOT,
-            &mut h,
-            &mut ft,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &m,
+                state: doc,
+                path: &automerge::ROOT,
+                handled: &mut h,
+                focus_target: &mut ft,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
     }
 

@@ -32,8 +32,14 @@ pub enum Mode {
     Connect,
     RunApp {
         app_id: String,
+        /// A room this profile joined; the profile's own room when `None`.
+        room: Option<String>,
         executable: OsString,
         args: Vec<OsString>,
+    },
+    /// Join the room an invitation names, through the running daemon.
+    Join {
+        invitation: String,
     },
 }
 #[derive(Debug, PartialEq, Eq)]
@@ -99,6 +105,14 @@ pub fn parse_args(arguments: impl IntoIterator<Item = OsString>) -> io::Result<A
             }
             Some("--daemon") if mode.is_none() => mode = Some(Mode::Daemon),
             Some("--connect") if mode.is_none() => mode = Some(Mode::Connect),
+            Some("--join") if mode.is_none() => {
+                let invitation = arguments
+                    .next()
+                    .and_then(|arg| arg.into_string().ok())
+                    .filter(|invitation| !invitation.is_empty() && invitation.len() <= 384 * 1024)
+                    .ok_or_else(|| invalid("--join requires an invitation"))?;
+                mode = Some(Mode::Join { invitation });
+            }
             Some("--run-app") if mode.is_none() => {
                 let app_id = arguments
                     .next()
@@ -107,14 +121,29 @@ pub fn parse_args(arguments: impl IntoIterator<Item = OsString>) -> io::Result<A
                 if app_id.trim().is_empty() || app_id.len() > 4096 {
                     return Err(invalid("invalid application ID"));
                 }
-                if arguments.next().as_deref() != Some(std::ffi::OsStr::new("--")) {
-                    return Err(invalid("--run-app APP_ID requires -- EXECUTABLE ARGS..."));
+                let mut next = arguments.next();
+                let mut room = None;
+                if next.as_deref() == Some(std::ffi::OsStr::new("--room")) {
+                    room = Some(
+                        arguments
+                            .next()
+                            .and_then(|arg| arg.into_string().ok())
+                            .filter(|room| uuid::Uuid::parse_str(room).is_ok())
+                            .ok_or_else(|| invalid("--room requires a room id"))?,
+                    );
+                    next = arguments.next();
+                }
+                if next.as_deref() != Some(std::ffi::OsStr::new("--")) {
+                    return Err(invalid(
+                        "--run-app APP_ID [--room ROOM] requires -- EXECUTABLE ARGS...",
+                    ));
                 }
                 let executable = arguments
                     .next()
                     .ok_or_else(|| invalid("missing app executable"))?;
                 mode = Some(Mode::RunApp {
                     app_id,
+                    room,
                     executable,
                     args: arguments.collect(),
                 });
@@ -135,7 +164,7 @@ pub fn parse_args(arguments: impl IntoIterator<Item = OsString>) -> io::Result<A
     if !profile.is_absolute() {
         return Err(invalid("runtime profile must be absolute"));
     }
-    let mode = mode.ok_or_else(|| invalid("choose --daemon, --connect, --run-app APP_ID -- EXECUTABLE, or --profile PATH --apps MANIFEST"))?;
+    let mode = mode.ok_or_else(|| invalid("choose --daemon, --connect, --join INVITATION, --run-app APP_ID [--room ROOM] -- EXECUTABLE, or --profile PATH --apps MANIFEST"))?;
     if dev && mode != Mode::Daemon {
         return Err(invalid("--dev starts a daemon: use it with --daemon"));
     }
@@ -679,6 +708,7 @@ pub fn serve<S: RuntimeServices>(profile: &Path, dev: bool) -> io::Result<()> {
         pid: std::process::id(),
         room: session.room().to_owned(),
     };
+    let joiner = session.joiner();
     let active = Arc::new(AtomicUsize::new(0));
     for stream in listener.incoming() {
         let stream = stream?;
@@ -691,6 +721,7 @@ pub fn serve<S: RuntimeServices>(profile: &Path, dev: bool) -> io::Result<()> {
         let actor = session.actor().to_owned();
         let status = status.clone();
         let computer = computer.clone();
+        let joiner = joiner.clone();
         let active = Arc::clone(&active);
         active.fetch_add(1, Ordering::Relaxed);
         let slot = ConnectionSlot(active);
@@ -702,6 +733,7 @@ pub fn serve<S: RuntimeServices>(profile: &Path, dev: bool) -> io::Result<()> {
                     stream,
                     McpServer::new(host, room, actor).with_computer(computer),
                     &status,
+                    joiner.as_ref(),
                 ) {
                     tracing::debug!(%error, "native runtime client disconnected");
                 }
@@ -722,6 +754,7 @@ fn serve_connection<
     mut stream: UnixStream,
     mut server: McpServer<H>,
     status: &Status,
+    joiner: Option<&crate::Joiner>,
 ) -> io::Result<()> {
     stream.set_nonblocking(false)?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
@@ -739,6 +772,9 @@ fn serve_connection<
                 Ok(value) if value == json!({"native":"status"}) => {
                     Some(serde_json::to_value(status).map_err(io::Error::other)?)
                 }
+                Ok(value) if value.get("native") == Some(&json!("join")) => {
+                    Some(answer_join(joiner, &value))
+                }
                 Ok(value) => runtime
                     .block_on(server.handle(value))
                     .map_err(io::Error::other)?,
@@ -750,6 +786,53 @@ fn serve_connection<
         if let Some(reply) = reply {
             write_reply(&mut stream, &reply)?;
         }
+    }
+}
+
+/// A native join request's answer: the joined room, or why not.
+fn answer_join(joiner: Option<&crate::Joiner>, request: &Value) -> Value {
+    let Some(joiner) = joiner else {
+        return json!({"error": "this host joins rooms through its own surfaces"});
+    };
+    let Some(invitation) = request.get("invitation").and_then(Value::as_str) else {
+        return json!({"error": "a join request needs an invitation"});
+    };
+    match joiner(invitation) {
+        Ok(room) => json!({"room": room}),
+        Err(error) => json!({"error": error.to_string()}),
+    }
+}
+
+/// Join the room `invitation` names, through the running daemon, and print
+/// the joined room's id.
+/// # Errors
+/// Returns startup or transport errors, or why the daemon did not join.
+pub fn join(profile: &Path, invitation: &str) -> io::Result<()> {
+    ensure_running(profile)?;
+    let mut stream = UnixStream::connect(profile.join("native.sock"))?;
+    let mut request = serde_json::to_vec(&json!({"native": "join", "invitation": invitation}))
+        .map_err(io::Error::other)?;
+    request.push(b'\n');
+    stream.write_all(&request)?;
+    let mut reply = Vec::new();
+    BufReader::new(stream)
+        .take(16_385)
+        .read_until(b'\n', &mut reply)?;
+    let reply: Value = serde_json::from_slice(&reply).map_err(io::Error::other)?;
+    match (
+        reply.get("room").and_then(Value::as_str),
+        reply.get("error"),
+    ) {
+        (Some(room), None) => {
+            println!("{room}");
+            Ok(())
+        }
+        (_, error) => Err(io::Error::other(
+            error
+                .and_then(Value::as_str)
+                .unwrap_or("invalid join reply")
+                .to_owned(),
+        )),
     }
 }
 
@@ -778,6 +861,7 @@ pub fn connect(profile: &Path) -> io::Result<()> {
 pub fn run_app(
     profile: &Path,
     app_id: &str,
+    room: Option<&str>,
     executable: &OsString,
     args: &[OsString],
 ) -> io::Result<()> {
@@ -795,7 +879,9 @@ pub fn run_app(
     // already named a workspace keeps its participation, including fail-closed
     // viewer. A personal attach has no room yet, and the person who owns this
     // runtime may edit their own app.
-    if std::env::var_os("TILO_WORKSPACE_ID").is_none()
+    // A joined room's role is the one its governor admitted.
+    if room.is_none()
+        && std::env::var_os("TILO_WORKSPACE_ID").is_none()
         && std::env::var_os("TILO_PARTICIPATION").is_none()
     {
         command.env("TILO_PARTICIPATION", "author");
@@ -803,7 +889,7 @@ pub fn run_app(
     let connections = unix::Connections::prepare(
         &mut command,
         app_id,
-        &status.room,
+        room.unwrap_or(&status.room),
         &unix::ServiceSockets {
             collab: &profile.join(COLLAB_SOCKET),
             identity: &profile.join(IDENTITY_SOCKET),

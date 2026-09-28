@@ -98,14 +98,18 @@ macro_rules! retained_parts {
                 path,
             )
         }
-        fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+        fn update(
+            &mut self,
+            state: &mut crate::widget::AppModel,
+            path: &crate::widget::ModelPath,
+        ) -> bool {
             let mut changed = false;
             for child in &mut self.parts.children {
                 changed |= child.update(state, path);
             }
             changed
         }
-        fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+        fn sync(&mut self, state: &mut crate::widget::AppModel, path: &crate::widget::ModelPath) {
             for child in &mut self.parts.children {
                 child.sync(state, path);
             }
@@ -113,20 +117,12 @@ macro_rules! retained_parts {
         fn handle_event(
             &mut self,
             event: &winit::event::WindowEvent,
-            scale: f64,
-            modifiers: &winit::event::Modifiers,
-            state: &mut AutoCommit,
-            path: &ObjId,
-            handled: &mut bool,
-            focus: &mut Option<NodeId>,
-            _node: NodeId,
-            taffy: &TaffyTree<()>,
+            ctx: &mut crate::widget::EventCtx<'_>,
         ) {
             for (child, &node) in self.parts.children.iter_mut().zip(&self.parts.nodes) {
-                child.handle_event(
-                    event, scale, modifiers, state, path, handled, focus, node, taffy,
-                );
-                if *handled {
+                let path = ctx.path;
+                child.handle_event(event, &mut ctx.reborrow(path, node));
+                if *ctx.handled {
                     break;
                 }
             }
@@ -207,7 +203,6 @@ mod tests {
         fn get_rect(&self) -> Rect {
             Rect::ZERO
         }
-        fn sync(&mut self, _: &mut AutoCommit, _: &ObjId) {}
         fn build_layout(
             &mut self,
             tree: &mut TaffyTree<()>,
@@ -224,19 +219,6 @@ mod tests {
             _: &mut TextRenderer,
             _: &Theme,
             _: &PresenceCtx,
-        ) {
-        }
-        fn handle_event(
-            &mut self,
-            _: &winit::event::WindowEvent,
-            _: f64,
-            _: &winit::event::Modifiers,
-            _: &mut AutoCommit,
-            _: &ObjId,
-            _: &mut bool,
-            _: &mut Option<NodeId>,
-            _: NodeId,
-            _: &TaffyTree<()>,
         ) {
         }
         fn local_resource_operation_handlers(&self) -> &'static [&'static str] {

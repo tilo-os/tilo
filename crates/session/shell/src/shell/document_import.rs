@@ -106,7 +106,7 @@ impl HostedRooms for NativeHostedRooms {
     }
 
     fn read(&self, room: RoomId, app: &str, record: &RecordId) -> Result<Vec<u8>, String> {
-        use crate::shell::native_workspace_owner::document_read::DocumentRead;
+        use crate::shell::native_workspace_owner::DocumentRead;
         let owner = self.0.native_owner()?;
         self.0.check_native_custody(&owner, room)?;
         let limit =

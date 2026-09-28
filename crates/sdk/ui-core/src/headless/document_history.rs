@@ -647,14 +647,16 @@ impl FrameHarness {
                     |widget, doc, path| {
                         widget.handle_event(
                             event,
-                            self.input_scale,
-                            &self.modifiers,
-                            doc,
-                            path,
-                            handled,
-                            focus,
-                            node,
-                            &self.taffy,
+                            &mut crate::widget::EventCtx {
+                                scale_factor: self.input_scale,
+                                modifiers: &self.modifiers,
+                                state: doc,
+                                path,
+                                handled,
+                                focus_target: focus,
+                                node_id: node,
+                                taffy: &self.taffy,
+                            },
                         );
                     },
                 )
@@ -663,14 +665,16 @@ impl FrameHarness {
         }
         self.document_history.toolbar_mut().handle_event(
             event,
-            self.input_scale,
-            &self.modifiers,
-            &mut self.state.doc,
-            &self.state.root,
-            handled,
-            focus,
-            layout.toolbar,
-            &self.taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor: self.input_scale,
+                modifiers: &self.modifiers,
+                state: &mut self.state.doc,
+                path: &self.state.root,
+                handled,
+                focus_target: focus,
+                node_id: layout.toolbar,
+                taffy: &self.taffy,
+            },
         );
         if !*handled
             && let Some(node) = layout.pane
@@ -678,14 +682,16 @@ impl FrameHarness {
         {
             pane.handle_event(
                 event,
-                self.input_scale,
-                &self.modifiers,
-                &mut self.state.doc,
-                &self.state.root,
-                handled,
-                focus,
-                node,
-                &self.taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: self.input_scale,
+                    modifiers: &self.modifiers,
+                    state: &mut self.state.doc,
+                    path: &self.state.root,
+                    handled,
+                    focus_target: focus,
+                    node_id: node,
+                    taffy: &self.taffy,
+                },
             );
         }
         if !*handled
@@ -694,14 +700,16 @@ impl FrameHarness {
         {
             preview.handle_event(
                 event,
-                self.input_scale,
-                &self.modifiers,
-                &mut self.state.doc,
-                &self.state.root,
-                handled,
-                focus,
-                node,
-                &self.taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: self.input_scale,
+                    modifiers: &self.modifiers,
+                    state: &mut self.state.doc,
+                    path: &self.state.root,
+                    handled,
+                    focus_target: focus,
+                    node_id: node,
+                    taffy: &self.taffy,
+                },
             );
         }
         if !layout.app_visible {

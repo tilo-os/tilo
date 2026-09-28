@@ -225,6 +225,34 @@ enum Cmd {
         #[command(subcommand)]
         command: ReviewCommand,
     },
+    /// Decide on keys asking to publish under namespaces they proved.
+    Applications {
+        #[command(subcommand)]
+        command: ApplicationsCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ApplicationsCommand {
+    /// List applications waiting for a decision.
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Check the proofs again and allowlist the key for their namespaces.
+    Approve {
+        pubkey: String,
+        #[arg(long)]
+        reviewer: String,
+    },
+    /// Turn an application down; the key's allowlist row is untouched.
+    Reject {
+        pubkey: String,
+        #[arg(long)]
+        reviewer: String,
+        #[arg(long)]
+        reason: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -380,6 +408,7 @@ async fn serve_cli() -> anyhow::Result<()> {
         } => cmd_rollback_snapshot(&storage, to_sequence, &owner_key_file, valid_for_seconds),
         // Review fetches packages with a blocking HTTP client, which must not
         // run (or be dropped) on an async worker.
+        Cmd::Applications { command } => cmd_applications(&storage, command),
         Cmd::Review { command } => tilo_rt::io::run(move || Ok(cmd_review(&storage, command)))
             .await
             .map_err(|error| anyhow::anyhow!("review: {error}"))?,
@@ -1565,6 +1594,61 @@ fn cmd_remove_publisher(storage: &Storage, pubkey: &str) -> anyhow::Result<()> {
 }
 
 /// `Cmd::ListPublishers` — print `publishers.toml` to stdout.
+fn cmd_applications(storage: &Storage, command: ApplicationsCommand) -> anyhow::Result<()> {
+    use registry_server::applications::{self, ApplicationStatus, NetworkProofs};
+    match command {
+        ApplicationsCommand::List { json } => {
+            let mut waiting: Vec<_> = storage
+                .load_publisher_applications()?
+                .into_iter()
+                .filter(|stored| stored.status == ApplicationStatus::Pending)
+                .collect();
+            waiting.sort_by_key(|stored| stored.received_at_unix);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&waiting)?);
+                return Ok(());
+            }
+            for stored in &waiting {
+                println!(
+                    "{}  {}  {}",
+                    stored.application.pubkey_hex,
+                    stored.namespaces().join(","),
+                    stored.application.contact
+                );
+                for claim in &stored.verified {
+                    println!("    {} via {}", claim.namespace, claim.location);
+                }
+                if !stored.application.note.is_empty() {
+                    println!("    note: {}", stored.application.note);
+                }
+            }
+        }
+        ApplicationsCommand::Approve { pubkey, reviewer } => {
+            let (_, row) = applications::approve(
+                storage,
+                &pubkey,
+                &reviewer,
+                unix_now(),
+                &NetworkProofs::default(),
+            )?;
+            info!(
+                "allowlisted {} for {}",
+                row.pubkey_hex,
+                row.namespaces.join(", ")
+            );
+        }
+        ApplicationsCommand::Reject {
+            pubkey,
+            reviewer,
+            reason,
+        } => {
+            applications::reject(storage, &pubkey, &reviewer, &reason, unix_now())?;
+            info!("rejected the application from {pubkey}");
+        }
+    }
+    Ok(())
+}
+
 fn cmd_list_publishers(storage: &Storage) -> anyhow::Result<()> {
     let allow: PublisherAllowlist = storage
         .load_allowlist()

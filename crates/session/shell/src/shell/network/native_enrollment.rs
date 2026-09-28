@@ -28,7 +28,7 @@ impl ShellNetwork {
             return Ok(owner.clone());
         }
         let rooms = tree.read().rooms();
-        let owner = NativeWorkspaceOwner::open(tree)?;
+        let owner = crate::shell::native_workspace_owner::open(tree)?;
         *retained = Some(owner.clone());
         drop(retained);
         for room in rooms {

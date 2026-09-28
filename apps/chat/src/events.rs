@@ -91,14 +91,16 @@ fn drive_text_input(
     let mut focus_target: Option<NodeId> = None;
     ti.handle_event(
         event,
-        scale,
-        &modifiers,
-        doc,
-        &automerge::ROOT,
-        &mut handled,
-        &mut focus_target,
-        node,
-        &taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: scale,
+            modifiers: &modifiers,
+            state: doc,
+            path: &automerge::ROOT,
+            handled: &mut handled,
+            focus_target: &mut focus_target,
+            node_id: node,
+            taffy: &taffy,
+        },
     );
     focus_target.is_some()
 }
@@ -121,14 +123,16 @@ fn drive_context_menu(
     let mut focus_target = None;
     menu.handle_event(
         event,
-        scale,
-        &modifiers,
-        doc,
-        &automerge::ROOT,
-        &mut handled,
-        &mut focus_target,
-        node,
-        &taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: scale,
+            modifiers: &modifiers,
+            state: doc,
+            path: &automerge::ROOT,
+            handled: &mut handled,
+            focus_target: &mut focus_target,
+            node_id: node,
+            taffy: &taffy,
+        },
     );
     handled
 }

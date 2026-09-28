@@ -17,6 +17,7 @@
 //! open expand-modal are view state and stay local to each peer.
 
 use std::collections::HashMap;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ChangeHash, ObjId};
 use taffy::{NodeId, Style, TaffyTree};
@@ -516,21 +517,13 @@ impl SnippetsApp {
             && (!self.is_push_layout() || self.push_pane == PushPane::Detail)
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "forwards the shared Widget event context"
-    )]
     fn route_body_event(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
+        let modifiers = *ctx.modifiers;
+        let state = &mut *ctx.state;
         if !self.body_available() {
             self.body_editor.set_focused(false);
             return false;
@@ -573,14 +566,16 @@ impl SnippetsApp {
         let mut handled = false;
         self.body_editor.handle_event(
             event,
-            scale_factor,
-            &modifiers,
-            state,
-            path,
-            &mut handled,
-            focus_target,
-            node_id,
-            taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: ctx.scale_factor,
+                modifiers: &modifiers,
+                state,
+                path: ctx.path,
+                handled: &mut handled,
+                focus_target: ctx.focus_target,
+                node_id: ctx.node_id,
+                taffy: ctx.taffy,
+            },
         );
         self.flush_body_edit(state);
         handled
@@ -1028,7 +1023,8 @@ impl ui::widget::Widget for SnippetsApp {
         Ok(true)
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, _) = ui::doc::document(state, path);
         self.sync_library(state);
         self.sync_body_editor();
     }
@@ -1237,77 +1233,30 @@ impl ui::widget::Widget for SnippetsApp {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         // Track the cursor for hit-testing.
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_mouse = Point::new(position.x / scale_factor, position.y / scale_factor);
+            self.last_mouse =
+                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
         }
 
         // The expand modal is modal: it owns all input while open.
-        if self.handle_expand_event(
-            event,
-            scale_factor,
-            *modifiers,
-            state,
-            path,
-            focus_target,
-            node_id,
-            taffy,
-        ) {
-            *handled = true;
+        if self.handle_expand_event(event, ctx) {
+            *ctx.handled = true;
             return;
         }
 
-        if self.route_body_event(
-            event,
-            scale_factor,
-            *modifiers,
-            state,
-            path,
-            focus_target,
-            node_id,
-            taffy,
-        ) {
-            *handled = true;
+        if self.route_body_event(event, ctx) {
+            *ctx.handled = true;
             return;
         }
 
-        if self.route_pointer_to_search(
-            event,
-            scale_factor,
-            *modifiers,
-            state,
-            path,
-            focus_target,
-            node_id,
-            taffy,
-        ) {
-            *handled = true;
+        if self.route_pointer_to_search(event, ctx) {
+            *ctx.handled = true;
             return;
         }
 
-        self.dispatch_event(
-            event,
-            scale_factor,
-            *modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
-        );
+        self.dispatch_event(event, ctx);
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -1316,7 +1265,7 @@ impl ui::widget::Widget for SnippetsApp {
             || self.push.is_animating(SplitLayout::Docked)
     }
 
-    fn update(&mut self, _state: &mut AutoCommit, _path: &ObjId) -> bool {
+    fn update(&mut self, _state: &mut AppModel, _path: &ModelPath) -> bool {
         // Advance the sidebar reveal + the push (list↔detail) slide toward
         // their targets. Frame-rate-independent; the host re-pumps frames
         // while `needs_animation_frame` stays true.
@@ -1448,9 +1397,10 @@ impl ui::widget::Widget for SnippetsApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
+        let (state, path) = ui::doc::document(state, path);
         if let Some(mut modal) = self.expand.take() {
             let Some(outcome) = modal.perform_semantic_action(target, action, state, path) else {
                 self.expand = Some(modal);
@@ -1740,22 +1690,13 @@ impl SnippetsApp {
 
     /// The per-`WindowEvent`-kind dispatch, once the expand modal and the
     /// embedded search editor have both had first refusal.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "mirrors the WindowEvent-routing signature threaded through ui::widget::Widget::handle_event and route_search_event in this file — bundling it into a context struct would ripple into the shared ui widget trait, out of scope here"
-    )]
-    fn dispatch_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn dispatch_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        let modifiers = *ctx.modifiers;
+        let state = &mut *ctx.state;
+        let path = ctx.path;
+        let focus_target = &mut *ctx.focus_target;
+        let node_id = ctx.node_id;
+        let taffy = ctx.taffy;
         match event {
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -1764,23 +1705,25 @@ impl SnippetsApp {
             } => {
                 self.handle_left_click(
                     event,
-                    scale_factor,
-                    modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    node_id,
-                    taffy,
+                    &mut ui::widget::EventCtx {
+                        scale_factor: ctx.scale_factor,
+                        modifiers: &modifiers,
+                        state,
+                        path,
+                        handled: &mut *ctx.handled,
+                        focus_target,
+                        node_id,
+                        taffy,
+                    },
                 );
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let dy = match delta {
                     winit::event::MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * BODY_LINE,
-                    winit::event::MouseScrollDelta::PixelDelta(p) => p.y / scale_factor,
+                    winit::event::MouseScrollDelta::PixelDelta(p) => p.y / ctx.scale_factor,
                 };
                 self.scroll = (self.scroll - dy).max(0.0);
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -1792,23 +1735,25 @@ impl SnippetsApp {
                 ..
             } => {
                 self.handle_keyboard_input(
-                    logical_key,
                     event,
-                    scale_factor,
-                    modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    node_id,
-                    taffy,
+                    &mut ui::widget::EventCtx {
+                        scale_factor: ctx.scale_factor,
+                        modifiers: &modifiers,
+                        state,
+                        path,
+                        handled: &mut *ctx.handled,
+                        focus_target,
+                        node_id,
+                        taffy,
+                    },
+                    logical_key,
                 );
             }
             WindowEvent::Ime(_)
                 if self.search_input.is_focused()
                     && self.route_search_event(
                         event,
-                        scale_factor,
+                        ctx.scale_factor,
                         modifiers,
                         state,
                         path,
@@ -1817,7 +1762,7 @@ impl SnippetsApp {
                         taffy,
                     ) =>
             {
-                *handled = true;
+                *ctx.handled = true;
             }
             _ => {}
         }
@@ -1828,36 +1773,16 @@ impl SnippetsApp {
     /// are never consulted. Returns `true` once a modal was open and has
     /// consumed the event (closing, copying and toasting side effects are
     /// already applied); `false` when there is no modal to route to.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "mirrors the WindowEvent-routing signature threaded through ui::widget::Widget::handle_event and route_search_event in this file — bundling it into a context struct would ripple into the shared ui widget trait, out of scope here"
-    )]
     fn handle_expand_event(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
         let Some(mut modal) = self.expand.take() else {
             return false;
         };
-        let outcome = modal.handle_event(
-            event,
-            scale_factor,
-            self.last_mouse,
-            &modifiers,
-            state,
-            path,
-            focus_target,
-            node_id,
-            taffy,
-        );
-        self.finish_expand(modal, outcome, state);
+        let outcome = modal.handle_event(event, ctx, self.last_mouse);
+        self.finish_expand(modal, outcome, ctx.state);
         true
     }
 
@@ -1885,31 +1810,21 @@ impl SnippetsApp {
     /// explicit routing rather than the normal event-tree dispatch. Returns
     /// `true` when the editor consumed a click and the caller should stop
     /// routing the event further.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "mirrors the WindowEvent-routing signature threaded through ui::widget::Widget::handle_event and route_search_event in this file — bundling it into a context struct would ripple into the shared ui widget trait, out of scope here"
-    )]
     fn route_pointer_to_search(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
         if matches!(event, WindowEvent::CursorMoved { .. }) {
             let _ = self.route_search_event(
                 event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                focus_target,
-                node_id,
-                taffy,
+                ctx.scale_factor,
+                *ctx.modifiers,
+                ctx.state,
+                ctx.path,
+                ctx.focus_target,
+                ctx.node_id,
+                ctx.taffy,
             );
         }
         if matches!(
@@ -1926,75 +1841,49 @@ impl SnippetsApp {
             && (self.search_input.is_focused() || self.search_rect.contains(self.last_mouse))
             && self.route_search_event(
                 event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                focus_target,
-                node_id,
-                taffy,
+                ctx.scale_factor,
+                *ctx.modifiers,
+                ctx.state,
+                ctx.path,
+                ctx.focus_target,
+                ctx.node_id,
+                ctx.taffy,
             )
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "mirrors the WindowEvent-routing signature threaded through ui::widget::Widget::handle_event and route_search_event in this file — bundling it into a context struct would ripple into the shared ui widget trait, out of scope here"
-    )]
-    fn handle_left_click(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_left_click(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let Some(action) = self.action_at(self.last_mouse) {
             // Clicking anywhere that isn't the search field blurs it.
             if !matches!(action, Action::FocusSearch) {
                 self.search_input.set_focus(false);
             }
             let search_click = matches!(action, Action::FocusSearch);
-            self.apply(action, state);
+            self.apply(action, ctx.state);
             if search_click {
                 let _ = self.route_search_event(
                     event,
-                    scale_factor,
-                    modifiers,
-                    state,
-                    path,
-                    focus_target,
-                    node_id,
-                    taffy,
+                    ctx.scale_factor,
+                    *ctx.modifiers,
+                    ctx.state,
+                    ctx.path,
+                    ctx.focus_target,
+                    ctx.node_id,
+                    ctx.taffy,
                 );
             }
-            *handled = true;
+            *ctx.handled = true;
         } else {
             self.search_input.set_focus(false);
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "mirrors the WindowEvent-routing signature threaded through ui::widget::Widget::handle_event and route_search_event in this file — bundling it into a context struct would ripple into the shared ui widget trait, out of scope here"
-    )]
     fn handle_keyboard_input(
         &mut self,
-        logical_key: &Key,
         event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
+        ctx: &mut ui::widget::EventCtx<'_>,
+        logical_key: &Key,
     ) {
-        let mods = modifiers.state();
+        let mods = ctx.modifiers.state();
         // Cmd/Ctrl-F focuses search; Cmd/Ctrl-N new snippet;
         // Cmd/Ctrl-C copies the open snippet.
         if (mods.control_key() || mods.super_key())
@@ -2005,19 +1894,19 @@ impl SnippetsApp {
                     self.search_input.set_focus(true);
                     self.search_input
                         .set_cursor_pos(self.search_input.value().len());
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 "n" => {
-                    self.new_snippet(state);
-                    *handled = true;
+                    self.new_snippet(ctx.state);
+                    *ctx.handled = true;
                     return;
                 }
                 "c" if !self.search_input.is_focused() => {
                     if let Some(id) = self.open {
-                        self.copy(id, state);
+                        self.copy(id, ctx.state);
                     }
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 _ => {}
@@ -2030,24 +1919,24 @@ impl SnippetsApp {
                     self.search_input.set_text("");
                     self.search_input.set_focus(false);
                     self.recompute_visible();
-                    *handled = true;
+                    *ctx.handled = true;
                 }
                 Key::Named(NamedKey::Enter) => {
                     self.search_input.set_focus(false);
-                    *handled = true;
+                    *ctx.handled = true;
                 }
                 _ => {
                     if self.route_search_event(
                         event,
-                        scale_factor,
-                        modifiers,
-                        state,
-                        path,
-                        focus_target,
-                        node_id,
-                        taffy,
+                        ctx.scale_factor,
+                        *ctx.modifiers,
+                        ctx.state,
+                        ctx.path,
+                        ctx.focus_target,
+                        ctx.node_id,
+                        ctx.taffy,
                     ) {
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                 }
             }
@@ -2060,15 +1949,15 @@ impl SnippetsApp {
         // open it dismisses the flap; otherwise it clears the search.
         if let Key::Named(NamedKey::Escape) = logical_key {
             if self.is_push_layout() && self.push.reveal() > 0.5 {
-                self.apply(Action::PushBack, state);
-                *handled = true;
+                self.apply(Action::PushBack, ctx.state);
+                *ctx.handled = true;
             } else if self.sidebar_layout() == SplitLayout::Overlay && self.sidebar_open() {
-                self.apply(Action::DismissSidebar, state);
-                *handled = true;
+                self.apply(Action::DismissSidebar, ctx.state);
+                *ctx.handled = true;
             } else if !self.search_input.value().is_empty() {
                 self.search_input.set_text("");
                 self.recompute_visible();
-                *handled = true;
+                *ctx.handled = true;
             }
         }
     }
@@ -2091,14 +1980,16 @@ impl SnippetsApp {
         let mut input_handled = false;
         self.search_input.handle_event(
             event,
-            scale_factor,
-            &modifiers,
-            state,
-            path,
-            &mut input_handled,
-            focus_target,
-            node_id,
-            taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor,
+                modifiers: &modifiers,
+                state,
+                path,
+                handled: &mut input_handled,
+                focus_target,
+                node_id,
+                taffy,
+            },
         );
         if self.search_input.take_dirty().is_some() {
             self.scroll = 0.0;
@@ -3494,14 +3385,16 @@ mod tests {
             let mut handled = false;
             app.handle_event(
                 &WindowEvent::Ime(winit::event::Ime::Commit("Grün\n  ${name}\n".into())),
-                1.0,
-                &winit::event::Modifiers::default(),
-                &mut state.doc,
-                &state.root,
-                &mut handled,
-                &mut None,
-                node,
-                &taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &winit::event::Modifiers::default(),
+                    state: &mut state.doc,
+                    path: &state.root,
+                    handled: &mut handled,
+                    focus_target: &mut None,
+                    node_id: node,
+                    taffy: &taffy,
+                },
             );
             assert!(handled);
             assert_eq!(
@@ -3530,14 +3423,18 @@ mod tests {
             handled = false;
             app.handle_event(
                 &undo_event,
-                1.0,
-                &winit::event::Modifiers::from(winit::keyboard::ModifiersState::CONTROL),
-                &mut state.doc,
-                &state.root,
-                &mut handled,
-                &mut None,
-                node,
-                &taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &winit::event::Modifiers::from(
+                        winit::keyboard::ModifiersState::CONTROL,
+                    ),
+                    state: &mut state.doc,
+                    path: &state.root,
+                    handled: &mut handled,
+                    focus_target: &mut None,
+                    node_id: node,
+                    taffy: &taffy,
+                },
             );
             assert!(
                 !handled,

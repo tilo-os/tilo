@@ -4,6 +4,7 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use crate::widget::{AppModel, ModelPath};
 use automerge::{AutoCommit, ObjId};
 use std::any::Any;
 use taffy::style_helpers::{auto, length, percent};
@@ -271,13 +272,7 @@ impl Widget for Container {
         )
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
-        if let Some(child) = &mut self.child {
-            child.sync(state, path);
-        }
-    }
-
-    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         match &mut self.child {
             Some(child) => child.update(state, path),
             None => false,
@@ -397,32 +392,11 @@ impl Widget for Container {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if let Some(child) = &mut self.child
-            && let Some(&child_node) = taffy.children(node_id).unwrap_or_default().first()
+            && let Some(&child_node) = ctx.taffy.children(ctx.node_id).unwrap_or_default().first()
         {
-            child.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                child_node,
-                taffy,
-            );
+            child.handle_event(event, &mut ctx.reborrow(ctx.path, child_node));
         }
     }
 

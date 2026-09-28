@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, mpsc};
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -19,7 +20,7 @@ use ui::widget::{Button, Card, Column, Container, Row, Scrollable, Text, Widget}
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::Fill;
-use winit::event::{Modifiers, WindowEvent};
+use winit::event::WindowEvent;
 
 use super::desktop_continuation::{self, ChoiceMode, Continuation};
 use super::folders;
@@ -2925,7 +2926,7 @@ impl Widget for ImportApp {
         Some(update)
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.poll_background();
         self.drain_commands();
         if let Some(composed) = &mut self.composed {
@@ -2933,7 +2934,7 @@ impl Widget for ImportApp {
         }
     }
 
-    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         let mut changed = self.poll_background() || self.drain_commands();
         if let Some(composed) = &mut self.composed {
             changed |= composed.update(state, path);
@@ -3004,33 +3005,12 @@ impl Widget for ImportApp {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let Some(composed) = &mut self.composed
-            && let Ok(children) = taffy.children(node_id)
+            && let Ok(children) = ctx.taffy.children(ctx.node_id)
             && let Some(&child) = children.first()
         {
-            composed.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                child,
-                taffy,
-            );
+            composed.handle_event(event, &mut ctx.reborrow(ctx.path, child));
         }
     }
 

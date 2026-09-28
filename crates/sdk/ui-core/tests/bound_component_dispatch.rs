@@ -2,6 +2,7 @@
 use automerge::ROOT;
 use std::collections::HashMap;
 use tilo_ui::bound_dispatch::{BoundDispatchError, BoundNodeMap, invoke_bound_node};
+use tilo_ui::widget::{AppModel, ModelPath};
 use tilo_ui::widget::{Button, Widget};
 
 #[allow(
@@ -494,10 +495,12 @@ impl Leaf {
     }
 }
 impl Widget for Leaf {
-    fn sync(&mut self, doc: &mut AutoCommit, _: &ObjId) {
+    fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
+        let (doc, _) = tilo_ui::doc::document(doc, path);
         self.edit(doc, "sync");
     }
-    fn update(&mut self, doc: &mut AutoCommit, _: &ObjId) -> bool {
+    fn update(&mut self, doc: &mut AppModel, path: &ModelPath) -> bool {
+        let (doc, _) = tilo_ui::doc::document(doc, path);
         self.edit(doc, "update");
         false
     }
@@ -541,21 +544,14 @@ impl Widget for Leaf {
     fn handle_event(
         &mut self,
         _: &winit::event::WindowEvent,
-        _: f64,
-        _: &winit::event::Modifiers,
-        doc: &mut AutoCommit,
-        _: &ObjId,
-        _: &mut bool,
-        _: &mut Option<taffy::NodeId>,
-        node: taffy::NodeId,
-        _: &taffy::TaffyTree<()>,
+        ctx: &mut tilo_ui::widget::EventCtx<'_>,
     ) {
         assert_eq!(
             self.layout_node,
-            Some(node),
+            Some(ctx.node_id),
             "adapter shifted event topology"
         );
-        self.edit(doc, "event");
+        self.edit(ctx.state, "event");
     }
     fn name(&self) -> &'static str {
         "Leaf"
@@ -596,9 +592,10 @@ impl Widget for Leaf {
     fn perform_action(
         &mut self,
         _: &tilo_ui::a11y::Action,
-        doc: &mut AutoCommit,
-        _: &ObjId,
+        doc: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
+        let (doc, _) = tilo_ui::doc::document(doc, path);
         self.edit(doc, "action");
         true
     }
@@ -606,9 +603,10 @@ impl Widget for Leaf {
         &mut self,
         action: &tilo_ui::a11y::Action,
         path: &[u64],
-        doc: &mut AutoCommit,
-        _: &ObjId,
+        doc: &mut AppModel,
+        doc_path: &ModelPath,
     ) -> bool {
+        let (doc, _) = tilo_ui::doc::document(doc, doc_path);
         assert_eq!(path, &[42]);
         assert_eq!(action, &tilo_ui::a11y::Action::Focus);
         self.edit(doc, "synthetic-action");
@@ -758,10 +756,10 @@ impl Widget for Root {
         )))
     }
 
-    fn sync(&mut self, d: &mut AutoCommit, p: &ObjId) {
+    fn sync(&mut self, d: &mut AppModel, p: &ModelPath) {
         self.0.sync(d, p);
     }
-    fn update(&mut self, d: &mut AutoCommit, p: &ObjId) -> bool {
+    fn update(&mut self, d: &mut AppModel, p: &ModelPath) -> bool {
         self.0.update(d, p)
     }
     fn build_layout(
@@ -788,18 +786,9 @@ impl Widget for Root {
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        scale: f64,
-        modifiers: &winit::event::Modifiers,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus: &mut Option<taffy::NodeId>,
-        node: taffy::NodeId,
-        tree: &taffy::TaffyTree<()>,
+        ctx: &mut tilo_ui::widget::EventCtx<'_>,
     ) {
-        self.0.handle_event(
-            event, scale, modifiers, doc, path, handled, focus, node, tree,
-        );
+        self.0.handle_event(event, ctx);
     }
     fn draw_with_presence(
         &mut self,
@@ -823,14 +812,16 @@ impl Widget for Root {
         self.mark("provider-create");
         vec![]
     }
-    fn activate_search_result(&mut self, _: &str, doc: &mut AutoCommit, _: &ObjId) {
+    fn activate_search_result(&mut self, _: &str, doc: &mut AppModel, path: &ModelPath) {
+        let (doc, _) = tilo_ui::doc::document(doc, path);
         assert_eq!(
             doc.get(ROOT, "marker").unwrap().unwrap().0.as_str(),
             Some(self.1.as_str())
         );
         self.mark("search-activate");
     }
-    fn on_external_event(&mut self, _: &str, doc: &mut AutoCommit, _: &ObjId) {
+    fn on_external_event(&mut self, _: &str, doc: &mut AppModel, path: &ModelPath) {
+        let (doc, _) = tilo_ui::doc::document(doc, path);
         assert_eq!(
             doc.get(ROOT, "marker").unwrap().unwrap().0.as_str(),
             Some(self.1.as_str())
@@ -1857,10 +1848,7 @@ thread_local! { static PANIC_VIEW: Cell<bool> = const { Cell::new(false) }; }
 
 struct ReplacingHost(TileHost, std::rc::Rc<Cell<bool>>);
 impl Widget for ReplacingHost {
-    fn sync(&mut self, doc: &mut AutoCommit, path: &ObjId) {
-        self.0.sync(doc, path);
-    }
-    fn update(&mut self, doc: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, doc: &mut AppModel, path: &ModelPath) -> bool {
         if self.1.replace(false) {
             self.0
                 .replace_content(tilo_ui::widget::TileContent::Notice {
@@ -1899,19 +1887,6 @@ impl Widget for ReplacingHost {
     ) {
         self.0.draw(scene, transform, text, theme, presence);
     }
-    fn handle_event(
-        &mut self,
-        _: &winit::event::WindowEvent,
-        _: f64,
-        _: &winit::event::Modifiers,
-        _: &mut AutoCommit,
-        _: &ObjId,
-        _: &mut bool,
-        _: &mut Option<taffy::NodeId>,
-        _: taffy::NodeId,
-        _: &taffy::TaffyTree<()>,
-    ) {
-    }
     fn name(&self) -> &'static str {
         "ReplacingHost"
     }
@@ -1931,7 +1906,7 @@ impl Widget for ReplacingHost {
 #[repr(transparent)]
 struct SameNameUnregisteredWrapper(Button);
 impl Widget for SameNameUnregisteredWrapper {
-    fn sync(&mut self, _: &mut AutoCommit, _: &ObjId) {}
+    fn sync(&mut self, _: &mut AppModel, _: &ModelPath) {}
     fn build_layout(
         &mut self,
         tree: &mut taffy::TaffyTree<()>,
@@ -1957,19 +1932,6 @@ impl Widget for SameNameUnregisteredWrapper {
         presence: &tilo_ui::PresenceCtx,
     ) {
         self.0.draw(scene, transform, text, theme, presence);
-    }
-    fn handle_event(
-        &mut self,
-        _: &winit::event::WindowEvent,
-        _: f64,
-        _: &winit::event::Modifiers,
-        _: &mut AutoCommit,
-        _: &ObjId,
-        _: &mut bool,
-        _: &mut Option<taffy::NodeId>,
-        _: taffy::NodeId,
-        _: &taffy::TaffyTree<()>,
-    ) {
     }
     fn name(&self) -> &str {
         self.0.name()

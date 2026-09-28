@@ -1,5 +1,5 @@
 use super::*;
-use automerge::{AutoCommit, ObjId, ROOT, ReadDoc, transaction::Transactable};
+use automerge::{AutoCommit, ROOT, ReadDoc, transaction::Transactable};
 
 /// A root that, like an app scaffolding its first run or writing its person
 /// into a shared roster, writes to the document while it syncs.
@@ -8,7 +8,8 @@ struct Upkeep {
     write: Option<&'static str>,
 }
 impl Widget for Upkeep {
-    fn sync(&mut self, doc: &mut AutoCommit, _: &ObjId) {
+    fn sync(&mut self, doc: &mut crate::widget::AppModel, path: &crate::widget::ModelPath) {
+        let (doc, _) = crate::doc::document(doc, path);
         if let Some(key) = self.write.take() {
             doc.put(ROOT, key, "upkeep").unwrap();
         }

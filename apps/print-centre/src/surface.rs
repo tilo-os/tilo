@@ -7,6 +7,7 @@ use taffy::{NodeId, TaffyTree};
 use tilo_actions::{ActionSpec, OperationKind, Resource};
 use ui::icons::Icon;
 use ui::widget::toggle_group::Segment;
+use ui::widget::{AppModel, ModelPath};
 use ui::widget::{
     Banner, Button, Card, CardGrid, Column, Container, CropSelection, Divider, Dropdown,
     IconWidget, Image, ImageCropEditor, NumberInput, PagePreview, ProgressBar, Row, ScrollAxis,
@@ -21,7 +22,7 @@ use vello::{
     Scene,
     kurbo::{Affine, Point, Rect},
 };
-use winit::event::{Modifiers, WindowEvent};
+use winit::event::WindowEvent;
 
 type El = Box<dyn Widget>;
 
@@ -634,11 +635,7 @@ impl DashboardCard {
 }
 
 impl Widget for DashboardCard {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
-        self.inner.sync(state, path);
-    }
-
-    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         self.inner.update(state, path)
     }
 
@@ -666,21 +663,8 @@ impl Widget for DashboardCard {
         self.inner.draw(scene, transform, text, theme, presence);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus: &mut Option<NodeId>,
-        node: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        self.inner.handle_event(
-            event, scale, modifiers, state, path, handled, focus, node, taffy,
-        );
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        self.inner.handle_event(event, ctx);
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -3274,10 +3258,7 @@ impl Default for PrintCentre {
     }
 }
 impl Widget for PrintCentre {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
-        self.inner.sync(state, path);
-    }
-    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         if self.poll_picker() {
             self.inner.sync(state, path);
             return true;
@@ -3325,21 +3306,8 @@ impl Widget for PrintCentre {
     ) {
         self.inner.draw(scene, transform, text, theme, presence);
     }
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus: &mut Option<NodeId>,
-        node: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        self.inner.handle_event(
-            event, scale, modifiers, state, path, handled, focus, node, taffy,
-        );
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        self.inner.handle_event(event, ctx);
     }
     fn children(&self) -> Vec<&dyn Widget> {
         vec![self.inner.as_ref()]

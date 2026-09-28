@@ -108,4 +108,27 @@ fn desktop_packages_ship_one_executable_under_a_signed_target() {
             [module]
         );
     }
+
+    let output = tilo_app(
+        &app,
+        &cargo,
+        &["package", "--static", "--arch", "aarch64", "--json"],
+    );
+    assert!(
+        output.status.success(),
+        "tilo: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let reader = std::io::BufReader::new(std::fs::File::open(app.join("dist/notes.tapp")).unwrap());
+    let read = tilo_app_package::tapp::read(reader, &mut tilo_app_package::DiscardBlobs).unwrap();
+    let manifest = &read.meta.manifest;
+    assert!(manifest.target.is_none());
+    assert_eq!(
+        manifest.package.isa,
+        tilo_app_package::manifest::IsaRequirements {
+            x86_64: None,
+            aarch64: Some(tilo_app_package::manifest::AArch64Level::Armv8A),
+        },
+        "a Tilo OS package declares the one architecture it carries"
+    );
 }

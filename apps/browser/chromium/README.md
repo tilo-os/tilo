@@ -44,7 +44,7 @@ The limit is 64 MiB per packet, with dimensions 1–8192 and checked frame sizes
 
 JSON commands use `op`; events use `event`. Supported operations are navigate,
 back, forward, reload, stop, resize, focus, mouse_move, mouse_button, scroll,
-key, scripts, filter_rules, clear_data, devtools, shutdown. `filter_rules` takes
+key, scripts, filter_rules, clear_data, devtools, page, shutdown. `filter_rules` takes
 `rules` text and `enabled`: a boolean replaces the toggle, while null preserves
 the current toggle. Compilation failure retains the previous rules and reports
 an error. The shared protocol specification is in the browser implementation
@@ -109,6 +109,30 @@ and Retina frame dimensions/pointer coordinates:
 ```sh
 python3 apps/browser/chromium/tests/native_regressions.py \
   'target/chromium/Browser Engine.app/Contents/MacOS/tilo-chromium-host'
+```
+
+## Page actions
+
+`page` reads or operates the main document for the browser's `browser.page`
+actions and answers with exactly one `page_result` carrying its `request_id`.
+`action` is `outline`, `click`, `fill`, `select`, `press` or `submit`.
+`src/page_automation.js` runs in a DevTools-created isolated world of the main
+frame: it shares the DOM, but page script cannot see or call it (the regression
+suite checks this from the main world). An outline lists landmarks, headings,
+text and interactive elements; interactive elements carry refs
+`d<document>e<element>`. Documents are numbered across the host's tabs, so a ref
+never resolves in a later document or another tab. Password and card-number
+values are reported by length only. Clicks and keys go through CEF's own input
+path, so pages see trusted events with user activation; fill, select and submit
+edit the DOM and dispatch the page's input, change and submit events. An action
+that starts a main-frame navigation answers once it loads (up to ten seconds),
+with `navigated` set and the new URL.
+
+Not yet covered: cross-origin and same-origin iframe content (listed as
+`iframe` lines), file inputs, and drag gestures.
+
+```sh
+python3 apps/browser/chromium/tests/page_actions.py target/chromium/tilo-chromium-host
 ```
 
 ## Native blocking

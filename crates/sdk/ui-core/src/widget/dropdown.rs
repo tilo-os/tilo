@@ -20,6 +20,7 @@
 //! container routes all events to it exclusively — how the out-of-layout
 //! list becomes hit-testable and click-outside dismissal works.
 
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
 use crate::widget::TaffyTreeExt;
@@ -707,7 +708,8 @@ impl Widget for Dropdown {
         }
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+        let (state, root) = crate::doc::document(state, root);
         if let Some(binding) = &mut self.local_state {
             if let Some(selected) = binding.poll() {
                 self.selected = selected;
@@ -1003,18 +1005,7 @@ impl Widget for Dropdown {
         scene.pop_layer();
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         // Disabled: reject all input — won't open, no selection, no hover.
         if !self.effectively_enabled() {
             return;
@@ -1034,13 +1025,13 @@ impl Widget for Dropdown {
                 self.highlight = 0;
                 self.scroll = 0.0;
             }
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let pos = Point::new(position.x / scale_factor, position.y / scale_factor);
-                self.on_cursor_moved(pos, handled);
+                let pos = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.on_cursor_moved(pos, ctx.handled);
             }
             // The pointer left the window: no `CursorMoved` follows, so the
             // resting hover veneer would otherwise stay painted.
@@ -1052,10 +1043,16 @@ impl Widget for Dropdown {
                 button: MouseButton::Left,
                 ..
             } => {
-                self.on_left_press(state, root, handled, focus_target, node_id);
+                self.on_left_press(
+                    ctx.state,
+                    ctx.path,
+                    ctx.handled,
+                    ctx.focus_target,
+                    ctx.node_id,
+                );
             }
             WindowEvent::MouseWheel { delta, .. } if self.open => {
-                self.on_wheel(delta, handled);
+                self.on_wheel(delta, ctx.handled);
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -1065,7 +1062,7 @@ impl Widget for Dropdown {
                     },
                 ..
             } if self.is_focused => {
-                self.on_key(event, ke, *modifiers, state, root, handled);
+                self.on_key(event, ke, *ctx.modifiers, ctx.state, ctx.path, ctx.handled);
             }
             _ => {}
         }
@@ -1202,10 +1199,11 @@ impl Widget for Dropdown {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut AutoCommit,
-        root: &ObjId,
+        state: &mut AppModel,
+        root: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
+        let (state, root) = crate::doc::document(state, root);
         if !self.effectively_enabled() {
             return false;
         }
@@ -1294,14 +1292,16 @@ mod tests {
         let mut focus_target = None;
         dd.handle_event(
             ev,
-            1.0,
-            &Modifiers::default(),
-            doc,
-            root,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &Modifiers::default(),
+                state: doc,
+                path: root,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         handled
     }

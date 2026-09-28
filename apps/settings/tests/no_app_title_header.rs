@@ -21,60 +21,22 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use std::collections::HashMap;
-
 use settings::SettingsApp;
 use settings::categories::Category;
-use taffy::{NodeId, TaffyTree};
-use ui::text_render::TextRenderer;
+use ui::headless::Framed;
 use ui::widget::Widget;
 use ui::{AppWidget, IconDescriptor};
-use vello::kurbo::Point;
 
 const W: f32 = 1200.0;
 const H: f32 = 760.0;
 
-fn lay_out(app: &mut SettingsApp) {
-    let theme = ui::Theme::dark();
-    let mut doc = automerge::AutoCommit::new();
-    let root = automerge::ROOT;
-    app.sync(&mut doc, &root);
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    let node = app.build_layout(&mut taffy, &theme, &mut node_map);
-    let outer = taffy
-        .new_with_children(
-            taffy::Style {
-                size: taffy::Size {
-                    width: taffy::Dimension::length(W),
-                    height: taffy::Dimension::length(H),
-                },
-                ..Default::default()
-            },
-            &[node],
-        )
-        .unwrap();
-    app.sync(&mut doc, &root);
-    let measure_map = node_map.clone();
-    let mut tr = TextRenderer::new();
-    taffy
-        .compute_layout_with_measure(
-            outer,
-            taffy::Size {
-                width: taffy::AvailableSpace::Definite(W),
-                height: taffy::AvailableSpace::Definite(H),
-            },
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = measure_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, &mut tr) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
-        )
-        .unwrap();
-    app.apply_layout(&taffy, node, Point::ORIGIN);
-    app.sync(&mut doc, &root);
+fn lay_out(app: SettingsApp) -> Framed<SettingsApp> {
+    Framed::new(
+        ui::State::new(),
+        app,
+        ui::headless::viewport((W, H)),
+        ui::Theme::dark(),
+    )
 }
 
 /// Every accessible name rendered anywhere in the composed tree.
@@ -118,8 +80,8 @@ fn app_title_lives_only_in_the_window_chrome() {
             Category::RegionFormats,
             Category::About,
         ] {
-            let mut app = config.app().with_category(cat);
-            lay_out(&mut app);
+            let app = config.app().with_category(cat);
+            let app = lay_out(app);
             let names = rendered_names(&app);
 
             assert!(

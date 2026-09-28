@@ -348,7 +348,6 @@ mod tests {
     }
 
     impl Widget for Placed {
-        fn sync(&mut self, _s: &mut automerge::AutoCommit, _p: &automerge::ObjId) {}
         fn build_layout(
             &mut self,
             taffy: &mut TaffyTree<()>,
@@ -376,7 +375,7 @@ mod tests {
             _: &crate::presence::PresenceCtx,
         ) {
         }
-        fn handle_event_ctx(
+        fn handle_event(
             &mut self,
             _: &winit::event::WindowEvent,
             _: &mut crate::widget::EventCtx<'_>,

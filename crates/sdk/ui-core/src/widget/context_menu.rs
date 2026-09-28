@@ -6,7 +6,7 @@
 //! Callers push `MenuItem::action(label, fn)` and optional
 //! `MenuItem::separator()` entries, then call `open_at` on right-click.
 
-use automerge::{AutoCommit, ObjId};
+use crate::widget::{AppModel, ModelPath};
 use std::sync::Arc;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -767,8 +767,6 @@ fn label_inset(theme: &Theme) -> f64 {
 // an owner that fills its rows for a target, and only that owner can open it
 // again. Owners report `overlay_state` from their own `Widget::open_overlay`.
 impl Widget for ContextMenu {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -997,24 +995,14 @@ impl Widget for ContextMenu {
         self.draw_scroll_affordance(scene, transform, theme);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if !self.open {
             return;
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_cursor =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.hovered = self
                     .item_at([self.last_cursor.x, self.last_cursor.y])
                     .filter(|index| self.items[*index].is_enabled());
@@ -1026,13 +1014,13 @@ impl Widget for ContextMenu {
             {
                 let amount = match delta {
                     MouseScrollDelta::LineDelta(_, y) => -f64::from(*y) * self.row_height(),
-                    MouseScrollDelta::PixelDelta(position) => -position.y / scale_factor,
+                    MouseScrollDelta::PixelDelta(position) => -position.y / ctx.scale_factor,
                 };
                 self.scroll_by(amount);
                 self.hovered = self
                     .item_at([self.last_cursor.x, self.last_cursor.y])
                     .filter(|index| self.items[*index].is_enabled());
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -1045,32 +1033,32 @@ impl Widget for ContextMenu {
             } => match key {
                 Key::Named(NamedKey::Escape) => {
                     self.close();
-                    *handled = true;
+                    *ctx.handled = true;
                 }
                 Key::Named(NamedKey::ArrowDown) => {
                     self.move_hover(1);
-                    *handled = true;
+                    *ctx.handled = true;
                 }
                 Key::Named(NamedKey::ArrowUp) => {
                     self.move_hover(-1);
-                    *handled = true;
+                    *ctx.handled = true;
                 }
                 Key::Named(NamedKey::Enter) => {
                     if let Some(idx) = self.hovered {
                         self.click_item(idx);
                     }
-                    *handled = true;
+                    *ctx.handled = true;
                 }
                 _ => {}
             },
             WindowEvent::MouseWheel { delta, .. } if self.bounds.is_some() => {
                 let delta = match delta {
                     MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * self.row_height,
-                    MouseScrollDelta::PixelDelta(p) => p.y / scale_factor,
+                    MouseScrollDelta::PixelDelta(p) => p.y / ctx.scale_factor,
                 };
                 self.scroll_offset = (self.scroll_offset - delta).clamp(0.0, self.max_scroll());
                 self.hovered = self.item_at([self.last_cursor.x, self.last_cursor.y]);
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -1079,18 +1067,18 @@ impl Widget for ContextMenu {
             } => {
                 if let Some(idx) = self.item_at([self.last_cursor.x, self.last_cursor.y]) {
                     self.click_item(idx);
-                    *handled = true;
+                    *ctx.handled = true;
                 } else {
                     // An open menu is modal-ish: swallow the dismiss click
                     // so it doesn't also activate whatever sits underneath.
                     self.close();
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::Touch(touch) => {
                 let point = Point::new(
-                    touch.location.x / scale_factor,
-                    touch.location.y / scale_factor,
+                    touch.location.x / ctx.scale_factor,
+                    touch.location.y / ctx.scale_factor,
                 );
                 match touch.phase {
                     winit::event::TouchPhase::Started if self.active_touch.is_none() => {
@@ -1099,14 +1087,14 @@ impl Widget for ContextMenu {
                         self.hovered = self
                             .item_at([point.x, point.y])
                             .filter(|index| self.items[*index].is_enabled());
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                     winit::event::TouchPhase::Moved if self.active_touch == Some(touch.id) => {
                         self.last_cursor = point;
                         self.hovered = self
                             .item_at([point.x, point.y])
                             .filter(|index| self.items[*index].is_enabled());
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                     winit::event::TouchPhase::Ended if self.active_touch == Some(touch.id) => {
                         self.active_touch = None;
@@ -1115,12 +1103,12 @@ impl Widget for ContextMenu {
                         } else {
                             self.close();
                         }
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                     winit::event::TouchPhase::Cancelled if self.active_touch == Some(touch.id) => {
                         self.active_touch = None;
                         self.close();
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                     _ => {}
                 }
@@ -1205,8 +1193,8 @@ impl Widget for ContextMenu {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         if !self.open || !matches!(action, crate::a11y::Action::Activate) {
             return false;
@@ -1303,6 +1291,7 @@ mod a11y_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::AutoCommit;
     use std::collections::HashMap;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU32, Ordering};
@@ -1401,14 +1390,16 @@ mod tests {
         let root = automerge::ROOT;
         m.handle_event(
             event,
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &winit::event::Modifiers::default(),
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         handled
     }

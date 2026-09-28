@@ -2959,7 +2959,6 @@ mod legacy_owner_routing_tests {
     }
 
     impl Widget for OwnerProbe {
-        fn sync(&mut self, _: &mut automerge::AutoCommit, _: &automerge::ObjId) {}
         fn build_layout(
             &mut self,
             tree: &mut taffy::TaffyTree<()>,
@@ -2978,19 +2977,6 @@ mod legacy_owner_routing_tests {
             _: &mut TextRenderer,
             _: &Theme,
             _: &PresenceCtx,
-        ) {
-        }
-        fn handle_event(
-            &mut self,
-            _: &WindowEvent,
-            _: f64,
-            _: &winit::event::Modifiers,
-            _: &mut automerge::AutoCommit,
-            _: &automerge::ObjId,
-            _: &mut bool,
-            _: &mut Option<NodeId>,
-            _: NodeId,
-            _: &taffy::TaffyTree<()>,
         ) {
         }
         fn name(&self) -> &'static str {
@@ -3015,9 +3001,10 @@ mod legacy_owner_routing_tests {
             &mut self,
             target: &str,
             action: &crate::a11y::Action,
-            doc: &mut automerge::AutoCommit,
-            _: &automerge::ObjId,
+            doc: &mut crate::widget::AppModel,
+            path: &crate::widget::ModelPath,
         ) -> bool {
+            let (doc, _) = crate::doc::document(doc, path);
             if target != "owner:named" {
                 return false;
             }
@@ -3035,9 +3022,10 @@ mod legacy_owner_routing_tests {
             &mut self,
             action: &crate::a11y::Action,
             keys: &[u64],
-            doc: &mut automerge::AutoCommit,
-            _: &automerge::ObjId,
+            doc: &mut crate::widget::AppModel,
+            path: &crate::widget::ModelPath,
         ) -> bool {
+            let (doc, _) = crate::doc::document(doc, path);
             if keys != [7] || !matches!(action, crate::a11y::Action::Activate) {
                 return false;
             }

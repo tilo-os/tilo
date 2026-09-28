@@ -433,35 +433,19 @@ fn read_bounded(path: &Path) -> std::io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
-/// Write `bytes` to `dir/name` atomically: a fresh temp file, fsync, rename
-/// over the target, fsync the directory. `public` selects 0644 over 0600.
+/// Write `bytes` to `dir/name` durably and atomically. `public` selects 0644
+/// over 0600.
 pub fn write_atomic(dir: &Path, name: &str, bytes: &[u8], public: bool) -> std::io::Result<()> {
-    use std::io::Write;
-    let temp = dir.join(format!(".{name}.{}.tmp", super::random_guid()));
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
+    let path = dir.join(name);
     #[cfg(unix)]
     {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(if public { 0o644 } else { 0o600 });
-        options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+        atomic_file::write_with_mode(&path, bytes, if public { 0o644 } else { 0o600 })
     }
     #[cfg(not(unix))]
-    let _ = public;
-    let result = (|| {
-        let mut file = options.open(&temp)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
-        drop(file);
-        std::fs::rename(&temp, dir.join(name))?;
-        #[cfg(unix)]
-        std::fs::File::open(dir)?.sync_all()?;
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&temp);
+    {
+        let _ = public;
+        atomic_file::write(&path, bytes)
     }
-    result
 }
 
 #[cfg(unix)]

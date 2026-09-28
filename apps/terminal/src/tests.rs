@@ -379,14 +379,16 @@ fn send_left_press(widget: &mut TerminalWidget, doc: &mut AutoCommit) {
     };
     widget.handle_event(
         &ev,
-        1.0,
-        &modifiers,
-        doc,
-        &automerge::ROOT,
-        &mut handled,
-        &mut focus,
-        node,
-        &taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &modifiers,
+            state: doc,
+            path: &automerge::ROOT,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: node,
+            taffy: &taffy,
+        },
     );
 }
 
@@ -405,14 +407,16 @@ fn send_left_release(widget: &mut TerminalWidget, doc: &mut AutoCommit) {
     };
     widget.handle_event(
         &ev,
-        1.0,
-        &modifiers,
-        doc,
-        &automerge::ROOT,
-        &mut handled,
-        &mut focus,
-        node,
-        &taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &modifiers,
+            state: doc,
+            path: &automerge::ROOT,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: node,
+            taffy: &taffy,
+        },
     );
 }
 
@@ -431,14 +435,16 @@ fn send_cursor_move(widget: &mut TerminalWidget, doc: &mut AutoCommit, x: f64, y
     };
     widget.handle_event(
         &ev,
-        1.0,
-        &modifiers,
-        doc,
-        &automerge::ROOT,
-        &mut handled,
-        &mut focus,
-        node,
-        &taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &modifiers,
+            state: doc,
+            path: &automerge::ROOT,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: node,
+            taffy: &taffy,
+        },
     );
 }
 
@@ -467,14 +473,16 @@ fn send_mouse_button_mods(
     };
     widget.handle_event(
         &ev,
-        1.0,
-        &modifiers,
-        doc,
-        &automerge::ROOT,
-        &mut handled,
-        &mut focus,
-        taffy::NodeId::new(0),
-        &taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &modifiers,
+            state: doc,
+            path: &automerge::ROOT,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: taffy::NodeId::new(0),
+            taffy: &taffy,
+        },
     );
 }
 
@@ -486,14 +494,16 @@ fn send_focus(widget: &mut TerminalWidget, doc: &mut AutoCommit, focused: bool) 
     let taffy = taffy::TaffyTree::<()>::new();
     widget.handle_event(
         &WindowEvent::Focused(focused),
-        1.0,
-        &Modifiers::default(),
-        doc,
-        &automerge::ROOT,
-        &mut handled,
-        &mut focus,
-        taffy::NodeId::new(0),
-        &taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &Modifiers::default(),
+            state: doc,
+            path: &automerge::ROOT,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: taffy::NodeId::new(0),
+            taffy: &taffy,
+        },
     );
 }
 
@@ -570,14 +580,16 @@ fn send_key_with_modifiers(
     };
     widget.handle_event(
         &win_ev,
-        1.0,
-        &modifiers,
-        doc,
-        &automerge::ROOT,
-        &mut handled,
-        &mut focus,
-        node,
-        &taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &modifiers,
+            state: doc,
+            path: &automerge::ROOT,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: node,
+            taffy: &taffy,
+        },
     );
 }
 
@@ -3045,14 +3057,16 @@ fn ime_and_accessibility_expose_terminal_semantics() {
         let taffy = taffy::TaffyTree::<()>::new();
         w.handle_event(
             &WindowEvent::Ime(winit::event::Ime::Commit("漢字".into())),
-            1.0,
-            &Modifiers::default(),
-            &mut doc,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus,
-            taffy::NodeId::new(0),
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &Modifiers::default(),
+                state: &mut doc,
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: taffy::NodeId::new(0),
+                taffy: &taffy,
+            },
         );
 
         assert!(handled, "focused terminal consumes an IME commit");
@@ -4089,14 +4103,16 @@ fn send_left_press_mods(widget: &mut TerminalWidget, doc: &mut AutoCommit, shift
     };
     widget.handle_event(
         &ev,
-        1.0,
-        &modifiers,
-        doc,
-        &automerge::ROOT,
-        &mut handled,
-        &mut focus,
-        node,
-        &taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &modifiers,
+            state: doc,
+            path: &automerge::ROOT,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: node,
+            taffy: &taffy,
+        },
     );
 }
 
@@ -4116,14 +4132,16 @@ fn send_middle_press(widget: &mut TerminalWidget, doc: &mut AutoCommit) {
     };
     widget.handle_event(
         &ev,
-        1.0,
-        &modifiers,
-        doc,
-        &automerge::ROOT,
-        &mut handled,
-        &mut focus,
-        node,
-        &taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &modifiers,
+            state: doc,
+            path: &automerge::ROOT,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: node,
+            taffy: &taffy,
+        },
     );
 }
 
@@ -4315,14 +4333,16 @@ fn mouse_selection_gestures_select_extend_and_stay_anchored() {
         };
         widget.handle_event(
             &ev,
-            1.0,
-            &modifiers,
-            &mut doc,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &modifiers,
+                state: &mut doc,
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
 
         // The highlight span exists in the SAME event that moved the pointer —

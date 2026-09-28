@@ -47,6 +47,10 @@ pub const COLLAB_SOCKET: &str = "collab.sock";
 pub const IDENTITY_SOCKET: &str = "identity.sock";
 pub const BLOB_SOCKET: &str = "blobs.sock";
 
+/// Joins a room another host governs from an invitation, answering the
+/// joined room's id.
+pub type Joiner = std::sync::Arc<dyn Fn(&str) -> io::Result<String> + Send + Sync>;
+
 /// One running service session over a profile: the host's identity,
 /// collaboration and content services.
 pub trait RuntimeServices: Sized {
@@ -87,6 +91,12 @@ pub trait RuntimeServices: Sized {
     /// # Errors
     /// Returns an error when the action broker is unavailable.
     fn action_host(&self) -> io::Result<Self::ActionHost>;
+
+    /// How this host joins rooms other hosts govern; `None` for a host
+    /// that joins through its own surfaces.
+    fn joiner(&self) -> Option<Joiner> {
+        None
+    }
 
     /// Spawn `command` as `app_id`, connected to this session's services.
     /// # Errors

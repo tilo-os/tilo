@@ -5,6 +5,7 @@ use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::{ActionEmitter, ControlBindingKind, ControlBindingMetadata};
+use crate::widget::{AppModel, ModelPath};
 use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -519,7 +520,8 @@ impl Widget for Toggle {
         self.is_hovered &= environment.supports_hover();
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+        let (state, root) = crate::doc::document(state, root);
         if let Some(binding) = &mut self.local_state {
             if let Some(checked) = binding.poll() {
                 self.is_checked = checked;
@@ -594,28 +596,18 @@ impl Widget for Toggle {
         );
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if !self.effectively_enabled() {
             return;
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let logical_pos = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let logical_pos =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 let hover = self.rect.contains(logical_pos);
                 if hover != self.is_hovered {
                     self.is_hovered = hover;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseInput {
@@ -623,9 +615,9 @@ impl Widget for Toggle {
                 button: MouseButton::Left,
                 ..
             } if self.is_hovered && *element_state == ElementState::Pressed => {
-                *handled = true;
-                *focus_target = Some(node_id);
-                self.commit_user_toggle(state, root);
+                *ctx.handled = true;
+                *ctx.focus_target = Some(ctx.node_id);
+                self.commit_user_toggle(ctx.state, ctx.path);
             }
             _ => {}
         }
@@ -661,10 +653,11 @@ impl Widget for Toggle {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
+        let (state, path) = crate::doc::document(state, path);
         if !self.effectively_enabled() {
             return false;
         }
@@ -1149,14 +1142,16 @@ mod tests {
                     device_id: device,
                     position: (10.0, 10.0).into(),
                 },
-                1.0,
-                &mods,
-                &mut doc,
-                &root,
-                &mut handled,
-                &mut focus,
-                node,
-                &tree,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &mods,
+                    state: &mut doc,
+                    path: &root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &tree,
+                },
             );
             t.handle_event(
                 &WindowEvent::MouseInput {
@@ -1164,14 +1159,16 @@ mod tests {
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                 },
-                1.0,
-                &mods,
-                &mut doc,
-                &root,
-                &mut handled,
-                &mut focus,
-                node,
-                &tree,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &mods,
+                    state: &mut doc,
+                    path: &root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &tree,
+                },
             );
 
             assert!(focus.is_none(), "disabled toggle must not request focus");
