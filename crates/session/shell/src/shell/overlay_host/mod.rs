@@ -22753,8 +22753,26 @@ impl ShellOverlayHost {
                         "a11y-speaker-playing-on",
                         &[("group", session.name.as_str().into())],
                     ),
-                    if session.inbound {
-                        t_args(
+                    match session.status() {
+                        crate::shell::speaker_group_runtime::SpeakerSessionStatus::ClockFailed(
+                            reason,
+                        ) => t_args(
+                            "qs-devices-speaker-clock-failed",
+                            &[
+                                ("count", session.failed_members.into()),
+                                ("reason", t(reason.message_key()).into()),
+                            ],
+                        ),
+                        crate::shell::speaker_group_runtime::SpeakerSessionStatus::SyncingClocks => {
+                            t_args(
+                                "qs-devices-speaker-syncing",
+                                &[
+                                    ("playing", session.playing_members.into()),
+                                    ("syncing", session.syncing_members.into()),
+                                ],
+                            )
+                        }
+                        _ if session.inbound => t_args(
                             "qs-devices-speaker-for",
                             &[(
                                 "peer",
@@ -22764,20 +22782,22 @@ impl ShellOverlayHost {
                                     .unwrap_or_else(|| t("qs-devices-another-device"))
                                     .into(),
                             )],
-                        )
-                    } else if session.waiting_members > 0 {
-                        t_args(
-                            "qs-devices-speaker-connecting",
-                            &[
-                                ("playing", session.playing_members.into()),
-                                ("waiting", session.waiting_members.into()),
-                            ],
-                        )
-                    } else {
-                        t_args(
-                            "qs-devices-speakers-playing",
-                            &[("count", session.playing_members.into())],
-                        )
+                        ),
+                        crate::shell::speaker_group_runtime::SpeakerSessionStatus::Connecting => {
+                            t_args(
+                                "qs-devices-speaker-connecting",
+                                &[
+                                    ("playing", session.playing_members.into()),
+                                    ("waiting", session.waiting_members.into()),
+                                ],
+                            )
+                        }
+                        crate::shell::speaker_group_runtime::SpeakerSessionStatus::Playing => {
+                            t_args(
+                                "qs-devices-speakers-playing",
+                                &[("count", session.playing_members.into())],
+                            )
+                        }
                     },
                     ui::icons::Icon::Volume2,
                     true,
@@ -22856,6 +22876,16 @@ impl ShellOverlayHost {
                         crate::shell::remote_audio::RemoteAudioPhase::AwaitingConsent => {
                             t_args("qs-devices-audio-awaiting", &[("peer", peer.into())])
                         }
+                        crate::shell::remote_audio::RemoteAudioPhase::SyncingClock => {
+                            t_args("qs-devices-audio-syncing", &[("peer", peer.into())])
+                        }
+                        crate::shell::remote_audio::RemoteAudioPhase::ClockFailed(reason) => t_args(
+                            "qs-devices-audio-clock-failed",
+                            &[
+                                ("peer", peer.into()),
+                                ("reason", t(reason.message_key()).into()),
+                            ],
+                        ),
                         crate::shell::remote_audio::RemoteAudioPhase::Streaming => {
                             t_args("qs-devices-audio-streaming", &[("peer", peer.into())])
                         }
