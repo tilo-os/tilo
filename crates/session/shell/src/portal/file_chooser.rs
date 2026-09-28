@@ -60,10 +60,6 @@ impl FileChooserBackend {
 #[cfg(target_os = "linux")]
 impl FileChooserBackend {
     /// `OpenFile` — request one or more existing files.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "argument list mirrors the fixed org.freedesktop.impl.portal.FileChooser.OpenFile D-Bus signature"
-    )]
     async fn open_file(
         &self,
         #[zbus(signal_emitter)] _ctx: SignalEmitter<'_>,
@@ -90,10 +86,6 @@ impl FileChooserBackend {
     }
 
     /// `SaveFile` — request a destination for one new file.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "argument list mirrors the fixed org.freedesktop.impl.portal.FileChooser.SaveFile D-Bus signature"
-    )]
     async fn save_file(
         &self,
         #[zbus(signal_emitter)] _ctx: SignalEmitter<'_>,
@@ -126,10 +118,6 @@ impl FileChooserBackend {
     }
 
     /// `SaveFiles` — request a folder + multiple destination filenames.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "argument list mirrors the fixed org.freedesktop.impl.portal.FileChooser.SaveFiles D-Bus signature"
-    )]
     async fn save_files(
         &self,
         #[zbus(signal_emitter)] _ctx: SignalEmitter<'_>,
