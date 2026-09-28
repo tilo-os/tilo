@@ -226,17 +226,16 @@ fn logind_set_brightness(name: &str, raw: u32) -> Result<(), String> {
     let name = name.to_owned();
     crate::block_on(async move {
         let cached = SYSTEM_BUS.lock().ok().and_then(|bus| bus.clone());
-        let bus = match cached {
-            Some(bus) => bus,
-            None => {
-                let bus = zbus::Connection::system()
-                    .await
-                    .map_err(|e| format!("cannot reach the system bus: {e}"))?;
-                if let Ok(mut slot) = SYSTEM_BUS.lock() {
-                    *slot = Some(bus.clone());
-                }
-                bus
+        let bus = if let Some(bus) = cached {
+            bus
+        } else {
+            let bus = zbus::Connection::system()
+                .await
+                .map_err(|e| format!("cannot reach the system bus: {e}"))?;
+            if let Ok(mut slot) = SYSTEM_BUS.lock() {
+                *slot = Some(bus.clone());
             }
+            bus
         };
         bus.call_method(
             Some("org.freedesktop.login1"),
