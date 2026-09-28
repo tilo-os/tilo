@@ -22,7 +22,7 @@ use std::time::{Duration, Instant, SystemTime};
 use anyhow::{Context, Result, bail};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher as _};
 
-pub mod android;
+pub mod capability_usage;
 pub mod ci;
 mod dev_reload;
 pub mod examples;

@@ -479,6 +479,17 @@ pub fn lint_app(app_dir: &Path) -> Result<PortabilityReport> {
     })
 }
 
+/// The app's shipped module trees (library and binaries), test items
+/// removed, for other checks that read the same code as the lint.
+///
+/// # Errors
+///
+/// When the Cargo manifest or a reachable source file cannot be read or parsed.
+pub(crate) fn shipped_sources(app_dir: &Path) -> Result<Vec<(PathBuf, TokenStream)>> {
+    let cargo = CargoFacts::read(app_dir, rules()?)?;
+    shipped_modules(&cargo.roots(app_dir))
+}
+
 /// Every Tilo app that is a member of the workspace containing `start`.
 ///
 /// # Errors
@@ -789,7 +800,7 @@ fn internal_dependency(
 }
 
 /// `pattern` matches `text`, where `*` matches any run of characters.
-fn wildcard(pattern: &str, text: &str) -> bool {
+pub(crate) fn wildcard(pattern: &str, text: &str) -> bool {
     let mut parts = pattern.split('*');
     let Some(first) = parts.next() else {
         return text.is_empty();
@@ -824,7 +835,7 @@ fn header_line(text: &str, target: &str) -> usize {
 }
 
 /// The workspace root above `app_dir` and its `[workspace.dependencies]`.
-fn workspace(app_dir: &Path) -> (Option<PathBuf>, toml::Table) {
+pub(crate) fn workspace(app_dir: &Path) -> (Option<PathBuf>, toml::Table) {
     for dir in app_dir.ancestors().skip(1) {
         let Ok(source) = std::fs::read_to_string(dir.join("Cargo.toml")) else {
             continue;
@@ -850,7 +861,7 @@ fn table_path(value: Option<&toml::Value>) -> Option<PathBuf> {
 
 /// Dependency tables that reach shipped code: normal and build dependencies,
 /// including target-specific ones. Dev-dependencies only reach tests.
-fn shipped_dependency_tables(manifest: &toml::Table) -> Vec<(String, &toml::Table)> {
+pub(crate) fn shipped_dependency_tables(manifest: &toml::Table) -> Vec<(String, &toml::Table)> {
     let mut tables = Vec::new();
     for name in ["dependencies", "build-dependencies"] {
         if let Some(table) = manifest.get(name).and_then(toml::Value::as_table) {
@@ -870,7 +881,7 @@ fn shipped_dependency_tables(manifest: &toml::Table) -> Vec<(String, &toml::Tabl
 }
 
 /// The line of `key` inside `[table]` (or of a `[table.key]` header).
-fn manifest_key_line(text: &str, table: &str, key: &str) -> usize {
+pub(crate) fn manifest_key_line(text: &str, table: &str, key: &str) -> usize {
     let normalize = |header: &str| -> String {
         header
             .chars()
@@ -906,7 +917,7 @@ fn manifest_key_line(text: &str, table: &str, key: &str) -> usize {
 
 /// Every file of the module trees rooted at `roots` with its test-only items
 /// removed, skipping modules that only exist under `cfg(test)`.
-fn shipped_modules(roots: &[PathBuf]) -> Result<Vec<(PathBuf, TokenStream)>> {
+pub(crate) fn shipped_modules(roots: &[PathBuf]) -> Result<Vec<(PathBuf, TokenStream)>> {
     let mut seen = BTreeSet::new();
     let mut modules = Vec::new();
     let mut queue: VecDeque<(PathBuf, bool)> =
@@ -1156,7 +1167,7 @@ fn item_test_only(item: &syn::Item) -> bool {
     test_only(attrs)
 }
 
-fn is_path_sep(tokens: &[TokenTree], index: usize) -> bool {
+pub(crate) fn is_path_sep(tokens: &[TokenTree], index: usize) -> bool {
     matches!(
         (tokens.get(index), tokens.get(index.saturating_add(1))),
         (Some(TokenTree::Punct(first)), Some(TokenTree::Punct(second)))
@@ -1164,13 +1175,13 @@ fn is_path_sep(tokens: &[TokenTree], index: usize) -> bool {
     )
 }
 
-fn ident_is(tokens: &[TokenTree], index: usize, name: &str) -> bool {
+pub(crate) fn ident_is(tokens: &[TokenTree], index: usize, name: &str) -> bool {
     matches!(tokens.get(index), Some(TokenTree::Ident(ident)) if ident == name)
 }
 
 /// Whether the identifier at `index` continues a path or field access, so it
 /// is not a crate name.
-fn continues_path(tokens: &[TokenTree], index: usize) -> bool {
+pub(crate) fn continues_path(tokens: &[TokenTree], index: usize) -> bool {
     let Some(before) = index.checked_sub(1) else {
         return false;
     };
@@ -1211,14 +1222,14 @@ fn contains_ident(stream: &TokenStream, names: &[&str]) -> bool {
 }
 
 /// Whether a `use std::{...}` group names `module` at its top level.
-fn group_names(stream: &TokenStream, module: &str) -> bool {
+pub(crate) fn group_names(stream: &TokenStream, module: &str) -> bool {
     let tokens: Vec<TokenTree> = stream.clone().into_iter().collect();
     (0..tokens.len())
         .any(|index| ident_is(&tokens, index, module) && !continues_path(&tokens, index))
 }
 
 /// Whether the token at `index` follows a `.` (a method or field, not a path).
-fn follows_dot(tokens: &[TokenTree], index: usize) -> bool {
+pub(crate) fn follows_dot(tokens: &[TokenTree], index: usize) -> bool {
     index
         .checked_sub(1)
         .and_then(|before| tokens.get(before))
@@ -1226,7 +1237,7 @@ fn follows_dot(tokens: &[TokenTree], index: usize) -> bool {
 }
 
 /// Whether the path `segments` starts at `index`; returns the index after it.
-fn path_at(tokens: &[TokenTree], index: usize, segments: &[&str]) -> Option<usize> {
+pub(crate) fn path_at(tokens: &[TokenTree], index: usize, segments: &[&str]) -> Option<usize> {
     let mut at = index;
     for (position, segment) in segments.iter().enumerate() {
         if position > 0 {
@@ -1270,7 +1281,7 @@ fn first_string_argument(tokens: &[TokenTree], index: usize) -> Option<String> {
 
 /// Whether the bracket group at `index` is a `#[doc = ...]` attribute, which is
 /// how doc comments reach the token stream.
-fn is_doc_attribute(tokens: &[TokenTree], index: usize) -> bool {
+pub(crate) fn is_doc_attribute(tokens: &[TokenTree], index: usize) -> bool {
     let Some(TokenTree::Group(group)) = tokens.get(index) else {
         return false;
     };
@@ -1300,6 +1311,7 @@ struct Scanner<'a> {
     paths: Vec<(Vec<&'a str>, FindingKind, &'a str)>,
     literal_prefixes: Vec<&'a str>,
     literal_contains: Vec<&'a str>,
+    exempt_literal_prefixes: Vec<&'a str>,
     env_functions: Vec<Vec<&'a str>>,
     env_names: Vec<&'a str>,
     env_prefixes: Vec<&'a str>,
@@ -1311,7 +1323,6 @@ impl<'a> Scanner<'a> {
         let mut std_modules = Vec::new();
         let mut paths = Vec::new();
         for (id, rule) in &table.rules {
-    exempt_literal_prefixes: Vec<&'a str>,
             let Some(kind) = FindingKind::for_pattern_rule(id) else {
                 continue;
             };
@@ -1339,6 +1350,7 @@ impl<'a> Scanner<'a> {
             paths,
             literal_prefixes: table.list("R3", |rule| &rule.literal_prefixes),
             literal_contains: table.list("R3", |rule| &rule.literal_contains),
+            exempt_literal_prefixes: table.list("R3", |rule| &rule.exempt_literal_prefixes),
             env_functions: split("R3", |rule| &rule.env_functions),
             env_names: table.list("R3", |rule| &rule.env_names),
             env_prefixes: table.list("R3", |rule| &rule.env_prefixes),
@@ -1350,7 +1362,6 @@ impl<'a> Scanner<'a> {
         let tokens: Vec<TokenTree> = stream.into_iter().collect();
         for (index, token) in tokens.iter().enumerate() {
             let ident = match token {
-            exempt_literal_prefixes: table.list("R3", |rule| &rule.exempt_literal_prefixes),
                 TokenTree::Group(group) => {
                     if !is_doc_attribute(&tokens, index) {
                         self.scan(group.stream(), hits);
@@ -1516,6 +1527,13 @@ impl<'a> Scanner<'a> {
         let Some(value) = string_value(literal) else {
             return;
         };
+        if self
+            .exempt_literal_prefixes
+            .iter()
+            .any(|prefix| value.starts_with(prefix))
+        {
+            return;
+        }
         let platform = self
             .literal_prefixes
             .iter()
@@ -1527,13 +1545,6 @@ impl<'a> Scanner<'a> {
         if platform {
             let shown: String = value.chars().take(60).collect();
             hits.push((
-        if self
-            .exempt_literal_prefixes
-            .iter()
-            .any(|prefix| value.starts_with(prefix))
-        {
-            return;
-        }
                 literal.span().start().line,
                 FindingKind::PlatformPath,
                 format!("\"{shown}\" names a platform path"),

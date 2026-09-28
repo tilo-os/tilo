@@ -14,6 +14,9 @@ on:
       - "apps/**"
       - "crates/**"
       - "rust-toolchain.toml"
+      - "tools/policy/app_capability*"
+      - "tools/policy/app_portability*"
+      - "tools/policy/check_app_*"
       - "tools/sdk/**"
       - "tools/web/**"
       - "vendor/**"
@@ -27,6 +30,9 @@ on:
       - "apps/**"
       - "crates/**"
       - "rust-toolchain.toml"
+      - "tools/policy/app_capability*"
+      - "tools/policy/app_portability*"
+      - "tools/policy/check_app_*"
       - "tools/sdk/**"
       - "tools/web/**"
       - "vendor/**"
@@ -46,6 +52,7 @@ env:
 
 jobs:
   # Compile-free gates: portability rules and their shrink-only baseline, the
+  # capabilities each app's code uses against its manifest, the
   # manifest-generated desktop registry, the SDK patch list outside apps
   # carry, the publishable crate set, and the web size budgets.
   policy:
@@ -62,6 +69,8 @@ jobs:
           filter: blob:none
       - name: Apps and portable SDK crates hold no platform code
         run: python3 tools/policy/check_app_portability.py
+      - name: Apps declare the capabilities their code uses
+        run: python3 tools/policy/check_app_capabilities.py
       - name: Web size budgets only decrease
         shell: bash
         run: |

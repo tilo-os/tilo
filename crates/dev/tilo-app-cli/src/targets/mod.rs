@@ -6,8 +6,9 @@
 //! turns it into the distributable: a signed `.tapp`, a signed (and, when
 //! configured, notarized) `.app` zip, or an immutable content-addressed web
 //! version. Before anything compiles, [`check_target`] refuses a target the
-//! manifest does not declare and a required capability the target cannot
-//! provide, with the fix.
+//! manifest does not declare, a required capability the target cannot
+//! provide, and a capability the code uses that the manifest does not
+//! declare, with the fix.
 
 mod macos;
 mod serve;
@@ -246,8 +247,8 @@ pub(crate) fn cargo_program() -> OsString {
     std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"))
 }
 
-/// Check that `target` is declared and every required capability can be
-/// provided there. Returns the non-fatal notes (planned backends allowed by
+/// Check that `target` is declared, every required capability can be
+/// provided there, and every capability the code uses is declared. Returns the non-fatal notes (planned backends allowed by
 /// `allow_planned`).
 ///
 /// # Errors
@@ -286,6 +287,19 @@ pub fn check_target(project: &Project, target: Target, allow_planned: bool) -> R
         } else {
             notes.push(message);
         }
+    }
+    let declared: Vec<&str> = capabilities
+        .required
+        .iter()
+        .chain(&capabilities.optional)
+        .map(String::as_str)
+        .collect();
+    for (capability, sites) in crate::capability_usage::undeclared(&project.app_dir, &declared)? {
+        errors.push_str(&crate::capability_usage::render(
+            &capability,
+            &sites,
+            &manifest,
+        ));
     }
     if errors.is_empty() {
         Ok(notes)
