@@ -1451,6 +1451,16 @@ impl FrameHarness {
         self.try_relayout()
     }
 
+    /// Run one frame that rebuilds the whole layout tree, as a structural
+    /// change does, even when no widget reported one.
+    ///
+    /// # Errors
+    /// As [`Self::resize`].
+    pub fn recompose(&mut self) -> Result<(), crate::widget::WidgetLayoutError> {
+        self.invalidate_layout_tree();
+        self.try_relayout()
+    }
+
     /// [`Self::relayout_at`] under `theme`, which later frames keep.
     ///
     /// # Errors
@@ -12040,6 +12050,14 @@ mod framed_tests {
         Framed::harness_mut(&mut probe).relayout();
         assert!(Framed::harness(&probe).last_relayout().rebuilt);
         assert!((probe.rect.width() - 200.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn recompose_rebuilds_an_unchanged_tree() {
+        let mut probe = Framed::new(State::new(), Probe::new(120.0), (400, 200), Theme::dark());
+        Framed::harness_mut(&mut probe).recompose().unwrap();
+        assert!(Framed::harness(&probe).last_relayout().rebuilt);
+        assert!((probe.rect.width() - 120.0).abs() < f64::EPSILON);
     }
 
     #[test]
