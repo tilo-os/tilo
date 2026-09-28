@@ -89,7 +89,11 @@ impl Platform {
     }
 }
 
-/// `[target]` — a WebAssembly build of the package.
+/// `[target]` — a WebAssembly, Windows or macOS build of the package.
+///
+/// For `windows` and `macos`, `architecture` is `x86_64` or `aarch64`,
+/// `module` is the executable the GUI entrypoint names, and `runtime` is the
+/// toolkit release linked into it (`[package].runtime`).
 ///
 /// The first four fields are exactly the registry's signed `RegistryTarget`
 /// (see `registry_types::target` for the canonical spellings):
