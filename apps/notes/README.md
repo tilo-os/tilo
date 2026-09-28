@@ -150,8 +150,7 @@ Inline marks inside non-code blocks:
 
 ## Architecture
 
-- `notebook.rs` / `block_order.rs`: canonical Automerge schema, validation and
-  stable ordering for notes and blocks.
+- `notebook.rs`: canonical Automerge schema and validation.
 - `actions.rs` / `doc.rs`: canonical note, block, tag and inline-mark actions.
 - `main_panel.rs`: title, metadata, scrolling and the shared `BlockEditor`.
 - `sidebar.rs`: responsive note tree, hover actions, context menus and
@@ -159,6 +158,7 @@ Inline marks inside non-code blocks:
 - `app.rs` / `hosting.rs` / `component.rs`: component lifecycle, published
   resources/actions, record binding and local presentation state.
 - `markdown.rs`: block-list and Markdown conversion.
-- `model.rs` / `storage.rs` / `legacy_import.rs`: legacy standalone format and
-  its one-time migration into the canonical notebook.
+- `model.rs` / `storage.rs` / `legacy_import.rs`: the legacy standalone format
+  and its import, which now only seed test and capture fixtures; a launch
+  never reads it.
 - `capture.rs`: semantic production-component fixtures for visual review.
