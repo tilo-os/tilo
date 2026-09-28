@@ -359,6 +359,15 @@ jobs:
       # llvmpipe and an audio endpoint, so a test that finds either missing
       # fails instead of skipping. A package too heavy for one job runs its
       # nextest partitions in `test-partition` instead.
+      # The shell's real-app end-to-end tests (replay_headless_e2e,
+      # chat_feedback_live_e2e) run the built apps and launcher from target/;
+      # build just those binaries, not their packages' tests.
+      - name: Build the apps the shell's end-to-end tests run
+        if: matrix.test_packages != '' && contains(format('{0} ', matrix.test_packages), '-p shell ')
+        run: >-
+          bash scripts/ci-run.sh "cargo build (shell end-to-end apps)" --
+          cargo build --locked --bin notes --bin chat --bin tilo-launcher
+
       - name: Test shard ${{ matrix.shard }}
         if: matrix.test_packages != ''
         env:
@@ -443,6 +452,15 @@ jobs:
       # Compile-time paths (CARGO_BIN_EXE_*, OUT_DIR) point into this
       # checkout's target/, so the partitions extract the archive at the same
       # workspace path; record it to fail clearly if a runner's differs.
+      # The shell's real-app end-to-end tests (replay_headless_e2e,
+      # chat_feedback_live_e2e) run the built apps and launcher from target/;
+      # build just those binaries, not their packages' tests.
+      - name: Build the apps the shell's end-to-end tests run
+        if: contains(format('{0} ', matrix.test_packages), '-p shell ')
+        run: >-
+          bash scripts/ci-run.sh "cargo build (shell end-to-end apps)" --
+          cargo build --locked --bin notes --bin chat --bin tilo-launcher
+
       - name: Archive the tests of ${{ matrix.package }}
         run: |
           mkdir -p target/ci/nextest-archive

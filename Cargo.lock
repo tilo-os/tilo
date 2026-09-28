@@ -912,6 +912,7 @@ name = "atomic-file"
 version = "0.1.0"
 dependencies = [
  "advisory-lock",
+ "atomic-file",
  "rustix 1.1.4",
  "serde",
  "serde_json",
@@ -6675,7 +6676,6 @@ dependencies = [
  "block-devices",
  "bounded-command",
  "console-control",
- "libc",
  "os-actions",
  "serde",
  "serde_json",
@@ -13141,7 +13141,6 @@ dependencies = [
  "blake3",
  "bounded-command",
  "browser",
- "bs58",
  "bytes",
  "capnp",
  "capnp-rpc",
@@ -14170,9 +14169,9 @@ name = "system-extension"
 version = "0.1.0"
 dependencies = [
  "atomic-file",
+ "bounded-command",
  "ed25519-dalek 3.0.0",
  "hex",
- "libc",
  "postcard",
  "serde",
  "serde_json",
@@ -15539,11 +15538,11 @@ dependencies = [
 name = "tilo-projector"
 version = "0.1.0"
 dependencies = [
+ "bounded-command",
  "fcast-sender-sdk",
  "futures-util",
  "getrandom 0.4.3",
  "hex",
- "libc",
  "mdns-sd",
  "rand 0.10.1",
  "serde",

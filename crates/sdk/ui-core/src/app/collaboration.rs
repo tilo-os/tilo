@@ -469,6 +469,7 @@ impl App {
 
     /// Re-apply the followed View after the widgets synced to a document
     /// change that arrived while following.
+    #[cfg(any(test, feature = "native"))]
     pub(super) fn follow_after_sync(&mut self) {
         if std::mem::take(&mut self.presence.follow_after_sync) {
             self.apply_follow();

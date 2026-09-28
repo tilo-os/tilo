@@ -80,7 +80,7 @@ pub enum Command {
         #[serde(default)]
         scale: Option<f64>,
     },
-    /// Say whether a viewer is looking at a headless session's frames. Unwatched, the headless backend lays frames out and hands clients their frame callbacks but does not rasterize them; attaching a viewer paints a fresh frame. `snapshot` renders on demand either way. Other backends always paint. Answered by the native transport.
+    /// Say whether a viewer is looking at a headless session's frames. Unwatched, the headless backend lays frames out and hands clients their frame callbacks but does not rasterize them; attaching a viewer paints a fresh frame, and shared legacy windows are encoded only while watched. `snapshot` renders on demand either way. Other backends always paint. Answered by the native transport; the agent-control socket accepts it, so a partner's `POST /watch` lease reaches it.
     Watch { watching: bool },
     /// Read-only snapshot of the live `shell::state::WorkspaceTree` plus [`ChromeState`](crate::shell::chrome_state::ChromeState), both as opaque `serde_json::Value` so future fields don't break the wire.
     StateDump,
@@ -1306,13 +1306,14 @@ pub fn parse_command(line: &str) -> Result<Command, Response> {
 
 /// Protocol error for a command an agent-control connection may not send.
 pub const AGENT_CONTROL_NOT_PERMITTED: &str =
-    "the agent-control socket serves input and screenshots only";
+    "the agent-control socket serves input, screenshots and the watch signal only";
 
 impl Command {
     /// Whether an agent-control connection may send this command: pointer,
-    /// keyboard and clipboard input, screenshots and read-only frame and
-    /// target inventories. Everything that grants, invokes, seeds fixtures
-    /// or reaches around the input path stays test-only.
+    /// keyboard and clipboard input, screenshots, read-only frame and target
+    /// inventories, and the partner watch signal, which only decides whether
+    /// frames are painted. Everything that grants, invokes, seeds fixtures or
+    /// reaches around the input path stays test-only.
     #[must_use]
     pub const fn agent_permitted(&self) -> bool {
         matches!(
@@ -1332,6 +1333,7 @@ impl Command {
                 | Self::PointerButton { .. }
                 | Self::ClipboardCopy { .. }
                 | Self::ClipboardPaste { .. }
+                | Self::Watch { .. }
         )
     }
 }

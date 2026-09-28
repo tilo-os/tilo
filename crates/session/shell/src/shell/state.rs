@@ -373,47 +373,9 @@ mod identity_fs_tests {
 /// decision may rest on. Namespaced (`iroh:` / `hub:`) and carried whole
 /// rather than hashed: equality must not turn on a digest an attacker
 /// can grind against.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct PeerOrigin(String);
-
-impl<'de> Deserialize<'de> for PeerOrigin {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let value = String::deserialize(deserializer)?;
-        if let Some(legacy) = value.strip_prefix("p2p:")
-            && let Some(endpoint) = crate::network::behaviour::endpoint_from_legacy_peer_id(legacy)
-        {
-            return Ok(Self(format!("iroh:{endpoint}")));
-        }
-        Ok(Self(value))
-    }
-}
-
-fn deserialize_room_peer_names<'de, D>(
-    deserializer: D,
-) -> Result<HashMap<RoomId, std::collections::BTreeMap<String, String>>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let mut rooms =
-        HashMap::<RoomId, std::collections::BTreeMap<String, String>>::deserialize(deserializer)?;
-    for names in rooms.values_mut() {
-        let old = std::mem::take(names);
-        *names = old
-            .into_iter()
-            .map(|(peer, name)| {
-                let peer = crate::network::behaviour::endpoint_from_legacy_peer_id(&peer)
-                    .map(|endpoint| endpoint.to_string())
-                    .unwrap_or(peer);
-                (peer, name)
-            })
-            .collect();
-    }
-    Ok(rooms)
-}
 
 impl PeerOrigin {
     /// A remote peer, by its authenticated iroh endpoint id.
@@ -768,7 +730,7 @@ pub struct WorkspaceTree {
     /// What each peer is **called**, as Iroh `EndpointId` →
     /// display name. Written only by the inviter (non-spoofable);
     /// [`Self::apply_room_changes`] refuses it from anyone else.
-    #[serde(default, deserialize_with = "deserialize_room_peer_names")]
+    #[serde(default)]
     pub room_peer_names: HashMap<RoomId, std::collections::BTreeMap<String, String>>,
     /// Certified endpoint→human-root associations admitted by the room
     /// governor. A peer announcement never writes this map directly.
@@ -848,44 +810,6 @@ impl Default for WorkspaceTree {
             fs_acl_path: None,
             room_record_signer_override: None,
         }
-    }
-}
-
-#[cfg(test)]
-mod iroh_identity_migration_tests {
-    use super::*;
-
-    fn legacy_peer(seed: [u8; 32]) -> (String, iroh::EndpointId) {
-        let endpoint = iroh::SecretKey::from_bytes(&seed).public();
-        let mut bytes = vec![0x00, 0x24, 0x08, 0x01, 0x12, 0x20];
-        bytes.extend_from_slice(endpoint.as_bytes());
-        (bs58::encode(bytes).into_string(), endpoint)
-    }
-
-    #[test]
-    fn persisted_libp2p_authority_and_names_migrate_to_iroh() {
-        let room = RoomId::from(uuid::Uuid::new_v4());
-        let (legacy, endpoint) = legacy_peer([31; 32]);
-        let mut tree = WorkspaceTree::default();
-        tree.room_authority.insert(
-            room,
-            RoomAuthority::Peer(PeerOrigin(format!("p2p:{legacy}"))),
-        );
-        tree.room_peer_names
-            .entry(room)
-            .or_default()
-            .insert(legacy, "Alice".into());
-
-        let json = serde_json::to_vec(&tree).unwrap();
-        let migrated: WorkspaceTree = serde_json::from_slice(&json).unwrap();
-        assert_eq!(
-            migrated.room_authority(room),
-            RoomAuthority::Peer(PeerOrigin::peer(&endpoint))
-        );
-        assert_eq!(
-            migrated.room_peer_names[&room].get(&endpoint.to_string()),
-            Some(&"Alice".to_string())
-        );
     }
 }
 

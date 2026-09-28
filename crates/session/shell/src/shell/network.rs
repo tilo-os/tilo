@@ -1122,23 +1122,10 @@ struct PersistedPersonalContinuity {
     continuity: crate::shell::personal_continuity::PersonalContinuity,
 }
 
-#[derive(Deserialize)]
-struct PersistedPersonalContinuityV1 {
-    counter: u64,
-    continuity: crate::shell::personal_continuity::PersonalContinuityWireV1,
-}
-
 fn decode_persisted_personal_continuity(bytes: &[u8]) -> Option<PersistedPersonalContinuity> {
-    if let Ok(mut current) = postcard::from_bytes::<PersistedPersonalContinuity>(bytes) {
-        current.counter = current.continuity.recover_counter(current.counter);
-        return Some(current);
-    }
-    let legacy = postcard::from_bytes::<PersistedPersonalContinuityV1>(bytes).ok()?;
-    let continuity = legacy.continuity.upgrade().ok()?;
-    Some(PersistedPersonalContinuity {
-        counter: continuity.recover_counter(legacy.counter),
-        continuity,
-    })
+    let mut current = postcard::from_bytes::<PersistedPersonalContinuity>(bytes).ok()?;
+    current.counter = current.continuity.recover_counter(current.counter);
+    Some(current)
 }
 
 fn personal_continuity_backup_path(path: &Path) -> PathBuf {
@@ -9932,7 +9919,7 @@ mod tests {
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
-    fn personal_continuity_store_survives_restart_migration_and_backup_failure() {
+    fn personal_continuity_store_survives_restart_and_backup_failure() {
         fn personal_continuity_counter_and_checkpoint_survive_restart_store() {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("personal-continuity.postcard");
@@ -9972,60 +9959,6 @@ mod tests {
                 "backup recovery reserves a counter peers may already have seen"
             );
             assert_eq!(recovered.continuity.snapshot_for(&device), Some(&snapshot));
-        }
-
-        fn legacy_continuity_store_migrates_without_resetting_counter() {
-            use crate::shell::personal_continuity::{
-                ContinuityStamp, DeviceFocus, DeviceId, WorkspaceContinuation,
-            };
-            #[derive(Serialize)]
-            struct LegacySnapshot {
-                schema_version: u16,
-                device: DeviceId,
-                stamp: ContinuityStamp,
-                focus: Option<DeviceFocus>,
-                workspaces: Vec<WorkspaceContinuation>,
-            }
-            #[derive(Serialize)]
-            struct LegacyCollection {
-                snapshots: Vec<LegacySnapshot>,
-            }
-            #[derive(Serialize)]
-            struct LegacyStore {
-                counter: u64,
-                continuity: LegacyCollection,
-            }
-            let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("personal-continuity.postcard");
-            let device = DeviceId::new("legacy-device").unwrap();
-            let bytes = postcard::to_allocvec(&LegacyStore {
-                counter: 7,
-                continuity: LegacyCollection {
-                    snapshots: vec![LegacySnapshot {
-                        schema_version: 1,
-                        device: device.clone(),
-                        stamp: ContinuityStamp {
-                            counter: 91,
-                            device: device.clone(),
-                        },
-                        focus: None,
-                        workspaces: Vec::new(),
-                    }],
-                },
-            })
-            .unwrap();
-            std::fs::write(&path, bytes).unwrap();
-
-            let restored = load_personal_continuity(&path);
-            assert_eq!(restored.counter, 91);
-            assert_eq!(
-                restored
-                    .continuity
-                    .snapshot_for(&device)
-                    .unwrap()
-                    .schema_version,
-                crate::shell::personal_continuity::CONTINUITY_SCHEMA_VERSION
-            );
         }
 
         fn backup_failure_never_advances_continuity_primary() {
@@ -10068,7 +10001,6 @@ mod tests {
         }
 
         personal_continuity_counter_and_checkpoint_survive_restart_store();
-        legacy_continuity_store_migrates_without_resetting_counter();
         backup_failure_never_advances_continuity_primary();
         personal_continuity_topic_is_stable_and_root_bound();
     }

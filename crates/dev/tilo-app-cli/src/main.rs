@@ -20,7 +20,7 @@ mod publishing;
     long_about = "The short path from an app idea to a running Tilo window.\n\n\
                   Run `tilo-app new` for an interactive setup, or provide a name \
                   and flags for a reproducible, non-interactive scaffold. Then \
-                  use `add`, `locale`, `check`, `scenario`, `dev`, `test`, `run`, `shot`, `inspect`, and `package` from anywhere inside the app. Use `ui` to construct validated serialized screens."
+                  use `add`, `locale`, `check`, `scenario`, `dev`, `test`, `run`, `shot`, `inspect`, `build`, and `package` from anywhere inside the app. Use `ui` to construct validated serialized screens."
 )]
 struct Cli {
     /// Write one JSON document describing the result to stdout. Progress and
@@ -61,6 +61,9 @@ enum Command {
     Inspect(InspectArgs),
     /// Create and edit validated serialized UI object graphs.
     Ui(UiArgs),
+    /// Build the app for a platform without packaging it (`--platform web`:
+    /// a page with the toolkit core and the app, ready to serve).
+    Build(BuildArgs),
     /// Build, assemble, sign, and verify an installable Tilo package.
     Package(PackageArgs),
     /// Create or show the publisher key that signs packages and entries.
@@ -445,6 +448,15 @@ struct DevArgs {
     #[arg(long)]
     app_only: bool,
 
+    /// `web` serves the app's web build and reloads the page into the same
+    /// document after each rebuild, instead of running it natively.
+    #[arg(long, value_enum, default_value_t = DevPlatformArg::Tilo)]
+    platform: DevPlatformArg,
+
+    /// Address the web page is served on (`--platform web`).
+    #[arg(long, default_value = "127.0.0.1:4321")]
+    bind: String,
+
     /// Arguments forwarded to the app. Write them after `--`.
     #[arg(last = true, allow_hyphen_values = true)]
     forwarded: Vec<OsString>,
@@ -507,6 +519,25 @@ struct InspectArgs {
 }
 
 #[derive(clap::Args)]
+struct BuildArgs {
+    /// App directory or a file/directory inside it. Defaults to the current directory.
+    path: Option<PathBuf>,
+
+    /// The system to build for.
+    #[arg(long, value_enum)]
+    platform: BuildPlatformArg,
+
+    /// The page directory, relative to the app root unless absolute
+    /// [default: target/web].
+    #[arg(short, long)]
+    output: Option<PathBuf>,
+
+    /// Relink only the app against the toolkit core already built.
+    #[arg(long)]
+    app_only: bool,
+}
+
+#[derive(clap::Args)]
 struct PackageArgs {
     /// App directory or a file/directory inside it. Defaults to the current directory.
     path: Option<PathBuf>,
@@ -530,8 +561,9 @@ struct PackageArgs {
     #[arg(long = "static")]
     static_link: bool,
 
-    /// The system to build for: a thin Tilo OS app, or one self-contained
-    /// Windows or macOS executable with the toolkit linked in.
+    /// The system to build for: a thin Tilo OS app, one self-contained
+    /// Windows or macOS executable with the toolkit linked in, or a
+    /// WebAssembly side module of the browser's toolkit core.
     #[arg(long, value_enum, default_value_t = PlatformArg::Tilo)]
     platform: PlatformArg,
 
@@ -690,6 +722,7 @@ fn main() -> ExitCode {
         Command::Shot(args) => run_shot(args),
         Command::Inspect(args) => run_inspect(args),
         Command::Ui(args) => run_ui(args),
+        Command::Build(args) => run_build(args),
         Command::Package(args) => run_package(args),
         Command::Keys(args) => publishing::run_keys(args),
         Command::Apply(args) => publishing::run_apply(args),
@@ -790,6 +823,7 @@ impl Command {
             Self::Shot(_) => "shot",
             Self::Inspect(_) => "inspect",
             Self::Ui(_) => "ui",
+            Self::Build(_) => "build",
             Self::Package(_) => "package",
             Self::Keys(_) => "keys",
             Self::Apply(_) => "apply",
@@ -1189,6 +1223,18 @@ enum PlatformArg {
     Tilo,
     Windows,
     Macos,
+    Web,
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum BuildPlatformArg {
+    Web,
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum DevPlatformArg {
+    Tilo,
+    Web,
 }
 
 #[derive(Clone, Copy, clap::ValueEnum)]
@@ -1203,10 +1249,20 @@ enum ArchArg {
     #[value(name = "x86_64")]
     X86_64,
     Aarch64,
+    /// The one architecture of `--platform web`.
+    Wasm32,
 }
 
 fn run_package(args: PackageArgs) -> Result<Value> {
     let path = args.path.map_or_else(std::env::current_dir, Ok)?;
+    let web = matches!(args.platform, PlatformArg::Web);
+    match args.arch {
+        Some(ArchArg::Wasm32) if !web => anyhow::bail!("--arch wasm32 is for --platform web"),
+        Some(ArchArg::X86_64 | ArchArg::Aarch64) if web => {
+            anyhow::bail!("--platform web builds for wasm32")
+        }
+        _ => {}
+    }
     let outcome = tilo_app_cli::package_app(
         &path,
         &tilo_app_cli::PackageRequest {
@@ -1219,10 +1275,12 @@ fn run_package(args: PackageArgs) -> Result<Value> {
                 PlatformArg::Tilo => tilo_app_cli::PackagePlatform::Tilo,
                 PlatformArg::Windows => tilo_app_cli::PackagePlatform::Windows,
                 PlatformArg::Macos => tilo_app_cli::PackagePlatform::Macos,
+                PlatformArg::Web => tilo_app_cli::PackagePlatform::Web,
             },
-            arch: args.arch.map(|arch| match arch {
-                ArchArg::X86_64 => tilo_app_cli::PackageArch::X86_64,
-                ArchArg::Aarch64 => tilo_app_cli::PackageArch::Aarch64,
+            arch: args.arch.and_then(|arch| match arch {
+                ArchArg::X86_64 => Some(tilo_app_cli::PackageArch::X86_64),
+                ArchArg::Aarch64 => Some(tilo_app_cli::PackageArch::Aarch64),
+                ArchArg::Wasm32 => None,
             }),
             features: args.features,
             no_default_features: args.no_default_features,
@@ -1234,15 +1292,41 @@ fn run_package(args: PackageArgs) -> Result<Value> {
 
 fn run_dev(args: DevArgs) -> Result<Value> {
     let path = args.path.map_or_else(std::env::current_dir, Ok)?;
-    tilo_app_cli::dev_app(
+    let request = tilo_app_cli::DevRequest {
+        forwarded: args.forwarded,
+        watch_ui: !args.app_only,
+        debounce: Duration::from_millis(args.debounce_ms.get()),
+    };
+    match args.platform {
+        DevPlatformArg::Tilo => tilo_app_cli::dev_app(&path, &request)?,
+        DevPlatformArg::Web => tilo_app_cli::web::dev_web(
+            &path,
+            &request,
+            &tilo_app_cli::web::WebDevOptions { bind: args.bind },
+        )?,
+    }
+    Ok(json!({"stopped": true}))
+}
+
+fn run_build(args: BuildArgs) -> Result<Value> {
+    let path = args.path.map_or_else(std::env::current_dir, Ok)?;
+    let BuildPlatformArg::Web = args.platform;
+    let build = tilo_app_cli::web::build_web(
         &path,
-        &tilo_app_cli::DevRequest {
-            forwarded: args.forwarded,
-            watch_ui: !args.app_only,
-            debounce: Duration::from_millis(args.debounce_ms.get()),
+        &tilo_app_cli::web::WebBuildRequest {
+            output: args.output,
+            app_only: args.app_only,
         },
     )?;
-    Ok(json!({"stopped": true}))
+    eprintln!(
+        "[tilo-app] built {} for the web in {:.1} s: {} (module {} bytes, core {} bytes)",
+        build.app_id,
+        build.elapsed.as_secs_f64(),
+        build.output.display(),
+        build.module_bytes,
+        build.core_bytes
+    );
+    Ok(build.to_json())
 }
 
 fn run_shot(args: ShotArgs) -> Result<Value> {

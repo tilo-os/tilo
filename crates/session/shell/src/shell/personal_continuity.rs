@@ -724,38 +724,7 @@ struct DeviceContinuationSnapshotWire {
     stamp: ContinuityStamp,
     focus: Option<DeviceFocus>,
     workspaces: Vec<WorkspaceContinuation>,
-    #[serde(default)]
     tombstones: Vec<AppTombstone>,
-}
-
-/// Exact pre-tombstone wire shape, retained only for one-way checkpoint
-/// migration. Postcard structs have no self-described trailing fields, so a
-/// serde default alone cannot reliably decode an older sequence.
-#[derive(Deserialize)]
-pub(crate) struct DeviceContinuationSnapshotV1 {
-    schema_version: u16,
-    device: DeviceId,
-    stamp: ContinuityStamp,
-    focus: Option<DeviceFocus>,
-    workspaces: Vec<WorkspaceContinuation>,
-}
-
-impl DeviceContinuationSnapshotV1 {
-    fn upgrade(self) -> Result<DeviceContinuationSnapshot, ContinuityError> {
-        if self.schema_version != 1 {
-            return Err(ContinuityError::UnsupportedSchema(self.schema_version));
-        }
-        let value = DeviceContinuationSnapshot {
-            schema_version: CONTINUITY_SCHEMA_VERSION,
-            device: self.device,
-            stamp: self.stamp,
-            focus: self.focus,
-            workspaces: self.workspaces,
-            tombstones: Vec::new(),
-        };
-        value.validate()?;
-        Ok(value)
-    }
 }
 
 impl Serialize for DeviceContinuationSnapshot {
@@ -776,12 +745,8 @@ impl Serialize for DeviceContinuationSnapshot {
 impl<'de> Deserialize<'de> for DeviceContinuationSnapshot {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let wire = DeviceContinuationSnapshotWire::deserialize(deserializer)?;
-        let schema_version = match wire.schema_version {
-            1 if wire.tombstones.is_empty() => CONTINUITY_SCHEMA_VERSION,
-            version => version,
-        };
         let value = Self {
-            schema_version,
+            schema_version: wire.schema_version,
             device: wire.device,
             stamp: wire.stamp,
             focus: wire.focus,
@@ -971,34 +936,15 @@ struct PersonalContinuityWire {
     snapshots: Vec<DeviceContinuationSnapshot>,
 }
 
-#[derive(Deserialize)]
-pub(crate) struct PersonalContinuityWireV1 {
-    snapshots: Vec<DeviceContinuationSnapshotV1>,
-}
-
-impl PersonalContinuityWireV1 {
-    pub(crate) fn upgrade(self) -> Result<PersonalContinuity, ContinuityError> {
-        let mut value = PersonalContinuity::default();
-        for snapshot in self.snapshots {
-            value.upsert(snapshot.upgrade()?)?;
-        }
-        Ok(value)
-    }
-}
-
-/// Decode the current checkpoint or migrate the exact v1 Postcard shape.
+/// Decode a Postcard checkpoint.
 ///
 /// # Errors
 ///
-/// Returns [`ContinuityError::InvalidCheckpoint`] when neither supported wire
-/// format can be decoded.
+/// Returns [`ContinuityError::InvalidCheckpoint`] when the bytes are not a
+/// valid checkpoint.
 pub fn decode_checkpoint(bytes: &[u8]) -> Result<PersonalContinuity, ContinuityError> {
-    if let Ok(current) = postcard::from_bytes::<PersonalContinuity>(bytes) {
-        return Ok(current);
-    }
-    postcard::from_bytes::<PersonalContinuityWireV1>(bytes)
-        .map_err(|_| ContinuityError::InvalidCheckpoint)?
-        .upgrade()
+    postcard::from_bytes::<PersonalContinuity>(bytes)
+        .map_err(|_| ContinuityError::InvalidCheckpoint)
 }
 
 impl Serialize for PersonalContinuity {
@@ -1295,53 +1241,9 @@ mod tests {
             assert_eq!(from_postcard, original);
         }
 
-        #[allow(
-            clippy::items_after_statements,
-            reason = "the legacy wire fixture is defined next to the only migration scenario that uses it"
-        )]
-        fn migrates_v1_snapshot_without_losing_its_counter_or_apps() {
-            #[derive(Serialize)]
-            struct V1Snapshot {
-                schema_version: u16,
-                device: DeviceId,
-                stamp: ContinuityStamp,
-                focus: Option<DeviceFocus>,
-                workspaces: Vec<WorkspaceContinuation>,
-            }
-            let device = device("legacy-laptop");
-            let legacy = V1Snapshot {
-                schema_version: 1,
-                device: device.clone(),
-                stamp: ContinuityStamp {
-                    counter: 987,
-                    device: device.clone(),
-                },
-                focus: None,
-                workspaces: vec![WorkspaceContinuation {
-                    room: room(ROOM_A),
-                    apps: vec![safe_app(42, &device, 987)],
-                }],
-            };
-            #[derive(Serialize)]
-            struct V1Collection {
-                snapshots: Vec<V1Snapshot>,
-            }
-            let bytes = postcard::to_allocvec(&V1Collection {
-                snapshots: vec![legacy],
-            })
-            .unwrap();
-            let collection = decode_checkpoint(&bytes).unwrap();
-            let upgraded = collection.snapshot_for(&device).unwrap();
-            assert_eq!(upgraded.schema_version, CONTINUITY_SCHEMA_VERSION);
-            assert_eq!(upgraded.stamp.counter, 987);
-            assert_eq!(upgraded.workspaces[0].apps[0].id, AppInstanceId(42));
-            assert!(upgraded.tombstones.is_empty());
-        }
-
         two_devices_keep_their_own_focus();
         newest_same_app_checkpoint_has_a_deterministic_winner();
         personal_continuity_round_trips_as_json_and_postcard();
-        migrates_v1_snapshot_without_losing_its_counter_or_apps();
     }
 
     #[test]
