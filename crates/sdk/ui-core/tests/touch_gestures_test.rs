@@ -14,7 +14,6 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use tilo_ui::State;
 use tilo_ui::headless::Driver;
@@ -25,7 +24,7 @@ use tilo_ui::widget::Widget;
 use tilo_ui::widget::context_menu::{ContextMenu, MenuItem};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use winit::event::{ElementState, Modifiers, MouseButton, TouchPhase, WindowEvent};
+use winit::event::{ElementState, MouseButton, TouchPhase, WindowEvent};
 
 /// Fills the window, records every event it is given and, like any widget
 /// with a context menu, opens its menu on a secondary press.
@@ -80,22 +79,7 @@ impl Widget for Probe {
     ) {
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the test widget implements the framework event contract"
-    )]
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor = Point::new(position.x, position.y);
@@ -112,7 +96,7 @@ impl Widget for Probe {
                 let at = [self.cursor.x as f32, self.cursor.y as f32];
                 self.menu.open_at(at);
                 *self.menu_open_at.borrow_mut() = self.menu.is_open().then_some(at);
-                *handled = true;
+                *ctx.handled = true;
             }
             _ => {}
         }

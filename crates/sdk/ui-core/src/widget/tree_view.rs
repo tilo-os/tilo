@@ -2642,14 +2642,16 @@ impl<T, M: TreeModel> TreeView<T, M> {
         {
             row.widget.handle_event(
                 event,
-                scale_factor,
-                &modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node,
-                taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor,
+                    modifiers: &modifiers,
+                    state,
+                    path,
+                    handled,
+                    focus_target,
+                    node_id: node,
+                    taffy,
+                },
             );
             return;
         }
@@ -2659,14 +2661,16 @@ impl<T, M: TreeModel> TreeView<T, M> {
             };
             row.widget.handle_event(
                 event,
-                scale_factor,
-                &modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node,
-                taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor,
+                    modifiers: &modifiers,
+                    state,
+                    path,
+                    handled,
+                    focus_target,
+                    node_id: node,
+                    taffy,
+                },
             );
             if *handled {
                 break;
@@ -3310,7 +3314,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
         self.paint_context_menu(scene, transform, text_renderer, theme, presence);
     }
 
-    fn handle_event_ctx(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
         self.route_event(event, ctx);
         // Pointer motion repaints only through what the view signature sees
         // (hover, affordance hover, drags), so a resting pointer stays inert.
@@ -3767,27 +3771,31 @@ impl<T: 'static, M: TreeModel + 'static> TreeView<T, M> {
         }
         if self.route_context_menu(
             event,
-            scale_factor,
-            *modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                node_id,
+                taffy,
+            },
         ) {
             return;
         }
         if self.route_rename(
             event,
-            scale_factor,
-            *modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                node_id,
+                taffy,
+            },
         ) {
             return;
         }
@@ -4703,7 +4711,7 @@ mod tests {
         ) {
         }
 
-        fn handle_event_ctx(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
+        fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
             if let WindowEvent::CursorMoved { position, .. } = event {
                 self.cursor = Some(Point::new(position.x, position.y));
             }
@@ -4808,14 +4816,16 @@ mod tests {
         let root = automerge::ROOT;
         view.handle_event(
             event,
-            1.0,
-            &Modifiers::default(),
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &tree,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &Modifiers::default(),
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &tree,
+            },
         );
     }
 
@@ -4830,14 +4840,16 @@ mod tests {
         let mut doc = AutoCommit::new();
         view.handle_event(
             event,
-            1.0,
-            &Modifiers::default(),
-            &mut doc,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus_target,
-            node,
-            taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &Modifiers::default(),
+                state: &mut doc,
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy,
+            },
         );
         handled
     }

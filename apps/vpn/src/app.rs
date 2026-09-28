@@ -345,20 +345,6 @@ impl Widget for ConfirmBody {
         );
     }
 
-    fn handle_event(
-        &mut self,
-        _event: &WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
-    }
-
     fn name(&self) -> &'static str {
         "ConfirmBody"
     }
@@ -3582,42 +3568,37 @@ impl Widget for VpnApp {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if self.modal == Modal::Add {
-            self.route_add_modal_event(event, scale_factor, handled);
+            self.route_add_modal_event(event, ctx.scale_factor, ctx.handled);
             return;
         }
         // The Confirm dialog is modal: while it's up the shared ModalDialog
         // captures every event (clicks, Esc, y/n) and nothing leaks to the
         // list behind the scrim.
         if self.modal == Modal::Confirm {
-            self.route_confirm_event(event, scale_factor, *modifiers, state, handled);
+            self.route_confirm_event(
+                event,
+                ctx.scale_factor,
+                *ctx.modifiers,
+                ctx.state,
+                ctx.handled,
+            );
             return;
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.handle_cursor_moved(position, scale_factor, handled);
+                self.handle_cursor_moved(position, ctx.scale_factor, ctx.handled);
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                self.handle_detail_scroll(delta, handled);
+                self.handle_detail_scroll(delta, ctx.handled);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
             } => {
-                self.handle_left_click(state, handled);
+                self.handle_left_click(ctx.state, ctx.handled);
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -3628,7 +3609,7 @@ impl Widget for VpnApp {
                     },
                 ..
             } => {
-                self.handle_key_press(logical_key, handled);
+                self.handle_key_press(logical_key, ctx.handled);
             }
             _ => {}
         }
@@ -4415,21 +4396,8 @@ mod tests {
         fn get_rect(&self) -> Rect {
             self.child.get_rect()
         }
-        fn handle_event(
-            &mut self,
-            event: &WindowEvent,
-            scale: f64,
-            modifiers: &Modifiers,
-            doc: &mut AutoCommit,
-            path: &ObjId,
-            handled: &mut bool,
-            focus: &mut Option<NodeId>,
-            node: NodeId,
-            tree: &TaffyTree<()>,
-        ) {
-            self.child.handle_event(
-                event, scale, modifiers, doc, path, handled, focus, node, tree,
-            );
+        fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+            self.child.handle_event(event, ctx);
         }
         fn children(&self) -> Vec<&dyn Widget> {
             vec![self.child.as_ref()]
@@ -4918,14 +4886,16 @@ mod tests {
         let mut focus = None;
         app.handle_event(
             ev,
-            1.0,
-            &modifiers,
-            doc,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &modifiers,
+                state: doc,
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
     }
 

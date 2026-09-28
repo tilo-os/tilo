@@ -1839,10 +1839,6 @@ impl Core {
     }
 
     /// Handle an event routed to the overview pane. Returns true if consumed.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "mirrors the WindowEvent-routing signature threaded through ui::widget::Widget::handle_event across this crate's app.rs/panes.rs — bundling it into a context struct would ripple across every event-routing method here, out of scope for this split"
-    )]
     pub(crate) fn handle_overview_event(&mut self, mut ctx: OverviewEventCtx<'_>) -> bool {
         // Keep the shared field placed so its overlay hit-tests correctly.
         self.search.apply_layout_external(self.search_field_rect);
@@ -1861,10 +1857,6 @@ impl Core {
     /// `Some(consumed)` when the field fully handled the event (the caller
     /// should return immediately), or `None` to fall through to the list's
     /// own gesture handling.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "mirrors the WindowEvent-routing signature threaded through ui::widget::Widget::handle_event across this crate's app.rs/panes.rs — bundling it into a context struct would ripple across every event-routing method here, out of scope for this split"
-    )]
     fn route_overview_search_field(&mut self, ctx: &mut OverviewEventCtx<'_>) -> Option<bool> {
         use winit::event::{ElementState, MouseButton};
 
@@ -1889,14 +1881,16 @@ impl Core {
         let mut ac_handled = false;
         self.search.handle_event(
             ctx.event,
-            ctx.scale_factor,
-            &ctx.modifiers,
-            ctx.state,
-            ctx.path,
-            &mut ac_handled,
-            ctx.focus_target,
-            ctx.node_id,
-            ctx.taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: ctx.scale_factor,
+                modifiers: &ctx.modifiers,
+                state: ctx.state,
+                path: ctx.path,
+                handled: &mut ac_handled,
+                focus_target: ctx.focus_target,
+                node_id: ctx.node_id,
+                taffy: ctx.taffy,
+            },
         );
         self.finish_search_edit(&before, ac_handled)
     }

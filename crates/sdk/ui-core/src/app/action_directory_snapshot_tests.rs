@@ -51,19 +51,6 @@ impl Widget for DeclaredDirectory {
     fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: Point) {}
     fn draw(&mut self, _: &mut Scene, _: Affine, _: &mut TextRenderer, _: &Theme, _: &PresenceCtx) {
     }
-    fn handle_event(
-        &mut self,
-        _: &WindowEvent,
-        _: f64,
-        _: &winit::event::Modifiers,
-        _: &mut automerge::AutoCommit,
-        _: &automerge::ObjId,
-        _: &mut bool,
-        _: &mut Option<NodeId>,
-        _: NodeId,
-        _: &TaffyTree<()>,
-    ) {
-    }
     fn name(&self) -> &'static str {
         "declared-directory"
     }
@@ -650,19 +637,6 @@ impl Widget for ExtendedDirectory {
     }
     fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: Point) {}
     fn draw(&mut self, _: &mut Scene, _: Affine, _: &mut TextRenderer, _: &Theme, _: &PresenceCtx) {
-    }
-    fn handle_event(
-        &mut self,
-        _: &WindowEvent,
-        _: f64,
-        _: &winit::event::Modifiers,
-        _: &mut automerge::AutoCommit,
-        _: &automerge::ObjId,
-        _: &mut bool,
-        _: &mut Option<NodeId>,
-        _: NodeId,
-        _: &TaffyTree<()>,
-    ) {
     }
     fn name(&self) -> &'static str {
         "extended-directory"

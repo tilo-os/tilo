@@ -3369,30 +3369,25 @@ impl Widget for ChatApp {
         self.draw(scene, tf, tr, theme, presence);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         // Embedded inputs request focus with a temporary layout node. Map
         // that actual request to Chat's retained keyboard/IME owner.
-        let was_handled = *handled;
-        let requested = self.dispatch_event(event, scale_factor, *modifiers, state, handled);
+        let was_handled = *ctx.handled;
+        let requested = self.dispatch_event(
+            event,
+            ctx.scale_factor,
+            *ctx.modifiers,
+            ctx.state,
+            ctx.handled,
+        );
         // Pointer motion that neither Chat nor its inputs consumed changes
         // nothing visible; every other event may. Marking every event dirty
         // made each pointer move anywhere on the desktop repaint everything.
-        if !matches!(event, WindowEvent::CursorMoved { .. }) || *handled || requested {
+        if !matches!(event, WindowEvent::CursorMoved { .. }) || *ctx.handled || requested {
             self.canonical_dirty = true;
         }
-        if !was_handled && requested && focus_target.is_none() {
-            *focus_target = Some(node_id);
+        if !was_handled && requested && ctx.focus_target.is_none() {
+            *ctx.focus_target = Some(ctx.node_id);
         }
     }
 

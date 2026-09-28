@@ -426,14 +426,16 @@ impl App {
         } else if let Some(root) = self.layout.root_node {
             self.root_widget.handle_event(
                 event,
-                scale,
-                &self.input.modifiers,
-                &mut self.state.doc,
-                &self.state.root,
-                &mut handled,
-                &mut focus,
-                root,
-                &self.layout.taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: scale,
+                    modifiers: &self.input.modifiers,
+                    state: &mut self.state.doc,
+                    path: &self.state.root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: root,
+                    taffy: &self.layout.taffy,
+                },
             );
         }
         if let Some(focus) = focus {

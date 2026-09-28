@@ -31,7 +31,6 @@ use tilo_ui::theme::Theme;
 use tilo_ui::widget::{Column, Container, Row, Stack, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use winit::event::{Modifiers, WindowEvent};
 
 /// Counts `update` calls and reports a change on every one, so a
 /// container that forwards must also surface the child's `true`.
@@ -65,24 +64,6 @@ impl Widget for Probe {
         _text_renderer: &mut TextRenderer,
         _theme: &Theme,
         _presence: &PresenceCtx,
-    ) {
-    }
-
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the test widget implements the framework event contract"
-    )]
-    fn handle_event(
-        &mut self,
-        _event: &WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
     ) {
     }
 

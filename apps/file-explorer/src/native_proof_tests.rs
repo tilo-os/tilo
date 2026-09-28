@@ -147,14 +147,16 @@ fn native_pointer_observer_tracks_logical_cursor_and_survives_rebuild() {
     let mut focus = None;
     h.w.handle_event(
         &event,
-        2.0,
-        &winit::event::Modifiers::default(),
-        &mut h.state.doc,
-        &h.state.root,
-        &mut handled,
-        &mut focus,
-        h.node,
-        &h.taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 2.0,
+            modifiers: &winit::event::Modifiers::default(),
+            state: &mut h.state.doc,
+            path: &h.state.root,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: h.node,
+            taffy: &h.taffy,
+        },
     );
     let snapshot =
         h.w.native_input_snapshot(&h.state.doc, &h.state.root)

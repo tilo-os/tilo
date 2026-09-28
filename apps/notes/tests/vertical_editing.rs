@@ -199,14 +199,16 @@ impl Editor {
         let mut handled = false;
         self.editor.handle_event(
             &event,
-            1.0,
-            &modifiers,
-            &mut automerge::AutoCommit::new(),
-            &automerge::ROOT,
-            &mut handled,
-            &mut None,
-            self.node,
-            &self.tree,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &modifiers,
+                state: &mut automerge::AutoCommit::new(),
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut None,
+                node_id: self.node,
+                taffy: &self.tree,
+            },
         );
         assert!(handled, "editor must consume {key:?}");
         self.draw();

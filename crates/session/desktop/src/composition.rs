@@ -984,21 +984,12 @@ impl Widget for DesktopSurface {
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        scale: f64,
-        modifiers: &winit::event::Modifiers,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus: &mut Option<NodeId>,
-        node: NodeId,
-        tree: &TaffyTree<()>,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) {
-        if !*handled {
-            self.observe_navigation_event(event, scale);
+        if !*ctx.handled {
+            self.observe_navigation_event(event, ctx.scale_factor);
         }
-        self.root.handle_event(
-            event, scale, modifiers, doc, path, handled, focus, node, tree,
-        );
+        self.root.handle_event(event, ctx);
     }
     fn focus_requested(&mut self, target: Option<NodeId>, tree: &TaffyTree<()>) {
         self.observe_focus_request(target, tree);

@@ -26,13 +26,13 @@ use crate::text_render::TextRenderer;
 use crate::text_selection::{clipboard_copy, clipboard_paste};
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
-use crate::widget::Widget;
 use crate::widget::code_editor::{SyntaxHighlighter, TokenKind};
 use crate::widget::link_popover::{LinkPopover, PageEntry};
 use crate::widget::marks::{Mark, MarkSpan, PageId};
 use crate::widget::rich_text_line::{LineSignal, RichTextLine, TransientColorSpan};
 use crate::widget::slash_menu::SlashMenu;
 use crate::widget::{Button, SearchField};
+use crate::widget::{EventCtx, Widget};
 
 /// Deeper nesting runs off the panel's right edge.
 pub const MAX_LIST_INDENT: u8 = 5;
@@ -2030,17 +2030,8 @@ impl BlockEditor {
         }
 
         if let Some(node) = self.find_node {
-            self.find_field.handle_event(
-                event,
-                ctx.scale_factor,
-                ctx.modifiers,
-                ctx.state,
-                ctx.path,
-                ctx.handled,
-                ctx.focus_target,
-                node,
-                ctx.taffy,
-            );
+            self.find_field
+                .handle_event(event, &mut ctx.reborrow(ctx.path, node));
             if self.find_field.take_dirty().is_some() {
                 self.refresh_find_matches(true);
             }
@@ -3282,17 +3273,9 @@ impl BlockEditor {
                     || image.button().is_focused()
                     || (self.is_focused && self.focused == Some(index));
                 if visible && let Some(node) = image.node {
-                    image.button_mut().handle_event(
-                        event,
-                        ctx.scale_factor,
-                        ctx.modifiers,
-                        ctx.state,
-                        ctx.path,
-                        ctx.handled,
-                        ctx.focus_target,
-                        node,
-                        ctx.taffy,
-                    );
+                    image
+                        .button_mut()
+                        .handle_event(event, &mut ctx.reborrow(ctx.path, node));
                     if *ctx.handled {
                         return true;
                     }
@@ -5926,20 +5909,6 @@ fn transformed(transform: Affine, p: Point) -> Point {
     transform * p
 }
 
-/// Bundles [`Widget::handle_event`]'s pass-through parameters so the
-/// per-gesture helpers in that method stay well under clippy's
-/// argument-count limit instead of repeating this whole list on each one.
-struct EventCtx<'a> {
-    scale_factor: f64,
-    modifiers: &'a Modifiers,
-    state: &'a mut AutoCommit,
-    path: &'a ObjId,
-    handled: &'a mut bool,
-    focus_target: &'a mut Option<NodeId>,
-    node_id: NodeId,
-    taffy: &'a TaffyTree<()>,
-}
-
 /// Per-frame drawing context shared by every block in
 /// [`BlockEditor::draw`] — bundled into one struct so the per-block
 /// helpers below stay well under clippy's argument-count limit.
@@ -7921,33 +7890,12 @@ impl Widget for BlockEditor {
         self.refresh_live_link_hits(theme);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if self.read_only {
             return;
         }
-        let typing = self.typing_position(event, *modifiers);
-        self.handle_event_unscoped(
-            event,
-            scale_factor,
-            *modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
-        );
+        let typing = self.typing_position(event, *ctx.modifiers);
+        self.handle_event_unscoped(event, ctx);
         let scope = match typing {
             Some((index, count, id))
                 if self.blocks.len() == count
@@ -9680,9 +9628,8 @@ impl BlockEditor {
     /// any structural signal it emitted, and promotes `# `/`## `/`### `
     /// paragraphs to headings on the keystroke that completes the prefix.
     #[expect(
-        clippy::too_many_lines,
         clippy::indexing_slicing,
-        reason = "the focused index is validated before this cohesive event-routing state machine"
+        reason = "the focused index is validated before it is used"
     )]
     fn route_event_to_focused_block(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
         if matches!(
@@ -9739,17 +9686,7 @@ impl BlockEditor {
             // reconciliation, but their optimistic input must stay local until
             // the host dispatches the semantic operation captured below.
             b.line.set_direct_crdt_writes(!self.action_interception);
-            b.line.handle_event(
-                event,
-                ctx.scale_factor,
-                ctx.modifiers,
-                ctx.state,
-                ctx.path,
-                ctx.handled,
-                ctx.focus_target,
-                ctx.node_id,
-                ctx.taffy,
-            );
+            b.line.handle_event(event, ctx);
         }
         if let Some(sig) = self
             .blocks
@@ -10439,50 +10376,16 @@ impl BlockEditor {
         true
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one cohesive table interaction state machine routes controls and projected cells"
-    )]
     fn handle_visual_table_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) -> bool {
         let mut toggle = None;
         let mut structural = None;
         for (id, control) in &mut self.table_mode_controls {
-            control.button.handle_event(
-                event,
-                ctx.scale_factor,
-                ctx.modifiers,
-                ctx.state,
-                ctx.path,
-                ctx.handled,
-                ctx.focus_target,
-                ctx.node_id,
-                ctx.taffy,
-            );
+            control.button.handle_event(event, ctx);
             if control.requested.replace(false) {
                 toggle = Some(id.clone());
             }
-            control.add_row.handle_event(
-                event,
-                ctx.scale_factor,
-                ctx.modifiers,
-                ctx.state,
-                ctx.path,
-                ctx.handled,
-                ctx.focus_target,
-                ctx.node_id,
-                ctx.taffy,
-            );
-            control.add_column.handle_event(
-                event,
-                ctx.scale_factor,
-                ctx.modifiers,
-                ctx.state,
-                ctx.path,
-                ctx.handled,
-                ctx.focus_target,
-                ctx.node_id,
-                ctx.taffy,
-            );
+            control.add_row.handle_event(event, ctx);
+            control.add_column.handle_event(event, ctx);
             if let Some(row) = control.structure.take() {
                 structural = Some((id.clone(), row));
             }
@@ -10524,17 +10427,7 @@ impl BlockEditor {
         let mut exit = None;
         for (index, block) in self.blocks.iter().enumerate() {
             if let Some(table) = self.table_editors.get_mut(&block.id) {
-                if let Some((row, column, value)) = table.handle_projected_event(
-                    event,
-                    ctx.scale_factor,
-                    ctx.modifiers,
-                    ctx.state,
-                    ctx.path,
-                    ctx.handled,
-                    ctx.focus_target,
-                    ctx.node_id,
-                    ctx.taffy,
-                ) {
+                if let Some((row, column, value)) = table.handle_projected_event(event, ctx) {
                     change = Some((index, row, column, value));
                 }
                 if table.projected_focus().is_some() {
@@ -10941,52 +10834,25 @@ impl BlockEditor {
         Some((index, self.blocks.len(), block.id.clone()))
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the widget event entry point, less its edit-scope bookkeeping"
-    )]
-    fn handle_event_unscoped(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        let modifiers = &modifiers;
+    fn handle_event_unscoped(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
         use winit::event::{ElementState, MouseButton};
 
-        let mut ctx = EventCtx {
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
-        };
-
-        if self.handle_find_event(event, &mut ctx) {
+        if self.handle_find_event(event, ctx) {
             return;
         }
 
-        if self.handle_opening_code_fence(event, &mut ctx) {
+        if self.handle_opening_code_fence(event, ctx) {
             return;
         }
 
         // While visible, intercept keystrokes BEFORE the editable line
         // sees them. Same pattern as the slash menu below.
-        if self.handle_link_popover_key(event, &mut ctx) {
+        if self.handle_link_popover_key(event, ctx) {
             return;
         }
 
         // The menu owns arrow nav / Enter / Escape / typing-into-filter.
-        if self.handle_slash_menu_key(event, &mut ctx) {
+        if self.handle_slash_menu_key(event, ctx) {
             return;
         }
 
@@ -11004,35 +10870,35 @@ impl BlockEditor {
             if matches!(logical_key, Key::Named(NamedKey::Escape)) {
                 self.visual_formula_focus = None;
                 self.dirty = true;
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
             if !matches!(logical_key, Key::Named(NamedKey::Tab)) {
                 let chrome = self.formula_chrome.get(start).and_then(|value| *value);
                 let changed = self.visual_formulas.get_mut(&start).is_some_and(|visual| {
-                    handle_visual_formula_key(&mut visual.editor, logical_key, *modifiers)
+                    handle_visual_formula_key(&mut visual.editor, logical_key, *ctx.modifiers)
                 });
                 if changed && let Some(chrome) = chrome {
                     self.commit_visual_formula_edit(start, chrome.end, chrome.descriptor.syntax);
                 }
                 self.dirty = true;
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
         }
 
         // A focused table cell owns editing shortcuts before the document.
-        if self.handle_visual_table_event(event, &mut ctx) {
+        if self.handle_visual_table_event(event, ctx) {
             return;
         }
         // Select-all is document-scoped, like a browser editing host, rather
         // than stopping at the focused paragraph's TextInput.
-        if self.try_select_all_shortcut(event, &mut ctx) {
+        if self.try_select_all_shortcut(event, ctx) {
             return;
         }
 
         // Code indentation owns whole selected lines before generic replacement.
-        if self.handle_code_keyboard(event, &mut ctx) {
+        if self.handle_code_keyboard(event, ctx) {
             return;
         }
 
@@ -11043,15 +10909,15 @@ impl BlockEditor {
             return;
         }
 
-        if self.try_move_focused_block_shortcut(event, &mut ctx) {
+        if self.try_move_focused_block_shortcut(event, ctx) {
             return;
         }
 
-        if self.handle_block_drag_lifecycle(event, &mut ctx) {
+        if self.handle_block_drag_lifecycle(event, ctx) {
             return;
         }
 
-        if self.handle_image_event(event, &mut ctx) {
+        if self.handle_image_event(event, ctx) {
             return;
         }
 
@@ -11061,7 +10927,7 @@ impl BlockEditor {
 
         // Runs BEFORE event routing so the click doesn't fall through to
         // TextInput (which would place the caret at byte 0).
-        if self.handle_mouse_press_gestures(event, &mut ctx) {
+        if self.handle_mouse_press_gestures(event, ctx) {
             return;
         }
         if let WindowEvent::MouseInput {
@@ -11076,7 +10942,7 @@ impl BlockEditor {
 
         // TextInput does NOT handle Tab, but intercept anyway so future
         // TextInput changes don't break the contract.
-        if self.try_tab_indent(event, &mut ctx) {
+        if self.try_tab_indent(event, ctx) {
             return;
         }
 
@@ -11087,9 +10953,9 @@ impl BlockEditor {
 
         // Focus whichever editable block the press lands on first, so the
         // routing below's TextInput click handler sets the caret there.
-        self.focus_block_under_mouse(event, &mut ctx);
+        self.focus_block_under_mouse(event, ctx);
 
-        self.route_event_to_focused_block(event, &mut ctx);
+        self.route_event_to_focused_block(event, ctx);
         // Consumed input can move the caret or selection without editing text.
         // Repaint that change once; focus alone is not an animation source.
         self.dirty |= *ctx.handled;

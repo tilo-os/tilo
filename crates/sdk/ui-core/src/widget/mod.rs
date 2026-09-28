@@ -1155,43 +1155,8 @@ pub trait Widget {
         presence: &PresenceCtx,
     );
 
-    /// Compatibility dispatcher for retained containers and host code.
-    ///
-    /// New widgets implement [`Widget::handle_event_ctx`]. Existing positional
-    /// implementations remain valid while call sites migrate independently.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "temporary compatibility adapter; implementations use EventCtx"
-    )]
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        self.handle_event_ctx(
-            event,
-            &mut EventCtx {
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
-            },
-        );
-    }
-
     /// Handle one input event with the runtime services for this retained node.
-    fn handle_event_ctx(&mut self, _event: &WindowEvent, _ctx: &mut EventCtx<'_>) {}
+    fn handle_event(&mut self, _event: &WindowEvent, _ctx: &mut EventCtx<'_>) {}
     fn children(&self) -> Vec<&dyn Widget> {
         vec![]
     }
@@ -3228,20 +3193,6 @@ mod tests {
         ) {
         }
 
-        fn handle_event(
-            &mut self,
-            _: &WindowEvent,
-            _: f64,
-            _: &winit::event::Modifiers,
-            _: &mut AutoCommit,
-            _: &ObjId,
-            _: &mut bool,
-            _: &mut Option<NodeId>,
-            _: NodeId,
-            _: &TaffyTree<()>,
-        ) {
-        }
-
         fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
             let Some(child) = self.child.as_mut() else {
                 return Vec::new();
@@ -3315,14 +3266,7 @@ mod tests {
                 fn handle_event(
                     &mut self,
                     _: &WindowEvent,
-                    _: f64,
-                    _: &winit::event::Modifiers,
-                    _: &mut AutoCommit,
-                    _: &ObjId,
-                    _: &mut bool,
-                    _: &mut Option<NodeId>,
-                    _: NodeId,
-                    _: &TaffyTree<()>,
+                    _ctx: &mut crate::widget::EventCtx<'_>,
                 ) {
                     unreachable!()
                 }
@@ -3581,23 +3525,6 @@ pub(crate) mod control_result_probe {
             _: &mut TextRenderer,
             _: &Theme,
             _: &PresenceCtx,
-        ) {
-        }
-        #[allow(
-            clippy::too_many_arguments,
-            reason = "test probe implements the Widget event contract"
-        )]
-        fn handle_event(
-            &mut self,
-            _: &WindowEvent,
-            _: f64,
-            _: &winit::event::Modifiers,
-            _: &mut AutoCommit,
-            _: &ObjId,
-            _: &mut bool,
-            _: &mut Option<NodeId>,
-            _: NodeId,
-            _: &TaffyTree<()>,
         ) {
         }
         fn name(&self) -> &'static str {

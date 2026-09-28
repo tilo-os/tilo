@@ -353,14 +353,16 @@ impl CompactSwatchPalette {
         if let Some(picker) = self.picker.as_mut() {
             picker.handle_event(
                 event,
-                scale,
-                &modifiers,
-                state,
-                root,
-                &mut handled,
-                &mut focus,
-                node,
-                &taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: scale,
+                    modifiers: &modifiers,
+                    state,
+                    path: root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &taffy,
+                },
             );
             if let Some(index) = picker.take_choice()
                 && let Some(rgb) = picker.color_at(index)

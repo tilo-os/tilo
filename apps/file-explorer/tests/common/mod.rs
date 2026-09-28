@@ -153,14 +153,16 @@ impl Harness {
         let mods = winit::event::Modifiers::default();
         self.w.handle_event(
             ev,
-            1.0,
-            &mods,
-            &mut self.state.doc,
-            &self.state.root,
-            &mut handled,
-            &mut focus,
-            self.child,
-            &self.taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: &mut self.state.doc,
+                path: &self.state.root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: self.child,
+                taffy: &self.taffy,
+            },
         );
     }
 

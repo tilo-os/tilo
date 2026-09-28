@@ -2095,19 +2095,8 @@ impl Widget for WindowGroup {
             scene.pop_layer();
         }
     }
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        m: &winit::event::Modifiers,
-        s: &mut AutoCommit,
-        p: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        let children = taffy.children(node_id).unwrap_or_default();
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        let children = ctx.taffy.children(ctx.node_id).unwrap_or_default();
         let bar_child = (!self.external_navigation)
             .then(|| children.first().copied())
             .flatten();
@@ -2121,31 +2110,22 @@ impl Widget for WindowGroup {
             self.rect.y1,
         );
         if !self.external_navigation
-            && self.handle_direct_input(event, scale_factor, *m, handle_rect)
+            && self.handle_direct_input(event, ctx.scale_factor, *ctx.modifiers, handle_rect)
         {
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
         if let Some(bar_child) = bar_child {
-            self.bar.handle_event(
-                event,
-                scale_factor,
-                m,
-                s,
-                p,
-                handled,
-                focus_target,
-                bar_child,
-                taffy,
-            );
+            self.bar
+                .handle_event(event, &mut ctx.reborrow(ctx.path, bar_child));
         }
 
         self.sweep_expired_closing_hosts();
         if self.drain_bar_signals() {
-            *handled = true;
+            *ctx.handled = true;
         }
 
-        if *handled {
+        if *ctx.handled {
             return;
         }
         let active_id = self.bar.active_id();
@@ -2153,17 +2133,7 @@ impl Widget for WindowGroup {
             self.hosts.iter_mut().find(|(i, _)| *i == active_id),
             tile_child,
         ) {
-            h.handle_event(
-                event,
-                scale_factor,
-                m,
-                s,
-                p,
-                handled,
-                focus_target,
-                tile_child,
-                taffy,
-            );
+            h.handle_event(event, &mut ctx.reborrow(ctx.path, tile_child));
         }
     }
     fn name(&self) -> &'static str {
@@ -2569,12 +2539,6 @@ mod tests {
             _p: &PresenceCtx,
         ) {
         }
-        fn handle_event_ctx(
-            &mut self,
-            _event: &winit::event::WindowEvent,
-            _ctx: &mut crate::widget::EventCtx<'_>,
-        ) {
-        }
         fn name(&self) -> &'static str {
             "Starting"
         }
@@ -2776,12 +2740,6 @@ mod tests {
             _p: &PresenceCtx,
         ) {
         }
-        fn handle_event_ctx(
-            &mut self,
-            _event: &winit::event::WindowEvent,
-            _ctx: &mut crate::widget::EventCtx<'_>,
-        ) {
-        }
         fn name(&self) -> &'static str {
             "Latching"
         }
@@ -2915,14 +2873,16 @@ mod tests {
         let mut handled = false;
         g.handle_event(
             event,
-            1.0,
-            &winit::event::Modifiers::default(),
-            state,
-            root_id,
-            &mut handled,
-            focus_target,
-            group_node,
-            taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &winit::event::Modifiers::default(),
+                state,
+                path: root_id,
+                handled: &mut handled,
+                focus_target,
+                node_id: group_node,
+                taffy,
+            },
         );
         handled
     }
@@ -3106,14 +3066,16 @@ mod tests {
             };
             g.handle_event(
                 &moved,
-                1.0,
-                &winit::event::Modifiers::default(),
-                &mut state,
-                &root_id,
-                &mut handled,
-                &mut focus_target,
-                group_node,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &winit::event::Modifiers::default(),
+                    state: &mut state,
+                    path: &root_id,
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: group_node,
+                    taffy: &taffy,
+                },
             );
 
             assert!(g.maximized, "maximize drain must flip the flag");
@@ -3199,14 +3161,16 @@ mod tests {
             let mut focus_target = None;
             g.handle_event(
                 &moved,
-                1.0,
-                &winit::event::Modifiers::default(),
-                &mut state,
-                &root_id,
-                &mut handled,
-                &mut focus_target,
-                group_node,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &winit::event::Modifiers::default(),
+                    state: &mut state,
+                    path: &root_id,
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: group_node,
+                    taffy: &taffy,
+                },
             );
 
             assert!(g.maximized, "drain must flip maximized true");
@@ -3227,14 +3191,16 @@ mod tests {
             let mut handled = false;
             g.handle_event(
                 &moved,
-                1.0,
-                &winit::event::Modifiers::default(),
-                &mut state,
-                &root_id,
-                &mut handled,
-                &mut focus_target,
-                group_node,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &winit::event::Modifiers::default(),
+                    state: &mut state,
+                    path: &root_id,
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: group_node,
+                    taffy: &taffy,
+                },
             );
             assert!(!g.maximized, "second drain must flip back to false");
             assert_eq!(
@@ -3323,14 +3289,16 @@ mod tests {
             let mut state = automerge::AutoCommit::new();
             g.handle_event(
                 &press,
-                1.0,
-                &winit::event::Modifiers::default(),
-                &mut state,
-                &automerge::ROOT,
-                &mut handled,
-                &mut focus_target,
-                group_node,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &winit::event::Modifiers::default(),
+                    state: &mut state,
+                    path: &automerge::ROOT,
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: group_node,
+                    taffy: &taffy,
+                },
             );
 
             assert!(handled);
@@ -3462,14 +3430,16 @@ mod tests {
                 let mut handled = false;
                 g.handle_event(
                     ev,
-                    1.0,
-                    &mods,
-                    &mut state,
-                    &root_id,
-                    &mut handled,
-                    &mut focus,
-                    node,
-                    taffy,
+                    &mut crate::widget::EventCtx {
+                        scale_factor: 1.0,
+                        modifiers: &mods,
+                        state: &mut state,
+                        path: &root_id,
+                        handled: &mut handled,
+                        focus_target: &mut focus,
+                        node_id: node,
+                        taffy,
+                    },
                 );
             };
 
@@ -3672,14 +3642,16 @@ mod tests {
             };
             g.handle_event(
                 &moved,
-                1.0,
-                &winit::event::Modifiers::default(),
-                &mut state,
-                &root_id,
-                &mut handled,
-                &mut focus,
-                node,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &winit::event::Modifiers::default(),
+                    state: &mut state,
+                    path: &root_id,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &taffy,
+                },
             );
 
             assert_eq!(
@@ -3764,14 +3736,16 @@ mod tests {
                 let mut focus_target = None;
                 g.handle_event(
                     &moved,
-                    1.0,
-                    &winit::event::Modifiers::default(),
-                    &mut state,
-                    &root_id,
-                    &mut handled,
-                    &mut focus_target,
-                    group_node,
-                    &taffy,
+                    &mut crate::widget::EventCtx {
+                        scale_factor: 1.0,
+                        modifiers: &winit::event::Modifiers::default(),
+                        state: &mut state,
+                        path: &root_id,
+                        handled: &mut handled,
+                        focus_target: &mut focus_target,
+                        node_id: group_node,
+                        taffy: &taffy,
+                    },
                 );
 
                 assert_eq!(
@@ -3862,14 +3836,16 @@ mod tests {
             let mut focus_target = None;
             g.handle_event(
                 &event,
-                1.0,
-                &mods,
-                &mut state,
-                &root_id,
-                &mut handled,
-                &mut focus_target,
-                group_node,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &mods,
+                    state: &mut state,
+                    path: &root_id,
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: group_node,
+                    taffy: &taffy,
+                },
             );
             assert!(handled, "Ctrl+Shift+P press must be claimed");
             assert!(
@@ -3881,14 +3857,16 @@ mod tests {
             let mut handled = false;
             g.handle_event(
                 &event,
-                1.0,
-                &mods,
-                &mut state,
-                &root_id,
-                &mut handled,
-                &mut focus_target,
-                group_node,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &mods,
+                    state: &mut state,
+                    path: &root_id,
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: group_node,
+                    taffy: &taffy,
+                },
             );
             assert!(handled, "second Ctrl+Shift+P press is also claimed");
             assert!(
@@ -3900,14 +3878,16 @@ mod tests {
             let mut handled = false;
             g.handle_event(
                 &event,
-                1.0,
-                &plain_mods,
-                &mut state,
-                &root_id,
-                &mut handled,
-                &mut focus_target,
-                group_node,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &plain_mods,
+                    state: &mut state,
+                    path: &root_id,
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: group_node,
+                    taffy: &taffy,
+                },
             );
             assert!(
                 !g.bar.is_pinned(active),
@@ -4275,14 +4255,16 @@ mod tests {
             };
             g.handle_event(
                 &moved,
-                1.0,
-                &winit::event::Modifiers::default(),
-                &mut state,
-                &root_id,
-                &mut handled,
-                &mut focus_target,
-                group_node,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &winit::event::Modifiers::default(),
+                    state: &mut state,
+                    path: &root_id,
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: group_node,
+                    taffy: &taffy,
+                },
             );
 
             assert!(
@@ -4304,14 +4286,16 @@ mod tests {
             let mut handled2 = false;
             g.handle_event(
                 &moved2,
-                1.0,
-                &winit::event::Modifiers::default(),
-                &mut state,
-                &root_id,
-                &mut handled2,
-                &mut focus_target,
-                group_node,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &winit::event::Modifiers::default(),
+                    state: &mut state,
+                    path: &root_id,
+                    handled: &mut handled2,
+                    focus_target: &mut focus_target,
+                    node_id: group_node,
+                    taffy: &taffy,
+                },
             );
             assert!(
                 !g.has_host(2),
@@ -4374,14 +4358,16 @@ mod tests {
             };
             g.handle_event(
                 &moved,
-                1.0,
-                &winit::event::Modifiers::default(),
-                &mut state,
-                &root_id,
-                &mut handled,
-                &mut focus_target,
-                group_node,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &winit::event::Modifiers::default(),
+                    state: &mut state,
+                    path: &root_id,
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: group_node,
+                    taffy: &taffy,
+                },
             );
             assert!(
                 g.has_closing_host(1),
@@ -4402,14 +4388,16 @@ mod tests {
             let mut handled2 = false;
             g.handle_event(
                 &moved2,
-                1.0,
-                &winit::event::Modifiers::default(),
-                &mut state,
-                &root_id,
-                &mut handled2,
-                &mut focus_target,
-                group_node,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &winit::event::Modifiers::default(),
+                    state: &mut state,
+                    path: &root_id,
+                    handled: &mut handled2,
+                    focus_target: &mut focus_target,
+                    node_id: group_node,
+                    taffy: &taffy,
+                },
             );
             assert!(
                 g.is_closing(),
@@ -4565,14 +4553,16 @@ mod tests {
             let root_id = automerge::ROOT;
             g.handle_event(
                 &press,
-                1.0,
-                &winit::event::Modifiers::default(),
-                &mut state,
-                &root_id,
-                &mut handled,
-                &mut focus_target,
-                group_node,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &winit::event::Modifiers::default(),
+                    state: &mut state,
+                    path: &root_id,
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: group_node,
+                    taffy: &taffy,
+                },
             );
 
             assert!(handled, "press must be consumed by the close arm");
@@ -4611,14 +4601,16 @@ mod tests {
             let mut handled2 = false;
             g.handle_event(
                 &moved,
-                1.0,
-                &winit::event::Modifiers::default(),
-                &mut state,
-                &root_id,
-                &mut handled2,
-                &mut focus_target,
-                group_node,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &winit::event::Modifiers::default(),
+                    state: &mut state,
+                    path: &root_id,
+                    handled: &mut handled2,
+                    focus_target: &mut focus_target,
+                    node_id: group_node,
+                    taffy: &taffy,
+                },
             );
 
             assert!(!g.has_host(1), "sweep drops the host once the fade expires");

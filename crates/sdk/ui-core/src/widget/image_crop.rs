@@ -383,23 +383,12 @@ impl Widget for ImageCropEditor {
         self.paint_crop_overlay(scene, transform, theme);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        focus: &mut Option<NodeId>,
-        node: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
-        if self.handle_event_at(event, scale) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        if self.handle_event_at(event, ctx.scale_factor) {
             if self.drag.is_some() {
-                *focus = Some(node);
+                *ctx.focus_target = Some(ctx.node_id);
             }
-            *handled = true;
+            *ctx.handled = true;
         }
     }
 

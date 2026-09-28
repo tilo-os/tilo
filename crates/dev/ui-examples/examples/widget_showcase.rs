@@ -16,7 +16,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use automerge::AutoCommit;
 use chrono::NaiveDate;
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 use tilo_ui::i18n::I18nManager;
@@ -127,19 +126,6 @@ impl Widget for LabelTile {
             transform.pre_translate(Vec2::new(self.rect.x0 + 8.0, self.rect.y0 + 6.0)),
             None,
         );
-    }
-    fn handle_event(
-        &mut self,
-        _: &winit::event::WindowEvent,
-        _: f64,
-        _: &winit::event::Modifiers,
-        _: &mut AutoCommit,
-        _: &automerge::ObjId,
-        _: &mut bool,
-        _: &mut Option<NodeId>,
-        _: NodeId,
-        _: &TaffyTree<()>,
-    ) {
     }
     fn name(&self) -> &'static str {
         "LabelTile"

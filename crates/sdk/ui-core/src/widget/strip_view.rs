@@ -4,7 +4,6 @@ use crate::theme::Theme;
 use crate::time::{Duration, Instant};
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -127,18 +126,7 @@ impl Widget for StripView {
         // Invisible — real strip chrome lives in the shell's window-group
         // layout + top-bar.
     }
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        _scale: f64,
-        _m: &winit::event::Modifiers,
-        _s: &mut AutoCommit,
-        _p: &ObjId,
-        handled: &mut bool,
-        _focus: &mut Option<NodeId>,
-        _n: NodeId,
-        _t: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if let WindowEvent::MouseWheel { delta, .. } = event {
             let sign = match delta {
                 MouseScrollDelta::LineDelta(_x, y) => wheel_sign(f64::from(*y)),
@@ -147,7 +135,7 @@ impl Widget for StripView {
             if sign != 0 {
                 let now = crate::time::now().duration_since(self.start);
                 if self.try_paginate(sign, now) {
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
         }

@@ -452,30 +452,17 @@ impl Widget for ResourceActionHost {
     fn handle_event(
         &mut self,
         event: &crate::winit::event::WindowEvent,
-        scale_factor: f64,
-        modifiers: &crate::winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
+        ctx: &mut crate::widget::EventCtx<'_>,
     ) {
-        self.root.handle_event(
-            event,
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            taffy
-                .children(node_id)
-                .ok()
-                .and_then(|children| children.first().copied())
-                .unwrap_or(node_id),
-            taffy,
-        );
+        let node_id = ctx
+            .taffy
+            .children(ctx.node_id)
+            .ok()
+            .and_then(|children| children.first().copied())
+            .unwrap_or(ctx.node_id);
+        let path = ctx.path;
+        self.root
+            .handle_event(event, &mut ctx.reborrow(path, node_id));
     }
 
     fn children(&self) -> Vec<&dyn Widget> {

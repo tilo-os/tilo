@@ -1405,18 +1405,7 @@ impl Widget for CalculatorApp {
         self.draw(scene, transform, text_renderer, theme, presence);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         // Window groups offer an event to visible apps in presentation order.
         // Keyboard and IME input belongs to the host-selected Calculator only;
         // an unfocused instance must leave it unclaimed so that selected sibling
@@ -1435,7 +1424,7 @@ impl Widget for CalculatorApp {
 
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.mouse = p;
                 match self.model.mode {
                     Mode::Calc => {
@@ -1464,15 +1453,15 @@ impl Widget for CalculatorApp {
                     self.g2.hovered_row,
                     self.g3.hovered_row,
                 );
-                *handled = self.dragging || self.field_dragging || hover_now != hover_before;
+                *ctx.handled = self.dragging || self.field_dragging || hover_now != hover_before;
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
             } => {
-                self.on_press(self.mouse, state);
-                *handled = true;
+                self.on_press(self.mouse, ctx.state);
+                *ctx.handled = true;
             }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
@@ -1484,7 +1473,7 @@ impl Widget for CalculatorApp {
                 self.g2.release_fields();
                 self.g3.release_fields();
                 self.calc.pressed_key = None;
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let step = match delta {
@@ -1492,30 +1481,30 @@ impl Widget for CalculatorApp {
                     MouseScrollDelta::PixelDelta(pos) => pos.y / 40.0,
                 };
                 self.on_wheel(step);
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::KeyboardInput {
                 event: key_event, ..
             } if key_event.state == ElementState::Pressed => {
-                *handled = !self.escape_is_idle(&key_event.logical_key);
-                self.on_key(&key_event.logical_key, *modifiers, state);
+                *ctx.handled = !self.escape_is_idle(&key_event.logical_key);
+                self.on_key(&key_event.logical_key, *ctx.modifiers, ctx.state);
             }
             WindowEvent::Ime(winit::event::Ime::Commit(text)) => {
                 self.on_key(
                     &WKey::Character(text.clone().into()),
                     winit::event::Modifiers::default(),
-                    state,
+                    ctx.state,
                 );
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::Ime(_) => {
-                *handled = true;
+                *ctx.handled = true;
             }
             _ => {}
         }
 
         // Everything but inert pointer motion may have changed what is drawn.
-        if !matches!(event, WindowEvent::CursorMoved { .. }) || *handled || self.model_dirty {
+        if !matches!(event, WindowEvent::CursorMoved { .. }) || *ctx.handled || self.model_dirty {
             self.dirty = true;
         }
         if self.model_dirty {
@@ -3134,14 +3123,16 @@ mod tests {
         let mut focus = None;
         app.handle_event(
             ev,
-            1.0,
-            &mods,
-            &mut st.doc,
-            &st.root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: &mut st.doc,
+                path: &st.root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         handled
     }
@@ -3418,14 +3409,16 @@ mod tests {
                     device_id: dev,
                     position: winit::dpi::PhysicalPosition::new(toggle.x, toggle.y),
                 },
-                1.0,
-                &mods,
-                &mut st.doc,
-                &st.root,
-                &mut handled,
-                &mut focus,
-                node,
-                &taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &mods,
+                    state: &mut st.doc,
+                    path: &st.root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &taffy,
+                },
             );
             app.handle_event(
                 &WindowEvent::MouseInput {
@@ -3433,14 +3426,16 @@ mod tests {
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                 },
-                1.0,
-                &mods,
-                &mut st.doc,
-                &st.root,
-                &mut handled,
-                &mut focus,
-                node,
-                &taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &mods,
+                    state: &mut st.doc,
+                    path: &st.root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &taffy,
+                },
             );
             assert!(
                 app.g2.panel_open(),

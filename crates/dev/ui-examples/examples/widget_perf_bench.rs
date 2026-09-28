@@ -393,14 +393,16 @@ fn run_one_cycle(
     };
     root.handle_event(
         &move_evt,
-        1.0,
-        &modifiers,
-        doc,
-        &automerge::ObjId::Root,
-        &mut handled,
-        &mut focus_target,
-        root_node,
-        taffy,
+        &mut tilo_ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &modifiers,
+            state: doc,
+            path: &automerge::ObjId::Root,
+            handled: &mut handled,
+            focus_target: &mut focus_target,
+            node_id: root_node,
+            taffy,
+        },
     );
     handled = false;
     let press_evt = WindowEvent::MouseInput {
@@ -410,14 +412,16 @@ fn run_one_cycle(
     };
     root.handle_event(
         &press_evt,
-        1.0,
-        &modifiers,
-        doc,
-        &automerge::ObjId::Root,
-        &mut handled,
-        &mut focus_target,
-        root_node,
-        taffy,
+        &mut tilo_ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &modifiers,
+            state: doc,
+            path: &automerge::ObjId::Root,
+            handled: &mut handled,
+            focus_target: &mut focus_target,
+            node_id: root_node,
+            taffy,
+        },
     );
     handled = false;
     let release_evt = WindowEvent::MouseInput {
@@ -427,14 +431,16 @@ fn run_one_cycle(
     };
     root.handle_event(
         &release_evt,
-        1.0,
-        &modifiers,
-        doc,
-        &automerge::ObjId::Root,
-        &mut handled,
-        &mut focus_target,
-        root_node,
-        taffy,
+        &mut tilo_ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &modifiers,
+            state: doc,
+            path: &automerge::ObjId::Root,
+            handled: &mut handled,
+            focus_target: &mut focus_target,
+            node_id: root_node,
+            taffy,
+        },
     );
     phases.handle_us = t_handle.elapsed().as_micros();
 

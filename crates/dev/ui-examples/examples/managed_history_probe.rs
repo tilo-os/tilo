@@ -12,7 +12,7 @@
 //! Real native shared History qualification fixture. --plan emits measured
 //! `FrameHarness` coordinates for the same retained tile at an800x600 viewport.
 //! Native mode uses the ordinary scoped factory and shared scheduled input.
-use automerge::{AutoCommit, ObjId, ROOT, ReadDoc, transaction::Transactable};
+use automerge::{AutoCommit, ROOT, ReadDoc, transaction::Transactable};
 use std::{cell::RefCell, collections::HashMap};
 use taffy::{NodeId, TaffyTree};
 use tilo_ui::{
@@ -177,28 +177,10 @@ impl Widget for Note {
     ) {
         self.0.draw(scene, transform, text, theme, presence);
     }
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale: f64,
-        mods: &winit::event::Modifiers,
-        doc: &mut AutoCommit,
-        root: &ObjId,
-        handled: &mut bool,
-        focused: &mut Option<NodeId>,
-        node: NodeId,
-        tree: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui::widget::EventCtx<'_>) {
         self.0.handle_event(
             event,
-            scale,
-            mods,
-            doc,
-            root,
-            handled,
-            focused,
-            tree.children(node).unwrap()[0],
-            tree,
+            &mut ctx.reborrow(ctx.path, ctx.taffy.children(ctx.node_id).unwrap()[0]),
         );
     }
 }

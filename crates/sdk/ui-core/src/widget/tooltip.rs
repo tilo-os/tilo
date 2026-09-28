@@ -4,7 +4,6 @@
 //! primitive is unit-testable without a winit event loop or a wall clock.
 
 use crate::time::{Duration, Instant};
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -328,18 +327,7 @@ impl Widget for Tooltip {
         );
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         // Without an anchor the widget stays driven by the explicit
         // on_hover_*/tick API.
         if self.anchor == Rect::ZERO {
@@ -347,7 +335,7 @@ impl Widget for Tooltip {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 let inside = self.anchor.contains(p);
                 if inside && self.hover_since.is_none() {
                     self.on_hover_enter(Duration::ZERO);
@@ -652,6 +640,7 @@ mod host_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::AutoCommit;
 
     fn feed(t: &mut Tooltip, p: Point) {
         let mut tree = TaffyTree::<()>::new();
@@ -666,14 +655,16 @@ mod tests {
         };
         t.handle_event(
             &ev,
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus,
-            node,
-            &tree,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &winit::event::Modifiers::default(),
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &tree,
+            },
         );
     }
 

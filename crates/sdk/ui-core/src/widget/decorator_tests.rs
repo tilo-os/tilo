@@ -91,14 +91,16 @@ fn decorators_forward_override_and_intercept_their_inner_widget() {
         let mut focus = None;
         widget.handle_event(
             &WindowEvent::Focused(true),
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut doc,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &winit::event::Modifiers::default(),
+                state: &mut doc,
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         assert_eq!(widget.resources(&doc).len(), 1);
         assert!(widget.take_control_invocation().is_none());
@@ -122,7 +124,7 @@ fn decorators_forward_override_and_intercept_their_inner_widget() {
                 "build_layout",
                 "apply_layout",
                 "draw",
-                "handle_event_ctx",
+                "handle_event",
                 "resources",
                 "take_control_invocation",
                 "start_operation",
@@ -132,9 +134,8 @@ fn decorators_forward_override_and_intercept_their_inner_widget() {
         assert_eq!(nodes.len(), 1);
     }
 
-    /// Overriding `handle_event_ctx` alone is enough: the host calls the
-    /// positional `handle_event`, which reaches the decorator's override.
-    fn a_decorator_intercepts_input_through_either_entry_point() {
+    /// A decorator's `handle_event` override sees input before its inner widget.
+    fn a_decorator_intercepts_input() {
         struct Swallow {
             inner: Recorder,
             seen: usize,
@@ -147,7 +148,7 @@ fn decorators_forward_override_and_intercept_their_inner_widget() {
             fn inner_mut(&mut self) -> &mut Recorder {
                 &mut self.inner
             }
-            fn handle_event_ctx(&mut self, _event: &WindowEvent, ctx: &mut EventCtx<'_>) {
+            fn handle_event(&mut self, _event: &WindowEvent, ctx: &mut EventCtx<'_>) {
                 self.seen += 1;
                 *ctx.handled = true;
             }
@@ -163,14 +164,16 @@ fn decorators_forward_override_and_intercept_their_inner_widget() {
         Widget::handle_event(
             &mut swallow,
             &WindowEvent::Focused(true),
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut AutoCommit::new(),
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &winit::event::Modifiers::default(),
+                state: &mut AutoCommit::new(),
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         assert!(handled);
         assert_eq!(swallow.seen, 1);
@@ -240,7 +243,7 @@ fn decorators_forward_override_and_intercept_their_inner_widget() {
 
     decorator_forwards_every_widget_method();
     a_decorator_is_its_inner_widget_plus_its_overrides();
-    a_decorator_intercepts_input_through_either_entry_point();
+    a_decorator_intercepts_input();
     a_container_without_overrides_forwards_its_children();
 }
 
@@ -301,8 +304,8 @@ impl Widget for Recorder {
         self.note("draw");
     }
 
-    fn handle_event_ctx(&mut self, _event: &WindowEvent, _ctx: &mut EventCtx<'_>) {
-        self.note("handle_event_ctx");
+    fn handle_event(&mut self, _event: &WindowEvent, _ctx: &mut EventCtx<'_>) {
+        self.note("handle_event");
     }
 
     fn name(&self) -> &'static str {

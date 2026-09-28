@@ -510,14 +510,16 @@ fn send_with(
     let root = automerge::ROOT;
     app.handle_event(
         ev,
-        1.0,
-        &mods,
-        doc,
-        &root,
-        &mut handled,
-        &mut focus,
-        node,
-        &taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &mods,
+            state: doc,
+            path: &root,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: node,
+            taffy: &taffy,
+        },
     );
     handled
 }

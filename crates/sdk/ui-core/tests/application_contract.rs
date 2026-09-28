@@ -1370,19 +1370,6 @@ mod save_status_fixture {
             _: &tilo_ui::presence::PresenceCtx,
         ) {
         }
-        fn handle_event(
-            &mut self,
-            _: &winit::event::WindowEvent,
-            _: f64,
-            _: &winit::event::Modifiers,
-            _: &mut automerge::AutoCommit,
-            _: &automerge::ObjId,
-            _: &mut bool,
-            _: &mut Option<taffy::NodeId>,
-            _: taffy::NodeId,
-            _: &taffy::TaffyTree<()>,
-        ) {
-        }
         fn name(&self) -> &'static str {
             "Status"
         }
@@ -1647,7 +1634,7 @@ mod save_status_fixture {
 
 mod paired_local {
     use super::*;
-    use automerge::{AutoCommit, ObjId, ReadDoc};
+    use automerge::{AutoCommit, ReadDoc};
     use std::cell::RefCell;
     use tilo_ui::application::{AppComponent, ApplicationDefinition};
     use tilo_ui::application_view::{ApplicationFocusRestore, ApplicationLocalView};
@@ -1693,19 +1680,6 @@ mod paired_local {
             _: &mut tilo_ui::TextRenderer,
             _: &tilo_ui::Theme,
             _: &tilo_ui::presence::PresenceCtx,
-        ) {
-        }
-        fn handle_event(
-            &mut self,
-            _: &winit::event::WindowEvent,
-            _: f64,
-            _: &winit::event::Modifiers,
-            _: &mut AutoCommit,
-            _: &ObjId,
-            _: &mut bool,
-            _: &mut Option<taffy::NodeId>,
-            _: taffy::NodeId,
-            _: &taffy::TaffyTree<()>,
         ) {
         }
         fn name(&self) -> &'static str {

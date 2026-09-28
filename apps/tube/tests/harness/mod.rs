@@ -210,14 +210,16 @@ impl<W: Widget> Harness<W> {
         let mut focus: Option<NodeId> = None;
         self.app.handle_event(
             event,
-            1.0,
-            &self.modifiers,
-            &mut self.state.doc,
-            &self.state.root,
-            &mut handled,
-            &mut focus,
-            self.child,
-            &self.taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &self.modifiers,
+                state: &mut self.state.doc,
+                path: &self.state.root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: self.child,
+                taffy: &self.taffy,
+            },
         );
         if focus.is_some() {
             self.last_focus = focus;

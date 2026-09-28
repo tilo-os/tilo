@@ -14,7 +14,6 @@
 
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Vec2};
@@ -251,21 +250,11 @@ impl Widget for ImageViewer {
         clippy::arithmetic_side_effects,
         reason = "kurbo::Vec2 arithmetic is f64 component-wise math; it never panics or overflows, unlike integer +/-/*"
     )]
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let logical = Vec2::new(position.x / scale_factor, position.y / scale_factor);
+                let logical =
+                    Vec2::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 let prev = self.cursor;
                 self.cursor = Some(logical);
                 // `pan` is image-space, so the screen delta is divided by
@@ -278,7 +267,7 @@ impl Widget for ImageViewer {
                         let total_scale = base * f64::from(self.zoom);
                         let delta = logical - prev_pos;
                         self.pan += Vec2::new(delta.x / total_scale, delta.y / total_scale);
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                 }
             }
@@ -292,14 +281,14 @@ impl Widget for ImageViewer {
                         let p = Point::new(c.x, c.y);
                         if self.rect.contains(p) {
                             self.drag_origin = Some(c);
-                            *handled = true;
+                            *ctx.handled = true;
                         }
                     }
                 }
                 ElementState::Released => {
                     if self.drag_origin.is_some() {
                         self.drag_origin = None;
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                 }
             },
@@ -328,14 +317,14 @@ impl Widget for ImageViewer {
                 let factor = ZOOM_STEP.powf(scroll_y);
                 let new_zoom = (self.zoom * factor).clamp(ZOOM_MIN, ZOOM_MAX);
                 if (new_zoom - self.zoom).abs() < f32::EPSILON {
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 self.zoom = new_zoom;
                 if let (Some(before), Some(after)) = (before, self.screen_to_image(cursor)) {
                     self.pan += after - before;
                 }
-                *handled = true;
+                *ctx.handled = true;
             }
             _ => {}
         }
@@ -361,6 +350,7 @@ impl Widget for ImageViewer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::AutoCommit;
     use std::sync::Arc;
     use vello::peniko::{Blob, ImageAlphaType, ImageData as Image, ImageFormat as Format};
     use winit::dpi::PhysicalPosition;
@@ -414,14 +404,16 @@ mod tests {
                     device_id: dev,
                     position: PhysicalPosition::new(50.0, 50.0),
                 },
-                1.0,
-                &modifiers,
-                &mut state,
-                &root,
-                &mut handled,
-                &mut focus,
-                node,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state: &mut state,
+                    path: &root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &taffy,
+                },
             );
 
             iv.handle_event(
@@ -430,14 +422,16 @@ mod tests {
                     delta: MouseScrollDelta::LineDelta(0.0, 1.0),
                     phase: winit::event::TouchPhase::Moved,
                 },
-                1.0,
-                &modifiers,
-                &mut state,
-                &root,
-                &mut handled,
-                &mut focus,
-                node,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state: &mut state,
+                    path: &root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &taffy,
+                },
             );
 
             assert!(
@@ -468,14 +462,16 @@ mod tests {
                     device_id: dev,
                     position: PhysicalPosition::new(50.0, 50.0),
                 },
-                1.0,
-                &modifiers,
-                &mut state,
-                &root,
-                &mut handled,
-                &mut focus,
-                node,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state: &mut state,
+                    path: &root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &taffy,
+                },
             );
 
             iv.handle_event(
@@ -484,14 +480,16 @@ mod tests {
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                 },
-                1.0,
-                &modifiers,
-                &mut state,
-                &root,
-                &mut handled,
-                &mut focus,
-                node,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state: &mut state,
+                    path: &root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &taffy,
+                },
             );
             assert!(
                 iv.drag_origin.is_some(),
@@ -505,14 +503,16 @@ mod tests {
                     device_id: dev,
                     position: PhysicalPosition::new(80.0, 70.0),
                 },
-                1.0,
-                &modifiers,
-                &mut state,
-                &root,
-                &mut handled,
-                &mut focus,
-                node,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state: &mut state,
+                    path: &root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &taffy,
+                },
             );
 
             iv.handle_event(
@@ -521,14 +521,16 @@ mod tests {
                     state: ElementState::Released,
                     button: MouseButton::Left,
                 },
-                1.0,
-                &modifiers,
-                &mut state,
-                &root,
-                &mut handled,
-                &mut focus,
-                node,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state: &mut state,
+                    path: &root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &taffy,
+                },
             );
 
             assert!(iv.drag_origin.is_none(), "Release must clear drag origin");

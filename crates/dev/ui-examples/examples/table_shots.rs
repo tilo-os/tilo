@@ -127,14 +127,16 @@ fn dispatch(
     let mods = Modifiers::default();
     table.handle_event(
         ev,
-        1.0,
-        &mods,
-        doc,
-        t,
-        &mut handled,
-        &mut focus_target,
-        node,
-        taffy,
+        &mut tilo_ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &mods,
+            state: doc,
+            path: t,
+            handled: &mut handled,
+            focus_target: &mut focus_target,
+            node_id: node,
+            taffy,
+        },
     );
 }
 

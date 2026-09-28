@@ -255,18 +255,7 @@ impl Widget for UndoButton {
         Button::paint(scene, transform, text_renderer, theme, &face);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         // Unavailable: reject input outright, matching every other disabled
         // widget. No hover feedback, no request, not consumed.
         if !self.is_available() {
@@ -279,7 +268,8 @@ impl Widget for UndoButton {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let logical = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let logical =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 let hover = self.rect.contains(logical);
                 if hover != self.is_hovered {
                     self.is_hovered = hover;
@@ -296,9 +286,9 @@ impl Widget for UndoButton {
                     if pressed != self.is_pressed {
                         self.is_pressed = pressed;
                         self.dirty = true;
-                        *handled = true;
+                        *ctx.handled = true;
                         if pressed {
-                            *focus_target = Some(node_id);
+                            *ctx.focus_target = Some(ctx.node_id);
                         } else {
                             // Fires on release-while-hovered, like `Button`.
                             self.activate();
@@ -307,7 +297,7 @@ impl Widget for UndoButton {
                 } else if self.is_pressed {
                     self.is_pressed = false;
                     self.dirty = true;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             _ => {}
@@ -485,14 +475,16 @@ mod tests {
         ] {
             b.handle_event(
                 &ev,
-                1.0,
-                &mods,
-                &mut doc,
-                &ROOT,
-                &mut handled,
-                &mut focus,
-                node,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &mods,
+                    state: &mut doc,
+                    path: &ROOT,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &taffy,
+                },
             );
         }
     }

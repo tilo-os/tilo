@@ -321,18 +321,7 @@ impl Widget for Gate {
             self.content.draw(scene, transform, text, theme, presence);
         }
     }
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale: f64,
-        modifiers: &winit::event::Modifiers,
-        doc: &mut automerge::AutoCommit,
-        path: &automerge::ObjId,
-        handled: &mut bool,
-        focus: &mut Option<NodeId>,
-        node: NodeId,
-        t: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if !self.open.get() {
             return;
         }
@@ -350,11 +339,10 @@ impl Widget for Gate {
             )
         {
             self.delivered.set(self.delivered.get() + 1);
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
-        self.content
-            .handle_event(event, scale, modifiers, doc, path, handled, focus, node, t);
+        self.content.handle_event(event, ctx);
     }
     fn children(&self) -> Vec<&dyn Widget> {
         if self.open.get() {

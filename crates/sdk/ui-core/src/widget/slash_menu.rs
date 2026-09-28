@@ -660,20 +660,6 @@ impl Widget for SlashMenu {
     ) {
         // No-op in the main draw pass; see `draw_overlay`.
     }
-    fn handle_event(
-        &mut self,
-        _event: &WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
-        // Routing is owned by the parent — see `handle_key`.
-    }
     fn name(&self) -> &'static str {
         "SlashMenu"
     }

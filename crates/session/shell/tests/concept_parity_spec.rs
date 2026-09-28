@@ -1252,19 +1252,19 @@ fn maximized_chrome_hides_when_cursor_below_y_80() {
     };
     let mut handled = false;
     let mut focus: Option<NodeId> = None;
-    let mods = Modifiers::default();
     let mut doc = automerge::AutoCommit::new();
-    let doc_root = automerge::ROOT.clone();
     group.handle_event(
         &cursor_event,
-        1.0,
-        &mods,
-        &mut doc,
-        &doc_root,
-        &mut handled,
-        &mut focus,
-        child,
-        &taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &Modifiers::default(),
+            state: &mut doc,
+            path: &automerge::ROOT,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: child,
+            taffy: &taffy,
+        },
     );
 
     let mut scene_below = Scene::new();
@@ -1957,14 +1957,16 @@ mod overview_add_workspace {
                     device_id: unsafe { std::mem::zeroed() },
                     position: PhysicalPosition::new(centre.x, centre.y),
                 },
-                1.0,
-                &modifiers,
-                &mut doc,
-                &doc_root,
-                &mut handled,
-                &mut focus,
-                h.root_node,
-                &h.taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state: &mut doc,
+                    path: &doc_root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: h.root_node,
+                    taffy: &h.taffy,
+                },
             );
             h.host.handle_event(
                 &WindowEvent::MouseInput {
@@ -1972,14 +1974,16 @@ mod overview_add_workspace {
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                 },
-                1.0,
-                &modifiers,
-                &mut doc,
-                &doc_root,
-                &mut handled,
-                &mut focus,
-                h.root_node,
-                &h.taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state: &mut doc,
+                    path: &doc_root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: h.root_node,
+                    taffy: &h.taffy,
+                },
             );
 
             let st = h.chrome.borrow();

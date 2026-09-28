@@ -262,21 +262,11 @@ impl Widget for TriStateControl {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_cursor =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -291,7 +281,7 @@ impl Widget for TriStateControl {
                     let target = if i == self.selected { 1 } else { i };
                     self.selected = target;
                     self.choice = Some(target);
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             _ => {}
@@ -595,21 +585,11 @@ impl Widget for ColorSwatchPicker {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_cursor =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.hovered = self
                     .swatch_rects
                     .iter()
@@ -629,8 +609,8 @@ impl Widget for ColorSwatchPicker {
                     self.choice = Some(i);
                     self.focused = true;
                     self.focus_index = i;
-                    *focus_target = Some(node_id);
-                    *handled = true;
+                    *ctx.focus_target = Some(ctx.node_id);
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::KeyboardInput {
@@ -657,13 +637,13 @@ impl Widget for ColorSwatchPicker {
                     Key::Named(NamedKey::Enter | NamedKey::Space) => {
                         self.selected = Some(self.focus_index);
                         self.choice = Some(self.focus_index);
-                        *handled = true;
+                        *ctx.handled = true;
                         return;
                     }
                     _ => return,
                 };
                 self.focus_index = next;
-                *handled = true;
+                *ctx.handled = true;
             }
             _ => {}
         }
@@ -924,14 +904,16 @@ mod tests {
         let root = automerge::ROOT;
         w.handle_event(
             e,
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut ft,
-            node,
-            &taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &winit::event::Modifiers::default(),
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut ft,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         handled
     }

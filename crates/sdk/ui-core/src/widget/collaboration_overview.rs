@@ -11,7 +11,6 @@ use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::widget::avatar::Avatar;
 use crate::widget::{TaffyTreeExt, Widget};
-use automerge::{AutoCommit, ObjId};
 use std::collections::{HashMap, HashSet};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -695,21 +694,11 @@ impl Widget for CollaborationOverview {
         self.draw_catchup(s, a, tr, th, top);
         self.dirty = false;
     }
-    fn handle_event(
-        &mut self,
-        e: &WindowEvent,
-        scale: f64,
-        _: &winit::event::Modifiers,
-        _: &mut AutoCommit,
-        _: &ObjId,
-        h: &mut bool,
-        _: &mut Option<NodeId>,
-        _: NodeId,
-        _: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, e: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         match e {
             WindowEvent::CursorMoved { position, .. } => {
-                self.pointer = Point::new(position.x / scale, position.y / scale);
+                self.pointer =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -718,7 +707,7 @@ impl Widget for CollaborationOverview {
             } => {
                 if self.status_hit.contains(self.pointer) {
                     self.pending = Some(CollaborationOverviewAction::EditStatus);
-                    *h = true;
+                    *ctx.handled = true;
                 } else if let Some((mode, _)) = self
                     .sharing_hits
                     .iter()
@@ -727,7 +716,7 @@ impl Widget for CollaborationOverview {
                 {
                     self.experience.set_sharing(mode);
                     self.dirty = true;
-                    *h = true;
+                    *ctx.handled = true;
                 } else if let Some((i, _)) = self
                     .brief_hits
                     .iter()
@@ -738,7 +727,7 @@ impl Widget for CollaborationOverview {
                         self.expanded.insert(i);
                     }
                     self.dirty = true;
-                    *h = true;
+                    *ctx.handled = true;
                 }
             }
             _ => {}

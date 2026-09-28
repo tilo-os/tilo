@@ -16,14 +16,12 @@ use std::path::PathBuf;
 use std::sync::{Arc, LazyLock};
 
 use crate::widget::TaffyTreeExt;
-use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Stroke};
 use vello::peniko::{
     Blob, Color, Fill, ImageAlphaType, ImageBrush, ImageData as PenikoImage, ImageFormat as Format,
 };
-use winit::event::WindowEvent;
 
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
@@ -464,20 +462,6 @@ impl Widget for Image {
         _presence: &PresenceCtx,
     ) {
         self.paint(scene, transform, theme.tokens.colors.semantic.danger);
-    }
-
-    fn handle_event(
-        &mut self,
-        _event: &WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
     }
 
     fn name(&self) -> &'static str {

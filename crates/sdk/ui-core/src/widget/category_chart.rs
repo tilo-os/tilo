@@ -835,19 +835,8 @@ impl Widget for CategoryChart {
             );
         }
     }
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
-        if let Some(action) = self.touch.handle(event, scale_factor) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        if let Some(action) = self.touch.handle(event, ctx.scale_factor) {
             match action {
                 ChartTouchAction::Inspect(point) => {
                     self.pointer = point;
@@ -865,15 +854,15 @@ impl Widget for CategoryChart {
                             .map(|(id, _)| id.clone())
                     {
                         let _ = self.toggle_series(&id);
-                        *handled = true;
-                        *focus_target = Some(node_id);
+                        *ctx.handled = true;
+                        *ctx.focus_target = Some(ctx.node_id);
                     } else if let Some((category, series)) = self.hovered
                         && let (Some(category), Some(series)) =
                             (self.categories.get(category), self.series.get(series))
                     {
                         self.activated = Some((series.id.clone(), category.id.clone()));
-                        *handled = true;
-                        *focus_target = Some(node_id);
+                        *ctx.handled = true;
+                        *ctx.focus_target = Some(ctx.node_id);
                     }
                 }
                 ChartTouchAction::Clear => self.hovered = None,
@@ -882,7 +871,8 @@ impl Widget for CategoryChart {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.pointer = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.pointer =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.update_hover();
                 self.keyboard_inspection = false;
             }
@@ -900,8 +890,8 @@ impl Widget for CategoryChart {
                         .map(|(id, _)| id.clone())
                 {
                     let _ = self.toggle_series(&id);
-                    *handled = true;
-                    *focus_target = Some(node_id);
+                    *ctx.handled = true;
+                    *ctx.focus_target = Some(ctx.node_id);
                     return;
                 }
                 if let Some((category, series)) = self.hovered
@@ -909,8 +899,8 @@ impl Widget for CategoryChart {
                         (self.categories.get(category), self.series.get(series))
                 {
                     self.activated = Some((series.id.clone(), category.id.clone()));
-                    *handled = true;
-                    *focus_target = Some(node_id);
+                    *ctx.handled = true;
+                    *ctx.focus_target = Some(ctx.node_id);
                 }
             }
             _ if chart_nav_action(event).is_some() => {
@@ -942,8 +932,8 @@ impl Widget for CategoryChart {
                         self.pointer = bar.rect.center();
                     }
                 }
-                *handled = true;
-                *focus_target = Some(node_id);
+                *ctx.handled = true;
+                *ctx.focus_target = Some(ctx.node_id);
             }
             _ => {}
         }

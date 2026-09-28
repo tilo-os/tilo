@@ -17,7 +17,7 @@ use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
+use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::presence::PresenceCtx;
@@ -294,20 +294,10 @@ impl Widget for EditableLabel {
         );
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_pointer = Point::new(position.x / scale_factor, position.y / scale_factor);
+            self.last_pointer =
+                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
         }
         if !self.editing {
             return;
@@ -325,7 +315,7 @@ impl Widget for EditableLabel {
                 ..
             } => {
                 self.commit();
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -337,7 +327,7 @@ impl Widget for EditableLabel {
                 ..
             } => {
                 self.cancel();
-                *handled = true;
+                *ctx.handled = true;
             }
             // Deliberately NOT consumed, so the click still reaches whatever
             // is under it — clicking away both saves and acts, like a
@@ -353,34 +343,14 @@ impl Widget for EditableLabel {
             // A plain hover move is forwarded but not claimed, so the host
             // keeps its own pointer bookkeeping.
             WindowEvent::CursorMoved { .. } => {
-                let was = *handled;
-                self.input.handle_event(
-                    event,
-                    scale_factor,
-                    modifiers,
-                    state,
-                    root,
-                    handled,
-                    focus_target,
-                    node_id,
-                    taffy,
-                );
+                let was = *ctx.handled;
+                self.input.handle_event(event, ctx);
                 if !self.input.is_dragging() {
-                    *handled = was;
+                    *ctx.handled = was;
                 }
             }
             _ => {
-                self.input.handle_event(
-                    event,
-                    scale_factor,
-                    modifiers,
-                    state,
-                    root,
-                    handled,
-                    focus_target,
-                    node_id,
-                    taffy,
-                );
+                self.input.handle_event(event, ctx);
             }
         }
     }
@@ -497,6 +467,7 @@ impl Widget for EditableLabel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use winit::event::Modifiers;
 
     fn drive(el: &mut EditableLabel, doc: &mut AutoCommit, ev: &WindowEvent, m: Modifiers) -> bool {
         let mut handled = false;
@@ -505,14 +476,16 @@ mod tests {
         let node = taffy.leaf_node(Style::default());
         el.handle_event(
             ev,
-            1.0,
-            &m,
-            doc,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &m,
+                state: doc,
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         handled
     }

@@ -425,18 +425,7 @@ impl Widget for BreadcrumbBar {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut automerge::AutoCommit,
-        _path: &automerge::ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         match event {
             WindowEvent::KeyboardInput { event, .. }
                 if event.state == ElementState::Pressed && self.focused =>
@@ -447,29 +436,30 @@ impl Widget for BreadcrumbBar {
                 match event.logical_key {
                     Key::Named(NamedKey::ArrowLeft) => {
                         self.keyboard_index = (len > 0).then_some(current.saturating_sub(1));
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                     Key::Named(NamedKey::ArrowRight) => {
                         self.keyboard_index =
                             (len > 0).then_some((current + 1).min(len.saturating_sub(1)));
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                     Key::Named(NamedKey::Home) => {
                         self.keyboard_index = (len > 0).then_some(0);
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                     Key::Named(NamedKey::End) => {
                         self.keyboard_index = (len > 0).then_some(len - 1);
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                     Key::Named(NamedKey::Enter) => {
-                        *handled = self.activate_keyboard_segment();
+                        *ctx.handled = self.activate_keyboard_segment();
                     }
                     _ => {}
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_cursor =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 // Latch hover on clickable (non-current) slots so the accent
                 // recolour + pointer affordance read as "this is a link".
                 let mut new_hover = None;
@@ -487,7 +477,7 @@ impl Widget for BreadcrumbBar {
                 }
                 if new_hover != self.hover {
                     self.hover = new_hover;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseInput {
@@ -498,14 +488,14 @@ impl Widget for BreadcrumbBar {
                 if let Some(i) = self.hover {
                     if let Some(Some(target)) = self.laid.get(i).map(|ls| ls.target.clone()) {
                         push(&self.sink, FileCommand::Navigate(target));
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                 } else if self.rect.contains(self.last_cursor) {
                     // A press on the trail that isn't a navigable ancestor — the
                     // current location or the empty area after it — asks to edit
                     // the path (Finder/Nautilus: click the path to type one).
                     self.edit_requested = true;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             _ => {}
