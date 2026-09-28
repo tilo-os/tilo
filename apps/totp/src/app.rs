@@ -439,6 +439,18 @@ impl AuthenticatorApp {
         persisted
     }
 
+    /// Live vault-save retry is not in [`crate::resource::Totp`]'s children —
+    /// publish it beside the framework tree when hosted.
+    fn persistence_retry_resource(&self) -> Option<tilo_actions::Resource> {
+        if !self.persistence_pending {
+            return None;
+        }
+        Some(
+            tilo_actions::Resource::new("totp.persistence", "totp.persistence", "Local vault save")
+                .with_action(crate::actions::retry_persist_operation()),
+        )
+    }
+
     /// Recompute the filtered/ordered visible set and push it to the list.
     fn refresh_list(&mut self) {
         let query = self.search.value().to_string();
@@ -1755,6 +1767,11 @@ impl ui::resources::PublishesResources for AuthenticatorApp {
     /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
     /// [`crate::actions`], which reads the accounts straight from the document.
     fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        // The framework root publishes the vault and its accounts. Keep only
+        // the live persistence retry when hosted — it is not in the resource.
+        if self.actions.is_hosted() {
+            return self.persistence_retry_resource().into_iter().collect();
+        }
         let mut resources = crate::actions::provide_contextual_resources(&self.vault.accounts);
         if self.persistence_pending
             && let Some(root) = resources.first_mut()
@@ -1766,7 +1783,15 @@ impl ui::resources::PublishesResources for AuthenticatorApp {
         resources
     }
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        if id == "totp.persistence" {
+            return self.persistence_retry_resource();
+        }
         if id == "totp.vault" {
+            // When hosted the framework root owns totp.vault; this surface
+            // only adds the persistence retry beside it.
+            if self.actions.is_hosted() {
+                return None;
+            }
             return self.resources(doc).pop();
         }
         let raw_id = id.strip_prefix("totp.account:")?;
