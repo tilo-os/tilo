@@ -4384,6 +4384,19 @@ fn load_session_tree(
             adopted.len()
         );
     }
+    if let Some(account) = std::env::var("USER")
+        .ok()
+        .filter(|account| !account.is_empty())
+    {
+        let rebound = tree
+            .rebind_account_owned_workspaces(&account, crate::shell::state::local_user_id_for_room);
+        if !rebound.is_empty() {
+            tracing::info!(
+                "capabilities: {} workspace(s) created before this device's identity now belong to it",
+                rebound.len()
+            );
+        }
+    }
     // Replay the persisted aggregate on every boot. A previous session may
     // have stopped while the authority socket was unavailable; the
     // background publisher coalesces this with any immediate mutation.
