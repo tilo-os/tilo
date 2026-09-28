@@ -1,6 +1,6 @@
 //! `PeerSnapshot` and `SessionHealth` v1, the shapes Cloud already codes
 //! against, derived from the relay session and the page store's save
-//! status instead of qOS delivery cursors.
+//! status.
 //!
 //! Serialized with camelCase field names so the page can hand the value to
 //! JavaScript unchanged.

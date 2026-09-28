@@ -14,7 +14,7 @@
 # runtime with every web-capable app registered from its manifest, under the
 # runtime's module name so the page host loads it unchanged, plus apps.json.
 # Needs the wasm32-unknown-unknown target and a wasm-bindgen CLI matching the
-# crate's pinned wasm-bindgen. Ported from PR 541's qos-browser-runtime build.
+# crate's pinned wasm-bindgen.
 set -euo pipefail
 
 crate=$(cd "$(dirname "$0")/.." && pwd)

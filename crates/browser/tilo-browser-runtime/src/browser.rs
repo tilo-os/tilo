@@ -1,11 +1,9 @@
 //! One page-lifetime winit loop. JavaScript owns the DOM and `IndexedDB`; this
 //! owns the real application component, its frame pipeline and the GPU.
 //!
-//! Ported from PR 541's `qos-browser-runtime/src/browser.rs` (component
-//! path). Records and views live in `durable_store::MemoryStore` via
+//! Records and views live in `durable_store::MemoryStore` via
 //! [`crate::storage`]. A mount is the session desktop ([`crate::desktop`])
-//! unless the page names one application; PR 541's desktop host, peer,
-//! live-view and action-palette paths are not part of this runtime.
+//! unless the page names one application.
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
