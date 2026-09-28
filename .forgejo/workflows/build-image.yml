@@ -205,8 +205,8 @@ jobs:
             else
               # A protected manual or nightly main publication uses the same native
               # runner-large fleet as the integration build below; its runner
-              # image carries the release signer. Its VM gate already falls
-              # back to TCG inside Kata when KVM is unavailable. Tags retain
+              # image carries the release signer. The early KVM probe rejects
+              # publishing if nested virtualization is unavailable. Tags retain
               # the dedicated release fleet above.
               matrix='{"include":[{"arch":"x86_64","runner":"runner-large"},{"arch":"aarch64","runner":"runner-large-arm64"},{"arch":"x86_64","runner":"runner-large","role":"reproduce"},{"arch":"aarch64","runner":"runner-large-arm64","role":"reproduce"}]}'
             fi
