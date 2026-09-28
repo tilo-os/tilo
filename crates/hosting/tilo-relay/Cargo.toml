@@ -65,7 +65,7 @@ path = "src/home_peer_control.rs"
 #   iroh endpoint so the integration tests spin up two relays + N
 #   peers without any external service.
 [dependencies]
-xdg-paths = { path = "../../system/xdg-paths" }
+tilo-xdg-paths = { path = "../../system/xdg-paths" }
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-agent-control-protocol = { path = "../../agent/control-protocol" }
 web-time = { version = "1", features = ["serde"] }
@@ -162,10 +162,10 @@ tokio = { workspace = true, features = ["full"] }
 # The daemon's bounded runtime.
 tilo-rt.workspace = true
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
-atomic-file = { path = "../../system/atomic-file" }
+tilo-atomic-file = { path = "../../system/atomic-file" }
 # Home-peer configuration is one signed filesystem bundle; the relay imports
 # its workspace tickets rather than asking the operator to duplicate ids.
-fs = { path = "../../system/fs" }
+tilo-fs = { path = "../../system/fs" }
 collab-types = { path = "../../collab/collab-types" }
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 runtime-identity = { path = "../../runtime/runtime-identity" }
@@ -178,7 +178,7 @@ getrandom03 = { package = "getrandom", version = "0.3", features = ["wasm_js"] }
 uuid = { workspace = true, features = ["js"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-atomic-file = { path = "../../system/atomic-file", features = ["test-support"] }
+tilo-atomic-file = { path = "../../system/atomic-file", features = ["test-support"] }
 chat = { path = "../../../apps/chat", default-features = false }
 word-processor = { path = "../../../apps/word-processor" }
 qdoc = { path = "../../doc/qdoc" }

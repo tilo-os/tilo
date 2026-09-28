@@ -24,7 +24,7 @@ blake3.workspace = true
 hex.workspace = true
 reqwest = { workspace = true, features = ["json"] }
 tilo-net = { path = "../../platform/tilo-net", features = ["http"] }
-advisory-lock = { path = "../../system/advisory-lock" }
+tilo-advisory-lock = { path = "../../system/advisory-lock" }
 wire-frame = { path = "../../system/wire-frame", features = ["tokio"] }
 url.workspace = true
 zeroize.workspace = true
@@ -48,7 +48,7 @@ collab-types = {path="../../collab/collab-types"}
 tilo-actions = { path = "../../collab/actions" }
 tilo-relay = { path = "../tilo-relay" }
 tilo-delivery-protocol = { path = "../tilo-delivery-protocol" }
-atomic-file = {path="../../system/atomic-file"}
+tilo-atomic-file = {path="../../system/atomic-file"}
 private-fs = { path = "../../system/private-fs" }
 secret-vault = { path = "../../system/secret-vault" }
 tilo-seal = { path = "../../system/tilo-seal" }
@@ -64,7 +64,7 @@ tilo-cloud-enrollment = { path = "../tilo-cloud-enrollment" }
 channel-crypto = { path = "../../collab/channel-crypto" }
 tilo-automerge.workspace = true
 tilo-action-broker = {path="../../collab/tilo-action-broker", features=["test-support"]}
-atomic-file = {path="../../system/atomic-file", features=["test-support"]}
+tilo-atomic-file = {path="../../system/atomic-file", features=["test-support"]}
 tempfile.workspace = true
 tilo-test-env = { path = "../../dev/test-env" }
 moq-net.workspace = true

@@ -54,7 +54,7 @@ bounded-zip = { path = "../../crates/doc/bounded-zip", features = ["epub"] }
 roxmltree.workspace = true
 # Decode and downscale embedded raster covers for the shelf, through the
 # shared preview decoder.
-thumbnail = { path = "../../crates/media/thumbnail" }
+tilo-thumbnail = { path = "../../crates/media/thumbnail" }
 unicode-bidi = "0.3.18"
 
 [dev-dependencies]

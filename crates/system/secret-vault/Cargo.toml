@@ -24,7 +24,7 @@ hex.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 # Serializes key creation between processes.
-advisory-lock = { path = "../advisory-lock" }
+tilo-advisory-lock = { path = "../advisory-lock" }
 # Draws a fresh key before DPAPI protects it.
 getrandom.workspace = true
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }

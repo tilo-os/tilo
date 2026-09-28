@@ -504,7 +504,7 @@ inputs = ["os/usr/lib/systemd/system/tilo-device-key-init.service"]
 readers = ["crates/collab/tilo-user-identity/src/bin/tilo-device-key-init.rs"]
 
 [[cargo]]
-package = "fs"
+package = "tilo-fs"
 inputs = [
   "os/Containerfile", "os/usr/lib/systemd/system/fs.service", "os/usr/lib/tmpfiles.d/tilo.conf",
   "os/usr/share/tilo/fs-capabilities.json", "crates/doc/fixtures/sample.docx",

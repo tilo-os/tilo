@@ -20,10 +20,10 @@ name = "tilo-runtime"
 path = "src/bin/tilo-runtime.rs"
 
 [dependencies]
-xdg-paths = { path = "../../system/xdg-paths" }
+tilo-xdg-paths = { path = "../../system/xdg-paths" }
 tilo-clock = { path = "../../platform/tilo-clock" }
-advisory-lock = { path = "../../system/advisory-lock" }
-atomic-file = { path = "../../system/atomic-file" }
+tilo-advisory-lock = { path = "../../system/advisory-lock" }
+tilo-atomic-file = { path = "../../system/atomic-file" }
 automerge.workspace = true
 base64.workspace = true
 # Seals and opens the channel state this device keeps for its encrypted routes.
@@ -58,7 +58,7 @@ tilo-automerge-isolate.workspace = true
 tilo-desktop-model = { path = "../../session/desktop-model" }
 # The document-media capability over the content store, and the workspace
 # files mirrored into a folder where nothing mounts them.
-tilo-fs = { package = "fs", path = "../../system/fs" }
+tilo-fs = { package = "tilo-fs", path = "../../system/fs" }
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
 tilo-identity-host = { path = "../tilo-identity-host" }
 # The one per-user index the host's own search reads.
