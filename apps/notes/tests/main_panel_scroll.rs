@@ -15,11 +15,10 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use std::collections::HashMap;
 use std::fmt::Write as _;
+use ui::headless::{FrameOptions, Framed};
 
 use notes::NotesApp;
-use taffy::prelude::*;
 use tempfile::TempDir;
 use ui::theme::Theme;
 use ui::widget::Widget;
@@ -43,94 +42,25 @@ fn tall_body() -> String {
     s
 }
 
-fn settle(
-    app: &mut NotesApp,
-    state: &mut ui::State,
-    w: u16,
-    h: u16,
-) -> Result<(TaffyTree<()>, NodeId), String> {
+fn settle(app: NotesApp, state: ui::State, w: u16, h: u16) -> Framed<NotesApp> {
     settle_scaled(app, state, w, h, 1.0)
 }
 
-fn settle_scaled(
-    app: &mut NotesApp,
-    state: &mut ui::State,
-    w: u16,
-    h: u16,
-    scale: f32,
-) -> Result<(TaffyTree<()>, NodeId), String> {
-    let theme = Theme::dark().with_text_scale(scale);
-    let mut text_renderer = crate::component_support::renderer();
-    text_renderer.set_text_scale(scale);
-    app.sync(&mut state.doc, &state.root);
-    let mut result: Option<(TaffyTree<()>, NodeId)> = None;
-    for _ in 0..5 {
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let child = app.build_layout(&mut taffy, &theme, &mut node_map);
-        let root = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::length(f32::from(w)),
-                        height: Dimension::length(f32::from(h)),
-                    },
-                    ..Default::default()
-                },
-                &[child],
-            )
-            .map_err(|e| e.to_string())?;
-        {
-            let measure_map = node_map.clone();
-            let tr = &mut text_renderer;
-            taffy
-                .compute_layout_with_measure(
-                    root,
-                    taffy::Size {
-                        width: AvailableSpace::Definite(f32::from(w)),
-                        height: AvailableSpace::Definite(f32::from(h)),
-                    },
-                    |known, avail, node_id, _, _| {
-                        if let Some(&ptr) = measure_map.get(&node_id) {
-                            unsafe { (*ptr).measure(known, avail, tr) }
-                        } else {
-                            taffy::Size::ZERO
-                        }
-                    },
-                )
-                .map_err(|e| e.to_string())?;
-        }
-        app.apply_layout(&taffy, child, Point::ORIGIN);
-        let settled = !app.take_structure_dirty();
-        result = Some((taffy, child));
-        if settled {
-            break;
-        }
-    }
-    result.ok_or_else(|| "layout never settled".to_string())
+fn settle_scaled(app: NotesApp, state: ui::State, w: u16, h: u16, scale: f32) -> Framed<NotesApp> {
+    Framed::with_options(
+        state,
+        app,
+        (u32::from(w), u32::from(h)),
+        FrameOptions {
+            theme: Some(Theme::dark().with_text_scale(scale)),
+            text: Some(crate::component_support::renderer()),
+            ..FrameOptions::default()
+        },
+    )
 }
 
-fn dispatch(
-    app: &mut NotesApp,
-    state: &mut ui::State,
-    taffy: &TaffyTree<()>,
-    child: NodeId,
-    event: &WindowEvent,
-) {
-    let modifiers = Modifiers::default();
-    let mut handled = false;
-    let mut focus_target = None;
-    app.handle_event(
-        event,
-        1.0,
-        &modifiers,
-        &mut state.doc,
-        &state.root,
-        &mut handled,
-        &mut focus_target,
-        child,
-        taffy,
-    );
+fn dispatch(app: &mut Framed<NotesApp>, event: &WindowEvent) {
+    Framed::harness_mut(app).dispatch_to_root_with(event, &Modifiers::default());
 }
 
 #[allow(
@@ -151,9 +81,9 @@ fn note_scrolling_clamps_reveals_and_drags_through_the_real_scrollbar() {
         // Otherwise its delayed first bind replaces the panel midway through this test.
         app.bypass_seed_grace_for_test();
 
-        let mut state = ui::State::new();
+        let state = ui::State::new();
         // Wide (stays inline) but short so the content overflows.
-        let (taffy, child) = settle(&mut app, &mut state, 1000, 300).unwrap();
+        let mut app = settle(app, state, 1000, 300);
         assert_eq!(
             app.main_panel_mut().scroll_y_for_test(),
             0.0,
@@ -161,8 +91,10 @@ fn note_scrolling_clamps_reveals_and_drags_through_the_real_scrollbar() {
         );
 
         // Scroll down: negative LineDelta y → positive px offset.
-        dispatch(&mut app, &mut state, &taffy, child, &wheel(-3.0));
-        let (taffy, child) = settle(&mut app, &mut state, 1000, 300).unwrap();
+        dispatch(&mut app, &wheel(-3.0));
+        Framed::harness_mut(&mut app)
+            .relayout_at((1000, 300))
+            .unwrap();
         let scrolled = app.main_panel_mut().scroll_y_for_test();
         assert!(
             scrolled > 0.0,
@@ -171,11 +103,15 @@ fn note_scrolling_clamps_reveals_and_drags_through_the_real_scrollbar() {
 
         // Scroll far past the bottom: scroll_y must clamp to the content
         // extent — a second huge scroll can't push it further.
-        dispatch(&mut app, &mut state, &taffy, child, &wheel(-1000.0));
-        let (taffy, child) = settle(&mut app, &mut state, 1000, 300).unwrap();
+        dispatch(&mut app, &wheel(-1000.0));
+        Framed::harness_mut(&mut app)
+            .relayout_at((1000, 300))
+            .unwrap();
         let at_max = app.main_panel_mut().scroll_y_for_test();
-        dispatch(&mut app, &mut state, &taffy, child, &wheel(-1000.0));
-        let (taffy, child) = settle(&mut app, &mut state, 1000, 300).unwrap();
+        dispatch(&mut app, &wheel(-1000.0));
+        Framed::harness_mut(&mut app)
+            .relayout_at((1000, 300))
+            .unwrap();
         let still_max = app.main_panel_mut().scroll_y_for_test();
         assert!(
             at_max > scrolled,
@@ -192,8 +128,10 @@ fn note_scrolling_clamps_reveals_and_drags_through_the_real_scrollbar() {
         );
 
         // Scroll back up past the top: clamps at 0.
-        dispatch(&mut app, &mut state, &taffy, child, &wheel(1000.0));
-        let _ = settle(&mut app, &mut state, 1000, 300).unwrap();
+        dispatch(&mut app, &wheel(1000.0));
+        Framed::harness_mut(&mut app)
+            .relayout_at((1000, 300))
+            .unwrap();
         assert_eq!(
             app.main_panel_mut().scroll_y_for_test(),
             0.0,
@@ -211,10 +149,12 @@ fn note_scrolling_clamps_reveals_and_drags_through_the_real_scrollbar() {
             notes::storage::write_page_body(tmp.path(), id, &body).unwrap();
             app.main_panel_mut().load_page(id, "Long note", &body);
             app.bypass_seed_grace_for_test();
-            let mut state = ui::State::new();
-            let (taffy, child) = settle_scaled(&mut app, &mut state, 1000, 1000, scale).unwrap();
-            dispatch(&mut app, &mut state, &taffy, child, &wheel(-1000.0));
-            settle_scaled(&mut app, &mut state, 1000, 1000, scale).unwrap();
+            let state = ui::State::new();
+            let mut app = settle_scaled(app, state, 1000, 1000, scale);
+            dispatch(&mut app, &wheel(-1000.0));
+            Framed::harness_mut(&mut app)
+                .relayout_themed((1000, 1000), Theme::dark().with_text_scale(scale))
+                .unwrap();
             let mut renderer = crate::component_support::renderer();
             renderer.set_text_scale(scale);
             let (_, pill_height) = ui::status_bubble::pill_size("Saved", &mut renderer, 12.0, 0.0);
@@ -240,56 +180,48 @@ fn note_scrolling_clamps_reveals_and_drags_through_the_real_scrollbar() {
         notes::storage::write_page_body(tmp.path(), id, &body).unwrap();
         app.main_panel_mut().load_page(id, "Long note", &body);
         app.bypass_seed_grace_for_test();
-        let mut state = ui::State::new();
-        let (taffy, child) = settle(&mut app, &mut state, 1000, 600).unwrap();
+        let state = ui::State::new();
+        let mut app = settle(app, state, 1000, 600);
         let before = app.main_panel_mut().editor().to_markdown();
         let thumb = scroll_control(&mut app).bounds.unwrap().to_rect();
         assert_eq!(scroll_control(&mut app).value.as_deref(), Some("0"));
+        dispatch(&mut app, &pointer(thumb.center()));
+        dispatch(&mut app, &mouse(Pressed));
         dispatch(
             &mut app,
-            &mut state,
-            &taffy,
-            child,
-            &pointer(thumb.center()),
-        );
-        dispatch(&mut app, &mut state, &taffy, child, &mouse(Pressed));
-        dispatch(
-            &mut app,
-            &mut state,
-            &taffy,
-            child,
             &pointer(Point::new(thumb.center().x, thumb.center().y + 100.0)),
         );
-        let (taffy, child) = settle(&mut app, &mut state, 1000, 600).unwrap();
+        Framed::harness_mut(&mut app)
+            .relayout_at((1000, 600))
+            .unwrap();
         assert!(
             app.main_panel_mut().scroll_y_for_test() > 0.0,
             "drag must move the note"
         );
         assert!(scroll_control(&mut app).bounds.unwrap().y0 > thumb.y0);
-        dispatch(&mut app, &mut state, &taffy, child, &mouse(Released));
+        dispatch(&mut app, &mouse(Released));
         let scrolled = app.main_panel_mut().scroll_y_for_test();
-        dispatch(
-            &mut app,
-            &mut state,
-            &taffy,
-            child,
-            &pointer(Point::new(thumb.center().x, 10.0)),
-        );
-        settle(&mut app, &mut state, 1000, 600).unwrap();
+        dispatch(&mut app, &pointer(Point::new(thumb.center().x, 10.0)));
+        Framed::harness_mut(&mut app)
+            .relayout_at((1000, 600))
+            .unwrap();
         assert_eq!(
             app.main_panel_mut().scroll_y_for_test(),
             scrolled,
             "release ends the drag"
         );
 
-        let root = state.root.clone();
-        assert!(app.main_panel_mut().perform_semantic_action(
+        let root = Framed::harness(&app).state().root.clone();
+        let (notes, state) = Framed::split(&mut app);
+        assert!(notes.main_panel_mut().perform_semantic_action(
             "notes.scroll-position",
             &Action::SetValue("100".into()),
             &mut state.doc,
             &root
         ));
-        let (taffy, child) = settle(&mut app, &mut state, 1000, 600).unwrap();
+        Framed::harness_mut(&mut app)
+            .relayout_at((1000, 600))
+            .unwrap();
         assert_eq!(scroll_control(&mut app).value.as_deref(), Some("100"));
         let last = app
             .main_panel_mut()
@@ -307,25 +239,26 @@ fn note_scrolling_clamps_reveals_and_drags_through_the_real_scrollbar() {
         let thumb = scroll_control(&mut app).bounds.unwrap().to_rect();
         dispatch(
             &mut app,
-            &mut state,
-            &taffy,
-            child,
             &pointer(Point::new(thumb.center().x, thumb.y0 - 20.0)),
         );
-        dispatch(&mut app, &mut state, &taffy, child, &mouse(Pressed));
-        dispatch(&mut app, &mut state, &taffy, child, &mouse(Released));
-        settle(&mut app, &mut state, 1000, 600).unwrap();
+        dispatch(&mut app, &mouse(Pressed));
+        dispatch(&mut app, &mouse(Released));
+        Framed::harness_mut(&mut app)
+            .relayout_at((1000, 600))
+            .unwrap();
         assert!(
             app.main_panel_mut().scroll_y_for_test() < bottom,
             "track click pages upward"
         );
-        assert!(!app.main_panel_mut().perform_semantic_action(
+        let (notes, state) = Framed::split(&mut app);
+        assert!(!notes.main_panel_mut().perform_semantic_action(
             "notes.scroll-position",
             &Action::SetValue("NaN".into()),
             &mut state.doc,
             &root
         ));
-        assert!(app.main_panel_mut().perform_semantic_action(
+        let (notes, state) = Framed::split(&mut app);
+        assert!(notes.main_panel_mut().perform_semantic_action(
             "notes.scroll-position",
             &Action::Focus,
             &mut state.doc,
@@ -346,50 +279,28 @@ fn note_scrolling_clamps_reveals_and_drags_through_the_real_scrollbar() {
                 is_synthetic: false,
             }
         };
-        let (taffy, child) = settle(&mut app, &mut state, 1000, 600).unwrap();
-        dispatch(
-            &mut app,
-            &mut state,
-            &taffy,
-            child,
-            &key(winit::keyboard::NamedKey::Home),
-        );
-        let (taffy, child) = settle(&mut app, &mut state, 1000, 600).unwrap();
+        Framed::harness_mut(&mut app)
+            .relayout_at((1000, 600))
+            .unwrap();
+        dispatch(&mut app, &key(winit::keyboard::NamedKey::Home));
+        Framed::harness_mut(&mut app)
+            .relayout_at((1000, 600))
+            .unwrap();
         assert_eq!(app.main_panel_mut().scroll_y_for_test(), 0.0);
-        dispatch(
-            &mut app,
-            &mut state,
-            &taffy,
-            child,
-            &key(winit::keyboard::NamedKey::PageDown),
-        );
-        let (taffy, child) = settle(&mut app, &mut state, 1000, 600).unwrap();
+        dispatch(&mut app, &key(winit::keyboard::NamedKey::PageDown));
+        Framed::harness_mut(&mut app)
+            .relayout_at((1000, 600))
+            .unwrap();
         assert!(app.main_panel_mut().scroll_y_for_test() > 0.0);
         let thumb = scroll_control(&mut app).bounds.unwrap().to_rect();
-        dispatch(
-            &mut app,
-            &mut state,
-            &taffy,
-            child,
-            &pointer(thumb.center()),
-        );
-        dispatch(&mut app, &mut state, &taffy, child, &mouse(Pressed));
-        dispatch(
-            &mut app,
-            &mut state,
-            &taffy,
-            child,
-            &WindowEvent::Focused(false),
-        );
+        dispatch(&mut app, &pointer(thumb.center()));
+        dispatch(&mut app, &mouse(Pressed));
+        dispatch(&mut app, &WindowEvent::Focused(false));
         let stopped = app.main_panel_mut().scroll_y_for_test();
-        dispatch(
-            &mut app,
-            &mut state,
-            &taffy,
-            child,
-            &pointer(Point::new(thumb.center().x, 500.0)),
-        );
-        settle(&mut app, &mut state, 1000, 600).unwrap();
+        dispatch(&mut app, &pointer(Point::new(thumb.center().x, 500.0)));
+        Framed::harness_mut(&mut app)
+            .relayout_at((1000, 600))
+            .unwrap();
         assert_eq!(
             app.main_panel_mut().scroll_y_for_test(),
             stopped,
@@ -409,8 +320,8 @@ fn note_scrolling_clamps_reveals_and_drags_through_the_real_scrollbar() {
         app.main_panel_mut()
             .load_page(id, "Short note", "Fits on screen");
         app.bypass_seed_grace_for_test();
-        let mut state = ui::State::new();
-        settle(&mut app, &mut state, 1000, 600).unwrap();
+        let state = ui::State::new();
+        let mut app = settle(app, state, 1000, 600);
         assert_eq!(app.main_panel_mut().editor().blocks().len(), 1);
         assert_eq!(
             app.main_panel_mut().editor().blocks()[0].text(),
@@ -438,12 +349,14 @@ fn note_scrolling_clamps_reveals_and_drags_through_the_real_scrollbar() {
         notes::storage::write_page_body(tmp.path(), id, &body).unwrap();
         app.main_panel_mut().load_page(id, "Long note", &body);
         app.bypass_seed_grace_for_test();
-        let mut state = ui::State::new();
-        settle(&mut app, &mut state, 1000, 400).unwrap();
+        let state = ui::State::new();
+        let mut app = settle(app, state, 1000, 400);
 
         let last = app.main_panel_mut().editor().blocks().len() - 1;
         assert!(app.main_panel_mut().reveal_block(last));
-        let (taffy, child) = settle(&mut app, &mut state, 1000, 400).unwrap();
+        Framed::harness_mut(&mut app)
+            .relayout_at((1000, 400))
+            .unwrap();
         let panel = app.main_panel_mut();
         assert!(
             panel.scroll_y_for_test() > 0.0,
@@ -456,8 +369,10 @@ fn note_scrolling_clamps_reveals_and_drags_through_the_real_scrollbar() {
             panel.get_rect()
         );
 
-        dispatch(&mut app, &mut state, &taffy, child, &wheel(1000.0));
-        settle(&mut app, &mut state, 1000, 400).unwrap();
+        dispatch(&mut app, &wheel(1000.0));
+        Framed::harness_mut(&mut app)
+            .relayout_at((1000, 400))
+            .unwrap();
         assert_eq!(
             app.main_panel_mut().scroll_y_for_test(),
             0.0,
@@ -465,9 +380,13 @@ fn note_scrolling_clamps_reveals_and_drags_through_the_real_scrollbar() {
         );
 
         assert!(app.main_panel_mut().reveal_block(last));
-        settle(&mut app, &mut state, 1000, 400).unwrap();
+        Framed::harness_mut(&mut app)
+            .relayout_at((1000, 400))
+            .unwrap();
         assert!(app.main_panel_mut().reveal_block(0));
-        settle(&mut app, &mut state, 1000, 400).unwrap();
+        Framed::harness_mut(&mut app)
+            .relayout_at((1000, 400))
+            .unwrap();
         assert_eq!(
             app.main_panel_mut().scroll_y_for_test(),
             0.0,
@@ -488,10 +407,14 @@ fn note_scrolling_clamps_reveals_and_drags_through_the_real_scrollbar() {
             is_synthetic: false,
         };
         for _ in 0..last {
-            let (taffy, child) = settle(&mut app, &mut state, 1000, 400).unwrap();
-            dispatch(&mut app, &mut state, &taffy, child, &arrow_down);
+            Framed::harness_mut(&mut app)
+                .relayout_at((1000, 400))
+                .unwrap();
+            dispatch(&mut app, &arrow_down);
         }
-        settle(&mut app, &mut state, 1000, 400).unwrap();
+        Framed::harness_mut(&mut app)
+            .relayout_at((1000, 400))
+            .unwrap();
         let panel = app.main_panel_mut();
         assert!(
             panel.scroll_y_for_test() > 0.0,
@@ -541,21 +464,27 @@ fn external_primary_region_is_measured_editor_and_matches_wheel() {
     notes::storage::write_page_body(tmp.path(), id, &body).unwrap();
     app.main_panel_mut().load_page(id, "Long page", body);
     app.bypass_seed_grace_for_test();
-    let mut state = ui::State::new();
-    let (tree, node) = settle(&mut app, &mut state, 1000, 300).unwrap();
+    let state = ui::State::new();
+    let mut app = settle(app, state, 1000, 300);
     let m = app.primary_vertical_scroll().unwrap().metrics;
     assert!(m.max_scroll() > 0.0);
-    let heads = state.doc.get_heads();
+    let heads = Framed::split(&mut app).1.doc.get_heads();
     app.apply_primary_vertical_scroll(PrimaryScrollAction::End);
-    settle(&mut app, &mut state, 1000, 300).unwrap();
+    Framed::harness_mut(&mut app)
+        .relayout_at((1000, 300))
+        .unwrap();
     let m = app.primary_vertical_scroll().unwrap().metrics;
     assert_eq!(m.offset, m.max_scroll());
     assert_eq!(m.offset, app.main_panel_mut().scroll_y_for_test());
-    dispatch(&mut app, &mut state, &tree, node, &wheel(2.0));
-    settle(&mut app, &mut state, 1000, 300).unwrap();
+    dispatch(&mut app, &wheel(2.0));
+    Framed::harness_mut(&mut app)
+        .relayout_at((1000, 300))
+        .unwrap();
     assert!(app.primary_vertical_scroll().unwrap().metrics.offset < m.offset);
-    assert_eq!(state.doc.get_heads(), heads);
-    settle(&mut app, &mut state, 1000, 1200).unwrap();
+    assert_eq!(Framed::split(&mut app).1.doc.get_heads(), heads);
+    Framed::harness_mut(&mut app)
+        .relayout_at((1000, 1200))
+        .unwrap();
     let m = app.primary_vertical_scroll().unwrap().metrics;
     assert!(m.offset <= m.max_scroll());
 }
