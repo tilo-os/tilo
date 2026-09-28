@@ -920,10 +920,24 @@ pub struct RoomStatus {
     pub governed: bool,
     /// Whether this machine is the room's governance authority.
     pub governs: bool,
-    /// This session's role in the room, if it holds one yet.
+    /// This session's role in the room, if it holds one yet: `owner`,
+    /// `editor`, `commenter`, `viewer` or `blocked` — a key for scripts and
+    /// agents, never the reader's words.
     pub role: Option<String>,
     /// People holding a role in the room.
     pub members: usize,
+}
+
+/// The stable key of `role` in a [`RoomStatus`], whatever language the
+/// session reads.
+fn role_key(role: crate::shell::state::CapRole) -> &'static str {
+    match role {
+        crate::shell::state::CapRole::Owner => "owner",
+        crate::shell::state::CapRole::Editor => "editor",
+        crate::shell::state::CapRole::Commenter => "commenter",
+        crate::shell::state::CapRole::Viewer => "viewer",
+        crate::shell::state::CapRole::Denied => "blocked",
+    }
 }
 
 /// How often the session looks at whether it is where the person wants to be
@@ -3154,7 +3168,7 @@ impl ShellNetwork {
         let me = crate::shell::state::local_user_id_for_room(&room);
         let role = workspace
             .role_of(&me)
-            .map(tilo_desktop::workspace_settings::role_label);
+            .map(|role| role_key(role).to_string());
         let governed = tree
             .room_docs
             .get(&room)
@@ -4232,14 +4246,18 @@ impl ShellNetwork {
         local: crate::shell::state::WorkspaceId,
         token: &str,
     ) -> Result<crate::shell::state::RoomId, String> {
-        let replica = self
-            .replica
-            .lock()
-            .map_err(|_| "peer-sync replica lock poisoned".to_string())?;
-        let room = {
-            let mut tree = replica.tree.write();
-            accept_invite_into(&mut tree, local, token)?
-        };
+        // The replica is held only while it changes: publishing reads it
+        // again, and a second lock of it from this thread never returns.
+        let room = accept_invite_into(
+            &mut self
+                .replica
+                .lock()
+                .map_err(|_| "peer-sync replica lock poisoned".to_string())?
+                .tree
+                .write(),
+            local,
+            token,
+        )?;
         if !self.join_topic(room_topic_id(room)) {
             return Err("peer-sync command queue is full; try accepting the invite again".into());
         }
@@ -4247,9 +4265,14 @@ impl ShellNetwork {
         // `validate_invite_token` already ran inside `accept_invite_into`,
         // so re-reading the token here cannot let an unverified address through.
         self.redeem_invite(room, token);
-        replica.request_sync();
-        let outgoing = replica.drain_outgoing();
-        drop(replica);
+        let outgoing = {
+            let replica = self
+                .replica
+                .lock()
+                .map_err(|_| "peer-sync replica lock poisoned".to_string())?;
+            replica.request_sync();
+            replica.drain_outgoing()
+        };
         for msg in outgoing {
             let _ = self.publish_message(msg);
         }
@@ -13631,8 +13654,10 @@ mod tests {
             assert!(team_net.connect_host(relay.node_addr()));
             let team_device = team.cert.device_public_key;
             let retained = tick_until(&team_net, 30, |_| {
-                std::fs::read_dir(store.root().join("retained").join("checkpoints"))
-                    .is_ok_and(|entries| entries.count() >= 2)
+                // Read through the store, whatever its layout on disk.
+                store
+                    .load_retained()
+                    .is_ok_and(|retained| retained.len() >= 2)
             })
             .await;
             assert!(
@@ -14627,6 +14652,11 @@ mod tests {
         }
 
         let sockets = tempfile::tempdir().expect("sockets");
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(sockets.path(), std::fs::Permissions::from_mode(0o700))
+                .expect("an owner-only socket directory");
+        }
         let ada_tree = ada.tree_handle().expect("tree");
         let bea_tree = bea.tree_handle().expect("tree");
         let ada_broker = crate::shell::collab_broker::spawn_native(
@@ -14991,5 +15021,20 @@ mod tests {
         let (net, _) = shell_network_for_test(tree.clone(), 6);
         net.dispatch_neighbour_msg(topic, peer, None, genuine);
         assert!(lists_recorder(&tree), "the genuine one is listed");
+    }
+}
+
+#[cfg(test)]
+mod room_status_role_tests {
+    /// A room's status names the session's role by key, so a script reading
+    /// it works whatever language the session is in.
+    #[test]
+    fn a_room_status_names_the_role_by_key_not_by_label() {
+        use crate::shell::state::CapRole;
+        assert_eq!(super::role_key(CapRole::Editor), "editor");
+        assert_eq!(super::role_key(CapRole::Commenter), "commenter");
+        assert_eq!(super::role_key(CapRole::Owner), "owner");
+        assert_eq!(super::role_key(CapRole::Viewer), "viewer");
+        assert_eq!(super::role_key(CapRole::Denied), "blocked");
     }
 }
