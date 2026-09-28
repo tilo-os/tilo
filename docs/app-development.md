@@ -785,9 +785,9 @@ to the SDK rebuilds the core too. `--bind` picks another address.
 
 The build needs wasm-bindgen 0.2.108, binaryen's `wasm-opt`, lld's `wasm-ld`,
 Node.js and brotli, which the builder image `tilo-app add ci` uses has.
-`TILO_WEB_BUILD_RUNNER` runs the build under a command prefix instead: with
-`rcargo --fetch web exec --` it runs on an rcargo builder and brings
-`target/web` back. A web package's `[budget]` applies to its module as it
+`TILO_WEB_BUILD_RUNNER` runs the build under a command prefix instead, for
+example a wrapper that runs it on a remote machine and brings `target/web`
+back. A web package's `[budget]` applies to its module as it
 does to a thin binary.
 
 ### Publishing

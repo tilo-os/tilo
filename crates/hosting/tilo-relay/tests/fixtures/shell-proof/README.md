@@ -5,10 +5,10 @@ identity, signature and timestamp is derived in that file, so no key outside
 the repository signs anything here. Regenerate with:
 
 ```sh
-rcargo test -p tilo-relay --lib --run-ignored only regenerate_shell_proof_fixture
+cargo nextest run -p tilo-relay --lib --run-ignored only regenerate_shell_proof_fixture
 ```
 
-(`cargo nextest` takes the same arguments; with plain `cargo test`, use
+(With plain `cargo test`, use
 `-- --ignored regenerate_shell_proof_fixture`.) The output is not byte-identical
 between runs, because the room document's Automerge actor and the store's
 generation directory names are random, but the scenario is.
