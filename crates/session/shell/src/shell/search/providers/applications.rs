@@ -423,17 +423,7 @@ impl ApplicationsProvider {
         apps: Vec<InstalledApp>,
         open_target: OpenTarget,
     ) -> Vec<SearchResult> {
-        let scores = test_scores(
-            needle,
-            apps.iter().map(|app| {
-                application_fields(
-                    &app.display_name,
-                    &app.package_id,
-                    app.category.as_deref(),
-                    None,
-                )
-            }),
-        );
+        let scores = test_scores(needle, apps.iter().map(installed_fields));
         self.installed_rows(needle, apps, &scores, open_target)
     }
 
@@ -472,7 +462,10 @@ impl ApplicationsProvider {
                 app.package_id.clone(),
                 t_args(
                     "search-apps-open",
-                    &[("app", app.display_name.as_str().into())],
+                    &[(
+                        "app",
+                        app.name_for(&crate::shell::i18n::current_locale()).into(),
+                    )],
                 ),
                 Some(subtitle),
                 presentation_score(needle, &app.package_id, score),
@@ -1181,15 +1174,34 @@ const APPLICATION_MATCHING: Matching = Matching::LOOSE;
 /// Each app's provider score for `needle`, for tests building rows from a
 /// bare list.
 #[cfg(test)]
-fn test_scores<'a>(
-    needle: &str,
-    apps: impl Iterator<Item = [(&'a str, tilo_search::FieldWeight); 5]>,
-) -> Vec<Option<i32>> {
+fn test_scores<'a, Fields>(needle: &str, apps: impl Iterator<Item = Fields>) -> Vec<Option<i32>>
+where
+    Fields: IntoIterator<Item = (&'a str, tilo_search::FieldWeight)>,
+{
     ui::search::ListIndex::new(APPLICATION_MATCHING)
         .ranks(needle, apps)
         .into_iter()
         .map(|rank| rank.map(provider_score))
         .collect()
+}
+
+/// An installed app's [`application_fields`], plus its name in every
+/// language its manifest gives one, each weighed as the name itself: a
+/// German desktop types "Dateien", an English habit types "Files".
+fn installed_fields(app: &InstalledApp) -> Vec<(&str, tilo_search::FieldWeight)> {
+    let mut fields = application_fields(
+        &app.display_name,
+        &app.package_id,
+        app.category.as_deref(),
+        None,
+    )
+    .to_vec();
+    fields.extend(
+        app.localized_names
+            .values()
+            .map(|name| (name.as_str(), tilo_search::FieldWeight::TITLE)),
+    );
+    fields
 }
 
 /// Index each entry's [`application_fields`], keyed by position.
@@ -1211,13 +1223,11 @@ fn index_entries(entries: &[ApplicationEntry]) -> SearchIndex {
     index.replace_all(entries.iter().enumerate().map(|(at, entry)| {
         let document = Document::new(at as u64);
         match entry {
-            ApplicationEntry::Installed(app) => app_fields(
-                document,
-                &app.display_name,
-                &app.package_id,
-                app.category.as_deref(),
-                None,
-            ),
+            ApplicationEntry::Installed(app) => installed_fields(app)
+                .into_iter()
+                .fold(document, |document, (text, weight)| {
+                    document.field(text, weight)
+                }),
             ApplicationEntry::Dynamic(record) => {
                 app_fields(document, &record.name, &record.id, None, None)
             }
@@ -1288,6 +1298,7 @@ mod tests {
         InstalledApp {
             package_id: package_id.to_string(),
             display_name: display_name.to_string(),
+            localized_names: Default::default(),
             category: category.map(str::to_string),
             version: "0.1.0".to_string(),
             manifest_path: PathBuf::from("/apps/x/manifest.toml"),
@@ -1896,6 +1907,44 @@ mod tests {
                     .is_some_and(|text| text.contains("verified"))
             );
         }
+    }
+
+    /// An app is found by its name in any language its manifest gives, so a
+    /// German desktop finds Files as "Dateien" and English still works.
+    #[test]
+    fn an_installed_app_is_found_by_its_localized_name_and_its_own() {
+        let mut files = app_in("so.tilo.file-explorer", "Files", Some("System"));
+        files.localized_names.insert("de".into(), "Dateien".into());
+        let p = ApplicationsProvider::with_test_source(ApplicationsTestSource::new(
+            vec![files.clone()],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        ));
+        let c = chrome_rc();
+        let state = c.borrow();
+        let doc = AutoCommit::new();
+        for needle in ["Dateien", "dateien", "Files"] {
+            let ctx = SearchContext {
+                needle,
+                wanted: &[ResourceKind::Application],
+                chrome: &state,
+                doc: &doc,
+                doc_root: &automerge::ROOT,
+            };
+            refresh_until_ready(&p, &ctx);
+            let results = p.query(ctx);
+            assert!(
+                results
+                    .iter()
+                    .any(|row| row.id.ends_with("so.tilo.file-explorer")),
+                "{needle:?} finds Files: {:?}",
+                results.iter().map(|row| &row.title).collect::<Vec<_>>()
+            );
+        }
+        assert_eq!(files.name_for("de-DE"), "Dateien");
+        assert_eq!(files.name_for("de"), "Dateien");
+        assert_eq!(files.name_for("en-US"), "Files");
     }
 
     #[test]

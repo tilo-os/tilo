@@ -18,6 +18,9 @@ version  = "0.1.0"
 kind     = "service"
 runtime  = "tilo-runtime/2026.07"
 
+[package.names]
+de = "Bildschirmtastatur"
+
 [package.isa]
 x86_64 = "v3"
 aarch64 = "aarch64"
