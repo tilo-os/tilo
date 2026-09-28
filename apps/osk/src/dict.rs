@@ -22,6 +22,7 @@
 //! `tres` must still reach `très`.
 
 use std::cmp::Ordering;
+use std::collections::HashMap;
 
 /// A language the keyboard ships offline word data for.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -194,6 +195,20 @@ impl Dictionary {
     /// All entries, in frequency order (most common first).
     pub fn words(&self) -> &[Entry] {
         &self.entries
+    }
+
+    /// How often each non-ASCII letter occurs in running text of this
+    /// language: its occurrences summed over every word, weighted by the
+    /// word's estimated count. Ranks the long-press accents.
+    pub fn accent_usage(&self) -> HashMap<char, f64> {
+        let mut usage: HashMap<char, f64> = HashMap::new();
+        for entry in &self.entries {
+            let count = weight_to_count(entry.weight);
+            for c in entry.word.chars().filter(|c| !c.is_ascii()) {
+                *usage.entry(c).or_insert(0.0) += count;
+            }
+        }
+        usage
     }
 
     /// The compact frequency weight of `word` (case-insensitive), or `None`
@@ -415,8 +430,7 @@ mod tests {
             assert_eq!(d.weight("ou"), Some(800));
             assert_eq!(d.weight("où"), Some(700));
             assert_eq!(d.weight("trés"), None);
-            let next: std::collections::HashMap<char, f64> =
-                d.next_char_weights("tr").into_iter().collect();
+            let next: HashMap<char, f64> = d.next_char_weights("tr").into_iter().collect();
             assert!(next[&'e'] > next[&'a'], "è and é count for e: {next:?}");
         }
 

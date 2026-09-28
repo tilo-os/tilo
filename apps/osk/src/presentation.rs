@@ -138,17 +138,39 @@ impl AlternatesPopup {
     }
 }
 
-/// Key-sized cells in one row just above `key_rect`, starting over the held
-/// key and shifted to stay inside `bounds`.
+/// Key-sized cells in one row just above `key_rect`, parallel to the options.
 fn alternates_cells(key_rect: Rect, n: usize, bounds: Rect) -> Vec<Rect> {
     let w = key_rect.width();
     let h = key_rect.height();
-    let total = w * n as f64;
-    let x0 = key_rect.x0.min(bounds.x1 - total).max(bounds.x0);
     let y0 = (key_rect.y0 - h).max(bounds.y0);
+    // The first option (the plain letter) sits right above the finger, so a
+    // press released without sliding, or with a small wobble, keeps it. The
+    // rest run towards the side with room: rightwards, or leftwards near the
+    // right edge, the way a thumb naturally slides away from the edge.
+    let span = w * n.saturating_sub(1) as f64;
+    let room_right = bounds.x1 - key_rect.x1;
+    let room_left = key_rect.x0 - bounds.x0;
+    let step = if room_right >= span || room_right >= room_left {
+        w
+    } else {
+        -w
+    };
+    // When the row cannot fit either way, slide it back inside the bounds.
+    let (lo, hi) = if step > 0.0 {
+        (key_rect.x0, key_rect.x0 + span + w)
+    } else {
+        (key_rect.x0 - span, key_rect.x1)
+    };
+    let shift = if hi > bounds.x1 {
+        bounds.x1 - hi
+    } else if lo < bounds.x0 {
+        bounds.x0 - lo
+    } else {
+        0.0
+    };
     (0..n)
         .map(|i| {
-            let x = x0 + w * i as f64;
+            let x = key_rect.x0 + shift + step * i as f64;
             Rect::new(x, y0, x + w, y0 + h)
         })
         .collect()
