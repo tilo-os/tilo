@@ -7397,6 +7397,8 @@ impl Collaborative for FileExplorerWidget {
 }
 
 impl Widget for FileExplorerWidget {
+    ui::provides!(dyn ui::widget::Collaborative);
+
     fn history_registration(
         &self,
     ) -> Result<
@@ -7413,10 +7415,6 @@ impl Widget for FileExplorerWidget {
     fn native_input_snapshot(&self, doc: &AppModel, path: &ModelPath) -> Option<serde_json::Value> {
         let (doc, path) = ui::doc::document_ref(doc, path);
         Some(self.native_input_snapshot_impl(doc, path))
-    }
-
-    fn collaborative_mut(&mut self) -> Option<&mut dyn Collaborative> {
-        Some(self)
     }
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {

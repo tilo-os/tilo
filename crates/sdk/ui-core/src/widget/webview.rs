@@ -276,9 +276,7 @@ impl crate::widget::NativeViewLifecycle for WebView {
 }
 
 impl Widget for WebView {
-    fn native_view_lifecycle_mut(&mut self) -> Option<&mut dyn crate::widget::NativeViewLifecycle> {
-        Some(self)
-    }
+    crate::provides!(dyn crate::widget::NativeViewLifecycle);
 
     fn build_layout(
         &mut self,

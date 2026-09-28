@@ -3123,24 +3123,18 @@ impl FloatingSurfaceProvider for ChatApp {
 }
 
 impl Widget for ChatApp {
+    ui::provides!(
+        dyn ui::widget::Collaborative,
+        dyn ui::widget::Continuable,
+        dyn ui::widget::FloatingSurfaceProvider
+    );
+
     fn semantic_readers(&self) -> &'static [ui::semantic_document_read::RegisteredSemanticReader] {
         &crate::semantic_read::action::READERS
     }
 
     fn presence_payload(&self) -> Option<(ui::presence::PresenceKey, ui::PresencePayload)> {
         self.composer_presence()
-    }
-
-    fn collaborative_mut(&mut self) -> Option<&mut dyn Collaborative> {
-        Some(self)
-    }
-
-    fn continuable(&self) -> Option<&dyn Continuable> {
-        Some(self)
-    }
-
-    fn continuable_mut(&mut self) -> Option<&mut dyn Continuable> {
-        Some(self)
     }
 
     fn primary_vertical_scroll(&self) -> Option<ui::widget::PrimaryScrollRegion> {
@@ -3212,13 +3206,6 @@ impl Widget for ChatApp {
         }
     }
 
-    fn floating_surface_provider(&self) -> Option<&dyn FloatingSurfaceProvider> {
-        Some(self)
-    }
-
-    fn floating_surface_provider_mut(&mut self) -> Option<&mut dyn FloatingSurfaceProvider> {
-        Some(self)
-    }
     fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
         let (doc, _) = ui::doc::document(doc, path);
         self.apply_realtime_stop(doc);
