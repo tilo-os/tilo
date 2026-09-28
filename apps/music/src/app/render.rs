@@ -851,239 +851,35 @@ impl Widget for MusicApp {
         &[crate::actions::MUSIC_OPERATION_TYPE]
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one exhaustive authority boundary keeps every Music operation and its validation auditable together"
-    )]
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(false);
-        };
-        match (kind, operation) {
-            (
-                tilo_actions::OperationKind::View,
-                crate::actions::MusicOperation::OpenView { id },
-            ) => {
-                // A forged operation must not acquire arbitrary local routing
-                // authority. Check the exported allowlist before converting it
-                // to the exact view this app implements.
-                if crate::actions::known_view_label(&id).is_none() {
-                    return Err("unknown Music destination".into());
-                }
-                let Some(view) = Self::top_level_view(&id) else {
-                    return Err("unsupported Music destination".into());
-                };
-                self.on_nav(view);
-            }
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::MusicOperation::PlayTrack { .. },
-            ) => {
-                return Err(
-                    "streaming playback requires the lifecycle-capable operation host".into(),
-                );
-            }
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::MusicOperation::PlayQueueItem { .. },
-            ) => {
-                return Err("queue playback requires the lifecycle-capable operation host".into());
-            }
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::MusicOperation::SetPlayback { playback },
-            ) => {
-                if playback.playing
-                    && (self.pb.current != playback.current || !self.audio.has_stream())
-                {
-                    return Err(
-                        "streaming playback requires the lifecycle-capable operation host".into(),
-                    );
-                }
-                let _ = self.apply_resource_playback(playback)?;
-            }
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::MusicOperation::SetOffline { tracks, keep },
-            ) => {
-                if tracks.iter().any(|id| !self.lib.tracks.contains_key(id)) {
-                    return Err("offline-cache target is no longer in the library".into());
-                }
-                if keep {
-                    for id in tracks {
-                        self.request_offline_download(&id)?;
-                    }
-                    self.toast = Some(("Preparing offline download".into(), Instant::now()));
-                    self.dirty = true;
-                    return Ok(true);
-                }
-                // A stale client may still ask to remove legacy metadata. Do
-                // all device-local object removals before refreshing the
-                // projection; the manifest itself is atomically replaced.
-                for id in tracks {
-                    if let Some(download) = self.downloads.remove(&id) {
-                        download.cancel();
-                    }
-                    self.offline_resolves.retain(|_, pending| pending != &id);
-                    self.offline_errors.remove(&id);
-                    self.media_cache
-                        .remove(&self.media_cache_root, &id)
-                        .map_err(|error| format!("could not remove offline media: {error}"))?;
-                    self.update_device_cache(&id, CacheState::Streamed);
-                    self.settle_offline_track(&id, Some("offline download cancelled".into()));
-                }
-            }
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::MusicOperation::RemoveQueueItem { index, track },
-            ) => {
-                self.apply_resource_remove_queue_item(index, &track)?;
-            }
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::MusicOperation::MoveQueueItem { index, track, to },
-            ) => {
-                self.apply_resource_move_queue_item(index, &track, to)?;
-            }
-            (
-                tilo_actions::OperationKind::View,
-                crate::actions::MusicOperation::OpenAlbum { id },
-            ) => {
-                if !self.lib.albums.contains_key(&id) {
-                    return Err("album is no longer in the library".into());
-                }
-                self.on_nav(View::Album(id));
-            }
-            (
-                tilo_actions::OperationKind::View,
-                crate::actions::MusicOperation::OpenArtist { id },
-            ) => {
-                if !self.lib.artists.contains_key(&id) {
-                    return Err("artist is no longer in the library".into());
-                }
-                self.on_nav(View::Artist(id));
-            }
-            (
-                tilo_actions::OperationKind::View,
-                crate::actions::MusicOperation::OpenPlaylist { id },
-            ) => {
-                if self.lib.playlist(&id).is_none() {
-                    return Err("playlist is no longer in the library".into());
-                }
-                self.on_nav(View::Playlist(id));
-            }
-            (
-                tilo_actions::OperationKind::View,
-                crate::actions::MusicOperation::OpenPlaylistMembership { playlist, track },
-            ) => {
-                let Some(current_playlist) = self.lib.playlist(&playlist) else {
-                    return Err("playlist is no longer in the library".into());
-                };
-                if !current_playlist.track_ids.iter().any(|id| id == &track) {
-                    return Err("playlist membership is no longer present".into());
-                }
-                let playlist_name = current_playlist.name.clone();
-                let track_label = self.track_label(&track);
-                self.on_nav(View::Playlist(playlist.clone()));
-                self.revealed_membership = Some((playlist, track));
-                self.toast = Some((
-                    format!("Opened “{track_label}” in “{playlist_name}”"),
-                    Instant::now(),
-                ));
-            }
-            _ => return Ok(false),
-        }
-        self.dirty = true;
-        Ok(true)
-    }
-
-    fn start_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(None);
+        let Some(request) = op.unscoped() else {
+            return ui::widget::start_in_children(self, op, doc, path);
         };
-        match (kind, operation) {
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::MusicOperation::ChooseAudioFile,
-            ) => {
-                self.begin_local_file_pick(invocation)?;
-                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
-            }
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::MusicOperation::SetOffline { tracks, keep: true },
-            ) => {
-                if self.offline_invocation.is_some() {
-                    return Err("another offline download operation is running".into());
-                }
-                let pending = tracks
-                    .iter()
-                    .cloned()
-                    .collect::<std::collections::BTreeSet<_>>();
-                if pending.is_empty() {
-                    return Err("offline download requires at least one track".into());
-                }
-                for track_id in &pending {
-                    self.request_offline_download(track_id)?;
-                }
-                self.offline_invocation = Some((invocation, pending));
-                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
-            }
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::MusicOperation::PlayTrack { id },
-            ) => {
-                if self.resource_stream_invocation.is_some() {
-                    return Err("another Music stream-start operation is still resolving".into());
-                }
-                let request = self.apply_resource_play_track(&id)?;
-                self.register_playback_start(invocation, request, 0, false)
-            }
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::MusicOperation::PlayQueueItem { index, track },
-            ) => {
-                if self.resource_stream_invocation.is_some() {
-                    return Err("another Music stream-start operation is still resolving".into());
-                }
-                let request = self.apply_resource_play_queue_item(index, &track)?;
-                self.register_playback_start(invocation, request, 0, false)
-            }
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::MusicOperation::SetPlayback { playback },
-            ) if playback.playing
-                && (self.pb.current != playback.current
-                    || !self.pb.playing
-                    || !self.audio.has_stream()) =>
-            {
-                self.begin_resource_playback(invocation, playback)
-            }
-            _ => self
-                .invoke_resource_operation(kind, type_id, payload, doc, path)
-                .map(|handled| {
-                    handled.then(|| {
-                        ui::widget::ResourceOperationStart::Completed(
-                            tilo_actions::ActionOutput::default(),
-                        )
-                    })
-                }),
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
         }
+        if let Some(started) = self.admit_resource_operation(
+            request.invocation,
+            request.kind,
+            request.type_id,
+            request.payload,
+            doc,
+            path,
+        )? {
+            return Ok(Some(started));
+        }
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
     }
 
     fn poll_resource_operation(
@@ -1985,6 +1781,243 @@ impl Widget for MusicApp {
 
     fn mark_drawn(&mut self) {
         self.dirty = false;
+    }
+}
+
+impl MusicApp {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one exhaustive authority boundary keeps every Music operation and its validation auditable together"
+    )]
+    pub(super) fn answer_resource_operation(
+        &mut self,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
+        };
+        match (kind, operation) {
+            (
+                tilo_actions::OperationKind::View,
+                crate::actions::MusicOperation::OpenView { id },
+            ) => {
+                // A forged operation must not acquire arbitrary local routing
+                // authority. Check the exported allowlist before converting it
+                // to the exact view this app implements.
+                if crate::actions::known_view_label(&id).is_none() {
+                    return Err("unknown Music destination".into());
+                }
+                let Some(view) = Self::top_level_view(&id) else {
+                    return Err("unsupported Music destination".into());
+                };
+                self.on_nav(view);
+            }
+            (
+                tilo_actions::OperationKind::Effect,
+                crate::actions::MusicOperation::PlayTrack { .. },
+            ) => {
+                return Err(
+                    "streaming playback requires the lifecycle-capable operation host".into(),
+                );
+            }
+            (
+                tilo_actions::OperationKind::Effect,
+                crate::actions::MusicOperation::PlayQueueItem { .. },
+            ) => {
+                return Err("queue playback requires the lifecycle-capable operation host".into());
+            }
+            (
+                tilo_actions::OperationKind::Effect,
+                crate::actions::MusicOperation::SetPlayback { playback },
+            ) => {
+                if playback.playing
+                    && (self.pb.current != playback.current || !self.audio.has_stream())
+                {
+                    return Err(
+                        "streaming playback requires the lifecycle-capable operation host".into(),
+                    );
+                }
+                let _ = self.apply_resource_playback(playback)?;
+            }
+            (
+                tilo_actions::OperationKind::Effect,
+                crate::actions::MusicOperation::SetOffline { tracks, keep },
+            ) => {
+                if tracks.iter().any(|id| !self.lib.tracks.contains_key(id)) {
+                    return Err("offline-cache target is no longer in the library".into());
+                }
+                if keep {
+                    for id in tracks {
+                        self.request_offline_download(&id)?;
+                    }
+                    self.toast = Some(("Preparing offline download".into(), Instant::now()));
+                    self.dirty = true;
+                    return Ok(true);
+                }
+                // A stale client may still ask to remove legacy metadata. Do
+                // all device-local object removals before refreshing the
+                // projection; the manifest itself is atomically replaced.
+                for id in tracks {
+                    if let Some(download) = self.downloads.remove(&id) {
+                        download.cancel();
+                    }
+                    self.offline_resolves.retain(|_, pending| pending != &id);
+                    self.offline_errors.remove(&id);
+                    self.media_cache
+                        .remove(&self.media_cache_root, &id)
+                        .map_err(|error| format!("could not remove offline media: {error}"))?;
+                    self.update_device_cache(&id, CacheState::Streamed);
+                    self.settle_offline_track(&id, Some("offline download cancelled".into()));
+                }
+            }
+            (
+                tilo_actions::OperationKind::Effect,
+                crate::actions::MusicOperation::RemoveQueueItem { index, track },
+            ) => {
+                self.apply_resource_remove_queue_item(index, &track)?;
+            }
+            (
+                tilo_actions::OperationKind::Effect,
+                crate::actions::MusicOperation::MoveQueueItem { index, track, to },
+            ) => {
+                self.apply_resource_move_queue_item(index, &track, to)?;
+            }
+            (
+                tilo_actions::OperationKind::View,
+                crate::actions::MusicOperation::OpenAlbum { id },
+            ) => {
+                if !self.lib.albums.contains_key(&id) {
+                    return Err("album is no longer in the library".into());
+                }
+                self.on_nav(View::Album(id));
+            }
+            (
+                tilo_actions::OperationKind::View,
+                crate::actions::MusicOperation::OpenArtist { id },
+            ) => {
+                if !self.lib.artists.contains_key(&id) {
+                    return Err("artist is no longer in the library".into());
+                }
+                self.on_nav(View::Artist(id));
+            }
+            (
+                tilo_actions::OperationKind::View,
+                crate::actions::MusicOperation::OpenPlaylist { id },
+            ) => {
+                if self.lib.playlist(&id).is_none() {
+                    return Err("playlist is no longer in the library".into());
+                }
+                self.on_nav(View::Playlist(id));
+            }
+            (
+                tilo_actions::OperationKind::View,
+                crate::actions::MusicOperation::OpenPlaylistMembership { playlist, track },
+            ) => {
+                let Some(current_playlist) = self.lib.playlist(&playlist) else {
+                    return Err("playlist is no longer in the library".into());
+                };
+                if !current_playlist.track_ids.iter().any(|id| id == &track) {
+                    return Err("playlist membership is no longer present".into());
+                }
+                let playlist_name = current_playlist.name.clone();
+                let track_label = self.track_label(&track);
+                self.on_nav(View::Playlist(playlist.clone()));
+                self.revealed_membership = Some((playlist, track));
+                self.toast = Some((
+                    format!("Opened “{track_label}” in “{playlist_name}”"),
+                    Instant::now(),
+                ));
+            }
+            _ => return Ok(false),
+        }
+        self.dirty = true;
+        Ok(true)
+    }
+
+    fn admit_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(None);
+        };
+        match (kind, operation) {
+            (
+                tilo_actions::OperationKind::Effect,
+                crate::actions::MusicOperation::ChooseAudioFile,
+            ) => {
+                self.begin_local_file_pick(invocation)?;
+                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+            }
+            (
+                tilo_actions::OperationKind::Effect,
+                crate::actions::MusicOperation::SetOffline { tracks, keep: true },
+            ) => {
+                if self.offline_invocation.is_some() {
+                    return Err("another offline download operation is running".into());
+                }
+                let pending = tracks
+                    .iter()
+                    .cloned()
+                    .collect::<std::collections::BTreeSet<_>>();
+                if pending.is_empty() {
+                    return Err("offline download requires at least one track".into());
+                }
+                for track_id in &pending {
+                    self.request_offline_download(track_id)?;
+                }
+                self.offline_invocation = Some((invocation, pending));
+                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+            }
+            (
+                tilo_actions::OperationKind::Effect,
+                crate::actions::MusicOperation::PlayTrack { id },
+            ) => {
+                if self.resource_stream_invocation.is_some() {
+                    return Err("another Music stream-start operation is still resolving".into());
+                }
+                let request = self.apply_resource_play_track(&id)?;
+                self.register_playback_start(invocation, request, 0, false)
+            }
+            (
+                tilo_actions::OperationKind::Effect,
+                crate::actions::MusicOperation::PlayQueueItem { index, track },
+            ) => {
+                if self.resource_stream_invocation.is_some() {
+                    return Err("another Music stream-start operation is still resolving".into());
+                }
+                let request = self.apply_resource_play_queue_item(index, &track)?;
+                self.register_playback_start(invocation, request, 0, false)
+            }
+            (
+                tilo_actions::OperationKind::Effect,
+                crate::actions::MusicOperation::SetPlayback { playback },
+            ) if playback.playing
+                && (self.pb.current != playback.current
+                    || !self.pb.playing
+                    || !self.audio.has_stream()) =>
+            {
+                self.begin_resource_playback(invocation, playback)
+            }
+            _ => self
+                .answer_resource_operation(kind, type_id, payload, doc, path)
+                .map(|handled| {
+                    handled.then(|| {
+                        ui::widget::ResourceOperationStart::Completed(
+                            tilo_actions::ActionOutput::default(),
+                        )
+                    })
+                }),
+        }
     }
 }
 

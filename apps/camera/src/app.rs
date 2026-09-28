@@ -2627,93 +2627,32 @@ impl Widget for CameraApp {
         vec![Box::new(self.search_provider.clone())]
     }
 
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        if kind == tilo_actions::OperationKind::Document {
-            return Ok(false);
-        }
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(false);
-        };
-        self.perform_resource_operation(operation)?;
-        Ok(true)
-    }
-
-    fn start_resource_operation_with_document(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &mut AutoCommit,
-        _path: &ObjId,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if kind == tilo_actions::OperationKind::Document {
-            return Ok(None);
-        }
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(None);
+        let Some(request) = op.unscoped() else {
+            return ui::widget::start_in_children(self, op, doc, path);
         };
-        match operation {
-            crate::actions::CameraOperation::Capture => {
-                self.capture(Some(invocation))?;
-                if matches!(self.storage, Storage::Disk(_)) {
-                    return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
-                }
-            }
-            crate::actions::CameraOperation::ToggleRecording if self.is_recording() => {
-                self.stop_recording(Some(invocation))?;
-                // Both live and hermetic paths finalize through the bounded
-                // worker, so neither may report completion before the clip is
-                // muxed, verified, and canonically registered.
-                return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
-            }
-            crate::actions::CameraOperation::ImportCodeImage => {
-                self.request_scan_image();
-                if self.scan_image_picker.is_none() {
-                    return Err("The image picker could not be opened".into());
-                }
-                self.pending_scan_import = Some(invocation);
-                return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
-            }
-            crate::actions::CameraOperation::CaptureDocumentPage => {
-                let pages_before = self.document_scan.pages.len();
-                self.capture_document_page();
-                if self.document_job.is_some() {
-                    self.pending_document_job = Some(invocation);
-                    return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
-                }
-                if self.document_scan.pages.len() == pages_before {
-                    return Err("No document scanner is available".into());
-                }
-            }
-            crate::actions::CameraOperation::RecognizeDocumentPage => {
-                self.recognize_document_page();
-                if self.document_job.is_none() {
-                    return Err("Text recognition could not start".into());
-                }
-                self.pending_document_job = Some(invocation);
-                return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
-            }
-            crate::actions::CameraOperation::ExportDocument => {
-                self.request_document_export();
-                if self.document_save_picker.is_none() {
-                    return Err("Document export could not start".into());
-                }
-                self.pending_document_export = Some(invocation);
-                return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
-            }
-            operation => self.perform_resource_operation(operation)?,
+        if let Some(started) = self.admit_resource_operation_with_document(
+            request.invocation,
+            request.kind,
+            request.type_id,
+            request.payload,
+            doc,
+            path,
+        )? {
+            return Ok(Some(started));
         }
-        Ok(Some(ui::widget::ResourceOperationStart::Completed(
-            tilo_actions::ActionOutput::default(),
-        )))
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
     }
 
     /// Hand the host the heads captured before an on-screen affordance dispatched
@@ -3530,6 +3469,97 @@ impl Widget for CameraApp {
         _permissions: &ui::permissions::PermissionContext,
     ) {
         self.draw(scene, t, tr, theme, presence);
+    }
+}
+
+impl CameraApp {
+    fn answer_resource_operation(
+        &mut self,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind == tilo_actions::OperationKind::Document {
+            return Ok(false);
+        }
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
+        };
+        self.perform_resource_operation(operation)?;
+        Ok(true)
+    }
+
+    fn admit_resource_operation_with_document(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if kind == tilo_actions::OperationKind::Document {
+            return Ok(None);
+        }
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(None);
+        };
+        match operation {
+            crate::actions::CameraOperation::Capture => {
+                self.capture(Some(invocation))?;
+                if matches!(self.storage, Storage::Disk(_)) {
+                    return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+                }
+            }
+            crate::actions::CameraOperation::ToggleRecording if self.is_recording() => {
+                self.stop_recording(Some(invocation))?;
+                // Both live and hermetic paths finalize through the bounded
+                // worker, so neither may report completion before the clip is
+                // muxed, verified, and canonically registered.
+                return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+            }
+            crate::actions::CameraOperation::ImportCodeImage => {
+                self.request_scan_image();
+                if self.scan_image_picker.is_none() {
+                    return Err("The image picker could not be opened".into());
+                }
+                self.pending_scan_import = Some(invocation);
+                return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+            }
+            crate::actions::CameraOperation::CaptureDocumentPage => {
+                let pages_before = self.document_scan.pages.len();
+                self.capture_document_page();
+                if self.document_job.is_some() {
+                    self.pending_document_job = Some(invocation);
+                    return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+                }
+                if self.document_scan.pages.len() == pages_before {
+                    return Err("No document scanner is available".into());
+                }
+            }
+            crate::actions::CameraOperation::RecognizeDocumentPage => {
+                self.recognize_document_page();
+                if self.document_job.is_none() {
+                    return Err("Text recognition could not start".into());
+                }
+                self.pending_document_job = Some(invocation);
+                return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+            }
+            crate::actions::CameraOperation::ExportDocument => {
+                self.request_document_export();
+                if self.document_save_picker.is_none() {
+                    return Err("Document export could not start".into());
+                }
+                self.pending_document_export = Some(invocation);
+                return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+            }
+            operation => self.perform_resource_operation(operation)?,
+        }
+        Ok(Some(ui::widget::ResourceOperationStart::Completed(
+            tilo_actions::ActionOutput::default(),
+        )))
     }
 }
 
@@ -7617,14 +7647,16 @@ mod tests {
             let invocation = tilo_actions::InvocationId::new();
             let payload = serde_json::to_vec(&crate::actions::CameraOperation::Capture).unwrap();
             assert!(matches!(
-                Widget::start_resource_operation_with_document(
+                Widget::start_operation(
                     &mut app,
-                    invocation,
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::CAMERA_OPERATION_TYPE,
-                    &payload,
+                    &ui::widget::ResourceOperation::local(
+                        invocation,
+                        tilo_actions::OperationKind::Effect,
+                        crate::actions::CAMERA_OPERATION_TYPE,
+                        &payload
+                    ),
                     &mut doc,
-                    &root,
+                    &root
                 )
                 .unwrap(),
                 Some(ui::widget::ResourceOperationStart::Accepted)
@@ -7668,14 +7700,16 @@ mod tests {
             let payload = serde_json::to_vec(&crate::actions::CameraOperation::ToggleRecording)
                 .expect("video operation payload");
             assert!(matches!(
-                Widget::start_resource_operation_with_document(
+                Widget::start_operation(
                     &mut app,
-                    invocation,
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::CAMERA_OPERATION_TYPE,
-                    &payload,
+                    &ui::widget::ResourceOperation::local(
+                        invocation,
+                        tilo_actions::OperationKind::Effect,
+                        crate::actions::CAMERA_OPERATION_TYPE,
+                        &payload
+                    ),
                     &mut doc,
-                    &root,
+                    &root
                 )
                 .expect("accepted video finalization"),
                 Some(ui::widget::ResourceOperationStart::Accepted)
@@ -7706,12 +7740,14 @@ mod tests {
             let invocation = tilo_actions::InvocationId::new();
             let payload = serde_json::to_vec(&crate::actions::CameraOperation::CaptureDocumentPage)
                 .expect("document capture payload");
-            let result = Widget::start_resource_operation_with_document(
+            let result = Widget::start_operation(
                 &mut app,
-                invocation,
-                tilo_actions::OperationKind::Effect,
-                crate::actions::CAMERA_OPERATION_TYPE,
-                &payload,
+                &ui::widget::ResourceOperation::local(
+                    invocation,
+                    tilo_actions::OperationKind::Effect,
+                    crate::actions::CAMERA_OPERATION_TYPE,
+                    &payload,
+                ),
                 &mut doc,
                 &root,
             )
