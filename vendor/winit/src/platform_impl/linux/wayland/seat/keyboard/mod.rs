@@ -225,6 +225,21 @@ impl Dispatch<WlKeyboard, KeyboardData, WinitState> for WinitState {
                     }
                 }
             },
+            // wl_keyboard v10 (bound through sctk's wl_seat 1..=10): the
+            // compositor repeats the key itself.
+            WlKeyboardEvent::Key { key, state: WEnum::Value(WlKeyState::Repeated), .. } => {
+                key_input(
+                    keyboard_state,
+                    &mut state.events_sink,
+                    data,
+                    key + 8,
+                    ElementState::Pressed,
+                    true,
+                );
+            },
+            WlKeyboardEvent::Key { state, .. } => {
+                warn!("Ignoring wl_keyboard key state {state:?}");
+            },
             WlKeyboardEvent::Modifiers {
                 mods_depressed, mods_latched, mods_locked, group, ..
             } => {
