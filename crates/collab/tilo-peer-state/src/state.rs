@@ -204,6 +204,23 @@ struct DurableV5<'a> {
     exact: &'a [u8],
 }
 
+/// V5 and the sealed history of each encrypted record. Written only while a
+/// record holds sealed writes, so every other state keeps its v5 bytes.
+#[derive(Serialize, Deserialize)]
+struct DurableV6<'a> {
+    version: u32,
+    base: DurableV4,
+    #[serde(borrow)]
+    exact: &'a [u8],
+    sealed: SealedHistory,
+}
+/// Each encrypted record's sealed writes, in admission order.
+type SealedHistory = Vec<(Route, Vec<SignedOp>)>;
+
+/// Most sealed writes, and their bytes, one record keeps for a key holder.
+const MAX_SEALED_OPS: usize = 4096;
+const MAX_SEALED_BYTES: usize = 16 * 1024 * 1024;
+
 #[derive(Clone)]
 pub struct StatePeer {
     core: PeerCore<LegacyNative>,
@@ -999,8 +1016,14 @@ impl StatePeer {
     pub fn has_governance(&self) -> bool {
         self.core.room_doc.is_some()
     }
+    /// An encrypted record with no durable history: state kept before sealed
+    /// writes were stored, which this replica cannot serve or publish.
     pub fn incomplete_reason(&self) -> Option<String> {
-        self.core.documents.values().any(|entry|entry.encryption_required).then(||"incomplete: authenticated persisted MLS group required; plaintext downgrade forbidden".into())
+        self.core
+            .documents
+            .values()
+            .any(|entry| entry.encryption_required && entry.sealed.is_empty())
+            .then(|| "incomplete: an encrypted record has no durable sealed history".into())
     }
     /// Validated data from this exact snapshot, not an authorization credential.
     /// Missing exact Chat prerequisites and unpromoted local revocations fail
@@ -1803,6 +1826,7 @@ impl StatePeer {
                 encryption_required: false,
                 covered: BTreeMap::new(),
                 covered_snapshot: None,
+                sealed: Vec::new(),
             });
         candidate
             .channel
@@ -1853,14 +1877,39 @@ impl StatePeer {
         }
         let mutation=match payload {
             collab_types::WholeDocumentPayload::Cleartext(mutation) if !candidate.encryption_required=>mutation,
-            collab_types::WholeDocumentPayload::Encrypted{..}=>{
-                // Validate the signed author first, then retain only the missing
-                // prerequisite. Ciphertext has not been applied, so its sequence
-                // is deliberately not advanced until a real MLS group exists.
-                candidate.encryption_required=true;
-                self.core.documents.insert(route,candidate);
-                return Ok(AdmissionReport::new(InputDisposition::RetryLater(MissingPrerequisite::PersistedMls), ReceiveOutcome{metadata_changed:true,incomplete:self.incomplete_reason(),..Default::default()}));
-            },
+            collab_types::WholeDocumentPayload::Encrypted { .. } if !self.core.admission_v5 => {
+                // A replica without exact admission evidence keeps no sealed
+                // history: it only records that the record is encrypted, so a
+                // later plaintext write cannot downgrade it.
+                candidate.encryption_required = true;
+                self.core.documents.insert(route, candidate);
+                return Ok(AdmissionReport::new(
+                    InputDisposition::RetryLater(MissingPrerequisite::PersistedMls),
+                    ReceiveOutcome {
+                        metadata_changed: true,
+                        incomplete: self.incomplete_reason(),
+                        ..Default::default()
+                    },
+                ));
+            }
+            collab_types::WholeDocumentPayload::Encrypted { .. } => {
+                if !route_existed {
+                    return self.defer(
+                        source,
+                        NeighbourMsg::AppDocument {
+                            peer,
+                            app_id: route.app,
+                            cluster_id,
+                            record_id: route.record,
+                            envelope,
+                        },
+                        retained_replay,
+                        MissingPrerequisite::RecordCheckpoint,
+                    );
+                }
+                candidate.channel = validated_channel;
+                return self.admit_sealed(route, candidate, *envelope);
+            }
             collab_types::WholeDocumentPayload::Cleartext(_)=>return Err("incomplete: authenticated persisted MLS group required; plaintext downgrade forbidden".into()),
         };
         candidate.channel = validated_channel;
@@ -2023,6 +2072,92 @@ impl StatePeer {
                 ..Default::default()
             },
         ))
+    }
+    /// Keep a sealed write this replica holds no key for: its author, role,
+    /// route, signature and sequence were checked above, and the ciphertext
+    /// itself becomes the record's durable history, never opened here.
+    fn admit_sealed(
+        &mut self,
+        route: Route,
+        mut candidate: Document,
+        envelope: SignedOp,
+    ) -> Result<AdmissionReport, AdmissionError> {
+        let held: usize = candidate.sealed.iter().map(|op| op.payload.len()).sum();
+        if candidate.sealed.len() >= MAX_SEALED_OPS
+            || held.saturating_add(envelope.payload.len()) > MAX_SEALED_BYTES
+        {
+            return Err("sealed record history is full; a key holder must compact it".into());
+        }
+        let primary = if self.core.admission_v5 {
+            let admitted =
+                DocumentAdmission::from_op(&self.core.room, &route.app, &route.record, &envelope)?;
+            self.core.exact_admissions.insert(&admitted)?;
+            InputDisposition::Accepted(admitted)
+        } else {
+            InputDisposition::MetadataOnly
+        };
+        candidate.encryption_required = true;
+        candidate.sealed.push(envelope);
+        self.core.documents.insert(route, candidate);
+        Ok(AdmissionReport::new(
+            primary,
+            ReceiveOutcome {
+                changed: true,
+                metadata_changed: true,
+                ..Default::default()
+            },
+        ))
+    }
+    /// Reinstall `route`'s stored sealed history, checking every write as it
+    /// was admitted: sealed for this exact route, signed by its author, with
+    /// exact admission evidence and within the record's watermark and bounds.
+    fn restore_sealed(&mut self, route: &Route, ops: Vec<SignedOp>) -> Result<(), String> {
+        let held: usize = ops.iter().map(|op| op.payload.len()).sum();
+        if ops.is_empty() || ops.len() > MAX_SEALED_OPS || held > MAX_SEALED_BYTES {
+            return Err("sealed record history outside its bounds".into());
+        }
+        let document = self
+            .core
+            .documents
+            .get(route)
+            .ok_or("sealed history for a record this state does not hold")?;
+        if !document.encryption_required || !document.sealed.is_empty() {
+            return Err("sealed history for a record that is not encrypted".into());
+        }
+        for op in &ops {
+            collab_types::verify_op(op).map_err(err)?;
+            let payload = collab_types::validate_whole_document_payload_route(
+                &route.app,
+                &self.core.room,
+                &route.record,
+                op,
+            )
+            .map_err(err)?;
+            if !matches!(
+                payload,
+                collab_types::WholeDocumentPayload::Encrypted { .. }
+            ) {
+                return Err("sealed history holds a cleartext write".into());
+            }
+            let admitted =
+                DocumentAdmission::from_op(&self.core.room, &route.app, &route.record, op)
+                    .map_err(err)?;
+            if self.core.exact_admissions.get(&admitted.key) != Some(&admitted.operation_id) {
+                return Err("sealed history lacks exact admission evidence".into());
+            }
+            if document
+                .channel
+                .last_seq_per_author
+                .get(&op.author)
+                .is_none_or(|floor| *floor < op.seq)
+            {
+                return Err("sealed history is ahead of the record's watermark".into());
+            }
+        }
+        if let Some(document) = self.core.documents.get_mut(route) {
+            document.sealed = ops;
+        }
+        Ok(())
     }
     pub fn room_message(&self) -> NeighbourMsg {
         let changes = self
@@ -2703,7 +2838,25 @@ impl StatePeer {
             pending: self.core.pending.clone(),
             pending_bytes: self.core.pending_bytes,
         };
-        if self.core.admission_v5 {
+        let sealed: Vec<_> = self
+            .core
+            .documents
+            .iter()
+            .filter(|(_, entry)| !entry.sealed.is_empty())
+            .map(|(route, entry)| (route.clone(), entry.sealed.clone()))
+            .collect();
+        if self.core.admission_v5 && !sealed.is_empty() {
+            let exact = self.core.exact_admissions.encode().map_err(err)?;
+            postcard::to_allocvec(&DurableV6 {
+                version: 6,
+                base: value,
+                exact: &exact,
+                sealed,
+            })
+            .map_err(err)
+        } else if !sealed.is_empty() {
+            Err("sealed record history requires durable admission v5".into())
+        } else if self.core.admission_v5 {
             let exact = self.core.exact_admissions.encode().map_err(err)?;
             postcard::to_allocvec(&DurableV5 {
                 version: 5,
@@ -2740,6 +2893,7 @@ impl StatePeer {
     ) -> Result<Self, String> {
         let (version, _) = postcard::take_from_bytes::<u32>(bytes).map_err(err)?;
         let mut exact_admissions = ExactAdmissions::default();
+        let mut sealed = Vec::new();
         let (durable, pending, pending_bytes) = match version {
             4 => {
                 let value: DurableV4 = postcard::from_bytes(bytes).map_err(err)?;
@@ -2752,6 +2906,24 @@ impl StatePeer {
                     return Err("invalid native v5 durable envelope".into());
                 }
                 exact_admissions = ExactAdmissions::decode(value.exact).map_err(err)?;
+                (
+                    value.base.base,
+                    value.base.pending,
+                    value.base.pending_bytes,
+                )
+            }
+            6 => {
+                let (value, tail): (DurableV6<'_>, _) =
+                    postcard::take_from_bytes(bytes).map_err(err)?;
+                if !tail.is_empty()
+                    || value.version != 6
+                    || value.base.version != 4
+                    || value.sealed.is_empty()
+                {
+                    return Err("invalid native v6 durable envelope".into());
+                }
+                exact_admissions = ExactAdmissions::decode(value.exact).map_err(err)?;
+                sealed = value.sealed;
                 (
                     value.base.base,
                     value.base.pending,
@@ -2784,7 +2956,7 @@ impl StatePeer {
                 pending_bytes,
                 checkpoint_times: BTreeMap::new(),
                 exact_admissions,
-                admission_v5: version == 5,
+                admission_v5: version >= 5,
                 native_cut_publisher: None,
                 _retention: (),
             },
@@ -2830,8 +3002,12 @@ impl StatePeer {
                     encryption_required: document.encryption_required,
                     covered: document.covered,
                     covered_snapshot: document.covered_snapshot.map(AcceptedCheckpoint::new),
+                    sealed: Vec::new(),
                 },
             );
+        }
+        for (route, ops) in sealed {
+            peer.restore_sealed(&route, ops)?;
         }
         if let Some(policy) = peer.validate_present_media_policy()? {
             let doc = peer.core.room_doc.as_deref().ok_or("missing room")?.clone();
@@ -3183,6 +3359,9 @@ mod delivery_admission_resource_tests {
 #[path = "state/media_tests.rs"]
 mod room_media_native_tests;
 
+#[cfg(test)]
+#[path = "state/sealed_tests.rs"]
+mod sealed_tests;
 #[cfg(test)]
 #[path = "state/superseded_checkpoint_tests.rs"]
 mod superseded_checkpoint_tests;
