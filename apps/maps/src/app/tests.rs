@@ -534,6 +534,7 @@ fn overflow_menu_and_offline_download_dispatch_target_the_right_area() {
         let mut a = app_at(1280.0, 800.0);
         let dir = region_test_cache("citydl");
         a.tiles = TileLayer::offline_with_cache_dir(dir.clone());
+        a.tiles.allow_prefetch_for_test();
 
         // Open the dialog and pick "Munich" from the (sample) geocoded results.
         a.offline_panel.open(a.tiles.cache_bytes());
@@ -597,6 +598,7 @@ fn overflow_menu_and_offline_download_dispatch_target_the_right_area() {
     // for the current viewport and surfaces a progress status.
     {
         let mut a = app_at(1280.0, 720.0);
+        a.tiles.allow_prefetch_for_test();
         a.offline_panel.open(a.tiles.cache_bytes());
         assert!(a.offline_panel.is_open(), "opening shows the overlay");
         tap_offline(&mut a, OfflineAction::Download);
@@ -610,6 +612,38 @@ fn overflow_menu_and_offline_download_dispatch_target_the_right_area() {
             a.tiles.progress().total > 0,
             "a real region of tiles was queued"
         );
+    }
+
+    // Phase `osm_tiles_refuse_offline_areas`.
+    // The OSM tile server forbids prefetching, so on its layer the Download
+    // button is inert and says why, and a Download reaching the dispatcher
+    // anyway queues nothing, records no region, and tells the user why.
+    {
+        let mut a = app_at(1280.0, 720.0);
+        assert!(!a.tiles.allows_prefetch());
+        a.offline_panel.open(a.tiles.cache_bytes());
+        a.draw_app(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &Theme::dark(),
+        );
+        let mut doc = AutoCommit::new();
+        assert!(
+            !Widget::perform_semantic_action(
+                &mut a,
+                "maps.offline.download",
+                &ui::a11y::Action::Activate,
+                &mut doc,
+                &automerge::ROOT,
+            ),
+            "no actionable Download target while saving areas is refused"
+        );
+        let before = a.model.regions.len();
+        tap_offline(&mut a, OfflineAction::Download);
+        assert_eq!(a.tiles.progress().total, 0, "nothing was queued");
+        assert_eq!(a.model.regions.len(), before, "no region was recorded");
+        assert_eq!(a.model.status, OFFLINE_AREAS_REFUSED);
     }
 
     // Phase `offline_zoom_delta_clamps`.
@@ -2859,6 +2893,7 @@ fn offline_regions_record_delete_and_clear_without_losing_shared_tiles() {
         // real tile cache.
         let dir = region_test_cache("regtest");
         a.tiles = TileLayer::offline_with_cache_dir(dir.clone());
+        a.tiles.allow_prefetch_for_test();
         a.offline_panel.open(a.tiles.cache_bytes());
         let before = a.model.regions.len();
         tap_offline(&mut a, OfflineAction::Download);
