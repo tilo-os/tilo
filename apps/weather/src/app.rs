@@ -954,7 +954,7 @@ impl WeatherApp {
         } else {
             self.core.borrow_mut().refresh_all();
         }
-        self.last_activity = Instant::now();
+        self.last_activity = ui::time::now();
         Ok(true)
     }
 
