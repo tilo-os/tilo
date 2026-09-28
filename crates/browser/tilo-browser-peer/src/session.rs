@@ -30,7 +30,7 @@ use tokio::sync::mpsc;
 use crate::carrier::{HttpClient, HttpsLink, LinkError};
 use crate::custody::{OutboxEntry, PeerRecord, PeerStore};
 use crate::document::{
-    Ciphers, ContentCipher, DocumentRoute, OpenedDocument, open_frame, sign_frame,
+    Ciphers, ContentCipher, DocumentRoute, OpenedDocument, Reassembly, open_frame, sign_frame,
 };
 
 /// Longest wait between reconnect attempts.
@@ -413,6 +413,7 @@ impl PeerHandle {
             refused: (0, String::new()),
             held_inbound: BTreeMap::new(),
             held_outbound: saved.held.into_iter().collect(),
+            reassembly: Reassembly::default(),
             doc_seq: 0,
             barriers: Vec::new(),
             admission_since: None,
@@ -785,6 +786,7 @@ struct Task {
     /// Frames published on an encrypted route before this device held its
     /// keys; they are sealed and committed once the keys arrive.
     held_outbound: BTreeMap<DocumentRoute, Vec<Vec<u8>>>,
+    reassembly: Reassembly,
     doc_seq: u64,
     barriers: Vec<([u8; 16], Completion)>,
     /// When the rooms not yet admitted were subscribed (ms since the epoch).
@@ -1395,7 +1397,10 @@ impl Task {
     }
 
     fn open_document(&mut self, body: &[u8], author: [u8; 32]) {
-        match open_frame(body, author, &mut self.ciphers) {
+        match open_frame(body, author, &mut self.ciphers).and_then(|document| match document {
+            Some(document) => self.reassembly.accept(document),
+            None => Ok(None),
+        }) {
             Ok(Some(document)) => {
                 let from: [u8; 4] = author
                     .get(..4)

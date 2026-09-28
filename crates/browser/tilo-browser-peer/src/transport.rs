@@ -248,9 +248,12 @@ impl RelayCollabTransport {
                     self.ready.insert(workspace_id);
                 }
                 PeerEvent::Document(document) => {
-                    // Segments of a mutation larger than one frame need
-                    // reassembly before an app may see them.
-                    if !self.routes.contains(&document.route) || document.mutation().is_none() {
+                    // The toolkit takes whole frames only; a reassembled
+                    // transfer's envelope is just its last segment.
+                    if !self.routes.contains(&document.route)
+                        || document.is_reassembled()
+                        || document.mutation().is_none()
+                    {
                         continue;
                     }
                     self.live

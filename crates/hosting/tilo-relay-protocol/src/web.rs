@@ -43,6 +43,31 @@ pub const MAX_POLL_MS: u32 = 25_000;
 pub const MAX_REQUEST_BYTES: usize = 8 * 1024 * 1024;
 /// Most envelopes one `/events` answer carries.
 pub const MAX_PAGE_ENVELOPES: usize = 256;
+/// Payload bytes after which an `/events` answer ends (it always carries at
+/// least one envelope). A late join's checkpoint and tail, or a segmented
+/// multi-megabyte document, then stream as a series of bounded pages, each
+/// acknowledged before the next.
+pub const MAX_PAGE_BYTES: usize = 1024 * 1024;
+
+/// Approximate wire size of `envelope`: its opaque payload plus a fixed
+/// allowance for keys and framing. Bounds pages and session buffers without
+/// encoding every envelope twice.
+pub fn envelope_bytes(envelope: &Envelope) -> usize {
+    const OVERHEAD: usize = 160;
+    let payload = match envelope {
+        Envelope::Delta { delta, .. } | Envelope::Commit { delta, .. } => delta.len(),
+        Envelope::SyncResponse { delta_since, .. } => delta_since.len(),
+        Envelope::Presence { payload, .. } => payload.len(),
+        Envelope::Live { frame, .. } | Envelope::RemoteAction { frame, .. } => frame.len(),
+        Envelope::NotAuthorised { reason, .. }
+        | Envelope::RemoteActionUndeliverable { reason, .. }
+        | Envelope::CommitRefused { reason, .. } => reason.len(),
+        Envelope::PeerRelayHello { hosted_workspaces } => hosted_workspaces.len().saturating_mul(8),
+        Envelope::SyncRequest { have_heads, .. } => have_heads.len().saturating_mul(32),
+        _ => 0,
+    };
+    payload.saturating_add(OVERHEAD)
+}
 
 /// What a page needs to know about the host before it has a certificate.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
