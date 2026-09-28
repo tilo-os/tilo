@@ -213,9 +213,9 @@ mod tests {
         // Phase `signed_reconstruction_rejects_tampering_and_wrong_route`.
         {
             let op = envelope();
-            let doc = reconstruct(&[op.clone()], "room").unwrap();
+            let doc = reconstruct(std::slice::from_ref(&op), "room").unwrap();
             assert!(qdoc::model::open(&doc, &automerge::ROOT).is_ok());
-            assert!(reconstruct(&[op.clone()], "another-room").is_err());
+            assert!(reconstruct(std::slice::from_ref(&op), "another-room").is_err());
             let mut altered = op;
             altered.payload.push(0);
             assert!(reconstruct(&[altered], "room").is_err());

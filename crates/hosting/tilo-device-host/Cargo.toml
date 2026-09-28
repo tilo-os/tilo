@@ -51,3 +51,9 @@ rustls.workspace = true
 tilo-moq = { path = "../tilo-moq", features = ["relay"] }
 url.workspace = true
 web-transport-quinn = { version = "0.12.1", default-features = false, features = ["ring"] }
+
+# Examples that carry unit tests build as test targets too, so `cargo test`
+# and the CI test jobs run those tests.
+[[example]]
+name = "inspect-effect-receipt"
+test = true

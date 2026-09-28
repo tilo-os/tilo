@@ -4943,8 +4943,6 @@ impl Widget for BooksApp {
         // Hydrate the persisted library on the first frame (when the document is
         // finally available), then pull in any book the host picker returned.
         self.ensure_library_loaded(doc);
-        // Notes written before their text was rich text come across once.
-        BooksDoc::migrate_annotation_text(doc);
         self.close_orphaned_editors();
         self.note_composer.sync(doc, path);
         self.comment_overlay.sync(doc, path);

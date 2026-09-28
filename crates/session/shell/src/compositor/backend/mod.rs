@@ -685,6 +685,12 @@ pub trait Backend {
         false
     }
 
+    /// Whether anyone may be looking at this backend's pixels, and so whether
+    /// shared legacy windows are worth encoding.
+    fn watched(&self) -> bool {
+        true
+    }
+
     fn outputs(&self) -> &[Output];
 
     /// The presentation interval of the display this backend drives, if

@@ -462,6 +462,10 @@ impl Backend for HeadlessBackend {
         attached
     }
 
+    fn watched(&self) -> bool {
+        self.watched
+    }
+
     fn poll_events(&mut self, callback: &mut dyn FnMut(BackendEvent)) {
         // The headless backend has no input devices and no display events,
         // so it emits one `BackendEvent::Redraw` at startup to get the
@@ -540,11 +544,13 @@ mod tests {
                 backend.last_frame().is_empty(),
                 "nobody watches a fresh headless backend, so nothing is rasterized"
             );
+            assert!(!backend.watched());
             assert!(
                 backend.set_watched(true),
                 "attaching a viewer asks for a fresh frame"
             );
             assert!(!backend.set_watched(true), "already watched");
+            assert!(backend.watched());
             backend.submit_frame(&scene, OutputId(0));
             let frame = backend.last_frame();
             assert_eq!(

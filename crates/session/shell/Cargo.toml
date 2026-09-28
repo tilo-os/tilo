@@ -49,6 +49,8 @@ fnv.workspace = true
 advisory-lock = { path = "../../system/advisory-lock" }
 tilo-clock = { path = "../../system/tilo-clock" }
 tilo-action-broker = { path = "../../collab/tilo-action-broker" }
+# The governor's per-application open action a hosted room's launches use.
+tilo-agent-control-protocol = { path = "../../agent/control-protocol" }
 tilo-desktop = { path = "../desktop" }
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 tilo-automerge-isolate.workspace = true
@@ -331,6 +333,16 @@ path = "src/bin/tilo-control.rs"
 [[test]]
 name = "it"
 path = "tests/it.rs"
+
+# Examples that carry unit tests build as test targets too, so `cargo test`
+# and the CI test jobs run those tests.
+[[example]]
+name = "runtime-mcp-inspect"
+test = true
+
+[[example]]
+name = "shared-runtime-proof"
+test = true
 
 [lints]
 workspace = true

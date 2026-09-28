@@ -52,6 +52,35 @@ pub fn kill_tree(child: &mut Child) {
     let _ = child.kill();
 }
 
+/// Stop a child started with [`own_process_tree`] and reap it. With a
+/// non-zero `grace`, the tree is first asked to exit (`SIGTERM` on Unix) and
+/// the child gets that long to do so; whatever remains is then killed with
+/// [`kill_tree`].
+pub fn terminate_tree(child: &mut Child, grace: Duration) {
+    #[cfg(unix)]
+    if !grace.is_zero()
+        && let Ok(pid) = i32::try_from(child.id())
+        && let Some(group) = pid.checked_neg()
+    {
+        // SAFETY: the child was placed in its own pid-named process group; a
+        // negative pid targets exactly that group.
+        unsafe { libc::kill(group, libc::SIGTERM) };
+        let deadline = Instant::now()
+            .checked_add(grace)
+            .unwrap_or_else(Instant::now);
+        while Instant::now() < deadline {
+            if child.try_wait().ok().flatten().is_some() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = grace;
+    kill_tree(child);
+    let _ = child.wait();
+}
+
 /// Mark a script or program file executable for everyone and writable only
 /// by its owner (mode `0755` on Unix). A no-op where executability is not a
 /// file permission.
@@ -543,6 +572,16 @@ mod tests {
             let started = Instant::now();
             drop(child);
             assert!(started.elapsed() < Duration::from_secs(1));
+        }
+        // Phase `terminate_tree_escalates_when_the_grace_period_is_ignored`.
+        {
+            let mut command = Command::new("sh");
+            command.args(["-c", "trap '' TERM; sleep 5"]);
+            let mut child = own_process_tree(&mut command).spawn().unwrap();
+            let started = Instant::now();
+            terminate_tree(&mut child, Duration::from_millis(50));
+            assert!(started.elapsed() < Duration::from_secs(1));
+            assert!(child.try_wait().unwrap().is_some());
         }
     }
 
