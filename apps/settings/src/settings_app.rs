@@ -2277,6 +2277,10 @@ impl Widget for SettingsApp {
             return Ok(start);
         }
         if type_id != crate::actions::ACCOUNT_OPERATION_TYPE {
+            let op = ui::widget::ResourceOperation::local(invocation, kind, type_id, payload);
+            if let Some(started) = ui::widget::start_in_children(self, &op, doc, path)? {
+                return Ok(Some(started));
+            }
             return self.start_resource_operation(invocation, kind, type_id, payload, doc, path);
         }
         let operation: crate::actions::AccountOperation =

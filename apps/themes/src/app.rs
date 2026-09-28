@@ -2211,11 +2211,14 @@ mod tests {
         .unwrap();
         assert!(
             app.narrow_tabs
-                .invoke_resource_operation_v2(
-                    tilo_actions::OperationKind::View,
-                    "tilo.ui.segmented.select",
-                    &payload,
-                    &state.doc,
+                .start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        tilo_actions::InvocationId::new(),
+                        tilo_actions::OperationKind::View,
+                        "tilo.ui.segmented.select",
+                        &payload,
+                    ),
+                    &mut state.doc,
                     &state.root,
                 )
                 .unwrap()
