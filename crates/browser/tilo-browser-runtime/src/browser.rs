@@ -91,6 +91,11 @@ struct Config {
     /// be an agent task participant (`agent-task:<task>`).
     #[serde(default)]
     agent: Option<String>,
+    /// A relay peer (`WasmPeer.id`, feature `relay`) whose joined room is
+    /// `room`: the mount runs as a local one, and its records replicate
+    /// through the peer.
+    #[serde(default)]
+    relay: Option<u32>,
 }
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -167,6 +172,9 @@ struct Mount {
     semantics: RefCell<crate::semantics_status::SemanticsGate>,
     peer_suspended: bool,
     peer: Option<u32>,
+    /// The relay peer whose room this mount's records replicate through.
+    #[cfg_attr(not(feature = "relay"), allow(dead_code, reason = "read by the relay feature"))]
+    relay: Option<u32>,
     desktop: Option<crate::desktop_host::DesktopHandle>,
     record: Option<crate::desktop_host::OwnedRecord>,
     /// `record_version` of each record this mount shows (`record`, or its
@@ -604,6 +612,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         crate::mount_agent::mount_agent(&config.author, config.agent.as_deref()).map_err(error)?;
     let author = config.author.clone();
     let storage = load_cache(&config.profile, &config.device, &hydrated)?;
+    attach_relay(&config, &storage)?;
     let records = RecordOwners::portable(storage.clone())
         .open(definition.app_id, &config.room)
         .map_err(error)?;
@@ -765,6 +774,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         semantics: semantics_gate(config.semantics_window_ms),
         peer_suspended: false,
         peer: config.peer,
+        relay: config.relay,
         desktop: None,
         record: Some(crate::desktop_host::OwnedRecord {
             app: definition.app_id.into(),
@@ -844,10 +854,12 @@ fn begin_local_desktop(
     let seed = config.local.clone().unwrap_or_default();
     let local = crate::local_desktop::LocalDesktop::new(&config.room, &config.author, &seed)
         .map_err(error)?;
+    let storage = load_cache(&config.profile, &config.device, &hydrated)?;
+    attach_relay(&config, &storage)?;
     let desktop = DesktopMount {
         sources: DesktopSources {
             admission: local.admission().map_err(error)?,
-            storage: load_cache(&config.profile, &config.device, &hydrated)?,
+            storage,
             permissions: PermissionContext::from_capabilities(
                 Actor::person(Some(Role::Owner), &config.author),
                 vec![],
@@ -934,6 +946,7 @@ fn begin_desktop_root(
         semantics: semantics_gate(config.semantics_window_ms),
         peer_suspended: false,
         peer,
+        relay: config.relay,
         desktop: Some(desktop),
         record: None,
         record_versions: HashMap::new(),
@@ -1063,6 +1076,10 @@ fn propagate_record_change(mounts: &mut HashMap<u64, Mount>, origin: u64) -> Vec
     if changed.is_empty() {
         return Vec::new();
     }
+    #[cfg(feature = "relay")]
+    if let Some(relay) = mounts.get(&origin).and_then(|mount| mount.relay) {
+        crate::relay::publish_changes(relay);
+    }
     let mut resynced = Vec::new();
     for (&id, mount) in mounts.iter_mut().filter(|(id, mount)| {
         **id != origin && changed.iter().any(|changed| changed.shown_by(mount))
@@ -1075,6 +1092,44 @@ fn propagate_record_change(mounts: &mut HashMap<u64, Mount>, origin: u64) -> Vec
         resynced.push(id);
     }
     resynced
+}
+/// Before a mount on a relay room opens its records: the room's documents
+/// that arrived earlier go into the mount's cache first.
+fn attach_relay(config: &Config, storage: &PortableStorage) -> Result<(), JsValue> {
+    match config.relay {
+        #[cfg(feature = "relay")]
+        Some(relay) => crate::relay::attach_cache(relay, &config.room, storage).map_err(error),
+        #[cfg(not(feature = "relay"))]
+        Some(_) => {
+            let _ = storage;
+            Err(error("a relay mount requires a runtime built with the relay peer"))
+        }
+        None => Ok(()),
+    }
+}
+/// A peer's change reached records the relay mounts of `relay` may show:
+/// re-run their frame passes, as for another mount's change.
+#[cfg(feature = "relay")]
+pub(crate) fn wake_relay_mounts(relay: u32) {
+    // Replication may run while a mount is being created; that mount opens
+    // its records afresh anyway.
+    let ids = MOUNTS.with(|mounts| {
+        let Ok(mut mounts) = mounts.try_borrow_mut() else {
+            return Vec::new();
+        };
+        mounts
+            .iter_mut()
+            .filter(|(_, mount)| mount.relay == Some(relay))
+            .map(|(&id, mount)| {
+                let _ = mount.take_record_changes();
+                mount.frame.relayout();
+                mount.pending = true;
+                mount.window.request_redraw();
+                id
+            })
+            .collect::<Vec<_>>()
+    });
+    wake(ids);
 }
 /// A redraw requested outside Winit's dispatch (from a call the page made)
 /// waits for the next event; a proxy event per mount delivers it now.
