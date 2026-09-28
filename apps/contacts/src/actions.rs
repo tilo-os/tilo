@@ -2127,7 +2127,7 @@ mod tests {
             );
 
             // The search side finds the contact and names its exported action.
-            let providers = Widget::search_providers(&app);
+            let providers = ui::search::capability::search_providers(&app);
             assert_eq!(providers.len(), 1, "one contacts search provider");
             let hits = providers[0].search("hopper");
             let hit = hits

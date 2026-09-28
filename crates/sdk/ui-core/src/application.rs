@@ -693,7 +693,7 @@ impl AppComponent {
         let Some(root) = self.root.as_deref() else {
             return vec![];
         };
-        root.search_providers()
+        crate::search::capability::search_providers(root)
             .into_iter()
             .filter_map(|provider| {
                 // The host independently collects nested component boundaries.
