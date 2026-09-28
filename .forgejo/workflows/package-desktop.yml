@@ -347,7 +347,7 @@ jobs:
             curl --fail --silent --show-error --request POST \
               --header "Authorization: token $VARIABLE_TOKEN" \
               --header 'Content-Type: application/json' \
-              --data '{"ref":"main","inputs":{"with_browser":"1","publish":"true"}}' \
+              --data '{"ref":"main","inputs":{"with_browser":"1","release":"true"}}' \
               "$dispatch_api"
             echo '::notice::requested continuous desktop/OS integration release'
           fi
