@@ -4235,365 +4235,35 @@ impl Widget for StoreApp {
         None
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the Store's synchronous action boundary keeps every local view route and typed operation refusal together so capability checks cannot split from resource dispatch"
-    )]
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        if kind == OperationKind::View && type_id == "store.navigation" {
-            let target: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
-            match target.as_str() {
-                "catalogue" => {
-                    self.focused_detail = None;
-                    self.remotes_open = false;
-                    self.safety_open = false;
-                }
-                "previous-page" => {
-                    self.catalog_page = self.catalog_page.saturating_sub(1);
-                    self.scroll_offset.set((0.0, 0.0));
-                }
-                "next-page" => {
-                    let pages = self.visible_items().len().div_ceil(PAGE_SIZE).max(1);
-                    self.catalog_page = (self.catalog_page + 1).min(pages.saturating_sub(1));
-                    self.scroll_offset.set((0.0, 0.0));
-                }
-                _ => return Err("unknown Store navigation target".into()),
-            }
-            self.structure_dirty = true;
-            return Ok(true);
-        }
-        if kind == OperationKind::View && type_id == "store.remote-form" {
-            let (): () = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
-            let name = self.remote_name_state.with(Clone::clone);
-            let url = self.remote_url_state.with(Clone::clone);
-            if validate_remote_name(&name).is_ok() && validate_remote_url(&url).is_ok() {
-                self.pending_control_invocation = Some(ControlInvocation {
-                    address: ActionAddress::new("store:remotes", "add"),
-                    arguments: serde_json::Map::from_iter([
-                        ("name".into(), serde_json::Value::String(name)),
-                        ("url".into(), serde_json::Value::String(url)),
-                    ]),
-                });
-            } else {
-                self.status_line =
-                    "A remote name and credential-free HTTPS repository URL are required.".into();
-                self.structure_dirty = true;
-            }
-            return Ok(true);
-        }
-        if kind == OperationKind::View
-            && let Some(operation) = crate::browse_actions::decode(type_id, payload)?
-        {
-            match operation {
-                crate::browse_actions::BrowseOperation::SetSearch { query } => {
-                    if query.chars().count() > 512 {
-                        return Err("search query is too long".into());
-                    }
-                    self.set_query(query);
-                }
-                crate::browse_actions::BrowseOperation::SetSource { source } => {
-                    self.set_active_filter_from_local(&source);
-                    if self.active_filter.label() != source {
-                        return Err("unknown Store source filter".into());
-                    }
-                }
-                crate::browse_actions::BrowseOperation::SetCategory { category } => {
-                    let category = (category != "All").then_some(category);
-                    if category.as_ref().is_some_and(|value| {
-                        value.chars().count() > 128
-                            || !self.category_labels().iter().any(|known| known == value)
-                    }) {
-                        return Err("unknown Store category".into());
-                    }
-                    self.set_active_category(category);
-                }
-                crate::browse_actions::BrowseOperation::Clear => {
-                    self.set_query(String::new());
-                    self.set_active_filter(SourceFilter::All);
-                    self.set_active_category(None);
-                }
-            }
-            return Ok(true);
-        }
-        if kind == OperationKind::View && type_id == "store.view-remotes" {
-            let (): () = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
-            self.remotes_open = true;
-            self.safety_open = false;
-            self.focused_detail = None;
-            self.pending_control_invocation = Some(ControlInvocation {
-                address: ActionAddress::new("store:remotes", "refresh"),
-                arguments: serde_json::Map::new(),
-            });
-            self.structure_dirty = true;
-            return Ok(true);
-        }
-        if kind == OperationKind::View && type_id == "store.view-trust" {
-            let (): () = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
-            self.safety_open = true;
-            self.remotes_open = false;
-            self.focused_detail = None;
-            self.structure_dirty = true;
-            return Ok(true);
-        }
-        if kind == OperationKind::View && type_id == "store.view" {
-            let app_id: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
-            let item = self
-                .items
-                .iter()
-                .find(|item| item.id == app_id)
-                .ok_or_else(|| "app is no longer present in the catalogue".to_string())?;
-            self.focused_detail = Some(app_id.clone());
-            self.pending_detail = Some(app_id);
-            self.status_line = format!("Loading details for {}…", item.name);
-            self.structure_dirty = true;
-            return Ok(true);
-        }
-        if kind != OperationKind::Effect {
-            return Ok(false);
-        }
-        match type_id {
-            "store.refresh" | "store.app" => {
-                Err("store operations require the lifecycle-capable operation host".into())
-            }
-            _ => Ok(false),
-        }
-    }
-
-    #[allow(
-        clippy::too_many_lines,
-        reason = "this is the single typed effect-dispatch boundary for Store lifecycle, export, remote, and moderation actions"
-    )]
-    fn start_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if kind != OperationKind::Effect {
-            return Ok(None);
+        let Some(request) = op.unscoped() else {
+            return ui::widget::start_in_children(self, op, doc, path);
+        };
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
         }
-        if type_id == "store.refresh" {
-            if self.pending_lifecycle_refresh.is_some() {
-                return Err("a catalog refresh is already queued".into());
-            }
-            self.pending_lifecycle_refresh = Some(invocation);
-            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+        if let Some(started) = self.admit_resource_operation(
+            request.invocation,
+            request.kind,
+            request.type_id,
+            request.payload,
+            doc,
+            path,
+        )? {
+            return Ok(Some(started));
         }
-        if type_id == "store.report-export" {
-            if self.report_export.is_some() {
-                return Err("a report export is already in progress".into());
-            }
-            let envelope: ReportEnvelope =
-                serde_json::from_slice(payload).map_err(|e| e.to_string())?;
-            if envelope.format != "tilo.store.report-envelope.v1"
-                || envelope.app_id.trim().is_empty()
-                || envelope.evidence_note.len() > 65_536
-            {
-                return Err("invalid report evidence envelope".into());
-            }
-            let bytes = serde_json::to_vec_pretty(&envelope).map_err(|e| e.to_string())?;
-            let suggested = format!(
-                "{}-report.json",
-                envelope.app_id.replace(
-                    |c: char| !c.is_ascii_alphanumeric() && c != '.' && c != '-',
-                    "-"
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
                 )
-            );
-            let receiver =
-                ui::portal::PickRequest::save("Export report evidence", "Export", &suggested)
-                    .filter(ui::portal::FileFilter::new("JSON evidence envelope").glob("*.json"))
-                    .thread_name("store-report-export")
-                    .send();
-            self.report_export = Some((invocation, receiver, bytes));
-            self.status_line = "Choose where to export the report evidence…".into();
-            self.structure_dirty = true;
-            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
-        }
-        if type_id == "store.moderation" {
-            if self.pending_moderation.len() >= MAX_PENDING_EXTERNAL_OPERATIONS {
-                return Err("too many moderation operations are already queued".into());
-            }
-            let (registry_name, envelope): (String, ReportEnvelope) =
-                serde_json::from_slice(payload)
-                    .map_err(|_| "invalid moderation request".to_string())?;
-            if registry_name.trim().is_empty()
-                || envelope.format != "tilo.store.report-envelope.v1"
-                || envelope.app_id.trim().is_empty()
-                || envelope.evidence_note.trim().chars().count() < 8
-                || envelope.evidence_note.chars().count() > 4_096
-            {
-                return Err("Add a concern of 8–4096 characters before submitting".into());
-            }
-            let item = self
-                .items
-                .iter()
-                .find(|item| item.id == envelope.app_id)
-                .ok_or_else(|| "the reported app is no longer in this catalogue".to_string())?;
-            let StoreSource::Tilo {
-                registry_name: current_registry,
-            } = &item.source
-            else {
-                return Err("reports can only be submitted to the app's Tilo registry".into());
-            };
-            if current_registry != &registry_name {
-                return Err("the report target no longer matches this app's registry".into());
-            }
-            let report = self
-                .reports
-                .iter()
-                .find(|report| report.app_id == envelope.app_id && !report.id.starts_with("case-"))
-                .ok_or_else(|| "the current report draft is no longer available".to_string())?;
-            // A published action is a precise snapshot, not a bearer token
-            // for any app id that happens to be in the request. Rebuild the
-            // expected envelope from the collaborative document and reject a
-            // stale or substituted submission before it reaches the worker.
-            let note = self
-                .report_notes
-                .get(&report.app_id)
-                .map_or("", String::as_str);
-            if report_envelope(report, Some(item), note) != envelope {
-                return Err(
-                    "the report draft changed; review it and submit the current version".into(),
-                );
-            }
-            self.pending_moderation.push((
-                ModerationIntent::Submit {
-                    registry_name,
-                    envelope,
-                },
-                invocation,
-            ));
-            self.status_line = "Signing report with your workspace identity…".into();
-            self.structure_dirty = true;
-            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
-        }
-        if matches!(
-            type_id,
-            "store.moderation-status" | "store.moderation-appeal"
-        ) {
-            let (registry_name, case_id, reason): (String, String, String) =
-                serde_json::from_slice(payload)
-                    .map_err(|_| "invalid moderation case request".to_string())?;
-            if self.pending_moderation.len() >= MAX_PENDING_EXTERNAL_OPERATIONS {
-                return Err("too many moderation operations are already queued".into());
-            }
-            if registry_name.trim().is_empty() || !valid_case_id(&case_id) {
-                return Err("moderation case is no longer available".into());
-            }
-            let report = self
-                .reports
-                .iter()
-                .find(|report| report.id == case_id)
-                .ok_or_else(|| "moderation case is no longer available".to_string())?;
-            let item = self
-                .items
-                .iter()
-                .find(|item| item.id == report.app_id)
-                .ok_or_else(|| "the moderated app is no longer in this catalogue".to_string())?;
-            let StoreSource::Tilo {
-                registry_name: current_registry,
-            } = &item.source
-            else {
-                return Err("this moderation case no longer has a Tilo registry target".into());
-            };
-            if current_registry != &registry_name {
-                return Err("the moderation case no longer matches this app's registry".into());
-            }
-            let intent = if type_id == "store.moderation-status" {
-                ModerationIntent::Refresh {
-                    registry_name,
-                    case_id,
-                }
-            } else {
-                if reason.trim().chars().count() < 8 || reason.chars().count() > 8_192 {
-                    return Err("Add an appeal reason of 8–8192 characters".into());
-                }
-                ModerationIntent::Appeal {
-                    registry_name,
-                    case_id,
-                    reason,
-                }
-            };
-            self.pending_moderation.push((intent, invocation));
-            self.status_line = "Contacting the authoritative registry…".into();
-            self.structure_dirty = true;
-            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
-        }
-        if type_id == "store.remote" {
-            if self.pending_lifecycle_remote.len() >= MAX_PENDING_EXTERNAL_OPERATIONS {
-                return Err("too many remote operations are already queued".into());
-            }
-            let args: Vec<String> = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
-            let intent = match args.first().map(String::as_str) {
-                Some("refresh") => RemoteIntent::Refresh,
-                Some("remove") => {
-                    let name = args
-                        .get(1)
-                        .ok_or_else(|| "missing remote name".to_string())?;
-                    validate_remote_name(name)?;
-                    RemoteIntent::Remove(name.clone())
-                }
-                Some("add") => {
-                    let name = args
-                        .get(1)
-                        .ok_or_else(|| "missing remote name".to_string())?
-                        .clone();
-                    let url = args
-                        .get(2)
-                        .ok_or_else(|| "missing repository URL".to_string())?
-                        .clone();
-                    validate_remote_name(&name)?;
-                    validate_remote_url(&url)?;
-                    RemoteIntent::Add { name, url }
-                }
-                _ => return Err("unknown remote action".into()),
-            };
-            self.pending_lifecycle_remote.push((intent, invocation));
-            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
-        }
-        if type_id != "store.app" {
-            return Ok(None);
-        }
-        let args: Vec<String> = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
-        let id = args
-            .first()
-            .ok_or_else(|| "missing app id".to_string())?
-            .clone();
-        let action = action_from_code(args.get(1).map_or("", String::as_str))
-            .ok_or_else(|| "unknown store action".to_string())?;
-        let item = self
-            .items
-            .iter()
-            .find(|item| item.id == id)
-            .ok_or_else(|| "app is no longer present in the catalog".to_string())?;
-        if !item.allows_action(action, self.flatpak_available) {
-            return Err("this action is no longer available for the current app state".into());
-        }
-        if action.requires_flatpak_host() && !self.flatpak_available {
-            return Err(
-                "Flatpak is not installed on this host; no install operation can run".into(),
-            );
-        }
-        if self.active_operation.is_some() {
-            return Err("a package operation is already in progress".into());
-        }
-        self.active_operation = Some((id.clone(), action));
-        self.operation_error = None;
-        self.status_line = format!("{} {}…", action.progress_label(), item.name);
-        self.structure_dirty = true;
-        self.pending_lifecycle_actions
-            .push((id, action, invocation));
-        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+            }))
     }
 
     fn poll_resource_operation(
@@ -4828,6 +4498,369 @@ impl Widget for StoreApp {
                 .as_ref()
                 .is_some_and(|images| images.pending() > 0)
             || self.report_export.is_some()
+    }
+}
+
+impl StoreApp {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the Store's synchronous action boundary keeps every local view route and typed operation refusal together so capability checks cannot split from resource dispatch"
+    )]
+    fn answer_resource_operation(
+        &mut self,
+        kind: OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind == OperationKind::View && type_id == "store.navigation" {
+            let target: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+            match target.as_str() {
+                "catalogue" => {
+                    self.focused_detail = None;
+                    self.remotes_open = false;
+                    self.safety_open = false;
+                }
+                "previous-page" => {
+                    self.catalog_page = self.catalog_page.saturating_sub(1);
+                    self.scroll_offset.set((0.0, 0.0));
+                }
+                "next-page" => {
+                    let pages = self.visible_items().len().div_ceil(PAGE_SIZE).max(1);
+                    self.catalog_page = (self.catalog_page + 1).min(pages.saturating_sub(1));
+                    self.scroll_offset.set((0.0, 0.0));
+                }
+                _ => return Err("unknown Store navigation target".into()),
+            }
+            self.structure_dirty = true;
+            return Ok(true);
+        }
+        if kind == OperationKind::View && type_id == "store.remote-form" {
+            let (): () = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+            let name = self.remote_name_state.with(Clone::clone);
+            let url = self.remote_url_state.with(Clone::clone);
+            if validate_remote_name(&name).is_ok() && validate_remote_url(&url).is_ok() {
+                self.pending_control_invocation = Some(ControlInvocation {
+                    address: ActionAddress::new("store:remotes", "add"),
+                    arguments: serde_json::Map::from_iter([
+                        ("name".into(), serde_json::Value::String(name)),
+                        ("url".into(), serde_json::Value::String(url)),
+                    ]),
+                });
+            } else {
+                self.status_line =
+                    "A remote name and credential-free HTTPS repository URL are required.".into();
+                self.structure_dirty = true;
+            }
+            return Ok(true);
+        }
+        if kind == OperationKind::View
+            && let Some(operation) = crate::browse_actions::decode(type_id, payload)?
+        {
+            match operation {
+                crate::browse_actions::BrowseOperation::SetSearch { query } => {
+                    if query.chars().count() > 512 {
+                        return Err("search query is too long".into());
+                    }
+                    self.set_query(query);
+                }
+                crate::browse_actions::BrowseOperation::SetSource { source } => {
+                    self.set_active_filter_from_local(&source);
+                    if self.active_filter.label() != source {
+                        return Err("unknown Store source filter".into());
+                    }
+                }
+                crate::browse_actions::BrowseOperation::SetCategory { category } => {
+                    let category = (category != "All").then_some(category);
+                    if category.as_ref().is_some_and(|value| {
+                        value.chars().count() > 128
+                            || !self.category_labels().iter().any(|known| known == value)
+                    }) {
+                        return Err("unknown Store category".into());
+                    }
+                    self.set_active_category(category);
+                }
+                crate::browse_actions::BrowseOperation::Clear => {
+                    self.set_query(String::new());
+                    self.set_active_filter(SourceFilter::All);
+                    self.set_active_category(None);
+                }
+            }
+            return Ok(true);
+        }
+        if kind == OperationKind::View && type_id == "store.view-remotes" {
+            let (): () = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+            self.remotes_open = true;
+            self.safety_open = false;
+            self.focused_detail = None;
+            self.pending_control_invocation = Some(ControlInvocation {
+                address: ActionAddress::new("store:remotes", "refresh"),
+                arguments: serde_json::Map::new(),
+            });
+            self.structure_dirty = true;
+            return Ok(true);
+        }
+        if kind == OperationKind::View && type_id == "store.view-trust" {
+            let (): () = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+            self.safety_open = true;
+            self.remotes_open = false;
+            self.focused_detail = None;
+            self.structure_dirty = true;
+            return Ok(true);
+        }
+        if kind == OperationKind::View && type_id == "store.view" {
+            let app_id: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+            let item = self
+                .items
+                .iter()
+                .find(|item| item.id == app_id)
+                .ok_or_else(|| "app is no longer present in the catalogue".to_string())?;
+            self.focused_detail = Some(app_id.clone());
+            self.pending_detail = Some(app_id);
+            self.status_line = format!("Loading details for {}…", item.name);
+            self.structure_dirty = true;
+            return Ok(true);
+        }
+        if kind != OperationKind::Effect {
+            return Ok(false);
+        }
+        match type_id {
+            "store.refresh" | "store.app" => {
+                Err("store operations require the lifecycle-capable operation host".into())
+            }
+            _ => Ok(false),
+        }
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "this is the single typed effect-dispatch boundary for Store lifecycle, export, remote, and moderation actions"
+    )]
+    fn admit_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        kind: OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if kind != OperationKind::Effect {
+            return Ok(None);
+        }
+        if type_id == "store.refresh" {
+            if self.pending_lifecycle_refresh.is_some() {
+                return Err("a catalog refresh is already queued".into());
+            }
+            self.pending_lifecycle_refresh = Some(invocation);
+            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+        }
+        if type_id == "store.report-export" {
+            if self.report_export.is_some() {
+                return Err("a report export is already in progress".into());
+            }
+            let envelope: ReportEnvelope =
+                serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+            if envelope.format != "tilo.store.report-envelope.v1"
+                || envelope.app_id.trim().is_empty()
+                || envelope.evidence_note.len() > 65_536
+            {
+                return Err("invalid report evidence envelope".into());
+            }
+            let bytes = serde_json::to_vec_pretty(&envelope).map_err(|e| e.to_string())?;
+            let suggested = format!(
+                "{}-report.json",
+                envelope.app_id.replace(
+                    |c: char| !c.is_ascii_alphanumeric() && c != '.' && c != '-',
+                    "-"
+                )
+            );
+            let receiver =
+                ui::portal::PickRequest::save("Export report evidence", "Export", &suggested)
+                    .filter(ui::portal::FileFilter::new("JSON evidence envelope").glob("*.json"))
+                    .thread_name("store-report-export")
+                    .send();
+            self.report_export = Some((invocation, receiver, bytes));
+            self.status_line = "Choose where to export the report evidence…".into();
+            self.structure_dirty = true;
+            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+        }
+        if type_id == "store.moderation" {
+            if self.pending_moderation.len() >= MAX_PENDING_EXTERNAL_OPERATIONS {
+                return Err("too many moderation operations are already queued".into());
+            }
+            let (registry_name, envelope): (String, ReportEnvelope) =
+                serde_json::from_slice(payload)
+                    .map_err(|_| "invalid moderation request".to_string())?;
+            if registry_name.trim().is_empty()
+                || envelope.format != "tilo.store.report-envelope.v1"
+                || envelope.app_id.trim().is_empty()
+                || envelope.evidence_note.trim().chars().count() < 8
+                || envelope.evidence_note.chars().count() > 4_096
+            {
+                return Err("Add a concern of 8–4096 characters before submitting".into());
+            }
+            let item = self
+                .items
+                .iter()
+                .find(|item| item.id == envelope.app_id)
+                .ok_or_else(|| "the reported app is no longer in this catalogue".to_string())?;
+            let StoreSource::Tilo {
+                registry_name: current_registry,
+            } = &item.source
+            else {
+                return Err("reports can only be submitted to the app's Tilo registry".into());
+            };
+            if current_registry != &registry_name {
+                return Err("the report target no longer matches this app's registry".into());
+            }
+            let report = self
+                .reports
+                .iter()
+                .find(|report| report.app_id == envelope.app_id && !report.id.starts_with("case-"))
+                .ok_or_else(|| "the current report draft is no longer available".to_string())?;
+            // A published action is a precise snapshot, not a bearer token
+            // for any app id that happens to be in the request. Rebuild the
+            // expected envelope from the collaborative document and reject a
+            // stale or substituted submission before it reaches the worker.
+            let note = self
+                .report_notes
+                .get(&report.app_id)
+                .map_or("", String::as_str);
+            if report_envelope(report, Some(item), note) != envelope {
+                return Err(
+                    "the report draft changed; review it and submit the current version".into(),
+                );
+            }
+            self.pending_moderation.push((
+                ModerationIntent::Submit {
+                    registry_name,
+                    envelope,
+                },
+                invocation,
+            ));
+            self.status_line = "Signing report with your workspace identity…".into();
+            self.structure_dirty = true;
+            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+        }
+        if matches!(
+            type_id,
+            "store.moderation-status" | "store.moderation-appeal"
+        ) {
+            let (registry_name, case_id, reason): (String, String, String) =
+                serde_json::from_slice(payload)
+                    .map_err(|_| "invalid moderation case request".to_string())?;
+            if self.pending_moderation.len() >= MAX_PENDING_EXTERNAL_OPERATIONS {
+                return Err("too many moderation operations are already queued".into());
+            }
+            if registry_name.trim().is_empty() || !valid_case_id(&case_id) {
+                return Err("moderation case is no longer available".into());
+            }
+            let report = self
+                .reports
+                .iter()
+                .find(|report| report.id == case_id)
+                .ok_or_else(|| "moderation case is no longer available".to_string())?;
+            let item = self
+                .items
+                .iter()
+                .find(|item| item.id == report.app_id)
+                .ok_or_else(|| "the moderated app is no longer in this catalogue".to_string())?;
+            let StoreSource::Tilo {
+                registry_name: current_registry,
+            } = &item.source
+            else {
+                return Err("this moderation case no longer has a Tilo registry target".into());
+            };
+            if current_registry != &registry_name {
+                return Err("the moderation case no longer matches this app's registry".into());
+            }
+            let intent = if type_id == "store.moderation-status" {
+                ModerationIntent::Refresh {
+                    registry_name,
+                    case_id,
+                }
+            } else {
+                if reason.trim().chars().count() < 8 || reason.chars().count() > 8_192 {
+                    return Err("Add an appeal reason of 8–8192 characters".into());
+                }
+                ModerationIntent::Appeal {
+                    registry_name,
+                    case_id,
+                    reason,
+                }
+            };
+            self.pending_moderation.push((intent, invocation));
+            self.status_line = "Contacting the authoritative registry…".into();
+            self.structure_dirty = true;
+            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+        }
+        if type_id == "store.remote" {
+            if self.pending_lifecycle_remote.len() >= MAX_PENDING_EXTERNAL_OPERATIONS {
+                return Err("too many remote operations are already queued".into());
+            }
+            let args: Vec<String> = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+            let intent = match args.first().map(String::as_str) {
+                Some("refresh") => RemoteIntent::Refresh,
+                Some("remove") => {
+                    let name = args
+                        .get(1)
+                        .ok_or_else(|| "missing remote name".to_string())?;
+                    validate_remote_name(name)?;
+                    RemoteIntent::Remove(name.clone())
+                }
+                Some("add") => {
+                    let name = args
+                        .get(1)
+                        .ok_or_else(|| "missing remote name".to_string())?
+                        .clone();
+                    let url = args
+                        .get(2)
+                        .ok_or_else(|| "missing repository URL".to_string())?
+                        .clone();
+                    validate_remote_name(&name)?;
+                    validate_remote_url(&url)?;
+                    RemoteIntent::Add { name, url }
+                }
+                _ => return Err("unknown remote action".into()),
+            };
+            self.pending_lifecycle_remote.push((intent, invocation));
+            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+        }
+        if type_id != "store.app" {
+            return Ok(None);
+        }
+        let args: Vec<String> = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+        let id = args
+            .first()
+            .ok_or_else(|| "missing app id".to_string())?
+            .clone();
+        let action = action_from_code(args.get(1).map_or("", String::as_str))
+            .ok_or_else(|| "unknown store action".to_string())?;
+        let item = self
+            .items
+            .iter()
+            .find(|item| item.id == id)
+            .ok_or_else(|| "app is no longer present in the catalog".to_string())?;
+        if !item.allows_action(action, self.flatpak_available) {
+            return Err("this action is no longer available for the current app state".into());
+        }
+        if action.requires_flatpak_host() && !self.flatpak_available {
+            return Err(
+                "Flatpak is not installed on this host; no install operation can run".into(),
+            );
+        }
+        if self.active_operation.is_some() {
+            return Err("a package operation is already in progress".into());
+        }
+        self.active_operation = Some((id.clone(), action));
+        self.operation_error = None;
+        self.status_line = format!("{} {}…", action.progress_label(), item.name);
+        self.structure_dirty = true;
+        self.pending_lifecycle_actions
+            .push((id, action, invocation));
+        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
     }
 }
 
@@ -5507,23 +5540,29 @@ mod tests {
         // Case `detail_and_remote_controls_use_typed_local_actions`.
         {
             let mut app = seeded_app();
-            let doc = AutoCommit::new();
-            app.invoke_resource_operation(
-                OperationKind::View,
-                "store.view",
-                &serde_json::to_vec(&"id.chess").unwrap(),
-                &doc,
+            let mut doc = AutoCommit::new();
+            app.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    OperationKind::View,
+                    "store.view",
+                    &serde_json::to_vec(&"id.chess").unwrap(),
+                ),
+                &mut doc,
                 &automerge::ROOT,
             )
             .unwrap();
             assert_eq!(app.take_detail_requested().as_deref(), Some("id.chess"));
             assert!(app.take_detail_requested().is_none());
 
-            app.invoke_resource_operation(
-                OperationKind::View,
-                "store.view-remotes",
-                &serde_json::to_vec(&()).unwrap(),
-                &doc,
+            app.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    OperationKind::View,
+                    "store.view-remotes",
+                    &serde_json::to_vec(&()).unwrap(),
+                ),
+                &mut doc,
                 &automerge::ROOT,
             )
             .unwrap();
@@ -5772,13 +5811,15 @@ mod tests {
             let heads = doc.get_heads();
             let invocation = tilo_actions::InvocationId::new();
             assert_eq!(
-                app.start_resource_operation(
-                    invocation,
-                    OperationKind::Effect,
-                    "store.refresh",
-                    &serde_json::to_vec(&"").unwrap(),
-                    &doc,
-                    &automerge::ROOT,
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        invocation,
+                        OperationKind::Effect,
+                        "store.refresh",
+                        &serde_json::to_vec(&"").unwrap()
+                    ),
+                    &mut doc,
+                    &automerge::ROOT
                 )
                 .unwrap(),
                 Some(ui::widget::ResourceOperationStart::Accepted)
@@ -5790,15 +5831,17 @@ mod tests {
         // Case `exported_refresh_is_accepted_until_worker_completion`.
         {
             let mut app = seeded_app();
-            let doc = AutoCommit::new();
+            let mut doc = AutoCommit::new();
             let invocation = tilo_actions::InvocationId::new();
             let started = app
-                .start_resource_operation(
-                    invocation,
-                    OperationKind::Effect,
-                    "store.refresh",
-                    &serde_json::to_vec(&"").unwrap(),
-                    &doc,
+                .start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        invocation,
+                        OperationKind::Effect,
+                        "store.refresh",
+                        &serde_json::to_vec(&"").unwrap(),
+                    ),
+                    &mut doc,
                     &automerge::ROOT,
                 )
                 .unwrap();
@@ -5818,15 +5861,17 @@ mod tests {
         // Case `app_operation_locks_the_target_card_until_the_worker_is_idle`.
         {
             let mut app = seeded_app();
-            let doc = AutoCommit::new();
+            let mut doc = AutoCommit::new();
             let payload = serde_json::to_vec(&vec!["id.notes", "open"]).unwrap();
             let first = app
-                .start_resource_operation(
-                    tilo_actions::InvocationId::new(),
-                    OperationKind::Effect,
-                    "store.app",
-                    &payload,
-                    &doc,
+                .start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        tilo_actions::InvocationId::new(),
+                        OperationKind::Effect,
+                        "store.app",
+                        &payload,
+                    ),
+                    &mut doc,
                     &automerge::ROOT,
                 )
                 .unwrap();
@@ -5838,13 +5883,15 @@ mod tests {
             assert_eq!(app.status_line(), "Starting Notes…");
             assert_eq!(app.take_lifecycle_actions().len(), 1);
             assert!(
-                app.start_resource_operation(
-                    tilo_actions::InvocationId::new(),
-                    OperationKind::Effect,
-                    "store.app",
-                    &payload,
-                    &doc,
-                    &automerge::ROOT,
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        tilo_actions::InvocationId::new(),
+                        OperationKind::Effect,
+                        "store.app",
+                        &payload
+                    ),
+                    &mut doc,
+                    &automerge::ROOT
                 )
                 .is_err(),
                 "the card action cannot double-submit while the worker owns it"
@@ -5883,6 +5930,10 @@ mod tests {
 
     /// The live store starts empty and its search/source/category controls stay local to the window.
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
     fn local_browse_controls_filter_without_document_writes() {
         // Case `live_constructor_starts_empty`.
         {
@@ -5977,16 +6028,20 @@ mod tests {
                 },
             )
             .unwrap();
-            assert!(
-                app.invoke_resource_operation(
-                    OperationKind::View,
-                    &encoded.type_id,
-                    &encoded.payload,
-                    &doc,
-                    &automerge::ROOT,
+            assert!(matches!(
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        OperationKind::View,
+                        &encoded.type_id,
+                        &encoded.payload
+                    ),
+                    &mut doc,
+                    &automerge::ROOT
                 )
-                .unwrap()
-            );
+                .unwrap(),
+                Some(ui::widget::ResourceOperationStart::Completed(_))
+            ));
             assert_eq!(app.active_filter(), SourceFilter::Tilo);
             assert!(
                 app.visible_items()
@@ -6011,13 +6066,15 @@ mod tests {
         // Case `stale_resource_action_cannot_escalate_to_an_unoffered_mutation`.
         {
             let mut app = seeded_app();
-            let doc = AutoCommit::new();
-            let result = app.start_resource_operation(
-                tilo_actions::InvocationId::new(),
-                OperationKind::Effect,
-                "store.app",
-                &serde_json::to_vec(&vec!["id.notes", "remove"]).unwrap(),
-                &doc,
+            let mut doc = AutoCommit::new();
+            let result = app.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    tilo_actions::InvocationId::new(),
+                    OperationKind::Effect,
+                    "store.app",
+                    &serde_json::to_vec(&vec!["id.notes", "remove"]).unwrap(),
+                ),
+                &mut doc,
                 &automerge::ROOT,
             );
             assert!(
@@ -6064,7 +6121,7 @@ mod tests {
                 user_managed: true,
             };
             app.set_flatpak_available(false);
-            let doc = AutoCommit::new();
+            let mut doc = AutoCommit::new();
             let root = Widget::resources(&app, &doc).pop().unwrap();
             let chess = root
                 .children
@@ -6080,13 +6137,15 @@ mod tests {
                 ));
             }
             assert!(
-                app.start_resource_operation(
-                    tilo_actions::InvocationId::new(),
-                    OperationKind::Effect,
-                    "store.app",
-                    &serde_json::to_vec(&vec!["id.chess", "flatpak-remove"]).unwrap(),
-                    &doc,
-                    &automerge::ROOT,
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        tilo_actions::InvocationId::new(),
+                        OperationKind::Effect,
+                        "store.app",
+                        &serde_json::to_vec(&vec!["id.chess", "flatpak-remove"]).unwrap()
+                    ),
+                    &mut doc,
+                    &automerge::ROOT
                 )
                 .is_err(),
                 "direct/stale invocation cannot bypass the unavailable resource contract"
@@ -6154,13 +6213,15 @@ mod tests {
                 note,
             );
             assert_eq!(
-                app.start_resource_operation(
-                    invocation,
-                    OperationKind::Effect,
-                    "store.moderation",
-                    &serde_json::to_vec(&("Tilo", &envelope)).unwrap(),
-                    &doc,
-                    &automerge::ROOT,
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        invocation,
+                        OperationKind::Effect,
+                        "store.moderation",
+                        &serde_json::to_vec(&("Tilo", &envelope)).unwrap()
+                    ),
+                    &mut doc,
+                    &automerge::ROOT
                 )
                 .unwrap(),
                 Some(ui::widget::ResourceOperationStart::Accepted)
@@ -6220,29 +6281,33 @@ mod tests {
         // Case `remote_effect_queue_is_bounded`.
         {
             let mut app = seeded_app();
-            let doc = AutoCommit::new();
+            let mut doc = AutoCommit::new();
             let payload = serde_json::to_vec(&vec!["refresh".to_string()]).unwrap();
             for _ in 0..MAX_PENDING_EXTERNAL_OPERATIONS {
                 assert!(
-                    app.start_resource_operation(
-                        tilo_actions::InvocationId::new(),
-                        OperationKind::Effect,
-                        "store.remote",
-                        &payload,
-                        &doc,
-                        &automerge::ROOT,
+                    app.start_operation(
+                        &ui::widget::ResourceOperation::local(
+                            tilo_actions::InvocationId::new(),
+                            OperationKind::Effect,
+                            "store.remote",
+                            &payload
+                        ),
+                        &mut doc,
+                        &automerge::ROOT
                     )
                     .is_ok()
                 );
             }
             assert!(
-                app.start_resource_operation(
-                    tilo_actions::InvocationId::new(),
-                    OperationKind::Effect,
-                    "store.remote",
-                    &payload,
-                    &doc,
-                    &automerge::ROOT,
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        tilo_actions::InvocationId::new(),
+                        OperationKind::Effect,
+                        "store.remote",
+                        &payload
+                    ),
+                    &mut doc,
+                    &automerge::ROOT
                 )
                 .is_err()
             );
@@ -6266,13 +6331,15 @@ mod tests {
                 app.items.iter().find(|item| item.id == "id.notes"),
                 note,
             );
-            let doc = AutoCommit::new();
-            let accepted = app.start_resource_operation(
-                tilo_actions::InvocationId::new(),
-                OperationKind::Effect,
-                "store.moderation",
-                &serde_json::to_vec(&("Tilo", &current)).unwrap(),
-                &doc,
+            let mut doc = AutoCommit::new();
+            let accepted = app.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    tilo_actions::InvocationId::new(),
+                    OperationKind::Effect,
+                    "store.moderation",
+                    &serde_json::to_vec(&("Tilo", &current)).unwrap(),
+                ),
+                &mut doc,
                 &automerge::ROOT,
             );
             assert!(accepted.is_ok());
@@ -6280,12 +6347,14 @@ mod tests {
 
             let mut stale = current;
             stale.evidence_note = "Different text that was never saved in this draft.".into();
-            let rejected = app.start_resource_operation(
-                tilo_actions::InvocationId::new(),
-                OperationKind::Effect,
-                "store.moderation",
-                &serde_json::to_vec(&("Tilo", stale)).unwrap(),
-                &doc,
+            let rejected = app.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    tilo_actions::InvocationId::new(),
+                    OperationKind::Effect,
+                    "store.moderation",
+                    &serde_json::to_vec(&("Tilo", stale)).unwrap(),
+                ),
+                &mut doc,
                 &automerge::ROOT,
             );
             assert!(rejected.is_err());

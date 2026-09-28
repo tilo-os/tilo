@@ -4516,7 +4516,7 @@ impl MusicApp {
                 // This takes the identical operation-decoding/validation path
                 // a Ctrl+K result takes after its canonical resource action
                 // resolves at the authority door.
-                let _ = self.invoke_resource_operation(
+                let _ = self.answer_resource_operation(
                     tilo_actions::OperationKind::View,
                     crate::actions::MUSIC_OPERATION_TYPE,
                     &payload,
