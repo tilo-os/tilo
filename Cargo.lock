@@ -14751,6 +14751,48 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-browser-peer"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "bytes",
+ "channel-crypto",
+ "collab-types",
+ "ed25519-dalek 3.0.0",
+ "getrandom 0.4.3",
+ "hex",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "iroh",
+ "iroh-base",
+ "n0-future",
+ "neighbour-wire",
+ "postcard",
+ "rand 0.10.1",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "test-http",
+ "thiserror 2.0.18",
+ "tilo-clock",
+ "tilo-moq",
+ "tilo-relay",
+ "tilo-relay-client",
+ "tilo-relay-protocol",
+ "tilo-ui",
+ "tilo-user-identity",
+ "tokio",
+ "tokio-rustls",
+ "url",
+ "uuid",
+ "web-time",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-browser-runtime"
 version = "0.1.0"
 dependencies = [
@@ -15452,6 +15494,7 @@ dependencies = [
  "tilo-automerge",
  "tilo-automerge-isolate",
  "tilo-desktop-model",
+ "tilo-relay-protocol",
  "tilo-user-identity",
  "uuid",
  "web-time",
@@ -15520,6 +15563,7 @@ dependencies = [
  "automerge",
  "blake3",
  "bounded-command",
+ "bytes",
  "chat",
  "clap",
  "collab-types",
@@ -15528,6 +15572,10 @@ dependencies = [
  "getrandom 0.3.4",
  "getrandom 0.4.3",
  "hex",
+ "http-body",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "iroh",
  "iroh-base",
  "iroh-relay",
@@ -15540,6 +15588,7 @@ dependencies = [
  "qdoc",
  "rand 0.10.1",
  "runtime-identity",
+ "rustls",
  "sd-notify",
  "serde",
  "serde_bytes",
@@ -15555,6 +15604,7 @@ dependencies = [
  "tilo-browser-runtime",
  "tilo-clock",
  "tilo-delivery-protocol",
+ "tilo-moq",
  "tilo-peer-state",
  "tilo-relay-client",
  "tilo-relay-protocol",
@@ -15564,6 +15614,7 @@ dependencies = [
  "tilo-ui",
  "tilo-user-identity",
  "tokio",
+ "tokio-rustls",
  "toml 1.0.6+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
@@ -15580,9 +15631,19 @@ dependencies = [
 name = "tilo-relay-client"
 version = "0.1.0"
 dependencies = [
+ "automerge",
+ "ed25519-dalek 3.0.0",
+ "iroh",
+ "iroh-base",
+ "n0-future",
  "postcard",
+ "rand 0.10.1",
+ "serde",
+ "thiserror 2.0.18",
  "tilo-relay-protocol",
+ "tilo-user-identity",
  "tokio",
+ "web-time",
  "wire-frame",
  "workspace-hack",
 ]
@@ -15602,7 +15663,6 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
- "tilo-peer-state",
  "tilo-user-identity",
  "toml 1.0.6+spec-1.1.0",
  "uuid",
