@@ -52,7 +52,8 @@ provenance records the profile. `--profile` applies only to
 
 Each worktree has its own build dir in the VM; `gc` evicts old ones.
 
-`--builder host` builds with this host's cargo and uploads the layer. It
+`--builder host` builds with this host's cargo (or `TILO_VM_CARGO`, any cargo
+drop-in, such as one that builds on another machine) and uploads the layer. It
 needs a Linux host of the VM's architecture; macOS and Windows hosts use the
 VM builder. Without `--builder`, a VM image that lacks cargo, rsync or
 python3 makes a Linux host build locally, with a warning before the build
