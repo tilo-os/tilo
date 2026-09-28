@@ -5432,6 +5432,34 @@ impl MonitorApp {
     }
 }
 
+impl MonitorApp {
+    fn answer_resource_operation(
+        &mut self,
+        kind: OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if type_id != MONITOR_OPERATION_TYPE {
+            return Ok(false);
+        }
+        let operation: MonitorOperation =
+            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+        let expected_kind = match &operation {
+            MonitorOperation::Inspect { .. } => OperationKind::View,
+            MonitorOperation::Refresh
+            | MonitorOperation::CopyPid { .. }
+            | MonitorOperation::Signal { .. } => OperationKind::Effect,
+        };
+        if kind != expected_kind {
+            return Err("Monitor operation kind does not match its payload".into());
+        }
+        self.perform_operation(&operation, SignalConfirmation::ActionContract)?;
+        Ok(true)
+    }
+}
+
 impl Widget for MonitorApp {
     fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
         Some(&crate::framework_history::HISTORY)
@@ -5486,30 +5514,25 @@ impl Widget for MonitorApp {
             .map(monitor_process_resource)
     }
 
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        if type_id != MONITOR_OPERATION_TYPE {
-            return Ok(false);
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
         }
-        let operation: MonitorOperation =
-            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-        let expected_kind = match &operation {
-            MonitorOperation::Inspect { .. } => OperationKind::View,
-            MonitorOperation::Refresh
-            | MonitorOperation::CopyPid { .. }
-            | MonitorOperation::Signal { .. } => OperationKind::Effect,
+        let Some(request) = op.unscoped() else {
+            return Ok(None);
         };
-        if kind != expected_kind {
-            return Err("Monitor operation kind does not match its payload".into());
-        }
-        self.perform_operation(&operation, SignalConfirmation::ActionContract)?;
-        Ok(true)
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
     }
 
     fn search_providers(&self) -> Vec<Box<dyn SearchProvider>> {
@@ -8517,16 +8540,20 @@ mod tests {
                 signal: MonitorSignal::Kill,
             })
             .expect("typed monitor operation serializes");
-            let doc = AutoCommit::new();
+            let mut doc = AutoCommit::new();
             assert!(
-                Widget::invoke_resource_operation(
+                Widget::start_operation(
                     &mut a,
-                    OperationKind::Effect,
-                    MONITOR_OPERATION_TYPE,
-                    &payload,
-                    &doc,
-                    &automerge::ROOT,
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        OperationKind::Effect,
+                        MONITOR_OPERATION_TYPE,
+                        &payload
+                    ),
+                    &mut doc,
+                    &automerge::ROOT
                 )
+                .map(|started| started.is_some())
                 .expect("the action-contract-confirmed signal executes")
             );
             assert!(
@@ -8691,14 +8718,18 @@ mod tests {
                 started_at: process.started_at,
             };
             assert!(
-                Widget::invoke_resource_operation(
+                Widget::start_operation(
                     &mut a,
-                    OperationKind::Effect,
-                    MONITOR_OPERATION_TYPE,
-                    &serde_json::to_vec(&operation).unwrap(),
-                    &AutoCommit::new(),
-                    &automerge::ROOT,
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        OperationKind::Effect,
+                        MONITOR_OPERATION_TYPE,
+                        &serde_json::to_vec(&operation).unwrap()
+                    ),
+                    &mut AutoCommit::new(),
+                    &automerge::ROOT
                 )
+                .map(|started| started.is_some())
                 .expect("copy invocation accepted")
             );
             assert_eq!(a.copied_pid, Some(pid), "copy recorded");
@@ -8708,14 +8739,18 @@ mod tests {
                 started_at: process.started_at.saturating_add(1),
             };
             assert!(
-                Widget::invoke_resource_operation(
+                Widget::start_operation(
                     &mut a,
-                    OperationKind::Effect,
-                    MONITOR_OPERATION_TYPE,
-                    &serde_json::to_vec(&stale).unwrap(),
-                    &AutoCommit::new(),
-                    &automerge::ROOT,
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        OperationKind::Effect,
+                        MONITOR_OPERATION_TYPE,
+                        &serde_json::to_vec(&stale).unwrap()
+                    ),
+                    &mut AutoCommit::new(),
+                    &automerge::ROOT
                 )
+                .map(|started| started.is_some())
                 .is_err(),
                 "a recycled PID cannot receive a stale copy action"
             );
