@@ -17,7 +17,11 @@
 
 use std::sync::Arc;
 
+#[cfg(target_os = "android")]
+use crate::host::HostServices;
+#[cfg(not(target_os = "android"))]
 use crate::host::{HostServices, MediaSession, MediaSessionFactory, SpeechFactory};
+#[cfg(not(target_os = "android"))]
 use crate::mpris::{MprisConfig, PlayerSnapshot};
 
 /// The native services for this process. `app_id` names the app to the
@@ -34,7 +38,9 @@ pub fn services(app_id: Option<&str>) -> HostServices {
 }
 
 /// `services` with the desktop backends that have no platform crate yet:
-/// speech, media controls and screen capture.
+/// speech, media controls and screen capture. Android installs its own
+/// speech in [`super::android::services`] and keeps null media/capture.
+#[cfg(not(target_os = "android"))]
 pub(crate) fn with_native_backends(services: HostServices) -> HostServices {
     HostServices {
         speech: Arc::new(SystemSpeech),
@@ -178,6 +184,7 @@ impl SpeechFactory for SystemSpeech {
     }
 }
 
+#[cfg(not(target_os = "android"))]
 impl MediaSessionFactory for super::mpris::DesktopMediaSessions {
     fn start(&self, config: MprisConfig, initial: PlayerSnapshot) -> Option<MediaSession> {
         super::mpris::start_desktop_session(config, initial)

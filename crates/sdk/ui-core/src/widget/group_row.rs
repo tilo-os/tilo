@@ -63,6 +63,8 @@ const TRAILING_REVEAL_FRAC: f64 = 0.20;
 const STRIP_OVERSCROLL_REACH_FRAC: f64 = 0.28;
 /// How far a group's shadow sprites paint past its rect: `bloom_pad`
 /// (120 px) in `TileHost::draw_steady_state`, with the clip's margin.
+/// Not a Theme spacing token: it must match the compositor shadow draw,
+/// not layout padding a theme can resize.
 const GROUP_SPRITE_REACH_PX: f64 = 160.0;
 
 /// Touchpad px per wheel detent for the discrete jump gestures; also the

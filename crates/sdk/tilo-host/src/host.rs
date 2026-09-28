@@ -167,7 +167,7 @@ impl HostServices {
             secrets: Arc::new(SystemSecrets),
             ..Self::null()
         };
-        #[cfg(feature = "native")]
+        #[cfg(all(feature = "native", not(target_os = "android")))]
         let services = crate::native::services::with_native_backends(services);
         services
     }

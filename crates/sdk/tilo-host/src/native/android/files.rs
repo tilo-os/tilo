@@ -52,7 +52,7 @@ pub(super) struct DocumentPicker;
 impl FilePicker for DocumentPicker {
     fn pick(&self, request: PickRequest) -> PortalChannel {
         let (tx, rx) = reply();
-        match request.kind {
+        match request.kind() {
             PickKind::Open { .. } => choose_documents(&request, false, move |result| {
                 tx.send(match result {
                     DocumentResult::Picked(uris) => match uris.first().map(|uri| snapshot(uri)) {
@@ -76,7 +76,7 @@ impl FilePicker for DocumentPicker {
 
     fn pick_multiple(&self, request: PickRequest) -> MultiChannel {
         let (tx, rx) = reply();
-        match request.kind {
+        match request.kind() {
             PickKind::Open { .. } => choose_documents(&request, true, move |result| {
                 tx.send(match result {
                     DocumentResult::Picked(uris) => snapshots(&uris),
@@ -96,7 +96,7 @@ impl FilePicker for DocumentPicker {
 
     fn open_file(&self, request: PickRequest) -> OpenFileChannel {
         let (tx, rx) = reply();
-        if !matches!(request.kind, PickKind::Open { multiple: false }) {
+        if !matches!(request.kind(), PickKind::Open { multiple: false }) {
             tx.send(OpenFileOutcome::Failed(OPEN_FILE_ONLY.to_string()));
             return rx;
         }
@@ -115,13 +115,13 @@ impl FilePicker for DocumentPicker {
 
     fn save_file(&self, request: PickRequest) -> OpenFileChannel {
         let (tx, rx) = reply();
-        let PickKind::Save { suggested_name } = &request.kind else {
+        let Some(suggested_name) = request.suggested_name() else {
             tx.send(OpenFileOutcome::Failed(SAVE_FILE_ONLY.to_string()));
             return rx;
         };
         let name = saf::document_file_name(Some(suggested_name));
-        let filters = request.filters.clone();
-        let thread_name = request.thread_name.clone();
+        let filters = request.filters().to_vec();
+        let thread_name = request.worker_name().to_string();
         let finish = move |result| {
             tx.send(match result {
                 DocumentResult::Picked(uris) => match uris.first() {
@@ -160,7 +160,7 @@ impl FilePicker for DocumentPicker {
             tx.send(LaunchOutcome::Failed(REVEAL_UNSUPPORTED.to_string()));
             return rx;
         }
-        let thread_name = request.thread_name.clone();
+        let thread_name = request.worker_name().to_string();
         crate::portal::spawn_worker(&thread_name, move || {
             tx.send(view(&request));
         });
@@ -175,9 +175,9 @@ fn choose_documents(
     multiple: bool,
     finish: impl FnOnce(DocumentResult) + Send + 'static,
 ) {
-    let filters = request.filters.clone();
+    let filters = request.filters().to_vec();
     choose(
-        request.thread_name.clone(),
+        request.worker_name().to_string(),
         move |env, activity| {
             let documents = bridge::class(env, activity, DOCUMENTS)?;
             let types = saf::open_mime_types(&filters, |extension| {

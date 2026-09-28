@@ -194,13 +194,14 @@ mod now_playing {
     }
 }
 
-#[cfg(all(feature = "mpris", not(unix)))]
+#[cfg(all(feature = "mpris", not(freedesktop)))]
 mod imp {
     use super::{MprisCommand, MprisConfig, PlayerSnapshot, Receiver};
     use tokio::sync::mpsc::UnboundedSender;
 
-    // MPRIS is a Unix session-bus protocol. Keep the common application API
-    // available without claiming a native Windows media-control service.
+    // MPRIS is a freedesktop session-bus protocol. Keep the common application
+    // API available on Android, macOS and Windows without claiming a bus
+    // service; macOS reaches now-playing first and falls through here.
     pub(super) fn spawn(
         _config: MprisConfig,
         _initial: PlayerSnapshot,
