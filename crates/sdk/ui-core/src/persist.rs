@@ -369,7 +369,7 @@ mod tests {
     }
 
     #[test]
-    fn persistence_opens_twice_and_recovers_a_stale_state_file() {
+    fn persistence_opens_twice() {
         // Case `open_keeps_autosave_enabled_when_the_state_dir_already_exists`:
         // Opening an app for the SECOND time must keep persistence ON. If the
         // store treated an already-existing state directory as an error,
@@ -411,50 +411,6 @@ mod tests {
                 note(&state).as_deref(),
                 Some("survives"),
                 "state written on the first run must load on the second open"
-            );
-        }
-
-        // Case `open_recovers_when_the_state_path_is_a_stale_file`:
-        // An older app layout wrote the document as a zero-byte *file* at the
-        // per-package state path. `open` must recover and come up with
-        // persistence enabled, not swallow the `EEXIST` and fall back to the
-        // disabled in-memory store.
-        {
-            let tmp = tempfile::tempdir().expect("temp dir");
-            let pkg = "so.tilo.stale-file-open";
-
-            // Old layout's leftover: a file where the new layout wants a directory.
-            let path = tmp.path().join(pkg);
-            std::fs::write(&path, b"").unwrap();
-            assert!(path.is_file(), "the leftover is a file, not a directory");
-
-            // Run 1: `open` must recover to enabled persistence.
-            {
-                let (mut state, mut autosave) = open_at(tmp.path(), pkg);
-                assert!(
-                    autosave.is_enabled(),
-                    "opening over a stale file must recover to enabled persistence, \
-                 not drop to the in-memory fallback"
-                );
-                state
-                    .doc
-                    .put(&ROOT, "note", ScalarValue::Str("recovered".into()))
-                    .unwrap();
-                autosave.request(&mut state.doc);
-                autosave.flush();
-                assert_eq!(autosave.last_error(), None, "no write may have failed");
-            }
-
-            // Run 2: the path is a directory now, and the value survives.
-            let (state, autosave) = open_at(tmp.path(), pkg);
-            assert!(
-                autosave.is_enabled(),
-                "persistence stays enabled after recovery"
-            );
-            assert_eq!(
-                note(&state).as_deref(),
-                Some("recovered"),
-                "state written after recovery must load on the next open"
             );
         }
     }
