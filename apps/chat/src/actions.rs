@@ -1312,11 +1312,12 @@ pub fn resolve_resource(ctx: &ChatResourceCtx, doc: &AutoCommit, id: &str) -> Op
         // watching the conversation finds each new one here. The eager tree
         // stays bounded and lists none.
         let users = ChatDoc::list_users(doc);
+        let agents = ChatDoc::agent_authors(doc);
         let mut messages = ChatDoc::list_messages(doc, &model.id);
         let recent = messages.split_off(messages.len().saturating_sub(RESOLVED_CHANNEL_MESSAGES));
         let recent = recent
             .into_iter()
-            .map(|message| message_resource(ctx, message, &users))
+            .map(|message| message_resource(ctx, message, &users, &agents))
             .collect::<Vec<_>>();
         let mut resource = build_channel_resource(ctx, doc, &workspace_id, &model, &recent);
         annotate_contracts(&mut resource);
@@ -1430,7 +1431,7 @@ pub fn resolve_resource(ctx: &ChatResourceCtx, doc: &AutoCommit, id: &str) -> Op
         .find(|workspace| workspace.id == channel.workspace)?;
     let channel_model = channel_resource(&channel);
     let users = ChatDoc::list_users(doc);
-    let message_model = message_resource(ctx, message, &users);
+    let message_model = message_resource(ctx, message, &users, &ChatDoc::agent_authors(doc));
     let mut resource = build_message_resource(ctx, &workspace.id, &channel_model, &message_model);
     annotate_contracts(&mut resource);
     Some(resource)
@@ -1443,6 +1444,7 @@ fn message_resource(
     ctx: &ChatResourceCtx,
     message: crate::model::Message,
     users: &[crate::model::User],
+    agents: &std::collections::HashMap<String, String>,
 ) -> MessageResource {
     MessageResource {
         label: message_label(
@@ -1450,6 +1452,7 @@ fn message_resource(
             &message.text,
             message.attachment.as_ref(),
             users,
+            agents,
         ),
         id: message.id,
         author: message.author,
@@ -2157,11 +2160,17 @@ fn message_label(
     text: &str,
     attachment: Option<&crate::model::Attachment>,
     users: &[crate::model::User],
+    agents: &std::collections::HashMap<String, String>,
 ) -> String {
-    let author = users
-        .iter()
-        .find(|user| user.id == author_id)
-        .map_or(author_id, |user| user.name.as_str());
+    let author = agents.get(author_id).map_or_else(
+        || {
+            users
+                .iter()
+                .find(|user| user.id == author_id)
+                .map_or(author_id, |user| user.name.as_str())
+        },
+        String::as_str,
+    );
     let body = if text.trim().is_empty() {
         match attachment {
             Some(
@@ -2606,9 +2615,15 @@ mod tests {
                 message
                     .actions
                     .iter()
-                    .filter(|action| action.id != "open")
+                    .filter(|action| action.id != "open" && action.id != "read")
                     .all(|action| action.kind == OperationKind::Document)
             );
+            let read = message.actions.iter().find(|a| a.id == "read").unwrap();
+            assert_eq!(read.kind, OperationKind::View);
+            assert!(matches!(
+                read.contract.result,
+                tilo_actions::ResultSpec::Json { .. }
+            ));
             let delete = channel.actions.iter().find(|a| a.id == "delete").unwrap();
             assert_eq!(delete.contract.risk, tilo_actions::RiskLevel::Destructive);
             assert_eq!(

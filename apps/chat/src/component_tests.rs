@@ -812,6 +812,7 @@ fn an_agent_mount_reads_the_visitors_message_and_replies_as_an_agent() {
     );
     // Only an agent may record work, and only on its own message.
     let visitor_actions = visitor.bound_resources(Some(&reply)).unwrap();
+    assert!(visitor_actions[0].label.starts_with("Reading agent: "));
     assert!(
         visitor_actions[0]
             .actions
