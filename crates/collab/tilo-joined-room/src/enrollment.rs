@@ -1,13 +1,13 @@
-use super::{
-    NativeCommittedView, NativeWorkspaceOwner, NeighbourMsg, PendingEnrollmentId,
-    PendingEnrollmentStatus, RoomId, StatePeer, SystemTime, TransportOrigin, persist, publication,
-    record, store,
+use crate::{
+    Change, NativeAuthorityStorage, NativeCommittedView, NativeWorkspaceOwner, NeighbourMsg,
+    PendingEnrollmentId, PendingEnrollmentStatus, RoomId, StatePeer, SystemTime, TransportOrigin,
+    VerifiedNativeEnrollment, VerifiedNativeEnrollmentIntent, WorkspaceId, limits, publication,
+    record,
 };
-use crate::network::invite::{VerifiedNativeEnrollment, VerifiedNativeEnrollmentIntent};
 use record::{StoredPendingEnrollment, StoredRoom};
 use tilo_user_identity::RevocationList;
 
-pub(super) fn validate_pending(
+pub(crate) fn validate_pending(
     room: RoomId,
     pending: &StoredPendingEnrollment,
 ) -> Result<(), String> {
@@ -25,7 +25,7 @@ pub(super) fn validate_pending(
     clippy::suspicious_operation_groupings,
     reason = "a persisted floor stores the descriptor digest as `digest`"
 )]
-pub(super) fn restore(
+pub(crate) fn restore(
     room: RoomId,
     record: &StoredRoom,
     now: SystemTime,
@@ -88,32 +88,18 @@ pub(super) fn restore(
     Ok(view)
 }
 impl NativeWorkspaceOwner {
-    #[cfg(test)]
-    pub(crate) fn prepare_enrollment(
+    /// Persist the signed Complete proof before it is sent, so a lost
+    /// response is retried with the exact same proof. `local` is the
+    /// workspace slot the enrolled room will be shown in, where the host has
+    /// slots.
+    ///
+    /// # Errors
+    /// The owner is fenced, the room is already enrolled or has another
+    /// proof in flight, the slot is gone or the record cannot be published.
+    pub fn prepare_enrollment_into(
         &self,
         intent: &VerifiedNativeEnrollmentIntent,
-        now: SystemTime,
-    ) -> Result<PendingEnrollmentId, String> {
-        let local = self
-            .0
-            .tree
-            .read()
-            .desktop
-            .workspaces
-            .iter()
-            .find(|slot| slot.room == intent.room())
-            .map(|slot| slot.id)
-            .ok_or("enrollment requires an explicit existing local slot")?;
-        self.prepare_enrollment_into(intent, local, now)
-    }
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the write guard is handed to `publish_storage`, which replaces the tree in place"
-    )]
-    pub(crate) fn prepare_enrollment_into(
-        &self,
-        intent: &VerifiedNativeEnrollmentIntent,
-        local: super::super::state::WorkspaceId,
+        local: Option<WorkspaceId>,
         _now: SystemTime,
     ) -> Result<PendingEnrollmentId, String> {
         let bytes = intent.durable_bytes()?;
@@ -131,119 +117,126 @@ impl NativeWorkspaceOwner {
         let room = intent.room();
         {
             let current = self.0.current.read();
-            if current.fenced || current.denied.contains(&room) || !self.0.runtime.healthy() {
+            if current.fenced || current.denied.contains(&room) || !self.0.store.healthy() {
                 return Err("native enrollment custody is fenced".into());
             }
         }
-        let mut tree = self.0.tree.write();
-        if tree.native_authority.rooms.contains_key(&room) {
+        let mut next = self.0.authority.read().clone();
+        if next.rooms.contains_key(&room) {
             return Err(
                 "room is already enrolled; identity replacement requires explicit custody handoff"
                     .into(),
             );
         }
-        let prior_room = tree
-            .room_of(local)
-            .ok_or("enrollment local slot no longer exists")?;
-        if tree
-            .native_authority
-            .pending
-            .values()
-            .any(|pending| pending.target.workspace == local && pending.id.room() != room)
+        let target = local
+            .map(|workspace| {
+                self.0
+                    .store
+                    .slot_room(workspace)
+                    .map(|prior_room| record::EnrollmentTarget {
+                        workspace,
+                        prior_room,
+                    })
+                    .ok_or("enrollment local slot no longer exists")
+            })
+            .transpose()?;
+        if let Some(target) = &target
+            && next.pending.values().any(|pending| {
+                pending
+                    .target
+                    .as_ref()
+                    .is_some_and(|other| other.workspace == target.workspace)
+                    && pending.id.room() != room
+            })
         {
             return Err("local slot already has an unresolved enrollment proof".into());
         }
 
-        if let Some(pending) = tree.native_authority.pending.get(&room) {
+        if let Some(pending) = next.pending.get(&room) {
+            let same_target = match (&pending.target, &target) {
+                (Some(stored), Some(target)) => {
+                    stored.workspace == target.workspace && stored.prior_room == target.prior_room
+                }
+                (None, None) => true,
+                _ => false,
+            };
             if pending.intent == bytes
                 && pending.status == PendingEnrollmentStatus::Active
-                && pending.target.workspace == local
-                && pending.target.prior_room == prior_room
+                && same_target
             {
                 return Ok(pending.id.clone());
             }
             return Err("room already has an unresolved enrollment proof".into());
         }
-        if tree.native_authority.pending.len() >= store::MAX_PENDING {
+        if next.pending.len() >= limits::MAX_PENDING {
             return Err("native pending enrollment quota exhausted".into());
         }
-        let generation = tree
-            .native_authority
+        let generation = next
             .revision
             .checked_add(1)
             .ok_or("native storage generation exhausted")?;
         let id = PendingEnrollmentId::new(room, generation, intent.proof_digest());
-        store::preflight(&*tree, store::MAX_STATE_BYTES).map_err(|e| e.to_string())?;
-        let mut next = tree.clone();
-        next.native_authority.revision = generation;
-        next.native_authority.pending.insert(
+        next.revision = generation;
+        next.pending.insert(
             room,
             StoredPendingEnrollment {
-                target: record::EnrollmentTarget {
-                    workspace: local,
-                    prior_room,
-                },
+                target,
                 id: id.clone(),
                 intent: bytes,
                 status: PendingEnrollmentStatus::Active,
             },
         );
-        Self::publish_storage(&mut tree, next)?;
-        self.0.current.write().required.insert(room);
+        self.publish_pending(&next, Some(room))?;
         Ok(id)
     }
-    pub(crate) fn pending_enrollment(
+    /// # Errors
+    /// The store is fenced.
+    pub fn pending_enrollment(
         &self,
         room: RoomId,
     ) -> Result<Option<StoredPendingEnrollment>, String> {
-        if !self.0.runtime.healthy() {
+        if !self.0.store.healthy() {
             return Err("native state writer is fenced".into());
         }
-        Ok(self
-            .0
-            .tree
-            .read()
-            .native_authority
-            .pending
-            .get(&room)
-            .cloned())
+        Ok(self.0.authority.read().pending.get(&room).cloned())
     }
-    pub(crate) fn pending_enrollment_for_slot(
+    /// # Errors
+    /// The store is fenced or the slot is ambiguous.
+    pub fn pending_enrollment_for_slot(
         &self,
-        local: super::super::state::WorkspaceId,
+        local: WorkspaceId,
     ) -> Result<Option<StoredPendingEnrollment>, String> {
-        if !self.0.runtime.healthy() {
+        if !self.0.store.healthy() {
             return Err("native state writer is fenced".into());
         }
-        let tree = self.0.tree.read();
-        if tree.native_authority.pending.len() > store::MAX_PENDING {
+        let authority = self.0.authority.read();
+        if authority.pending.len() > limits::MAX_PENDING {
             return Err("native pending enrollment quota exceeded".into());
         }
-        let mut found = tree
-            .native_authority
-            .pending
-            .values()
-            .filter(|pending| pending.target.workspace == local);
+        let mut found = authority.pending.values().filter(|pending| {
+            pending
+                .target
+                .as_ref()
+                .is_some_and(|target| target.workspace == local)
+        });
         let result = found.next().cloned();
         let ambiguous = found.next().is_some();
-        drop(tree);
+        drop(authority);
         if ambiguous {
             return Err("ambiguous native pending enrollment slot".into());
         }
         Ok(result)
     }
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the write guard is handed to `publish_storage`, which replaces the tree in place"
-    )]
-    pub(crate) fn cancel_enrollment(
+    /// # Errors
+    /// `id` names another attempt, or the record cannot be published.
+    pub fn cancel_enrollment(
         &self,
         room: RoomId,
         id: &PendingEnrollmentId,
     ) -> Result<bool, String> {
         let _turn = self.0.mutation.lock();
-        let mut tree = self.0.tree.write();
-        let Some(pending) = tree.native_authority.pending.get(&room) else {
+        let mut next = self.0.authority.read().clone();
+        let Some(pending) = next.pending.get(&room) else {
             return Ok(false);
         };
         if &pending.id != id {
@@ -252,38 +245,36 @@ impl NativeWorkspaceOwner {
         if pending.status == PendingEnrollmentStatus::Cancelled {
             return Ok(false);
         }
-        store::preflight(&*tree, store::MAX_STATE_BYTES).map_err(|e| e.to_string())?;
-        let mut next = tree.clone();
-        next.native_authority.revision = next
-            .native_authority
+        next.revision = next
             .revision
             .checked_add(1)
             .ok_or("native storage generation exhausted")?;
-        next.native_authority
-            .pending
+        next.pending
             .get_mut(&room)
             .ok_or("native pending enrollment disappeared")?
             .status = PendingEnrollmentStatus::Cancelled;
-        Self::publish_storage(&mut tree, next)?;
+        self.publish_pending(&next, None)?;
         Ok(true)
     }
-    fn publish_storage(
-        tree: &mut super::super::state::WorkspaceTree,
-        next: super::super::state::WorkspaceTree,
+    /// `required` is a room the owner must answer for from now on.
+    fn publish_pending(
+        &self,
+        next: &NativeAuthorityStorage,
+        required: Option<RoomId>,
     ) -> Result<(), String> {
-        let path = tree
-            .persist_path
-            .as_ref()
-            .ok_or("native owner state-file path removed")?;
-        let bytes = persist::encode_tree(&next).map_err(|e| e.to_string())?;
-        tree.native_runtime
-            .publish(path, &tree.native_authority, &next.native_authority, &bytes)
-            .map_err(|e| e.to_string())?;
-        persist::save_doc_for(&next, path, &bytes);
-        *tree = next;
-        Ok(())
+        self.0.publish(next, Change::Pending, &mut || {
+            *self.0.authority.write() = next.clone();
+            if let Some(room) = required {
+                self.0.current.write().required.insert(room);
+            }
+        })
     }
-    pub(crate) fn install(
+    /// Install a completed enrollment: the room's first committed replica.
+    ///
+    /// # Errors
+    /// The Complete does not match the persisted proof, the admitted role
+    /// differs from the signed one, or the record cannot be published.
+    pub fn install(
         &self,
         enrollment: &VerifiedNativeEnrollment,
         now: SystemTime,
@@ -293,9 +284,8 @@ impl NativeWorkspaceOwner {
             .ok_or("noncanonical native enrollment room")?;
         let pending = self
             .0
-            .tree
+            .authority
             .read()
-            .native_authority
             .pending
             .get(&room)
             .cloned()
@@ -374,7 +364,13 @@ impl NativeWorkspaceOwner {
         };
         self.publish_room(room, NativeCommittedView { peer, record }, Some(&pending))
     }
-    pub(crate) fn commit_document(
+    /// Admit and durably commit a document write signed by this device,
+    /// with its outgoing custody, before any receipt.
+    ///
+    /// # Errors
+    /// The request is not an admissible local document write, or the record
+    /// cannot be published.
+    pub fn commit_document(
         &self,
         request: tilo_peer_state::owner_commit::OwnerCommitRequest,
         now: SystemTime,
@@ -434,7 +430,7 @@ impl NativeWorkspaceOwner {
         Ok(receipt)
     }
 }
-pub(super) fn ns(now: SystemTime) -> Result<u64, String> {
+pub(crate) fn ns(now: SystemTime) -> Result<u64, String> {
     u64::try_from(
         now.duration_since(SystemTime::UNIX_EPOCH)
             .map_err(|e| e.to_string())?
