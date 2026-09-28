@@ -35,12 +35,16 @@
 //! is the persistence/replication mirror. The one piece that is *read*
 //! back live is each item's `notes`: rich text edited in the SDK editor,
 //! so notes are a genuine collaborative document.
+//!
+//! Notes were first stored as a `List` of `{id, kind, text}` block maps.
+//! A `List` under `notes` is that first format; [`CalDoc::migrate_notes`]
+//! rewrites it as rich text in place when the document loads or merges.
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
 use qdoc_rich_text::RichText;
-use ui::doc::{read_bool, read_i64_coerced, read_str};
+use ui::doc::{read_bool, read_i64_coerced, read_str, read_str_or_text};
 use ui::widget::{BlockContent, BlockKind};
 
 use crate::model::{
@@ -782,22 +786,61 @@ impl CalDoc {
         }
     }
 
-    /// An item's notes, started when it has none. `None` when the item does
-    /// not exist.
+    /// An item's notes, started (or brought from the first format) when it
+    /// has none. `None` when the item does not exist, or its notes in the
+    /// first format could not be brought across (they stay as they are).
     pub fn ensure_notes(doc: &mut AutoCommit, event_owner: bool, id: Id) -> Option<ObjId> {
         let item = Self::item(doc, event_owner, id)?;
         Self::ensure_notes_in(doc, &item)
     }
 
     fn ensure_notes_in(doc: &mut AutoCommit, item: &ObjId) -> Option<ObjId> {
-        if let Ok(Some((Value::Object(ObjType::Map), notes))) = doc.get(item, "notes") {
-            return Some(notes);
-        }
+        let blocks = match doc.get(item, "notes") {
+            Ok(Some((Value::Object(ObjType::Map), notes))) => return Some(notes),
+            Ok(Some((Value::Object(ObjType::List), list))) => {
+                let blocks = first_format_blocks(doc, &list);
+                // Rehearse on a scratch document first: the list is replaced
+                // only once its every block is known to come across.
+                if let Err(error) = fill_notes(&mut AutoCommit::new(), &ROOT, &blocks) {
+                    tracing::warn!(%error, "calendar notes kept in their first format");
+                    return None;
+                }
+                blocks
+            }
+            _ => Vec::new(),
+        };
         let notes = doc.put_object(item, "notes", ObjType::Map).ok()?;
-        if let Err(error) = fill_notes(doc, &notes, &[]) {
+        if let Err(error) = fill_notes(doc, &notes, &blocks) {
             tracing::warn!(%error, "calendar notes could not be started");
         }
         Some(notes)
+    }
+
+    /// Bring every event's and task's notes to the current format, in place.
+    /// Run when the document loads and after a merge, so notes a peer still
+    /// writes in the first format come across too.
+    pub fn migrate_notes(doc: &mut AutoCommit) {
+        for parent in ["events", "tasks"] {
+            let Ok(Some((Value::Object(ObjType::Map), items))) = doc.get(&ROOT, parent) else {
+                continue;
+            };
+            let first_format: Vec<ObjId> = doc
+                .keys(&items)
+                .filter_map(|key| match doc.get(&items, key.as_str()) {
+                    Ok(Some((Value::Object(ObjType::Map), item))) => Some(item),
+                    _ => None,
+                })
+                .filter(|item| {
+                    matches!(
+                        doc.get(item, "notes"),
+                        Ok(Some((Value::Object(ObjType::List), _)))
+                    )
+                })
+                .collect();
+            for item in first_format {
+                Self::ensure_notes_in(doc, &item);
+            }
+        }
     }
 
     /// Whether an event's notes hold any text, without writing. Used by the
@@ -1116,6 +1159,36 @@ fn fill_notes(doc: &mut AutoCommit, root: &ObjId, blocks: &[BlockContent]) -> Re
     tilo_rich_text::fill_under(doc, root, blocks).map_err(|error| error.to_string())
 }
 
+/// The blocks of notes in the first format: a `List` of `{id, kind, text,
+/// nesting, code_group}` maps. A kind this version does not know keeps its
+/// text as a paragraph, so nothing written in that format is lost.
+fn first_format_blocks(doc: &AutoCommit, list: &ObjId) -> Vec<BlockContent> {
+    (0..doc.length(list))
+        .filter_map(|index| match doc.get(list, index) {
+            Ok(Some((Value::Object(ObjType::Map), block))) => Some(block),
+            _ => None,
+        })
+        .map(|block| {
+            let text = read_str_or_text(doc, &block, "text").unwrap_or_default();
+            let kind = read_str(doc, &block, "kind")
+                .and_then(|kind| BlockKind::from_stored(&kind))
+                .unwrap_or(BlockKind::Paragraph);
+            let nesting = doc
+                .get(&block, "nesting")
+                .ok()
+                .flatten()
+                .and_then(|(value, _)| value.as_u64())
+                .map_or(0, |depth| u8::try_from(depth.min(5)).unwrap_or(0));
+            BlockContent {
+                kind,
+                nesting,
+                code_group: read_str(doc, &block, "code_group").filter(|group| !group.is_empty()),
+                ..BlockContent::paragraph("", text)
+            }
+        })
+        .collect()
+}
+
 fn nonempty(value: String) -> Option<String> {
     (!value.is_empty()).then_some(value)
 }
@@ -1303,6 +1376,133 @@ mod tests {
                 "notes of one event only"
             );
         }
+    }
+
+    /// Writes notes exactly as the first format stored them: a `List` of
+    /// block maps under the item's `notes`.
+    fn first_format_notes(doc: &mut AutoCommit, item: &ObjId, blocks: &[(&str, &str)]) {
+        let list = doc.put_object(item, "notes", ObjType::List).unwrap();
+        for (index, (kind, text)) in blocks.iter().enumerate() {
+            let block = doc.insert_object(&list, index, ObjType::Map).unwrap();
+            doc.put(&block, "id", uuid::Uuid::new_v4().to_string())
+                .unwrap();
+            doc.put(&block, "kind", *kind).unwrap();
+            let body = doc.put_object(&block, "text", ObjType::Text).unwrap();
+            doc.splice_text(&body, 0, 0, text).unwrap();
+            if *kind == "paragraph" && text.starts_with("  ") {
+                doc.put(&block, "nesting", 1_u64).unwrap();
+            }
+            if kind.starts_with("code:") {
+                doc.put(&block, "code_group", "5c7a1b0e-0d6f-4e7c-9f0a-3f1e2d4c5b6a")
+                    .unwrap();
+            }
+        }
+    }
+
+    fn event_map(doc: &AutoCommit, id: Id) -> ObjId {
+        let Ok(Some((_, events))) = doc.get(&ROOT, "events") else {
+            panic!("events map");
+        };
+        let Ok(Some((_, event))) = doc.get(&events, id.to_string().as_str()) else {
+            panic!("event map");
+        };
+        event
+    }
+
+    #[test]
+    fn first_format_notes_come_across_whole_and_once() {
+        let model = crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).unwrap());
+        let (first, second) = (model.events[0].id, model.tasks[0].id);
+        // A document saved before notes were rich text.
+        let mut old = AutoCommit::new();
+        CalDoc::seed(&mut old, &model);
+        let event = event_map(&old, first);
+        first_format_notes(
+            &mut old,
+            &event,
+            &[
+                ("heading1", "Agenda"),
+                ("paragraph", "Walk through the mockups — café ✓"),
+                ("paragraph", "  indented"),
+                ("bullet:1", "nested bullet"),
+                ("numbered:0", "first"),
+                ("checklist:0:1", "done item"),
+                ("code:rust", "fn main() {}"),
+                ("divider", ""),
+                ("quote", "quoted"),
+                ("table:1", "| a | b |"),
+                ("unknown-kind", "kept as a paragraph"),
+            ],
+        );
+        let Ok(Some((_, tasks))) = old.get(&ROOT, "tasks") else {
+            panic!("tasks map");
+        };
+        let Ok(Some((_, task))) = old.get(&tasks, second.to_string().as_str()) else {
+            panic!("task map");
+        };
+        first_format_notes(&mut old, &task, &[]);
+        let mut doc = AutoCommit::load(&old.save()).unwrap();
+
+        CalDoc::migrate_notes(&mut doc);
+        let notes = CalDoc::notes(&doc, true, first).expect("notes are rich text now");
+        let blocks = tilo_rich_text::blocks_under(&doc, &notes).unwrap();
+        let shown: Vec<(BlockKind, &str, u8)> = blocks
+            .iter()
+            .map(|block| (block.kind.clone(), block.text.as_str(), block.nesting))
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                (BlockKind::Heading(1), "Agenda", 0),
+                (BlockKind::Paragraph, "Walk through the mockups — café ✓", 0),
+                (BlockKind::Paragraph, "  indented", 1),
+                (BlockKind::Bullet { indent: 1 }, "nested bullet", 0),
+                (BlockKind::Numbered { indent: 0 }, "first", 0),
+                (
+                    BlockKind::Checklist {
+                        indent: 0,
+                        done: true
+                    },
+                    "done item",
+                    0
+                ),
+                (
+                    BlockKind::CodeBlock {
+                        lang: Some("rust".into())
+                    },
+                    "fn main() {}",
+                    0
+                ),
+                (BlockKind::Divider, "", 0),
+                (BlockKind::Quote, "quoted", 0),
+                (BlockKind::Table { visual: true }, "| a | b |", 0),
+                (BlockKind::Paragraph, "kept as a paragraph", 0),
+            ]
+        );
+        assert_eq!(
+            blocks[6].code_group.as_deref(),
+            Some("5c7a1b0e-0d6f-4e7c-9f0a-3f1e2d4c5b6a"),
+            "a code line keeps its fence"
+        );
+        assert!(
+            CalDoc::notes(&doc, false, second).is_some(),
+            "empty first-format notes become empty rich text"
+        );
+        assert_eq!(CalDoc::note_text(&doc, false, second), "");
+
+        // Once is enough: a second pass writes nothing.
+        let heads = doc.get_heads();
+        CalDoc::migrate_notes(&mut doc);
+        assert_eq!(doc.get_heads(), heads);
+        // And the model around the notes is untouched.
+        let titles = |doc: &AutoCommit| -> Vec<String> {
+            CalDoc::read_model(doc)
+                .events
+                .into_iter()
+                .map(|event| event.title)
+                .collect()
+        };
+        assert_eq!(titles(&doc), titles(&old));
     }
 
     #[test]
