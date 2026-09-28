@@ -1090,9 +1090,7 @@ impl SystemPrefs {
         let has_sources = root
             .get("input")
             .and_then(serde_json::Value::as_object)
-            .is_some_and(|input| {
-                input.contains_key("keyboard_layouts") || input.contains_key("layouts")
-            });
+            .is_some_and(|input| input.contains_key("keyboard_layouts"));
         if !has_sources {
             prefs.input.keyboard_layouts.clear();
         }
