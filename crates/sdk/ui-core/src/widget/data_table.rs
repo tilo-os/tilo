@@ -11,6 +11,7 @@
 //! same visible rows.
 
 use crate::time::Instant;
+use crate::widget::{AppModel, ModelPath};
 use automerge::{AutoCommit, ObjId};
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -1852,7 +1853,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
         self.visible_window_changed();
     }
 
-    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         let model_changes = self
             .model
             .as_deref_mut()
@@ -2348,8 +2349,8 @@ impl<Row: 'static> Widget for DataTable<Row> {
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],
-        state: &mut automerge::AutoCommit,
-        path: &automerge::ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
         // Empty path: the table itself, not a row — nothing table-specific to do.
@@ -2399,8 +2400,8 @@ impl<Row: 'static> Widget for DataTable<Row> {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
 

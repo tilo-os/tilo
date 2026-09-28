@@ -15,6 +15,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ChangeHash, ObjId, ObjType, ReadDoc, Value};
 use taffy::{NodeId, TaffyTree};
@@ -2549,7 +2550,8 @@ impl Widget for TubeApp {
         Ok(true)
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, path) = ui::doc::document(state, path);
         #[cfg(feature = "grayjay-sync")]
         {
             // Reconcile existing canonical state before comparing imports. A
@@ -2962,7 +2964,7 @@ impl Widget for TubeApp {
         }
     }
 
-    fn on_external_event(&mut self, _payload: &str, _state: &mut AutoCommit, _root: &ObjId) {}
+    fn on_external_event(&mut self, _payload: &str, _state: &mut AppModel, _root: &ModelPath) {}
 
     fn take_structure_dirty(&mut self) -> bool {
         let mut dirty = std::mem::take(&mut self.structure_dirty);

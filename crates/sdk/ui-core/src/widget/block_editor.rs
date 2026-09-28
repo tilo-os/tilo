@@ -5,6 +5,7 @@
 //! No demotion once a block is a heading. Promotion only fires on an
 //! *empty* paragraph, matching the slash-menu convention.
 
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
@@ -6916,7 +6917,8 @@ impl BlockEditor {
 }
 
 impl Widget for BlockEditor {
-    fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, _) = crate::doc::document(state, path);
         self.refresh_image_attachments();
         let Some(list) = self.blocks_list.clone() else {
             // Unbound (examples / tests): local-mode, nothing to sync.
@@ -8186,8 +8188,8 @@ impl Widget for BlockEditor {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
         if self.read_only {
@@ -8686,8 +8688,8 @@ impl Widget for BlockEditor {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         self.edit_scope = EditScope::Anywhere;
         if matches!(action, crate::a11y::Action::Activate) {

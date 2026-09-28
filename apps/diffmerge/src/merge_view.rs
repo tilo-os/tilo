@@ -8,6 +8,7 @@
 //! re-composes the merged buffer and writes it into the CRDT.
 
 use std::collections::HashMap;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::prelude::*;
@@ -1034,7 +1035,8 @@ impl MergeView {
 }
 
 impl Widget for MergeView {
-    fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, _) = ui::doc::document(state, path);
         if self.pending_seed {
             // Fresh inputs: seed the provisional merged output (a projection of
             // the external inputs, not a replayable action) and drop any stale
@@ -1367,8 +1369,8 @@ impl Widget for MergeView {
         &mut self,
         action: &ui::a11y::Action,
         key_path: &[u64],
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         use ui::a11y::hash_key;
         if !self.is_compact()

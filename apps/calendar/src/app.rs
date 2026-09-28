@@ -24,6 +24,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::path::PathBuf;
 use tilo_automerge::ApplyIncoming;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ChangeHash, ObjId};
 use chrono::{Datelike, Duration, Local, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
@@ -7106,7 +7107,8 @@ impl Widget for CalendarApp {
         vec![Box::new(self.search_provider.clone())]
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, path) = ui::doc::document(state, path);
         if !self.seeded {
             // Live app: adopt the user's persisted calendar (empty on a fresh
             // machine). Demo/test builds pass no path and stay in-memory.
@@ -7724,9 +7726,10 @@ impl Widget for CalendarApp {
         &mut self,
         target: &str,
         action: &A11yAction,
-        state: &mut AutoCommit,
-        _path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
+        let (state, _) = ui::doc::document(state, path);
         if !matches!(action, A11yAction::Activate | A11yAction::ToggleCheck) {
             return false;
         }

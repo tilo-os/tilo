@@ -32,6 +32,7 @@
 //! pinned 360 px width, which is wider than most paragraph blocks.
 //! A purpose-built widget is ~150 LOC and avoids the impedance match.
 
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
 use automerge::{AutoCommit, ObjId};
@@ -745,8 +746,8 @@ impl Widget for SlashMenu {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         let Some(row_index) = target
             .strip_prefix("row:")

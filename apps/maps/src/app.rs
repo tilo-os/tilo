@@ -12,6 +12,7 @@
 use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::Instant;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -5184,7 +5185,8 @@ impl Widget for MapsApp {
         ]
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, _) = ui::doc::document(state, path);
         // Pull any background network results into the model first.
         self.drain_net(Some(state));
         // Fold in a device-location fix if the portal worker has one.
@@ -5847,9 +5849,10 @@ impl Widget for MapsApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
-        _path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
+        let (state, _) = ui::doc::document(state, path);
         if self.offline_panel.is_open() {
             // Text input needs the framework's exact-rectangle pointer
             // fallback so it can place its caret. All buttons dispatch through

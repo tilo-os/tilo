@@ -7,6 +7,7 @@ use taffy::{NodeId, Size, Style, TaffyTree};
 use ui::a11y::{AccessNode, Role};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
+use ui::widget::{AppModel, ModelPath};
 use ui::widget::{TaffyTreeExt, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Point, Rect, RoundedRect};
@@ -106,7 +107,7 @@ impl Artwork {
 }
 
 impl Widget for Artwork {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
         if self.image.is_none()
             && !self.url.is_empty()
             && let Some(store) = &self.store

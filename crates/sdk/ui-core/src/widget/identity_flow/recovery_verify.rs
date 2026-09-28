@@ -17,6 +17,7 @@
 //! host's Tab walks the grid by ascending word position and a screen
 //! reader hears "Word 12" rather than "text input".
 
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
 use automerge::{AutoCommit, ObjId};
@@ -696,7 +697,7 @@ pub fn next_slot_in_visual_order(slot: usize, positions: &[usize; 3], backward: 
 }
 
 impl Widget for RecoveryVerifyScreen {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
+    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {}
 
     fn build_layout(
         &mut self,

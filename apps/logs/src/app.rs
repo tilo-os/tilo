@@ -35,6 +35,7 @@
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -2658,7 +2659,8 @@ impl Widget for LogsApp {
         Ok(true)
     }
 
-    fn sync(&mut self, doc: &mut AutoCommit, root: &ObjId) {
+    fn sync(&mut self, doc: &mut AppModel, root: &ModelPath) {
+        let (doc, root) = ui::doc::document(doc, root);
         // Upgrade old shared documents by removing the transient keys written
         // by previous Logs versions. Nothing below reads or writes view state
         // in the document.
@@ -2925,8 +2927,8 @@ impl Widget for LogsApp {
         &mut self,
         target: &str,
         action: &AccessAction,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         if target == "logs.search" {
             return self.search_input.perform_action(action, state, path);

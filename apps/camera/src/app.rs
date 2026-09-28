@@ -23,6 +23,7 @@ use std::time::{Duration, Instant};
 #[cfg(test)]
 use tilo_actions::EncodedAction;
 use tilo_clock::unix_now_i64;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ChangeHash, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -2784,7 +2785,8 @@ impl Widget for CameraApp {
         clippy::too_many_lines,
         reason = "sync is the one ordered document/lifecycle boundary"
     )]
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, path) = ui::doc::document(state, path);
         self.poll_document_job();
         self.poll_document_export();
         self.poll_scan_image_picker();
@@ -3486,9 +3488,10 @@ impl Widget for CameraApp {
         &mut self,
         target: &str,
         action: &A11yAction,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
+        let (state, path) = ui::doc::document(state, path);
         if let Some(editor) = self.document_crop_editor.as_mut()
             && editor.perform_semantic_action(target, action, state, path)
         {

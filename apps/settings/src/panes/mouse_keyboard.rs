@@ -36,6 +36,7 @@ use tracing::warn;
 use ui::doc::{read_bool, read_str_or_text};
 use ui::i18n::ArgValue;
 use ui::theme::Theme;
+use ui::widget::{AppModel, ModelPath};
 use ui::widget::{Button, Dropdown, Row, Slider, Spacer, Text, Toggle, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -1815,7 +1816,8 @@ impl MouseKeyboardPane {
 }
 
 impl Widget for MouseKeyboardPane {
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+        let (state, root) = ui::doc::document(state, root);
         self.poll_devices();
         self.seed_if_needed(state, root);
         self.sync_simple_fields(state, root);

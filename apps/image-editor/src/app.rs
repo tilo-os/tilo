@@ -11,6 +11,7 @@ use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
 use std::{cell::Cell, rc::Rc};
 use ui::widget::scrollbar::{ScrollMetrics, Scrollbar};
+use ui::widget::{AppModel, ModelPath};
 use ui::{
     a11y::{AccessNode, AccessState, Role},
     graph_editor::{ConnectionTarget, GraphEditor},
@@ -1169,7 +1170,8 @@ impl ImageEditorApp {
     }
 }
 impl Widget for ImageEditorApp {
-    fn sync(&mut self, state: &mut AutoCommit, _: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, _) = ui::doc::document(state, path);
         ProjectDoc::open_shared(state);
         self.project = ProjectDoc::read(state);
         if self.indexed_project != self.project {
@@ -2960,9 +2962,10 @@ impl Widget for ImageEditorApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
+        let (state, path) = ui::doc::document(state, path);
         if target.starts_with("crop.")
             && let Some(editor) = self.crop_editor.as_mut()
             && editor.perform_semantic_action(target, action, state, path)

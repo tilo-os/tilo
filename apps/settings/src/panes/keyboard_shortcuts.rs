@@ -15,6 +15,7 @@ use std::collections::HashMap;
 use taffy::{NodeId, TaffyTree};
 use ui::doc::{read_bool, read_str_or_text};
 use ui::theme::Theme;
+use ui::widget::{AppModel, ModelPath};
 use ui::widget::{ShortcutRecorder, Toggle, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -196,7 +197,8 @@ pub fn build() -> Box<dyn Widget> {
 }
 
 impl Widget for ShortcutPane {
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+        let (state, root) = ui::doc::document(state, root);
         if self.needs_seed {
             for action in rebindable() {
                 let key = durable_key(action);

@@ -9,6 +9,7 @@
 //! CRDT so collaboration and undo come for free.
 
 use std::collections::{HashMap, HashSet};
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ChangeHash, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -5151,7 +5152,8 @@ impl Widget for PdfApp {
         self.actions.take_committed()
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, _) = ui::doc::document(state, path);
         // Drain the dedicated PDF owner before any portal/action work.  This
         // is non-blocking and is the sole route by which production PDFium
         // results enter widget state.
@@ -5705,11 +5707,12 @@ impl Widget for PdfApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         use crate::actions::PdfOperation;
         use ui::a11y::Action as A11yAction;
+        let (state, path) = ui::doc::document(state, path);
         if self.awaiting_markup_record {
             return false;
         }

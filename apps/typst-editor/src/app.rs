@@ -35,6 +35,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
@@ -2059,7 +2060,8 @@ impl Widget for TypstApp {
             .flatten()
     }
 
-    fn sync(&mut self, doc: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
+        let (doc, _) = ui::doc::document(doc, path);
         self.background_poll_deadline.set(None);
         if let Some((invocation, operation)) = self.pending_resource_io.take() {
             let result = match operation {
@@ -2316,9 +2318,10 @@ impl Widget for TypstApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        doc: &mut AutoCommit,
-        _path: &ObjId,
+        doc: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
+        let (doc, _) = ui::doc::document(doc, path);
         if let Some((operation, _, _)) = TOOLBAR_ACTIONS.iter().find(|(_, id, _)| *id == target) {
             return match action {
                 ui::a11y::Action::Focus => true,

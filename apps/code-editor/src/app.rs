@@ -38,6 +38,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::time::{Duration, Instant};
+use ui::widget::{AppModel, ModelPath};
 
 mod file_workflow;
 mod lsp_workflow;
@@ -135,7 +136,7 @@ impl BottomPanelToggle {
 }
 
 impl Widget for BottomPanelToggle {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.button.sync(state, path);
     }
 
@@ -318,8 +319,8 @@ impl Widget for BottomPanelToggle {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         self.button.perform_action(action, state, path)
     }
@@ -3518,10 +3519,11 @@ fn find_char_span(text: &str, needle: &str) -> Option<(usize, usize, usize)> {
 }
 
 impl Widget for CodeApp {
-    fn native_input_snapshot(&self, doc: &AutoCommit, _path: &ObjId) -> Option<serde_json::Value> {
+    fn native_input_snapshot(&self, doc: &AppModel, path: &ModelPath) -> Option<serde_json::Value> {
         fn rect(rect: Rect) -> [f64; 4] {
             [rect.x0, rect.y0, rect.x1, rect.y1]
         }
+        let (doc, _) = ui::doc::document_ref(doc, path);
         // Read authoritative text, never the editor's optimistic render cache.
         // Only the opt-in native input observer invokes this O(buffer length) read.
         let buffer_id = self.active_file_node().map(|node| self.buffer_key(node));
@@ -3563,7 +3565,8 @@ impl Widget for CodeApp {
         clippy::too_many_lines,
         reason = "the widget lifecycle deliberately sequences every asynchronous projection in one auditable frame boundary"
     )]
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, path) = ui::doc::document(state, path);
         if let Some((id, argument)) = self.pending_resource_command.take()
             && let Some(command) = Command::from_id(&id)
         {
@@ -4473,7 +4476,7 @@ impl Widget for CodeApp {
 
     /// The explorer eases wheel scrolling and row transitions on its own
     /// clock; it is the one child whose per-frame update this root runs.
-    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         self.sidebar.update(state, path)
     }
 

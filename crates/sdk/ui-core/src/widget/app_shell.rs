@@ -11,6 +11,7 @@
 //! `focusable_order` and its caret survives the per-keystroke filter
 //! rebuild.
 
+use crate::widget::{AppModel, ModelPath};
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -694,7 +695,7 @@ fn paint_child(
 }
 
 impl Widget for AppShell {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         if self.back_requested.replace(false) {
             self.back();
         }

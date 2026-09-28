@@ -5,6 +5,7 @@ use crate::theme::Theme;
 use crate::tokens::SpringParams;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use crate::widget::{AppModel, ModelPath};
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -97,7 +98,7 @@ impl Widget for WorkspaceView {
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }
-    fn update(&mut self, _s: &mut AutoCommit, _p: &ObjId) -> bool {
+    fn update(&mut self, _s: &mut AppModel, _p: &ModelPath) -> bool {
         if self.slide.is_settled() {
             false
         } else {

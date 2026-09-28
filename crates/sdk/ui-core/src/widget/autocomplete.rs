@@ -20,6 +20,7 @@
 //! The editable path bar in the file manager is the canonical consumer, but
 //! the widget knows nothing about paths.
 
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
 use automerge::{AutoCommit, ObjId};
@@ -970,10 +971,11 @@ impl Widget for Autocomplete {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
+        let (state, path) = crate::doc::document(state, path);
         match action {
             Action::Focus | Action::Expand => {
                 self.begin_edit();
@@ -1001,8 +1003,8 @@ impl Widget for Autocomplete {
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         use crate::a11y::{Action, hash_key};
         let own_key = hash_key(&self.test_id().unwrap_or("autocomplete"));

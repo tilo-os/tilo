@@ -18,6 +18,7 @@ use super::{
     TextWeight, Theme, View, Widget, art, draw_text, elide, fill_rrect, icon, is_live_album_id,
     is_live_id, is_live_playlist_id, lyrics, rrect,
 };
+use ui::widget::{AppModel, ModelPath};
 
 use ui::surface;
 use ui::text_render::{NumericStyle, TextStyle};
@@ -795,7 +796,8 @@ impl Widget for MusicApp {
         }
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, _) = ui::doc::document(state, path);
         self.ensure_seeded(state);
         if self.playback_loaded {
             self.reload_library(state);
@@ -1769,9 +1771,10 @@ impl Widget for MusicApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
-        _path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
+        let (state, _) = ui::doc::document(state, path);
         if target == "music.search" {
             match action {
                 ui::a11y::Action::Focus | ui::a11y::Action::Activate => {

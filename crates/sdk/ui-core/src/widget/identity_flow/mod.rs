@@ -16,6 +16,7 @@
 //! drive it directly without ever building a `TaffyTree`.
 
 use crate::time::{Duration, SystemTime};
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -2457,7 +2458,7 @@ impl Widget for IdentityFlow {
         Some("identity_flow")
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         match self.current {
             IdentityFlowScreen::CreateIdentity => self.create_identity.sync(state, path),
             IdentityFlowScreen::RecoveryShare => self.recovery_share.sync(state, path),

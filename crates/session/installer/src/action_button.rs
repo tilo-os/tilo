@@ -18,6 +18,7 @@
 //! Every colour is read from the [`Theme`]; nothing is hard-coded.
 
 use std::collections::HashMap;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId, transaction::Transactable};
 use taffy::style_helpers::length;
@@ -481,9 +482,10 @@ impl Widget for ActionButton {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
-        root: &ObjId,
+        state: &mut AppModel,
+        root: &ModelPath,
     ) -> bool {
+        let (state, root) = ui::doc::document(state, root);
         let accepted = matches!(action, ui::a11y::Action::Activate)
             || (self.checked.is_some() && matches!(action, ui::a11y::Action::ToggleCheck));
         if self.disabled || !accepted {

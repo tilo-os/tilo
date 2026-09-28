@@ -9,6 +9,7 @@
 
 use std::collections::HashMap;
 use ui::clock::{Duration, Instant};
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, Display, NodeId, Size, Style, TaffyTree};
@@ -4858,7 +4859,7 @@ impl Widget for TopBarChrome {
         Some(self)
     }
 
-    fn update(&mut self, _state: &mut AutoCommit, _path: &ObjId) -> bool {
+    fn update(&mut self, _state: &mut AppModel, _path: &ModelPath) -> bool {
         if let Some(chrome) = self.chrome.clone() {
             let rev = chrome.snapshot().revision;
             if rev != self.synced_revision {
@@ -5260,8 +5261,8 @@ impl Widget for TopBarChrome {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         if !matches!(
             action,

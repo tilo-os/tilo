@@ -14,6 +14,7 @@
 //! IME or set through an accessibility action.
 
 use crate::time::SystemTime;
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
 use automerge::{AutoCommit, ObjId};
@@ -461,7 +462,7 @@ impl InviteAcceptScreen {
 }
 
 impl Widget for InviteAcceptScreen {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
+    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {}
 
     fn build_layout(
         &mut self,

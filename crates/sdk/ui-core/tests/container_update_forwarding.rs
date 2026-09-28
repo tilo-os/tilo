@@ -22,6 +22,7 @@
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use tilo_ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId, ROOT};
 use taffy::{NodeId, Style, TaffyTree};
@@ -40,7 +41,7 @@ struct Probe {
 }
 
 impl Widget for Probe {
-    fn update(&mut self, _state: &mut AutoCommit, _path: &ObjId) -> bool {
+    fn update(&mut self, _state: &mut AppModel, _path: &ModelPath) -> bool {
         self.updates.set(self.updates.get().saturating_add(1));
         true
     }

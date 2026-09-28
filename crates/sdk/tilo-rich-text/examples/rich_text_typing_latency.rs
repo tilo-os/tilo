@@ -15,11 +15,12 @@
 //! Release only: a debug build makes every reading meaningless.
 
 use std::time::Instant;
+use ui::widget::{AppModel, ModelPath};
 
 use qdoc_rich_text::{RichText, RichTextAction};
 use tilo_rich_text::RichTextViews;
 use ui::automerge::transaction::Transactable;
-use ui::automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
+use ui::automerge::{ObjType, ROOT, ReadDoc, Value};
 use ui::framework::testing::TestApp;
 use ui::framework::{ResourceApp, ViewCx};
 use ui::headless::FrameHarness;
@@ -81,7 +82,8 @@ impl Decorator for Direct {
         &mut self.editor
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, path) = ui::doc::document(state, path);
         if !self.bound {
             let list = match state.get(ROOT, "blocks") {
                 Ok(Some((Value::Object(ObjType::List), list))) => Some(list),

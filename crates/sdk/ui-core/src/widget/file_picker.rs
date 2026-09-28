@@ -17,6 +17,7 @@
 //! every path mutation against them so the user can't `..` out of the
 //! sandbox boundary.
 
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -1349,8 +1350,8 @@ impl Widget for FilePicker {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         matches!(action, crate::a11y::Action::Activate) && self.activate_focus()
     }
@@ -1359,8 +1360,8 @@ impl Widget for FilePicker {
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         use crate::a11y::{Action, hash_key};
         let Some((&control_key, rest)) = key_path.split_first() else {

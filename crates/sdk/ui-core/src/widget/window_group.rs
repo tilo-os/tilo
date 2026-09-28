@@ -7,6 +7,7 @@ use crate::theme::Theme;
 use crate::time::{Duration, Instant};
 use crate::widget::TaffyTreeExt;
 use crate::widget::tabs::CLOSE_FADE_MS;
+use crate::widget::{AppModel, ModelPath};
 use crate::widget::{
     FloatingSurfaceProvider, TabBar, TabDescriptor, TileContent, TileHost, Widget,
 };
@@ -1876,12 +1877,12 @@ impl Widget for WindowGroup {
             .collect()
     }
 
-    fn sync(&mut self, s: &mut AutoCommit, p: &ObjId) {
+    fn sync(&mut self, s: &mut AppModel, p: &ModelPath) {
         if let Some(h) = self.active_host_mut() {
             h.sync(s, p);
         }
     }
-    fn update(&mut self, s: &mut AutoCommit, p: &ObjId) -> bool {
+    fn update(&mut self, s: &mut AppModel, p: &ModelPath) -> bool {
         self.active_host_mut().is_some_and(|h| h.update(s, p))
     }
     fn build_layout(
@@ -2402,7 +2403,6 @@ mod tests {
 
     impl Widget for RetainedTraversalProbe {
         crate::testing::inert_widget_methods!(
-            sync,
             apply_layout,
             draw,
             get_rect,

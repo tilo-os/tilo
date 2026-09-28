@@ -1,4 +1,5 @@
 use super::*;
+use crate::widget::{AppModel, ModelPath};
 use crate::widget::{Button, Card, CardGrid, Column, Container, Element};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -420,7 +421,7 @@ struct GrowingBody {
     clicks: Rc<RefCell<Vec<usize>>>,
 }
 impl Widget for GrowingBody {
-    fn update(&mut self, _: &mut automerge::AutoCommit, _: &automerge::ObjId) -> bool {
+    fn update(&mut self, _: &mut AppModel, _: &ModelPath) -> bool {
         if self.count == self.requested.get() {
             return false;
         }

@@ -1,4 +1,5 @@
 use super::*;
+use crate::widget::{AppModel, ModelPath};
 use crate::widget::{Button, Widget};
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ROOT, ReadDoc, ScalarValue};
@@ -179,7 +180,8 @@ impl Widget for Publisher {
     fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
         vec![Box::new(PeopleProvider), Box::new(LazyProvider)]
     }
-    fn activate_search_result(&mut self, action_id: &str, doc: &mut AutoCommit, _p: &ObjId) {
+    fn activate_search_result(&mut self, action_id: &str, doc: &mut AppModel, p: &ModelPath) {
+        let (doc, _) = crate::doc::document(doc, p);
         doc.put(&ROOT, "navigated", ScalarValue::Str(action_id.into()))
             .unwrap();
     }

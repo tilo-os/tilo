@@ -9,6 +9,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -3371,7 +3372,8 @@ impl Widget for VpnApp {
         ]
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, _) = ui::doc::document(state, path);
         #[cfg(test)]
         if let Some(kind) = self.history_control_arm.as_ref().and_then(|arm| arm.take()) {
             self.queue_import(kind);
@@ -4042,8 +4044,8 @@ impl Widget for VpnApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         if !matches!(
             action,
@@ -4388,7 +4390,7 @@ mod tests {
         ) -> Option<&'static ui::history_mode::HistoryDefinition> {
             Some(&CUSTODY_HISTORY)
         }
-        fn sync(&mut self, doc: &mut AutoCommit, path: &ObjId) {
+        fn sync(&mut self, doc: &mut ui::widget::AppModel, path: &ui::widget::ModelPath) {
             self.child.sync(doc, path);
         }
         fn build_layout(

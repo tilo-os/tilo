@@ -29,6 +29,7 @@
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::percent;
@@ -5008,7 +5009,8 @@ impl Widget for ImagerApp {
         &[crate::actions::IMAGER_OPERATION_TYPE]
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, _) = ui::doc::document(state, path);
         if !self.seeded {
             if ImagerDoc::is_empty(state) {
                 // Start genuinely blank. In the live app a real `lsblk` probe
@@ -5493,10 +5495,11 @@ impl Widget for ImagerApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
-        _path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         use ui::a11y::Action as AccessAction;
+        let (state, _) = ui::doc::document(state, path);
 
         if self.export_dialog.is_open() {
             return false;

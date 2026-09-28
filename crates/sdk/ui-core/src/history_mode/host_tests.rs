@@ -1,4 +1,5 @@
 use super::*;
+use crate::widget::{AppModel, ModelPath};
 use crate::{
     State,
     headless::Driver,
@@ -1260,7 +1261,7 @@ impl Widget for LazyOwnerRoot {
     fn get_rect(&self) -> Rect {
         self.child.get_rect()
     }
-    fn sync(&mut self, doc: &mut automerge::AutoCommit, path: &automerge::ObjId) {
+    fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
         if !self.during_layout {
             self.mount_owner();
         } else if self.mount.get() && !self.mounted {

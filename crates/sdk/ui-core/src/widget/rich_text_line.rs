@@ -10,6 +10,7 @@
 //! * A [`MarkSpan`] list (inline bold/italic/code/link) with rendering and
 //!   Ctrl-B/I/E toggling built on the inner `TextInput`'s selection range.
 
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
 
@@ -914,7 +915,8 @@ impl Widget for RichTextLine {
         self.dirty.styled_layout || self.inner.is_layout_dirty()
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, path) = crate::doc::document(state, path);
         // Realigning the mark-diff snapshot here keeps a remotely-synced edit
         // from being misread as a local splice on the next keystroke.
         self.inner.sync(state, path);
@@ -1256,9 +1258,10 @@ impl Widget for RichTextLine {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
+        let (state, path) = crate::doc::document(state, path);
         let handled = Widget::perform_action(&mut self.inner, action, state, path);
         if handled && matches!(action, crate::a11y::Action::SetValue(_)) {
             self.marks.clear();

@@ -35,6 +35,7 @@
 use crate::categories::Category;
 use crate::panes;
 use crate::sidebar;
+use ui::widget::{AppModel, ModelPath};
 use ui::widget::{AppShell, Column, Container, NarrowScreen, Scrollable, TextInput, Widget};
 use ui::{AppKind, AppWidget, IconDescriptor};
 
@@ -1701,8 +1702,8 @@ fn valid_input_fraction(value: f64) -> Result<f64, String> {
 impl Widget for SettingsApp {
     fn native_input_snapshot(
         &self,
-        state: &automerge::AutoCommit,
-        path: &automerge::ObjId,
+        state: &AppModel,
+        path: &ModelPath,
     ) -> Option<serde_json::Value> {
         use automerge::transaction::Transactable;
         fn rect(value: vello::kurbo::Rect) -> [f64; 4] {
@@ -1731,6 +1732,7 @@ impl Widget for SettingsApp {
             }
             widget.for_each_child(&mut |child| inspect(child, search, categories));
         }
+        let (state, path) = ui::doc::document_ref(state, path);
         let mut search = None;
         let mut categories = Vec::new();
         inspect(self, &mut search, &mut categories);
@@ -1802,7 +1804,7 @@ impl Widget for SettingsApp {
         ]
     }
 
-    fn sync(&mut self, state: &mut automerge::AutoCommit, path: &automerge::ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         // Sidebar selection and search are local presentation state. They do
         // not create CRDT click flags, draft text, collaboration traffic or
         // undo entries. The canonical resource `settings.section:<slug>/open`

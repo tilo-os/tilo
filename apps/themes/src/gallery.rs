@@ -9,6 +9,7 @@
 //! committed operation into its canonical durable action.
 
 use std::collections::HashMap;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::length;
@@ -304,7 +305,7 @@ impl Gallery {
 }
 
 impl Widget for Gallery {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.name_input.sync(state, path);
     }
 

@@ -21,7 +21,7 @@ impl Widget for HostedPumpProbe {
         get_rect,
         name = "hosted-pump-probe"
     );
-    fn sync(&mut self, _: &mut automerge::AutoCommit, _: &automerge::ObjId) {
+    fn sync(&mut self, _: &mut AppModel, _: &ModelPath) {
         self.syncs.set(self.syncs.get() + 1);
         if let Some(label) = self.pending_label.borrow_mut().take() {
             self.label = label;

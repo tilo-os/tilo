@@ -16,6 +16,7 @@
 //! editor.set_text("fn main() {\n    println!(\"hi\");\n}\n");
 //! ```
 
+use crate::widget::{AppModel, ModelPath};
 use std::ops::Range;
 
 use automerge::{AutoCommit, ObjId};
@@ -400,11 +401,11 @@ impl CodeEditor {
 }
 
 impl Widget for CodeEditor {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.inner.sync(state, path);
     }
 
-    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         self.inner.update(state, path)
     }
 
@@ -571,8 +572,8 @@ impl Widget for CodeEditor {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         self.inner.perform_action(action, state, path)
     }

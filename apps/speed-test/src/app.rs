@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::{Duration, Instant};
+use ui::widget::{AppModel, ModelPath};
 
 use ui::ColorCompat;
 use ui::a11y::{AccessNode, AccessState, Role};
@@ -271,7 +272,7 @@ impl Default for SpeedTestApp {
 }
 
 impl Widget for SpeedTestApp {
-    fn update(&mut self, _doc: &mut AutoCommit, _path: &ObjId) -> bool {
+    fn update(&mut self, _doc: &mut AppModel, _path: &ModelPath) -> bool {
         let mut changed = false;
         if let Some(rx) = &self.worker {
             while let Ok(message) = rx.try_recv() {
@@ -717,8 +718,8 @@ impl Widget for SpeedTestApp {
         &mut self,
         action: &ui::a11y::Action,
         key_path: &[u64],
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         if !matches!(action, ui::a11y::Action::Activate) {
             return false;

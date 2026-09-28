@@ -16,6 +16,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use ui::search::{CatalogSearchProvider, SearchCatalog, SearchProvider, SearchResult};
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -5519,7 +5520,7 @@ impl Widget for MonitorApp {
         self.pending_control_invocation.take()
     }
 
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
         // Monitor's observation and safety preferences are device-local, so a
         // shared document sync must never overwrite this window's state.
         self.clear_selection_if_filtered_out();
@@ -5712,10 +5713,11 @@ impl Widget for MonitorApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         use ui::a11y::Action;
+        let (state, path) = ui::doc::document(state, path);
 
         let activated = matches!(action, Action::Activate | Action::ToggleCheck);
         match target {

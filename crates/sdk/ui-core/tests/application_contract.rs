@@ -1389,7 +1389,8 @@ mod save_status_fixture {
         fn get_rect(&self) -> vello::kurbo::Rect {
             vello::kurbo::Rect::ZERO
         }
-        fn sync(&mut self, doc: &mut automerge::AutoCommit, _: &automerge::ObjId) {
+        fn sync(&mut self, doc: &mut tilo_ui::widget::AppModel, path: &tilo_ui::widget::ModelPath) {
+            let (doc, _) = tilo_ui::doc::document(doc, path);
             assert!(matches!(
                 self.records.save_status(&self.checkout.id),
                 Err(RecordOpenError::Busy)
