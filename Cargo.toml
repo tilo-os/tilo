@@ -115,6 +115,7 @@ members = [
     "apps/word-processor",
 
     # Agent
+    "crates/agent/agent-participant",
     "crates/agent/local-model-service",
     "crates/agent/model-gateway",
     "crates/agent/provider-config",
