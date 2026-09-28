@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[2]
 IMAGE_WORKFLOW = ROOT / ".forgejo/workflows/build-image.yml"
 KERNEL_WORKFLOW = ROOT / ".forgejo/workflows/build-kernel.yml"
 APPS_WORKFLOW = ROOT / ".forgejo/workflows/release-apps.yml"
-DESKTOP_WORKFLOW = ROOT / ".forgejo/workflows/package-desktop.yml"
+DESKTOP_WORKFLOW = ROOT / ".forgejo/workflows/release-desktop.yml"
 CACHE_SETTINGS = (
     "SCCACHE_BUCKET", "SCCACHE_ENDPOINT", "SCCACHE_REGION", "SCCACHE_S3_USE_SSL",
     "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",

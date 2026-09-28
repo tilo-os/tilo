@@ -121,8 +121,8 @@ acceptance. Neither the scratch fix nor on-prem seed timings qualifies AWS reuse
   coalescer never targets either workflow. Cheap feedback can still wait for
   capacity; preserving runs does not prove acceptable latency.
 - The coalescer targets only superseded, unstarted **main push** runs of
-  `build-image.yml`, `package-desktop.yml`, `release-apps.yml`, `fs-fuse.yml`
-  and `legacy-app-e2e.yml`. It retains the newest eligible request per workflow.
+  `build-image.yml`, `release-desktop.yml`, `release-apps.yml`, `ci-filesystem.yml`
+  and `ci-legacy-apps.yml`. It retains the newest eligible request per workflow.
 - Manual hardware/bring-up requests, tags, PRs, other branches and work observed
   to have started are outside its policy. It rechecks the replacement, jobs and
   candidate before cancelling. Forgejo has no atomic cancel-if-still-waiting

@@ -10,7 +10,7 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
-WORKFLOW = ROOT / '.forgejo/workflows/canonical-verifier-bundle.yml'
+WORKFLOW = ROOT / '.forgejo/workflows/release-verifier-bundles.yml'
 BUILDER = 'registry.tilo.so/tilo/tilo-builder@sha256:' + 'a' * 64
 
 

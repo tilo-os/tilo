@@ -67,7 +67,7 @@ host_manifest = tomllib.loads((ROOT / "crates/sdk/tilo-host/Cargo.toml").read_te
 linux_host_dependencies = host_manifest["target"]['cfg(target_os = "linux")']["dependencies"]
 assert "smithay-clipboard" in linux_host_dependencies
 
-session_workflow = (ROOT / ".forgejo/workflows/package-desktop.yml").read_text()
+session_workflow = (ROOT / ".forgejo/workflows/release-desktop.yml").read_text()
 packaging_docs = (ROOT / "docs/packaging.md").read_text()
 rpm_publisher = (ROOT / "dist/ci/publish-forgejo-packages.sh").read_text()
 rpm_signer = (ROOT / "dist/rpm/sign-rpms.sh").read_text()
