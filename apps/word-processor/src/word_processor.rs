@@ -940,6 +940,25 @@ impl WordProcessor {
         let _ = action.apply_under(state, &automerge::ROOT);
     }
 
+    fn set_block_attr(
+        &mut self,
+        state: &mut AutoCommit,
+        blocks: Vec<String>,
+        key: &str,
+        value: crate::actions::AttrVal,
+    ) {
+        if self.containers.is_none() || self.ids.is_none() || blocks.is_empty() {
+            return;
+        }
+        let action = crate::actions::RichTextAction::SetBlockAttr {
+            region: self.action_region(),
+            blocks,
+            key: key.to_string(),
+            value,
+        };
+        let _ = action.apply_under(state, &automerge::ROOT);
+    }
+
     fn action_region(&self) -> crate::actions::RegionKind {
         match self.region {
             Region::Body => crate::actions::RegionKind::Body,
@@ -1355,29 +1374,30 @@ impl WordProcessor {
     /// exclusive. Returns nothing; reads/writes happen in document order.
     fn toggle_exclusive_run_mark(&mut self, state: &mut AutoCommit, name: &str, clears: &str) {
         let ranges = self.font_ranges(state);
-        let on = self.mark_over_ranges(state, &ranges, name);
-        let Some(containers) = self.containers.clone() else {
+        if self.containers.is_none() || self.ids.is_none() {
             return;
-        };
-        if let Some(ids) = self.ids.as_mut() {
-            let mut dm = DocMut {
-                doc: state,
-                c: &containers,
-                ids,
-            };
-            for (b, s, e) in &ranges {
-                if s >= e {
-                    continue;
-                }
-                if on {
-                    dm.remove_mark(b, *s, *e, name);
-                } else {
-                    // Turning this on: drop the sibling so the pair is exclusive.
-                    dm.remove_mark(b, *s, *e, clears);
-                    dm.add_mark(b, *s, *e, name, true);
-                }
-            }
         }
+        let on = self.mark_over_ranges(state, &ranges, name);
+        let spans = Self::mark_spans(&ranges);
+        if spans.is_empty() {
+            return;
+        }
+        let action = crate::actions::RichTextAction::SetMark {
+            region: self.action_region(),
+            spans,
+            name: name.to_string(),
+            value: if on {
+                None
+            } else {
+                Some(crate::actions::MarkVal::Bool(true))
+            },
+            also_clear: if on {
+                Vec::new()
+            } else {
+                vec![clears.to_string()]
+            },
+        };
+        let _ = action.apply_under(state, &automerge::ROOT);
     }
 
     /// Toggle the `super` (superscript) run mark over the selection / caret block,
@@ -1397,20 +1417,12 @@ impl WordProcessor {
     /// block attr; the layout pass feeds it to `RichTextLayout::shape` as the
     /// `line_height_mult`. A multiplier of `1.0` clears the attr (the default).
     pub fn set_line_spacing(&mut self, state: &mut AutoCommit, mult: f64) {
-        let Some(containers) = self.containers.clone() else {
-            return;
-        };
-        let targets = self.selected_block_ids(state);
-        if let Some(ids) = self.ids.as_mut() {
-            let mut dm = DocMut {
-                doc: state,
-                c: &containers,
-                ids,
-            };
-            for block in &targets {
-                dm.set_attr(block, "line_spacing", mult);
-            }
-        }
+        self.set_block_attr(
+            state,
+            self.selected_block_ids(state),
+            "line_spacing",
+            crate::actions::AttrVal::Float(mult),
+        );
     }
 
     /// The line-spacing multiplier on the caret's block (the `line_spacing` Float
@@ -1472,34 +1484,23 @@ impl WordProcessor {
 
     /// Set the left / hanging indent (px) on `block`. Clamped non-negative.
     pub fn set_block_indent(&mut self, state: &mut AutoCommit, block: &str, px: f64) {
-        let Some(containers) = self.containers.clone() else {
-            return;
-        };
-        let v = px.max(0.0);
-        if let Some(ids) = self.ids.as_mut() {
-            let mut dm = DocMut {
-                doc: state,
-                c: &containers,
-                ids,
-            };
-            dm.set_attr(block, "indent", v);
-        }
+        self.set_block_attr(
+            state,
+            vec![block.to_string()],
+            "indent",
+            crate::actions::AttrVal::Float(px.max(0.0)),
+        );
     }
 
     /// Set the first-line indent (px) on `block`. May be negative (a hanging
     /// indent draws the first line back toward the margin).
     pub fn set_block_first_line_indent(&mut self, state: &mut AutoCommit, block: &str, px: f64) {
-        let Some(containers) = self.containers.clone() else {
-            return;
-        };
-        if let Some(ids) = self.ids.as_mut() {
-            let mut dm = DocMut {
-                doc: state,
-                c: &containers,
-                ids,
-            };
-            dm.set_attr(block, "first_line_indent", px);
-        }
+        self.set_block_attr(
+            state,
+            vec![block.to_string()],
+            "first_line_indent",
+            crate::actions::AttrVal::Float(px),
+        );
     }
 
     /// The tab stops (px positions from the left text margin) of an arbitrary
@@ -1529,9 +1530,9 @@ impl WordProcessor {
     /// Replace `block`'s tab stops with `stops` (deduplicated + sorted). An empty
     /// list clears the attr to the empty string.
     pub fn set_block_tab_stops(&mut self, state: &mut AutoCommit, block: &str, stops: &[f64]) {
-        let Some(containers) = self.containers.clone() else {
+        if self.containers.is_none() {
             return;
-        };
+        }
         let mut v: Vec<f64> = stops.iter().copied().filter(|p| *p >= 0.0).collect();
         v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         v.dedup_by(|a, b| (*a - *b).abs() < 0.5);
@@ -1540,14 +1541,12 @@ impl WordProcessor {
             .map(|p| format!("{p:.1}"))
             .collect::<Vec<_>>()
             .join(",");
-        if let Some(ids) = self.ids.as_mut() {
-            let mut dm = DocMut {
-                doc: state,
-                c: &containers,
-                ids,
-            };
-            dm.set_attr(block, "tab_stops", encoded.as_str());
-        }
+        self.set_block_attr(
+            state,
+            vec![block.to_string()],
+            "tab_stops",
+            crate::actions::AttrVal::Str(encoded),
+        );
     }
 
     /// Add a tab stop at `px` (from the left text margin) on the caret's block.
