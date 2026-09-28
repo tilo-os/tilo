@@ -269,7 +269,7 @@ fn notes_continuation_actual_notes_and_search_cover_lazy_invocation_domains() {
     let app = notes::NotesApp::from_document(&doc, &f.author).unwrap();
     assert!(
         matches!(
-            app.action_directory_invocation_domain(&doc),
+            ui::resources::action_directory_invocation_domain(&app, &doc),
             ui::widget::ActionDirectoryInvocationDomain::Versioned(_)
         ),
         "actual Notes has omitted lazy page/block/tag actions"

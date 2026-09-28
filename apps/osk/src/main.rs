@@ -579,7 +579,7 @@ mod launch_tests {
                 let probe =
                     OskWidget::new_with_swipe_model(Box::new(osk::GeometricSwipeModel::english()));
                 let encoded = ui::tilo_actions::door::encode(
-                    &probe.resources(&automerge::AutoCommit::new()),
+                    &ui::resources::resources(&probe, &automerge::AutoCommit::new()),
                     &ui::tilo_actions::ActionAddress::new("osk.keyboard.suggestions", "disable"),
                     None,
                 )
@@ -637,11 +637,12 @@ mod launch_tests {
         acks: Rc<Cell<usize>>,
     }
     impl Widget for NativeObservedRoot {
-        ui::provides!(dyn ui::history_mode::capability::DocumentHistory);
+        ui::provides!(
+            dyn ui::history_mode::capability::DocumentHistory,
+            dyn ui::widget::controls::ActionControls,
+            dyn ui::resources::PublishesResources
+        );
 
-        fn resources(&self, doc: &automerge::AutoCommit) -> Vec<ui::tilo_actions::Resource> {
-            self.root.resources(doc)
-        }
         fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
             self.root.local_resource_operation_handlers()
         }
@@ -652,13 +653,6 @@ mod launch_tests {
             path: &automerge::ObjId,
         ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
             self.root.start_operation(op, doc, path)
-        }
-        fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
-            let value = self.root.take_control_invocation();
-            if value.is_some() {
-                self.takes.set(self.takes.get() + 1);
-            }
-            value
         }
         fn sync(&mut self, doc: &mut ui::widget::AppModel, path: &ui::widget::ModelPath) {
             self.root.sync(doc, path);
@@ -707,6 +701,22 @@ mod launch_tests {
         }
         fn take_structure_dirty(&mut self) -> bool {
             self.root.take_structure_dirty()
+        }
+    }
+
+    impl ui::resources::PublishesResources for NativeObservedRoot {
+        fn resources(&self, doc: &automerge::AutoCommit) -> Vec<ui::tilo_actions::Resource> {
+            ui::resources::resources(self.root.as_ref(), doc)
+        }
+    }
+
+    impl ui::widget::controls::ActionControls for NativeObservedRoot {
+        fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
+            let value = ui::widget::controls::take_control_invocation(self.root.as_mut());
+            if value.is_some() {
+                self.takes.set(self.takes.get() + 1);
+            }
+            value
         }
     }
 

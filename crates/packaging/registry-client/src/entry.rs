@@ -164,11 +164,7 @@ pub fn build_entry(
     let now = std::env::var("SOURCE_DATE_EPOCH")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
-        .unwrap_or_else(|| {
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |duration| duration.as_secs())
-        });
+        .unwrap_or_else(tilo_clock::unix_now);
     let version = registry_types::RegistryVersion {
         version: package.version.clone(),
         tapp_url: url.to_string(),

@@ -19,7 +19,7 @@ WORKFLOW = ROOT / ".forgejo/workflows/build-image.yml"
 
 def matrix_script() -> str:
     workflow = WORKFLOW.read_text()
-    marker = "      - name: Select validation or native publication lanes\n"
+    marker = "      - name: Select dev or release lanes\n"
     block = workflow.split(marker, 1)[1].split("\n\n  signing-preflight:", 1)[0]
     return textwrap.dedent(block.split("        run: |\n", 1)[1])
 
@@ -31,8 +31,6 @@ def plan(
     ref: str,
     event: str,
     requested: str,
-    published: str = "",
-    configured: str = "true",
     integration: str = "",
 ) -> tuple[bool, bool, list[dict[str, str]]]:
     with tempfile.TemporaryDirectory() as temporary:
@@ -44,14 +42,13 @@ def plan(
                 "GITHUB_EVENT_NAME": event,
                 "GITHUB_OUTPUT": str(output),
                 "GITHUB_SHA": SHA,
-                "REQUESTED_PUBLISH": requested,
-                "PUBLISHED_REVISION": published,
-                "PUBLICATION_CONFIGURED": configured,
+                "REQUESTED_RELEASE": requested,
                 "INTEGRATION_REVISION": integration,
             }
         )
         subprocess.run(["bash", "-c", matrix_script()], env=environment, check=True)
         values = dict(line.split("=", 1) for line in output.read_text().splitlines())
+        assert values["mode"] == ("release" if values["publish"] == "true" else "dev")
         return (
             values["publish"] == "true",
             values["skip"] == "true",
@@ -98,62 +95,40 @@ class OsReleaseMatrixTests(unittest.TestCase):
                 {"arch": "x86_64", "runner": "runner-large"},
                 {"arch": "aarch64", "runner": "runner-large-arm64"},
             ])
-        with self.subTest(phase='nightly main publishes through the manual main fleet'):
-            publish, skip, lanes = plan("refs/heads/main", "schedule", "", "f" * 40)
-            self.assertTrue(publish)
-            self.assertFalse(skip)
-            self.assertEqual(
-                lanes,
-                [
-                    {"arch": "x86_64", "runner": "runner-large"},
-                    {"arch": "aarch64", "runner": "runner-large-arm64"},
-                    {"arch": "x86_64", "runner": "runner-large", "role": "reproduce"},
-                    {"arch": "aarch64", "runner": "runner-large-arm64", "role": "reproduce"},
-                ],
-            )
-
-    def test_nightly_builds_publish_or_skip_based_on_published_and_built_revisions(self):
-        with self.subTest(phase='nightly publishes when no published revision is readable'):
-            publish, skip, _ = plan("refs/heads/main", "schedule", "", "")
-            self.assertTrue(publish)
-            self.assertFalse(skip)
-        with self.subTest(phase='nightly skips the build when main is already published'):
-            publish, skip, _ = plan("refs/heads/main", "schedule", "", SHA)
+        with self.subTest(phase='a release input on another branch is a dev build'):
+            publish, lanes = select_matrix("refs/heads/feature", "workflow_dispatch", "true")
             self.assertFalse(publish)
-            self.assertTrue(skip)
-        with self.subTest(phase='schedule never publishes from another ref'):
-            publish, skip, lanes = plan("refs/heads/feature", "schedule", "", "")
-            self.assertFalse(publish)
-            self.assertFalse(skip)
             self.assertEqual(lanes, [{"arch": "x86_64", "runner": "runner-large"}])
-        with self.subTest(phase='unconfigured nightly runs a main integration build'):
-            publish, skip, lanes = plan("refs/heads/main", "schedule", "", "", "false")
+
+    def test_the_nightly_run_is_a_dev_build(self):
+        with self.subTest(phase='nightly main builds both dev lanes and never releases'):
+            publish, skip, lanes = plan("refs/heads/main", "schedule", "")
             self.assertFalse(publish)
             self.assertFalse(skip)
             self.assertEqual(lanes, [
                 {"arch": "x86_64", "runner": "runner-large"},
                 {"arch": "aarch64", "runner": "runner-large-arm64"},
             ])
-        with self.subTest(phase='unconfigured nightly skips an already built integration image'):
-            publish, skip, _ = plan("refs/heads/main", "schedule", "", "", "false", SHA)
+        with self.subTest(phase='nightly skips a commit whose dev image exists'):
+            publish, skip, _ = plan("refs/heads/main", "schedule", "", SHA)
             self.assertFalse(publish)
             self.assertTrue(skip)
-        with self.subTest(phase='configured nightly publishes despite an integration image'):
-            publish, skip, _ = plan("refs/heads/main", "schedule", "", "", "true", SHA)
-            self.assertTrue(publish)
+        with self.subTest(phase='schedule on another ref builds one dev lane'):
+            publish, skip, lanes = plan("refs/heads/feature", "schedule", "")
+            self.assertFalse(publish)
             self.assertFalse(skip)
-        with self.subTest(phase='explicit publication ignores the published revision'):
+            self.assertEqual(lanes, [{"arch": "x86_64", "runner": "runner-large"}])
+        with self.subTest(phase='an explicit release ignores an existing dev image'):
             publish, skip, _ = plan("refs/heads/main", "workflow_dispatch", "true", SHA)
             self.assertTrue(publish)
             self.assertFalse(skip)
 
     def test_publishing_jobs_honour_the_nightly_skip_and_hold_the_series_lock(self):
-        with self.subTest(phase='build and publication jobs honour the nightly skip'):
+        with self.subTest(phase='build jobs honour the nightly skip'):
             workflow = WORKFLOW.read_text()
             build = workflow.split("\n  build-and-push:\n", 1)[1].split("\n    strategy:", 1)[0]
             self.assertIn("needs.plan.outputs.skip != 'true'", build)
-            self.assertIn("PLANNED_PUBLISH: ${{ needs.plan.outputs.publish }}", workflow)
-            self.assertIn("docker://registry.tilo.so/tilo/tilo:latest", workflow)
+            self.assertIn("docker://registry.tilo.so/tilo/tilo-ci:main-${GITHUB_SHA:0:7}-x86_64", workflow)
             self.assertIn('.Labels["org.opencontainers.image.revision"]', workflow)
         with self.subTest(phase='generic publishing runs hold the generation series lock'):
             cases = [
@@ -167,8 +142,6 @@ class OsReleaseMatrixTests(unittest.TestCase):
             ]
             for ref, event, requested in cases:
                 with self.subTest(ref=ref, event=event, requested=requested):
-                    # A scheduled main run that skips must still hold the lock, so
-                    # judge the lock against the unskipped rule.
                     publish, _, _ = plan(ref, event, requested)
                     group = concurrency_group(ref, event, requested)
                     if publish:
@@ -383,7 +356,7 @@ def concurrency_group(
         ("format('tilo-os-image-lenovo-{0}', github.sha)", "('tilo-os-image-lenovo-' + sha)"),
         ("format('tilo-os-image-validate-{0}', github.ref)", "('tilo-os-image-validate-' + ref)"),
         ("github.event.inputs.hardware_profile", "profile"),
-        ("github.event.inputs.publish", "requested"),
+        ("github.event.inputs.release", "requested"),
         ("github.event_name", "event"),
         ("github.ref", "ref"),
         ("&&", " and "),

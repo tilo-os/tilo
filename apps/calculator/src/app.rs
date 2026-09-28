@@ -1222,7 +1222,8 @@ impl CalculatorApp {
 impl Widget for CalculatorApp {
     ui::provides!(
         dyn ui::undo::CommittedActions,
-        dyn ui::history_mode::capability::DocumentHistory
+        dyn ui::history_mode::capability::DocumentHistory,
+        dyn ui::resources::PublishesResources
     );
 
     fn is_focusable(&self) -> bool {
@@ -1879,13 +1880,6 @@ impl Widget for CalculatorApp {
         self.last_edit_time = None;
     }
 
-    /// Publish the calculator's Ctrl+K resource tree (history entries + saved
-    /// graph formulas), via the [`ResourceProvider`](tilo_actions::ResourceProvider)
-    /// impl in [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
-    }
-
     fn test_id(&self) -> Option<&str> {
         Some("calculator_app")
     }
@@ -1898,6 +1892,15 @@ impl Widget for CalculatorApp {
     /// change.
     fn is_layout_dirty(&self) -> bool {
         self.area == Rect::ZERO
+    }
+}
+
+impl ui::resources::PublishesResources for CalculatorApp {
+    /// Publish the calculator's Ctrl+K resource tree (history entries + saved
+    /// graph formulas), via the [`ResourceProvider`](tilo_actions::ResourceProvider)
+    /// impl in [`crate::actions`].
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
     }
 }
 
@@ -2425,7 +2428,7 @@ mod tests {
             let expression = crate::doc::load(&state.doc).unwrap().history[1]
                 .expr
                 .clone();
-            let resources = app.resources(&state.doc);
+            let resources = ui::resources::resources(&app, &state.doc);
             let row = resources[0]
                 .children
                 .iter()
@@ -2471,7 +2474,7 @@ mod tests {
             let expression = crate::doc::load(&state.doc).unwrap().history[1]
                 .expr
                 .clone();
-            let resources = app.resources(&state.doc);
+            let resources = ui::resources::resources(&app, &state.doc);
             let row = resources[0]
                 .children
                 .iter()

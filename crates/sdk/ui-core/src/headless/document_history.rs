@@ -360,15 +360,13 @@ impl FrameHarness {
 
     pub(super) fn history_tick(&mut self) -> Result<(), String> {
         let mut pending = Vec::new();
-        while let Some(intent) = self
-            .document_history
-            .toolbar_mut()
-            .take_control_invocation()
+        while let Some(intent) =
+            crate::widget::controls::take_control_invocation(self.document_history.toolbar_mut())
         {
             pending.push(intent);
         }
         if let Some(pane) = self.document_history.pane_mut() {
-            while let Some(intent) = pane.take_control_invocation() {
+            while let Some(intent) = crate::widget::controls::take_control_invocation(pane) {
                 pending.push(intent);
             }
         }
@@ -389,11 +387,17 @@ impl FrameHarness {
                     tilo_actions::ActionOutput::default(),
                 ))
             })();
-            self.document_history
-                .toolbar_mut()
-                .on_control_invocation_result(&intent.address, &result);
+            crate::widget::controls::on_control_invocation_result(
+                self.document_history.toolbar_mut(),
+                &intent.address,
+                &result,
+            );
             if let Some(pane) = self.document_history.pane_mut() {
-                pane.on_control_invocation_result(&intent.address, &result);
+                crate::widget::controls::on_control_invocation_result(
+                    pane,
+                    &intent.address,
+                    &result,
+                );
             }
             result.map_err(|error| error.to_string())?;
         }
@@ -430,11 +434,12 @@ impl FrameHarness {
                 })
             })
             .collect();
-        self.document_history
-            .toolbar_mut()
-            .refresh_control_action_availability(&allowed);
+        crate::widget::controls::refresh_control_action_availability(
+            self.document_history.toolbar_mut(),
+            &allowed,
+        );
         if let Some(pane) = self.document_history.pane_mut() {
-            pane.refresh_control_action_availability(&allowed);
+            crate::widget::controls::refresh_control_action_availability(pane, &allowed);
         }
         self.document_history
             .sync(&mut self.state.doc, &self.state.root);

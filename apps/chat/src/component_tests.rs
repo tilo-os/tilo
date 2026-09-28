@@ -19,7 +19,7 @@ fn component_projection_never_seeds_or_marks_read() {
         app.sync(&mut doc, &ROOT);
     }
     assert_eq!((doc.base_heads(), doc.pending_ops()), before);
-    assert!(!app.resources(&doc).is_empty());
+    assert!(!ui::resources::resources(&app, &doc).is_empty());
 }
 #[test]
 fn canonical_chat_repaints_only_for_document_changes_and_consumed_input() {

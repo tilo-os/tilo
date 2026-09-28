@@ -148,7 +148,7 @@ pub(crate) fn refresh_bound_controls(
             .filter(|descriptor| descriptor.contract.availability.is_available())
             .map(|descriptor| descriptor.address)
             .collect();
-        widget.refresh_control_action_availability(&allowed);
+        crate::widget::controls::refresh_control_action_availability(widget, &allowed);
         None
     };
     root.visit_components(&mut ComponentRequest {
@@ -260,7 +260,7 @@ fn visit_control_queues(root: &mut dyn Widget, drain: bool) -> BoundControlBatch
                 intent,
             ));
         }
-        while let Some(intent) = widget.take_control_invocation() {
+        while let Some(intent) = crate::widget::controls::take_control_invocation(widget) {
             invocations.push((
                 BoundActionTarget {
                     binding: binding.clone(),
@@ -298,7 +298,11 @@ pub(crate) fn notify_control_invocation_result(
     let mut visit = |_: &CallbackBinding,
                      widget: &mut dyn crate::widget::AppWidget,
                      _: &tilo_actions::ActionRegistry| {
-        widget.on_control_invocation_result(&target.address.address, result);
+        crate::widget::controls::on_control_invocation_result(
+            widget,
+            &target.address.address,
+            result,
+        );
         None
     };
     root.visit_components(&mut ComponentRequest {
@@ -597,11 +601,13 @@ pub(crate) fn publication_visibility(
         {
             let found = if let Some(binding) = &binding {
                 binding
-                    .read_document(doc, |doc, _| widget.action_directory_visibility(doc, id))
+                    .read_document(doc, |doc, _| {
+                        crate::resources::action_directory_visibility(widget, doc, id)
+                    })
                     .ok()
                     .flatten()
             } else {
-                widget.action_directory_visibility(doc, id)
+                crate::resources::action_directory_visibility(widget, doc, id)
             };
             if found.is_some() {
                 return found;
@@ -734,14 +740,18 @@ pub(crate) fn directory_witness(
             if boundary.is_some() {
                 witness.domains.push(
                     binding
-                        .read_document(doc, |doc, _| widget.action_directory_invocation_domain(doc))
+                        .read_document(doc, |doc, _| {
+                            crate::resources::action_directory_invocation_domain(widget, doc)
+                        })
                         .map_err(|error| format!("{error:?}"))?,
                 );
             }
             if boundary.is_none() {
                 witness.revisions.push(
                     binding
-                        .read_document(doc, |doc, _| widget.action_directory_revision(doc))
+                        .read_document(doc, |doc, _| {
+                            crate::resources::action_directory_revision(widget, doc)
+                        })
                         .map_err(|error| format!("{error:?}"))?,
                 );
             }
@@ -795,9 +805,9 @@ pub(crate) fn discover_cached_bound_resources(
             return;
         }
         if boundary.is_none() {
-            revisions.push(widget.action_directory_revision(doc));
+            revisions.push(crate::resources::action_directory_revision(widget, doc));
             if declarations {
-                resources.extend(widget.resources(doc));
+                resources.extend(crate::resources::resources(widget, doc));
             }
         }
         widget.for_each_child(&mut |child| {
@@ -998,12 +1008,17 @@ fn discover_bound_resources_with_filter(
                 let resources = binding.read_document(doc, |doc, _| {
                     // A delivered invocation resolves in its invoker's own tree.
                     let participant = crate::invocation_scope::current_participant();
-                    let mut resources = widget.resources_for(participant.as_ref(), doc);
+                    let mut resources =
+                        crate::resources::resources_for(widget, participant.as_ref(), doc);
                     if let Some(address) = address
                         && tilo_actions::door::resolve(&resources, address).is_none()
-                        && let Some(resource) = widget
-                            .resource_for(participant.as_ref(), doc, &address.resource)
-                            .or_else(|| provider_resource(widget, binding, address))
+                        && let Some(resource) = crate::resources::resource_for(
+                            widget,
+                            participant.as_ref(),
+                            doc,
+                            &address.resource,
+                        )
+                        .or_else(|| provider_resource(widget, binding, address))
                     {
                         resources.push(resource);
                     }
@@ -1932,7 +1947,7 @@ fn collect_component_resources(
     if widget.has_separate_document_owner() {
         return;
     }
-    resources.extend(widget.resources(doc));
+    resources.extend(crate::resources::resources(widget, doc));
     widget.for_each_child(&mut |child| collect_component_resources(child, doc, resources));
 }
 
@@ -1955,7 +1970,11 @@ pub(crate) fn collect_participant_resources(
     if widget.has_separate_document_owner() {
         return;
     }
-    resources.extend(widget.resources_for(Some(participant), doc));
+    resources.extend(crate::resources::resources_for(
+        widget,
+        Some(participant),
+        doc,
+    ));
     widget.for_each_child(&mut |child| {
         collect_participant_resources(child, doc, participant, resources);
     });
@@ -1970,7 +1989,7 @@ pub(crate) fn resolve_unbound_resource(
         return None;
     }
     let participant = crate::invocation_scope::current_participant();
-    let mut found = widget.resource_for(participant.as_ref(), doc, id);
+    let mut found = crate::resources::resource_for(widget, participant.as_ref(), doc, id);
     widget.for_each_child(&mut |child| {
         if found.is_none() {
             found = resolve_unbound_resource(child, doc, id);

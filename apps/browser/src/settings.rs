@@ -773,7 +773,7 @@ mod tests {
             let mut doc = AutoCommit::new();
             pane.sync(&mut doc, &automerge::ROOT);
             assert!(
-                pane.control_action_bindings()
+                ui::widget::controls::control_action_bindings(&pane)
                     .iter()
                     .all(|binding| !matches!(
                         binding.kind,
@@ -873,7 +873,7 @@ mod tests {
             );
 
             assert!(
-                pane.control_action_bindings()
+                ui::widget::controls::control_action_bindings(&pane)
                     .iter()
                     .all(|binding| !matches!(
                         binding.kind,

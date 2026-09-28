@@ -324,6 +324,8 @@ impl CounterCard {
     }
 }
 impl Widget for CounterCard {
+    crate::provides!(dyn crate::resources::PublishesResources);
+
     fn sync(&mut self, s: &mut AppModel, p: &ModelPath) {
         let (s, p) = crate::doc::document(s, p);
         self.button.sync(s, p);
@@ -391,6 +393,73 @@ impl Widget for CounterCard {
     fn get_rect(&self) -> KurboRect {
         KurboRect::ZERO
     }
+    fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
+        self.directory_provider
+            .clone()
+            .map(|provider| vec![Box::new(provider) as Box<dyn crate::search::SearchProvider>])
+            .unwrap_or_default()
+    }
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[COUNTER_TYPE, ASYNC_COUNTER_TYPE]
+    }
+
+    fn start_operation(
+        &mut self,
+        op: &crate::widget::ResourceOperation<'_>,
+        doc: &mut automerge::AutoCommit,
+        path: &automerge::ObjId,
+    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        let (request, scope) = op.with_custody();
+        if scope.is_none()
+            && let Some(started) = crate::widget::start_in_children(self, op, doc, path)?
+        {
+            return Ok(Some(started));
+        }
+        op.check()?;
+        if self.async_bump && request.type_id == ASYNC_COUNTER_TYPE {
+            match scope {
+                Some(scope) => self.scoped_jobs.push(scope.clone()),
+                None => self.pending_bump = Some(request.invocation),
+            }
+            return Ok(Some(crate::widget::ResourceOperationStart::Accepted));
+        }
+        Ok(
+            (request.kind == tilo_actions::OperationKind::Effect
+                && request.type_id == COUNTER_TYPE)
+                .then(|| {
+                    crate::widget::ResourceOperationStart::Completed(
+                        tilo_actions::ActionOutput::default(),
+                    )
+                }),
+        )
+    }
+    fn poll_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        _cancellation_requested: bool,
+        _doc: &automerge::AutoCommit,
+        _path: &automerge::ObjId,
+    ) -> Option<tilo_actions::InvocationUpdate> {
+        if let Some(index) = self
+            .scoped_results
+            .iter()
+            .position(|update| update.invocation() == invocation)
+        {
+            return Some(self.scoped_results.remove(index));
+        }
+        if self
+            .resource_result
+            .as_ref()
+            .is_some_and(|update| update.invocation() == invocation)
+        {
+            self.resource_result.take()
+        } else {
+            None
+        }
+    }
+}
+
+impl crate::resources::PublishesResources for CounterCard {
     fn resources(&self, doc: &automerge::AutoCommit) -> Vec<Resource> {
         self.lazy_resource
             .is_none()
@@ -471,70 +540,6 @@ impl Widget for CounterCard {
                     .with_contract(tilo_actions::ActionContract::view()),
                 )
             })
-    }
-    fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
-        self.directory_provider
-            .clone()
-            .map(|provider| vec![Box::new(provider) as Box<dyn crate::search::SearchProvider>])
-            .unwrap_or_default()
-    }
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[COUNTER_TYPE, ASYNC_COUNTER_TYPE]
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &crate::widget::ResourceOperation<'_>,
-        doc: &mut automerge::AutoCommit,
-        path: &automerge::ObjId,
-    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        let (request, scope) = op.with_custody();
-        if scope.is_none()
-            && let Some(started) = crate::widget::start_in_children(self, op, doc, path)?
-        {
-            return Ok(Some(started));
-        }
-        op.check()?;
-        if self.async_bump && request.type_id == ASYNC_COUNTER_TYPE {
-            match scope {
-                Some(scope) => self.scoped_jobs.push(scope.clone()),
-                None => self.pending_bump = Some(request.invocation),
-            }
-            return Ok(Some(crate::widget::ResourceOperationStart::Accepted));
-        }
-        Ok(
-            (request.kind == tilo_actions::OperationKind::Effect
-                && request.type_id == COUNTER_TYPE)
-                .then(|| {
-                    crate::widget::ResourceOperationStart::Completed(
-                        tilo_actions::ActionOutput::default(),
-                    )
-                }),
-        )
-    }
-    fn poll_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        _cancellation_requested: bool,
-        _doc: &automerge::AutoCommit,
-        _path: &automerge::ObjId,
-    ) -> Option<tilo_actions::InvocationUpdate> {
-        if let Some(index) = self
-            .scoped_results
-            .iter()
-            .position(|update| update.invocation() == invocation)
-        {
-            return Some(self.scoped_results.remove(index));
-        }
-        if self
-            .resource_result
-            .as_ref()
-            .is_some_and(|update| update.invocation() == invocation)
-        {
-            self.resource_result.take()
-        } else {
-            None
-        }
     }
 }
 

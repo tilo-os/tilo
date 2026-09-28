@@ -1344,9 +1344,7 @@ fn identity_fingerprint(key: &[u8; 32]) -> String {
 /// How long until `expiry`, as the unit and count the expiry messages
 /// select on.
 fn time_until(expiry: u64) -> (&'static str, u64) {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
+    let now = tilo_clock::unix_now();
     match expiry.saturating_sub(now) {
         0 => ("now", 0),
         s if s < 120 => ("seconds", s),

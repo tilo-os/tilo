@@ -3301,6 +3301,8 @@ impl PrintCentre {
 }
 
 impl Widget for PrintCentre {
+    ui::provides!(dyn ui::resources::PublishesResources);
+
     fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         if self.poll_picker() {
             self.inner.sync(state, path);
@@ -3370,6 +3372,32 @@ impl Widget for PrintCentre {
     fn needs_idle_sync(&self) -> bool {
         self.refresh.is_some() || self.picker.is_some() || self.scan_save_picker.is_some()
     }
+    fn start_operation(
+        &mut self,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
+        }
+        let Some(request) = op.unscoped() else {
+            return Ok(None);
+        };
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
+    }
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[PRINT_CENTRE_OPERATION]
+    }
+}
+
+impl ui::resources::PublishesResources for PrintCentre {
     fn resources(&self, _: &AutoCommit) -> Vec<Resource> {
         let mut root = Resource::new("print-centre", "print-centre.dashboard", "Print Centre");
         for (id, label, kind, command) in [
@@ -3439,29 +3467,6 @@ impl Widget for PrintCentre {
         }
         vec![root]
     }
-    fn start_operation(
-        &mut self,
-        op: &ui::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
-            return Ok(Some(started));
-        }
-        let Some(request) = op.unscoped() else {
-            return Ok(None);
-        };
-        Ok(self
-            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
-            .then(|| {
-                ui::widget::ResourceOperationStart::Completed(
-                    ui::tilo_actions::ActionOutput::default(),
-                )
-            }))
-    }
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[PRINT_CENTRE_OPERATION]
-    }
 }
 
 #[cfg(test)]
@@ -3474,7 +3479,7 @@ mod tests {
     fn populated_resources(doc: &AutoCommit) -> Vec<Resource> {
         let mut centre = PrintCentre::demo(DemoScenario::Dashboard);
         centre.snapshot = Some(demo_snapshot());
-        centre.resources(doc)
+        ui::resources::resources(&centre, doc)
     }
 
     // Print Centre keeps no document: it publishes only effect and view
@@ -3526,7 +3531,7 @@ mod tests {
             let mut centre = PrintCentre::demo(DemoScenario::Dashboard);
             centre.snapshot = Some(demo_snapshot());
             let mut doc = AutoCommit::new();
-            let resources = centre.resources(&doc);
+            let resources = ui::resources::resources(&centre, &doc);
             let root = resources.first().expect("Print Centre root resource");
             let action_ids = root
                 .actions

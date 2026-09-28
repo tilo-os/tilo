@@ -3129,7 +3129,11 @@ fn synth_logs(
 }
 
 impl Widget for VpnApp {
-    ui::provides!(dyn ui::undo::CommittedActions);
+    ui::provides!(
+        dyn ui::undo::CommittedActions,
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::resources::PublishesResources
+    );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[
@@ -3403,82 +3407,6 @@ impl Widget for VpnApp {
         "VpnApp"
     }
 
-    /// Publish the vault + connections resource tree to the shell's Ctrl+K
-    /// palette (see [`crate::actions`]).
-    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        let mut resources = actions::provide_resources(&self.vault);
-        if let Some(root) = resources.first_mut() {
-            for connection in &self.vault.connections {
-                let Some(resource) = root
-                    .children
-                    .iter_mut()
-                    .find(|resource| resource.id.0 == format!("vpn.connection:{}", connection.id))
-                else {
-                    continue;
-                };
-                let connecting = connection.status == ConnStatus::Connecting;
-                let locally_provisioned = self.local_credentials.contains(&connection.id)
-                    && self
-                        .local_details
-                        .get(&connection.id)
-                        .is_some_and(|details| !details.network_manager_uuid.is_empty());
-                if let Some(delete) = resource
-                    .actions
-                    .iter_mut()
-                    .find(|action| action.id == "delete")
-                {
-                    delete.contract.availability = if locally_provisioned {
-                        tilo_actions::Availability::Available
-                    } else {
-                        tilo_actions::Availability::Unavailable {
-                            code: "local_credentials_required".into(),
-                            reason: "No exact local NetworkManager profile is provisioned on this device".into(),
-                        }
-                    };
-                }
-                let (id, label) = if connection.is_connected() {
-                    ("disconnect", "Disconnect")
-                } else {
-                    ("connect", "Connect")
-                };
-                if let Ok(spec) = tilo_actions::ActionSpec::operation(
-                    id,
-                    label,
-                    tilo_actions::OperationKind::Effect,
-                    "vpn.toggle-tunnel",
-                    &connection.id.to_string(),
-                ) {
-                    resource.actions.insert(
-                        0,
-                        spec.with_contract(tilo_actions::ActionContract {
-                            availability: if connecting {
-                                tilo_actions::Availability::Unavailable {
-                                    code: "transition_in_progress".into(),
-                                    reason: "The tunnel is already changing state".into(),
-                                }
-                            } else if !locally_provisioned {
-                                tilo_actions::Availability::Unavailable {
-                                    code: "local_credentials_required".into(),
-                                    reason: "Set up this shared profile on this device before connecting".into(),
-                                }
-                            } else {
-                                tilo_actions::Availability::Available
-                            },
-                            permission: tilo_actions::PermissionRequirement::Admin,
-                            risk: tilo_actions::RiskLevel::Privileged,
-                            confirmation: tilo_actions::ConfirmationPolicy::Confirm,
-                            retry: tilo_actions::RetryPolicy::AtMostOnce,
-                            execution: tilo_actions::ExecutionMode::Background { cancellable: true },
-                            result: tilo_actions::ResultSpec::Job,
-                            ..tilo_actions::ActionContract::default()
-                        }),
-                    );
-                }
-            }
-        }
-        resources
-    }
-
     fn start_operation(
         &mut self,
         op: &ui::widget::ResourceOperation<'_>,
@@ -3549,20 +3477,6 @@ impl Widget for VpnApp {
             return self.completed_resource_toggle.take();
         }
         None
-    }
-
-    fn install_control_custody(
-        &mut self,
-        domain: &ui::ControlDomain,
-        attachment: ui::control_custody::CustodyAttachment,
-    ) {
-        let _ = self
-            .pending_control_invocation
-            .install_custody(domain, attachment);
-    }
-
-    fn take_control_invocation(&mut self) -> Option<ControlInvocation> {
-        self.pending_control_invocation.take_legacy_compatibility()
     }
 
     fn test_id(&self) -> Option<&str> {
@@ -3814,6 +3728,99 @@ impl Widget for VpnApp {
         _permissions: &ui::permissions::PermissionContext,
     ) {
         self.draw(scene, transform, text_renderer, theme, presence);
+    }
+}
+
+impl ui::resources::PublishesResources for VpnApp {
+    /// Publish the vault + connections resource tree to the shell's Ctrl+K
+    /// palette (see [`crate::actions`]).
+    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        let mut resources = actions::provide_resources(&self.vault);
+        if let Some(root) = resources.first_mut() {
+            for connection in &self.vault.connections {
+                let Some(resource) = root
+                    .children
+                    .iter_mut()
+                    .find(|resource| resource.id.0 == format!("vpn.connection:{}", connection.id))
+                else {
+                    continue;
+                };
+                let connecting = connection.status == ConnStatus::Connecting;
+                let locally_provisioned = self.local_credentials.contains(&connection.id)
+                    && self
+                        .local_details
+                        .get(&connection.id)
+                        .is_some_and(|details| !details.network_manager_uuid.is_empty());
+                if let Some(delete) = resource
+                    .actions
+                    .iter_mut()
+                    .find(|action| action.id == "delete")
+                {
+                    delete.contract.availability = if locally_provisioned {
+                        tilo_actions::Availability::Available
+                    } else {
+                        tilo_actions::Availability::Unavailable {
+                            code: "local_credentials_required".into(),
+                            reason: "No exact local NetworkManager profile is provisioned on this device".into(),
+                        }
+                    };
+                }
+                let (id, label) = if connection.is_connected() {
+                    ("disconnect", "Disconnect")
+                } else {
+                    ("connect", "Connect")
+                };
+                if let Ok(spec) = tilo_actions::ActionSpec::operation(
+                    id,
+                    label,
+                    tilo_actions::OperationKind::Effect,
+                    "vpn.toggle-tunnel",
+                    &connection.id.to_string(),
+                ) {
+                    resource.actions.insert(
+                        0,
+                        spec.with_contract(tilo_actions::ActionContract {
+                            availability: if connecting {
+                                tilo_actions::Availability::Unavailable {
+                                    code: "transition_in_progress".into(),
+                                    reason: "The tunnel is already changing state".into(),
+                                }
+                            } else if !locally_provisioned {
+                                tilo_actions::Availability::Unavailable {
+                                    code: "local_credentials_required".into(),
+                                    reason: "Set up this shared profile on this device before connecting".into(),
+                                }
+                            } else {
+                                tilo_actions::Availability::Available
+                            },
+                            permission: tilo_actions::PermissionRequirement::Admin,
+                            risk: tilo_actions::RiskLevel::Privileged,
+                            confirmation: tilo_actions::ConfirmationPolicy::Confirm,
+                            retry: tilo_actions::RetryPolicy::AtMostOnce,
+                            execution: tilo_actions::ExecutionMode::Background { cancellable: true },
+                            result: tilo_actions::ResultSpec::Job,
+                            ..tilo_actions::ActionContract::default()
+                        }),
+                    );
+                }
+            }
+        }
+        resources
+    }
+}
+
+impl ui::widget::controls::ActionControls for VpnApp {
+    fn install_control_custody(
+        &mut self,
+        domain: &ui::ControlDomain,
+        attachment: ui::control_custody::CustodyAttachment,
+    ) {
+        let _ = self
+            .pending_control_invocation
+            .install_custody(domain, attachment);
+    }
+    fn take_control_invocation(&mut self) -> Option<ControlInvocation> {
+        self.pending_control_invocation.take_legacy_compatibility()
     }
 }
 
@@ -4149,7 +4156,10 @@ mod tests {
     }
 
     impl Widget for CustodyVpnRoot {
-        ui::provides!(dyn ui::history_mode::capability::DocumentHistory);
+        ui::provides!(
+            dyn ui::history_mode::capability::DocumentHistory,
+            dyn ui::widget::controls::ActionControls
+        );
 
         fn name(&self) -> &'static str {
             "CustodyVpnRoot"
@@ -4194,11 +4204,14 @@ mod tests {
                 vec![self.child.as_mut()]
             }
         }
+    }
+
+    impl ui::widget::controls::ActionControls for CustodyVpnRoot {
         fn take_control_invocation(&mut self) -> Option<ControlInvocation> {
             if self.denied.get() {
                 None
             } else {
-                self.child.take_control_invocation()
+                ui::widget::controls::take_control_invocation(self.child.as_mut())
             }
         }
     }
@@ -4613,23 +4626,24 @@ mod tests {
         assert_eq!(app.provision_target, None);
         app.queue_import(ConnKind::OpenVpn);
 
-        let replaced =
-            Widget::take_control_invocation(&mut app).expect("OpenVPN replaces WireGuard");
+        let replaced = ui::widget::controls::take_control_invocation(&mut app)
+            .expect("OpenVPN replaces WireGuard");
         assert_eq!(
             replaced.address,
             ActionAddress::new("vpn.vault", "import-openvpn")
         );
         assert!(replaced.arguments.is_empty());
-        assert!(Widget::take_control_invocation(&mut app).is_none());
+        assert!(ui::widget::controls::take_control_invocation(&mut app).is_none());
 
         app.queue_import(ConnKind::WireGuard);
-        let fresh = Widget::take_control_invocation(&mut app).expect("fresh post-drain import");
+        let fresh = ui::widget::controls::take_control_invocation(&mut app)
+            .expect("fresh post-drain import");
         assert_eq!(
             fresh.address,
             ActionAddress::new("vpn.vault", "import-wireguard")
         );
         assert!(fresh.arguments.is_empty());
-        assert!(Widget::take_control_invocation(&mut app).is_none());
+        assert!(ui::widget::controls::take_control_invocation(&mut app).is_none());
     }
 
     fn cursor_at(p: Point) -> WindowEvent {
@@ -4822,7 +4836,7 @@ mod tests {
                 Some(tilo_actions::InvocationUpdate::Cancelled { .. })
             ));
 
-            let action = Widget::resources(&app, &doc)
+            let action = ui::resources::resources(&app, &doc)
                 .into_iter()
                 .flat_map(|root| root.children)
                 .flat_map(|connection| connection.actions)
@@ -4931,7 +4945,7 @@ mod tests {
             let (mut app, doc) = demo_with_doc();
             app.seed_shot_state("unprovisioned");
             let id = app.vault.selected.expect("selected remote profile");
-            let resources = Widget::resources(&app, &doc);
+            let resources = ui::resources::resources(&app, &doc);
             let profile = resources[0]
                 .children
                 .iter()

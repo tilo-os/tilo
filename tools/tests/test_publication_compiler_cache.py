@@ -83,14 +83,15 @@ class ImagePublicationTests(unittest.TestCase):
         self.bind = self.steps["Bind the runner compiler cache"]
 
     def test_image_publication_binds_no_cache_while_integration_builds_keep_it(self):
-        with self.subTest(phase='publication binds no cache even when the runner offers one'):
-            values, text = run_script(self.bind, {"PUBLISH": "true", **runner_cache()})
-            self.assertEqual(values["mode"], "off")
+        with self.subTest(phase='publication compiles through the shared cache without requiring it'):
+            values, _ = run_script(self.bind, {"PUBLISH": "true", **runner_cache()})
+            self.assertEqual(values["mode"], "shared")
             self.assertEqual(values["required"], "0")
-            self.assertEqual(values["secret-envs"], "")
-            self.assertEqual(values["bucket"], "")
-            self.assertEqual(values["endpoint"], "")
-            self.assertNotIn("runner-", text)
+            self.assertEqual(values["bucket"], "runner-sccache_bucket")
+            self.assertEqual(values["secret-envs"].splitlines(), [
+                "aws_access_key_id=AWS_ACCESS_KEY_ID",
+                "aws_secret_access_key=AWS_SECRET_ACCESS_KEY",
+            ])
         with self.subTest(phase='publication uses only its own role scoped cache'):
             fake = ('#!/bin/sh\n[ "$1" = arn:aws:iam::123456789012:role/pub ] || exit 9\n'
                     'echo \'{"AccessKeyId":"ASIAPUB","SecretAccessKey":"s3cr3t","SessionToken":"tok"}\'\n')

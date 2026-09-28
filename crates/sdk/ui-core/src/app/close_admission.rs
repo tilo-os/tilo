@@ -266,17 +266,20 @@ impl App {
     }
 
     pub(super) fn service_close_admission(&mut self) {
-        while let Some(intent) = self
-            .close_admission
-            .dialog
-            .as_mut()
-            .and_then(|dialog| dialog.take_control_invocation())
+        while let Some(intent) =
+            self.close_admission.dialog.as_mut().and_then(|dialog| {
+                crate::widget::controls::take_control_invocation(dialog.as_mut())
+            })
         {
             let result = self
                 .invoke_history_address_local(&intent.address, None)
                 .unwrap_or_else(|| Err(tilo_actions::DoorError::Unknown(intent.address.clone())));
             if let Some(dialog) = self.close_admission.dialog.as_mut() {
-                dialog.on_control_invocation_result(&intent.address, &result);
+                crate::widget::controls::on_control_invocation_result(
+                    dialog.as_mut(),
+                    &intent.address,
+                    &result,
+                );
             }
         }
         while let Some(command) = self.close_admission.take_command() {
@@ -465,6 +468,8 @@ mod tests {
         save_allowed: bool,
     }
     impl Widget for OwnedRoot {
+        crate::provides!(dyn crate::resources::PublishesResources);
+
         fn sync(&mut self, doc: &mut crate::widget::AppModel, path: &crate::widget::ModelPath) {
             self.text.sync(doc, path);
         }
@@ -536,15 +541,6 @@ mod tests {
                 Vec::new()
             }
         }
-        fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
-            vec![crate::widget::resource_actions::resource(
-                "test.quit",
-                "Draft",
-                "save",
-                "Save",
-                false,
-            )]
-        }
         fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
             &[crate::widget::resource_actions::OPERATION_TYPE]
         }
@@ -567,6 +563,18 @@ mod tests {
             Ok(Some(crate::widget::ResourceOperationStart::Completed(
                 tilo_actions::ActionOutput::default(),
             )))
+        }
+    }
+
+    impl crate::resources::PublishesResources for OwnedRoot {
+        fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
+            vec![crate::widget::resource_actions::resource(
+                "test.quit",
+                "Draft",
+                "save",
+                "Save",
+                false,
+            )]
         }
     }
     #[test]
@@ -752,7 +760,7 @@ mod tests {
         let document = app.root_widget.unsaved_documents(&app.state.doc)[0].clone();
         assert!(
             tilo_actions::door::resolve(
-                &app.root_widget.resources(&app.state.doc),
+                &crate::resources::resources(app.root_widget.as_ref(), &app.state.doc),
                 &document.save,
             )
             .is_some(),

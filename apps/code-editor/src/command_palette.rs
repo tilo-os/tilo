@@ -267,11 +267,11 @@ impl CommandPalette {
     }
 
     pub fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
-        self.shared.take_control_invocation()
+        ui::widget::controls::take_control_invocation(&mut self.shared)
     }
 
     pub fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
-        self.shared.control_action_bindings()
+        ui::widget::controls::control_action_bindings(&self.shared)
     }
 
     pub fn seed_query(&mut self, query: &str) {

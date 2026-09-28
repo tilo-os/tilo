@@ -2642,7 +2642,10 @@ fn first_change(model: &RepoModel) -> Option<(ChangeArea, usize)> {
 }
 
 impl Widget for GitClientApp {
-    ui::provides!(dyn ui::undo::CommittedActions);
+    ui::provides!(
+        dyn ui::undo::CommittedActions,
+        dyn ui::resources::PublishesResources
+    );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::GIT_CLIENT_OPERATION_TYPE]
@@ -2926,13 +2929,6 @@ impl Widget for GitClientApp {
         true
     }
 
-    /// Publish the open repository and its view-preference actions to the
-    /// shell's Ctrl+K palette (delegates to the `ResourceProvider` impl in
-    /// [`crate::actions`]). Empty when no repository is open.
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
-    }
-
     fn start_operation(
         &mut self,
         op: &ui::widget::ResourceOperation<'_>,
@@ -3033,6 +3029,15 @@ impl Widget for GitClientApp {
         _permissions: &PermissionContext,
     ) {
         self.draw(scene, transform, tr, theme, presence);
+    }
+}
+
+impl ui::resources::PublishesResources for GitClientApp {
+    /// Publish the open repository and its view-preference actions to the
+    /// shell's Ctrl+K palette (delegates to the `ResourceProvider` impl in
+    /// [`crate::actions`]). Empty when no repository is open.
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
     }
 }
 
@@ -3753,7 +3758,7 @@ mod tests {
         assert_eq!(Settings::read_only(&doc).diff_layout, DiffLayout::Unified);
 
         // The action Ctrl+K would dispatch right now: flip unified → split.
-        let resources = Widget::resources(&app, &doc);
+        let resources = ui::resources::resources(&app, &doc);
         let spec = resources[0]
             .actions
             .iter()

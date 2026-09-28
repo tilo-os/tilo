@@ -32,7 +32,6 @@
 //! in `apply_change`.
 
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full, LengthLimitError, Limited};
@@ -330,10 +329,7 @@ async fn handle_post_application(
         ));
     };
     blocking(state, move |state| {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
+        let now = tilo_clock::unix_now();
         match applications::submit(
             &state.inner.storage,
             application,
@@ -450,10 +446,7 @@ fn apply_moderation(
         .storage
         .load_allowlist()
         .map_err(HandlerError::Storage)?;
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
+    let now = tilo_clock::unix_now();
     match state.inner.moderation_api.apply(request, now, &allowlist) {
         Ok(case) => Ok(json_response(StatusCode::OK, &case)),
         Err(error) => Ok(moderation_error_response(&error)),
@@ -646,10 +639,7 @@ fn handle_get_pending(
             "a pending read names its publisher key",
         ));
     };
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
+    let now = tilo_clock::unix_now();
     let verified = read
         .signed_at
         .as_deref()
@@ -685,10 +675,7 @@ fn snapshot_is_current(
     state: &AppState,
     snapshot: &registry_types::SignedRegistrySnapshot,
 ) -> bool {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
+    let now = tilo_clock::unix_now();
     if registry_types::verify_snapshot(snapshot, &state.identity().owner_pubkey_hex, now).is_err() {
         return false;
     }
@@ -794,10 +781,7 @@ fn apply_change(
             ),
         ));
     }
-    let submitted_at = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
+    let submitted_at = tilo_clock::unix_now();
     match state.inner.moderation.submit(change, submitted_at) {
         Ok(submission) => Ok(json_response(
             StatusCode::ACCEPTED,

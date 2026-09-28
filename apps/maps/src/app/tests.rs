@@ -15,8 +15,7 @@ fn resource_operations_are_window_local_brokered_and_unique() {
         app.online = true;
         let mut state = ui::State::new();
         app.sync(&mut state.doc, &state.root);
-        let locate = app
-            .resources(&state.doc)
+        let locate = ui::resources::resources(&app, &state.doc)
             .into_iter()
             .flat_map(|resource| resource.actions)
             .find(|action| action.id == "locate")
@@ -119,7 +118,7 @@ fn resource_operations_are_window_local_brokered_and_unique() {
         let mut doc = AutoCommit::new();
         MapsDoc::save(&mut doc, &a.model);
 
-        let root = Widget::resources(&a, &doc)
+        let root = ui::resources::resources(&a, &doc)
             .into_iter()
             .next()
             .expect("maps root");
@@ -154,7 +153,7 @@ fn resource_operations_are_window_local_brokered_and_unique() {
                 .any(|action| action.id == "directions")
         );
 
-        let lazy = Widget::resource(&a, &doc, "maps.place:lazy-saved")
+        let lazy = ui::resources::resource(&a, &doc, "maps.place:lazy-saved")
             .expect("exact saved-place resolver");
         assert!(lazy.actions.iter().any(|action| action.id == "open"));
         assert!(lazy.actions.iter().any(|action| action.id == "directions"));

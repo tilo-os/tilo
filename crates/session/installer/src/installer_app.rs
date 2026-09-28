@@ -3946,6 +3946,8 @@ fn args_none() -> serde_json::Map<String, serde_json::Value> {
 }
 
 impl Widget for InstallerApp {
+    ui::provides!(dyn ui::resources::PublishesResources);
+
     fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
         let (state, root) = ui::doc::document(state, root);
         if !self.bootstrap_done {
@@ -4134,10 +4136,6 @@ impl Widget for InstallerApp {
         }
     }
 
-    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        self.publish()
-    }
-
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         op::HANDLERS
     }
@@ -4213,6 +4211,12 @@ impl Widget for InstallerApp {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+}
+
+impl ui::resources::PublishesResources for InstallerApp {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        self.publish()
     }
 }
 

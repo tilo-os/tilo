@@ -225,6 +225,8 @@ mod tests {
 }
 
 impl Widget for ActionButton {
+    ui::provides!(dyn ui::widget::controls::ActionControls);
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -461,16 +463,6 @@ impl Widget for ActionButton {
         !self.disabled
     }
 
-    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
-        vec![ui::widget::ControlBindingMetadata {
-            control_id: self
-                .test_id()
-                .unwrap_or(self.click_path.as_str())
-                .to_string(),
-            kind: ui::widget::ControlBindingKind::CollaborativeDocument(self.click_path.clone()),
-        }]
-    }
-
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
@@ -510,5 +502,17 @@ impl Widget for ActionButton {
                 })
                 .with_action_target(control_id),
         )
+    }
+}
+
+impl ui::widget::controls::ActionControls for ActionButton {
+    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
+        vec![ui::widget::ControlBindingMetadata {
+            control_id: self
+                .test_id()
+                .unwrap_or(self.click_path.as_str())
+                .to_string(),
+            kind: ui::widget::ControlBindingKind::CollaborativeDocument(self.click_path.clone()),
+        }]
     }
 }

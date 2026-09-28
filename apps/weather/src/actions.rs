@@ -168,7 +168,7 @@ mod tests {
         let mut app = crate::app::WeatherApp::new();
         let mut doc = doc.clone();
         ui::widget::Widget::sync(&mut app, &mut doc, &automerge::ROOT);
-        ui::widget::Widget::resources(&app, &doc)
+        ui::resources::resources(&app, &doc)
     }
 
     fn auckland() -> SavedLocation {
