@@ -53,7 +53,8 @@ static INSTALLED: [CheckedCanonicalApplication; 4] = [
 ];
 
 fn initialize_chat(doc: &mut AutoCommit) -> Result<(), String> {
-    chat::doc::ChatDoc::seed_starter(doc, "native", "Native workspace peer", "NW");
+    // No person is invented for the room: each member's Chat adds its own.
+    chat::doc::ChatDoc::seed_shared(doc);
     Ok(())
 }
 

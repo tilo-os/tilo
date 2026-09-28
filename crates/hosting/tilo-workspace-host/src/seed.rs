@@ -114,7 +114,7 @@ pub(crate) fn seed(
         reserved
             .initialize(|doc| {
                 if checkout.id.is_package_primary() {
-                    chat::doc::ChatDoc::seed_starter(doc, "native", "Native workspace peer", "NW");
+                    chat::doc::ChatDoc::seed_shared(doc);
                     Ok(())
                 } else {
                     word_processor::initialize_empty_document(doc)

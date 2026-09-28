@@ -431,8 +431,19 @@ impl ChatDoc {
         if Self::is_seeded(doc) {
             return;
         }
-        let _ = tilo_automerge::ApplyIncoming::apply_incoming(doc, Self::starter_scaffold());
+        Self::seed_shared(doc);
         Self::put_user(doc, me_id, me_name, me_initials, 0, Presence::Online);
+    }
+
+    /// The starter workspace alone, with nobody in it: what a host that
+    /// is no member's own Chat lays out for a new room. Each member's Chat
+    /// adds its own person entry when it joins. Idempotent like
+    /// [`Self::seed_starter`], and the same shared change.
+    pub fn seed_shared(doc: &mut AutoCommit) {
+        if Self::is_seeded(doc) {
+            return;
+        }
+        let _ = tilo_automerge::ApplyIncoming::apply_incoming(doc, Self::starter_scaffold());
     }
 
     /// The starter workspace as the one change every member writes: a fixed
