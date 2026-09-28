@@ -45,6 +45,7 @@ pub mod doc;
 pub mod local;
 pub mod model;
 pub mod net;
+pub mod resource;
 
 pub use app::VpnApp;
 pub use model::{ConnKind, ConnStatus, Connection, Vault};
@@ -88,3 +89,4 @@ pub fn app_root_demo_state(state: &str) -> Box<dyn Widget> {
     app.seed_shot_state(state);
     Box::new(app)
 }
+pub use resource::{Vpn, VpnShell, launch_spec};

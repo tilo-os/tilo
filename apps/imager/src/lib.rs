@@ -117,6 +117,7 @@ pub mod probe;
 pub mod profile;
 pub mod profile_cli;
 pub mod release;
+pub mod resource;
 pub mod setup;
 pub mod write;
 
@@ -321,3 +322,4 @@ fn seed_scenario_common(doc: &mut automerge::AutoCommit, scenario: &str) {
         ImagerDoc::set_source(doc, Some(&demo_iso_source()));
     }
 }
+pub use resource::{Imager, ImagerShell};

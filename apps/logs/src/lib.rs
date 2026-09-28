@@ -53,6 +53,7 @@ pub mod framework_history;
 mod framework_history_tests;
 pub mod journal;
 pub mod model;
+pub mod resource;
 pub mod responsive;
 pub mod theme_ext;
 
@@ -83,3 +84,4 @@ pub fn app_root() -> Box<dyn Widget> {
         Err(error) => Box::new(LogsApp::new_with_source_error(Vec::new(), true, error)),
     }
 }
+pub use resource::{Logs, LogsShell};

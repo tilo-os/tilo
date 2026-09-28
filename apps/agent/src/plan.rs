@@ -12,7 +12,7 @@
 
 use std::collections::BTreeMap;
 
-use qdoc::snapshot::{AttrVal, BlockView, DocSnapshot};
+use tilo_doc::snapshot::{AttrVal, BlockView, DocSnapshot};
 
 use crate::surface::{self, NoMatch, Offer};
 
@@ -627,10 +627,10 @@ mod tests {
     /// actually exports.
     fn surveyed() -> Vec<Offer> {
         let mut doc = automerge::AutoCommit::new();
-        let c = qdoc::model::init(&mut doc, &automerge::ROOT);
-        let mut ids = qdoc::model::seeded_id_gen(&doc, &c);
+        let c = tilo_doc::model::init(&mut doc, &automerge::ROOT);
+        let mut ids = tilo_doc::model::seeded_id_gen(&doc, &c);
         {
-            let mut dm = qdoc::DocMut {
+            let mut dm = tilo_doc::DocMut {
                 doc: &mut doc,
                 c: &c,
                 ids: &mut ids,

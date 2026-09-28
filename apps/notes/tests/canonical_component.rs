@@ -248,9 +248,9 @@ fn canonical_component_status_and_binding_hydrate_without_touching_the_document(
                 edit_body(
                     &mut doc,
                     f.child,
-                    qdoc_rich_text::RichTextAction::SetMark {
-                        region: qdoc_rich_text::action::RegionKind::Body,
-                        spans: vec![qdoc_rich_text::action::Span {
+                    tilo_document::RichTextAction::SetMark {
+                        region: tilo_document::action::RegionKind::Body,
+                        spans: vec![tilo_document::action::Span {
                             block: block.clone(),
                             start: chars(span.start),
                             end: chars(span.end),

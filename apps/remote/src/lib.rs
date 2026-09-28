@@ -65,6 +65,7 @@ pub mod actions;
 pub mod app;
 pub mod doc;
 pub mod model;
+pub mod resource;
 pub mod rfb;
 pub mod session;
 pub mod ssh;
@@ -107,3 +108,4 @@ pub fn app_root_for_shot_demo(scenario: &str) -> Box<dyn Widget> {
     app.dev_set_screen(scenario);
     Box::new(app)
 }
+pub use resource::{Remote, RemoteShell, launch_spec};

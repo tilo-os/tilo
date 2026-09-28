@@ -14,8 +14,8 @@
 use std::rc::Rc;
 
 use automerge::AutoCommit;
-use qdoc_rich_text::{RichText, RichTextAction, RichTextState};
 use tilo_actions::{ActionContext, ActionError};
+use tilo_document::{RichText, RichTextAction, RichTextState};
 use ui::framework::{Dispatcher, Live, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
 use ui::tilo_resource::{Demand, Reader};
 use ui::widget::Element;
@@ -37,6 +37,12 @@ impl ResourceApp for WordProcessorApp {
     }
 
     /// The document's first heading, as the palette and history name it.
+    fn local_operations() -> Vec<tilo_actions::ActionSpec> {
+        // History is the framework's own surface. The editor's version strip
+        // is not offered beside it.
+        crate::actions::view_operations(false)
+    }
+
     fn label(state: &RichTextState) -> String {
         state
             .headings()

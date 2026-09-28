@@ -409,6 +409,15 @@ pub struct MailApp {
 }
 
 impl MailApp {
+    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Mail>,
+    ) {
+        self.shared.borrow_mut().actions.attach(dispatcher.clone());
+        self.compose.attach_framework(dispatcher);
+    }
+
     /// The hermetic constructor used by `--shots` and tests: the bundled
     /// sample corpus, no engine, deterministic "now".
     pub fn new_sample() -> Self {
@@ -1423,10 +1432,7 @@ impl MailApp {
         {
             let mut st = self.shared.borrow_mut();
             st.mailbox.insert(msg);
-            // The durable draft action already carries the user-authored
-            // content. This is only a local Drafts projection, so register its
-            // target without manufacturing flag writes outside an action.
-            MailDoc::register_message(doc, &id.to_string());
+            st.register_message_target(doc, &id.to_string());
         }
         id
     }
@@ -2367,8 +2373,8 @@ impl MailApp {
         messages: Vec<Message>,
     ) {
         let count = messages.len();
+        st.ingest_messages(doc, &messages);
         for message in messages {
-            MailDoc::ingest_message_flags(doc, &message);
             st.mailbox.insert(message);
         }
         if st.folder == folder && st.selected.is_none() {
@@ -2426,7 +2432,7 @@ impl MailApp {
                 .order
                 .retain(|message_id| *message_id != draft_id);
         }
-        MailDoc::ingest_message_flags(doc, &pending.message);
+        st.ingest_messages(doc, std::slice::from_ref(&pending.message));
         st.mailbox.insert(pending.message);
         self.editing_draft = None;
         self.compose.close();
@@ -2570,13 +2576,15 @@ impl MailApp {
     /// external ingestion, not a user mutation: it never writes flags from a
     /// presentation cache into the collaborative document.
     fn register_hydrated_messages(&self, doc: &mut AutoCommit) {
-        let st = self.shared.borrow();
-        let ids: Vec<_> = st.mailbox.messages.keys().copied().collect();
-        for id in ids {
-            if let Some(message) = st.mailbox.get(id) {
-                MailDoc::ingest_message_flags(doc, message);
-            }
-        }
+        let messages: Vec<_> = self
+            .shared
+            .borrow()
+            .mailbox
+            .messages
+            .values()
+            .cloned()
+            .collect();
+        self.shared.borrow_mut().ingest_messages(doc, &messages);
     }
 
     /// Flush an active-account change to the device-local shared account store.
@@ -4910,10 +4918,10 @@ impl Widget for MailApp {
 
     /// Publish the open mailbox + its folders/messages so the host's Ctrl+K
     /// action palette scopes to them. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
+    /// [``]() impl in
     /// [`crate::actions`].
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+        Self::publish_resources(self, doc)
     }
 
     fn action_directory_resource_page(
@@ -4933,7 +4941,7 @@ impl Widget for MailApp {
     }
 
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
+        Self::publish_resource(self, doc, id)
     }
 
     fn invoke_resource_operation(

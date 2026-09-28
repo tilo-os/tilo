@@ -1182,8 +1182,8 @@ mod publication_tests {
         let record = "tab:0000000000000001";
         let mut doc = automerge::AutoCommit::load(&peer.document(app, record).unwrap()).unwrap();
         let heads = doc.base_heads();
-        let model = qdoc::model::open(&doc, &automerge::ROOT).unwrap();
-        let block = qdoc::model::blocks_in_order(&doc, &model)[0].clone();
+        let model = tilo_doc::model::open(&doc, &automerge::ROOT).unwrap();
+        let block = tilo_doc::model::blocks_in_order(&doc, &model)[0].clone();
         word_processor::actions::RichTextAction::SpliceText {
             region: word_processor::actions::RegionKind::Body,
             block,
@@ -1291,8 +1291,8 @@ mod publication_tests {
         let record = "tab:0000000000000001";
         let mut doc = automerge::AutoCommit::load(&peer.document(app, record).unwrap()).unwrap();
         let before = doc.base_heads();
-        let model = qdoc::model::open(&doc, &automerge::ROOT).unwrap();
-        let block = qdoc::model::blocks_in_order(&doc, &model)[0].clone();
+        let model = tilo_doc::model::open(&doc, &automerge::ROOT).unwrap();
+        let block = tilo_doc::model::blocks_in_order(&doc, &model)[0].clone();
         word_processor::actions::RichTextAction::SpliceText {
             region: word_processor::actions::RegionKind::Body,
             block,

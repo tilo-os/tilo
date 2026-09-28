@@ -62,8 +62,8 @@ fn current_document(owner: &RuntimeOwner) -> Vec<u8> {
 }
 
 fn splice(document: &mut ui::automerge::AutoCommit, text: &str) {
-    let model = qdoc::model::open(document, &ui::automerge::ROOT).unwrap();
-    let block = qdoc::model::blocks_in_order(document, &model)[0].clone();
+    let model = tilo_doc::model::open(document, &ui::automerge::ROOT).unwrap();
+    let block = tilo_doc::model::blocks_in_order(document, &model)[0].clone();
     word_processor::actions::RichTextAction::SpliceText {
         region: word_processor::actions::RegionKind::Body,
         block,

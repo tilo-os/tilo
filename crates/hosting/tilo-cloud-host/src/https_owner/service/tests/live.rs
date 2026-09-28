@@ -272,8 +272,8 @@ fn delta_by(root: &Path, author: &SigningKey, text: &str) -> Vec<u8> {
     doc.set_actor(automerge::ActorId::from(
         author.verifying_key().to_bytes().to_vec(),
     ));
-    let model = qdoc::model::open(&doc, &automerge::ROOT).unwrap();
-    let block = qdoc::model::blocks_in_order(&doc, &model)[0].clone();
+    let model = tilo_doc::model::open(&doc, &automerge::ROOT).unwrap();
+    let block = tilo_doc::model::blocks_in_order(&doc, &model)[0].clone();
     let heads = doc.get_heads();
     word_processor::actions::RichTextAction::SpliceText {
         region: word_processor::actions::RegionKind::Body,

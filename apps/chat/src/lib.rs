@@ -54,6 +54,7 @@
 
 pub mod actions;
 pub mod app;
+pub mod resource;
 pub mod semantic_read;
 // Native device-free diagnostics reuse the privileged service codec.
 #[cfg(all(feature = "live-media", not(target_arch = "wasm32")))]
@@ -126,3 +127,4 @@ pub mod component;
 pub use component::definition;
 
 mod local_view;
+pub use resource::{Chat, ChatShell};

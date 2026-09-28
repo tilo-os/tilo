@@ -27,18 +27,22 @@ use crate::scan::{Entry, ScanCancellation, ScanResult};
 use ui::format::bytes_si;
 
 const TOP_H: f64 = 78.0;
-const OPERATION_TYPE: &str = "disk-usage.operation";
+pub(crate) const OPERATION_TYPE: &str = "disk-usage.operation";
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum DiskUsageOperation {
+pub(crate) enum DiskUsageOperation {
     Analyze { path: PathBuf },
     Choose,
     Back,
     Home,
 }
 
-fn operation_action(id: &str, label: &str, operation: &DiskUsageOperation) -> Option<ActionSpec> {
+pub(crate) fn operation_action(
+    id: &str,
+    label: &str,
+    operation: &DiskUsageOperation,
+) -> Option<ActionSpec> {
     let mut action =
         ActionSpec::operation(id, label, OperationKind::Effect, OPERATION_TYPE, operation).ok()?;
     action.contract = ActionContract {

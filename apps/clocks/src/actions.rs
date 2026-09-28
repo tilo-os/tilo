@@ -2,7 +2,7 @@
 use crate::ClockState;
 use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
-use tilo_actions::{ActionSpec, OperationKind, Resource, ResourcePresentation, ResourceProvider};
+use tilo_actions::{ActionSpec, OperationKind, Resource, ResourcePresentation};
 use uuid::Uuid;
 
 pub const OPERATION_TYPE: &str = "clocks.operation";
@@ -246,8 +246,9 @@ pub fn provide_resources(state: &ClockState) -> Vec<Resource> {
 /// Empty-state provider retained for lightweight contract consumers. The app
 /// itself uses [`provide_resources`] with its current state.
 pub struct ClockResources;
-impl ResourceProvider for ClockResources {
-    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
+// Inherent resource publication (was ResourceProvider)
+impl ClockResources {
+    pub fn publish_resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
         provide_resources(&ClockState::default())
     }
 }

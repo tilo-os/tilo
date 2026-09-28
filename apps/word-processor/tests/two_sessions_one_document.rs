@@ -148,8 +148,8 @@ fn sessions_keep_their_documents_and_share_content() {
             sync_full_state(&mut theirs, &mut mine);
 
             theirs_wp.sync(&mut theirs.doc, &theirs.root);
-            let containers = qdoc::model::open(&theirs.doc, &theirs.root).expect("qdoc schema");
-            let snap = qdoc::model::materialize(&theirs.doc, &containers);
+            let containers = tilo_doc::model::open(&theirs.doc, &theirs.root).expect("qdoc schema");
+            let snap = tilo_doc::model::materialize(&theirs.doc, &containers);
             let image = snap
                 .blocks
                 .iter()
@@ -161,7 +161,7 @@ fn sessions_keep_their_documents_and_share_content() {
                     )
                 });
             let hash = match image.attrs.get("blob") {
-                Some(qdoc::AttrVal::Str(h)) => h.clone(),
+                Some(tilo_doc::AttrVal::Str(h)) => h.clone(),
                 other => panic!("round {round}: image block carries no blob hash: {other:?}"),
             };
             assert!(
@@ -197,7 +197,7 @@ fn sessions_keep_their_documents_and_share_content() {
         sync_full_state(&mut mine, &mut theirs);
 
         assert_eq!(
-            qdoc::model::shadowed_containers(&mine.doc, &mine.root),
+            tilo_doc::model::shadowed_containers(&mine.doc, &mine.root),
             Vec::<String>::new(),
             "every schema container is reached through one object after a merge"
         );

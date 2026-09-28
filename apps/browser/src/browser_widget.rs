@@ -496,6 +496,9 @@ pub struct BrowserWidget {
     bootstrap_done: bool,
     /// `--shots` mode: no network, no filter loader, deterministic page.
     headless: bool,
+    /// Framework-hosted surfaces leave the palette tree to
+    /// `tilo_resource::publish`; standalone keeps the contextual builder.
+    framework_hosted: bool,
     initial_url: String,
     session_url: String,
     session_first_commit: bool,
@@ -923,6 +926,7 @@ impl BrowserWidget {
             composed: None,
             bootstrap_done: false,
             headless,
+            framework_hosted: false,
             address: ui::LocalState::new(initial_url.clone()),
             address_navigation_value: None,
             daily: crate::daily_controls::DailyControls::default(),
@@ -1027,6 +1031,12 @@ impl BrowserWidget {
             motion_reduced: false,
             pending_controls: std::collections::VecDeque::new(),
         }
+    }
+
+    /// Mark this browser as a framework-hosted surface so
+    /// [`Widget::resources`] defers to `tilo_resource::publish`.
+    pub(crate) fn set_framework_hosted(&mut self, hosted: bool) {
+        self.framework_hosted = hosted;
     }
 
     /// Test hook: pin a suggestion list into view (bypasses focus/query)
@@ -4227,6 +4237,9 @@ impl Widget for BrowserWidget {
         reason = "Resource definitions stay together so their action contracts remain discoverable."
     )]
     fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+        if self.framework_hosted {
+            return Vec::new();
+        }
         const MATERIALIZED_LIMIT: usize = 100;
         let operation =
             |id: &str, label: &str, kind: OperationKind, operation: BrowserOperation| {

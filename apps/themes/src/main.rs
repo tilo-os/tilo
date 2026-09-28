@@ -1,4 +1,7 @@
 //! Themes — standard Tilo application entry point.
+//!
+//! The live window runs on the app framework (`ThemesShell`). `--shots` keeps
+//! the standalone capture root.
 
 #![allow(
     clippy::arithmetic_side_effects,
@@ -24,6 +27,26 @@
 use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 use ui::widget::Widget;
 
+#[cfg(feature = "thin")]
+extern crate runtime_dylib;
+
+pub fn main() {
+    if standalone_capture() {
+        ui::launch::run_or_exit(&shot_launch_spec());
+        return;
+    }
+    ui::framework::run::<themes::ThemesShell>();
+}
+
+fn standalone_capture() -> bool {
+    std::env::args().any(|arg| {
+        arg == "--shots"
+            || arg.starts_with("--shots=")
+            || arg == "--responsive-matrix"
+            || arg.starts_with("--responsive-matrix=")
+    })
+}
+
 // The signature is fixed by `ui::launch::ShotFactory`: other apps' shot roots
 // may fail, so the alias is fallible even where this one isn't.
 #[allow(
@@ -35,14 +58,7 @@ fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
     Ok(themes::app_root_for_shot(width))
 }
 
-#[cfg(feature = "thin")]
-extern crate runtime_dylib;
-
-pub fn main() {
-    ui::launch::run_or_exit(&launch_spec());
-}
-
-fn launch_spec() -> LaunchSpec {
+fn shot_launch_spec() -> LaunchSpec {
     LaunchSpec::new("so.tilo.themes", themes::app_root)
         .history(&themes::framework_history::HISTORY)
         .shot_root(shot_root)
@@ -51,5 +67,5 @@ fn launch_spec() -> LaunchSpec {
 
 #[test]
 fn production_launch_registers_history() {
-    launch_spec().validate_history_declaration().unwrap();
+    shot_launch_spec().validate_history_declaration().unwrap();
 }

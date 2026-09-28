@@ -24,8 +24,8 @@ use serde::{Deserialize, Serialize};
 
 use tilo_actions::{
     Action, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
-    EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource,
-    ResourceProvider, ResultSpec, RetryPolicy,
+    EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource, ResultSpec,
+    RetryPolicy,
 };
 
 use crate::model::BufferEdit;
@@ -427,8 +427,9 @@ pub fn provide_resources(ctx: &HexResourceCtx) -> Vec<Resource> {
     vec![root]
 }
 
-impl ResourceProvider for crate::view::HexView {
-    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
+// Inherent resource publication (was ResourceProvider)
+impl crate::view::HexView {
+    pub fn publish_resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
         provide_resources(&self.hex_resource_ctx())
     }
 }
@@ -470,7 +471,7 @@ mod tests {
     ui::action_contract_tests! {
         seed: open_view(&[0x00, 0x11, 0x22, 0x33]).1,
         registry: ActionRegistry::new(),
-        resources: |doc| ResourceProvider::resources(&view_on_second_byte(), doc),
+        resources: |doc| view_on_second_byte().publish_resources(doc),
         palette: ["Insert byte", "Overwrite byte", "Delete byte"],
     }
 

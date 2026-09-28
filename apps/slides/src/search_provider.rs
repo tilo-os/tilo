@@ -334,7 +334,7 @@ mod tests {
                 .find(|hit| hit.action_address() == Some(actions::open_slide_address(slide_id)))
                 .unwrap();
             let address = hit.action_address().unwrap();
-            let resource = app.resource(&doc, &address.resource).unwrap();
+            let resource = app.publish_resource(&doc, &address.resource).unwrap();
             let encoded = tilo_actions::door::encode(&[resource], &address, None).unwrap();
             assert!(
                 app.invoke_resource_operation(

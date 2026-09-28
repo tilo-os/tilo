@@ -107,23 +107,44 @@ fn install_locales() -> Result<(), ui::i18n::I18nError> {
     )
 }
 
+fn wants_standalone() -> bool {
+    std::env::args().any(|arg| {
+        [
+            "--shots",
+            "--responsive-matrix",
+            "--native-audit",
+            "--headless",
+            "--shots-narrow",
+            "--stage-commit",
+        ]
+        .iter()
+        .any(|mode| arg == *mode || arg.starts_with(&format!("{mode}=")))
+    })
+}
+
+fn shot_spec() -> LaunchSpec {
+    LaunchSpec::new("so.tilo.git-client", git_client::app_root)
+        .shot_root(shot_root)
+        .shot_viewport(|_| WIDE_VIEWPORT)
+        .scenarios(git_client::SCENARIOS)
+        .allowed_live_options(&["--stage-commit", "--shots-narrow"])
+        .command_handler(command)
+        .configure_app(|app| {
+            app.set_window_title(Some("Git Client".into()));
+            git_client::actions::register(app.action_registry_mut());
+        })
+}
+
 pub fn main() {
     if let Err(error) = install_locales() {
         eprintln!("Git Client locale initialization failed: {error}");
         std::process::exit(1);
     }
-    ui::launch::run_or_exit(
-        &LaunchSpec::new("so.tilo.git-client", git_client::app_root)
-            .shot_root(shot_root)
-            .shot_viewport(|_| WIDE_VIEWPORT)
-            .scenarios(git_client::SCENARIOS)
-            .allowed_live_options(&["--stage-commit", "--shots-narrow"])
-            .command_handler(command)
-            .configure_app(|app| {
-                app.set_window_title(Some("Git Client".into()));
-                git_client::actions::register(app.action_registry_mut());
-            }),
-    );
+    if wants_standalone() {
+        ui::launch::run_or_exit(&shot_spec());
+        return;
+    }
+    ui::launch::run_or_exit(&git_client::launch_spec());
 }
 
 #[cfg(test)]

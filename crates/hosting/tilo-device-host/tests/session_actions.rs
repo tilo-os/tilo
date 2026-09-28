@@ -1842,8 +1842,8 @@ fn table_cells(peer: &tilo_peer_state::StatePeer) -> usize {
             .unwrap(),
     )
     .unwrap();
-    let containers = qdoc::model::open(&doc, &ui::automerge::ROOT).unwrap();
-    qdoc::model::materialize(&doc, &containers)
+    let containers = tilo_doc::model::open(&doc, &ui::automerge::ROOT).unwrap();
+    tilo_doc::model::materialize(&doc, &containers)
         .blocks
         .iter()
         .filter(|b| b.kind == "cell")

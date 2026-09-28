@@ -552,11 +552,11 @@ mod tests {
         let mut s = State::new();
         s.doc
             .set_actor(automerge::ActorId::from("alice".as_bytes()));
-        let c = qdoc::model::init(&mut s.doc, &s.root);
-        let mut ids = qdoc::IdGen::new(s.doc.get_actor().to_hex_string());
+        let c = tilo_doc::model::init(&mut s.doc, &s.root);
+        let mut ids = tilo_doc::IdGen::new(s.doc.get_actor().to_hex_string());
         s.commit_action(None, None);
         let p = {
-            let mut dm = qdoc::DocMut {
+            let mut dm = tilo_doc::DocMut {
                 doc: &mut s.doc,
                 c: &c,
                 ids: &mut ids,
@@ -567,7 +567,7 @@ mod tests {
         };
         s.commit_action(None, None);
         {
-            let mut dm = qdoc::DocMut {
+            let mut dm = tilo_doc::DocMut {
                 doc: &mut s.doc,
                 c: &c,
                 ids: &mut ids,
@@ -599,8 +599,8 @@ mod tests {
     }
 
     fn body(s: &State) -> String {
-        let c = qdoc::model::open(&s.doc, &s.root).unwrap();
-        qdoc::model::materialize(&s.doc, &c)
+        let c = tilo_doc::model::open(&s.doc, &s.root).unwrap();
+        tilo_doc::model::materialize(&s.doc, &c)
             .blocks
             .first()
             .map(|b| b.text.clone())
@@ -608,10 +608,10 @@ mod tests {
     }
 
     fn append_pending_text(s: &mut State) {
-        let c = qdoc::model::open(&s.doc, &s.root).unwrap();
-        let blocks = qdoc::model::materialize(&s.doc, &c).blocks;
-        let mut ids = qdoc::IdGen::new(s.doc.get_actor().to_hex_string());
-        let mut dm = qdoc::DocMut {
+        let c = tilo_doc::model::open(&s.doc, &s.root).unwrap();
+        let blocks = tilo_doc::model::materialize(&s.doc, &c).blocks;
+        let mut ids = tilo_doc::IdGen::new(s.doc.get_actor().to_hex_string());
+        let mut dm = tilo_doc::DocMut {
             doc: &mut s.doc,
             c: &c,
             ids: &mut ids,
@@ -727,11 +727,11 @@ mod tests {
             panel.set_current_tick(0);
 
             // A concurrent edit lands (a peer, or an autosave).
-            let c = qdoc::model::open(&s.doc, &s.root).unwrap();
-            let blocks = qdoc::model::materialize(&s.doc, &c).blocks;
-            let mut ids = qdoc::IdGen::new(s.doc.get_actor().to_hex_string());
+            let c = tilo_doc::model::open(&s.doc, &s.root).unwrap();
+            let blocks = tilo_doc::model::materialize(&s.doc, &c).blocks;
+            let mut ids = tilo_doc::IdGen::new(s.doc.get_actor().to_hex_string());
             {
-                let mut dm = qdoc::DocMut {
+                let mut dm = tilo_doc::DocMut {
                     doc: &mut s.doc,
                     c: &c,
                     ids: &mut ids,
@@ -894,11 +894,11 @@ mod tests {
         let mut s = State::new();
         s.doc
             .set_actor(automerge::ActorId::from("alice".as_bytes()));
-        let c = qdoc::model::init(&mut s.doc, &s.root);
-        let mut ids = qdoc::IdGen::new(s.doc.get_actor().to_hex_string());
+        let c = tilo_doc::model::init(&mut s.doc, &s.root);
+        let mut ids = tilo_doc::IdGen::new(s.doc.get_actor().to_hex_string());
         ui::tilo_resource::history::commit_stamped_at(&mut s.doc, 1_000_000);
         let p = {
-            let mut dm = qdoc::DocMut {
+            let mut dm = tilo_doc::DocMut {
                 doc: &mut s.doc,
                 c: &c,
                 ids: &mut ids,
@@ -912,13 +912,13 @@ mod tests {
         // Session one: five more edits, seconds apart.
         for stamp in (1_000_020..).step_by(10).take(5) {
             let at = {
-                let cc = qdoc::model::open(&s.doc, &s.root).unwrap();
-                qdoc::model::materialize(&s.doc, &cc).blocks[0]
+                let cc = tilo_doc::model::open(&s.doc, &s.root).unwrap();
+                tilo_doc::model::materialize(&s.doc, &cc).blocks[0]
                     .text
                     .chars()
                     .count()
             };
-            let mut dm = qdoc::DocMut {
+            let mut dm = tilo_doc::DocMut {
                 doc: &mut s.doc,
                 c: &c,
                 ids: &mut ids,
@@ -933,15 +933,15 @@ mod tests {
         peer.set_actor(automerge::ActorId::from("bob".as_bytes()));
         for stamp in (1_004_000..).step_by(10).take(3) {
             let at = {
-                let cc = qdoc::model::open(&peer, &s.root).unwrap();
-                qdoc::model::materialize(&peer, &cc).blocks[0]
+                let cc = tilo_doc::model::open(&peer, &s.root).unwrap();
+                tilo_doc::model::materialize(&peer, &cc).blocks[0]
                     .text
                     .chars()
                     .count()
             };
-            let cc = qdoc::model::open(&peer, &s.root).unwrap();
-            let mut pids = qdoc::IdGen::new(peer.get_actor().to_hex_string());
-            let mut dm = qdoc::DocMut {
+            let cc = tilo_doc::model::open(&peer, &s.root).unwrap();
+            let mut pids = tilo_doc::IdGen::new(peer.get_actor().to_hex_string());
+            let mut dm = tilo_doc::DocMut {
                 doc: &mut peer,
                 c: &cc,
                 ids: &mut pids,
@@ -954,14 +954,14 @@ mod tests {
         // Session three, two hours after that, back to the local author.
         for stamp in (1_012_000..).step_by(10).take(4) {
             let at = {
-                let cc = qdoc::model::open(&s.doc, &s.root).unwrap();
-                qdoc::model::materialize(&s.doc, &cc).blocks[0]
+                let cc = tilo_doc::model::open(&s.doc, &s.root).unwrap();
+                tilo_doc::model::materialize(&s.doc, &cc).blocks[0]
                     .text
                     .chars()
                     .count()
             };
-            let cc = qdoc::model::open(&s.doc, &s.root).unwrap();
-            let mut dm = qdoc::DocMut {
+            let cc = tilo_doc::model::open(&s.doc, &s.root).unwrap();
+            let mut dm = tilo_doc::DocMut {
                 doc: &mut s.doc,
                 c: &cc,
                 ids: &mut ids,
@@ -1107,18 +1107,18 @@ mod tests {
             let width_before = open.end - open.start;
 
             // Keep working. The open version has to grow.
-            let c = qdoc::model::open(&s.doc, &s.root).unwrap();
-            let blocks = qdoc::model::materialize(&s.doc, &c).blocks;
-            let mut ids = qdoc::IdGen::new(s.doc.get_actor().to_hex_string());
+            let c = tilo_doc::model::open(&s.doc, &s.root).unwrap();
+            let blocks = tilo_doc::model::materialize(&s.doc, &c).blocks;
+            let mut ids = tilo_doc::IdGen::new(s.doc.get_actor().to_hex_string());
             for _ in 0..3 {
                 let at = {
-                    let cc = qdoc::model::open(&s.doc, &s.root).unwrap();
-                    qdoc::model::materialize(&s.doc, &cc).blocks[0]
+                    let cc = tilo_doc::model::open(&s.doc, &s.root).unwrap();
+                    tilo_doc::model::materialize(&s.doc, &cc).blocks[0]
                         .text
                         .chars()
                         .count()
                 };
-                let mut dm = qdoc::DocMut {
+                let mut dm = tilo_doc::DocMut {
                     doc: &mut s.doc,
                     c: &c,
                     ids: &mut ids,

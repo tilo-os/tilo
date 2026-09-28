@@ -943,7 +943,7 @@ impl CustomizePanel {
         modifiers: &Modifiers,
         doc: &mut AutoCommit,
         path: &automerge::ObjId,
-        host: &mut ui::ActionHost,
+        host: &mut crate::resource::ActionSink,
         profile: &InstallProfile,
         target_removable: bool,
         content: Rect,
@@ -1046,7 +1046,7 @@ impl CustomizePanel {
         modifiers: Modifiers,
         doc: &mut AutoCommit,
         path: &automerge::ObjId,
-        host: &mut ui::ActionHost,
+        host: &mut crate::resource::ActionSink,
         profile: &InstallProfile,
         _target_removable: bool,
         g: &CzGeom,
@@ -1136,7 +1136,7 @@ impl CustomizePanel {
         modifiers: Modifiers,
         doc: &mut AutoCommit,
         path: &automerge::ObjId,
-        host: &mut ui::ActionHost,
+        host: &mut crate::resource::ActionSink,
         g: &CzGeom,
         node_id: taffy::NodeId,
         taffy: &taffy::TaffyTree<()>,
@@ -1290,7 +1290,11 @@ impl CustomizePanel {
         }
     }
 
-    fn dispatch(doc: &mut AutoCommit, host: &mut ui::ActionHost, action: &ImagerAction) {
+    fn dispatch(
+        doc: &mut AutoCommit,
+        host: &mut crate::resource::ActionSink,
+        action: &ImagerAction,
+    ) {
         host.dispatch_with_context(
             doc,
             IMAGER_ACTION_TYPE,

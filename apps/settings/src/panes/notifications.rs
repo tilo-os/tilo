@@ -222,7 +222,7 @@ pub struct NotificationsPane {
     /// exactly one boundary per event), encodes and dispatches each settings
     /// action, and remembers the last one so a test can prove an on-screen toggle
     /// builds the same [`EncodedAction`] the palette does.
-    actions: ui::ActionHost,
+    actions: crate::resource::ActionSink,
 }
 
 impl Default for NotificationsPane {
@@ -256,7 +256,7 @@ impl NotificationsPane {
             needs_seed: true,
             composed: None,
             rect: Rect::ZERO,
-            actions: ui::ActionHost::new(),
+            actions: crate::resource::ActionSink::default(),
         }
     }
 
@@ -290,6 +290,13 @@ impl NotificationsPane {
             action,
             tilo_actions::ActionContext::for_action("so.tilo.settings", "Settings", action),
         );
+    }
+
+    pub(crate) fn bind_dispatcher(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Settings>,
+    ) {
+        self.actions.attach(dispatcher);
     }
 
     /// Reconcile one boolean setting between its widget scratch key and its

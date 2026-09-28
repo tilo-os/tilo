@@ -249,7 +249,7 @@ pub struct BackupsApp {
     /// Framework-owned action dispatch: every retention-policy edit goes through
     /// here so it brackets one undo boundary, encodes under [`BACKUPS_ACTION_TYPE`],
     /// and replays byte-identically on peers — the same path Ctrl+K takes.
-    actions: ui::ActionHost,
+    actions: crate::resource::ActionSink,
     /// Transient floating status bubble: the health + snapshot tally surfaced as
     /// a bottom-right pill instead of a permanent bottom strip, so the dashboard
     /// spans to the window bottom. Poked when the tally/health changes and shown
@@ -365,7 +365,7 @@ impl BackupsApp {
                 .overlay_width(RAIL_W.max(288.0))
                 .breakpoint(RAIL_BREAKPOINT),
             force_rail_open: std::env::var("TILO_BACKUPS_RAIL_OPEN").as_deref() == Ok("1"),
-            actions: ui::ActionHost::new(),
+            actions: crate::resource::ActionSink::default(),
             status_bubble: ui::StatusBubble::new(),
             status_shown: String::new(),
             shots_status: false,
@@ -411,6 +411,19 @@ impl BackupsApp {
     #[cfg(test)]
     pub(crate) fn last_dispatched(&self) -> Option<&tilo_actions::EncodedAction> {
         self.actions.last_dispatched()
+    }
+
+    /// Show the retention policy the framework resource already holds.
+    pub(crate) fn adopt_resource_state(&mut self, state: &crate::resource::BackupsState) {
+        self.ui.policy = state.policy;
+    }
+
+    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Backups>,
+    ) {
+        self.actions.attach(dispatcher);
     }
 
     fn load_cache(&mut self, doc: &AutoCommit, root: &ObjId) {
@@ -4769,7 +4782,11 @@ impl Widget for BackupsApp {
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         self.drain_effects();
         if !self.seeded {
-            BackupsDoc::seed(state, path);
+            // Readers already fall back to the default policy. The hosted
+            // record stays empty until a retention action writes a field.
+            if !self.actions.is_hosted() {
+                BackupsDoc::seed(state, path);
+            }
             self.seeded = true;
         }
         self.load_cache(state, path);
@@ -4948,11 +4965,11 @@ impl Widget for BackupsApp {
     /// Publish the retention-policy resource tree to the shell's Ctrl+K palette
     /// (see [`crate::actions`]).
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+        Self::publish_resources(self, doc)
     }
 
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
+        Self::publish_resource(self, doc, id)
     }
 
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {

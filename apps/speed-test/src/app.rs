@@ -27,7 +27,7 @@ use ui::vello::peniko::Fill;
 use ui::widget::{Button, ButtonFace, Widget};
 use ui::winit::event::{ElementState, MouseButton, WindowEvent};
 
-const OPERATION_TYPE: &str = "speed-test.operation";
+pub(crate) const OPERATION_TYPE: &str = "speed-test.operation";
 
 #[derive(Clone, Copy, PartialEq)]
 enum Phase {
@@ -55,13 +55,13 @@ enum WorkerMessage {
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum SpeedOperation {
+pub(crate) enum SpeedOperation {
     Start,
     Stop,
     ChangeRegion,
 }
 
-fn action(id: &str, label: &str, op: &SpeedOperation) -> Option<ActionSpec> {
+pub(crate) fn action(id: &str, label: &str, op: &SpeedOperation) -> Option<ActionSpec> {
     let mut spec =
         ActionSpec::operation(id, label, OperationKind::Effect, OPERATION_TYPE, op).ok()?;
     spec.contract = ActionContract {

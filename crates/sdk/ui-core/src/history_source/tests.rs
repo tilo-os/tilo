@@ -101,9 +101,9 @@ fn browsing_history_never_commits_or_invents_entries() {
         let (mut doc, block) = two_identity_document();
         let entries = source().entries(&mut doc);
         let first = content_rows(&entries)[0].id;
-        let c = qdoc::model::open(&doc, &ROOT).unwrap();
-        let mut ids = qdoc::IdGen::new(doc.get_actor().to_hex_string());
-        qdoc::DocMut {
+        let c = tilo_doc::model::open(&doc, &ROOT).unwrap();
+        let mut ids = tilo_doc::IdGen::new(doc.get_actor().to_hex_string());
+        tilo_doc::DocMut {
             doc: &mut doc,
             c: &c,
             ids: &mut ids,
@@ -137,11 +137,11 @@ fn at(secs: i64) -> SystemTime {
 }
 
 /// A document carrying the qdoc schema, authored by `handle`.
-fn qdoc_doc(handle: &str) -> (AutoCommit, qdoc::Containers, qdoc::IdGen) {
+fn qdoc_doc(handle: &str) -> (AutoCommit, tilo_doc::Containers, tilo_doc::IdGen) {
     let mut doc = AutoCommit::new();
     doc.set_actor(ActorId::from(handle.as_bytes()));
-    let c = qdoc::model::init(&mut doc, &ROOT);
-    let ids = qdoc::IdGen::new(doc.get_actor().to_hex_string());
+    let c = tilo_doc::model::init(&mut doc, &ROOT);
+    let ids = tilo_doc::IdGen::new(doc.get_actor().to_hex_string());
     tilo_resource::history::commit_stamped_at(&mut doc, T0);
     (doc, c, ids)
 }
@@ -153,7 +153,7 @@ fn two_identity_document() -> (AutoCommit, String) {
     let (mut alice, c, mut alice_ids) = qdoc_doc("alice");
 
     let block = {
-        let mut dm = qdoc::DocMut {
+        let mut dm = tilo_doc::DocMut {
             doc: &mut alice,
             c: &c,
             ids: &mut alice_ids,
@@ -168,8 +168,8 @@ fn two_identity_document() -> (AutoCommit, String) {
     let mut bob = alice.fork();
     bob.set_actor(ActorId::from("bob".as_bytes()));
     {
-        let mut bob_ids = qdoc::IdGen::new(bob.get_actor().to_hex_string());
-        let mut dm = qdoc::DocMut {
+        let mut bob_ids = tilo_doc::IdGen::new(bob.get_actor().to_hex_string());
+        let mut dm = tilo_doc::DocMut {
             doc: &mut bob,
             c: &c,
             ids: &mut bob_ids,
@@ -181,7 +181,7 @@ fn two_identity_document() -> (AutoCommit, String) {
     alice.merge(&mut bob).expect("peers merge");
 
     {
-        let mut dm = qdoc::DocMut {
+        let mut dm = tilo_doc::DocMut {
             doc: &mut alice,
             c: &c,
             ids: &mut alice_ids,
@@ -270,7 +270,7 @@ fn rows_attribute_and_summarise_what_actually_changed() {
     {
         let (mut doc, c, mut ids) = qdoc_doc("alice");
         let (a, b) = {
-            let mut dm = qdoc::DocMut {
+            let mut dm = tilo_doc::DocMut {
                 doc: &mut doc,
                 c: &c,
                 ids: &mut ids,
@@ -284,7 +284,7 @@ fn rows_attribute_and_summarise_what_actually_changed() {
         tilo_resource::history::commit_stamped_at(&mut doc, T0 + HOUR);
 
         {
-            let mut dm = qdoc::DocMut {
+            let mut dm = tilo_doc::DocMut {
                 doc: &mut doc,
                 c: &c,
                 ids: &mut ids,
@@ -294,7 +294,7 @@ fn rows_attribute_and_summarise_what_actually_changed() {
         tilo_resource::history::commit_stamped_at(&mut doc, T0 + 2 * HOUR);
 
         {
-            let mut dm = qdoc::DocMut {
+            let mut dm = tilo_doc::DocMut {
                 doc: &mut doc,
                 c: &c,
                 ids: &mut ids,
@@ -374,7 +374,7 @@ fn rows_attribute_and_summarise_what_actually_changed() {
     // phase: semantic_action_context_becomes_the_row_summary_and_browse_metadata
     {
         let (mut doc, c, mut ids) = qdoc_doc("alice");
-        let mut dm = qdoc::DocMut {
+        let mut dm = tilo_doc::DocMut {
             doc: &mut doc,
             c: &c,
             ids: &mut ids,
@@ -426,8 +426,8 @@ fn restore_appends_an_undoable_entry_or_does_nothing() {
         let v1 = rows[0].id;
         let ids_before: Vec<HistoryEntryId> = before.iter().map(|e| e.id).collect();
 
-        let containers = qdoc::model::open(&state.doc, &ROOT).unwrap();
-        let text_now = qdoc::model::materialize(&state.doc, &containers).blocks[0]
+        let containers = tilo_doc::model::open(&state.doc, &ROOT).unwrap();
+        let text_now = tilo_doc::model::materialize(&state.doc, &containers).blocks[0]
             .text
             .clone();
         assert_eq!(text_now, "hello world!", "precondition: latest content");
@@ -444,8 +444,8 @@ fn restore_appends_an_undoable_entry_or_does_nothing() {
             "restoring to a different version must change the document"
         );
 
-        let containers = qdoc::model::open(&state.doc, &ROOT).unwrap();
-        let restored = qdoc::model::materialize(&state.doc, &containers).blocks[0]
+        let containers = tilo_doc::model::open(&state.doc, &ROOT).unwrap();
+        let restored = tilo_doc::model::materialize(&state.doc, &containers).blocks[0]
             .text
             .clone();
         assert_eq!(restored, "hello", "content matches the version restored to");
@@ -473,7 +473,7 @@ fn restore_appends_an_undoable_entry_or_does_nothing() {
         );
         assert_eq!(
             &block,
-            &qdoc::model::materialize(&state.doc, &containers).blocks[0].id
+            &tilo_doc::model::materialize(&state.doc, &containers).blocks[0].id
         );
     }
     // phase: a_restore_is_undoable
@@ -490,8 +490,10 @@ fn restore_appends_an_undoable_entry_or_does_nothing() {
 
         state.restore_to_heads(&target, None, None, Some(UserId("alice".into())));
         let text = |s: &State| {
-            let c = qdoc::model::open(&s.doc, &ROOT).unwrap();
-            qdoc::model::materialize(&s.doc, &c).blocks[0].text.clone()
+            let c = tilo_doc::model::open(&s.doc, &ROOT).unwrap();
+            tilo_doc::model::materialize(&s.doc, &c).blocks[0]
+                .text
+                .clone()
         };
         assert_eq!(text(&state), "hello");
 
@@ -643,7 +645,7 @@ fn entries_are_stamped_capped_and_stably_addressed() {
     {
         let (mut doc, c, mut ids) = qdoc_doc("alice");
         let p = {
-            let mut dm = qdoc::DocMut {
+            let mut dm = tilo_doc::DocMut {
                 doc: &mut doc,
                 c: &c,
                 ids: &mut ids,
@@ -653,7 +655,7 @@ fn entries_are_stamped_capped_and_stably_addressed() {
         tilo_resource::history::commit_stamped_at(&mut doc, T0);
         for i in 0..6 {
             {
-                let mut dm = qdoc::DocMut {
+                let mut dm = tilo_doc::DocMut {
                     doc: &mut doc,
                     c: &c,
                     ids: &mut ids,
@@ -704,7 +706,7 @@ fn entries_are_stamped_capped_and_stably_addressed() {
 
         for (row, expected) in rows.iter().zip(["hello", "hello world", "hello world!"]) {
             let idx = version_index_for_entry(&mut doc, &row.id).expect("row addresses a version");
-            let snap = qdoc::snapshot::at(&mut doc, idx).expect("version materialises");
+            let snap = tilo_doc::snapshot::at(&mut doc, idx).expect("version materialises");
             assert_eq!(
                 snap.blocks[0].text, expected,
                 "version {idx} should read {expected:?}"

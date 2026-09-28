@@ -70,7 +70,7 @@ use serde::{Deserialize, Serialize};
 use tilo_actions::{
     Action, ActionAddress, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry,
     ActionSpec, Doc, EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType,
-    Resource, ResourceProvider, ResultSpec, RetryPolicy, RiskLevel,
+    Resource, ResultSpec, RetryPolicy, RiskLevel,
 };
 use ui::tilo_resource::{ActionCx, ActionDecl};
 
@@ -277,7 +277,7 @@ pub struct ElementData {
     /// A text element's words as written (paragraphs with their marks);
     /// empty for one described by `text` alone.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub blocks: Vec<qdoc_rich_text::ClipBlock>,
+    pub blocks: Vec<tilo_document::ClipBlock>,
 }
 
 impl ElementData {
@@ -473,6 +473,8 @@ pub enum SlidesAction {
     /// Set the deck's accent theme (palette). Deck-wide, so it carries no slide
     /// index.
     SetDeckPalette { palette: String },
+    /// Set the deck title (committed rename, not a per-keystroke splice).
+    SetDeckTitle { title: String },
     /// Add an element (a fresh insert, a paste, a duplicate, or a picked image)
     /// to slide `slide`. The element's id is minted at authoring and carried in
     /// the payload.
@@ -535,7 +537,7 @@ pub enum SlidesAction {
     EditElementText {
         slide_id: String,
         element_id: String,
-        edit: qdoc_rich_text::RichTextAction,
+        edit: tilo_document::RichTextAction,
     },
     /// Rewrite the deck's first-format text elements as rich text, in place
     /// and once (see [`SlidesDoc::upgrade`]).
@@ -989,6 +991,12 @@ impl Action for SlidesAction {
                 }
                 SlidesDoc::set_palette(doc, PaletteKind::from_str(palette));
             }
+            SlidesAction::SetDeckTitle { title } => {
+                if title.chars().count() > MAX_TEXT_CHARS {
+                    return Err(refused("deck title is too long"));
+                }
+                SlidesDoc::set_title(doc, title);
+            }
             SlidesAction::AddElement {
                 slide,
                 slide_id,
@@ -1257,6 +1265,12 @@ pub fn set_deck_palette_action(palette: PaletteKind) -> SlidesAction {
     }
 }
 
+pub fn set_deck_title_action(title: impl Into<String>) -> SlidesAction {
+    SlidesAction::SetDeckTitle {
+        title: title.into(),
+    }
+}
+
 pub fn add_element_action(
     slide: usize,
     slide_id: impl Into<String>,
@@ -1508,6 +1522,17 @@ impl ui::tilo_resource::Resource for SlidesDeck {
         SlidesDoc::load(doc)
             .map(|deck| SlidesResourceCtx::from_deck(&deck))
             .ok_or_else(|| ui::tilo_resource::ModelError::invalid("the document holds no deck"))
+    }
+
+    fn initialize(doc: &mut Doc) -> Result<(), ui::tilo_resource::ModelError> {
+        if SlidesDoc::is_uninitialized(doc) {
+            SlidesDoc::seed(doc, &crate::model::starter_deck());
+        }
+        Ok(())
+    }
+
+    fn local_operations() -> Vec<ActionSpec> {
+        deck_local_operations()
     }
 
     fn declarations() -> Vec<ActionDecl<Self>> {
@@ -1850,32 +1875,28 @@ fn resource_rank_for_slot(ctx: &SlidesResourceCtx, at: usize) -> i64 {
     (at.min(ctx.slides.len()) as i64).saturating_mul(1_i64 << 32)
 }
 
-fn deck_resource(ctx: &SlidesResourceCtx) -> Resource {
-    let title = ctx.deck_title.trim();
-    let deck_label = if title.is_empty() { "Deck" } else { title };
-    // The declared operations, `apply`, `group` and the slides beneath.
-    let mut deck = ui::tilo_resource::publish::<SlidesDeck>("slides.deck", deck_label, ctx);
-
-    for (id, label, kind, value) in [
-        (
+/// View and Effect operations published via [`SlidesDeck::local_operations`].
+fn deck_local_operations() -> Vec<ActionSpec> {
+    let mut specs = vec![
+        operation(
             "editor",
             "Show editor",
             OperationKind::View,
             SlidesOperation::ShowEditor,
         ),
-        (
+        operation(
             "overview",
             "Show slide overview",
             OperationKind::View,
             SlidesOperation::ShowOverview,
         ),
-        (
+        operation(
             "present",
             "Start presentation",
             OperationKind::View,
             SlidesOperation::StartPresentation,
         ),
-        (
+        operation(
             "present-largest-external",
             "Present on largest external display",
             OperationKind::View,
@@ -1883,7 +1904,7 @@ fn deck_resource(ctx: &SlidesResourceCtx) -> Resource {
                 output: PresentationOutput::LargestExternal,
             },
         ),
-        (
+        operation(
             "present-primary-external",
             "Present on primary external display",
             OperationKind::View,
@@ -1891,17 +1912,24 @@ fn deck_resource(ctx: &SlidesResourceCtx) -> Resource {
                 output: PresentationOutput::PrimaryExternal,
             },
         ),
-        (
+        operation(
             "end-presentation",
             "End presentation",
             OperationKind::View,
             SlidesOperation::EndPresentation,
         ),
-    ] {
-        deck = deck.with_action(operation(id, label, kind, value));
-    }
-    deck = deck.with_action(file_operation("open", "Open presentation", false));
-    deck = deck.with_action(file_operation("save-as", "Save presentation", true));
+    ];
+    // System file picker with no document delta may stay an Effect.
+    specs.push(file_operation("open", "Open presentation", false));
+    specs.push(file_operation("save-as", "Save presentation", true));
+    specs
+}
+
+fn deck_resource(ctx: &SlidesResourceCtx) -> Resource {
+    let title = ctx.deck_title.trim();
+    let deck_label = if title.is_empty() { "Deck" } else { title };
+    // Declared ops, apply, group, View/Effect local_operations, and slides beneath.
+    let mut deck = ui::tilo_resource::publish::<SlidesDeck>("slides.deck", deck_label, ctx);
 
     // Deck-level: add a new slide after the whole deck. The slide's ids are
     // minted when the palette dispatches (a genuinely new slide), so this spec
@@ -2127,12 +2155,13 @@ pub fn resolve_resource(ctx: &SlidesResourceCtx, id: &str) -> Option<Resource> {
     None
 }
 
-impl ResourceProvider for crate::app::SlidesApp {
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+// Inherent resource publication (was ResourceProvider)
+impl crate::app::SlidesApp {
+    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         provide_resources(&self.slides_resource_ctx(), doc)
     }
 
-    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<Resource> {
+    pub fn publish_resource(&self, _doc: &AutoCommit, id: &str) -> Option<Resource> {
         resolve_resource(&self.slides_resource_ctx(), id)
     }
 }

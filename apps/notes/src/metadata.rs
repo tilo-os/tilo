@@ -165,7 +165,7 @@ mod tests {
                 &mut doc,
                 actions::edit_body_action(
                     a,
-                    qdoc_rich_text::RichTextAction::AppendParagraph {
+                    tilo_document::RichTextAction::AppendParagraph {
                         text: "Hello".into(),
                     },
                 ),
@@ -278,7 +278,7 @@ mod tests {
                 &mut second,
                 actions::edit_body_action(
                     page,
-                    qdoc_rich_text::RichTextAction::AppendParagraph {
+                    tilo_document::RichTextAction::AppendParagraph {
                         text: "Remote text".into(),
                     },
                 ),

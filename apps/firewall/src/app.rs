@@ -570,7 +570,7 @@ pub struct FirewallApp {
     /// [`FirewallAction`] through here so it brackets exactly **one** undo
     /// boundary, encodes under [`FIREWALL_ACTION_TYPE`](crate::actions::FIREWALL_ACTION_TYPE),
     /// and replays byte-identically on peers — the same path Ctrl+K takes.
-    actions: ui::ActionHost,
+    actions: crate::resource::ActionSink,
     pending_effect: Option<PendingFirewallEffect>,
     completed_effect: Option<tilo_actions::InvocationUpdate>,
 }
@@ -679,7 +679,7 @@ impl FirewallApp {
             seeded: false,
             available,
             pending_delete: None,
-            actions: ui::ActionHost::new(),
+            actions: crate::resource::ActionSink::default(),
             pending_effect: None,
             completed_effect: None,
         }
@@ -734,6 +734,27 @@ impl FirewallApp {
         }
     }
 
+    /// Show a shared configuration the framework resource already holds.
+    /// An empty projection does not wipe a config just read from the host.
+    pub(crate) fn adopt_resource_state(&mut self, state: &crate::model::FirewallConfig) {
+        if state.zones.is_empty() || state.validate().is_err() {
+            return;
+        }
+        self.config = state.clone();
+        self.available = true;
+        if self.config.zone(self.selected_zone).is_none() {
+            self.selected_zone = self.config.default_zone;
+        }
+    }
+
+    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Firewall>,
+    ) {
+        self.actions.attach(dispatcher);
+    }
+
     /// The last action dispatched, for the `affordance == ActionSpec` covenant
     /// test.
     #[cfg(test)]
@@ -743,7 +764,7 @@ impl FirewallApp {
 
     /// The configuration Ctrl+K builds its resource tree from, or `None` when the
     /// firewall is unavailable / has no zones (nothing to act on). Exposed to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
+    /// [``]() impl in
     /// [`crate::actions`], which can't read the app's private fields directly.
     pub(crate) fn firewall_resource_ctx(&self) -> Option<FirewallConfig> {
         if !self.available || self.config.zones.is_empty() {
@@ -1472,6 +1493,14 @@ impl Widget for FirewallApp {
                     // to native maps before any visible control can dispatch.
                     let snapshot = if FirewallDoc::has_native(state) {
                         self.config.to_json()
+                    } else if self.actions.is_hosted() {
+                        self.perform_action(
+                            state,
+                            &crate::actions::FirewallAction::PublishImported {
+                                config: self.config.clone(),
+                            },
+                        );
+                        self.last_json.clone().unwrap_or_default()
                     } else {
                         FirewallDoc::store(state, &self.config)
                     };
@@ -1480,8 +1509,17 @@ impl Widget for FirewallApp {
                     self.status = "Shared firewall configuration was rejected as invalid".into();
                 }
             } else if !self.config.zones.is_empty() {
-                let json = FirewallDoc::store(state, &self.config);
-                self.last_json = Some(json);
+                if self.actions.is_hosted() {
+                    self.perform_action(
+                        state,
+                        &crate::actions::FirewallAction::PublishImported {
+                            config: self.config.clone(),
+                        },
+                    );
+                } else {
+                    let json = FirewallDoc::store(state, &self.config);
+                    self.last_json = Some(json);
+                }
             }
             self.seeded = true;
             return;
@@ -1815,7 +1853,7 @@ impl Widget for FirewallApp {
 
     /// Publish the open configuration + its zones/rules so the host's Ctrl+K
     /// action palette scopes to them. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
+    /// [``]() impl in
     /// [`crate::actions`].
     #[allow(
         clippy::expect_used,
@@ -1849,7 +1887,7 @@ impl Widget for FirewallApp {
                 ),
             ];
         }
-        let mut resources = <Self as tilo_actions::ResourceProvider>::resources(self, doc);
+        let mut resources = Self::publish_resources(self, doc);
         if let Some(root) = resources.first_mut() {
             root.actions.push(
                 tilo_actions::ActionSpec::operation(

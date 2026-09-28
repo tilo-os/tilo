@@ -2348,7 +2348,7 @@ impl Session {
             .into_iter()
             .rev()
             .find(|version| {
-                !qdoc::model::is_schema_genesis(version)
+                !tilo_doc::model::is_schema_genesis(version)
                     && !version.actor.eq_ignore_ascii_case(&mine)
             })
             .map(|version| version.actor)
@@ -4056,7 +4056,7 @@ mod tests {
             Arc, Mutex,
             atomic::{AtomicBool, Ordering},
         };
-        use tilo_actions::{ActionOutput, ResourceProvider, ResultSpec};
+        use tilo_actions::{ActionOutput, ResultSpec};
         use tilo_content::ContentStore;
 
         const PHOTOS: &str = "so.tilo.photos";
@@ -4174,10 +4174,10 @@ mod tests {
             photos::doc::PhotosDoc::set_image(&mut photo, Some(&open));
             let image_id = photos::actions::resource_id(&open);
             let mut document = automerge::AutoCommit::new();
-            let model = qdoc::model::init(&mut document, &automerge::ROOT);
-            let mut ids = qdoc::model::seeded_id_gen(&document, &model);
+            let model = tilo_doc::model::init(&mut document, &automerge::ROOT);
+            let mut ids = tilo_doc::model::seeded_id_gen(&document, &model);
             let instruction_id = {
-                let mut edit = qdoc::DocMut {
+                let mut edit = tilo_doc::DocMut {
                     doc: &mut document,
                     c: &model,
                     ids: &mut ids,
@@ -4205,7 +4205,7 @@ mod tests {
                     let mut client = if is_photo {
                         let mut client = connect_peer(&worker_socket, PHOTOS, "photos", None);
                         let mut photo_resources =
-                            photos::actions::PhotosResources.resources(&photo);
+                            photos::actions::PhotosResources.publish_resources(&photo);
                         for resource in &mut photo_resources {
                             resource.children.clear();
                             resource
@@ -4413,7 +4413,7 @@ mod tests {
                     .iter()
                     .filter(|block| block.kind == "image")
                     .filter_map(|block| match block.attrs.get("blob") {
-                        Some(qdoc::AttrVal::Str(hash)) => Some(hash.clone()),
+                        Some(tilo_doc::AttrVal::Str(hash)) => Some(hash.clone()),
                         _ => None,
                     })
                     .collect(),

@@ -1433,7 +1433,7 @@ pub struct ContactsApp {
     /// brackets exactly one undo boundary, encodes under
     /// [`CONTACTS_ACTION_TYPE`](crate::actions::CONTACTS_ACTION_TYPE), and replays
     /// byte-identically on peers — the same path Ctrl+K takes.
-    actions: ui::ActionHost,
+    actions: crate::resource::ActionSink,
 
     /// The document heads the in-memory [`ContactStore`] was last derived from.
     /// When the document moves past this out of band — a Ctrl+K palette action,
@@ -1557,7 +1557,7 @@ impl ContactsApp {
             completed_resource_invocation: None,
             import_conflicts: Vec::new(),
             pending_conflict_resolution: None,
-            actions: ui::ActionHost::new(),
+            actions: crate::resource::ActionSink::default(),
             model_heads: Vec::new(),
             local_projection_heads: None,
             pending_local_changes: Vec::new(),
@@ -1969,6 +1969,37 @@ impl ContactsApp {
         outcome
     }
 
+    /// Show the address book the framework resource already holds.
+    /// An empty projection does not wipe contacts that have not been published yet.
+    pub(crate) fn adopt_resource_state(&mut self, state: &crate::resource::ContactsState) {
+        if state.contacts.is_empty() {
+            return;
+        }
+        let keep: std::collections::HashSet<_> =
+            state.contacts.iter().map(|contact| contact.id).collect();
+        let stale: Vec<_> = self
+            .store
+            .contacts
+            .iter()
+            .map(|contact| contact.id)
+            .filter(|id| !keep.contains(id))
+            .collect();
+        for id in stale {
+            self.store.delete(id);
+        }
+        for contact in &state.contacts {
+            self.store.upsert(contact.clone());
+        }
+    }
+
+    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Contacts>,
+    ) {
+        self.actions.attach(dispatcher);
+    }
+
     fn local_change_for(
         &self,
         action: &crate::actions::ContactsAction,
@@ -1982,8 +2013,11 @@ impl ContactsApp {
             | ContactsAction::SetFavorite { id, .. } => id.parse().ok()?,
             // A merge changes two projections. Let the next normal document
             // sync reconcile both together rather than risking a one-sided
-            // optimistic list update.
-            ContactsAction::MergeContacts { .. } => return None,
+            // optimistic list update. Repairing legacy row ids is the same:
+            // the next sync reads the repaired book.
+            ContactsAction::MergeContacts { .. } | ContactsAction::MigrateLegacyRows => {
+                return None;
+            }
         };
         let before = self.indexed_contact(id).cloned();
         if matches!(action, ContactsAction::CreateContact(_)) || before.is_some() {
@@ -6860,7 +6894,14 @@ impl Widget for ContactsApp {
         // Legacy rows receive deterministic read identities, then this small
         // canonical migration persists them before UI edits/actions can target
         // a row. It only touches missing row ids and is idempotent.
-        ContactsDoc::migrate_legacy_rows(state);
+        if self.actions.is_hosted() {
+            if !self.seeded {
+                let _ = self
+                    .try_perform_action(state, &crate::actions::ContactsAction::MigrateLegacyRows);
+            }
+        } else {
+            ContactsDoc::migrate_legacy_rows(state);
+        }
         if let Some((token, import_as_new)) = self.pending_conflict_resolution.take()
             && let Err(error) = self.resolve_import_conflict(state, &token, import_as_new)
         {
@@ -7100,10 +7141,10 @@ impl Widget for ContactsApp {
 
     /// Publish the open book + its contacts so the host's Ctrl+K action palette
     /// scopes to them. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
+    /// [``]() impl in
     /// [`crate::actions`].
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+        Self::publish_resources(self, doc)
     }
 
     /// Resolve contacts outside the contextual palette page. This is the
@@ -7111,7 +7152,7 @@ impl Widget for ContactsApp {
     /// reaches the exact current resource/action catalogue, while a deleted
     /// contact has no resource for the broker to invoke.
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
+        Self::publish_resource(self, doc, id)
     }
 
     /// Hand the host the heads captured before an on-screen affordance dispatched
