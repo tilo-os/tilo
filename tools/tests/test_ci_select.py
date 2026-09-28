@@ -483,20 +483,52 @@ class SelectorTests(unittest.TestCase):
             seconds = {"base": heavy, "middle": 100, "qdoc": 150, "pkg": 10}
             plan = ci_select.make_plan(self.metadata, self.root, changes, 2, test_seconds=seconds)
             self.assertEqual(plan["shard_count"], 1)
-            rows = plan["matrix"]["include"]
+            partitions = plan["partition_matrix"]["include"]
+            whole_rows = plan["matrix"]["include"]
+            rows = partitions + whole_rows
             room = ci_select.TEST_PARTITION_WEIGHT - ci_select.package_cost(packages["base"])
             count = min(ci_select.MAX_TEST_PARTITIONS,
                         -(-ci_select.TEST_SECOND_WEIGHT * heavy // room))
             self.assertGreater(count, 1)
             # Partitions come first, one dedicated shard each, then the rest.
-            self.assertEqual([row["partition"] for row in rows[:count]],
+            self.assertTrue(plan["partitions_required"])
+            self.assertEqual([row["partition"] for row in partitions],
                              [f"count:{index}/{count}" for index in range(1, count + 1)])
-            self.assertEqual({row["test_packages"] for row in rows[:count]}, {"-p base"})
-            self.assertEqual({row["partition"] for row in rows[count:]}, {""})
+            self.assertEqual({row["test_packages"] for row in partitions}, {"-p base"})
+            self.assertEqual({row["scoped_tests"] for row in partitions}, {""})
+            self.assertEqual({row["partition"] for row in whole_rows}, {""})
             self.assertEqual([row["shard"] for row in rows], list(range(1, len(rows) + 1)))
-            whole = [name for row in rows[count:] for name in row["test_packages"].split()[1::2]]
+            whole = [name for row in whole_rows for name in row["test_packages"].split()[1::2]]
             self.assertEqual(sorted(whole + ["base"]), plan["tested"])
             self.assertEqual(plan["test_shard_count"], len(rows))
+            # The package's tests are built once per architecture, on the
+            # larger x86 slot, into the archive its partitions run from.
+            self.assertEqual(plan["archive_matrix"]["include"], [{
+                "arch": "x86_64", "runner": "runner-large", "package": "base",
+                "test_packages": "-p base", "partitions": count,
+                "archive": "nextest-archive-x86_64-base"}])
+            self.assertEqual({row["archive"] for row in partitions}, {"nextest-archive-x86_64-base"})
+            full = ci_select.make_plan(self.metadata, self.root, changes, 2, force_full=True,
+                                       test_seconds={**seconds, **{name: 0 for name in packages
+                                                                   if name != "base"}})
+            self.assertEqual([(row["arch"], row["runner"]) for row in full["archive_matrix"]["include"]],
+                             [("x86_64", "runner-large"), ("aarch64", "runner-arm64")])
+            self.assertEqual({(row["arch"], row["archive"]) for row in full["partition_matrix"]["include"]},
+                             {(arch, f"nextest-archive-{arch}-base") for arch in ("x86_64", "aarch64")})
+            # Every package partitioned still leaves one inert whole shard, so
+            # the test job's result stays applicable.
+            original_always = ci_select.ALWAYS_PACKAGES
+            try:
+                ci_select.ALWAYS_PACKAGES = set()
+                only = ci_select.make_plan(self.metadata, self.root, ["leaf/src/lib.rs"], 2,
+                                           test_seconds={"leaf": heavy})
+            finally:
+                ci_select.ALWAYS_PACKAGES = original_always
+            self.assertEqual(only["tested"], ["leaf"])
+            self.assertTrue(only["partitions_required"])
+            inert = only["matrix"]["include"]
+            self.assertEqual([(row["test_packages"], row["scoped_tests"]) for row in inert], [("", "")])
+            self.assertEqual(inert[0]["shard"], len(only["partition_matrix"]["include"]) + 1)
             # Type-check shards are unaffected.
             self.assertNotIn("partition", plan["clippy_matrix"]["include"][0])
             # A package whose build alone exceeds the target gains nothing from
@@ -511,6 +543,9 @@ class SelectorTests(unittest.TestCase):
             self.assertEqual(ci_select.test_partitions(set(packages), packages, {}), {})
             unsplit = ci_select.make_plan(self.metadata, self.root, changes, 2)
             self.assertEqual({row["partition"] for row in unsplit["matrix"]["include"]}, {""})
+            self.assertFalse(unsplit["partitions_required"])
+            self.assertEqual(unsplit["partition_matrix"]["include"], [])
+            self.assertEqual(unsplit["archive_matrix"]["include"], [])
         with self.subTest(phase='recorded test time never changes selection or budgets'):
             self.setUp()
             changes = ["leaf/src/lib.rs"]

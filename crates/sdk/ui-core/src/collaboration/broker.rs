@@ -2625,6 +2625,33 @@ impl CollaborationManager {
         tests::connected_manager()
     }
 
+    /// Block until the broker worker has finished every command submitted so
+    /// far. A route join enqueues the route's initial action catalogue before
+    /// its command completes, so the next [`Self::poll`] then sees everything
+    /// those commands produced. Panics at the hang bound.
+    #[cfg(all(test, unix))]
+    pub(crate) fn wait_for_commands_for_test(&self) {
+        let Backend::Transport(transport) = &self.backend else {
+            panic!("a broker transport");
+        };
+        let state = &transport
+            .as_any()
+            .and_then(|any| any.downcast_ref::<BrokerTransport>())
+            .expect("a broker transport")
+            .state;
+        let deadline = tilo_test_env::hang_deadline();
+        while state.command_bytes.0.load(Ordering::Acquire) != 0
+            || state.document_command_bytes.0.load(Ordering::Acquire) != 0
+        {
+            assert!(
+                crate::time::now() < deadline,
+                "broker worker still had commands in flight after {:?}",
+                tilo_test_env::hang_bound()
+            );
+            thread::sleep(Duration::from_millis(1));
+        }
+    }
+
     /// Real socket-backed SDK transport plus a probe returning every signed
     /// envelope the broker accepted, in order.
     #[cfg(all(test, unix))]

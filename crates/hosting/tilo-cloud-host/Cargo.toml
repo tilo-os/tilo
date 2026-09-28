@@ -24,6 +24,7 @@ hex.workspace = true
 reqwest = { workspace = true, features = ["json"] }
 tilo-net = { path = "../../system/tilo-net", features = ["http"] }
 advisory-lock = { path = "../../system/advisory-lock" }
+wire-frame = { path = "../../system/wire-frame", features = ["tokio"] }
 url.workspace = true
 zeroize.workspace = true
 libc.workspace = true
