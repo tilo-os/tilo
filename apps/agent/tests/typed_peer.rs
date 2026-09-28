@@ -104,6 +104,7 @@ impl TypedPeer {
             app_id,
             cluster_id,
             record,
+            record_kind: _,
             handle,
         } = request
         else {

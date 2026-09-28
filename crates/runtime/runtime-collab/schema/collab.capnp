@@ -31,8 +31,12 @@ interface CollabService {
   # because the identity format is collab-types' domain and we
   # don't want this schema to drift every time that crate adds a
   # field.
+  #
+  # `recordKind` names the resource kind of the record the channel carries,
+  # empty when the app names none. A host that creates a missing record on
+  # the app's first write creates it in this kind, if the app declares it.
   joinChannel @0 (channelId :Text, identity :Data, participantHandle :Text,
-                  participantKind :Text) -> (handle :ChannelHandle);
+                  participantKind :Text, recordKind :Text) -> (handle :ChannelHandle);
 }
 
 interface ChannelHandle {
