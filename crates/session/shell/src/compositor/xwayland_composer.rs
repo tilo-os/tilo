@@ -13,10 +13,8 @@
 
 use std::collections::HashSet;
 use std::fs;
-use std::io::Write as _;
 use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
 use std::os::unix::ffi::OsStrExt as _;
-use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI32, Ordering};
 
@@ -353,18 +351,8 @@ pub(crate) fn write_composer_authority(path: &Path, authorities: &[PathBuf]) -> 
                 .map_err(|error| format!("reading {}: {error}", authority.display()))?,
         );
     }
-    let staged = path.with_extension("new");
-    let _ = fs::remove_file(&staged);
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&staged)
-        .map_err(|error| format!("creating {}: {error}", staged.display()))?;
-    file.write_all(&contents)
-        .and_then(|()| file.sync_all())
-        .map_err(|error| format!("writing {}: {error}", staged.display()))?;
-    fs::rename(&staged, path).map_err(|error| format!("installing {}: {error}", path.display()))
+    atomic_file::write_with_mode(path, &contents, 0o600)
+        .map_err(|error| format!("installing {}: {error}", path.display()))
 }
 
 /// Ask the composer, over the session bus, to become the input method of
