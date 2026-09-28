@@ -1560,7 +1560,7 @@ fn topbar_avatar_cluster_paints_exactly_the_present_collaborators() {
     // (the presence path must fill it) and don't drop the empty-before half.
     {
         use shell::shell::network::InboundPresence;
-        use shell::shell::peer_presence::fold_inbound;
+        use shell::shell::peer_presence::{AnchoredPointers, fold_inbound, place_pointers};
         use ui::presence::PresenceKey;
 
         let mut tree = WorkspaceTree::bootstrap_default();
@@ -1576,12 +1576,10 @@ fn topbar_avatar_cluster_paints_exactly_the_present_collaborators() {
             "the bar must start empty, or the assertions below prove nothing"
         );
 
-        // Exactly what the network layer buffers: a room-scoped pointer frame per
-        // publishing session.
-        let key = serde_json::to_string(&PresenceKey::Workspace {
-            id: room.to_string(),
-        })
-        .expect("a workspace key serialises");
+        // Exactly what the network layer buffers: a pointer frame per
+        // publishing session, anchored to one of the room's tabs.
+        let key = serde_json::to_string(&PresenceKey::tile_pointer(room.to_string(), 1))
+            .expect("a tile pointer key serialises");
         let frames = vec![
             InboundPresence {
                 peer: 0x11,
@@ -1611,9 +1609,13 @@ fn topbar_avatar_cluster_paints_exactly_the_present_collaborators() {
         let this_room = |_: &str| true;
 
         let mut presence = PresenceCtx::default();
+        let mut anchored = AnchoredPointers::new();
+        let arrived = fold_inbound(frames, &mut anchored, &mut presence, &room_says, &this_room);
+        assert_eq!(arrived.len(), 2, "two room-scoped frames must land");
+        let tiles = [(1u64, vello::kurbo::Rect::new(0.0, 40.0, 800.0, 700.0))];
         assert!(
-            fold_inbound(frames, &mut presence, &room_says, &this_room),
-            "two room-scoped frames must land"
+            place_pointers(&anchored, &arrived, &mut presence, &tiles),
+            "and be placed over this desk's tile for their tab"
         );
         for (peer, name) in [(0x11u64, "bob"), (0x22u64, "dana")] {
             assert!(

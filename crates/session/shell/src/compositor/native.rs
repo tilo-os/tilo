@@ -8516,10 +8516,10 @@ pub fn run() {
         // room mid-session and the subscription must follow.
         let pump_network_done = Instant::now();
         let pump_presence_started = pump_network_done;
+        // The pointer as the input state knows it — "nowhere", not the origin, for
+        // a session that never moved one; being level-triggered, `cursor()` would paint a cursor for nobody.
+        frame_builder.note_local_pointer(state.client_input.pointer_position());
         let peers_moved = if let Some(relay) = frame_builder.peer_presence() {
-            // The pointer as the input state knows it — "nowhere", not the origin, for
-            // a session that never moved one; being level-triggered, `cursor()` would paint a cursor for nobody.
-            relay.set_cursor_position(state.client_input.pointer_position());
             let (rooms, here) = {
                 // Clone the tree handle and drop the `ChromeState` borrow before
                 // locking the tree — nothing here needs the RefCell guard itself.
@@ -8542,8 +8542,8 @@ pub fn run() {
                 (rooms, here)
             };
             relay.set_rooms(rooms);
-            // Say where this session's pointer is regardless of what's running — the
-            // app-driven republish alone stayed silent on an empty desktop, so peers never saw each other.
+            // Say where this session's pointer is whether or not an app is publishing —
+            // the app-driven republish alone stays silent over a window whose app draws no cursor.
             if let Some(here) = here.as_deref() {
                 relay.publish_local_cursor(here);
             }
