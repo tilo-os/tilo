@@ -81,10 +81,16 @@ impl ShellDriver {
         // paints (`compositor::hosted`), so a room you made is a room
         // you own; skipping it renders "no members" for rooms that on a
         // real machine are yours.
+        // The driver then acts as that same owner in every room: the
+        // identity registry of the machine rendering would otherwise pick
+        // who "you" are, and a roster whose viewer is not the room's owner
+        // offers no Invite.
+        let owner = shell::shell::state::local_user_id();
         let mut tree = tree;
-        tree.adopt_ownerless_workspaces(&shell::shell::state::local_user_id());
+        tree.adopt_ownerless_workspaces(&owner);
         let hosted_tabs = hosted_app_tabs(&tree);
-        let fb = FrameBuilder::with_tree(tree, viewport);
+        let mut fb = FrameBuilder::with_tree(tree, viewport);
+        fb.with_chrome(|st| st.act_as(owner));
         // Binding a tab never creates its document: the action that opens
         // an app does. This driver opens every tab of the tree it is handed
         // into its own fresh record store, so it is that action here —
