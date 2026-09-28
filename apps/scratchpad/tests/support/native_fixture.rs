@@ -6,7 +6,7 @@ use std::path::Path;
 use serde::Serialize;
 use ui::prelude::HeadlessApp;
 
-use crate::{Note, Scratchpad};
+use scratchpad::{Note, Scratchpad};
 
 #[derive(Debug, Serialize)]
 pub struct NativeFixtureManifest {

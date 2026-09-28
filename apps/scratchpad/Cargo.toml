@@ -9,16 +9,17 @@ license.workspace = true
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
-tilo-files = { path = "../../crates/platform/tilo-files" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-anyhow.workspace = true
-serde.workspace = true
 serde_json.workspace = true
 # The native diagnostic reports the note's BLAKE3 hash, never its text.
 blake3.workspace = true
 
 [dev-dependencies]
+# The native fixture (tests/support) seeds a profile through the headless app.
+anyhow.workspace = true
+serde.workspace = true
+tilo-files = { path = "../../crates/platform/tilo-files" }
 tempfile.workspace = true
 
 [lints]
