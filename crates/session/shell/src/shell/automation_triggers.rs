@@ -658,14 +658,7 @@ impl ScheduleTriggers {
         };
         let written = serde_json::to_vec_pretty(&self.ledger)
             .map_err(std::io::Error::other)
-            .and_then(|bytes| {
-                if let Some(parent) = path.parent() {
-                    std::fs::create_dir_all(parent)?;
-                }
-                let staged = path.with_extension("json.tmp");
-                std::fs::write(&staged, bytes)?;
-                std::fs::rename(&staged, path)
-            });
+            .and_then(|bytes| atomic_file::write_creating_parent(path, &bytes));
         if let Err(error) = written {
             tracing::warn!(%error, path = %path.display(), "shortcut schedules were not saved");
         }
