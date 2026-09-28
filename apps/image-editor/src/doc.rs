@@ -1,9 +1,8 @@
 //! Granular, replicated image-editor project document.
 //!
-//! The original implementation stored `Project` as one JSON scalar. That
-//! converged on one whole-project value, but two people changing different
-//! adjustments still lost work. V2 gives every independently editable thing
-//! its own CRDT location: project metadata, nodes, operation fields, order,
+//! A single JSON scalar would converge on one whole-project value, so two
+//! people changing different adjustments would still lose work. Every
+//! independently editable thing instead has its own CRDT location: project metadata, nodes, operation fields, order,
 //! expert connection overrides, and delete tombstones.
 //!
 //! `order` is the approachable adjustment stack. Concurrent inserts use
@@ -22,7 +21,6 @@ use automerge::{
 use ui::doc::{read_bool, read_number, read_str, read_u64};
 use ui::graph_editor::{Edge, Graph, GraphNode, GraphPoint, Port};
 
-const LEGACY_KEY: &str = "image-editor.project";
 const V2_KEY: &str = "image-editor.project.v2";
 const METADATA: &str = "metadata";
 const NODES: &str = "nodes";
@@ -54,14 +52,12 @@ fn blank_genesis() -> Option<&'static [u8]> {
 pub struct ProjectDoc;
 
 impl ProjectDoc {
-    /// Seed v2 and migrate a pre-v2 scalar project once. The legacy scalar is
-    /// retained, so an older installed version can still recover its work.
+    /// Seed the blank project into a document that has none yet.
     pub fn seed(doc: &mut AutoCommit) {
         if Self::v2(doc).is_some() {
             return;
         }
-        let legacy = Self::legacy(doc).unwrap_or_else(Project::blank);
-        Self::write_fresh(doc, &legacy);
+        Self::write_fresh(doc, &Project::blank());
     }
 
     /// Give a document that has no project yet the *shared* blank project,
@@ -75,8 +71,7 @@ impl ProjectDoc {
     /// from one canonical change (fixed actor, no dependencies, time 0), which
     /// is byte-identical on every replica and so deduplicates on merge.
     pub fn open_shared(doc: &mut AutoCommit) {
-        let untouched =
-            doc.get_all(&ROOT, V2_KEY).is_ok_and(|v| v.is_empty()) && Self::legacy(doc).is_none();
+        let untouched = doc.get_all(&ROOT, V2_KEY).is_ok_and(|v| v.is_empty());
         if untouched && let Some(genesis) = blank_genesis() {
             let _ = tilo_automerge::ApplyIncoming::load_incoming(doc, genesis);
         }
@@ -87,9 +82,7 @@ impl ProjectDoc {
     /// history and agents. One document remains the canonical resource.
     #[must_use]
     pub fn read(doc: &AutoCommit) -> Project {
-        Self::read_v2(doc)
-            .or_else(|| Self::legacy(doc))
-            .unwrap_or_else(Project::blank)
+        Self::read_v2(doc).unwrap_or_else(Project::blank)
     }
 
     /// Compatibility upsert for local UI code. Missing rows are never
@@ -430,15 +423,6 @@ impl ProjectDoc {
         })
     }
 
-    fn legacy(doc: &AutoCommit) -> Option<Project> {
-        doc.get(&ROOT, LEGACY_KEY)
-            .ok()
-            .flatten()
-            .and_then(|(value, _)| value.into_scalar().ok())
-            .and_then(|value| value.as_str().map(str::to_owned))
-            .and_then(|json| serde_json::from_str(&json).ok())
-    }
-
     fn v2(doc: &AutoCommit) -> Option<ObjId> {
         get_map(doc, &ROOT, V2_KEY)
     }
@@ -711,22 +695,10 @@ mod tests {
         }
     }
 
-    /// Storage shape: legacy migration keeps identity; repeated snapshot writes stay bounded.
+    /// Storage shape: repeated snapshot writes stay bounded.
     #[test]
-    fn project_doc_storage_migrates_legacy_and_stays_bounded() {
-        migrates_legacy_scalar_without_changing_project_identity();
+    fn project_doc_storage_stays_bounded() {
         repetitive_snapshot_writes_do_not_materialize_unbounded_graphs();
-    }
-
-    fn migrates_legacy_scalar_without_changing_project_identity() {
-        let project = Project::blank();
-        let mut doc = AutoCommit::new();
-        doc.put(&ROOT, LEGACY_KEY, serde_json::to_string(&project).unwrap())
-            .unwrap();
-        ProjectDoc::seed(&mut doc);
-        assert_eq!(ProjectDoc::read(&doc), project);
-        assert!(doc.get(&ROOT, V2_KEY).unwrap().is_some());
-        assert!(doc.get(&ROOT, LEGACY_KEY).unwrap().is_some());
     }
     /// Concurrent participants converge per adjustment: interleaved adds, independent
     /// metadata/parameter edits, and delete-wins without resurrection.

@@ -190,6 +190,42 @@ app's `assets/web/`, stored content-addressed as `assets/<sha256>.<ext>` and
 named by their path below that directory (neither Books nor Writer has any; both
 embed their data).
 
+## Apps outside the Tilo tree
+
+`tilo-app build --platform web` (and `package`, `dev`) runs
+`build-web-standalone.sh OUTPUT WORK APP_DIR [--app-only]` from the SDK
+checkout the app builds against. A crate's symbols carry its Cargo metadata
+hash, which covers its path relative to the workspace root, so the app cannot
+simply be built in its own workspace. `web-runtime/external-workspace.mjs`
+makes `WORK/workspace`, a workspace that mirrors the checkout: every top-level
+entry linked in as it is, Tilo's `Cargo.toml` with one more member,
+`external/<package>`, and Tilo's `Cargo.lock`. The member is the app's package
+with its Tilo dependencies pointed into the mirror (`tilo-app` without default
+features, the portable toolkit); its sources stay where they are. Every build
+step then runs against that workspace (`TILO_WEB_WORKSPACE`), and the core is
+the same core as in the checkout: its ABI id digests only the core's own
+`Cargo.lock` entries, so the app's additions leave it alone.
+
+OUTPUT receives the core's output without `build/`, the app under `apps/`,
+and `web/dev.html` as `index.html`: it mounts the app on the record it had
+before and reloads when a new build is served (under `tilo-app dev`, the
+server's `/__tilo-dev/build` generation; elsewhere the module digest in
+`app.json`). `--app-only` rebuilds only the side module against the core in
+WORK and replaces only `apps/` in OUTPUT; when an edit made the module import
+something the core does not export yet, it links the core again.
+
+The app joins `TILO_WEB_COLLECTION`, so the core exports what it imports from
+crates that are not the toolkit's (`automerge`, `serde_json`, generic
+instantiations). A registry core is built for the default collection only: an
+app outside it can import something that core does not export, and the page
+refuses to link it (`unresolved.txt` names what is missing) until the app
+drops that import or the core's collection grows.
+
+`build-web-core.sh` keeps the core in OUTPUT when cargo rebuilt nothing and
+the ABI, features, collection and the scripts themselves are unchanged, and
+publishes fonts and measures sizes again only when their inputs changed, so a
+repeated build costs the cargo check and the app's link.
+
 ## Loading apps in the page
 
 ```js
@@ -502,7 +538,9 @@ node --test crates/browser/tilo-browser-runtime/web/dylink.test.mjs \
   crates/browser/tilo-browser-runtime/web/app-installer.test.mjs \
   crates/browser/tilo-browser-runtime/web/app-directory.test.mjs \
   crates/browser/tilo-browser-runtime/web/open-file.test.mjs \
-  crates/browser/tilo-browser-runtime/scripts/web-runtime/bundle-glue.test.mjs
+  crates/browser/tilo-browser-runtime/scripts/web-runtime/bundle-glue.test.mjs \
+  crates/browser/tilo-browser-runtime/scripts/web-runtime/abi.test.mjs \
+  crates/browser/tilo-browser-runtime/scripts/web-runtime/external-workspace.test.mjs
 cargo test --locked -j4 -p tilo-browser-runtime --lib catalog::
 # the wasm32 type check CI runs for every change these builds depend on
 tools/ci/check-wasm.sh

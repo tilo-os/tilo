@@ -5081,8 +5081,6 @@ impl Widget for PdfApp {
             self.pin_source(state);
             self.adopt_existing(state);
         }
-        // Comments written before their text was rich text come across once.
-        PdfDoc::migrate_comment_text(state);
         self.reload(state);
         self.sync_reader_markup(state);
         self.refresh_search_catalog(state);

@@ -1474,14 +1474,7 @@ impl Widget for FirewallApp {
                     if self.config.zone(self.selected_zone).is_none() {
                         self.selected_zone = self.config.default_zone;
                     }
-                    // A legacy JSON document is accepted once, then promoted
-                    // to native maps before any visible control can dispatch.
-                    let snapshot = if FirewallDoc::has_native(state) {
-                        self.config.to_json()
-                    } else {
-                        FirewallDoc::store(state, &self.config)
-                    };
-                    self.last_json = Some(snapshot);
+                    self.last_json = Some(self.config.to_json());
                 } else {
                     self.status = "Shared firewall configuration was rejected as invalid".into();
                 }

@@ -29,6 +29,7 @@ pub mod portability;
 mod resource_kinds;
 pub mod size;
 pub mod standalone;
+pub mod web;
 
 const STARTER_APP_TEMPLATE: &str = include_str!("../templates/starter.rs");
 const DATA_APP_TEMPLATE: &str = include_str!("../templates/data.rs");
@@ -502,6 +503,8 @@ pub enum PackagePlatform {
     Windows,
     /// One self-contained macOS executable with the toolkit linked in.
     Macos,
+    /// A WebAssembly side module of the browser's toolkit core.
+    Web,
 }
 
 impl PackagePlatform {
@@ -512,6 +515,7 @@ impl PackagePlatform {
             Self::Tilo => registry_types::TILO_OS_PLATFORM,
             Self::Windows => registry_types::WINDOWS_PLATFORM,
             Self::Macos => registry_types::MACOS_PLATFORM,
+            Self::Web => registry_types::WEB_PLATFORM,
         }
     }
 
@@ -523,13 +527,14 @@ impl PackagePlatform {
             Self::Tilo => format!("{arch}-unknown-linux-gnu"),
             Self::Windows => format!("{arch}-pc-windows-msvc"),
             Self::Macos => format!("{arch}-apple-darwin"),
+            Self::Web => "wasm32-unknown-unknown".to_owned(),
         }
     }
 
     const fn executable_suffix(self) -> &'static str {
         match self {
             Self::Windows => ".exe",
-            Self::Tilo | Self::Macos => "",
+            Self::Tilo | Self::Macos | Self::Web => "",
         }
     }
 }
@@ -4598,6 +4603,9 @@ struct AppPackageSpec {
 /// Returns an error when preflight, compilation, staging, packing, or
 /// verification fails, or when the destination exists without `force`.
 pub fn package_app(start: &Path, request: &PackageRequest) -> Result<PackageOutcome> {
+    if request.platform == PackagePlatform::Web {
+        return web::package_web(start, request);
+    }
     let app_dir = resolve_app_dir(start)?;
     let report = doctor_resolved_app(app_dir.clone());
     if !report.is_ready() {

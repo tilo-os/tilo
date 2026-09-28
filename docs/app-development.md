@@ -598,6 +598,8 @@ complete Cargo/app process group, so an earlier window cannot be stranded
 beside the new one.
 Use `--app-only` when toolkit edits should not restart this app, and
 `--debounce-ms` to adjust the default 150 ms quiet period.
+`tilo-app dev --platform web` runs the same loop in the browser
+([The web](#the-web)).
 
 Every template starts on the app framework (`ui::framework`): the app's
 state is a `#[derive(Model)]` resource, every edit is an `#[action]` method in
@@ -729,6 +731,46 @@ Build on the system you target, or with a cross toolchain Cargo can drive;
 A Tilo OS package declares only the architecture it was built for, at the
 level `[package.isa]` names for it (`tilo-app new` declares `v3` and
 `aarch64`).
+
+### The web
+
+In the browser the toolkit is a WebAssembly core, and an app is a small side
+module the page links into it at run time, as a thin app links the toolkit
+the OS ships:
+
+```bash
+tilo-app build --platform web      # target/web: the core, the app and index.html
+tilo-app dev --platform web        # serve it on http://127.0.0.1:4321/, rebuild on save
+tilo-app package --platform web    # dist/<pkg>-web-wasm32.tapp
+```
+
+Nothing in the app is web-specific: the build registers the `definition()`
+that `ui::dev_reload_entry!` defines, as component apps export theirs. It
+comes from the SDK checkout the app builds against
+(`crates/browser/tilo-browser-runtime`, see its `WEB_RUNTIME.md`): the app is
+built as a member of a workspace that mirrors the checkout, so every crate it
+shares with the core compiles to the core's symbols, and a crate it needs with
+features the core lacks is named and refused. The first build compiles and
+links the core, a few minutes; later builds keep it while nothing under it
+changed, and `--app-only` relinks only the app against the core already built.
+
+The core the build links exports what the app imports. The core the registry
+serves is built for Tilo's own web apps, so a package that imports something
+only this app uses (a generic instantiation from `serde_json`, say) can fail
+to link in a page that runs that core; the page names the missing symbols.
+
+`dev --platform web` serves the page and rebuilds after every save. An edit to
+the app relinks only its module; the page notices the finished build and
+reloads into the same record. The record's state lives in the browser's
+storage, not in the module, so the document survives the new code. An edit
+to the SDK rebuilds the core too. `--bind` picks another address.
+
+The build needs wasm-bindgen 0.2.108, binaryen's `wasm-opt`, lld's `wasm-ld`,
+Node.js and brotli, which the builder image `tilo-app add ci` uses has.
+`TILO_WEB_BUILD_RUNNER` runs the build under a command prefix instead: with
+`rcargo --fetch web exec --` it runs on an rcargo builder and brings
+`target/web` back. A web package's `[budget]` applies to its module as it
+does to a thin binary.
 
 ### Publishing
 

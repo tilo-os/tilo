@@ -98,7 +98,22 @@ const GITHUB_BUILDS: &[Build] = &[
         runner: "macos-15-intel",
         builder: false,
     },
+    // The web side module builds on Linux in the builder, which carries the
+    // web toolchain (wasm-bindgen, wasm-opt, wasm-ld, Node.js, brotli).
+    Build {
+        platform: "web",
+        arch: "wasm32",
+        runner: "ubuntu-latest",
+        builder: true,
+    },
 ];
+
+impl Build {
+    /// Built on the forge's Linux `x86_64` runner, the one every forge has.
+    fn on_default_runner(&self) -> bool {
+        self.builder && self.arch != "aarch64"
+    }
+}
 
 /// What `tilo-app add ci` wrote, or would write.
 #[derive(Debug)]
@@ -263,7 +278,7 @@ fn workflow(forge: Forge, runner: &str, working_directory: &str, lock: &str) -> 
         }
         Forge::Forgejo | Forge::Gitea => {
             for build in GITHUB_BUILDS.iter().filter(|build| build.builder) {
-                if build.arch == "x86_64" {
+                if build.on_default_runner() {
                     matrix_entry(&mut out, build, "", runner);
                 } else {
                     matrix_entry(&mut out, build, "# ", "your-aarch64-runner");
@@ -318,7 +333,7 @@ fn workflow(forge: Forge, runner: &str, working_directory: &str, lock: &str) -> 
 }
 
 fn runner_for<'a>(build: &'a Build, linux_x86: &'a str) -> &'a str {
-    if build.platform == "tilo" && build.arch == "x86_64" {
+    if build.on_default_runner() {
         linux_x86
     } else {
         build.runner
@@ -391,7 +406,8 @@ mod tests {
                 "windows-x86_64",
                 "windows-aarch64",
                 "macos-aarch64",
-                "macos-x86_64"
+                "macos-x86_64",
+                "web-wasm32"
             ]
         );
         assert_eq!(
@@ -425,8 +441,21 @@ mod tests {
         let include = yaml["jobs"]["package"]["strategy"]["matrix"]["include"]
             .as_sequence()
             .expect("matrix");
-        assert_eq!(include.len(), 1, "only the x86_64 Tilo build is on");
-        assert_eq!(include[0]["runner"].as_str(), Some("codeberg-small"));
+        let builds: Vec<(&str, &str)> = include
+            .iter()
+            .map(|entry| {
+                (
+                    entry["platform"].as_str().unwrap_or_default(),
+                    entry["runner"].as_str().unwrap_or_default(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            builds,
+            [("tilo", "codeberg-small"), ("web", "codeberg-small")],
+            "the Linux x86_64 builds are on"
+        );
+        assert!(text.contains("# - { platform: tilo, arch: aarch64"));
         assert!(text.contains("https://code.forgejo.org/forgejo/upload-artifact@v4"));
         assert!(!text.contains("actions/upload-artifact"));
         assert_eq!(

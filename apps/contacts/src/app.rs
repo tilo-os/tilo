@@ -6842,10 +6842,6 @@ impl Widget for ContactsApp {
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         let (state, path) = ui::doc::document(state, path);
-        // Legacy rows receive deterministic read identities, then this small
-        // canonical migration persists them before UI edits/actions can target
-        // a row. It only touches missing row ids and is idempotent.
-        ContactsDoc::migrate_legacy_rows(state);
         if let Some((token, import_as_new)) = self.pending_conflict_resolution.take()
             && let Err(error) = self.resolve_import_conflict(state, &token, import_as_new)
         {

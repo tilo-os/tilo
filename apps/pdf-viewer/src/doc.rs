@@ -71,8 +71,6 @@ use std::collections::HashSet;
 
 /// Where a comment or reply keeps its text: rich text.
 const TEXT: &str = "text";
-/// Where the first format kept it: a plain string.
-const LEGACY_BODY: &str = "body";
 use ui::doc::{read_bool, read_number, read_scalar, read_str};
 
 use automerge::transaction::Transactable;
@@ -1157,21 +1155,14 @@ impl PdfDoc {
     }
 
     /// Write a comment or reply's text as rich text under its [`TEXT`] key,
-    /// replacing what it held, and drop a plain `body` left by the first
-    /// format.
+    /// replacing what it held.
     fn write_text(doc: &mut AutoCommit, entry: &ObjId, clips: &[qdoc_rich_text::ClipBlock]) {
         if let Err(error) = tilo_rich_text::put_rich_text(doc, entry, TEXT, clips) {
             tracing::warn!(%error, "comment text not written");
-            return;
-        }
-        if doc.get(entry, LEGACY_BODY).ok().flatten().is_some() {
-            let _ = doc.delete(entry, LEGACY_BODY);
         }
     }
 
-    /// A comment or reply's text: its plain text and its paragraphs. Text
-    /// stored in the first format (a plain `body`) reads as a paragraph per
-    /// line until [`Self::migrate_comment_text`] rewrites it.
+    /// A comment or reply's text: its plain text and its paragraphs.
     fn read_text(doc: &AutoCommit, entry: &ObjId) -> (String, Vec<ui::widget::BlockContent>) {
         if let Some(root) = tilo_rich_text::rich_text_at(doc, entry, TEXT) {
             return (
@@ -1179,41 +1170,7 @@ impl PdfDoc {
                 tilo_rich_text::blocks_under(doc, &root).unwrap_or_default(),
             );
         }
-        let body = read_str(doc, entry, LEGACY_BODY).unwrap_or_default();
-        let blocks = tilo_rich_text::plain_blocks(&body);
-        (body, blocks)
-    }
-
-    /// Rewrite every comment and reply still holding the first format's
-    /// plain `body` as rich text, a paragraph per line, in place and once:
-    /// an entry that has rich text is left as it is. Returns whether
-    /// anything was rewritten.
-    pub fn migrate_comment_text(doc: &mut AutoCommit) -> bool {
-        let mut legacy = Vec::new();
-        for comment in Self::entries(doc, "comments") {
-            legacy.push(comment.clone());
-            if let Ok(Some((Value::Object(ObjType::List), replies))) = doc.get(&comment, "replies")
-            {
-                for index in 0..doc.length(&replies) {
-                    if let Ok(Some((Value::Object(ObjType::Map), reply))) = doc.get(&replies, index)
-                    {
-                        legacy.push(reply);
-                    }
-                }
-            }
-        }
-        let mut changed = false;
-        for entry in legacy {
-            if tilo_rich_text::rich_text_at(doc, &entry, TEXT).is_some() {
-                continue;
-            }
-            let Some(body) = read_str(doc, &entry, LEGACY_BODY) else {
-                continue;
-            };
-            Self::write_text(doc, &entry, &tilo_rich_text::plain_clips(&body));
-            changed = true;
-        }
-        changed
+        (String::new(), Vec::new())
     }
 
     pub fn list_comments(doc: &AutoCommit) -> Vec<Comment> {
@@ -1239,12 +1196,9 @@ impl PdfDoc {
                 let mut seen_reply_ids = HashSet::new();
                 for j in 0..doc.length(&rl) {
                     if let Ok(Some((Value::Object(ObjType::Map), rm))) = doc.get(&rl, j) {
-                        // Old documents predate reply ids.  Give their
-                        // read-only projection a deterministic legacy key;
-                        // newly-authored replies always persist their UUID and
-                        // are never renumbered when siblings arrive.
-                        let id = read_str(doc, &rm, "id")
-                            .unwrap_or_else(|| Self::legacy_reply_id(&id, &rm));
+                        let Some(id) = read_str(doc, &rm, "id") else {
+                            continue;
+                        };
                         if !seen_reply_ids.insert(id.clone()) {
                             continue;
                         }
@@ -1339,15 +1293,6 @@ impl PdfDoc {
                 Self::write_text(doc, &rm, clips);
             }
         }
-    }
-
-    /// Stable projection for old reply maps which had no id on disk.  This is
-    /// deliberately read-only: writing a generated id while listing would
-    /// create a surprising local edit.  The map's Automerge object id remains
-    /// stable through insertions and merges, so legacy siblings do not get
-    /// renumbered merely because a new reply is added.
-    fn legacy_reply_id(comment_id: &str, reply: &ObjId) -> String {
-        format!("legacy:{comment_id}:{reply}")
     }
 
     // ---- signatures -------------------------------------------------
@@ -1525,75 +1470,6 @@ mod tests {
             ink,
             space: crate::model::GeomSpace::Page,
         }
-    }
-
-    /// A notebook written before comment text was rich text: each comment
-    /// and reply a plain `body` string, as the first format stored it.
-    fn first_format_comments() -> AutoCommit {
-        let mut doc = AutoCommit::new();
-        let list = doc.put_object(&ROOT, "comments", ObjType::List).unwrap();
-        let comment = doc.insert_object(&list, 0, ObjType::Map).unwrap();
-        doc.put(&comment, "id", "c-1").unwrap();
-        doc.put(&comment, "page", 1_i64).unwrap();
-        doc.put(&comment, "author", "Ada").unwrap();
-        doc.put(
-            &comment,
-            "body",
-            "First line\n\nThird line, after a blank one",
-        )
-        .unwrap();
-        doc.put(&comment, "created", 1_i64).unwrap();
-        doc.put(&comment, "resolved", false).unwrap();
-        let replies = doc.put_object(&comment, "replies", ObjType::List).unwrap();
-        let reply = doc.insert_object(&replies, 0, ObjType::Map).unwrap();
-        doc.put(&reply, "id", "r-1").unwrap();
-        doc.put(&reply, "author", "Bea").unwrap();
-        doc.put(&reply, "body", "Agreed.").unwrap();
-        // A reply of the oldest format: no id, an empty body.
-        let bare = doc.insert_object(&replies, 1, ObjType::Map).unwrap();
-        doc.put(&bare, "author", "Cy").unwrap();
-        doc.put(&bare, "body", "").unwrap();
-        doc.commit();
-        doc
-    }
-
-    #[test]
-    fn first_format_comment_text_comes_across_whole_and_once() {
-        let mut doc = first_format_comments();
-        let before = PdfDoc::list_comments(&doc);
-        assert_eq!(
-            before[0].body,
-            "First line\n\nThird line, after a blank one"
-        );
-        assert_eq!(before[0].blocks.len(), 3, "read as a paragraph per line");
-
-        assert!(PdfDoc::migrate_comment_text(&mut doc));
-        let after = PdfDoc::list_comments(&doc);
-        assert_eq!(after[0].body, before[0].body, "nothing is lost");
-        let texts: Vec<&str> = after[0].blocks.iter().map(|b| b.text.as_str()).collect();
-        assert_eq!(texts, ["First line", "", "Third line, after a blank one"]);
-        assert_eq!(after[0].replies.len(), 2);
-        assert_eq!(after[0].replies[0].body, "Agreed.");
-        assert_eq!(after[0].replies[0].id, "r-1");
-        assert_eq!(after[0].replies[1].body, "");
-        assert_eq!(
-            after[0].replies[1].id, before[0].replies[1].id,
-            "a legacy reply keeps its projected id"
-        );
-        let comment = PdfDoc::entries(&doc, "comments")[0].clone();
-        assert!(
-            doc.get(&comment, "body").unwrap().is_none(),
-            "the plain body is gone"
-        );
-        assert!(tilo_rich_text::rich_text_at(&doc, &comment, "text").is_some());
-
-        // Once is enough: a second pass writes nothing.
-        let heads = doc.get_heads();
-        assert!(!PdfDoc::migrate_comment_text(&mut doc));
-        assert_eq!(doc.get_heads(), heads);
-        // And the rewrite survives a save and load.
-        let reloaded = AutoCommit::load(&doc.save()).unwrap();
-        assert_eq!(PdfDoc::list_comments(&reloaded)[0].body, before[0].body);
     }
 
     #[test]

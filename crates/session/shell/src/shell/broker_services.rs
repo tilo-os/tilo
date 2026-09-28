@@ -289,10 +289,52 @@ fn stage_launch_content(
 }
 
 /// Launches installed apps. With the session's workspace tree it can record
-/// a workspace author granting an app authorship before launching it.
-pub struct NativeLauncher(pub Option<WorkspaceTreeHandle>);
+/// a workspace author granting an app authorship before launching it; with
+/// the network, an app opened in a room another device governs is opened by
+/// that governor, which creates and places its record.
+pub struct NativeLauncher(
+    pub Option<WorkspaceTreeHandle>,
+    pub Option<Arc<super::network::ShellNetwork>>,
+);
+
+/// How long a launch waits for a room's governor to open the app.
+const GOVERNED_OPEN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(35);
 
 impl NativeLauncher {
+    /// Open `app` through the governor of `workspace`'s room, when another
+    /// device governs it. `None` when this session opens it itself.
+    ///
+    /// Such a room only holds records its governor created, so a local
+    /// launch would open an app whose document the room does not hold. The
+    /// governor's open places the window in the room; the session then opens
+    /// its own instance of that window through [`super::peer_windows`].
+    fn open_through_governor(
+        &self,
+        app: &str,
+        workspace: &tilo_desktop_model::Workspace,
+    ) -> Option<Result<(), String>> {
+        let resource = format!(
+            "{}{app}",
+            tilo_agent_control_protocol::OPEN_APP_RESOURCE_PREFIX
+        );
+        let answer = self
+            .1
+            .as_ref()
+            .filter(|network| network.governed_elsewhere(workspace.room))?
+            .invoke_governor(
+                workspace.room,
+                tilo_desktop_model::commands::APP_ID,
+                &resource,
+                tilo_agent_control_protocol::OPEN_APP_ACTION,
+                None,
+            );
+        Some(match answer.wait_timeout(GOVERNED_OPEN_TIMEOUT) {
+            Ok(Some(result)) => result.map(drop),
+            Ok(None) => Err("the workspace host stopped before opening the app".into()),
+            Err(_) => Err("the workspace host did not open the app in time".into()),
+        })
+    }
+
     /// Record `person` granting `app` authorship of `workspace`'s space and
     /// add the grant to the launch's copy, unless the app already holds it.
     /// The tree checks `person`'s own authority; a refusal launches a viewer.
@@ -350,6 +392,9 @@ impl LauncherServices for NativeLauncher {
             .collect()
     }
     fn launch(&self, app: &str, workspace: &tilo_desktop_model::Workspace) -> Result<(), String> {
+        if let Some(opened) = self.open_through_governor(app, workspace) {
+            return opened;
+        }
         super::launcher::launch_in_workspace(app, workspace)
             .map(|_| ())
             .map_err(|e| e.to_string())
@@ -360,6 +405,11 @@ impl LauncherServices for NativeLauncher {
         workspace: &tilo_desktop_model::Workspace,
         content: LaunchContent<'_>,
     ) -> Result<(), String> {
+        if content.hash.is_empty()
+            && let Some(opened) = self.open_through_governor(app, workspace)
+        {
+            return opened;
+        }
         let mut workspace = workspace.clone();
         if let Some(person) = content.author {
             self.grant_authorship(person, app, &mut workspace);
@@ -860,7 +910,7 @@ pub fn native_services(
         Arc::new(NativeAppActionGrants(tree.clone()))
             as Arc<dyn tilo_action_broker::services::AppActionGrants>
     });
-    let launcher = Arc::new(NativeLauncher(membership.clone()));
+    let launcher = Arc::new(NativeLauncher(membership.clone(), network.clone()));
     HostServices {
         app_action_access: Some(super::app_action_access::installed_resolver()),
         app_action_grants,
@@ -910,7 +960,7 @@ pub(crate) fn test_broker_with_membership(
     let authority = Arc::new(NativeWorkspaceAuthority(membership.clone()));
     let services = HostServices {
         legacy_workspace: Some(authority.clone()),
-        launcher: Some(Arc::new(NativeLauncher(Some(membership.clone())))),
+        launcher: Some(Arc::new(NativeLauncher(Some(membership.clone()), None))),
         workspace_governance: Some(Arc::new(NativeWorkspaceGovernance(membership.clone()))),
         shortcut_library: Some(Arc::new(NativeShortcutLibrary(membership.clone()))),
         keyboard_shortcuts: Some(Arc::new(NativeKeyboardShortcuts)),
@@ -1286,7 +1336,7 @@ mod tests {
         workspace.set_owner("owner".to_string());
         tree.desktop.workspaces.push(workspace.clone());
         let handle = tree.shared();
-        let launcher = NativeLauncher(Some(handle.clone()));
+        let launcher = NativeLauncher(Some(handle.clone()), None);
         let app = "so.tilo.word-processor";
 
         let mut stranger_copy = workspace.clone();
@@ -1302,6 +1352,7 @@ mod tests {
 
         let mut again = handle.read().desktop.workspaces[0].clone();
         launcher.grant_authorship("owner", app, &mut again);
+        drop(launcher);
         assert_eq!(
             handle.read().desktop.workspaces[0].capabilities.len(),
             stored,

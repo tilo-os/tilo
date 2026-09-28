@@ -49,14 +49,17 @@ workspace = true
 [[example]]
 name = "ui-lab"
 path = "examples/ui_lab.rs"
+test = true
 
 [[example]]
 name = "ui-shots"
 path = "examples/ui_shots.rs"
+test = true
 
 [[example]]
 name = "ui-perf"
 path = "examples/ui_perf.rs"
+test = true
 
 [[example]]
 name = "search-latency"
