@@ -2761,8 +2761,10 @@ fn mark_launch_spawned(package_id: &str, pid: u32) -> Option<u64> {
         .iter_mut()
         .find(|note| note.key == package_id && !note.metric_spawned)?;
     note.metric_spawned = true;
-    tilo_startup_metrics::launch_spawned(note.launch_metric_id, pid);
-    Some(note.launch_metric_id)
+    let launch_id = note.launch_metric_id;
+    drop(pending);
+    tilo_startup_metrics::launch_spawned(launch_id, pid);
+    Some(launch_id)
 }
 
 /// Finish every launch-bound surface that has captured its first frame.
@@ -2789,7 +2791,8 @@ pub(crate) fn record_first_present(surface_id: u64, frame_seq: u64) {
         return;
     }
     let session = LaunchSession::current();
-    if let Some(launch) = lock(&session.claimed_surfaces).remove(&surface_id) {
+    let claimed = lock(&session.claimed_surfaces).remove(&surface_id);
+    if let Some(launch) = claimed {
         lock(&session.presented_launches).insert(launch);
     }
 }
