@@ -488,6 +488,8 @@ impl SearchProvider for HostApplicationsProvider {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
     use crate::shell::chrome_state::ChromeState;
     use crate::shell::state::{WorkspaceTree, WorkspaceTreeHandle};
@@ -823,7 +825,7 @@ mod tests {
                 vec![crate::shell::launcher::InstalledApp {
                     package_id: "so.tilo.terminal".into(),
                     display_name: "Terminal".into(),
-                    localized_names: Default::default(),
+                    localized_names: BTreeMap::default(),
                     category: None,
                     version: "1".into(),
                     manifest_path: std::path::PathBuf::from("/x/manifest.toml"),
@@ -875,7 +877,7 @@ mod tests {
         crate::shell::launcher::InstalledApp {
             package_id: package_id.into(),
             display_name: display_name.into(),
-            localized_names: Default::default(),
+            localized_names: BTreeMap::default(),
             category: None,
             version: "1".into(),
             manifest_path: std::path::PathBuf::from("/x/manifest.toml"),

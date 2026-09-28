@@ -418,7 +418,7 @@ mod tests {
             let chrome = ChromeState::new(crate::shell::state::WorkspaceTree::bootstrap_default());
             let policy = SessionActionPolicy::new(tilo_power_mgmt::InhibitRegistry::new());
             policy.set_user_switching(true);
-            policy.clone().detach_from_host();
+            policy.detach_from_host();
             for id in ["suspend", "switch-user", "restart", "shut-down"] {
                 assert!(
                     exact_catalog(&policy, &chrome, id).enumerate().is_empty(),
@@ -446,7 +446,10 @@ mod tests {
                 "the flyout drops suspend, switch user, restart and shut down"
             );
         }
+    }
 
+    #[test]
+    fn invoking_a_session_action_queues_it_and_honours_inhibits() {
         // Phase `invoking_queues_for_the_executor_and_actuates_nothing_itself`.
         {
             let chrome = ChromeState::new(crate::shell::state::WorkspaceTree::bootstrap_default());

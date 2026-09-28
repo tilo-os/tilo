@@ -3196,6 +3196,8 @@ use crate::shell::state::WorkspaceExt as _;
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
 
     fn launch_event(kind: LaunchEventKind) -> LaunchEvent {
@@ -4072,7 +4074,7 @@ mod tests {
             let app = InstalledApp {
                 package_id: "so.tilo.hello".into(),
                 display_name: "Hello".into(),
-                localized_names: Default::default(),
+                localized_names: BTreeMap::default(),
                 category: None,
                 version: "0.1.0".into(),
                 manifest_path: PathBuf::from("/apps/hello/manifest.toml"),
@@ -4120,7 +4122,7 @@ mod tests {
             let app = InstalledApp {
                 package_id: "so.tilo.hello".into(),
                 display_name: "Hello".into(),
-                localized_names: Default::default(),
+                localized_names: BTreeMap::default(),
                 category: None,
                 version: "0.1.0".into(),
                 manifest_path: PathBuf::from("/apps/hello/manifest.toml"),
@@ -4222,7 +4224,7 @@ mod tests {
             let app = InstalledApp {
                 package_id: WORKSPACE_AGENT_PACKAGE_ID.into(),
                 display_name: "Agent".into(),
-                localized_names: Default::default(),
+                localized_names: BTreeMap::default(),
                 category: None,
                 version: "0.1.0".into(),
                 manifest_path: PathBuf::from("/apps/agent/manifest.toml"),
@@ -4511,7 +4513,7 @@ mod tests {
             remember_launch(&InstalledApp {
                 package_id: "so.tilo.matchfixture".into(),
                 display_name: "Match Fixture".into(),
-                localized_names: Default::default(),
+                localized_names: BTreeMap::default(),
                 category: None,
                 version: "0.1.0".into(),
                 manifest_path: PathBuf::new(),
@@ -4549,7 +4551,7 @@ mod tests {
         InstalledApp {
             package_id: package_id.to_string(),
             display_name: display_name_for_package_id(package_id),
-            localized_names: Default::default(),
+            localized_names: BTreeMap::default(),
             category: None,
             version: "0.1.0".into(),
             manifest_path: PathBuf::from("/apps/x/manifest.toml"),
