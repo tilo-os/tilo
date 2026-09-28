@@ -134,6 +134,26 @@ pub fn configured_font_system() -> FontSystem {
     crate::font_catalog::fixture_font_system()
 }
 
+thread_local! {
+    static LAYOUT_RENDERERS: std::cell::RefCell<Vec<TextRenderer>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Run `f` with a layout-only renderer at `text_scale`, for widgets that
+/// must measure in `apply_layout`, which is handed no renderer. Building one
+/// loads every installed font (tens of milliseconds) and layout runs every
+/// frame an animation is live, so renderers are pooled per thread; a nested
+/// call takes its own from the pool rather than borrowing the outer one.
+pub fn with_layout_renderer<R>(text_scale: f32, f: impl FnOnce(&mut TextRenderer) -> R) -> R {
+    let mut renderer = LAYOUT_RENDERERS
+        .with(|pool| pool.borrow_mut().pop())
+        .unwrap_or_else(TextRenderer::new);
+    renderer.set_text_scale(text_scale);
+    let out = f(&mut renderer);
+    LAYOUT_RENDERERS.with(|pool| pool.borrow_mut().push(renderer));
+    out
+}
+
 /// Build a font system whose generic families are deterministic across the
 /// developer distrobox and the Tilo image. cosmic-text's platform fallback
 /// still supplies script-aware Noto faces for Arabic, Indic, CJK, emoji, and
@@ -4302,3 +4322,37 @@ mod tests {
 
 #[cfg(test)]
 mod renderer_regressions;
+
+#[cfg(test)]
+mod layout_renderer_pool {
+    use super::*;
+
+    #[test]
+    fn layout_passes_reuse_pooled_renderers_instead_of_reloading_fonts() {
+        let constructions = || FONT_SYSTEM_CONSTRUCTIONS.with(std::cell::Cell::get);
+        FONT_SYSTEM_CONSTRUCTIONS.with(|count| count.set(0));
+        for _ in 0..8 {
+            with_layout_renderer(1.0, |tr| {
+                tr.measure("Files", 14.0, None);
+            });
+        }
+        assert_eq!(
+            constructions(),
+            1,
+            "a repeated layout pass loads fonts once"
+        );
+
+        let scales = with_layout_renderer(2.0, |outer| {
+            let inner = with_layout_renderer(1.5, |inner| inner.text_scale());
+            (outer.text_scale(), inner)
+        });
+        assert_eq!(
+            scales,
+            (2.0, 1.5),
+            "a nested pass has its own renderer and scale"
+        );
+        assert_eq!(constructions(), 2, "nesting adds one renderer to the pool");
+        with_layout_renderer(1.0, |_| with_layout_renderer(1.0, |_| ()));
+        assert_eq!(constructions(), 2, "and later nested passes reuse it");
+    }
+}
