@@ -78,6 +78,18 @@ first so a builder published before that recipe change still works, at the cost
 of one ~700 MB download per job until the next builder is promoted. The
 aggregate requires the job exactly when the selector does.
 
+When the selection includes a browser crate (one built on `wasm-bindgen`; the
+web core depends on the toolkit and every app of its collection, so every
+change to the SDK crates beneath them), a separate `wasm` job type-checks the
+selected browser crates for `wasm32-unknown-unknown` with `-D warnings`, then
+runs `tools/ci/check-wasm.sh`: each wasm32 build with the packages and
+features its build script uses (the `dylink` core with its app collection, the
+Cloud frontend, the registry verifier), code the default-feature check does not
+compile. Native jobs compile neither code gated to wasm32 nor the browser's
+view of modules gated away from it. It is a type check, not a build: linking
+needs wasm-bindgen and binaryen. The aggregate requires the job exactly when
+the selector does.
+
 Check scheduling lives in `tools/ci/affected_packages.py`; app releases share
 only the Git and Cargo graph helpers in `tools/ci/workspace_graph.py`. Changing
 check shard counts does not invalidate apps. Graph changes still invalidate
