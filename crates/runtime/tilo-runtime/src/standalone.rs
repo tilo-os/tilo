@@ -62,11 +62,16 @@ impl RuntimeServices for Standalone {
         let lock = profile::lock(root)?;
         stage("provisioning the collaboration identity");
         let identity_dir = runtime_identity::identity_dir_from_env()?;
+        let paths = tilo_identity_host::provisioning::collaboration_identity_paths();
         tilo_identity_host::provisioning::ensure_foreign_collaboration_identity(
             &identity_dir,
-            &tilo_identity_host::provisioning::collaboration_identity_paths(),
+            &paths,
             IdentityStorage::Platform,
         )?;
+        let device = tilo_user_identity::persist::read_device_key(&paths.device_privkey)
+            .map_err(io::Error::other)?
+            .verifying_key()
+            .to_bytes();
         stage("loading the workspace");
         let workspace = ProfileWorkspace::open(root)?;
         let room_id = workspace.room();
@@ -91,7 +96,10 @@ impl RuntimeServices for Standalone {
             PeerPublisher::disabled(),
             None,
             HostServices {
-                native_certificates: Some(Arc::new(Certificates)),
+                native_certificates: Some(Arc::new(Certificates {
+                    room: room_id.clone(),
+                    device,
+                })),
                 launchable_catalogue: Some(root.join("state/launchable-actions.json")),
                 launcher: Some(Arc::clone(&apps) as Arc<dyn LauncherServices>),
                 app_action_access: Some(apps.access_resolver()),
@@ -185,7 +193,12 @@ impl ActionHost for RuntimeActionHost {
 }
 
 /// The identity store's device-certificate checks, as the broker asks them.
-struct Certificates;
+/// This device governs the profile's own room, so a foreign runtime is not
+/// held to the cap there.
+struct Certificates {
+    room: String,
+    device: [u8; 32],
+}
 
 impl tilo_action_broker::peer_actions::CertificateAuthority for Certificates {
     fn authorize(
@@ -201,6 +214,9 @@ impl tilo_action_broker::peer_actions::CertificateAuthority for Certificates {
         cert: &tilo_user_identity::DeviceCert,
     ) -> Result<(), String> {
         tilo_identity_host::certificates::authorize_join(&room.to_string(), cert)
+    }
+    fn governs(&self, room: uuid::Uuid, cert: &tilo_user_identity::DeviceCert) -> bool {
+        uuid::Uuid::parse_str(&self.room) == Ok(room) && cert.device_public_key == self.device
     }
 }
 

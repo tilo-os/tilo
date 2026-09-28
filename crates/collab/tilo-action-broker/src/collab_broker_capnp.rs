@@ -76,7 +76,7 @@ use crate::collab_broker::{
 };
 use crate::collab_outbound::PeerPublisher;
 use crate::services::{HostServices, WorkspaceAuthorityHandle as WorkspaceTreeHandle};
-use collab_types::foreign_device::{foreign_device_role, on_foreign_device};
+use collab_types::foreign_device::{cap_applies, foreign_device_role, on_foreign_device};
 use collab_types::{Principal, Role as CapRole};
 use tilo_desktop_model::{DesktopTree, WorkspaceTaskStatus};
 
@@ -419,18 +419,31 @@ struct CollabLaunchHandoff {
 struct VerifiedJoinIdentity {
     user_public_key: [u8; 32],
     device_public_key: [u8; 32],
-    /// The certificate marks a foreign device, so its role is capped.
-    foreign: bool,
+    /// A foreign device in a room it does not govern: its role is capped.
+    capped: bool,
 }
 
 impl VerifiedJoinIdentity {
-    fn of(cert: &tilo_user_identity::DeviceCert) -> Self {
+    fn of(cert: &tilo_user_identity::DeviceCert, capped: bool) -> Self {
         Self {
             user_public_key: cert.user_public_key,
             device_public_key: cert.device_public_key,
-            foreign: cert.capabilities.foreign,
+            capped,
         }
     }
+}
+
+/// Whether `cert`'s device is held to the foreign-device cap in `room`, as
+/// far as `authority` knows who governs it.
+fn cap_applies_in(
+    authority: Option<&dyn super::peer_actions::CertificateAuthority>,
+    room: &str,
+    cert: &tilo_user_identity::DeviceCert,
+) -> bool {
+    let governs = authority
+        .zip(uuid::Uuid::parse_str(room).ok())
+        .is_some_and(|(authority, room)| authority.governs(room, cert));
+    cap_applies(cert.capabilities.foreign, governs)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -459,8 +472,8 @@ struct AdmittedJoinIdentity {
 pub struct BrokerActor {
     id: String,
     is_agent: bool,
-    /// A person acting from a device whose certificate marks it foreign.
-    foreign: bool,
+    /// A person acting from a foreign device in a room it does not govern.
+    capped: bool,
 }
 
 impl BrokerActor {
@@ -469,7 +482,7 @@ impl BrokerActor {
         Self {
             id: id.into(),
             is_agent: false,
-            foreign: false,
+            capped: false,
         }
     }
 
@@ -478,15 +491,7 @@ impl BrokerActor {
         Self {
             id: id.into(),
             is_agent: true,
-            foreign: false,
-        }
-    }
-
-    /// The person `cert` certifies, acting from that certificate's device.
-    fn for_certificate(cert: &tilo_user_identity::DeviceCert) -> Self {
-        Self {
-            foreign: cert.capabilities.foreign,
-            ..Self::person(principal_id_for_root(cert.user_public_key))
+            capped: false,
         }
     }
 
@@ -512,20 +517,19 @@ impl BrokerActor {
             workspace.actor_for_agent(self.id.strip_prefix("agent:").unwrap_or(&self.id))
         } else {
             let person = workspace.actor_for_person_at(&self.id, now);
-            capped_if_foreign(person, self.foreign, workspace, now)
+            capped_if(person, self.capped, workspace, now)
         }
     }
 }
 
-/// `actor`, held to `workspace`'s foreign-device cap when it acts from a
-/// foreign device.
-fn capped_if_foreign(
+/// `actor`, held to `workspace`'s foreign-device cap when `capped`.
+fn capped_if(
     actor: Actor,
-    foreign: bool,
+    capped: bool,
     workspace: &tilo_desktop_model::Workspace,
     now: u64,
 ) -> Actor {
-    if foreign {
+    if capped {
         on_foreign_device(actor, &workspace.capabilities, now)
     } else {
         actor
@@ -537,7 +541,7 @@ impl AdmittedJoinIdentity {
         match &self.agent_id {
             Some(agent) => BrokerActor::agent(format!("agent:{agent}")),
             None => BrokerActor {
-                foreign: self.verified.foreign,
+                capped: self.verified.capped,
                 ..BrokerActor::person(self.principal_id.clone())
             },
         }
@@ -558,7 +562,7 @@ impl AdmittedJoinIdentity {
             return Actor::agent(agent).in_room(room);
         }
         let person = Actor::person(Some(self.role), self.principal_id.clone()).in_room(room);
-        capped_if_foreign(person, self.verified.foreign, workspace, now)
+        capped_if(person, self.verified.capped, workspace, now)
     }
 }
 
@@ -633,7 +637,7 @@ fn admit_verified_join_at(
     let mut role = workspace
         .role_of_at(&principal_id, now)
         .ok_or_else(|| "certified collaboration identity is not a workspace member".to_string())?;
-    if verified.foreign {
+    if verified.capped {
         role = foreign_device_role(role, &workspace.capabilities, now);
     }
     if role == CapRole::Denied {
@@ -682,7 +686,7 @@ fn admit_agent_delegation_at(
         .iter()
         .find(|workspace| workspace.room.to_string() == route.cluster_id)
         .ok_or_else(|| "agent delegation names an unavailable workspace".to_string())?;
-    if admitted.verified.foreign
+    if admitted.verified.capped
         || (workspace.owner.as_ref() != Some(&admitted.principal_id)
             && workspace.decide_at(
                 &workspace.actor_for_person_at(&admitted.principal_id, now),
@@ -747,7 +751,9 @@ fn verify_join_presentation(
             &Signature::from_bytes(&proof),
         )
         .map_err(|_| "collaboration join proof was signed by an unknown device".to_string())?;
-    Ok(VerifiedJoinIdentity::of(&cert))
+    // Without an authority to ask who governs the room, every foreign device
+    // is held to the cap; the caller refines this where it has one.
+    Ok(VerifiedJoinIdentity::of(&cert, cert.capabilities.foreign))
 }
 
 fn verify_join_identity(
@@ -812,14 +818,17 @@ fn verify_join_identity_with_host_scope(
         super::peer_actions::CertificateAuthority::policy_time,
     )?;
     let now_ns = policy_context::sample(registered.clone(), registered.as_ref())?.1;
-    let verified = verify_join_presentation(
-        route,
-        &presentation,
-        &expected_root,
-        now_ns,
-        revoked,
-        enrolled,
-    )?;
+    let verified = VerifiedJoinIdentity {
+        capped: cap_applies_in(authority, &route.cluster_id, &cert),
+        ..verify_join_presentation(
+            route,
+            &presentation,
+            &expected_root,
+            now_ns,
+            revoked,
+            enrolled,
+        )?
+    };
     let membership = membership
         .ok_or_else(|| "certified join has no workspace membership authority".to_string())?;
     let mut admitted = admit_verified_join_at(
@@ -860,7 +869,10 @@ fn verify_enrolled_join_identity(
     let now_ns = policy_context::sample(registered.clone(), registered.as_ref())?.1;
     tilo_user_identity::verify_device_cert_at(&cert, now_ns)
         .map_err(|error| format!("device certificate was rejected: {error}"))?;
-    let verified = VerifiedJoinIdentity::of(&cert);
+    let verified = VerifiedJoinIdentity::of(
+        &cert,
+        cap_applies_in(Some(authority), &route.cluster_id, &cert),
+    );
     let membership = membership
         .ok_or_else(|| "certified join has no workspace membership authority".to_string())?;
     let tree = membership.snapshot()?;
@@ -1284,6 +1296,23 @@ impl CapnpBrokerState {
             policy_time: self.registered_policy_time()?,
             admitted,
         })
+    }
+
+    /// Whether `cert`'s device is held to the foreign-device cap in `room`.
+    fn capped_in(&self, room: &str, cert: &tilo_user_identity::DeviceCert) -> bool {
+        cap_applies_in(
+            self.certificate_authority.get().map(AsRef::as_ref),
+            room,
+            cert,
+        )
+    }
+
+    /// The person `cert` certifies, acting in `room` from that certificate's device.
+    fn certified_person(&self, room: &str, cert: &tilo_user_identity::DeviceCert) -> BrokerActor {
+        BrokerActor {
+            capped: self.capped_in(room, cert),
+            ..BrokerActor::person(principal_id_for_root(cert.user_public_key))
+        }
     }
 
     fn current_action_caller(
@@ -2569,7 +2598,7 @@ impl CapnpBrokerState {
         admit_verified_join_at(
             &tree,
             &route,
-            VerifiedJoinIdentity::of(certificate),
+            VerifiedJoinIdentity::of(certificate, self.capped_in(&route.cluster_id, certificate)),
             now / 1_000_000_000,
         )?;
         let mut workers = self
@@ -5214,7 +5243,7 @@ impl CapnpBrokerState {
             None => workspace.role_of_at(&admitted.principal_id, now),
         }
         .ok_or_else(|| capnp::Error::failed("current document membership expired".into()))?;
-        if admitted.verified.foreign {
+        if admitted.verified.capped {
             role = foreign_device_role(role, &workspace.capabilities, now);
         }
         let mut current = admitted.clone();
@@ -11337,7 +11366,7 @@ pub mod tests {
                     verified: VerifiedJoinIdentity {
                         user_public_key: [0; 32],
                         device_public_key: [0; 32],
-                        foreign: false,
+                        capped: false,
                     },
                     principal_id: "fixture-application".into(),
                     display_handle: None,
@@ -12185,7 +12214,7 @@ pub mod tests {
         VerifiedJoinIdentity {
             user_public_key: root.verifying_key().to_bytes(),
             device_public_key: [42; 32],
-            foreign: false,
+            capped: false,
         }
     }
 
@@ -12261,7 +12290,7 @@ pub mod tests {
         tree.workspaces.push(workspace);
         let native = admit_verified_join(&tree, &route, verified_device(&root)).unwrap();
         let foreign = VerifiedJoinIdentity {
-            foreign: true,
+            capped: true,
             ..verified_device(&root)
         };
         let foreign = admit_verified_join(&tree, &route, foreign).unwrap();
@@ -12291,6 +12320,76 @@ pub mod tests {
         authorize(&foreign, Write).unwrap();
     }
 
+    /// Governs every room for one device; admits every certificate.
+    #[cfg(test)]
+    struct GovernedBy([u8; 32]);
+
+    #[cfg(test)]
+    impl crate::peer_actions::CertificateAuthority for GovernedBy {
+        fn authorize(
+            &self,
+            _room: uuid::Uuid,
+            _certificate: &tilo_user_identity::DeviceCert,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+        fn governs(&self, _room: uuid::Uuid, certificate: &tilo_user_identity::DeviceCert) -> bool {
+            certificate.device_public_key == self.0
+        }
+    }
+
+    #[test]
+    fn a_foreign_device_is_capped_only_in_rooms_it_does_not_govern() {
+        let root = SigningKey::from_bytes(&[25; 32]);
+        let mut workspace =
+            crate::test_support::Workspace::new(crate::test_support::WorkspaceId(5), "Own");
+        workspace.owner = Some(principal_id_for_root(root.verifying_key().to_bytes()));
+        let room = workspace.room.to_string();
+        let mut tree = WorkspaceTree::default();
+        tree.workspaces.push(workspace);
+        let (state, _bridge_rx) = CapnpBrokerState::new(
+            &Arc::new(FanoutState::new()),
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            PeerPublisher::disabled(),
+            Some(tree.clone().shared()),
+            None,
+        );
+        let governor = [7; 32];
+        let authority: Arc<dyn crate::peer_actions::CertificateAuthority> =
+            Arc::new(GovernedBy(governor));
+        assert!(state.certificate_authority.set(authority).is_ok());
+        let foreign_cert = |device| tilo_user_identity::DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: device,
+            device_label: "mac".into(),
+            capabilities: tilo_user_identity::DeviceCapabilities {
+                foreign: true,
+                ..tilo_user_identity::DeviceCapabilities::primary()
+            },
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        let admin = |cert: &tilo_user_identity::DeviceCert| {
+            let identity = VerifiedJoinIdentity::of(cert, state.capped_in(&room, cert));
+            let admitted =
+                admit_verified_join(&tree, &CrdtRoute::cluster(&room), identity).unwrap();
+            let actor = state.certified_person(&room, cert);
+            let admin = state.authorize_invocation_permission(
+                &room,
+                "so.tilo.settings",
+                "workspace.rename",
+                tilo_actions::PermissionRequirement::Admin,
+                &actor,
+                0,
+            );
+            (admitted.role, admin.is_ok())
+        };
+
+        assert_eq!(admin(&foreign_cert(governor)), (CapRole::Owner, true));
+        assert_eq!(admin(&foreign_cert([8; 32])), (CapRole::Editor, false));
+    }
+
     #[test]
     fn a_foreign_device_joins_with_at_most_the_workspace_cap() {
         let root = SigningKey::from_bytes(&[23; 32]);
@@ -12306,7 +12405,7 @@ pub mod tests {
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
         let foreign = VerifiedJoinIdentity {
-            foreign: true,
+            capped: true,
             ..verified_device(&root)
         };
 
@@ -12578,7 +12677,7 @@ pub mod tests {
             VerifiedJoinIdentity {
                 user_public_key: root.verifying_key().to_bytes(),
                 device_public_key: device.verifying_key().to_bytes(),
-                foreign: false,
+                capped: false,
             },
         )
         .expect("owner is admitted");
@@ -14956,7 +15055,7 @@ mod host_worker_capacity_tests {
             verified: VerifiedJoinIdentity {
                 user_public_key: root.verifying_key().to_bytes(),
                 device_public_key: [92; 32],
-                foreign: false,
+                capped: false,
             },
             principal_id: "host".into(),
             display_handle: None,
