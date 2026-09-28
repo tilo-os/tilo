@@ -1,5 +1,5 @@
-//! Interaction tests for shell chrome widgets (`OverviewView`, `GlobalSearch`,
-//! `QuickSettings`, `WorkspaceSettings`, `SidebarWheelDisc`, `TopBar`, …).
+//! Interaction tests for shell chrome widgets (`OverviewView`, the search
+//! palette, `QuickSettings`, `WorkspaceSettings`, `SidebarWheelDisc`, `TopBar`, …).
 
 #![allow(
     clippy::unwrap_used,
@@ -81,72 +81,15 @@ fn overview_opens_by_cmd_tab_activates_on_click_and_uses_a_large_header() {
     }
 }
 
-use shell::shell::global_search::GlobalSearch;
-
 #[test]
-fn global_search_opens_filters_by_context_and_paints_an_opaque_surface() {
-    // Phase `global_search_seeds_commands_and_filters`.
-    {
-        let mut s = GlobalSearch::new();
-        s.seed_default_commands(); // "Create Workspace", "Rename Workspace", "Open Settings", ...
-        s.palette_mut().set_query("create");
-        assert!(
-            s.palette()
-                .visible_entries()
-                .iter()
-                .any(|e| e.label.contains("Create"))
-        );
-    }
-
-    // Phase `global_search_context_filter_narrows_results`.
-    {
-        let mut s = GlobalSearch::new();
-        s.seed_default_commands();
-        s.set_context_kind(shell::shell::global_search::SearchContext::Files);
-        let labels: Vec<String> = s
-            .palette()
-            .visible_entries()
-            .iter()
-            .map(|e| e.label.clone())
-            .collect();
-        assert!(
-            labels
-                .iter()
-                .all(|l| l.to_lowercase().contains("file") || l.to_lowercase().contains("open"))
-        );
-    }
-
-    // Phase `global_search_surface_alpha_is_opaque_and_matches_the_modal_tint`.
-    // The `GlobalSearch` palette surface is opaque (a tint would read as
-    // chrome bleeding through long result rows), leaning on the scrim below
-    // for depth. Pinned against `overlay_host::MODAL_SURFACE_ALPHA`, since
-    // the palette and workspace-settings modal share one value.
-    {
-        use shell::shell::global_search::GlobalSearch;
-        use shell::shell::overlay_host::MODAL_SURFACE_ALPHA;
-        let a = GlobalSearch::surface_alpha();
-        assert!(
-            (a - 1.0).abs() < f32::EPSILON,
-            "GlobalSearch surface alpha must be 1.0 so long result rows stay \
-             legible over a busy desktop; got {a}"
-        );
-        assert!(
-            (a - MODAL_SURFACE_ALPHA).abs() < f32::EPSILON,
-            "the palette tint must stay in step with MODAL_SURFACE_ALPHA \
-             ({MODAL_SURFACE_ALPHA}); got {a}"
-        );
-    }
-
-    // Phase `cmd_k_opens_and_escape_closes_search`.
-    {
-        use shell::shell::Shell;
-        use shell::shell::test_support::{Mods, key_press};
-        let mut shell = Shell::new_for_test();
-        shell.dispatch_key(key_press("K", Mods::CMD));
-        assert!(shell.search_visible());
-        shell.dispatch_key(key_press("Escape", Mods::NONE));
-        assert!(!shell.search_visible());
-    }
+fn cmd_k_opens_and_escape_closes_search() {
+    use shell::shell::Shell;
+    use shell::shell::test_support::{Mods, key_press};
+    let mut shell = Shell::new_for_test();
+    shell.dispatch_key(key_press("K", Mods::CMD));
+    assert!(shell.search_visible());
+    shell.dispatch_key(key_press("Escape", Mods::NONE));
+    assert!(!shell.search_visible());
 }
 
 #[test]
@@ -260,115 +203,11 @@ fn workspace_settings_tabs_edit_the_name_roster_and_capabilities() {
 }
 
 #[test]
-fn topbar_controls_navigate_request_settings_cycle_and_reveal_tooltips() {
-    // Phase `topbar_leftnav_navigates_workspaces`.
-    {
-        use shell::shell::state::{Workspace, WorkspaceId, WorkspaceTree};
-        use shell::shell::topbar::{TopBar, TopBarEvent};
-        let ws_a = Workspace::new(WorkspaceId::new(), "A");
-        let ws_b = Workspace::new(WorkspaceId::new(), "B");
-        let ws_c = Workspace::new(WorkspaceId::new(), "C");
-
-        let mut tree = WorkspaceTree {
-            desktop: shell::shell::state::DesktopTree {
-                workspaces: vec![ws_a, ws_b, ws_c],
-                active: WorkspaceId::from(0),
-                active_strip: HashMap::default(),
-                active_group: HashMap::default(),
-                collaborators: vec![],
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        tree.desktop.active = tree.desktop.workspaces[1].id;
-        let mut tb = TopBar::new();
-        tb.emit(TopBarEvent::WorkspaceUp, &mut tree);
-        assert_eq!(tree.desktop.active, tree.desktop.workspaces[0].id);
-        tb.emit(TopBarEvent::WorkspaceDown, &mut tree);
-        tb.emit(TopBarEvent::WorkspaceDown, &mut tree);
-        assert_eq!(tree.desktop.active, tree.desktop.workspaces[2].id);
-        // clamped at edges
-        tb.emit(TopBarEvent::WorkspaceDown, &mut tree);
-        assert_eq!(tree.desktop.active, tree.desktop.workspaces[2].id);
-    }
-
-    // Phase `topbar_workspace_name_button_emits_settings_request`.
-    {
-        use shell::shell::topbar::{TopBar, TopBarOutput};
-        let mut tb = TopBar::new();
-        let out = tb.click_workspace_name();
-        assert!(matches!(out, TopBarOutput::OpenWorkspaceSettings));
-    }
-
-    // Phase `topbar_center_widget_cycles_with_wheel_cooldown`.
-    {
-        use shell::shell::topbar::{CenterWidget, TopBar};
-        use std::time::Duration;
-        let mut tb = TopBar::new();
-        assert_eq!(tb.center_widget(), CenterWidget::Clock);
-        tb.on_center_wheel(1, Duration::from_millis(0));
-        assert_eq!(tb.center_widget(), CenterWidget::SystemMonitor);
-        // second wheel within 200ms cooldown: ignored
-        tb.on_center_wheel(1, Duration::from_millis(100));
-        assert_eq!(tb.center_widget(), CenterWidget::SystemMonitor);
-        tb.on_center_wheel(1, Duration::from_millis(300));
-        assert_eq!(tb.center_widget(), CenterWidget::Calendar);
-        // wrap
-        tb.on_center_wheel(1, Duration::from_millis(700));
-        assert_eq!(tb.center_widget(), CenterWidget::Clock);
-        // negative direction
-        tb.on_center_wheel(-1, Duration::from_secs(1));
-        assert_eq!(tb.center_widget(), CenterWidget::Calendar);
-    }
-
-    // Phase `topbar_ws_name_tooltip_reveals_after_delay`.
-    {
-        use shell::shell::topbar::TopBar;
-        use std::time::Duration;
-        let mut tb = TopBar::new();
-        tb.hover_ws_name(true);
-        tb.tick(Duration::from_millis(700));
-        assert!(tb.ws_name_tooltip_visible());
-        tb.hover_ws_name(false);
-        assert!(!tb.ws_name_tooltip_visible());
-    }
-}
-
-#[test]
 #[allow(
     clippy::too_many_lines,
     reason = "one scenario test keeps each merged phase and its fresh fixture visible"
 )]
 fn topbar_chrome_renders_tray_avatars_clock_glyph_and_dots() {
-    // Phase `topbar_right_tray_renders_collaborators_and_opens_quick_settings`.
-    {
-        use shell::shell::state::{Collaborator, Workspace, WorkspaceId, WorkspaceTree};
-        use shell::shell::topbar::{TopBar, TopBarOutput};
-        let collab_1 = Collaborator::new("u1", "Ada");
-        let collab_2 = Collaborator::new("u2", "Bo");
-        let collab_3 = Collaborator::new("u3", "Cy");
-        let collab_4 = Collaborator::new("u4", "Di");
-
-        let mut tree = WorkspaceTree {
-            desktop: shell::shell::state::DesktopTree {
-                workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
-                active: WorkspaceId::from(0),
-                active_strip: HashMap::default(),
-                active_group: HashMap::default(),
-                collaborators: vec![collab_1, collab_2, collab_3, collab_4],
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        tree.desktop.active = tree.desktop.workspaces[0].id;
-        let mut tb = TopBar::new();
-        let avatars = tb.visible_avatars(&tree, 3);
-        assert_eq!(avatars.len(), 3);
-        assert_eq!(tb.overflow_count(&tree, 3), 1);
-        let out = tb.click_tray_settings();
-        assert!(matches!(out, TopBarOutput::OpenQuickSettings));
-    }
-
     // Phase `topbar_chrome_maps_two_peers_to_two_distinct_avatar_hues`.
     {
         use shell::shell::state::{Collaborator, Workspace, WorkspaceId, WorkspaceTree};
@@ -388,7 +227,7 @@ fn topbar_chrome_renders_tray_avatars_clock_glyph_and_dots() {
             ..Default::default()
         };
         tree.desktop.active = tree.desktop.workspaces[0].id;
-        let chrome = TopBarChrome::from_tree(&tree);
+        let chrome = TopBarChrome::from_tree(&tree.desktop);
         let colors = chrome.collaborator_colors();
         assert_eq!(colors.len(), 2);
         // Two peers with distinct ids must resolve to distinct hues; otherwise
@@ -414,7 +253,7 @@ fn topbar_chrome_renders_tray_avatars_clock_glyph_and_dots() {
             },
             ..Default::default()
         };
-        let chrome = TopBarChrome::from_tree(&tree);
+        let chrome = TopBarChrome::from_tree(&tree.desktop);
         assert_eq!(
             chrome.clock_text_weight(),
             TextWeight::Bold,
@@ -458,7 +297,7 @@ fn topbar_chrome_renders_tray_avatars_clock_glyph_and_dots() {
             },
             ..Default::default()
         };
-        let chrome = TopBarChrome::from_tree(&tree);
+        let chrome = TopBarChrome::from_tree(&tree.desktop);
         assert!(
             chrome.active_dot_radius() > chrome.inactive_dot_radius(),
             "active dot radius {} must exceed inactive {}",

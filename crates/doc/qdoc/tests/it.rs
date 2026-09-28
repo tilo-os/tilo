@@ -12,5 +12,7 @@
 
 #[path = "blob_reference.rs"]
 mod blob_reference;
+#[path = "concurrent_block_text.rs"]
+mod concurrent_block_text;
 #[path = "independent_documents.rs"]
 mod independent_documents;

@@ -207,7 +207,7 @@ fn chrome_state_is_shared_defaults_sensibly_and_mutates_through_chrome() {
         assert_eq!(CenterWidget::from_index(3), CenterWidget::Clock);
         let tree = WorkspaceTree::bootstrap_default();
         assert_eq!(
-            TopBarChrome::from_tree(&tree).center_widget(),
+            TopBarChrome::from_tree(&tree.desktop).center_widget(),
             CenterWidget::Clock
         );
     }
@@ -297,7 +297,7 @@ fn topbar_avatars_cap_at_three_and_never_leak_into_an_empty_workspace() {
         // 2 peers → 2 avatars, no overflow.
         active_ws.collaborators =
             vec![Collaborator::new("a", "Ada"), Collaborator::new("b", "Ben")];
-        let top = TopBarChrome::from_tree(&tree);
+        let top = TopBarChrome::from_tree(&tree.desktop);
         assert_eq!(top.collaborator_initials(), &['A', 'B']);
         assert_eq!(top.collaborator_overflow(), 0);
 
@@ -315,7 +315,7 @@ fn topbar_avatars_cap_at_three_and_never_leak_into_an_empty_workspace() {
             Collaborator::new("d", "Dia"),
             Collaborator::new("e", "Eli"),
         ];
-        let top = TopBarChrome::from_tree(&tree);
+        let top = TopBarChrome::from_tree(&tree.desktop);
         assert_eq!(top.collaborator_initials(), &['A', 'B', 'C']);
         assert_eq!(top.collaborator_overflow(), 2);
     }
@@ -335,7 +335,7 @@ fn topbar_avatars_cap_at_three_and_never_leak_into_an_empty_workspace() {
         active_ws.collaborators.clear();
         tree.desktop.collaborators = vec![Collaborator::new("a", "Ada")];
 
-        let top = TopBarChrome::from_tree(&tree);
+        let top = TopBarChrome::from_tree(&tree.desktop);
         assert!(top.collaborator_initials().is_empty());
         assert_eq!(top.collaborator_overflow(), 0);
     }
@@ -932,7 +932,8 @@ fn topbar_with_overview_btn_hit() -> (
         "precondition: overview starts closed"
     );
 
-    let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
+    let mut bar = TopBarChrome::from_tree(&tree.desktop)
+        .with_chrome(shell::shell::topbar_chrome::native_source(chrome.clone()));
 
     let theme = Theme::dark();
     let mut taffy: TaffyTree<()> = TaffyTree::new();

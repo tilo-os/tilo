@@ -557,6 +557,32 @@ impl AudioEngine {
         self.backend.as_ref()?.audio_sink_is_real()
     }
 
+    /// Where a source stands on its way to audio, for a test's failure message.
+    #[cfg(all(test, feature = "audio"))]
+    pub fn diagnostics(&self) -> String {
+        use gstreamer::prelude::*;
+        let pipeline = self.backend.as_ref().map(|backend| {
+            let (result, current, pending) =
+                backend.inner.playbin.state(gstreamer::ClockTime::ZERO);
+            format!(
+                "{result:?} {current:?}->{pending:?}, sink {:?}",
+                backend.inner.sink.as_ref().map(GstObjectExt::name)
+            )
+        });
+        format!(
+            "uri {:?}, initializing {}, pipeline {pipeline:?}, frames {}, want_play {}, \
+             pending_seek {:?}, preroll {:?}, failed {}, capture {:?}",
+            self.current_uri,
+            self.initialization.is_some(),
+            self.frames_rendered(),
+            self.want_play,
+            self.pending_seek,
+            self.preroll_started.map(|started| started.elapsed()),
+            self.initialization_failed,
+            self.capture().map(PcmCapture::snapshot),
+        )
+    }
+
     /// Bounded test/probe helper; production frames call `pump` instead.
     #[cfg(feature = "audio")]
     pub fn wait_until_playing(&mut self, timeout: std::time::Duration) -> bool {
@@ -1779,7 +1805,7 @@ mod tests {
     use super::*;
 
     fn wait_for(mut condition: impl FnMut() -> bool) {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = tilo_test_env::hang_deadline();
         while !condition() {
             assert!(
                 std::time::Instant::now() < deadline,
@@ -1947,7 +1973,7 @@ mod tests {
             );
             assert!(!engine.is_playing_real());
             engine.play();
-            assert!(engine.wait_until_playing(std::time::Duration::from_secs(5)));
+            assert!(engine.wait_until_playing(tilo_test_env::hang_bound()));
             wait_for(|| {
                 assert!(!engine.pump());
                 engine.frames_rendered() > 0
@@ -1995,7 +2021,7 @@ mod tests {
             engine.load(&uri);
             engine.play();
             assert!(
-                engine.wait_until_playing(std::time::Duration::from_secs(5)),
+                engine.wait_until_playing(tilo_test_env::hang_bound()),
                 "pipeline reached PLAYING"
             );
 
@@ -2088,9 +2114,7 @@ mod tests {
                     drop(job);
                 }
                 release.send(()).unwrap();
-                disposal
-                    .recv_timeout(std::time::Duration::from_secs(5))
-                    .unwrap();
+                disposal.recv_timeout(tilo_test_env::hang_bound()).unwrap();
             }
         }
 
@@ -2247,14 +2271,14 @@ mod tests {
                 started: false,
             });
             assert!(!engine.pump(), "staged audio did not report an error");
-            assert!(engine.wait_until_playing(std::time::Duration::from_secs(5)));
+            assert!(engine.wait_until_playing(tilo_test_env::hang_bound()));
             let uri = engine
                 .inner
                 .playbin
                 .property::<Option<String>>("current-uri")
                 .expect("playbin committed the staged URI after entering PLAYING");
             assert_eq!(url::Url::parse(&uri).unwrap().to_file_path().unwrap(), path);
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let deadline = tilo_test_env::hang_deadline();
             let mut pcm = capture.snapshot();
             while pcm.peak == 0 && std::time::Instant::now() < deadline {
                 pcm = capture.wait_for_more(std::time::Duration::from_millis(100));
@@ -2324,7 +2348,7 @@ mod tests {
         engine.load(&uri);
         engine.play();
 
-        let reached = engine.wait_until_playing(std::time::Duration::from_secs(5));
+        let reached = engine.wait_until_playing(tilo_test_env::hang_bound());
         assert!(
             reached,
             "real sink pipeline reached PLAYING for a decoded stream"

@@ -11,6 +11,8 @@ use std::path::{Path, PathBuf};
 
 use ui::widget::{ScreenshotSendDevice, ScreenshotSendTarget};
 
+use crate::shell::i18n::{t, t_args};
+
 /// Folder inside the workspace files that sent screenshots land in.
 pub const WORKSPACE_SCREENSHOTS_DIR: &str = "Screenshots";
 
@@ -26,13 +28,21 @@ pub enum SendReceipt {
 impl SendReceipt {
     pub fn message(&self) -> String {
         match self {
-            Self::Offered { device } => format!("Offered to {device}; accept it there to save"),
-            Self::Saved(path) => format!(
-                "Saved to workspace files as {}",
-                path.file_name().map_or_else(
-                    || path.display().to_string(),
-                    |name| { name.to_string_lossy().into_owned() }
-                )
+            Self::Offered { device } => t_args(
+                "screenshot-send-offered",
+                &[("device", device.as_str().into())],
+            ),
+            Self::Saved(path) => t_args(
+                "screenshot-send-saved",
+                &[(
+                    "name",
+                    path.file_name()
+                        .map_or_else(
+                            || path.display().to_string(),
+                            |name| name.to_string_lossy().into_owned(),
+                        )
+                        .into(),
+                )],
             ),
         }
     }
@@ -67,7 +77,10 @@ pub fn route(
     bridge: &mut dyn ScreenshotSendBridge,
 ) -> Result<SendReceipt, String> {
     if !path.is_file() {
-        return Err(format!("the screenshot {} is gone", path.display()));
+        return Err(t_args(
+            "screenshot-send-gone",
+            &[("path", path.display().to_string().into())],
+        ));
     }
     match target {
         ScreenshotSendTarget::Workspace => bridge.save_to_workspace(path).map(SendReceipt::Saved),
@@ -76,7 +89,7 @@ pub fn route(
                 .devices()
                 .into_iter()
                 .find(|device| &device.id == id)
-                .ok_or_else(|| "that device is no longer online".to_string())?;
+                .ok_or_else(|| t("screenshot-send-device-offline"))?;
             bridge.offer_to_device(id, path)?;
             Ok(SendReceipt::Offered {
                 device: device.label,
@@ -91,11 +104,21 @@ pub fn route(
 /// The I/O error, phrased for the person.
 pub fn copy_into_workspace(source: &Path, root: &Path) -> Result<PathBuf, String> {
     let folder = root.join(WORKSPACE_SCREENSHOTS_DIR);
-    std::fs::create_dir_all(&folder)
-        .map_err(|error| format!("cannot create {}: {error}", folder.display()))?;
-    let name = source
-        .file_name()
-        .ok_or_else(|| format!("{} has no file name", source.display()))?;
+    std::fs::create_dir_all(&folder).map_err(|error| {
+        t_args(
+            "screenshot-send-create-failed",
+            &[
+                ("path", folder.display().to_string().into()),
+                ("error", error.to_string().into()),
+            ],
+        )
+    })?;
+    let name = source.file_name().ok_or_else(|| {
+        t_args(
+            "screenshot-send-no-file-name",
+            &[("path", source.display().to_string().into())],
+        )
+    })?;
     let stem = Path::new(name)
         .file_stem()
         .map_or_else(String::new, |stem| stem.to_string_lossy().into_owned());
@@ -118,19 +141,34 @@ pub fn copy_into_workspace(source: &Path, root: &Path) -> Result<PathBuf, String
             .open(&candidate)
         {
             Ok(mut target) => {
-                let mut input = std::fs::File::open(source)
-                    .map_err(|error| format!("cannot read {}: {error}", source.display()))?;
+                let mut input = std::fs::File::open(source).map_err(|error| {
+                    t_args(
+                        "screenshot-send-read-failed",
+                        &[
+                            ("path", source.display().to_string().into()),
+                            ("error", error.to_string().into()),
+                        ],
+                    )
+                })?;
                 std::io::copy(&mut input, &mut target).map_err(|error| {
                     let _ = std::fs::remove_file(&candidate);
-                    format!("cannot save to workspace files: {error}")
+                    t_args(
+                        "screenshot-send-save-failed",
+                        &[("error", error.to_string().into())],
+                    )
                 })?;
                 return Ok(candidate);
             }
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(error) => return Err(format!("cannot save to workspace files: {error}")),
+            Err(error) => {
+                return Err(t_args(
+                    "screenshot-send-save-failed",
+                    &[("error", error.to_string().into())],
+                ));
+            }
         }
     }
-    Err("workspace Screenshots folder has too many files with this name".into())
+    Err(t("screenshot-send-too-many"))
 }
 
 /// The production bridge: the session's device fabric and workspace mount.
@@ -145,14 +183,15 @@ impl ScreenshotSendBridge for FabricSendBridge<'_> {
     }
 
     fn offer_to_device(&mut self, id: &str, path: &Path) -> Result<(), String> {
-        let network = self
-            .network
-            .ok_or_else(|| "device sync is not running".to_string())?;
+        let network = self.network.ok_or_else(|| t("screenshot-send-sync-off"))?;
         let device = crate::shell::personal_continuity::DeviceId::new(id)
-            .map_err(|_| "that device is no longer online".to_string())?;
-        let folder = path
-            .parent()
-            .ok_or_else(|| format!("{} has no folder", path.display()))?;
+            .map_err(|_| t("screenshot-send-device-offline"))?;
+        let folder = path.parent().ok_or_else(|| {
+            t_args(
+                "screenshot-send-no-folder",
+                &[("path", path.display().to_string().into())],
+            )
+        })?;
         let source = crate::shell::nearby_transfer::SecureNearbySource::open_beneath(folder, path)?;
         crate::shell::device_fabric_runtime::request_nearby_drop_secure(
             network,

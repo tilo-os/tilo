@@ -1042,7 +1042,7 @@ fn decode_audio_full(path: &std::path::Path) -> DecodedAudio {
         settled_in.store(true, std::sync::atomic::Ordering::SeqCst);
     });
     let bus = pipeline.bus();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         if std::time::Instant::now() >= deadline {
             panic!("decoding audio from {} timed out", path.display());

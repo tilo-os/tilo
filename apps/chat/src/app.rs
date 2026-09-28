@@ -39,7 +39,7 @@ use ui::widget::{
 };
 
 use crate::actions::{self, ChatAction};
-use crate::call::{CallState, SoundEngine};
+use crate::call::CallState;
 use crate::doc::ChatDoc;
 use crate::identity::LocalIdentity;
 use crate::media::MediaEngine;
@@ -467,14 +467,12 @@ pub(crate) enum Hit {
     /// Toggle the participant list expand/collapse in the overlay.
     CallParticipantsToggle,
     CallMute,
-    CallDeafen,
-    CallAudioOnly,
-    /// Internal start/stop seam for a restored or remote-mediated screen
-    /// share. The shipped call chrome does not expose it until production has
-    /// a real `PipeWire` capture producer.
+    /// Share-screen control. The native voice path refuses it (calls are
+    /// microphone audio only); the shipped call chrome does not expose it
+    /// until production has a real screen-capture producer.
     #[allow(
         dead_code,
-        reason = "kept for defensive stop handling and the tested screen-share transport seam"
+        reason = "kept for defensive refusal handling and the voice-profile refusal test"
     )]
     CallShareScreen,
     CallExpand,
@@ -543,8 +541,6 @@ impl Hit {
             Self::EditSave => "chat.edit-save".into(),
             Self::EditCancel => "chat.edit-cancel".into(),
             Self::CallMute => "chat.call-mute".into(),
-            Self::CallDeafen => "chat.call-deafen".into(),
-            Self::CallAudioOnly => "chat.call-audio-only".into(),
             Self::CallShareScreen => "chat.call-share-screen".into(),
             Self::CallParticipantsToggle => "chat.call-participants".into(),
             Self::CallExpand => "chat.call-expand".into(),
@@ -614,7 +610,7 @@ impl CallChromeMotion {
             self.transition.set_open(
                 open,
                 if theme.reduce_motion {
-                    std::time::Duration::ZERO
+                    ui::clock::Duration::ZERO
                 } else {
                     theme.tokens.motion.durations.base()
                 },
@@ -626,7 +622,7 @@ impl CallChromeMotion {
             );
             self.target_open = open;
         }
-        let now = std::time::Instant::now();
+        let now = ui::clock::Instant::now();
         self.sampled = self.transition.value(now);
         self.animating = self.transition.is_animating(now);
     }
@@ -659,6 +655,7 @@ mod call_chrome_motion_tests {
             assert_eq!(motion.sampled, 0.0);
             assert!(!motion.animating);
         }
+
         // Phase: visual_review_can_pin_a_true_mid_morph_geometry.
         {
             let mut motion = CallChromeMotion::default();
@@ -676,6 +673,10 @@ mod call_chrome_motion_tests {
     reason = "the bools split across unrelated concerns (attachment-picker/emoji-popover open flags, layout/render bookkeeping, and --shots-only staging), so grouping them would need a real design pass rather than a mechanical lint fix"
 )]
 pub struct ChatApp {
+    /// Last resource tree with the exact inputs it was built from (committed
+    /// heads and resource context). The framework rediscovers resources on
+    /// every relayout, including frames that only moved the pointer.
+    pub(crate) resource_memo: std::cell::RefCell<Option<(String, Vec<tilo_actions::Resource>)>>,
     // CRDT projection (rebuilt every sync / after a mutation).
     pub(crate) workspaces: Vec<Workspace>,
     pub(crate) channels: Vec<Channel>,
@@ -727,9 +728,19 @@ pub struct ChatApp {
     /// see the newest edge. This flag is local presentation state, refreshed
     /// from the measured timeline during paint.
     pub(crate) timeline_at_end: bool,
+    /// A person is looking at this instance: a runner laid it out in a real
+    /// viewport. A hosted/headless worker only pumps the model and never lays
+    /// out, so it must not author read receipts under the host identity —
+    /// read state belongs to the person's own device.
+    pub(crate) presented: bool,
+    /// The first layout just happened; request one more model frame so the
+    /// channel already in view is marked read without waiting for input.
+    pub(crate) read_on_present: bool,
     /// Last measured timeline height. Keeps a reader's visual anchor stable if
     /// new messages arrive while they are reading older messages.
     pub(crate) timeline_total_height: f64,
+    pub(crate) scroll_content: f64,
+    pub(crate) scroll_viewport: f64,
     pub(crate) thread_open: Option<Id>,
     pub(crate) revealed_message: Option<Id>,
     /// A search result needs one initial scroll into view. Keeping this
@@ -783,6 +794,7 @@ pub struct ChatApp {
 
     // Call state.
     pub(crate) call: CallState,
+    pub(crate) native_voice: crate::local_voice::LocalVoice,
     /// Measured control/header sizes of the expanded call overlay, refreshed
     /// by the paint pass and read by the renderer-less layout functions.
     pub(crate) call_overlay_metrics: crate::render_call::CallOverlayMetrics,
@@ -817,6 +829,14 @@ pub struct ChatApp {
     pub(crate) room_names: HashMap<Id, String>,
     pub(crate) room_colors: HashMap<Id, (u8, u8, u8)>,
 
+    // Agent display names of agent-authored messages (`agent_authors` in the
+    // document): what every member renders as "<name> · agent".
+    pub(crate) agent_authors: HashMap<Id, String>,
+    // Agent task participants this (headless host) worker serves, with the
+    // display name the host labelled each with. A delivered `post` resolved
+    // for one of them is authored by that participant.
+    pub(crate) participant_labels: HashMap<Id, String>,
+
     // Ids this session authored under before the room told it which
     // participant it is. See `adopt_own_participant`: what was already said
     // under one of these is still this person, so their own earlier lines go
@@ -824,7 +844,6 @@ pub struct ChatApp {
     pub(crate) former_ids: Vec<Id>,
 
     // Engines (call sounds + media transport).
-    pub(crate) sound: SoundEngine,
     pub(crate) media: MediaEngine,
 
     // The OS permission gate: routes channel participation + file-embed
@@ -887,88 +906,34 @@ pub struct ChatApp {
     pub(crate) is_live: bool,
 
     /// Latest decoded RGBA frame per remote peer id, shown in that peer's call
-    /// tile (camera or screen-share). Populated only by the live media pump; in
-    /// the default build it stays empty, so a tile shows the honest placeholder
-    /// until a real decoded frame arrives — it never fabricates a picture.
+    /// tile (camera or screen-share). The native voice path carries no video,
+    /// so nothing fills it today and a tile shows the honest placeholder; it
+    /// never fabricates a picture.
     pub(crate) remote_frames: HashMap<String, vello::peniko::ImageData>,
 
     /// Latest decoded RGBA **screen-share** frame per remote peer id, kept
     /// separate from their camera frame so a peer can share their screen and
     /// keep their camera on at once — the screen fills the featured stage tile,
-    /// the camera stays in that peer's filmstrip cell. Populated only by the
-    /// live media pump; empty in the default build, where the featured tile
-    /// shows the honest "connecting" placeholder rather than a fabricated feed.
+    /// the camera stays in that peer's filmstrip cell. The native voice path
+    /// carries no video, so it stays empty and the featured tile shows the
+    /// honest "connecting" placeholder rather than a fabricated feed.
     pub(crate) remote_screens: HashMap<String, vello::peniko::ImageData>,
 
-    /// A screen-capture request the host has not answered yet, and the flow
-    /// its answer finishes. The host shows its own source picker; a share
-    /// starts only on a grant — honest gating, never a faked share.
-    pub(crate) pending_screen: Option<(
-        crate::call::ScreenCapturePurpose,
-        ui::capture::ScreenCaptureChannel,
-    )>,
-
-    // Live capture/encode/playback pipelines — present only under `live-media`
-    // and only while in a call. All `None`/empty until the call opens a device;
-    // torn down when the call ends or a device is unavailable (honest silence).
-    #[cfg(feature = "live-media")]
-    mic: Option<crate::audio::MicCapture>,
-    #[cfg(feature = "live-media")]
-    speaker: Option<crate::audio::SpeakerPlayback>,
-    #[cfg(feature = "live-media")]
-    camera: Option<crate::video::CameraCapture>,
-    // Camera encode reuses the shared Tilo video stack's encoder in the
-    // codec the call negotiated (see `call_video_codec`). H.264 publishes as
-    // raw access units on the camera track; other codecs as codec-tagged
-    // frames on the framed camera track. The self-preview decodes the same
-    // units through `ui`'s VideoPlayer.
-    #[cfg(feature = "live-media")]
-    cam_encoder: Option<tilo_callstream::VideoEncoder>,
-    #[cfg(feature = "live-media")]
-    cam_seq: u64,
-    /// Video decode capabilities of the other call members, refreshed with
-    /// the membership; `None` entries are peers that never announced any.
-    #[cfg(feature = "live-media")]
-    call_peer_video: Vec<Option<crate::model::VideoCaps>>,
-    /// This machine's codec capabilities, read once from the media stack.
-    #[cfg(feature = "live-media")]
-    local_codecs: Option<tilo_callstream::CodecCapabilities>,
-    #[cfg(feature = "live-media")]
-    screen: Option<crate::video::ScreenCapture>,
-    // Screen-share encode + framing runs the shared stack's throttle +
-    // encoder → `SurfaceFrame` sender seam — the same composition the
-    // compositor's `SharedFlatpakSession` performs for a Wayland surface.
-    #[cfg(feature = "live-media")]
-    screen_session: Option<tilo_callstream::VideoStreamSender>,
-    // Remote **camera** decoders (raw-NALU H.264 → RGBA), keyed by sender.
-    #[cfg(feature = "live-media")]
-    remote_decoders: HashMap<String, tilo_callstream::VideoDecoder>,
-    // Remote **camera** receivers for the framed (non-H.264) camera track.
-    #[cfg(feature = "live-media")]
-    remote_camera_rx: HashMap<String, tilo_callstream::VideoStreamReceiver>,
-    // Remote **screen-share** receivers (reframe + decode) → featured tile,
-    // keyed by sender. The receive half of the shared stack.
-    #[cfg(feature = "live-media")]
-    remote_screen_rx: HashMap<String, tilo_callstream::VideoStreamReceiver>,
-    /// Highest accepted sequence per remote sender + track. The transport is
-    /// deliberately lossy under pressure; rejecting late frames here prevents
-    /// a delayed packet from visibly rewinding a peer's camera or screen.
-    #[cfg(feature = "live-media")]
-    remote_media_seq: HashMap<(String, crate::media::TrackKind), u64>,
-    #[cfg(feature = "live-media")]
-    media_seq: u64,
-    /// Terminal local media-publish outcome. Kept visible until the call is
-    /// reset so sequence exhaustion is never an invisible early return.
+    /// The latest call/media problem to show in the call chrome (a refused
+    /// control, a native voice issue, or no connected media transport).
     pub(crate) media_error: Option<String>,
-    /// A capture-side terminal error has changed the share bit outside an
-    /// input event. `sync` owns the corresponding small canonical action so
-    /// collaborators do not retain a stale featured-stage reservation.
-    pub(crate) screen_share_needs_sync: bool,
     legacy_migration_attempted: bool,
     /// Feedback channels, reference chips and record cards on this peer.
     pub(crate) feedback: crate::feedback::FeedbackUi,
     /// What people wrote in feedback channels, in records they own.
     pub(crate) comments: crate::comments::Comments,
+    pub(crate) canonical: bool,
+    canonical_dirty: bool,
+    /// Document heads and pending-operation count at the last canonical reload,
+    /// so an unchanged document is not reloaded and repainted every frame.
+    synced: Option<(Vec<automerge::ChangeHash>, usize)>,
+    host_focused: bool,
+    pub(crate) external_services: bool,
 }
 
 impl Default for ChatApp {
@@ -977,14 +942,65 @@ impl Default for ChatApp {
     }
 }
 
+/// Native external services are explicit; browser peer transport is installed later.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChatRuntime {
+    Native,
+    Unavailable,
+}
+
 impl ChatApp {
+    /// Project a checked Chat record for `identity`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the record carries no Chat workspace schema.
+    pub fn from_document(
+        doc: &AutoCommit,
+        identity: LocalIdentity,
+        runtime: ChatRuntime,
+    ) -> Result<Self, String> {
+        if !ChatDoc::is_seeded(doc) {
+            return Err("Chat record has no workspace schema".into());
+        }
+        // A native component keeps attachments in the app's content store;
+        // any other host (the browser, tests) keeps them in memory.
+        #[cfg(not(target_arch = "wasm32"))]
+        let content = if runtime == ChatRuntime::Native {
+            ContentStore::for_app()
+        } else {
+            ContentStore::memory()
+        };
+        #[cfg(target_arch = "wasm32")]
+        let content = ContentStore::memory();
+        let mut app = Self::bare(content);
+        app.canonical = true;
+        app.external_services = runtime == ChatRuntime::Native;
+        app.me = identity;
+        app.active_ws.clear();
+        app.context_ws.clear();
+        app.active_channel.clear();
+        app.thread_open = None;
+        app.media_error = (!app.external_services).then(|| {
+            "Calls and screen sharing are unsupported until a media transport is connected".into()
+        });
+        app.reload(doc);
+        if app.ensure_selection() {
+            app.reload(doc);
+        }
+        Ok(app)
+    }
     /// The live instance: resolves this peer's real identity. The document
     /// itself is loaded and written by `app-state` (see `main`), so nothing
     /// here touches disk. The resolved identity is what makes two running
     /// instances genuinely different participants rather than two "`u_me"s`
     /// colliding.
     pub fn new() -> Self {
-        let mut app = Self::bare(ContentStore::for_app());
+        #[cfg(not(target_arch = "wasm32"))]
+        let content = ContentStore::for_app();
+        #[cfg(target_arch = "wasm32")]
+        let content = ContentStore::memory();
+        let mut app = Self::bare(content);
         app.is_live = true;
         app.comments =
             crate::comments::Comments::new(ui::record::RecordStore::open("so.tilo.chat"));
@@ -1015,10 +1031,7 @@ impl ChatApp {
 
     fn new_live_view(self) -> Self {
         let mut app = self;
-        // Select the live transport, but defer its endpoint bind until the
-        // user explicitly joins a call. Tests/`--shots` keep the deterministic
-        // local bus from `bare`.
-        app.media = MediaEngine::new();
+        // The admitted shell channel owns native voice transport and devices.
         // Author the local view state under the real identity from the start so
         // nothing is attributed to the demo `u_me`.
         app.active_ws.clear();
@@ -1048,6 +1061,7 @@ impl ChatApp {
         let (attachment_picker_result_tx, attachment_picker_result_rx) =
             std::sync::mpsc::sync_channel(1);
         Self {
+            resource_memo: std::cell::RefCell::new(None),
             workspaces: Vec::new(),
             channels: Vec::new(),
             categories: Vec::new(),
@@ -1067,7 +1081,11 @@ impl ChatApp {
             focus: Focus::Main,
             scroll: 0.0,
             timeline_at_end: true,
+            presented: false,
+            read_on_present: false,
             timeline_total_height: 0.0,
+            scroll_content: 0.0,
+            scroll_viewport: 0.0,
             thread_open: Some("m_concept".into()),
             revealed_message: None,
             reveal_scroll_pending: false,
@@ -1100,6 +1118,7 @@ impl ChatApp {
             rename_input: Self::new_rename_input(),
             swipe: None,
             call: CallState::default(),
+            native_voice: crate::local_voice::LocalVoice::default(),
             call_overlay_metrics: crate::render_call::CallOverlayMetrics::default(),
             call_overlay_metrics_key: None,
             realtime: crate::continuity::ChatRealtimeContinuity::default(),
@@ -1114,8 +1133,9 @@ impl ChatApp {
             me: LocalIdentity::demo(),
             room_names: HashMap::new(),
             room_colors: HashMap::new(),
+            agent_authors: HashMap::new(),
+            participant_labels: HashMap::new(),
             former_ids: Vec::new(),
-            sound: SoundEngine::new(),
             // Default to the deterministic local bus; the live binary
             // (`ChatApp::new`) upgrades to the real transport. This keeps
             // `--shots`/tests from binding a real iroh endpoint per instance.
@@ -1141,40 +1161,15 @@ impl ChatApp {
             is_live: false,
             remote_frames: HashMap::new(),
             remote_screens: HashMap::new(),
-            pending_screen: None,
-            #[cfg(feature = "live-media")]
-            mic: None,
-            #[cfg(feature = "live-media")]
-            speaker: None,
-            #[cfg(feature = "live-media")]
-            camera: None,
-            #[cfg(feature = "live-media")]
-            cam_encoder: None,
-            #[cfg(feature = "live-media")]
-            cam_seq: 0,
-            #[cfg(feature = "live-media")]
-            call_peer_video: Vec::new(),
-            #[cfg(feature = "live-media")]
-            local_codecs: None,
-            #[cfg(feature = "live-media")]
-            screen: None,
-            #[cfg(feature = "live-media")]
-            screen_session: None,
-            #[cfg(feature = "live-media")]
-            remote_decoders: HashMap::new(),
-            #[cfg(feature = "live-media")]
-            remote_camera_rx: HashMap::new(),
-            #[cfg(feature = "live-media")]
-            remote_screen_rx: HashMap::new(),
-            #[cfg(feature = "live-media")]
-            remote_media_seq: HashMap::new(),
-            #[cfg(feature = "live-media")]
-            media_seq: 0,
             media_error: None,
-            screen_share_needs_sync: false,
             legacy_migration_attempted: false,
             feedback: crate::feedback::FeedbackUi::default(),
             comments: crate::comments::Comments::new(ui::record::RecordStore::in_memory()),
+            canonical: false,
+            canonical_dirty: true,
+            synced: None,
+            host_focused: true,
+            external_services: true,
         }
     }
 
@@ -1183,7 +1178,11 @@ impl ChatApp {
     /// is blocked from join/speak/camera/screen-share; leaving is always
     /// allowed so a downgraded peer can drop out.
     pub(crate) fn call_allows(&self, action: crate::call::CallAction) -> bool {
-        self.perms.allows(action)
+        match action {
+            crate::call::CallAction::Leave => true,
+            crate::call::CallAction::Camera | crate::call::CallAction::ShareScreen => false,
+            _ => self.external_services && self.perms.allows(action),
+        }
     }
 
     /// Whether the local peer may post / react / start a call in the active
@@ -1254,6 +1253,13 @@ impl ChatApp {
     ) -> Option<Result<(), String>> {
         if !self.comments.available() {
             return None;
+        }
+        // An agent's post is the message it carries: in a feedback channel
+        // that is a comment record like anyone else's.
+        if let ChatAction::AgentAuthored { send, .. } = action
+            && !matches!(**send, ChatAction::AgentAuthored { .. })
+        {
+            return self.perform_as_comment(doc, send);
         }
         let in_feedback = |channel: &str| ChatDoc::is_feedback_channel(doc, channel);
         Some(match action {
@@ -1402,6 +1408,35 @@ impl ChatApp {
     /// workspace, its channels (including archived, so they can be unarchived from
     /// the palette), the open channel, and that channel's messages. Derived
     /// entirely from the projection the document already holds.
+    /// [`Self::chat_resource_ctx`] as agent task `participant`: authored by
+    /// it, with it in the room under its label as an agent. `None` for any
+    /// participant that is not an agent task (its own view is the default).
+    pub(crate) fn participant_ctx(
+        &self,
+        participant: &tilo_actions::ParticipantId,
+    ) -> Option<actions::ChatResourceCtx> {
+        participant.agent_task()?;
+        let id = participant.as_str().to_owned();
+        let label = self
+            .participant_labels
+            .get(&id)
+            .filter(|label| !label.is_empty())
+            .cloned()
+            .unwrap_or_else(|| "Agent".to_owned());
+        let mut ctx = self.chat_resource_ctx();
+        ctx.participants.retain(|p| p.id != id);
+        ctx.participants.insert(
+            0,
+            crate::mention::Participant {
+                id: id.clone(),
+                name: label,
+                is_agent: true,
+            },
+        );
+        ctx.me = id;
+        Some(ctx)
+    }
+
     pub(crate) fn chat_resource_ctx(&self) -> actions::ChatResourceCtx {
         let workspace_name = self
             .workspaces
@@ -1796,599 +1831,15 @@ impl ChatApp {
             .pin_handoff_for_visual_review(handoff_phase);
     }
 
-    /// The live media pump: run once per frame while the engine is live. Pulls
-    /// captured microphone/camera/screen media, encodes it and publishes it over
-    /// the transport, then decodes and plays whatever arrived from peers. Every
-    /// device/track honours the call permission gate; when a device is absent
-    /// the corresponding pipeline is simply `None` and that medium stays silent.
-    #[cfg(feature = "live-media")]
-    fn pump_media(&mut self) {
-        if !self.call.active {
-            self.pump_media_reset();
-            return;
-        }
-        let me = self.me.id.clone();
-        self.pump_mic(&me);
-        self.pump_camera(&me);
-        self.pump_screen(&me);
-        self.pump_receive(&me);
-    }
-
-    /// Release all devices + remote state between calls.
-    #[cfg(feature = "live-media")]
-    fn pump_media_reset(&mut self) {
-        self.mic = None;
-        self.speaker = None;
-        self.camera = None;
-        self.cam_encoder = None;
-        self.cam_seq = 0;
-        self.screen = None;
-        self.screen_session = None;
-        self.remote_decoders.clear();
-        self.remote_camera_rx.clear();
-        self.remote_screen_rx.clear();
-        self.remote_media_seq.clear();
-        self.remote_frames.clear();
-        self.remote_screens.clear();
-        // A new call is a fresh local stream. Remote receivers recognize the
-        // first seq=0/pts=0 object as the corresponding stream reset.
-        self.media_seq = 0;
-        self.media_error = None;
-    }
-
-    /// Microphone → Opus → publish (only while transmitting).
-    #[cfg(feature = "live-media")]
-    fn pump_mic(&mut self, me: &str) {
-        use crate::call::CallAction;
-        use crate::media::TrackKind;
-        use std::time::Duration;
-
-        let transmit =
-            !self.call.muted && !self.call.deafened && self.call_allows(CallAction::Speak);
-        if !transmit {
-            self.mic = None;
-            return;
-        }
-        if self.mic.is_none() {
-            self.mic = crate::audio::MicCapture::new();
-        }
-        let packets = self
-            .mic
-            .as_mut()
-            .map(super::audio::MicCapture::poll)
-            .unwrap_or_default();
-        for pkt in packets {
-            let pts = Duration::from_millis(self.media_seq.saturating_mul(20));
-            if !self.send_media_frame(me, TrackKind::Audio, pts, pkt) {
-                return;
-            }
-        }
-    }
-
-    /// Camera → encode (negotiated codec) → local preview + publish (only
-    /// with camera on).
-    #[cfg(feature = "live-media")]
-    fn pump_camera(&mut self, me: &str) {
-        use crate::call::CallAction;
-        use crate::media::TrackKind;
-        use std::time::Duration;
-        use tilo_callstream::StreamCodec;
-
-        let camera_on = !self.call.audio_only && self.call_allows(CallAction::Camera);
-        if !camera_on {
-            self.camera = None;
-            self.cam_encoder = None;
-            return;
-        }
-        let Some(codec) = self.call_video_codec() else {
-            // Nothing this machine can encode is decodable by every member.
-            self.cam_encoder = None;
-            return;
-        };
-        if self.camera.is_none() {
-            self.camera =
-                crate::video::CameraCapture::new(crate::video::DEFAULT_W, crate::video::DEFAULT_H);
-        }
-        if self.cam_encoder.as_ref().is_none_or(|e| e.codec() != codec) {
-            self.cam_encoder = tilo_callstream::VideoEncoder::new(
-                codec,
-                crate::video::DEFAULT_W,
-                crate::video::DEFAULT_H,
-                crate::video::DEFAULT_FPS,
-            )
-            .ok();
-        }
-        let ts_ms = self.cam_seq.saturating_mul(33);
-        let unit = match (self.camera.as_mut(), self.cam_encoder.as_mut()) {
-            (Some(cam), Some(enc)) => cam
-                .poll()
-                .and_then(|rgba| enc.encode_unit(&rgba, ts_ms).ok().flatten()),
-            _ => None,
-        };
-        let Some(unit) = unit else {
-            return;
-        };
-        if unit.data.is_empty() {
-            return;
-        }
-        // Feed the host tile's VideoPlayer so this peer sees its own
-        // camera (the surface yields its placeholder to a real frame).
-        self.video.feed_encoded(codec, &unit.data);
-        let pts = Duration::from_millis(self.media_seq.saturating_mul(33));
-        if codec == StreamCodec::H264 {
-            let _ = self.send_media_frame(me, TrackKind::Video, pts, unit.data);
-            return;
-        }
-        let frame = tilo_callstream::SurfaceFrame {
-            sequence: self.cam_seq,
-            keyframe: unit.keyframe,
-            codec,
-            display_size: Some((
-                u16::try_from(crate::video::DEFAULT_W).unwrap_or(u16::MAX),
-                u16::try_from(crate::video::DEFAULT_H).unwrap_or(u16::MAX),
-            )),
-            payload: unit.data,
-        };
-        self.cam_seq = self.cam_seq.saturating_add(1);
-        if let Ok(wire) = frame.encode() {
-            let _ = self.send_media_frame(me, TrackKind::CameraFramed, pts, wire);
-        }
-    }
-
-    /// This machine's video decode capabilities, as announced to the call.
-    /// `None` in builds without the live media engine.
-    #[cfg_attr(
-        feature = "live-media",
-        allow(
-            clippy::unnecessary_wraps,
-            reason = "`None` is the answer of builds without the live engine"
-        )
-    )]
-    #[cfg_attr(
-        not(feature = "live-media"),
-        allow(
-            clippy::unused_self,
-            clippy::needless_pass_by_ref_mut,
-            reason = "the live engine caches the probe on `self`"
-        )
-    )]
-    pub(crate) fn local_video_caps(&mut self) -> Option<crate::model::VideoCaps> {
-        #[cfg(feature = "live-media")]
-        {
-            let caps = self.local_codecs();
-            Some(crate::model::VideoCaps {
-                hardware_decode: tilo_callstream::CodecCapabilities::labels(&caps.hardware_decode),
-                software_decode: tilo_callstream::CodecCapabilities::labels(&caps.software_decode),
-            })
-        }
-        #[cfg(not(feature = "live-media"))]
-        {
-            None
-        }
-    }
-
-    #[cfg(feature = "live-media")]
-    fn local_codecs(&mut self) -> tilo_callstream::CodecCapabilities {
-        self.local_codecs
-            .get_or_insert_with(tilo_callstream::local_capabilities)
-            .clone()
-    }
-
-    /// Remember the other members' announced video capabilities.
-    #[cfg_attr(
-        not(feature = "live-media"),
-        allow(
-            clippy::needless_pass_by_ref_mut,
-            clippy::unused_self,
-            reason = "only the live engine negotiates codecs"
-        )
-    )]
-    pub(crate) fn note_call_peer_video(&mut self, me: &str, members: &[crate::model::VoiceMember]) {
-        #[cfg(feature = "live-media")]
-        {
-            self.call_peer_video = members
-                .iter()
-                .filter(|m| m.user != me)
-                .map(|m| m.video.clone())
-                .collect();
-        }
-        let _ = (me, members);
-    }
-
-    /// The codec this peer's camera and screen use in the current call: AV1
-    /// or VP9 when this machine encodes it in hardware and every other member
-    /// decodes it in hardware, otherwise H.264 (a member that never announced
-    /// capabilities pins H.264). `None` when nothing this machine can encode
-    /// is decodable by everyone.
-    #[cfg(feature = "live-media")]
-    fn call_video_codec(&mut self) -> Option<tilo_callstream::StreamCodec> {
-        let local = self.local_codecs();
-        call_video_codec(&local, &self.call_peer_video)
-    }
-
-    /// Screen capture → shared stack (throttle + encode → `SurfaceFrame`) →
-    /// publish (started via `share_screen`). The `VideoStreamSender` seam
-    /// does the throttling + encode + framing, so a returned `Some` is
-    /// already a wire-ready, rate-capped frame.
-    #[cfg(feature = "live-media")]
-    fn pump_screen(&mut self, me: &str) {
-        use crate::media::TrackKind;
-        use std::time::Duration;
-
-        // Follow the call's negotiated codec: a member joining without AV1
-        // hardware (or leaving) switches the share, starting with a keyframe.
-        let current = self
-            .screen_session
-            .as_ref()
-            .map(|s| (s.codec(), s.width(), s.height()));
-        if let Some((codec_now, w, h)) = current
-            && let Some(codec) = self.call_video_codec()
-            && codec != codec_now
-        {
-            self.screen_session =
-                tilo_callstream::VideoStreamSender::new(codec, w, h, crate::video::DEFAULT_FPS)
-                    .ok();
-        }
-        let screen_result = match (self.screen.as_mut(), self.screen_session.as_mut()) {
-            (Some(scr), Some(session)) => scr
-                .poll()
-                .map(|rgba| session.offer_frame(&rgba, std::time::Instant::now())),
-            _ => None,
-        };
-        let Some(result) = screen_result else {
-            return;
-        };
-        let wire = match result {
-            Ok(Some(wire)) => wire,
-            Ok(None) => return,
-            Err(error) => {
-                self.stop_screen_for_error(&error);
-                return;
-            }
-        };
-        let pts = Duration::from_millis(self.media_seq.saturating_mul(33));
-        let _ = self.send_media_frame(me, TrackKind::Screen, pts, wire);
-    }
-
-    /// Submit one already-encoded frame. Transport queue pressure is expected
-    /// for real-time media and is deliberately a non-fatal drop. A frame that
-    /// can never fit Chat's object contract is different: report it once and
-    /// stop that producer instead of attempting (and silently losing) it on
-    /// every frame.
-    #[cfg(feature = "live-media")]
-    fn send_media_frame(
-        &mut self,
-        me: &str,
-        kind: crate::media::TrackKind,
-        pts: std::time::Duration,
-        payload: Vec<u8>,
-    ) -> bool {
-        if payload.len() > crate::media::MAX_MEDIA_PAYLOAD {
-            self.stop_unrepresentable_media_track(kind, payload.len());
-            return false;
-        }
-        let Some(seq) = self.next_media_seq() else {
-            return false;
-        };
-        // `false` here is a bounded, ordinary transport rejection (usually a
-        // full realtime queue). Do not turn transient backpressure into a
-        // terminal call failure.
-        let _ = self.media.transport_mut().send(crate::media::MediaObject {
-            sender: me.to_string(),
-            kind,
-            seq,
-            pts,
-            payload,
-        });
-        true
-    }
-
-    #[cfg(feature = "live-media")]
-    fn stop_unrepresentable_media_track(&mut self, kind: crate::media::TrackKind, bytes: usize) {
-        let track = crate::i18n::t(match kind {
-            crate::media::TrackKind::Audio => "chat-media-microphone",
-            crate::media::TrackKind::Video | crate::media::TrackKind::CameraFramed => {
-                "chat-media-camera"
-            }
-            crate::media::TrackKind::Screen => "chat-media-screen",
-        });
-        self.media_error = Some(crate::i18n::t_args(
-            "chat-media-frame-too-large",
-            &[
-                ("track", crate::i18n::text(track)),
-                ("bytes", crate::i18n::number(bytes)),
-                (
-                    "limit",
-                    crate::i18n::number(crate::media::MAX_MEDIA_PAYLOAD),
-                ),
-            ],
-        ));
-        self.media.transport_mut().unpublish(kind);
-        match kind {
-            crate::media::TrackKind::Audio => self.mic = None,
-            crate::media::TrackKind::Video | crate::media::TrackKind::CameraFramed => {
-                self.camera = None;
-                self.cam_encoder = None;
-            }
-            crate::media::TrackKind::Screen => {
-                self.call.sharing = false;
-                self.release_screen();
-                self.screen_share_needs_sync = true;
-            }
-        }
-    }
-
-    #[cfg(feature = "live-media")]
-    fn stop_screen_for_error(&mut self, error: &tilo_callstream::FrameError) {
-        self.media_error = Some(crate::i18n::t_args(
-            "chat-media-screen-stopped",
-            &[("error", crate::i18n::text(error.to_string()))],
-        ));
-        self.call.sharing = false;
-        self.release_screen();
-        self.screen_share_needs_sync = true;
-    }
-
-    /// Receive: decode + play whatever arrived from peers.
-    #[cfg(feature = "live-media")]
-    fn pump_receive(&mut self, me: &str) {
-        use crate::media::TrackKind;
-
-        let objs = self.media.transport_mut().poll();
-        for o in objs {
-            if o.sender == me {
-                continue;
-            }
-            let sequence_key = (o.sender.clone(), o.kind);
-            // A peer that rejoined starts a new stream at 0. This explicit
-            // zero timestamp reset is accepted while ordinary late/reordered
-            // frames still fail closed.
-            let reset = o.seq == 0 && o.pts.is_zero();
-            if !reset
-                && self
-                    .remote_media_seq
-                    .get(&sequence_key)
-                    .is_some_and(|seen| o.seq <= *seen)
-            {
-                continue;
-            }
-            self.remote_media_seq.insert(sequence_key, o.seq);
-            match o.kind {
-                TrackKind::Audio => {
-                    if !self.call.deafened {
-                        if self.speaker.is_none() {
-                            self.speaker = crate::audio::SpeakerPlayback::new();
-                        }
-                        if let Some(sp) = self.speaker.as_mut() {
-                            sp.play(&o.payload);
-                        }
-                    }
-                }
-                TrackKind::Video => {
-                    // Remote camera: a raw-NALU H.264 stream decoded through
-                    // the shared stack's decoder → the peer's filmstrip cell.
-                    let frame = self
-                        .remote_decoders
-                        .entry(o.sender.clone())
-                        .or_default()
-                        .decode(&o.payload);
-                    if let Some(frame) = frame {
-                        self.remote_frames
-                            .insert(o.sender.clone(), rgba_to_image(&frame));
-                    }
-                }
-                TrackKind::CameraFramed => {
-                    // Remote camera in a negotiated non-H.264 codec: the same
-                    // codec-tagged framing as a screen share.
-                    let frames = self
-                        .remote_camera_rx
-                        .entry(o.sender.clone())
-                        .or_default()
-                        .push(&o.payload);
-                    if let Some(frame) = frames.last() {
-                        self.remote_frames
-                            .insert(o.sender.clone(), rgba_to_image(frame));
-                    }
-                }
-                TrackKind::Screen => {
-                    // Remote screen-share: reframe + decode through the shared
-                    // stack's receiver (the same `SurfaceFrame` framing the
-                    // compositor's PeerView consumes) → the featured stage tile.
-                    let frames = self
-                        .remote_screen_rx
-                        .entry(o.sender.clone())
-                        .or_default()
-                        .push(&o.payload);
-                    if let Some(frame) = frames.last() {
-                        self.remote_screens
-                            .insert(o.sender.clone(), rgba_to_image(frame));
-                    }
-                }
-            }
-        }
-    }
-
-    #[cfg(feature = "live-media")]
-    fn next_media_seq(&mut self) -> Option<u64> {
-        let s = self.media_seq;
-        let Some(next) = self.media_seq.checked_add(1) else {
-            self.media_error = Some(crate::i18n::t("chat-media-sequence-exhausted"));
-            for kind in [
-                crate::media::TrackKind::Audio,
-                crate::media::TrackKind::Video,
-                crate::media::TrackKind::CameraFramed,
-                crate::media::TrackKind::Screen,
-            ] {
-                self.media.transport_mut().unpublish(kind);
-            }
-            if self.call.sharing {
-                self.call.sharing = false;
-                self.release_screen();
-                self.screen_share_needs_sync = true;
-            }
-            return None;
-        };
-        self.media_seq = next;
-        Some(s)
-    }
-
-    /// Ask the host for a screen-share source: check the `ShareScreen`
-    /// permission, then request a stream through the host's screen-capture
-    /// service (natively the xdg-desktop-portal `ScreenCast` picker). The
-    /// answer is finished by [`Self::settle_screen_capture`] — immediately when
-    /// the host answers at once, otherwise on a later frame — so the picker
-    /// never blocks the UI thread. Returns `false` when permission is denied
-    /// or a request is already pending.
-    pub(crate) fn request_screen(&mut self, purpose: crate::call::ScreenCapturePurpose) -> bool {
-        if self.pending_screen.is_some() || !self.call_allows(crate::call::CallAction::ShareScreen)
-        {
-            return false;
-        }
-        let channel =
-            ui::capture::request_screen_capture(ui::capture::ScreenCaptureRequest::default());
-        self.pending_screen = Some((purpose, channel));
-        true
-    }
-
-    /// Finish an answered screen-capture request. A grant opens the capture
-    /// (see [`Self::start_screen`]) and completes the flow that asked for it;
-    /// anything else starts nothing. A share whose call ended, or whose
-    /// permission was revoked, while the picker was open is dropped.
-    pub(crate) fn settle_screen_capture(&mut self) {
-        let Some((_, channel)) = &self.pending_screen else {
-            return;
-        };
-        let outcome = match channel.try_recv() {
-            Ok(outcome) => outcome,
-            Err(std::sync::mpsc::TryRecvError::Empty) => return,
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                ui::capture::ScreenCaptureOutcome::Unavailable(
-                    "the screen-capture request closed without an answer".into(),
-                )
-            }
-        };
-        let Some((purpose, _)) = self.pending_screen.take() else {
-            return;
-        };
-        let source = match &outcome {
-            ui::capture::ScreenCaptureOutcome::Granted(grant) => {
-                crate::call::ScreenSource::from_grant(grant)
-            }
-            ui::capture::ScreenCaptureOutcome::Cancelled
-            | ui::capture::ScreenCaptureOutcome::Unavailable(_) => None,
-        };
-        match purpose {
-            crate::call::ScreenCapturePurpose::Share => {
-                let Some(source) = source else {
-                    return;
-                };
-                if !self.call.active
-                    || self.call.sharing
-                    || !self.call_allows(crate::call::CallAction::ShareScreen)
-                {
-                    return;
-                }
-                self.start_screen(source);
-                self.call.sharing = true;
-                self.screen_share_needs_sync = true;
-            }
-            crate::call::ScreenCapturePurpose::Resume { session } => {
-                if let Some(source) = source {
-                    self.start_screen(source);
-                    self.call.sharing = true;
-                    self.realtime.session = Some(session);
-                    self.realtime.target_media_ready = true;
-                } else {
-                    self.fail_realtime_target(session);
-                }
-            }
-        }
-    }
-
-    /// Open the `PipeWire` capture + a shared-stack video sender for a granted
-    /// source and publish the screen track (behind `live-media`).
-    ///
-    /// The encode + framing route through [`tilo_callstream::VideoStreamSender`]
-    /// — the same throttle+encoder+`SurfaceFrame` composition the compositor's
-    /// `SharedFlatpakSession` performs — instead of a second in-app codec.
-    #[cfg_attr(
-        not(feature = "live-media"),
-        allow(
-            clippy::needless_pass_by_ref_mut,
-            clippy::unused_self,
-            reason = "live-media mutates capture state; the default build keeps the same call API"
-        )
-    )]
-    fn start_screen(&mut self, src: crate::call::ScreenSource) {
-        #[cfg(all(feature = "live-media", not(test)))]
-        {
-            if let Some(scr) = crate::video::ScreenCapture::new(src.node, src.width, src.height) {
-                self.screen = Some(scr);
-                self.screen_session = self.call_video_codec().and_then(|codec| {
-                    tilo_callstream::VideoStreamSender::new(
-                        codec,
-                        src.width,
-                        src.height,
-                        crate::video::DEFAULT_FPS,
-                    )
-                    .ok()
-                });
-                self.media
-                    .transport_mut()
-                    .publish(crate::media::TrackKind::Screen);
-            }
-        }
-        #[cfg(all(feature = "live-media", test))]
-        {
-            // A recorded grant has no real PipeWire node. Tests still use the
-            // production sender/transport contract, but must never block
-            // opening a host device merely to verify the shared call state.
-            self.screen_session = self.call_video_codec().and_then(|codec| {
-                tilo_callstream::VideoStreamSender::new(
-                    codec,
-                    src.width,
-                    src.height,
-                    crate::video::DEFAULT_FPS,
-                )
-                .ok()
-            });
-            self.media
-                .transport_mut()
-                .publish(crate::media::TrackKind::Screen);
-        }
-        let _ = src;
-    }
-
     /// Whether this peer is currently sharing its screen — the shared-truth
-    /// flag used by the featured tile and transport tests. True only after the
-    /// host granted a source (see [`Self::request_screen`]).
+    /// flag used by the featured tile and the call-control tests. Chat has no
+    /// local screen-capture producer, so production never sets it.
     #[allow(
         dead_code,
-        reason = "queried by transport tests while the production capture control is hidden"
+        reason = "queried by call-control tests while the production capture control is hidden"
     )]
     pub(crate) fn sharing_screen(&self) -> bool {
         self.call.sharing
-    }
-
-    /// Tear down the local screen capture and stop publishing the screen track.
-    /// The caller clears `call.sharing` + the shared voice membership.
-    #[cfg_attr(
-        not(feature = "live-media"),
-        allow(
-            clippy::needless_pass_by_ref_mut,
-            clippy::unused_self,
-            reason = "live-media tears down capture state; the default build keeps the same call API"
-        )
-    )]
-    pub(crate) fn release_screen(&mut self) {
-        #[cfg(feature = "live-media")]
-        {
-            self.screen = None;
-            self.screen_session = None;
-            self.media
-                .transport_mut()
-                .unpublish(crate::media::TrackKind::Screen);
-        }
     }
 
     // --- model lookups ----------------------------------------------------
@@ -2491,6 +1942,9 @@ impl ChatApp {
         {
             return n.clone();
         }
+        if let Some(agent) = self.agent_authors.get(id) {
+            return agent.clone();
+        }
         if let Some(u) = self.users.iter().find(|u| u.id == id)
             && !u.name.trim().is_empty()
         {
@@ -2510,11 +1964,27 @@ impl ChatApp {
     /// participant and an honest placeholder for someone the room has not
     /// named yet — nobody is ever shown their raw routing id.
     pub(crate) fn user_name(&self, id: &str) -> String {
+        if self
+            .native_voice
+            .snapshot
+            .publishers
+            .iter()
+            .any(|namespace| namespace == id)
+        {
+            let tail = id.ceil_char_boundary(id.len().saturating_sub(6));
+            return crate::i18n::t_args(
+                "chat-call-audio-stream-name",
+                &[("tail", crate::i18n::text(id.get(tail..).unwrap_or(id)))],
+            );
+        }
         // `is_me` rather than a bare comparison: a peer that has adopted the
         // room's address for itself still wrote its earlier lines under the
         // id it resolved at startup, and those are still its own.
         if self.is_me(id) {
             return crate::i18n::t("chat-you");
+        }
+        if let Some(agent) = self.agent_authors.get(id) {
+            return format!("{agent} \u{b7} agent");
         }
         let named = self.display_name(id);
         if named != id && !named.trim().is_empty() {
@@ -2640,13 +2110,6 @@ impl ChatApp {
             .map_or(&[], std::vec::Vec::as_slice)
     }
 
-    /// The media routing for the current call, chosen from the live participant
-    /// count: peer-to-peer below the mesh threshold, host-relay above it. A
-    /// call transparently promotes from P2P to host-based as people join.
-    pub(crate) fn call_session(&self) -> crate::model::CallSession {
-        crate::model::CallSession::select(self.voice_in(&self.call.channel).len().max(1))
-    }
-
     /// Channels in `category` within the active workspace, ordered. Archived
     /// channels are hidden from the sidebar.
     pub(crate) fn category_channels(&self, category: &str) -> Vec<&Channel> {
@@ -2712,13 +2175,59 @@ impl ChatApp {
     /// when no inline editor / rename is capturing input. Idempotent; called
     /// from `reload` and after any focus change.
     pub(crate) fn set_composer_focus(&mut self) {
-        let editing = self.editing.is_some() || self.rename.is_some();
+        let editing = self.editing.is_some() || self.rename.is_some() || !self.host_focused;
         let main = matches!(self.focus, Focus::Main) && !editing;
         let thread = matches!(self.focus, Focus::Thread) && self.thread_open.is_some() && !editing;
         ui::Widget::set_focus(&mut self.composer_main, main);
         ui::Widget::set_focus(&mut self.composer_thread, thread);
-        ui::Widget::set_focus(&mut self.edit_input, self.editing.is_some());
-        ui::Widget::set_focus(&mut self.rename_input, self.rename.is_some());
+        ui::Widget::set_focus(
+            &mut self.edit_input,
+            self.host_focused && self.editing.is_some(),
+        );
+        ui::Widget::set_focus(
+            &mut self.rename_input,
+            self.host_focused && self.rename.is_some(),
+        );
+    }
+
+    /// Presence scope of a shared composer draft (`drafts[draft_key]`), so
+    /// collaborators' carets/selections in the same draft are drawn where
+    /// they type. Offsets are UTF-8 byte offsets into the draft text.
+    pub(crate) fn draft_presence_key(draft_key: &str) -> ui::presence::PresenceKey {
+        ui::presence::PresenceKey::Widget {
+            path: vec![
+                ui::presence::PathSegment::Field("chat_draft".into()),
+                ui::presence::PathSegment::Field(draft_key.to_owned()),
+            ],
+        }
+    }
+
+    /// The focused composer's draft scope and caret/selection, when the
+    /// person is typing in a composer (not an inline edit or rename).
+    pub(crate) fn composer_presence(
+        &self,
+    ) -> Option<(ui::presence::PresenceKey, ui::PresencePayload)> {
+        if !self.host_focused
+            || self.editing.is_some()
+            || self.rename.is_some()
+            || !self.can_participate()
+        {
+            return None;
+        }
+        let (composer, key) = match self.focus {
+            Focus::Thread => (&self.composer_thread, self.thread_draft_key()?),
+            Focus::Main => (&self.composer_main, self.active_channel.clone()),
+        };
+        if key.is_empty() {
+            return None;
+        }
+        let payload = match composer.selection_range_public() {
+            Some((start, end)) if start != end => ui::PresencePayload::Selection { start, end },
+            _ => ui::PresencePayload::Caret {
+                pos: composer.cursor_pos(),
+            },
+        };
+        Some((Self::draft_presence_key(&key), payload))
     }
 
     pub(crate) fn thread_draft_key(&self) -> Option<String> {
@@ -2773,31 +2282,31 @@ impl ChatApp {
             .map(|c| c.id.clone())
             .collect();
         self.comments.follow(&feedback_channels);
-        self.messages = self.channel_messages(doc, &self.active_channel.clone());
-        self.arrange_reports();
-        self.search_messages = self
+        // Read every channel's messages once per reload: the open channel,
+        // search and the workspace people directory all project from them
+        // (reading them three times dominated typing with a long history).
+        let per_channel: Vec<(Id, Vec<Message>)> = self
             .channels
             .clone()
             .iter()
-            .flat_map(|channel| self.channel_messages(doc, &channel.id))
+            .map(|channel| (channel.id.clone(), self.channel_messages(doc, &channel.id)))
+            .collect();
+        let active = self.active_channel.clone();
+        self.messages = match per_channel.iter().find(|(id, _)| *id == active) {
+            Some((_, messages)) => messages.clone(),
+            None => self.channel_messages(doc, &active),
+        };
+        self.arrange_reports();
+        self.search_messages = per_channel
+            .iter()
+            .flat_map(|(_, messages)| messages.iter().cloned())
             .collect();
         self.search_users = ChatDoc::list_users(doc);
-        // Cache voice membership for this workspace only. The document's
-        // channel list is global, so filtering here is as important as it is
-        // for the People projection below: a huddle elsewhere is not a huddle
-        // in the workspace currently on screen.
-        self.voice_members.clear();
-        for ch in self
-            .channels
-            .iter()
-            .filter(|c| c.workspace == self.active_ws && c.kind == model::ChannelKind::Voice)
-        {
-            let members = ChatDoc::list_voice_members(doc, &ch.id);
-            if !members.is_empty() {
-                self.voice_members.insert(ch.id.clone(), members);
-            }
-        }
-        self.users = self.workspace_people(doc);
+        self.agent_authors = ChatDoc::agent_authors(doc);
+        // Durable voice rows are legacy history. Current stream inventory is
+        // projected only from the authenticated local service response.
+        self.refresh_native_streams();
+        self.users = self.workspace_people_from(doc, &per_channel);
         self.reconcile_record_sharing();
         // Load the per-surface drafts from the CRDT into the composer widgets.
         // `set_text` is a no-op when the value is unchanged, so this preserves
@@ -2842,7 +2351,11 @@ impl ChatApp {
     /// workspace would be dishonest. Channel activity and voice membership
     /// are durable, workspace-owned evidence; the local identity is included
     /// so a brand-new workspace remains a valid one-person surface.
-    fn workspace_people(&self, doc: &AutoCommit) -> Vec<User> {
+    fn workspace_people_from(
+        &self,
+        doc: &AutoCommit,
+        per_channel: &[(Id, Vec<Message>)],
+    ) -> Vec<User> {
         let mut ids: HashSet<Id> = HashSet::from([self.me.id.clone()]);
         ids.extend(self.former_ids.iter().cloned());
 
@@ -2851,16 +2364,17 @@ impl ChatApp {
             .iter()
             .filter(|channel| channel.workspace == self.active_ws)
         {
-            for message in ChatDoc::list_messages(doc, &channel.id) {
-                ids.insert(message.author);
-                for reaction in message.reactions {
-                    ids.extend(reaction.users);
+            let messages = per_channel
+                .iter()
+                .find(|(id, _)| *id == channel.id)
+                .map(|(_, messages)| messages);
+            for message in messages.into_iter().flatten() {
+                ids.insert(message.author.clone());
+                for reaction in &message.reactions {
+                    ids.extend(reaction.users.iter().cloned());
                 }
-                ids.extend(message.mentions.into_iter().map(|mention| mention.user));
+                ids.extend(message.mentions.iter().map(|mention| mention.user.clone()));
             }
-        }
-        for members in self.voice_members.values() {
-            ids.extend(members.iter().map(|member| member.user.clone()));
         }
 
         let mut people: Vec<_> = ChatDoc::list_users(doc)
@@ -3224,7 +2738,7 @@ impl ChatApp {
             let _ = self.images.get(&e.key());
         }
         self.images
-            .block_until_idle(std::time::Duration::from_secs(3));
+            .block_until_idle(ui::clock::Duration::from_secs(3));
     }
 
     /// The host-tile video rect for the current call mode, including the
@@ -3356,7 +2870,7 @@ impl ChatApp {
                     ),
                     Hit::Send => (t("chat-a11y-send"), Role::Button, false),
                     Hit::JumpToLatest => (t("chat-a11y-jump-latest"), Role::Button, false),
-                    Hit::ComposerEmoji(_) => (t("chat-a11y-insert-emoji"), Role::Button, false),
+                    Hit::ComposerEmoji(_) => (t("chat-emoji-insert"), Role::Button, false),
                     Hit::Attach => (t("chat-a11y-attach"), Role::Button, false),
                     Hit::AttachPick(path) => (
                         t_args(
@@ -3391,30 +2905,36 @@ impl ChatApp {
                             .is_some_and(|reaction| reaction.reacted_by(&self.me.id));
                         (
                             t_args(
-                                "chat-a11y-reaction",
-                                &[("mine", flag(mine)), ("emoji", text(emoji.clone()))],
+                                if mine {
+                                    "chat-reaction-remove"
+                                } else {
+                                    "chat-reaction-add"
+                                },
+                                &[("emoji", text(emoji.clone()))],
                             ),
                             Role::ToggleButton,
                             mine,
                         )
                     }
-                    Hit::AddReaction { .. } => (t("chat-a11y-add-reaction"), Role::Button, false),
+                    Hit::AddReaction { .. } => (t("chat-emoji-add-reaction"), Role::Button, false),
                     Hit::EmojiChoice(emoji) => {
-                        let name = emoji::Catalogue::english()
+                        let name = crate::i18n::emoji_catalogue()
                             .get(emoji)
                             .map_or(emoji.as_str(), |found| found.name());
                         (
-                            t_args("chat-a11y-choose-emoji", &[("emoji", text(name))]),
+                            t_args("chat-emoji-choose", &[("name", text(name))]),
                             Role::Button,
                             false,
                         )
                     }
                     Hit::EmojiGroup(group) => (
-                        emoji::Catalogue::english()
+                        crate::i18n::emoji_catalogue()
                             .groups()
                             .get(*group)
-                            .map_or("Emoji group", emoji::Group::label)
-                            .into(),
+                            .map_or_else(
+                                || crate::i18n::t("chat-emoji-group"),
+                                |group| group.label().to_owned(),
+                            ),
                         Role::Tab,
                         *group == self.emoji_group,
                     ),
@@ -3426,16 +2946,6 @@ impl ChatApp {
                         t("chat-a11y-call-mute"),
                         Role::ToggleButton,
                         self.call.muted,
-                    ),
-                    Hit::CallDeafen => (
-                        t("chat-a11y-call-deafen"),
-                        Role::ToggleButton,
-                        self.call.deafened,
-                    ),
-                    Hit::CallAudioOnly => (
-                        t("chat-a11y-call-camera"),
-                        Role::ToggleButton,
-                        self.call.audio_only,
                     ),
                     Hit::CallShareScreen => (
                         t("chat-a11y-call-share"),
@@ -3657,15 +3167,24 @@ impl Continuable for ChatApp {
 impl Collaborative for ChatApp {
     fn take_collab_requests(&mut self) -> Vec<ui::collaboration::CollabRequest> {
         self.queue_realtime_registration();
-        if self.realtime.target_media_ready {
+        if self.realtime.target_media_ready && self.realtime_target_media_ready() {
             self.realtime.target_media_ready = false;
-            let _ = self.realtime_target_media_ready();
         }
-        std::mem::take(&mut self.realtime.requests)
+        let mut requests = std::mem::take(&mut self.realtime.requests);
+        let before = self.native_voice.snapshot.state;
+        requests.extend(self.native_voice.take_requests(ui::clock::Instant::now()));
+        if before != self.native_voice.snapshot.state {
+            self.project_native_voice();
+        }
+        requests
     }
 
     fn handle_collab_event(&mut self, event: &ui::collaboration::CollabEvent) {
         match event {
+            ui::collaboration::CollabEvent::NativeMediaCommandResult { request_id, result } => {
+                self.native_voice.complete(*request_id, result);
+                self.project_native_voice();
+            }
             ui::collaboration::CollabEvent::RealtimeCommandResult { result, .. } => match result {
                 Ok(ui::realtime_continuity::RealtimeReply::Registered { session }) => {
                     self.realtime.registration_pending = false;
@@ -3921,6 +3440,14 @@ impl Widget for ChatApp {
         self.restore_menu_overlay(menu);
     }
 
+    fn semantic_readers(&self) -> &'static [ui::semantic_document_read::RegisteredSemanticReader] {
+        &crate::semantic_read::action::READERS
+    }
+
+    fn presence_payload(&self) -> Option<(ui::presence::PresenceKey, ui::PresencePayload)> {
+        self.composer_presence()
+    }
+
     fn collaborative_mut(&mut self) -> Option<&mut dyn Collaborative> {
         Some(self)
     }
@@ -3933,6 +3460,75 @@ impl Widget for ChatApp {
         Some(self)
     }
 
+    fn primary_vertical_scroll(&self) -> Option<ui::widget::PrimaryScrollRegion> {
+        Some(ui::widget::PrimaryScrollRegion {
+            key: "primary",
+            owner_generation: None,
+            metrics: ui::widget::ScrollMetrics::new(
+                self.scroll_content,
+                self.scroll_viewport,
+                (self.scroll_content - self.scroll_viewport).max(0.0)
+                    - self
+                        .scroll
+                        .clamp(0.0, (self.scroll_content - self.scroll_viewport).max(0.0)),
+            ),
+        })
+    }
+    #[expect(
+        clippy::float_cmp,
+        reason = "the clamped target is compared exactly: identical means the scroll did not move"
+    )]
+    fn apply_primary_vertical_scroll(
+        &mut self,
+        action: ui::widget::PrimaryScrollAction,
+    ) -> ui::widget::PrimaryScrollResult {
+        use ui::widget::PrimaryScrollResult;
+        let Some(region) = self.primary_vertical_scroll() else {
+            return PrimaryScrollResult::Unsupported;
+        };
+        let Some(next) = action.offset(region.metrics) else {
+            return PrimaryScrollResult::Unsupported;
+        };
+        if next == region.metrics.offset {
+            return PrimaryScrollResult::Unchanged(region);
+        }
+        self.scroll = region.metrics.max_scroll() - next;
+        self.timeline_at_end = self.scroll <= 0.5;
+        self.canonical_dirty = true;
+        self.primary_vertical_scroll().map_or(
+            PrimaryScrollResult::Unsupported,
+            PrimaryScrollResult::Changed,
+        )
+    }
+
+    fn is_focusable(&self) -> bool {
+        true
+    }
+    fn is_focused(&self) -> bool {
+        self.host_focused
+    }
+    fn set_focus(&mut self, focused: bool) {
+        self.host_focused = focused;
+        self.canonical_dirty = true;
+        self.set_composer_focus();
+    }
+    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+        self.host_focused
+            .then_some(winit::window::ImePurpose::Normal)
+    }
+    fn ime_cursor_rect(&self) -> Option<Rect> {
+        if !self.host_focused {
+            return None;
+        }
+        if self.rename.is_some() {
+            self.rename_input.ime_cursor_rect()
+        } else if self.editing.is_some() {
+            self.edit_input.ime_cursor_rect()
+        } else {
+            self.focused_composer().ime_cursor_rect()
+        }
+    }
+
     fn floating_surface_provider(&self) -> Option<&dyn FloatingSurfaceProvider> {
         Some(self)
     }
@@ -3940,18 +3536,13 @@ impl Widget for ChatApp {
     fn floating_surface_provider_mut(&mut self) -> Option<&mut dyn FloatingSurfaceProvider> {
         Some(self)
     }
-    fn update(&mut self, _doc: &mut AutoCommit, _path: &ObjId) -> bool {
-        // A bound media endpoint wakes the event loop; sync adopts it.
-        self.media.poll_binding()
-    }
     fn sync(&mut self, doc: &mut AutoCommit, _path: &ObjId) {
         while let Some(action) = self.feedback.pending.pop_front() {
             self.perform_action(doc, &action);
         }
         self.apply_realtime_stop(doc);
         self.establish_realtime_target();
-        self.settle_screen_capture();
-        if self.is_live {
+        if !self.canonical && self.is_live {
             // Live instance. `app-state` has already restored the previous
             // session's document by now, so an unseeded document really is a
             // first run: scaffold a real, empty starter workspace for this
@@ -3980,49 +3571,58 @@ impl Widget for ChatApp {
                     model::Presence::Online,
                 )
             {}
-        } else if self.shot_starter {
+        } else if !self.canonical && self.shot_starter {
             // `--shots` capture of the honest first-run empty workspace.
             ChatDoc::seed_starter(doc, &self.me.id, &self.me.name, &self.me.initials);
-        } else {
+        } else if !self.canonical {
             // Ephemeral `--shots`/test instance: the rich demo workspace.
             ChatDoc::seed_if_empty(doc);
             if self.shot_feedback {
                 ChatDoc::seed_demo_feedback(doc);
             }
         }
-        if !self.legacy_migration_attempted {
+        if !self.canonical && !self.legacy_migration_attempted {
             ChatDoc::migrate_legacy_attachment_paths(doc);
             self.legacy_migration_attempted = true;
         }
-        if self.screen_share_needs_sync {
-            self.sync_local_sharing(doc);
-            self.screen_share_needs_sync = false;
-            self.request_relayout();
-        }
         self.settle_attachment_picker();
         self.settle_attachment_import(doc);
-        self.reload(doc);
+        if self.canonical {
+            use automerge::transaction::Transactable as _;
+            // Reload and repaint only when the document moved: committed heads
+            // differ, or a transaction is or was open. Service completions run
+            // before this comparison so their canonical changes are projected
+            // in the same frame without making idle sync reload continuously.
+            let heads = doc.base_heads();
+            let pending = doc.pending_ops();
+            let unchanged = self
+                .synced
+                .as_ref()
+                .is_some_and(|(synced_heads, synced_pending)| {
+                    *synced_heads == heads && *synced_pending == 0 && pending == 0
+                });
+            if !unchanged {
+                self.canonical_dirty = true;
+                self.reload(doc);
+                self.synced = Some((heads, pending));
+            }
+        } else {
+            self.reload(doc);
+        }
         if self.ensure_selection() {
             // Re-picking the workspace changes which channels/messages apply.
+            self.canonical_dirty = true;
             self.reload(doc);
         }
         // The channel in view is read: advance its watermark (no-op when
-        // nothing new arrived) so its unread badge stays cleared.
-        self.mark_active_read(doc);
-        // The live media endpoint binds in the background; a call joined
-        // before it was ready announces its ticket now.
-        if self.media.take_bound() {
-            self.announce_call_ticket(doc);
+        // nothing new arrived) so its unread badge stays cleared. Only a
+        // presented instance has a viewer; a headless host worker never
+        // authors read receipts.
+        if self.presented {
+            self.mark_active_read(doc);
         }
-        // While in a call, keep the media signalling handshake current: dial
-        // any peer that has joined since the last frame (idempotent).
-        if self.call.active {
-            self.connect_call_peers(doc);
-        }
-        // Move real media: capture mic/camera/screen → encode → publish, and
-        // decode/play whatever arrived from peers. No-op without `live-media`.
-        #[cfg(feature = "live-media")]
-        self.pump_media();
+        // Native capture/transport belongs to the shell's lease-bound service.
+        // Durable voice rows never start the legacy Iroh media pump.
     }
 
     fn build_layout(
@@ -4117,6 +3717,10 @@ impl Widget for ChatApp {
         let Ok(layout) = taffy.layout(node) else {
             return;
         };
+        if !self.presented {
+            self.presented = true;
+            self.read_on_present = true;
+        }
         self.rect = Rect::new(
             origin.x + f64::from(layout.location.x),
             origin.y + f64::from(layout.location.y),
@@ -4163,7 +3767,7 @@ impl Widget for ChatApp {
         self.layout_text_scale = theme.text_scale;
         self.reconcile_flaps();
         self.reconcile_huddle_motion(theme);
-        self.tooltips.tick(std::time::Instant::now());
+        self.tooltips.tick(ui::clock::Instant::now());
 
         let mut hits: Vec<(Rect, Hit)> = Vec::new();
         let c = &theme.tokens.colors;
@@ -4280,7 +3884,9 @@ impl Widget for ChatApp {
         // Immediate-mode keyboard focus needs a visible counterpart. The ring
         // is painted last so it remains legible on rail, sidebar and popovers.
         let semantic = Self::deduplicate_semantic_hits(self.semantic_hits_from(&hits));
-        if let Some(index) = self.keyboard_target {
+        if self.host_focused
+            && let Some(index) = self.keyboard_target
+        {
             if let Some((rect, ..)) = semantic.get(index) {
                 crate::paint::stroke_round(scene, tf, *rect, 9.0, c.accent[7], 2.0);
             } else {
@@ -4326,11 +3932,23 @@ impl Widget for ChatApp {
         state: &mut AutoCommit,
         _path: &ObjId,
         handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
         _taffy: &TaffyTree<()>,
     ) {
-        self.dispatch_event(event, scale_factor, *modifiers, state, handled);
+        // Embedded inputs request focus with a temporary layout node. Map
+        // that actual request to Chat's retained keyboard/IME owner.
+        let was_handled = *handled;
+        let requested = self.dispatch_event(event, scale_factor, *modifiers, state, handled);
+        // Pointer motion that neither Chat nor its inputs consumed changes
+        // nothing visible; every other event may. Marking every event dirty
+        // made each pointer move anywhere on the desktop repaint everything.
+        if !matches!(event, WindowEvent::CursorMoved { .. }) || *handled || requested {
+            self.canonical_dirty = true;
+        }
+        if !was_handled && requested && focus_target.is_none() {
+            *focus_target = Some(node_id);
+        }
     }
 
     /// The resource tree Chat currently has open — the active workspace, its
@@ -4346,6 +3964,53 @@ impl Widget for ChatApp {
         <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
     }
 
+    /// The tree a delivered invocation resolves against for an agent task
+    /// participant: the same resources, authored as that participant (its
+    /// posts carry it as author and its display name). Chat keeps no other
+    /// per-participant view state.
+    fn resources_for(
+        &self,
+        participant: Option<&tilo_actions::ParticipantId>,
+        doc: &AutoCommit,
+    ) -> Vec<tilo_actions::Resource> {
+        match participant.and_then(|p| self.participant_ctx(p)) {
+            Some(ctx) => crate::actions::provide_resources(&ctx, doc),
+            None => Widget::resources(self, doc),
+        }
+    }
+
+    fn resource_for(
+        &self,
+        participant: Option<&tilo_actions::ParticipantId>,
+        doc: &AutoCommit,
+        id: &str,
+    ) -> Option<tilo_actions::Resource> {
+        match participant.and_then(|p| self.participant_ctx(p)) {
+            Some(ctx) => crate::actions::resolve_resource(&ctx, doc, id),
+            None => Widget::resource(self, doc, id),
+        }
+    }
+
+    fn join_participant(&mut self, participant: &tilo_actions::ParticipantId) -> bool {
+        if participant.agent_task().is_some() {
+            self.participant_labels
+                .entry(participant.as_str().to_owned())
+                .or_default();
+        }
+        false
+    }
+
+    fn leave_participant(&mut self, participant: &tilo_actions::ParticipantId) {
+        self.participant_labels.remove(participant.as_str());
+    }
+
+    fn set_participant_label(&mut self, participant: &tilo_actions::ParticipantId, label: &str) {
+        if participant.agent_task().is_some() {
+            self.participant_labels
+                .insert(participant.as_str().to_owned(), label.trim().to_owned());
+        }
+    }
+
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Role};
 
@@ -4354,9 +4019,19 @@ impl Widget for ChatApp {
             .into_iter()
             .enumerate()
             .map(|(index, (rect, hit, name, role, selected))| {
-                let mut state = AccessState::new()
-                    .focusable(true)
-                    .focused(self.keyboard_target == Some(index));
+                let input = match &hit {
+                    Hit::FocusMain => Some(&self.composer_main),
+                    Hit::FocusThread => Some(&self.composer_thread),
+                    Hit::FocusRename => Some(&self.rename_input),
+                    Hit::FocusEdit => Some(&self.edit_input),
+                    _ => None,
+                };
+                let focused = self.host_focused
+                    && self.keyboard_target.map_or_else(
+                        || input.is_some_and(ui::Widget::is_focused),
+                        |target| target == index,
+                    );
+                let mut state = AccessState::new().focusable(true).focused(focused);
                 if matches!(role, Role::Tab | Role::ListItem) {
                     state = state.selected(selected);
                 }
@@ -4369,16 +4044,9 @@ impl Widget for ChatApp {
                     .with_bounds(rect)
                     .with_key(index as u64)
                     .with_action_target(hit.semantic_id());
-                let input = match hit {
-                    Hit::FocusMain => Some(&self.composer_main),
-                    Hit::FocusThread => Some(&self.composer_thread),
-                    Hit::FocusRename => Some(&self.rename_input),
-                    Hit::FocusEdit => Some(&self.edit_input),
-                    _ => None,
-                };
                 if let Some(input) = input {
                     let (anchor, focus) = input
-                        .selection_range_public()
+                        .selection_anchor_focus_public()
                         .unwrap_or_else(|| (input.cursor_pos(), input.cursor_pos()));
                     node = node
                         .with_value(input.value())
@@ -4468,6 +4136,10 @@ impl Widget for ChatApp {
     /// assistive-technology activation from taking a separate, untracked
     /// mutation path: `on_hit` builds the same `ChatAction` and delegates it
     /// to `ActionHost` for history and collaboration.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one flat semantic-target dispatch mirroring the pointer hit inventory"
+    )]
     fn perform_semantic_action(
         &mut self,
         target: &str,
@@ -4514,6 +4186,11 @@ impl Widget for ChatApp {
         ) {
             use ui::a11y::Action;
 
+            // `keyboard_target` is the immediate-mode Tab ring. A semantic
+            // editor action moves focus into the actual TextInput instead, so
+            // let that editor be the single focused accessibility child.
+            self.keyboard_target = None;
+
             match action {
                 Action::Focus | Action::Activate => {
                     self.on_hit(hit, state);
@@ -4526,7 +4203,12 @@ impl Widget for ChatApp {
                         {
                             return false;
                         }
-                        ChatDoc::set_draft(state, &self.active_channel, self.composer_main.value());
+                        ChatDoc::set_draft_from(
+                            state,
+                            &self.active_channel,
+                            &self.draft_main,
+                            self.composer_main.value(),
+                        );
                         self.reload(state);
                     }
                     Hit::FocusThread => {
@@ -4542,7 +4224,12 @@ impl Widget for ChatApp {
                         ) {
                             return false;
                         }
-                        ChatDoc::set_draft(state, &key, self.composer_thread.value());
+                        ChatDoc::set_draft_from(
+                            state,
+                            &key,
+                            &self.draft_thread,
+                            self.composer_thread.value(),
+                        );
                         self.reload(state);
                     }
                     Hit::FocusRename => {
@@ -4575,8 +4262,12 @@ impl Widget for ChatApp {
         ) {
             return false;
         }
+        let messages_before = matches!(hit, Hit::Send)
+            .then(|| ChatDoc::list_messages(state, &self.active_channel).len());
         self.on_hit(hit, state);
-        true
+        messages_before.is_none_or(|before| {
+            ChatDoc::list_messages(state, &self.active_channel).len() == before.saturating_add(1)
+        })
     }
 
     /// Hand the host the heads captured before an on-screen affordance dispatched
@@ -4619,8 +4310,23 @@ impl Widget for ChatApp {
             return Ok(false);
         };
         match &operation {
-            crate::actions::ChatOperation::ImportAttachment { .. }
-            | crate::actions::ChatOperation::Comment { .. } => {
+            crate::actions::ChatOperation::NativeVoice { request, .. } => {
+                if kind != tilo_actions::OperationKind::Effect
+                    || !request.valid()
+                    || request.intent != 0
+                {
+                    return Err("Call controls require a valid local Effect".into());
+                }
+            }
+            crate::actions::ChatOperation::ImportAttachment { .. } => {
+                if !self.external_services {
+                    return Err("attachment import unsupported: no host asset transport".into());
+                }
+                if kind != tilo_actions::OperationKind::Effect {
+                    return Err("this operation is an Effect".into());
+                }
+            }
+            crate::actions::ChatOperation::Comment { .. } => {
                 if kind != tilo_actions::OperationKind::Effect {
                     return Err("this operation is an Effect".into());
                 }
@@ -4629,6 +4335,9 @@ impl Widget for ChatApp {
             _ => {}
         }
         match operation {
+            crate::actions::ChatOperation::NativeVoice { channel, request } => {
+                self.native_voice_command(&channel, request.command)?;
+            }
             crate::actions::ChatOperation::OpenWorkspace { workspace } => {
                 self.reveal_workspace_resource(workspace)?;
             }
@@ -4853,8 +4562,17 @@ impl Widget for ChatApp {
     /// decoding in the background. A live-but-static call does **not** force
     /// continuous redraws (the roster/rings are static), so an idle call
     /// no longer pins a core.
+    fn update(&mut self, _doc: &mut AutoCommit, _path: &ObjId) -> bool {
+        // A bound media endpoint wakes the event loop; sync adopts it.
+        let media_bound = self.media.poll_binding();
+        // Re-run `sync` once after the first layout so the channel already in
+        // view acquires its read receipt on open.
+        std::mem::take(&mut self.read_on_present) || media_bound
+    }
+
     fn needs_animation_frame(&self) -> bool {
-        self.flap_animating
+        self.read_on_present
+            || self.flap_animating
             || self.call_chrome_motion.animating
             || self.call.placement.is_dragging()
             || self.call.placement.is_handoff_animating()
@@ -4867,7 +4585,12 @@ impl Widget for ChatApp {
     }
 
     fn needs_redraw(&self) -> bool {
-        true
+        !self.canonical || self.canonical_dirty
+    }
+    fn mark_drawn(&mut self) {
+        self.canonical_dirty = false;
+        self.composer_main.mark_drawn();
+        self.composer_thread.mark_drawn();
     }
 }
 
@@ -4910,198 +4633,31 @@ impl ChatApp {
     }
 }
 
-/// The codec a call member sends in, from this machine's capabilities and
-/// the other members' announced ones (`None` = never announced = H.264 only).
-#[cfg(feature = "live-media")]
-fn call_video_codec(
-    local: &tilo_callstream::CodecCapabilities,
-    peers: &[Option<crate::model::VideoCaps>],
-) -> Option<tilo_callstream::StreamCodec> {
-    use tilo_callstream::CodecCapabilities;
-    let receivers: Vec<CodecCapabilities> = peers
-        .iter()
-        .map(|p| match p {
-            None => CodecCapabilities::legacy_peer(),
-            Some(v) => CodecCapabilities {
-                hardware_decode: CodecCapabilities::parse_labels(&v.hardware_decode),
-                software_decode: CodecCapabilities::parse_labels(&v.software_decode),
-                ..CodecCapabilities::default()
-            },
-        })
-        .collect();
-    tilo_callstream::negotiate(local, &receivers).map(|n| n.codec)
-}
-
-/// Wrap a decoded RGBA frame as a `peniko` image for painting into a call tile.
-#[cfg(feature = "live-media")]
-fn rgba_to_image(frame: &tilo_callstream::DecodedFrame) -> vello::peniko::ImageData {
-    use vello::peniko::{Blob, ImageAlphaType, ImageData, ImageFormat};
-    ImageData {
-        data: Blob::new(std::sync::Arc::new(frame.rgba.clone())),
-        format: ImageFormat::Rgba8,
-        alpha_type: ImageAlphaType::Alpha,
-        width: frame.width,
-        height: frame.height,
-    }
-}
-
-/// Screen-share reuse proof: a remote peer's screen frame, encoded through the
-/// shared Tilo video-streaming stack, must travel the real receive path into
-/// the featured-tile map. Gated on `live-media` because the video stack (and
-/// the featured-tile decode) only compile there — the default/`--shots` build
-/// carries no codec and shows the honest placeholder.
-#[cfg(all(test, feature = "live-media"))]
-mod screenshare_reuse_tests {
-    use super::*;
-    use crate::media::{MediaEngine, MediaObject, TrackKind};
-    use std::time::{Duration, Instant};
-    use tilo_callstream::VideoStreamSender;
-
-    #[test]
-    fn remote_screen_share_negotiates_a_codec_and_reaches_the_featured_tile() {
-        // Phase: a_member_without_announced_capabilities_pins_h264.
-        {
-            use tilo_callstream::{CodecCapabilities, StreamCodec};
-            let local = CodecCapabilities {
-                hardware_encode: [StreamCodec::Av1, StreamCodec::H264].into(),
-                ..CodecCapabilities::default()
-            };
-            let av1_peer = crate::model::VideoCaps {
-                hardware_decode: vec!["av1".into(), "h264".into()],
-                software_decode: vec![],
-            };
-            assert_eq!(
-                super::call_video_codec(&local, &[Some(av1_peer.clone())]),
-                Some(StreamCodec::Av1),
-                "every member decodes AV1 in hardware"
-            );
-            assert_eq!(
-                super::call_video_codec(&local, &[Some(av1_peer), None]),
-                Some(StreamCodec::H264),
-                "an older member that never announced anything decodes H.264"
-            );
-        }
-        // Phase: remote_screen_share_frame_reaches_the_featured_tile.
-        // A remote screen-share frame encoded on the shared `VideoStreamSender`
-        // (throttle + H.264 + `SurfaceFrame` framing), delivered as a
-        // `TrackKind::Screen` `MediaObject`, must decode through the app's real
-        // `pump_media` receive path and land in `remote_screens` — the featured
-        // stage tile. This asserts on the production receive path (the same
-        // `VideoStreamReceiver` + decoder the app runs), proving a decoded frame
-        // reaches the tile with no second in-app codec.
-        {
-            const W: u32 = 96;
-            const H: u32 = 64;
-
-            let mut app = ChatApp::new_ephemeral();
-            // Deterministic in-process loopback transport; no network/devices.
-            app.media = MediaEngine::simulated();
-            app.call.active = true;
-            app.call.audio_only = true; // no camera capture in the pump
-            app.call.muted = true; // no mic capture in the pump
-
-            // A remote peer encodes a screen frame through the SHARED stack.
-            let mut sender = VideoStreamSender::new(tilo_callstream::StreamCodec::Vp9, W, H, 30)
-                .expect("shared-stack sender");
-            let wire = sender
-                .offer_frame(&gradient(W, H), Instant::now())
-                .expect("shared sender accepts the frame")
-                .expect("throttle admits the first frame + encoder emits a NALU");
-            app.media.transport_mut().send(MediaObject {
-                sender: "u_remote".into(),
-                kind: TrackKind::Screen,
-                seq: 0,
-                pts: Duration::from_millis(0),
-                payload: wire,
-            });
-
-            // Honest gating: nothing in the tile until a real frame is pumped.
-            assert!(
-                app.remote_screens.is_empty(),
-                "no fabricated featured-tile frame before the pump"
-            );
-
-            app.pump_media();
-
-            let img = app
-                .remote_screens
-                .get("u_remote")
-                .expect("the decoded screen frame reached the featured tile");
-            assert_eq!(
-                (img.width, img.height),
-                (W, H),
-                "featured-tile image carries the decoded frame's dimensions"
-            );
-        }
-    }
-
-    fn gradient(width: u32, height: u32) -> Vec<u8> {
-        let mut out = Vec::with_capacity((width * height * 4) as usize);
-        for y in 0..height {
-            for x in 0..width {
-                out.extend_from_slice(&[
-                    ((x * 255) / width.max(1)) as u8,
-                    ((y * 255) / height.max(1)) as u8,
-                    128,
-                    255,
-                ]);
-            }
-        }
-        out
-    }
-
-    #[test]
-    fn screen_share_failures_stop_the_track_and_say_why() {
-        // Phase: screen_stream_error_is_visible_and_unpublishes_the_track.
-        {
-            let mut app = ChatApp::new_ephemeral();
-            app.call.sharing = true;
-            app.screen_session =
-                VideoStreamSender::new(tilo_callstream::StreamCodec::Vp9, 96, 64, 30).ok();
-            app.media.transport_mut().publish(TrackKind::Screen);
-
-            app.stop_screen_for_error(&tilo_callstream::FrameError::SequenceExhausted);
-
-            assert!(!app.call.sharing);
-            assert!(app.screen_session.is_none());
-            assert!(
-                app.media_error
-                    .as_deref()
-                    .is_some_and(|message| message.contains("sequence space exhausted"))
-            );
-        }
-        // Phase: oversized_screen_object_stops_the_track_instead_of_silent_transport_drop.
-        {
-            use crate::media::{MAX_MEDIA_PAYLOAD, TrackKind};
-            use std::time::Duration;
-
-            let mut app = ChatApp::new_ephemeral();
-            app.call.sharing = true;
-            app.screen_session =
-                VideoStreamSender::new(tilo_callstream::StreamCodec::Vp9, 96, 64, 30).ok();
-            app.media.transport_mut().publish(TrackKind::Screen);
-
-            assert!(!app.send_media_frame(
-                "u_me",
-                TrackKind::Screen,
-                Duration::ZERO,
-                vec![0; MAX_MEDIA_PAYLOAD + 1],
-            ));
-            assert!(!app.call.sharing);
-            assert!(app.screen_session.is_none());
-            assert!(app.screen_share_needs_sync);
-            assert!(
-                app.media_error
-                    .as_deref()
-                    .is_some_and(|message| message.contains("media limit"))
-            );
-        }
-    }
-}
-
 #[cfg(test)]
 mod identity_on_screen {
     use super::*;
+    #[test]
+    fn primary_scroll_maps_bottom_anchor_and_clamps_without_editing() {
+        use ui::widget::PrimaryScrollAction;
+        let mut app = ChatApp::new_ephemeral();
+        app.scroll_content = 1000.0;
+        app.scroll_viewport = 200.0;
+        app.scroll = 0.0;
+        assert_eq!(app.primary_vertical_scroll().unwrap().metrics.offset, 800.0);
+        app.apply_primary_vertical_scroll(PrimaryScrollAction::Start);
+        assert_eq!(app.scroll, 800.0);
+        assert!(!app.timeline_at_end);
+        app.apply_primary_vertical_scroll(PrimaryScrollAction::Line(1));
+        assert_eq!(app.scroll, 752.0);
+        app.apply_primary_vertical_scroll(PrimaryScrollAction::End);
+        assert_eq!(app.scroll, 0.0);
+        assert!(app.timeline_at_end);
+        app.scroll_content = 100.0;
+        assert_eq!(
+            app.primary_vertical_scroll().unwrap().metrics.max_scroll(),
+            0.0
+        );
+    }
 
     fn user(id: &str, is_agent: bool) -> User {
         User {
@@ -5129,13 +4685,8 @@ mod identity_on_screen {
             app.users = vec![user("u_me", false), user("u_a71c", false)];
             assert_eq!(app.roster_label(), "People");
         }
+
         // Phase: an_unnamed_participant_is_not_shown_their_routing_token.
-        // Nobody is ever shown the token the system uses to route to them.
-        //
-        // A participant id is `peer@9007495404254172154` — a hash of a public
-        // key. It appeared beside messages and in the roster whenever the room
-        // had not named somebody yet, which is most of the time a peer has just
-        // arrived. It is not a name; it is the thing a name resolves from.
         {
             let app = ChatApp::new_ephemeral();
             let stranger = "peer@9007495404254172154";
@@ -5153,17 +4704,8 @@ mod identity_on_screen {
                 "two unnamed peers have to be distinguishable, got `{shown}`"
             );
         }
+
         // Phase: your_own_name_is_known_before_the_room_has_heard_of_you.
-        // You have a name, and this process knows it.
-        //
-        // `LocalIdentity::resolve` derives one at startup and puts it on
-        // `me`. `display_name` consulted the room document and the roster
-        // and neither knows you until you have spoken, so the one name that
-        // was certain was the one it fell through on — and a person saw
-        // their own routing hash in the roster and in the `@` picker.
-        //
-        // This is what "referred to as You" rests on: second-person is a
-        // rendering choice, not a substitute for having a name.
         {
             let mut app = ChatApp::new_ephemeral();
             app.me.name = "Quinten".to_string();
@@ -5175,15 +4717,214 @@ mod identity_on_screen {
                 "the name this process worked out for itself must be reachable",
             );
         }
+
         // Phase: the_person_reading_the_screen_is_you.
-        // And you are "You".
-        //
-        // Reading your own id — or your own name — back at you is how a chat
-        // tells you it does not know who you are.
         {
             let app = ChatApp::new_ephemeral();
             let me = app.me.id.clone();
             assert_eq!(app.user_name(&me), "You");
         }
+    }
+}
+
+#[cfg(test)]
+mod live_draft_presence {
+    use super::*;
+    use ui::PresencePayload;
+    use ui::permissions::UserId;
+    use ui::presence::SelectionRange;
+
+    fn focused_app(text: &str) -> ChatApp {
+        let mut app = ChatApp::new_ephemeral();
+        app.active_channel = "c1a2b3c4-0000-4000-8000-00000000c0de".into();
+        app.rect = Rect::new(0.0, 0.0, 1100.0, 720.0);
+        Widget::set_focus(&mut app, true);
+        app.composer_main.set_text(text);
+        app
+    }
+
+    fn composer_paths(app: &mut ChatApp, presence: &PresenceCtx) -> usize {
+        let mut scene = Scene::new();
+        let mut tr = TextRenderer::new();
+        let mut hits = Vec::new();
+        app.draw_composer(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &Theme::dark(),
+            presence,
+            &mut hits,
+        );
+        scene.encoding().path_tags.len()
+    }
+
+    /// The composer publishes its caret/selection in the shared draft's scope,
+    /// and only while the person is typing there.
+    #[test]
+    fn focused_composer_publishes_caret_and_selection_in_the_draft_scope() {
+        let mut app = focused_app("hello team");
+        let key = ChatApp::draft_presence_key(&app.active_channel);
+        app.composer_main.set_cursor_pos(5);
+        assert_eq!(
+            app.presence_payload(),
+            Some((key.clone(), PresencePayload::Caret { pos: 5 }))
+        );
+        app.composer_main.set_selection(0, 5);
+        assert_eq!(
+            app.presence_payload(),
+            Some((key, PresencePayload::Selection { start: 0, end: 5 }))
+        );
+        Widget::set_focus(&mut app, false);
+        assert_eq!(app.presence_payload(), None);
+    }
+
+    /// A collaborator's caret and selection in the same draft are drawn in
+    /// the composer; one in another channel's draft is not.
+    #[test]
+    fn remote_caret_and_selection_are_drawn_in_the_shared_draft() {
+        let mut app = focused_app("hello team");
+        let empty = composer_paths(&mut app, &PresenceCtx::empty());
+        let key = ChatApp::draft_presence_key(&app.active_channel);
+        let mut presence = PresenceCtx::empty();
+        presence.set_display_name(UserId("ada".into()), "Ada");
+        presence.set_caret(&key, UserId("ada".into()), 4);
+        let caret = composer_paths(&mut app, &presence);
+        assert!(caret > empty, "remote caret drawn ({empty} -> {caret})");
+        presence.set_selection(
+            &key,
+            UserId("ada".into()),
+            SelectionRange { start: 0, end: 4 },
+        );
+        assert!(
+            composer_paths(&mut app, &presence) > caret,
+            "remote selection drawn"
+        );
+        let mut elsewhere = PresenceCtx::empty();
+        elsewhere.set_caret(
+            &ChatApp::draft_presence_key("other"),
+            UserId("ada".into()),
+            4,
+        );
+        assert_eq!(composer_paths(&mut app, &elsewhere), empty);
+        // An offset past the local draft (not converged yet) is clamped.
+        let mut ahead = PresenceCtx::empty();
+        ahead.set_caret(&key, UserId("ada".into()), 400);
+        assert!(composer_paths(&mut app, &ahead) > empty);
+    }
+}
+
+/// Agent attribution: an agent task's `post` (the same operation a person
+/// uses) is authored by the invoking participant and rendered for every member
+/// as "<agent name> · agent"; a person's post is unchanged.
+#[cfg(test)]
+mod agent_attribution_tests {
+    use super::*;
+    use automerge::ROOT;
+    use tilo_actions::{ActionInput, LocalTransport, ParticipantId};
+
+    fn post_via(resources: &[tilo_actions::Resource], text: &str) -> tilo_actions::EncodedAction {
+        fn find<'a>(
+            resources: &'a [tilo_actions::Resource],
+            id: &str,
+        ) -> Option<&'a tilo_actions::Resource> {
+            resources.iter().find_map(|r| {
+                if r.id.as_str() == id {
+                    Some(r)
+                } else {
+                    find(&r.children, id)
+                }
+            })
+        }
+        let general = find(resources, "chat.channel:c_general").expect("general published");
+        let post = general.actions.iter().find(|a| a.id == "post").unwrap();
+        match &post.input {
+            ActionInput::Prompted { build, .. } => build(text),
+            _ => panic!("post is prompted"),
+        }
+    }
+
+    fn dispatch(doc: &mut AutoCommit, encoded: tilo_actions::EncodedAction) {
+        let mut registry = tilo_actions::ActionRegistry::new();
+        crate::actions::register(&mut registry);
+        let decoded = registry.decode(&encoded).unwrap();
+        let mut tx = LocalTransport::new();
+        tilo_actions::dispatch(doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+    }
+
+    #[test]
+    fn agent_posts_are_authored_by_the_invoking_agent_for_every_member() {
+        let mut app = ChatApp::new_ephemeral();
+        let mut doc = AutoCommit::new();
+        crate::doc::ChatDoc::seed_if_empty(&mut doc);
+        app.sync(&mut doc, &ROOT);
+        let agent = ParticipantId::for_agent_task("11111111-1111-4111-8111-111111111111").unwrap();
+        Widget::join_participant(&mut app, &agent);
+        Widget::set_participant_label(&mut app, &agent, "Tide");
+
+        let resources = Widget::resources_for(&app, Some(&agent), &doc);
+        let encoded = post_via(&resources, "hello from the agent");
+        let action: crate::actions::ChatAction = serde_json::from_slice(&encoded.payload).unwrap();
+        assert!(
+            matches!(&action, crate::actions::ChatAction::AgentAuthored { name, .. } if name == "Tide")
+        );
+        dispatch(&mut doc, encoded);
+
+        // A person's post in the same tree shape is the plain send, as before.
+        let own = Widget::resources_for(&app, None, &doc);
+        let encoded = post_via(&own, "hello from a person");
+        let action: crate::actions::ChatAction = serde_json::from_slice(&encoded.payload).unwrap();
+        assert!(matches!(
+            action,
+            crate::actions::ChatAction::SendMessage { .. }
+        ));
+        dispatch(&mut doc, encoded);
+
+        let messages = crate::doc::ChatDoc::list_messages(&doc, "c_general");
+        let by_agent = messages
+            .iter()
+            .find(|m| m.text == "hello from the agent")
+            .unwrap();
+        assert_eq!(by_agent.author, agent.as_str());
+        let by_person = messages
+            .iter()
+            .find(|m| m.text == "hello from a person")
+            .unwrap();
+        assert_eq!(by_person.author, app.me.id);
+
+        // Any member (a fresh peer replaying the document) renders the agent.
+        let mut member = ChatApp::new_ephemeral();
+        member.sync(&mut doc, &ROOT);
+        assert_eq!(member.user_name(agent.as_str()), "Tide \u{b7} agent");
+    }
+
+    /// The label is applied only to the message's own agent-task author: a
+    /// wrapper naming a person, or a message it did not write, labels nothing.
+    #[test]
+    fn agent_labels_bind_only_agent_task_authors_of_their_own_message() {
+        let mut doc = AutoCommit::new();
+        crate::doc::ChatDoc::seed_if_empty(&mut doc);
+        let send = crate::actions::send_message_action(
+            "c_general",
+            "m_person_1",
+            "person-1",
+            1,
+            "hi",
+            None,
+            None,
+            Vec::new(),
+        );
+        dispatch(
+            &mut doc,
+            crate::actions::encode(&crate::actions::ChatAction::AgentAuthored {
+                name: "Impostor".into(),
+                send: Box::new(send),
+            }),
+        );
+        assert!(
+            crate::doc::ChatDoc::list_messages(&doc, "c_general")
+                .iter()
+                .any(|m| m.id == "m_person_1")
+        );
+        assert!(crate::doc::ChatDoc::agent_authors(&doc).is_empty());
     }
 }

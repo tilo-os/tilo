@@ -23,7 +23,7 @@
 //! that every step narrows, and that no token has expired.
 
 use std::collections::BTreeSet;
-use std::time::SystemTime;
+use web_time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;

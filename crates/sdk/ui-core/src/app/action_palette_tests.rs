@@ -511,6 +511,64 @@ pub(super) fn synth_enter() -> WindowEvent {
 }
 
 #[test]
+fn native_directional_keys_reach_the_focused_control_before_host_navigation() {
+    use crate::widget::{Column, TextInput};
+    use winit::keyboard::ModifiersState;
+
+    let mut app = App::new_with_controlled_inputs(
+        State::new(),
+        Box::new(
+            Column::new()
+                .push(Box::new(
+                    TextInput::local().with_id("editor").with_initial_value("x"),
+                ))
+                .push(Box::new(Button::new("done", "Done", None))),
+        ),
+    );
+    app.init_layout();
+    let root = app.layout.root_node.unwrap();
+    run_layout_pass(&mut app, root, 320, 180, 1.0, false, None).unwrap();
+    let editor = app.focusable_order[0];
+    let done = app.focusable_order[1];
+    app.set_focused_node(Some(editor));
+
+    let mut left = synth_enter();
+    if let WindowEvent::KeyboardInput { event, .. } = &mut left {
+        event.logical_key = Key::Named(NamedKey::ArrowLeft);
+    }
+    app.input.modifiers =
+        winit::event::Modifiers::from(ModifiersState::ALT | ModifiersState::SHIFT);
+    let mut handled = false;
+    let mut focus = None;
+    app.presentation_handle_event(&left, 1.0, &mut handled, &mut focus);
+    assert!(handled, "the focused editor consumes exact Alt+Shift+Left");
+    if let Some(focus) = focus {
+        app.set_focused_node(Some(focus));
+    }
+    app.handle_unconsumed_directional_key(&left, None, true, &mut handled);
+    assert_eq!(app.focused_node, Some(editor));
+    assert_eq!(
+        app.inspect_node(editor, |widget| widget.get_state())
+            .unwrap(),
+        Some("0:b:1".into()),
+        "Shift+Left extends the editor selection instead of moving host focus"
+    );
+
+    let mut down = synth_enter();
+    if let WindowEvent::KeyboardInput { event, .. } = &mut down {
+        event.logical_key = Key::Named(NamedKey::ArrowDown);
+    }
+    app.input.modifiers = winit::event::Modifiers::from(ModifiersState::ALT);
+    let mut handled = false;
+    let mut focus = None;
+    app.presentation_handle_event(&down, 1.0, &mut handled, &mut focus);
+    assert!(!handled, "single-line editor leaves Alt+Down to the host");
+    app.handle_unconsumed_directional_key(&down, None, true, &mut handled);
+    assert!(handled);
+    assert_eq!(app.focused_node, Some(done));
+}
+
+#[test]
 fn palette_dispatch_routes_through_the_app_and_its_visible_controls() {
     // Case `tab_focused_host_buttons_keep_enter_and_space_out_of_consuming_app`.
     {

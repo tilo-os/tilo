@@ -7,6 +7,8 @@ license.workspace = true
 
 [features]
 default = []
+# Opus voice capture/playback without the video decoder stack.
+voice = ["dep:gstreamer", "dep:gstreamer-app"]
 # GStreamer decode: `playbin` diverts video through
 # `videoconvert ! appsink(RGBA)` and routes audio to `autoaudiosink`. Off by
 # default so hermetic builds, `--shots`, and CI do not require GStreamer.
@@ -28,10 +30,12 @@ realtime = ["dep:gstreamer", "dep:gstreamer-app", "dep:gstreamer-video"]
 # consumers that only enumerate the audio graph do not link libpipewire; the
 # stream logic and its backend trait compile either way.
 pipewire = ["dep:pipewire"]
+# Test builds of this crate and its dependents: startup waits use the shared
+# test hang bound instead of the shipping budget.
+test-support = ["dep:tilo-test-env"]
 
 [dependencies]
-bounded-command = { path = "../../system/bounded-command" }
-libc.workspace = true
+web-time = { version = "1", features = ["serde"] }
 # Transport CRDT. A tiny automerge document carries follow-the-host playback
 # state (playing / position / rate / epoch) between peers so a joiner follows
 # the host with drift correction. Same pin as `ui` so a single copy resolves.
@@ -67,7 +71,7 @@ rustfft.workspace = true
 gstreamer = { workspace = true, optional = true, features = ["v1_24"] }
 gstreamer-app = { workspace = true, optional = true, features = ["v1_24"] }
 gstreamer-video = { workspace = true, optional = true, features = ["v1_24"] }
-workspace-hack = { version = "0.1" }
+tilo-test-env = { path = "../../dev/test-env", optional = true }
 
 # Native audio streams — only linked under `--features pipewire`. Same pin as
 # the shell's screen-cast producer so one copy resolves; `v0_3_50` exposes the
@@ -82,6 +86,17 @@ pipewire = { version = "0.10.1", optional = true, features = ["v0_3_50"] }
 tracing-subscriber.workspace = true
 tilo-test-env = { path = "../../dev/test-env" }
 tempfile.workspace = true
+advisory-lock = { path = "../../system/advisory-lock" }
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+bounded-command = { path = "../../system/bounded-command" }
+libc.workspace = true
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# Enable Automerge's own browser entropy and clock support.
+automerge = { workspace = true, features = ["wasm"] }

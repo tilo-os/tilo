@@ -603,6 +603,9 @@ impl Session {
 mod tests {
     use super::*;
 
+    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+    const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
     /// Sessions seed only in demo, start empty live, open `SQLite` for real, load tables and report unreachable servers honestly.
     #[test]
     fn session_opens_connections_and_loads_tables_honestly() {
@@ -787,7 +790,8 @@ mod tests {
              SELECT sum(x) FROM n",
         );
             let mut requested = false;
-            for _ in 0..100 {
+            let deadline = std::time::Instant::now() + HANG_BOUND;
+            while std::time::Instant::now() < deadline {
                 if s.cancel_in_flight_query() {
                     requested = true;
                     break;

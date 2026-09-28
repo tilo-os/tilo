@@ -6,20 +6,19 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use collab_types::{
-    ArtifactId, ArtifactKind, ChannelState, OpClass, RedactedMarker, ValidationError,
+    ArtifactId, ArtifactKind, OpClass, RedactedMarker, ValidationError,
     validate_admitted_inbound_op,
 };
 #[cfg(test)]
 use collab_types::{DocumentMutation, document_artifact_id, document_attestation_id};
 use ui::collaboration::CollabEvent;
 
-use crate::shell::collab_broker_capnp::CapnpBrokerState;
 pub use crate::shell::collab_core::{
     AuditEntry, BrokerChannels, RedactionRecord, apply_redaction_from_envelope,
 };
@@ -122,489 +121,21 @@ impl LocalIdentity {
     }
 }
 
-/// Sentinel cluster id: `crate::shell::state::RoomId::nil` rendered as
-/// a string. A workspace announces this when its durable room identity
-/// has not been minted yet; never delivered to or from — see
-/// [`CrdtRoute::is_addressable`].
-const UNMINTED_CLUSTER_ID: &str = "00000000-0000-0000-0000-000000000000";
+pub use tilo_action_broker::route::CrdtRoute;
 
-/// The address a CRDT (or chrome) event is delivered to, built from the
-/// `(app_id, cluster_id)` pair a connection announces on `Hello`. App
-/// scope (both fields set) carries CRDT payloads, so one app's deltas
-/// never reach another; cluster scope (`app_id` empty) carries chrome
-/// traffic, where every app in the cluster is a legitimate audience, and
-/// the Cap'n Proto transport, whose `joinChannel` surface has a channel
-/// id but no app identity.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CrdtRoute {
-    /// App identity from the sender's `Hello`. Empty means "this
-    /// transport does not announce an app identity" — matched at
-    /// cluster granularity.
-    pub app_id: String,
-    /// Collaboration cluster id, carried in the typed `channelId`.
-    pub cluster_id: String,
-    /// The record the sender announced, or empty for an app whose state
-    /// is still one document per `(app, cluster)`. Finest granularity —
-    /// two people editing different files in one room share app and
-    /// cluster, and only the record tells them apart. Routing key only.
-    pub record_id: String,
-}
+pub use tilo_action_broker::collab_broker::{
+    AppActionBroker, FanoutSink, FanoutState, LocalParticipant, RoomSubscription,
+    SessionFollowDispatcher, SnapshotHolder,
+};
 
-impl CrdtRoute {
-    /// App-scoped route — the addressing a CRDT payload from an app
-    /// that has not adopted records uses.
-    pub fn app(app_id: impl Into<String>, cluster_id: impl Into<String>) -> Self {
-        Self {
-            app_id: app_id.into(),
-            cluster_id: cluster_id.into(),
-            record_id: String::new(),
-        }
-    }
-
-    /// Cluster-scoped route — chrome traffic and the capnp transport.
-    pub fn cluster(cluster_id: impl Into<String>) -> Self {
-        Self {
-            app_id: String::new(),
-            cluster_id: cluster_id.into(),
-            record_id: String::new(),
-        }
-    }
-
-    /// Record-scoped route — one document's change stream.
-    pub fn record(
-        app_id: impl Into<String>,
-        cluster_id: impl Into<String>,
-        record_id: impl Into<String>,
-    ) -> Self {
-        Self {
-            app_id: app_id.into(),
-            cluster_id: cluster_id.into(),
-            record_id: record_id.into(),
-        }
-    }
-
-    /// Narrow this route to a record; an empty `record_id` leaves it as
-    /// it was (pre-record addressing).
-    #[must_use]
-    pub fn on_record(mut self, record_id: impl Into<String>) -> Self {
-        self.record_id = record_id.into();
-        self
-    }
-
-    /// Widen an app-scoped route to its cluster — presence rides this.
-    /// "Who else is here" is a fact about the room, so a peer editing a
-    /// different document is still a legitimate audience for it.
-    pub(crate) fn to_cluster_scope(&self) -> Self {
-        Self::cluster(self.cluster_id.clone())
-    }
-
-    /// The channel this route names, as one string — the capnp
-    /// transport subscribes by channel id. Encoding lives in
-    /// [`ui::collaboration::channel_key`] (shared with the SDK) so both
-    /// ends can't drift.
-    pub fn channel_key(&self) -> String {
-        ui::collaboration::channel_key::format(&self.app_id, &self.cluster_id, &self.record_id)
-    }
-
-    /// Split a capnp `channelId` back into its route — the inverse of
-    /// [`Self::channel_key`].
-    pub fn from_channel_key(key: &str) -> Self {
-        let (app_id, cluster_id, record_id) = ui::collaboration::channel_key::parse(key);
-        Self {
-            app_id,
-            cluster_id,
-            record_id,
-        }
-    }
-
-    /// Whether a cluster id names a real room: not the empty string
-    /// (never said `Hello`) and not the nil uuid (a workspace whose room
-    /// identity has not been minted yet). The nil case must be checked
-    /// separately from empty — otherwise every workspace still carrying
-    /// the sentinel would share one enormous room on every machine.
-    fn is_addressable(cluster_id: &str) -> bool {
-        !cluster_id.is_empty() && cluster_id != UNMINTED_CLUSTER_ID
-    }
-
-    /// Whether this route may be stamped onto a frame leaving the
-    /// machine. Same test as [`Self::delivers_to`], because the
-    /// receiving broker rebuilds the route from the wire fields and runs
-    /// the identical check — publishing an unaddressable route would put
-    /// a frame in the room every receiver silently drops.
-    pub fn is_publishable(&self) -> bool {
-        Self::is_addressable(&self.cluster_id)
-    }
-
-    /// Whether an event addressed to `self` reaches a subscriber that
-    /// announced `subscriber`. Fails closed if either side lacks an
-    /// addressable cluster. App granularity applies only when both ends
-    /// announced an app id; an end with none stays cluster-scoped rather
-    /// than silently receiving nothing.
-    ///
-    /// Record granularity is innermost and fails closed both ways — "no
-    /// record" is a value like any other, so a converted app's deltas
-    /// never reach an unconverted connection of the same app.
-    pub fn delivers_to(&self, subscriber: &CrdtRoute) -> bool {
-        if !Self::is_addressable(&self.cluster_id) || !Self::is_addressable(&subscriber.cluster_id)
-        {
-            return false;
-        }
-        if self.cluster_id != subscriber.cluster_id {
-            return false;
-        }
-        if self.app_id.is_empty() || subscriber.app_id.is_empty() {
-            return true; // Cluster-scoped on at least one end.
-        }
-        if self.app_id != subscriber.app_id {
-            return false;
-        }
-        self.record_id == subscriber.record_id
-    }
-}
-
-/// Callback an in-process fanout subscriber registers to receive
-/// delivered events. Aliased because the raw `Box<dyn Fn(...)>` shape
-/// recurs across [`RoomSubscription`], `FanoutState::subscribe_rooms`
-/// and [`BrokerHandle::subscribe_rooms`], and the last of those is public
-/// API other modules call.
-pub type FanoutSink = Box<dyn Fn(&CollabEvent, &CrdtRoute) + Send + Sync>;
-
-/// How an in-process participant that holds a route's document answers the
-/// broker's late-joiner request for it: publish the snapshot on the route and
-/// return `true`, or return `false` when it does not hold that route.
-pub type SnapshotHolder = Box<dyn Fn(&CrdtRoute) -> bool + Send + Sync>;
-
-/// Shared fanout registry for typed RPC subscribers and in-process shell consumers.
-pub struct FanoutState {
-    peer_id_counter: AtomicU64,
-    capnp: Mutex<Option<Arc<CapnpBrokerState>>>,
-    local_subs: Mutex<Vec<Arc<RoomSubscription>>>,
-}
-
-/// A subscriber inside the shell process, addressed by room — how the
-/// compositor reads presence its apps publish. Delivery goes through the
-/// same [`CrdtRoute::delivers_to`] check as a typed subscriber, against
-/// `CrdtRoute::cluster(room)`; since presence widens to cluster scope on
-/// the way out, two apps in one room reach one subscription, so a cursor
-/// crossing between them is one peer moving, not a second appearing.
-/// Rooms are mutable — workspaces are created, and join a peer's room
-/// when an invite is accepted.
-pub struct RoomSubscription {
-    rooms: Mutex<Vec<String>>,
-    sink: FanoutSink,
-    /// The agent principal this subscription is a live participant as, if
-    /// any. The compositor's own subscribers are not participants; an
-    /// in-process agent (the session recorder) is, and belongs on the roster
-    /// of every room it holds for as long as it holds it.
-    participant: Option<LocalParticipant>,
-    /// Set when the participant holds documents on its rooms' routes (a
-    /// replay peer), so a late joiner's snapshot request can be answered by
-    /// it like by any connected holder.
-    holder: Option<SnapshotHolder>,
-}
-
-/// An agent principal taking part in a room from inside the shell process.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct LocalParticipant {
-    /// Stable agent id, the capability subject it was admitted as.
-    pub agent: String,
-    pub label: String,
-}
-
-impl RoomSubscription {
-    /// Replace the set of rooms this subscription covers.
-    pub fn set_rooms(&self, rooms: Vec<String>) {
-        if let Ok(mut g) = self.rooms.lock() {
-            *g = rooms;
-        }
-    }
-
-    /// The rooms this subscription currently covers.
-    pub fn rooms(&self) -> Vec<String> {
-        self.rooms.lock().map(|g| g.clone()).unwrap_or_default()
-    }
-
-    /// Whether `route` addresses any room this subscription holds. Uses
-    /// the broker's own delivery predicate, so it never receives
-    /// anything a socket peer in the same room wouldn't.
-    fn wants(&self, route: &CrdtRoute) -> bool {
-        let Ok(rooms) = self.rooms.lock() else {
-            return false;
-        };
-        rooms
-            .iter()
-            .any(|room| route.delivers_to(&CrdtRoute::cluster(room.clone())))
-    }
-}
-
-impl FanoutState {
-    pub(super) fn new() -> Self {
-        Self {
-            peer_id_counter: AtomicU64::new(0),
-            capnp: Mutex::new(None),
-            local_subs: Mutex::new(Vec::new()),
-        }
-    }
-
-    /// Register an in-process subscriber, returning a handle the caller
-    /// can use to keep its room set current.
-    pub(crate) fn subscribe_rooms(
-        &self,
-        rooms: Vec<String>,
-        sink: FanoutSink,
-    ) -> Arc<RoomSubscription> {
-        self.subscribe(rooms, sink, None, None)
-    }
-
-    /// Register an in-process subscriber that takes part in its rooms as the
-    /// agent `participant`. Its authority is the agent's own admission: the
-    /// owner keeps [`RoomSubscription::set_rooms`] to the rooms where that
-    /// admission is live.
-    pub(crate) fn subscribe_rooms_as(
-        &self,
-        participant: LocalParticipant,
-        rooms: Vec<String>,
-        sink: FanoutSink,
-    ) -> Arc<RoomSubscription> {
-        self.subscribe(rooms, sink, Some(participant), None)
-    }
-
-    /// Register an in-process participant that also holds the documents of
-    /// its rooms' routes: the broker asks `holder` for a late joiner's
-    /// snapshot before it asks a connected holder.
-    pub(crate) fn subscribe_rooms_holding(
-        &self,
-        participant: LocalParticipant,
-        rooms: Vec<String>,
-        sink: FanoutSink,
-        holder: SnapshotHolder,
-    ) -> Arc<RoomSubscription> {
-        self.subscribe(rooms, sink, Some(participant), Some(holder))
-    }
-
-    fn subscribe(
-        &self,
-        rooms: Vec<String>,
-        sink: FanoutSink,
-        participant: Option<LocalParticipant>,
-        holder: Option<SnapshotHolder>,
-    ) -> Arc<RoomSubscription> {
-        let sub = Arc::new(RoomSubscription {
-            rooms: Mutex::new(rooms),
-            sink,
-            participant,
-            holder,
-        });
-        if let Ok(mut g) = self.local_subs.lock() {
-            g.push(Arc::clone(&sub));
-        }
-        sub
-    }
-
-    /// Stop delivering to `subscription`.
-    pub(crate) fn unsubscribe(&self, subscription: &Arc<RoomSubscription>) {
-        if let Ok(mut g) = self.local_subs.lock() {
-            g.retain(|sub| !Arc::ptr_eq(sub, subscription));
-        }
-    }
-
-    /// Agent participants live in `room` from this machine — in-process ones
-    /// and typed connections admitted as an agent. The roster's answer for
-    /// participants that have no network session.
-    pub fn local_participants_in(&self, room: &str) -> Vec<LocalParticipant> {
-        let mut out: Vec<LocalParticipant> = Vec::new();
-        for sub in self.local_subs() {
-            let Some(participant) = &sub.participant else {
-                continue;
-            };
-            if sub.rooms().iter().any(|held| held == room) && !out.contains(participant) {
-                out.push(participant.clone());
-            }
-        }
-        // Agents connected over the typed service from this machine take
-        // part the same way; the broker knows them by their admission.
-        if let Some(capnp) = self.capnp_state() {
-            for agent in capnp.live_agents_in(room) {
-                if !out.iter().any(|participant| participant.agent == agent) {
-                    out.push(LocalParticipant {
-                        label: agent.clone(),
-                        agent,
-                    });
-                }
-            }
-        }
-        out
-    }
-
-    /// Take a document op this device authored inside the shell (record
-    /// custody) through the broker's own ingress: validated against the
-    /// route's channel like any op, kept in history, handed to the peer
-    /// network and fanned out on the route.
-    ///
-    /// # Errors
-    ///
-    /// When there is no typed broker, this device is not a member of the
-    /// route's room, or the op does not validate.
-    pub(crate) fn accept_shell_document(
-        &self,
-        route: &CrdtRoute,
-        envelope: collab_types::SignedOp,
-        person: [u8; 32],
-        from: &str,
-    ) -> Result<(), String> {
-        let capnp = self
-            .capnp_state()
-            .ok_or_else(|| "this session has no collaboration broker".to_string())?;
-        capnp.accept_shell_document(route, envelope, person, from)
-    }
-
-    /// Ask the holders of `route` on this device for its document.
-    pub(crate) fn request_route_snapshot(&self, route: &CrdtRoute) -> bool {
-        self.capnp_state()
-            .is_some_and(|capnp| capnp.request_document_snapshot(&route.channel_key(), u64::MAX))
-    }
-
-    /// What this device's history holds for `route`, newest page.
-    pub(crate) fn route_history(&self, route: &CrdtRoute) -> Vec<collab_types::SignedOp> {
-        self.capnp_state()
-            .map(|capnp| capnp.route_history(route))
-            .unwrap_or_default()
-    }
-
-    /// Ask the route's room for what its devices retained of `route`, and
-    /// have documents on it routed here.
-    pub(crate) fn request_route_history(&self, route: &CrdtRoute) {
-        if let Some(capnp) = self.capnp_state() {
-            capnp.request_route_history(route);
-        }
-    }
-
-    /// Offer a late joiner's snapshot request for `route` to the in-process
-    /// holders of its room. Returns whether one answered.
-    pub(crate) fn offer_snapshot(&self, route: &CrdtRoute) -> bool {
-        self.local_subs().into_iter().any(|sub| {
-            sub.holder
-                .as_ref()
-                .is_some_and(|holder| sub.rooms().contains(&route.cluster_id) && holder(route))
-        })
-    }
-
-    /// Ask every document route in `room` for its late-joiner snapshot on
-    /// behalf of the typed participant `requester`. Returns the routes a
-    /// holder was asked on; empty when no typed broker is attached.
-    pub(crate) fn request_room_snapshots(&self, room: &str, requester: u64) -> Vec<CrdtRoute> {
-        self.capnp_state()
-            .map(|capnp| capnp.request_room_snapshots(room, requester))
-            .unwrap_or_default()
-    }
-
-    /// Snapshot the in-process subscribers so the sinks run without
-    /// the registry lock held.
-    fn local_subs(&self) -> Vec<Arc<RoomSubscription>> {
-        self.local_subs
-            .lock()
-            .map(|g| g.clone())
-            .unwrap_or_default()
-    }
-
-    /// Mint the next typed connection id, reserving zero for the broker root
-    /// and `u64::MAX` for the current-connection sentinel. The counter itself
-    /// remains the number of accepted connections, including before the first.
-    #[expect(
-        clippy::expect_used,
-        reason = "minting 2^64 - 2 connection ids in one broker lifetime is unreachable"
-    )]
-    pub(crate) fn next_peer_id(&self) -> u64 {
-        let mut minted = 0;
-        self.peer_id_counter
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
-                minted = count.checked_add(1).filter(|next| *next < u64::MAX)?;
-                Some(minted)
-            })
-            .expect("application peer id space exhausted");
-        minted
-    }
-
-    /// How many typed connections this broker has ever accepted. Read as a
-    /// generation, not a count: it only rises, so
-    /// a value newer than the one recorded beside an announcement means
-    /// someone connected who wasn't there to hear it — see
-    /// [`remote_participant_id`], which uses that to re-say a name.
-    pub(crate) fn connections_seen(&self) -> u64 {
-        self.peer_id_counter.load(Ordering::Relaxed)
-    }
-
-    /// Attach the capnp fanout sink. Called at most once, at
-    /// broker-spawn time; repeat calls are silently ignored.
-    pub(crate) fn attach_capnp(&self, state: Arc<CapnpBrokerState>) {
-        if let Ok(mut g) = self.capnp.lock()
-            && g.is_none()
-        {
-            *g = Some(state);
-        }
-    }
-
-    /// Read the capnp fanout sink if one has been attached.
-    fn capnp_state(&self) -> Option<Arc<CapnpBrokerState>> {
-        self.capnp.lock().ok().and_then(|g| g.clone())
-    }
-
-    /// Deliver `event` to every typed or in-process subscriber addressed by
-    /// `route`, skipping the originating typed peer id.
-    pub(crate) fn fanout_to_route(&self, event: &CollabEvent, except: u64, route: &CrdtRoute) {
-        if route.cluster_id.is_empty() {
-            tracing::debug!(
-                "collab_broker: dropping event with an unaddressed route \
-                 (sender never announced a cluster)"
-            );
-            return;
-        }
-        for sub in self.local_subs() {
-            if sub.wants(route) {
-                (sub.sink)(event, route);
-            }
-        }
-        if let Some(capnp) = self.capnp_state() {
-            capnp.fanout_to_route(event, except, route);
-        }
-    }
-
-    /// Deliver a presence `event` published on the sender's `origin` route.
-    /// Presence is room-wide, so typed subscribers get it by the room's
-    /// cluster scope as before; in-process subscribers, which hold whole
-    /// rooms, are handed `origin` itself, so the session recorder can tell
-    /// which app spoke (and keep nothing of a capture-protected one).
-    pub(crate) fn fanout_presence(&self, event: &CollabEvent, except: u64, origin: &CrdtRoute) {
-        if origin.cluster_id.is_empty() {
-            tracing::debug!(
-                "collab_broker: dropping presence with an unaddressed route \
-                 (sender never announced a cluster)"
-            );
-            return;
-        }
-        for sub in self.local_subs() {
-            if sub.wants(origin) {
-                (sub.sink)(event, origin);
-            }
-        }
-        if let Some(capnp) = self.capnp_state() {
-            capnp.fanout_to_route(event, except, &origin.to_cluster_scope());
-        }
-    }
-}
-
-/// Owns the typed broker and optional peer-network drain.
 pub struct BrokerHandle {
-    capnp_socket_path: PathBuf,
+    inner: tilo_action_broker::collab_broker::BrokerHandle,
+    local_session: crate::shell::collab_broker_capnp::LocalSessionAuthority,
+    native_media: Option<super::native_media::NativeMediaService>,
+    realtime_fabric: Option<crate::shell::collab_broker_capnp::RealtimeFabricAppBridge>,
     /// Spawned only when there's a `ShellNetwork` to pump.
     drain_thread: Option<JoinHandle<()>>,
     drain_quit: Arc<AtomicBool>,
-    /// `None` when the capnp interface is not bound; runs a tokio
-    /// `LocalSet` driving capnp-rpc futures.
-    capnp_thread: Option<JoinHandle<()>>,
-    capnp_quit: Arc<AtomicBool>,
-    pub(crate) fanout: Arc<FanoutState>,
-    channels: Arc<Mutex<BrokerChannels>>,
     /// Trusted shell-only MLS lifecycle transaction boundary. This is never
     /// exposed through the app-facing Cap'n Proto service.
     mls_authority: Option<
@@ -619,294 +150,56 @@ pub struct BrokerHandle {
     /// End-to-end encryption of this device's collaboration channels.
     channel_encryption: Option<crate::shell::channel_encryption::ChannelKeyAccess>,
     peer_departures: Option<Arc<crate::shell::network::PeerDepartureHistory>>,
+    /// Where apps' `session.replay` requests open the session's replay, once
+    /// the overlay host installs it.
+    session_replay: Arc<super::broker_services::NativeSessionReplay>,
 }
 
-/// Cloneable, thread-safe slice of the broker used by shell chrome. Keeping
-/// the join handles out of the closure avoids extending broker lifetime or
-/// creating an ownership cycle with the root widget.
-#[derive(Clone)]
-pub struct SessionFollowDispatcher {
-    fanout: Arc<FanoutState>,
-}
-
-impl SessionFollowDispatcher {
-    pub fn set(&self, room: &str, peer_id: Option<String>) {
-        self.fanout.fanout_to_route(
-            &CollabEvent::FollowChanged {
-                peer_id,
-                mode: ui::view::FollowMode::Live,
-            },
-            u64::MAX,
-            &CrdtRoute::cluster(room.to_string()),
-        );
-    }
-}
-
-/// Cloneable, transport-owning facade used by shell search providers. It
-/// keeps only the shared action directory alive, never the broker threads or
-/// socket owner.
-#[derive(Clone)]
-pub struct AppActionBroker {
-    state: Arc<CapnpBrokerState>,
-}
-
-impl AppActionBroker {
-    pub(crate) fn from_state(state: Arc<CapnpBrokerState>) -> Self {
-        Self { state }
-    }
-
-    /// Construct the shell-facing facade around a real broker state for
-    /// `LocalSet` integration tests. Production construction remains owned by
-    /// the shell bootstrap, so tests cannot accidentally bypass it in a
-    /// non-test build.
-    #[cfg(test)]
-    pub(crate) fn from_state_for_test(state: Arc<CapnpBrokerState>) -> Self {
-        Self { state }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn replace_action_directory_roots_for_test(
-        &self,
-        roots: Vec<crate::shell::collab_broker_capnp::ActionDirectoryRoot>,
-    ) {
-        self.state.replace_action_directory_roots_for_test(roots);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn replace_published_surfaces_for_test(
-        &self,
-        surfaces: Vec<crate::shell::collab_broker_capnp::PublishedSurface>,
-    ) {
-        self.state.replace_published_surfaces_for_test(surfaces);
-    }
-
-    pub fn surfaces(&self) -> Vec<crate::shell::collab_broker_capnp::PublishedSurface> {
-        self.state.published_surfaces()
-    }
-
-    /// Generation of the retained published-surface source.  Palette query
-    /// edits use this inexpensive read before deciding to clone a new source
-    /// snapshot.
-    #[must_use]
-    pub fn surfaces_generation(&self) -> u64 {
-        self.state.published_surfaces_generation()
-    }
-
-    /// The broker state behind this facade, for the action host.
-    /// Read what each application declared on the action door from
-    /// `resolver` instead of the installed manifests.
-    pub fn set_app_action_access(&self, resolver: crate::shell::app_action_access::AccessResolver) {
-        self.state.set_app_action_access(resolver);
-    }
-
-    /// Ask `prompter` before an application uses another application's
-    /// action it holds no grant for. Without one, such a request is refused.
-    pub fn set_app_action_consent(
-        &self,
-        prompter: Arc<dyn crate::shell::app_action_consent::AppActionConsentPrompter>,
-    ) {
-        self.state.set_app_action_consent(prompter);
-    }
-
-    pub(crate) fn state(&self) -> &Arc<CapnpBrokerState> {
-        &self.state
-    }
-
-    #[cfg(test)]
-    pub(crate) fn record_completion_for_test(
-        &self,
-        id: u64,
-        actor: &str,
-        update: tilo_actions::InvocationUpdate,
-    ) {
-        self.state.record_completion_for_test(id, actor, update);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn capture_invocations_for_test(
-        &self,
-        peer_id: u64,
-    ) -> tokio::sync::mpsc::UnboundedReceiver<crate::shell::collab_broker_capnp::InvocationEnvelope>
-    {
-        self.state.capture_invocations_for_test(peer_id)
-    }
-
-    /// Shortcut runs finished since the last call, oldest first, for the
-    /// history recorder to record against the documents they changed.
-    pub fn take_finished_shortcut_runs(
-        &self,
-    ) -> Vec<crate::shell::automation_host::FinishedShortcutRun> {
-        self.state.take_finished_shortcut_runs()
-    }
-
-    /// Run saved shortcut `shortcut` in `room` for `caller`, who is at the
-    /// screen; its confirmations and questions wait for the compositor's
-    /// sheet ([`Self::take_step_prompt`]). Answers with the broker job the
-    /// run reports on.
-    ///
-    /// # Errors
-    ///
-    /// Why the shortcut cannot run for `caller`.
-    pub fn start_interactive_shortcut_run(
-        &self,
-        caller: &tilo_actions::remote::Caller,
-        room: &str,
-        shortcut: &str,
-        inputs: serde_json::Map<String, serde_json::Value>,
-    ) -> Result<u64, tilo_actions::remote::ActionHostError> {
-        self.state
-            .start_interactive_shortcut_run(caller, room, shortcut, inputs)
-    }
-
-    /// The oldest step of an interactive shortcut run waiting for its
-    /// person.
-    pub fn take_step_prompt(&self) -> Option<crate::shell::automation_host::PromptedStep> {
-        self.state.take_step_prompt()
-    }
-
-    /// Start saved shortcut `shortcut` in `room` because its `trigger`
-    /// fired, on behalf of `caller`, the person who saved it. Answers with
-    /// the broker job the run reports on.
-    ///
-    /// # Errors
-    ///
-    /// Why the trigger may not start it: the shortcut is gone or lost the
-    /// trigger, `caller` did not save it, or it now reaches past what
-    /// `caller` may do.
-    pub fn start_triggered_shortcut_run(
-        &self,
-        caller: &tilo_actions::remote::Caller,
-        room: &str,
-        shortcut: &str,
-        trigger: &tilo_automation::TriggerSpec,
-        run: tilo_automation::RunId,
-        inputs: serde_json::Map<String, serde_json::Value>,
-    ) -> Result<u64, tilo_actions::remote::ActionHostError> {
-        self.state
-            .start_triggered_shortcut_run(caller, room, shortcut, trigger, run, inputs)
-    }
-
-    pub fn statuses_generation(&self) -> u64 {
-        self.state.invocations_generation()
-    }
-
-    /// Every application connection that answers inspection: the peers
-    /// [`inspect`](Self::inspect) can address.
-    pub fn inspectable_apps(&self) -> Vec<crate::shell::collab_broker_capnp::InspectableApp> {
-        self.state.inspectable_apps()
-    }
-
-    /// The application connection that answers for the window `surface_id`
-    /// (a tab's surface): the one descended from the same supervised launch
-    /// as the window's Wayland client. `None` for a window the shell did not
-    /// launch or whose app does not answer inspection.
-    pub fn inspectable_app_for_surface(
-        &self,
-        surface_id: u64,
-    ) -> Option<crate::shell::collab_broker_capnp::InspectableApp> {
-        self.state.inspectable_app_for_surface(surface_id)
-    }
-
-    /// Every later report that an application's semantic tree changed. The
-    /// app debounces; a watcher inspects the peer again on each report.
-    pub fn watch_semantic_changes(
-        &self,
-    ) -> std::sync::mpsc::Receiver<crate::shell::collab_broker_capnp::SemanticChange> {
-        self.state.watch_semantic_changes()
-    }
-
-    /// Start an inspection without waiting for it; collect the answer with
-    /// [`inspection_answer`](Self::inspection_answer). For callers that must
-    /// never block: chrome in its frame loop, the control socket.
-    ///
-    /// # Errors
-    ///
-    /// As [`inspect`](Self::inspect).
-    pub fn start_inspection(
-        &self,
-        peer_id: u64,
-        query: ui::inspect::InspectQuery,
-        caller: &crate::shell::collab_broker_capnp::InspectCaller,
-    ) -> Result<u64, String> {
-        self.state.start_detached_inspection(peer_id, query, caller)
-    }
-
-    /// The answer to an inspection from
-    /// [`start_inspection`](Self::start_inspection), `None` while pending.
-    ///
-    /// # Errors
-    ///
-    /// When the id is unknown or already collected, or the app refused.
-    pub fn inspection_answer(&self, id: u64) -> Result<Option<ui::inspect::InspectReply>, String> {
-        self.state.inspection_answer(id)
-    }
-
-    /// Ask application connection `peer_id` what its semantic tree holds —
-    /// the node at a surface point, a node by id, or a bounded subtree — and
-    /// return the job to [`wait`](crate::shell::collab_broker_capnp::InspectionJob::wait)
-    /// on. Coordinates are that app surface's logical pixels.
-    ///
-    /// The broker checks `caller` may read the app's room before the request
-    /// reaches the app, and redacts the answer for `caller.audience` whatever
-    /// the app sent: a secret never arrives, personal content arrives only
-    /// for the local session.
-    ///
-    /// # Errors
-    ///
-    /// When the connection does not answer inspection, the caller may not
-    /// read its room, or the request cannot be delivered.
-    pub fn inspect(
-        &self,
-        peer_id: u64,
-        query: ui::inspect::InspectQuery,
-        caller: &crate::shell::collab_broker_capnp::InspectCaller,
-    ) -> Result<crate::shell::collab_broker_capnp::InspectionJob, String> {
-        self.state.start_inspection(peer_id, query, caller)
-    }
-
-    pub fn status_for_actor(&self, id: u64, actor: &str) -> Option<tilo_actions::InvocationUpdate> {
-        self.state.invocation_status_for_actor(id, actor)
-    }
-
-    pub fn status(&self, id: u64) -> Option<tilo_actions::InvocationUpdate> {
-        self.state.invocation_status(id)
-    }
-
-    pub fn statuses(&self, actor: &str) -> Vec<(u64, tilo_actions::InvocationUpdate)> {
-        self.state.invocation_statuses(actor)
-    }
-
-    /// Request cooperative cancellation for an owned invocation.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for an unknown, foreign, or non-cancellable invocation.
-    pub fn cancel(&self, id: u64, actor: &str) -> Result<(), String> {
-        self.state.request_cancellation(id, actor)
-    }
-
-    pub fn can_cancel(&self, id: u64, actor: &str) -> bool {
-        self.state.can_cancel(id, actor)
-    }
-
-    /// True only while the named admitted agent has a live task subscription.
-    pub fn agent_is_live_task_capable(&self, room: &str, agent: &str) -> bool {
-        self.state.agent_is_live_task_capable(room, agent)
-    }
-
-    /// Dispatch a task to its assigned live agent. There is intentionally no
-    /// offline queue or application launch fallback in this boundary.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when no matching admitted live agent can accept the
-    /// task.
-    pub fn dispatch_task(&self, room: &str, task_id: &str) -> Result<u64, String> {
-        self.state.dispatch_workspace_task(room, task_id)
+impl std::ops::Deref for BrokerHandle {
+    type Target = tilo_action_broker::collab_broker::BrokerHandle;
+    fn deref(&self) -> &Self::Target {
+        &self.inner
     }
 }
 
 impl BrokerHandle {
+    /// Let apps' `session.replay` requests open the session's replay.
+    pub fn install_replay(&self, replay: Arc<crate::shell::replay::ReplayController>) {
+        self.session_replay.install(replay);
+    }
+
+    pub(crate) fn native_media_service(&self) -> Option<super::native_media::NativeMediaService> {
+        self.native_media.clone()
+    }
+
+    /// This device's channel encryption service, for the identity service
+    /// that hands application endpoints their content keys.
+    pub fn channel_encryption(&self) -> Option<crate::shell::channel_encryption::ChannelKeyAccess> {
+        self.channel_encryption.clone()
+    }
+
+    pub(crate) fn local_session_lifecycle(
+        &self,
+    ) -> crate::shell::collab_broker_capnp::LocalSessionLifecycle {
+        self.local_session.lifecycle()
+    }
+
+    /// Cloneable facade over the canonical shared broker's live action
+    /// directory. Declared on the native wrapper as well as available through
+    /// `Deref` so UFCS call sites work on every target.
+    #[must_use]
+    pub fn app_action_broker(&self) -> Option<AppActionBroker> {
+        self.inner.app_action_broker()
+    }
+
+    /// Native device-fabric and compositor seam for realtime continuity.
+    #[must_use]
+    pub fn realtime_fabric_bridge(
+        &self,
+    ) -> Option<crate::shell::collab_broker_capnp::RealtimeFabricAppBridge> {
+        self.realtime_fabric.clone()
+    }
+
     /// Apply a typed, handle-only MLS membership transaction at the trusted
     /// workspace lifecycle boundary. Apps cannot call this interface.
     ///
@@ -933,138 +226,6 @@ impl BrokerHandle {
             .apply(transaction)
     }
 
-    /// This device's channel encryption service, for the identity service
-    /// that hands application endpoints their content keys.
-    pub fn channel_encryption(&self) -> Option<crate::shell::channel_encryption::ChannelKeyAccess> {
-        self.channel_encryption.clone()
-    }
-
-    /// Cloneable handle for the live resource/action search provider.
-    pub fn app_action_broker(&self) -> Option<AppActionBroker> {
-        self.fanout
-            .capnp_state()
-            .map(|state| AppActionBroker { state })
-    }
-
-    /// Cloneable bridge used by the compositor to install and pump realtime
-    /// device-fabric continuity for this exact application broker instance.
-    pub fn realtime_fabric_bridge(
-        &self,
-    ) -> Option<crate::shell::collab_broker_capnp::RealtimeFabricAppBridge> {
-        self.fanout.capnp_state().map(|state| {
-            crate::shell::collab_broker_capnp::RealtimeFabricAppBridge::from_state(state)
-        })
-    }
-
-    /// Number of typed connections accepted since this broker started.
-    pub fn peer_count(&self) -> usize {
-        // Saturates rather than truncates on a 32-bit target — this is a
-        // connection count, not an index, so clamping to `usize::MAX`
-        // loses nothing a real desktop session would ever reach.
-        usize::try_from(self.fanout.connections_seen()).unwrap_or(usize::MAX)
-    }
-
-    /// Every typed connection joins a channel as part of setup.
-    pub fn announced_peer_count(&self) -> usize {
-        self.peer_count()
-    }
-
-    /// Fan a `CollabEvent` to the peers `route` addresses. `except`
-    /// skips one peer id, for the Iroh bridge. No "reach everyone"
-    /// form exists — see `FanoutState::fanout_to_route`.
-    pub fn fanout_event(&self, event: &CollabEvent, except: Option<u64>, route: &CrdtRoute) {
-        self.fanout
-            .fanout_to_route(event, except.unwrap_or(u64::MAX), route);
-    }
-
-    /// Bind every local app in `room` to one participant's published view,
-    /// or release the binding. This is session-local and never enters the
-    /// peer publisher; each app already receives that participant's normal
-    /// view-presence frames and applies them through `ui::App::follow`.
-    pub fn set_follow_target(
-        &self,
-        room: &str,
-        peer_id: Option<String>,
-        mode: ui::view::FollowMode,
-    ) {
-        self.fanout_event(
-            &CollabEvent::FollowChanged { peer_id, mode },
-            None,
-            &CrdtRoute::cluster(room.to_string()),
-        );
-    }
-
-    #[must_use]
-    pub fn follow_dispatcher(&self) -> SessionFollowDispatcher {
-        SessionFollowDispatcher {
-            fanout: Arc::clone(&self.fanout),
-        }
-    }
-
-    /// Subscribe this process to the rooms it hosts. The sink runs on
-    /// the reader thread that decoded the frame: keep it short.
-    pub fn subscribe_rooms(&self, rooms: Vec<String>, sink: FanoutSink) -> Arc<RoomSubscription> {
-        self.fanout.subscribe_rooms(rooms, sink)
-    }
-
-    /// Let apps' `session.replay` requests open the session's replay.
-    pub fn install_replay(&self, replay: Arc<crate::shell::replay::ReplayController>) {
-        if let Some(capnp) = self.fanout.capnp_state() {
-            capnp.install_replay(replay);
-        }
-    }
-
-    /// The shared fanout registry, for in-process participants that outlive
-    /// a borrow of the handle.
-    pub fn fanout(&self) -> Arc<FanoutState> {
-        Arc::clone(&self.fanout)
-    }
-
-    /// The bound Cap'n Proto socket.
-    pub fn capnp_socket(&self) -> &std::path::Path {
-        &self.capnp_socket_path
-    }
-
-    /// Shared handle to per-channel state + audit log. Tests use this
-    /// to install a [`ChannelState`] before sending signed envelopes.
-    pub fn channels(&self) -> Arc<Mutex<BrokerChannels>> {
-        Arc::clone(&self.channels)
-    }
-
-    /// Snapshot the resource/action surfaces live applications published to
-    /// this session. The values are inert; invoking is a separate operation.
-    pub fn published_action_surfaces(
-        &self,
-    ) -> Vec<crate::shell::collab_broker_capnp::PublishedSurface> {
-        self.fanout
-            .capnp_state()
-            .map_or_else(Vec::new, |state| state.published_surfaces())
-    }
-
-    /// Install a populated [`ChannelState`] for one artifact id.
-    pub fn register_channel_state(&self, artifact: ArtifactId, state: ChannelState) {
-        if let Ok(mut ch) = self.channels.lock() {
-            ch.register_channel_state(artifact, state);
-        }
-    }
-
-    /// Audit-log entries for one artifact.
-    pub fn audit_for(&self, artifact: ArtifactId) -> Vec<AuditEntry> {
-        self.channels
-            .lock()
-            .map(|g| g.audit.for_artifact(artifact))
-            .unwrap_or_default()
-    }
-
-    /// Structured redaction records for one artifact, independent of
-    /// `audit_for` so the compliance surface skips filtering drops.
-    pub fn redactions_for(&self, artifact: ArtifactId) -> Vec<RedactionRecord> {
-        self.channels
-            .lock()
-            .map(|g| g.redactions.for_artifact(artifact))
-            .unwrap_or_default()
-    }
-
     /// Recent authenticated peer departures observed by the attached network.
     /// Empty when this broker was started without peer sync.
     pub fn peer_departures(&self) -> Vec<crate::shell::network::PeerDeparture> {
@@ -1076,10 +237,8 @@ impl BrokerHandle {
 
 impl Drop for BrokerHandle {
     fn drop(&mut self) {
+        self.local_session.lifecycle().close();
         self.drain_quit.store(true, Ordering::Relaxed);
-        self.capnp_quit.store(true, Ordering::Relaxed);
-        let _ = std::fs::remove_file(&self.capnp_socket_path);
-        let _ = self.capnp_thread.take();
         if let Some(t) = self.drain_thread.take() {
             let _ = t.join();
         }
@@ -1091,19 +250,29 @@ impl Drop for BrokerHandle {
 /// # Errors
 ///
 /// Returns an error if the Cap'n Proto socket at `capnp_socket_path`
-/// cannot be bound (e.g. a stale socket file blocks it, or the parent
-/// directory is not writable).
+/// cannot be bound. The parent must already be an owner-only real directory
+/// (normally mode 0700); live sockets and non-private parents are rejected,
+/// while proven stale socket inodes are reclaimed.
 pub fn spawn_native(
     capnp_socket_path: PathBuf,
     peer_sync: &Option<Arc<ShellNetwork>>,
     membership: crate::shell::state::WorkspaceTreeHandle,
 ) -> std::io::Result<BrokerHandle> {
-    let publisher = PeerPublisher::from_network(peer_sync.clone());
+    let publisher = PeerPublisher::with_optional_owner_commit(
+        peer_sync
+            .clone()
+            .map(|network| network as Arc<dyn crate::shell::collab_outbound::PeerPublishSink>),
+        Arc::new(super::broker_services::NativeOwnerCommitService::new(
+            membership.clone(),
+            peer_sync.clone(),
+        )),
+    );
     spawn_inner(
         capnp_socket_path,
         peer_sync.as_ref(),
         &publisher,
         Some(membership),
+        CertificateProvisioning::Production,
         None,
     )
 }
@@ -1112,6 +281,7 @@ pub fn spawn_native(
 /// Intended for integration harnesses that do not have the desktop identity
 /// registry on disk; certificate, proof, membership, role, and op validation
 /// remain identical to production.
+#[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
 pub fn spawn_native_harness(
     capnp_socket_path: PathBuf,
@@ -1124,7 +294,8 @@ pub fn spawn_native_harness(
         None,
         &publisher,
         Some(membership),
-        Some(Arc::new(trusted_devices)),
+        CertificateProvisioning::HarnessDevices(Arc::new(trusted_devices)),
+        None,
     )
 }
 
@@ -1144,8 +315,58 @@ pub(crate) fn spawn_networked_harness(
         Some(peer_sync),
         &publisher,
         Some(membership),
-        Some(Arc::new(trusted_devices)),
+        CertificateProvisioning::HarnessDevices(Arc::new(trusted_devices)),
+        None,
     )
+}
+
+/// Start the ordinary native service inside an independently owned peer.
+/// No global identity registry, Secret Service store or desktop network actor
+/// is opened. The explicit authority, journal and real signed-document publisher
+/// remain owned by the calling application's session.
+///
+/// # Errors
+///
+/// Returns an error if `publisher` has no attached signed-document sink, or if
+/// the Cap'n Proto socket at `capnp_socket_path` cannot be bound.
+pub fn spawn_native_peer(
+    capnp_socket_path: PathBuf,
+    membership: crate::shell::state::WorkspaceTreeHandle,
+    publisher: &Arc<PeerPublisher>,
+    config: &crate::shell::peer_actions::NativePeerBrokerConfig,
+) -> std::io::Result<BrokerHandle> {
+    if !publisher.is_wired() {
+        return Err(std::io::Error::other(
+            "peer broker requires an attached signed-document publisher",
+        ));
+    }
+    spawn_inner(
+        capnp_socket_path,
+        None,
+        publisher,
+        Some(membership),
+        CertificateProvisioning::Production,
+        Some(config),
+    )
+}
+
+/// Selects certificate provisioning at a host-owned construction boundary.
+/// The fixture variant is unavailable from ordinary production builds and is
+/// selected only by `spawn_native_harness`.
+enum CertificateProvisioning {
+    Production,
+    #[cfg(any(test, feature = "test-support"))]
+    HarnessDevices(Arc<Vec<[u8; 32]>>),
+}
+
+impl CertificateProvisioning {
+    fn uses_harness_devices(&self) -> bool {
+        match self {
+            Self::Production => false,
+            #[cfg(any(test, feature = "test-support"))]
+            Self::HarnessDevices(_) => true,
+        }
+    }
 }
 
 /// Inbound queues + shared fanout state the drain thread polls each
@@ -1210,7 +431,9 @@ impl DrainQueues {
         let host = self.action_host.get().or_else(|| {
             let state = self.table.capnp_state()?;
             Some(self.action_host.get_or_init(|| {
-                crate::shell::remote_actions::BrokerActionHost::new(AppActionBroker { state })
+                crate::shell::remote_actions::BrokerActionHost::new(AppActionBroker::from_state(
+                    state,
+                ))
             }))
         });
         answer_remote_actions(&self.net, host, drained);
@@ -1273,12 +496,12 @@ impl DrainQueues {
             let envelope = *entry.envelope;
             let artifact = envelope.artifact;
             let route = CrdtRoute::record(&entry.app_id, &entry.cluster_id, &entry.record_id);
-            let mutation = validate_document_route(&route, &envelope);
+            let payload = validate_document_route(&route, &envelope);
             // A requested replay of an exact op this broker already
             // validated goes to local apps again — one that restarted since
             // does not hold it — rather than being refused as a repeat.
             if entry.replayed
-                && mutation.is_ok()
+                && payload.is_ok()
                 && self
                     .channels
                     .lock()
@@ -1287,33 +510,39 @@ impl DrainQueues {
                 self.fan_out_signed_op(envelope, entry.peer, &route, labels, announced);
                 continue;
             }
-            let validation = if let Err(reason) = &mutation {
-                Err(reason.clone())
-            } else {
-                let Ok(mut ch) = self.channels.lock() else {
-                    return false;
-                };
-                let channel = collab_types::document_channel_id(
-                    &entry.app_id,
-                    &entry.cluster_id,
-                    &entry.record_id,
-                );
-                if ch.document_encryption_allowed(channel, envelope.encryption.as_ref()) {
-                    let state = ch.state_for(artifact);
-                    state.artifacts.insert(artifact, ArtifactKind::Note);
-                    state.artifact_apps.insert(artifact, entry.app_id.clone());
-                    validate_admitted_inbound_op(
-                        &envelope,
-                        entry.role,
-                        state,
-                        std::time::SystemTime::now(),
-                        Duration::from_secs(300),
-                    )
-                } else {
-                    Err(ValidationError::DocumentRouteMismatch)
+            let validation = match &payload {
+                Ok(payload) => {
+                    let Ok(mut ch) = self.channels.lock() else {
+                        return false;
+                    };
+                    let channel = match payload {
+                        collab_types::WholeDocumentPayload::Cleartext(_) => {
+                            collab_types::document_channel_id(
+                                &entry.app_id,
+                                &entry.cluster_id,
+                                &entry.record_id,
+                            )
+                        }
+                        collab_types::WholeDocumentPayload::Encrypted { channel, .. } => *channel,
+                    };
+                    if ch.document_encryption_allowed(channel, envelope.encryption.as_ref()) {
+                        let state = ch.state_for(artifact);
+                        state.artifacts.insert(artifact, ArtifactKind::Note);
+                        state.artifact_apps.insert(artifact, entry.app_id.clone());
+                        validate_admitted_inbound_op(
+                            &envelope,
+                            entry.role,
+                            state,
+                            std::time::SystemTime::now(),
+                            Duration::from_secs(300),
+                        )
+                    } else {
+                        Err(ValidationError::DocumentRouteMismatch)
+                    }
                 }
+                Err(error) => Err(error.clone()),
             };
-            match (mutation, validation) {
+            match (payload, validation) {
                 (Ok(_), Ok(())) => {
                     self.accept_signed_op(envelope, entry.peer, &route, labels, announced);
                 }
@@ -1520,8 +749,8 @@ impl DrainQueues {
 fn validate_document_route(
     route: &CrdtRoute,
     envelope: &collab_types::SignedOp,
-) -> Result<collab_types::RoutedDocumentPayload, ValidationError> {
-    collab_types::validate_document_payload_route(
+) -> Result<collab_types::WholeDocumentPayload, ValidationError> {
+    collab_types::validate_whole_document_payload_route(
         &route.app_id,
         &route.cluster_id,
         &route.record_id,
@@ -1530,16 +759,27 @@ fn validate_document_route(
     .map_err(|_| ValidationError::DocumentRouteMismatch)
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one ordered broker assembly: vaults, services, media, authority, then network attachment"
+)]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "the test-support provisioning variant moves its device set into the broker"
+)]
 fn spawn_inner(
     capnp_socket_path: PathBuf,
     peer_sync: Option<&Arc<ShellNetwork>>,
     publisher: &Arc<PeerPublisher>,
     membership: Option<crate::shell::state::WorkspaceTreeHandle>,
-    trusted_devices: Option<Arc<Vec<[u8; 32]>>>,
+    certificate_provisioning: CertificateProvisioning,
+    config: Option<&crate::shell::peer_actions::NativePeerBrokerConfig>,
 ) -> std::io::Result<BrokerHandle> {
     let table = Arc::new(FanoutState::new());
     let channels: Arc<Mutex<BrokerChannels>> = Arc::new(Mutex::new(BrokerChannels::default()));
-    let (mls_authority, channel_encryption) = open_session_services(membership.as_ref(), &channels);
+    // A configured peer broker runs without the session's vault.
+    let (mls_authority, channel_encryption) =
+        open_session_services(membership.as_ref(), &channels, config.is_none());
     // Who is waiting on a cooperative scrollback answer, keyed by
     // artifact — a `ScrollbackResponse` off gossip carries an
     // artifact id and nothing else, so without this the drain thread
@@ -1588,30 +828,113 @@ fn spawn_inner(
             .ok()
     });
 
-    // Typed RPC interface, attached to the shared fanout state.
-    let capnp_quit = Arc::new(AtomicBool::new(false));
-    let capnp_thread = crate::shell::collab_broker_capnp::spawn(
-        capnp_socket_path.clone(),
-        &table,
-        Arc::clone(&channels),
-        Arc::clone(publisher),
-        membership,
-        trusted_devices,
-        peer_sync.cloned(),
-        Arc::clone(&capnp_quit),
-    )?;
-
+    let local_session = crate::shell::collab_broker_capnp::LocalSessionAuthority::new();
+    let mut services = if config.is_none() {
+        super::broker_services::native_services(membership.clone(), peer_sync.cloned())
+    } else {
+        tilo_action_broker::services::HostServices::default()
+    };
+    if certificate_provisioning.uses_harness_devices() && config.is_none() {
+        services.native_certificates = None;
+    }
+    let session_replay = Arc::new(super::broker_services::NativeSessionReplay::default());
+    services.session_replay = Some(session_replay.clone());
+    let realtime_fabric = if config.is_none() {
+        peer_sync.and_then(crate::shell::collab_broker_capnp::NativeRealtimeServices::from_network)
+    } else {
+        None
+    };
+    if let Some((service, _)) = realtime_fabric.as_ref() {
+        services.realtime = Some(Arc::clone(service));
+    }
+    let native_media = peer_sync.and_then(|network| {
+        let (device, _) = network.local_device_fabric_identity()?;
+        let (_, bridge) = realtime_fabric.as_ref()?;
+        Some(super::native_media::NativeMediaService::new(
+            local_session.lifecycle(),
+            bridge.realtime_capture_broker()?,
+            device,
+        ))
+    });
+    if let Some(service) = native_media.as_ref() {
+        if let Some(network) = peer_sync {
+            let installed = network.native_owner().and_then(|owner| {
+                crate::network::native_media::Factory::new(
+                    network.cmd_tx.clone(),
+                    owner,
+                    service.capture_broker(),
+                    network.runtime_handle()?,
+                )
+            });
+            match installed {
+                Ok(factory) => {
+                    service.install_factory(Arc::new(factory));
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "native media factory prerequisites unavailable");
+                }
+            }
+        }
+        services.native_media = Some(Arc::new(service.clone()));
+    }
+    let authority = membership.as_ref().map(|tree| {
+        Arc::new(super::broker_services::NativeWorkspaceAuthority(
+            tree.clone(),
+        )) as tilo_action_broker::services::WorkspaceAuthorityHandle
+    });
+    let inner = match certificate_provisioning {
+        CertificateProvisioning::Production => {
+            tilo_action_broker::collab_broker::spawn_with_services(
+                capnp_socket_path,
+                authority,
+                publisher.clone(),
+                config,
+                services,
+                channels,
+                table,
+            )?
+        }
+        #[cfg(any(test, feature = "test-support"))]
+        CertificateProvisioning::HarnessDevices(trusted_devices) => {
+            tilo_action_broker::collab_broker::spawn_with_test_services(
+                capnp_socket_path,
+                authority,
+                publisher.clone(),
+                config,
+                services,
+                Some(trusted_devices),
+                channels,
+                table,
+            )?
+        }
+    };
+    if let (Some(network), Some(tree), Some(broker)) =
+        (peer_sync, membership, inner.app_action_broker())
+        && let Ok((queue, host)) = broker.peer_action_attachment()
+    {
+        let rooms = tree
+            .read()
+            .desktop
+            .workspaces
+            .iter()
+            .filter_map(|w| uuid::Uuid::parse_str(&w.room.to_string()).ok())
+            .collect();
+        network
+            .cmd_tx
+            .try_send(crate::network::actor::NetCmd::AttachActionBroker { queue, host, rooms })
+            .map_err(|_| std::io::Error::other("action broker network attachment unavailable"))?;
+    }
     Ok(BrokerHandle {
-        capnp_socket_path,
+        inner,
+        local_session,
+        native_media,
+        realtime_fabric: realtime_fabric.map(|(_, bridge)| bridge),
         drain_thread,
         drain_quit,
-        capnp_thread: Some(capnp_thread),
-        capnp_quit,
-        fanout: table,
-        channels,
         mls_authority,
         channel_encryption,
         peer_departures: peer_sync.map(|net| net.peer_departure_history()),
+        session_replay,
     })
 }
 
@@ -1635,6 +958,7 @@ type SessionServices = (
 fn open_session_services(
     _: Option<&crate::shell::state::WorkspaceTreeHandle>,
     _: &Arc<Mutex<BrokerChannels>>,
+    _: bool,
 ) -> SessionServices {
     (None, None)
 }
@@ -1643,6 +967,7 @@ fn open_session_services(
 fn open_session_services(
     membership: Option<&crate::shell::state::WorkspaceTreeHandle>,
     channels: &Arc<Mutex<BrokerChannels>>,
+    open_vault: bool,
 ) -> SessionServices {
     let mut mls_authority = None;
     let mut channel_encryption = None;
@@ -1656,11 +981,14 @@ fn open_session_services(
             tracing::warn!(%error, "durable collaboration history unavailable; scrollback is limited to memory");
         }
     }
+    if !open_vault {
+        return (mls_authority, channel_encryption);
+    }
     match crate::shell::collab_mls_authority::SecretServiceMlsVault::open_for_session() {
         Ok(vault) => {
             let vault = Arc::new(vault);
             if let Ok(mut state) = channels.lock() {
-                state.install_mls_vault(Arc::clone(&vault));
+                state.install_mls_vault(vault.clone());
             }
             if let Some(workspaces) = membership.cloned() {
                 channel_encryption =
@@ -1841,6 +1169,10 @@ fn roster_announcement(said: Option<&str>, known: Option<&str>, id: &str) -> Opt
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "each test keeps its fanout table alive for the whole scenario"
+)]
 mod tests {
     use super::*;
 
@@ -1857,7 +1189,7 @@ mod tests {
 
         fn exhausted_application_peer_ids_do_not_wrap_or_issue_the_current_connection_sentinel() {
             let table = FanoutState::new();
-            table.peer_id_counter.store(u64::MAX - 2, Ordering::Relaxed);
+            table.set_peer_counter_for_test(u64::MAX - 2);
             assert_eq!(table.next_peer_id(), u64::MAX - 1);
             assert!(
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| table.next_peer_id()))
@@ -1913,8 +1245,9 @@ mod tests {
 
             assert!(matches!(
                 validate_document_route(&route, &envelope),
-                Ok(collab_types::RoutedDocumentPayload::Cleartext(DocumentMutation::Snapshot(data)))
-                    if data == b"whole document"
+                Ok(collab_types::WholeDocumentPayload::Cleartext(
+                    DocumentMutation::Snapshot(data)
+                )) if data == b"whole document"
             ));
             assert_eq!(
                 validate_document_route(
@@ -1951,7 +1284,7 @@ mod tests {
             );
             assert_eq!(
                 validate_document_route(&route, &envelope),
-                Ok(collab_types::RoutedDocumentPayload::Encrypted {
+                Ok(collab_types::WholeDocumentPayload::Encrypted {
                     channel: expected_channel,
                     epoch: 9,
                 })
@@ -1978,9 +1311,7 @@ mod tests {
                     }
                 }),
             );
-            let dispatcher = super::SessionFollowDispatcher {
-                fanout: Arc::clone(&table),
-            };
+            let dispatcher = super::SessionFollowDispatcher::new(Arc::clone(&table));
             dispatcher.set("room-2", Some("peer@wrong".into()));
             dispatcher.set("room-1", Some("peer@7".into()));
             dispatcher.set("room-1", None);

@@ -80,7 +80,7 @@ foreach ($name in $Phase) {
         revision = $revision
         image = $ImagePath
         tag = $Tag
-        directBoot = [bool]$DirectBootBundle
+        directBoot = [bool]$DirectBootBundle -or [bool]$Tag
         component = $(if ($name -eq 'swap') { $Component } else { $null })
         app = $(if ($name -eq 'app') { $App } else { $null })
     }

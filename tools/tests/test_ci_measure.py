@@ -12,7 +12,7 @@ MEASURE = ROOT / "tools/ci/measure.sh"
 
 
 class CiMeasureTests(unittest.TestCase):
-    def test_measured_commands_report_memory_evidence_only_on_failure(self):
+    def test_measured_commands_report_peak_memory_and_failure_evidence(self):
         with self.subTest(phase='failed command reports cgroup memory evidence'):
             with tempfile.TemporaryDirectory() as directory:
                 cgroup = Path(directory)
@@ -37,6 +37,7 @@ class CiMeasureTests(unittest.TestCase):
             with tempfile.TemporaryDirectory() as directory:
                 cgroup = Path(directory)
                 (cgroup / "memory.events").write_text("oom 0\noom_kill 0\n", encoding="utf-8")
+                (cgroup / "memory.peak").write_text("4294967296\n", encoding="utf-8")
                 result = subprocess.run(
                     ["bash", str(MEASURE), "fixture", "--", "true"],
                     cwd=ROOT,
@@ -48,6 +49,8 @@ class CiMeasureTests(unittest.TestCase):
                 )
             self.assertEqual(result.returncode, 0, result.stdout)
             self.assertNotIn("cgroup_memory_events", result.stdout)
+            # The peak is the headroom evidence parallelism is tuned against.
+            self.assertIn("cgroup_memory_peak=4294967296", result.stdout)
 
 
 if __name__ == "__main__":

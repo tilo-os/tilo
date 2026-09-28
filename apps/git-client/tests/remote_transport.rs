@@ -67,7 +67,7 @@ fn start_server_with_tls(root: &Path, tls: bool) -> (Server, String) {
             .spawn()
             .expect("Python 3 is required for Git HTTP tests"),
     );
-    let deadline = Instant::now().checked_add(Duration::from_secs(10)).unwrap();
+    let deadline = tilo_test_env::hang_deadline();
     let ready = root.join("ready.json");
     while !ready.exists() {
         assert!(
@@ -398,7 +398,7 @@ fn remote_fetch_keeps_app_responsive_and_reports_completion_after_sync() {
         Some(ui::widget::ResourceOperationStart::Accepted)
     ));
     assert!(app.needs_animation_frame());
-    let request_deadline = Instant::now().checked_add(Duration::from_secs(5)).unwrap();
+    let request_deadline = tilo_test_env::hang_deadline();
     while !root.path().join("request-started").exists() {
         assert!(
             Instant::now() < request_deadline,
@@ -459,7 +459,7 @@ fn remote_fetch_keeps_app_responsive_and_reports_completion_after_sync() {
             .is_none()
     );
     fs::write(root.path().join("release"), "").unwrap();
-    let deadline = Instant::now().checked_add(Duration::from_secs(10)).unwrap();
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         app.sync(&mut doc, &automerge::ROOT);
         if let Some(update) = app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
@@ -539,7 +539,7 @@ fn remote_failure_is_reported_to_the_invocation_and_visible_status() {
         .unwrap(),
         Some(ui::widget::ResourceOperationStart::Accepted)
     ));
-    let deadline = Instant::now().checked_add(Duration::from_secs(10)).unwrap();
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         app.sync(&mut doc, &automerge::ROOT);
         // A cancellation request is not evidence of cancellation: authentication

@@ -125,6 +125,9 @@ fn a_widgets_joined_records_are_indexed_joined_published_and_merged() {
     ));
     let mut app = App::new_with_controlled_inputs(State::new(), Box::new(conversation))
         .with_records(crate::record::RecordSet::in_memory().with_home(ROOM), index);
+    app.collaboration.manager = CollaborationManager::with_peer_transport(
+        super::legacy_resource_tests::DocumentRouteTransport,
+    );
     app.actions.bound_broker_route_for_test = Some(crate::collaboration::PrimaryRouteWitness {
         route: crate::collaboration::RouteSpec::app(APP_ID, uuid::Uuid::parse_str(ROOM).unwrap()),
         epoch: uuid::Uuid::new_v4(),

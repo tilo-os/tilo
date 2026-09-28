@@ -326,6 +326,7 @@ fn the_focused_tile_is_activated_and_every_tile_is_tiled() {
     h.focus(second);
     let first_states = h.last_states("org.example.First");
     let second_states = h.last_states("org.example.Second");
+    drop(h);
     assert!(
         !first_states.contains(&ACTIVATED),
         "the tile that lost focus must be told so, or two windows look focused \
@@ -358,6 +359,7 @@ fn committed_window_geometry_crops_the_tile_to_the_window() {
     xdg.set_window_geometry(20, 20, 100, 80);
     surface.commit();
     h.pump();
+    drop(h);
 
     assert_eq!(
         store.frame_size(id),

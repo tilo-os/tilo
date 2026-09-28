@@ -5,7 +5,9 @@ The CI nextest profile retries a failing test once. A test that fails and then
 passes is reported by nextest as FLAKY and does not fail the job, so without
 this report an intermittently failing test is only visible by reading the
 whole log. This lists every retried test (flaky or finally failed) and the
-slowest tests, and emits one warning annotation per flaky test.
+20 slowest tests, the ones that decide a shard's wall time and are worth
+speeding up or starting first (.config/nextest.toml priorities), and emits one
+warning annotation per flaky test.
 
 Usage: nextest_report.py --label NAME [--summary PATH] junit.xml
 
@@ -25,7 +27,7 @@ import xml.etree.ElementTree as ET
 FAILURE_TAGS = ("failure", "error")
 RERUN_TAGS = ("rerunFailure", "rerunError")
 FLAKY_TAGS = ("flakyFailure", "flakyError")
-SLOWEST = 10
+SLOWEST = 20
 
 
 @dataclass(frozen=True)
@@ -93,11 +95,11 @@ def render(label: str, cases: list[Case]) -> str:
         lines.append("")
     slowest = sorted(cases, key=lambda c: c.seconds, reverse=True)[:SLOWEST]
     if slowest:
-        lines += ["<details><summary>Slowest tests</summary>", "",
+        lines += [f"Slowest tests ({len(slowest)}):", "",
                   "| Seconds | Binary | Test |", "|---|---|---|"]
         lines += [f"| {case.seconds:.1f} | {cell(case.binary)} | {cell(case.name)} |"
                   for case in slowest]
-        lines += ["", "</details>", ""]
+        lines.append("")
     return "\n".join(lines) + "\n"
 
 

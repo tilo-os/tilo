@@ -12,6 +12,10 @@
     clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "relays, fixtures and guards deliberately stay alive until each test ends"
+)]
 
 use std::time::Duration;
 
@@ -45,9 +49,8 @@ async fn subscribe(client: &RelayClient) -> Envelope {
         .send(Envelope::Subscribe { workspace_id: WS })
         .unwrap();
     loop {
-        let envelope = tokio::time::timeout(Duration::from_secs(5), client.recv())
+        let envelope = tilo_test_env::within("the subscribe answer", client.recv())
             .await
-            .expect("subscribe answer")
             .expect("connection open");
         if matches!(
             envelope,
@@ -99,20 +102,16 @@ async fn a_full_workspace_refuses_a_new_subscriber_but_not_a_returning_one() {
 
     // A departure frees the slot.
     first.close().await;
-    let freed = tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            if !relay
-                .relay
-                .is_subscribed(WS, &devices[0].device_pubkey())
-                .await
-            {
-                break;
-            }
+    tilo_test_env::within("the closed subscriber is unregistered", async {
+        while relay
+            .relay
+            .is_subscribed(WS, &devices[0].device_pubkey())
+            .await
+        {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
     .await;
-    assert!(freed.is_ok(), "the closed subscriber is unregistered");
     assert!(matches!(subscribe(&third).await, Envelope::Ready { .. }));
 }
 
@@ -137,8 +136,8 @@ async fn connections_beyond_the_relay_limit_are_refused_until_one_closes() {
 
     let held = connect(addr.clone(), &user, &a).await;
     assert!(matches!(subscribe(&held).await, Envelope::Ready { .. }));
-    let refused = tokio::time::timeout(
-        Duration::from_secs(10),
+    let refused = tilo_test_env::within(
+        "a refused connection fails promptly",
         RelayClient::connect(
             client_endpoint().await,
             addr.clone(),
@@ -148,15 +147,14 @@ async fn connections_beyond_the_relay_limit_are_refused_until_one_closes() {
             RevocationList::new(),
         ),
     )
-    .await
-    .expect("a refused connection fails promptly");
+    .await;
     assert!(
         refused.is_err(),
         "a second connection is closed at the limit"
     );
 
     held.close().await;
-    let admitted = tokio::time::timeout(Duration::from_secs(10), async {
+    let admitted = tilo_test_env::within("the freed slot admits the next connection", async {
         loop {
             if let Ok(client) = RelayClient::connect(
                 client_endpoint().await,
@@ -173,8 +171,7 @@ async fn connections_beyond_the_relay_limit_are_refused_until_one_closes() {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     })
-    .await
-    .expect("the freed slot admits the next connection");
+    .await;
     assert!(matches!(subscribe(&admitted).await, Envelope::Ready { .. }));
 }
 
@@ -212,25 +209,17 @@ async fn an_offline_member_receives_a_retained_message_without_a_pending_copy() 
         })
         .unwrap();
 
-    let tail = relay
-        .state_root
-        .join("workspaces")
-        .join(WS.to_string())
-        .join("retained/tails")
-        .join(hex::encode(channel));
-    let retained = tokio::time::timeout(Duration::from_secs(10), async {
+    tilo_test_env::within("the message retained once for the room", async {
         loop {
-            if std::fs::read_dir(&tail).is_ok_and(|entries| entries.count() == 1) {
+            let store =
+                tilo_relay::store::WorkspaceStore::open(&relay.state_root, WS, false).unwrap();
+            if store.load_retained_channel(&channel).unwrap().len() == 1 {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
     .await;
-    assert!(
-        retained.is_ok(),
-        "the message is retained once for the room"
-    );
     let pending = relay
         .state_root
         .join("workspaces")
@@ -246,9 +235,8 @@ async fn an_offline_member_receives_a_retained_message_without_a_pending_copy() 
     reader
         .send(Envelope::Subscribe { workspace_id: WS })
         .unwrap();
-    let replayed = tokio::time::timeout(Duration::from_secs(5), reader.recv())
+    let replayed = tilo_test_env::within("the replayed message", reader.recv())
         .await
-        .expect("replay")
         .expect("connection open");
     match replayed {
         Envelope::Delta {

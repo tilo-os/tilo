@@ -1975,9 +1975,7 @@ mod tests {
     fn eventually_page(mut query: impl FnMut() -> SearchPage) -> SearchPage {
         // A hang guard, not a latency budget: the work bounds are asserted
         // on inspected entries, which a loaded machine cannot perturb.
-        let deadline = std::time::Instant::now()
-            .checked_add(Duration::from_secs(30))
-            .expect("deadline within the clock's range");
+        let deadline = tilo_test_env::hang_deadline();
         while std::time::Instant::now() < deadline {
             let page = query();
             if !page.results.is_empty() || page.exhausted || page.stale_cursor {

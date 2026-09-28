@@ -3,6 +3,10 @@
 //! admitted as an Observer agent, the app answers the late-joiner snapshot,
 //! edits and moves its caret, and stopping yields a `session` record that
 //! holds the snapshot, the ops and the presence in delivery order.
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 
 use std::os::fd::IntoRawFd;
 use std::os::unix::net::UnixStream;
@@ -163,6 +167,12 @@ fn listed(tree: &WorkspaceTreeHandle, agent: &str) -> (Option<CapRole>, bool) {
 #[test]
 fn a_recording_keeps_snapshot_ops_and_presence_and_is_a_visible_revocable_agent() {
     let dir = tempfile::tempdir().unwrap();
+    // The broker binds only inside an owner-only directory.
+    std::fs::set_permissions(
+        dir.path(),
+        std::os::unix::fs::PermissionsExt::from_mode(0o700),
+    )
+    .expect("owner-only socket directory");
     let socket = dir.path().join("collab.sock");
     let tree = room_tree();
     let device = SigningKey::from_bytes(&DEVICE_KEY)
@@ -343,6 +353,12 @@ fn snapshot_taken(recorder: &Recorder) -> bool {
 #[test]
 fn removing_the_recorder_agent_ends_the_recording() {
     let dir = tempfile::tempdir().unwrap();
+    // The broker binds only inside an owner-only directory.
+    std::fs::set_permissions(
+        dir.path(),
+        std::os::unix::fs::PermissionsExt::from_mode(0o700),
+    )
+    .expect("owner-only socket directory");
     let socket = dir.path().join("collab.sock");
     let tree = room_tree();
     let broker =
@@ -380,6 +396,12 @@ fn removing_the_recorder_agent_ends_the_recording() {
 #[test]
 fn an_agent_connected_from_this_machine_is_on_the_roster_while_connected() {
     let dir = tempfile::tempdir().unwrap();
+    // The broker binds only inside an owner-only directory.
+    std::fs::set_permissions(
+        dir.path(),
+        std::os::unix::fs::PermissionsExt::from_mode(0o700),
+    )
+    .expect("owner-only socket directory");
     let socket = dir.path().join("collab.sock");
     let tree = room_tree();
     {
@@ -475,6 +497,12 @@ fn inspectable_app_as(socket: &Path, app: &str) -> ui::App {
 #[test]
 fn a_recording_keeps_semantic_keyframes_only_when_the_tree_changes() {
     let dir = tempfile::tempdir().unwrap();
+    // The broker binds only inside an owner-only directory.
+    std::fs::set_permissions(
+        dir.path(),
+        std::os::unix::fs::PermissionsExt::from_mode(0o700),
+    )
+    .expect("owner-only socket directory");
     let socket = dir.path().join("collab.sock");
     let tree = room_tree();
     let device = SigningKey::from_bytes(&DEVICE_KEY)
@@ -609,6 +637,12 @@ fn a_protected_app_leaves_only_a_marker_in_the_trace() {
         PROTECTED_APP
     ));
     let dir = tempfile::tempdir().unwrap();
+    // The broker binds only inside an owner-only directory.
+    std::fs::set_permissions(
+        dir.path(),
+        std::os::unix::fs::PermissionsExt::from_mode(0o700),
+    )
+    .expect("owner-only socket directory");
     let socket = dir.path().join("collab.sock");
     let tree = room_tree();
     let device = SigningKey::from_bytes(&DEVICE_KEY)

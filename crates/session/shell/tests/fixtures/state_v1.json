@@ -1,4 +1,9 @@
 {
+  "native_authority": {
+    "revision": 0,
+    "rooms": {},
+    "pending": {}
+  },
   "schema_version": 1,
   "workspaces": [
     {

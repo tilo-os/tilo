@@ -138,14 +138,19 @@ class ImagePublicationTests(unittest.TestCase):
                     if name == "Independently rebuild the release candidate":
                         continue
                     self.assertIn("TILO_COMPILER_CACHE=${{ steps.compiler-cache.outputs.mode }}", step)
-                    self.assertIn("secret-envs: ${{ steps.compiler-cache.outputs.secret-envs }}", step)
+                    self.assertIn("${{ steps.compiler-cache.outputs.secret-envs }}", step)
+                    if name not in ("Build and cache the compile stages", "Build and cache the browser engine stage"):
+                        self.assertIn("browser_runtime_identity=RUNTIME_BUNDLE_SIGNING_KEY", step)
+                        self.assertIn("browser_app_identity=TAPP_PUBLISHER_IDENTITY", step)
         with self.subTest(phase='the independent rebuild never sees the cache'):
             repro = self.steps["Independently rebuild the release candidate"]
             self.assertIn("if: matrix.role == 'reproduce'", repro)
             self.assertIn("TILO_COMPILER_CACHE=off\n", repro)
             self.assertIn("TILO_REQUIRE_COMPILER_CACHE=0\n", repro)
             self.assertIn("no-cache: true", repro)
-            for forbidden in ("SCCACHE_", "secret-envs", "AWS_", "aws_", "compiler-cache"):
+            self.assertIn("browser_runtime_identity=RUNTIME_BUNDLE_SIGNING_KEY", repro)
+            self.assertIn("browser_app_identity=TAPP_PUBLISHER_IDENTITY", repro)
+            for forbidden in ("SCCACHE_", "AWS_", "aws_", "compiler-cache"):
                 self.assertNotIn(forbidden, repro)
 
 

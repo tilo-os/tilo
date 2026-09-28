@@ -1,0 +1,107 @@
+//! # Rich text in a Tilo app
+//!
+//! One document model and one editor across the OS: qdoc's rich text
+//! ([`qdoc_rich_text::RichText`]) is the resource, and the toolkit's block
+//! editor is the view of it. An app that shows rich text writes one line:
+//!
+//! ```ignore
+//! use tilo_rich_text::RichTextViews;
+//!
+//! struct Doc;
+//! impl ResourceApp for Doc {
+//!     type Resource = qdoc_rich_text::RichText;
+//!     const ID: &'static str = "example.doc";
+//!     const TITLE: &'static str = "Document";
+//!     fn view(cx: &mut ViewCx<RichText>) -> Element {
+//!         cx.rich_text()
+//!     }
+//! }
+//! ```
+//!
+//! and gets, from the framework and without writing any of it: every edit as
+//! a replayable [`RichTextAction`](qdoc_rich_text::RichTextAction) (the same
+//! vocabulary the palette, agents and scripts use), permission checks (a
+//! viewer's keystrokes never reach the document), per-author undo with
+//! typing grouped a word at a time, attributed history with History mode
+//! drawn by the same editor, collaboration that keeps each person's caret
+//! where they were typing, and presence keyed to paragraphs.
+//!
+//! [`RichTextSurface`] is the surface behind that line, for an app that
+//! configures the editor or places it inside its own layout.
+
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::panic,
+        reason = "in a test these are the assertion, not a hazard"
+    )
+)]
+
+mod blocks;
+mod convert;
+mod edit;
+mod source;
+mod surface;
+
+use qdoc_rich_text::{RichText, RichTextAction};
+use ui::automerge::ObjId;
+use ui::framework::ViewCx;
+use ui::tilo_resource::{Doc, Resource};
+use ui::widget::Element;
+
+pub use blocks::{blocks_under, fill_under};
+pub use convert::document_mark;
+pub use source::{Hosted, RichTextField, RichTextSource};
+pub use surface::RichTextSurface;
+
+/// Rich text in a view: `cx.rich_text()`.
+pub trait RichTextViews {
+    /// The document, editable where the participant may edit it.
+    fn rich_text(&self) -> Element;
+
+    /// The document in `surface`, configured by the caller.
+    fn rich_text_in(&self, surface: RichTextSurface) -> Element;
+}
+
+impl<T: 'static> RichTextViews for ViewCx<RichText, T> {
+    fn rich_text(&self) -> Element {
+        self.rich_text_in(RichTextSurface::new())
+    }
+
+    fn rich_text_in(&self, surface: RichTextSurface) -> Element {
+        self.surface(surface)
+    }
+}
+
+/// A rich-text field of any resource in a view:
+/// `cx.rich_text_field(body_of, EditBody)`.
+pub trait RichTextFieldViews<R: Resource> {
+    /// The rich text `locate` finds in the resource's document, edited as
+    /// the resource's own action `wrap(edit)`.
+    fn rich_text_field(
+        &self,
+        locate: impl Fn(&Doc) -> Option<ObjId> + 'static,
+        wrap: impl Fn(RichTextAction) -> R::Action + 'static,
+    ) -> Element;
+}
+
+impl<R: Resource, T: 'static> RichTextFieldViews<R> for ViewCx<R, T>
+where
+    R::Action: serde::Serialize,
+{
+    fn rich_text_field(
+        &self,
+        locate: impl Fn(&Doc) -> Option<ObjId> + 'static,
+        wrap: impl Fn(RichTextAction) -> R::Action + 'static,
+    ) -> Element {
+        Box::new(RichTextSurface::field(RichTextField::framework(
+            self.dispatcher(),
+            locate,
+            wrap,
+        )))
+    }
+}

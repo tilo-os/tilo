@@ -301,7 +301,7 @@ impl MigrationWorker {
             !self.terminal_observed,
             "worker terminal event already observed"
         );
-        match self.events.recv_timeout(crate::HANG_BOUND) {
+        match self.events.recv_timeout(tilo_test_env::hang_bound()) {
             Ok(event) => {
                 assert!(
                     matches!(event, WorkerEvent::Finished(_) | WorkerEvent::Stored(_)),
@@ -395,7 +395,7 @@ mod tests {
             let mut worker = MigrationWorker::start(job).unwrap();
             // Eighty durable copies can take tens of seconds on a loaded disk;
             // this bound only catches a worker that never finishes.
-            let deadline = Instant::now() + crate::HANG_BOUND;
+            let deadline = tilo_test_env::hang_deadline();
             while worker.phase.load(Ordering::Acquire) != FINISHED {
                 assert!(Instant::now() < deadline, "worker did not finish");
                 std::thread::sleep(Duration::from_millis(1));
@@ -479,7 +479,7 @@ mod tests {
                 .unwrap();
             }
             let mut cancelled = MigrationWorker::start(fresh.clone()).unwrap();
-            let deadline = Instant::now() + crate::HANG_BOUND;
+            let deadline = tilo_test_env::hang_deadline();
             loop {
                 if matches!(cancelled.try_next(), Some(WorkerEvent::Progress(_))) {
                     assert!(cancelled.cancel());

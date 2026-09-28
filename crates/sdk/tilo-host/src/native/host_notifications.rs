@@ -6,6 +6,9 @@
 
 use std::{marker::PhantomData, path::Path, rc::Rc, sync::OnceLock};
 
+/// Whether this build delivers and schedules native notifications.
+pub const SUPPORTED: bool = true;
+
 use crate::time::{Duration, SystemTime, UNIX_EPOCH};
 use windows::Data::Xml::Dom::XmlDocument;
 use windows::UI::Notifications::{

@@ -87,6 +87,17 @@ pub enum Custody {
 }
 
 impl Custody {
+    /// A short user-facing name for where the key is held.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::SecretService => "System keyring",
+            Self::LocalFile => "Local encrypted storage",
+            #[cfg(windows)]
+            Self::WindowsDpapi => "Windows user protection (DPAPI)",
+        }
+    }
+
     /// The strongest custody this session offers: DPAPI on Windows,
     /// otherwise Secret Service when `secret-tool` answers, else a local key.
     pub fn for_session() -> Self {

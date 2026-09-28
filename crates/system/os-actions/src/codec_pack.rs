@@ -560,7 +560,7 @@ mod tests {
         std::fs::write(&temporary, r#"{"state":"installing"}"#).unwrap();
         std::fs::write(dir.path().join("unrelated"), "x").unwrap();
         std::fs::rename(&temporary, dir.path().join("status.json")).unwrap();
-        rx.recv_timeout(Duration::from_secs(10))
+        rx.recv_timeout(tilo_test_env::hang_bound())
             .expect("rename over status.json is reported");
         assert_eq!(
             CodecPackStatus::read_from(&dir.path().join("status.json")).state,

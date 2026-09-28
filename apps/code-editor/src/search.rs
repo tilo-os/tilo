@@ -435,6 +435,9 @@ pub fn relative_display(root: &Path, path: &Path) -> String {
 mod tests {
     use super::*;
 
+    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+    const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
     fn q(n: &str) -> Query {
         Query::new(n)
     }
@@ -640,7 +643,8 @@ mod tests {
         let mut job = start(d.path(), q("needle"));
         assert_eq!(job.query().needle, "needle");
         let mut hits = Vec::new();
-        for _ in 0..500 {
+        let deadline = std::time::Instant::now() + HANG_BOUND;
+        while std::time::Instant::now() < deadline {
             for msg in job.drain() {
                 match msg {
                     Msg::Hits(h) => hits.extend(h),

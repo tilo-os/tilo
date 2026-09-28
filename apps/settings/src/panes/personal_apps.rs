@@ -158,7 +158,7 @@ impl PersonalAppsPane {
             state,
             SETTINGS_ACTION_TYPE,
             action,
-            tilo_actions::ActionContext::for_action("org.tilo.Settings", "Settings", action),
+            tilo_actions::ActionContext::for_action("so.tilo.settings", "Settings", action),
         );
     }
 }

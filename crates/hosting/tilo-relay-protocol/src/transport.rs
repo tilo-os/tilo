@@ -340,7 +340,81 @@ mod tests {
     use super::*;
 
     #[test]
+    fn frozen_v1_envelope_bytes() {
+        // Literal ABI fixtures: changing an existing discriminant or field
+        // ordering would strand deployed readers and retained state.
+        let cases = [
+            (Envelope::Subscribe { workspace_id: 7 }, vec![0, 7]),
+            (Envelope::Unsubscribe { workspace_id: 7 }, vec![1, 7]),
+            (
+                Envelope::Presence {
+                    workspace_id: 7,
+                    payload: vec![9, 8],
+                },
+                vec![3, 7, 2, 9, 8],
+            ),
+            (
+                Envelope::Ready {
+                    workspace_id: 7,
+                    pending_deltas: 2,
+                },
+                vec![4, 7, 2],
+            ),
+            (
+                Envelope::NotAuthorised {
+                    workspace_id: 7,
+                    reason: "no".into(),
+                },
+                vec![5, 7, 2, 110, 111],
+            ),
+            (Envelope::Ping, vec![6]),
+            (Envelope::Pong, vec![7]),
+            (
+                Envelope::PeerRelayHello {
+                    hosted_workspaces: vec![7, 8],
+                },
+                vec![8, 2, 7, 8],
+            ),
+            (
+                Envelope::SyncRequest {
+                    workspace_id: 7,
+                    have_heads: vec![[9; 32]],
+                },
+                [vec![9, 7, 1], vec![9; 32]].concat(),
+            ),
+            (
+                Envelope::SyncResponse {
+                    workspace_id: 7,
+                    delta_since: vec![9, 8],
+                },
+                vec![10, 7, 2, 9, 8],
+            ),
+            (
+                Envelope::Delta {
+                    workspace_id: 7,
+                    author_device_public_key: [1; 32],
+                    authored_at_ns: 8,
+                    delta: vec![9],
+                    signature: [2; 64],
+                },
+                [vec![2, 7], vec![1; 32], vec![8, 1, 9, 64], vec![2; 64]].concat(),
+            ),
+        ];
+        // The frame codec (length prefix) lives in `tilo-relay-client`; the
+        // payload bytes it carries are these postcard encodings.
+        for (envelope, payload) in cases {
+            assert_eq!(postcard::to_stdvec(&envelope).unwrap(), payload);
+            assert_eq!(
+                postcard::from_bytes::<Envelope>(&payload).unwrap(),
+                envelope
+            );
+        }
+    }
+
+    #[test]
     fn alpn_is_stable() {
         assert_eq!(ALPN, b"tilo-relay/1");
+        assert_eq!(DISCOVERY_ALPN, b"tilo-relay-discovery/2");
+        assert_eq!(MANAGEMENT_ALPN, b"tilo-home-peer-management/1");
     }
 }

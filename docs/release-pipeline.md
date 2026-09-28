@@ -169,7 +169,7 @@ dispatch CI. **Release / OS** therefore runs every night at 02:00 UTC on
 `main` path: the same native `runner-large`/`runner-large-arm64`
 lanes, KMS signing preflight, reproducibility, installed-VM and AT-SPI gates,
 SBOM, provenance and freshness attestations, and the shared
-`tilo-os-image-series` generation lock. It also receives the same protected
+`tilo-os-image-series-2` generation lock. It also receives the same protected
 PCR-prediction and EFI signing inputs, and ships the full image including the
 browser, like a default manual publication, once `os/wpe-buildroot-snapshot.env`
 pins a promoted WPE buildroot for both architectures. Until then the nightly
@@ -201,7 +201,7 @@ rendering, so the first-login OOBE, compositor, lock and AT-SPI gates run and
 must pass in either mode. The display mode never selects which gates run.
 
 Only runs that can publish (tags, manual `main` runs with `publish`, and
-scheduled `main` runs) share the `tilo-os-image-series` concurrency group.
+scheduled `main` runs) share the `tilo-os-image-series-2` concurrency group.
 Non-publishing integration builds allocate no generation and serialize per
 ref instead, so a long branch rehearsal never delays a release.
 

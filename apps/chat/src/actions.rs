@@ -85,6 +85,12 @@ pub const CHAT_OPERATION_TYPE: &str = "chat.operation";
 /// document or its undo/history stream.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ChatOperation {
+    /// Local host service command. Neither authority nor capture consent is
+    /// carried in this replay-free effect.
+    NativeVoice {
+        channel: String,
+        request: ui::native_media::Request,
+    },
     OpenWorkspace {
         workspace: String,
     },
@@ -501,6 +507,17 @@ pub enum ChatAction {
         user: String,
         ticket: String,
     },
+    /// A message posted by an agent task through the same `post` operation a
+    /// person uses: `send` is the ordinary [`ChatAction::SendMessage`], whose
+    /// author is the invoking participant (`agent-task:<task>`), and `name` is
+    /// that agent's display name, recorded beside the author so every member
+    /// renders "<name> · agent" instead of the worker's own identity. Anything
+    /// else inside, or an author outside the agent-task namespace, applies the
+    /// inner action alone (no label).
+    AgentAuthored {
+        name: String,
+        send: Box<ChatAction>,
+    },
     /// Which video codecs this peer decodes, announced on join so a sender
     /// picks a codec every member of the call takes. Like the ticket it is
     /// minted locally (from the media stack) and not an addressable
@@ -513,13 +530,21 @@ pub enum ChatAction {
     },
 }
 
+/// Longest agent display name recorded beside an agent-authored message.
+pub const MAX_AGENT_AUTHOR_NAME_BYTES: usize = 80;
+
 /// Durable, browseable history metadata for a Chat mutation.
 #[allow(
     clippy::too_many_lines,
     reason = "one exhaustive action-to-history mapping keeps every ChatAction variant compiler-checked"
 )]
 pub fn history_context(action: &ChatAction) -> tilo_actions::ActionContext {
-    let mut context = tilo_actions::ActionContext::for_action("org.tilo.Chat", "Chat", action);
+    if let ChatAction::AgentAuthored { send, .. } = action
+        && !matches!(**send, ChatAction::AgentAuthored { .. })
+    {
+        return history_context(send);
+    }
+    let mut context = tilo_actions::ActionContext::for_action("so.tilo.chat", "Chat", action);
     let (label, channel, resource_id, kind) = match action {
         ChatAction::SendMessage { channel, id, .. } => {
             ("chat-undo-send-message", channel, id, "chat.message")
@@ -650,6 +675,8 @@ pub fn history_context(action: &ChatAction) -> tilo_actions::ActionContext {
             channel,
             "chat.call",
         ),
+        // A well-formed one delegated above; a nested wrapper applies nothing.
+        ChatAction::AgentAuthored { .. } => return context,
     };
     // The label a history list shows for the change, in the reader's words.
     context.action_label = crate::i18n::t(label);
@@ -670,6 +697,16 @@ pub fn history_context(action: &ChatAction) -> tilo_actions::ActionContext {
 
 impl Action for ChatAction {
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
+        if let ChatAction::AgentAuthored { name, send } = self {
+            if matches!(**send, ChatAction::AgentAuthored { .. }) {
+                return Ok(());
+            }
+            send.apply(doc)?;
+            if let ChatAction::SendMessage { id, author, .. } = &**send {
+                ChatDoc::label_agent_author(doc, id, author, name);
+            }
+            return Ok(());
+        }
         // Each helper matches only its own category's variants (a `_ => {}`
         // no-op for the rest), so exactly one of the three does real work per
         // call — split out of this trait method because a helper that isn't
@@ -937,6 +974,35 @@ pub fn encode(action: &ChatAction) -> EncodedAction {
 // Action builders — the single source of truth shared by the on-screen
 // affordances (see `crate::events`) and the Ctrl+K resource tree below.
 // ===========================================================================
+
+/// `send` as authored by `me`: when `me` is an agent task participant the
+/// room names (the invoker a delivered `post` resolved for), wrap it so the
+/// agent's display name is recorded with the message; a person's send is
+/// returned unchanged, byte-identical to before.
+pub fn agent_authored(
+    me: &str,
+    room: &[crate::mention::Participant],
+    send: ChatAction,
+) -> ChatAction {
+    let agent = me
+        .starts_with(tilo_actions::AGENT_TASK_PARTICIPANT_PREFIX)
+        .then(|| room.iter().find(|p| p.id == me && p.is_agent))
+        .flatten();
+    match agent {
+        Some(participant) => ChatAction::AgentAuthored {
+            name: bounded_agent_name(&participant.name),
+            send: Box::new(send),
+        },
+        None => send,
+    }
+}
+
+fn bounded_agent_name(name: &str) -> String {
+    let name = name.trim();
+    let name = if name.is_empty() { "Agent" } else { name };
+    let end = name.floor_char_boundary(MAX_AGENT_AUTHOR_NAME_BYTES);
+    name.get(..end).unwrap_or(name).to_owned()
+}
 
 #[allow(
     clippy::too_many_arguments,
@@ -1425,14 +1491,20 @@ fn channel_label(ch: &ChannelResource) -> String {
 pub fn provide_resources(ctx: &ChatResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
     let users = ChatDoc::list_users(doc);
     let mut resource_ctx = ctx.clone();
-    resource_ctx.participants = users
-        .iter()
-        .map(|user| crate::mention::Participant {
-            id: user.id.clone(),
-            name: user.name.clone(),
-            is_agent: user.is_agent,
-        })
-        .collect();
+    // Mentionable people: the room roster the caller supplied (workspace
+    // members under their room names, as the composer's `@` picker offers
+    // them) first, then document users the roster does not name. Replacing
+    // the roster with document rows alone left members who never posted, and
+    // the owner's room name, unresolvable for a catalogue `post`.
+    for user in &users {
+        if !resource_ctx.participants.iter().any(|p| p.id == user.id) {
+            resource_ctx.participants.push(crate::mention::Participant {
+                id: user.id.clone(),
+                name: user.name.clone(),
+                is_agent: user.is_agent,
+            });
+        }
+    }
     let all_channels = ChatDoc::list_channels(doc);
     let mut forest = Vec::new();
     let mut remaining = EAGER_RESOURCE_SNAPSHOT_LIMIT.saturating_sub(1 + EAGER_PEOPLE_LIMIT);
@@ -1903,6 +1975,7 @@ fn build_channel_resource(
         "chat.channel",
         channel_label(ch),
     )
+    .with_action(crate::semantic_read::action::spec(&ch.id))
     .with_action(view_operation(
         "open",
         &crate::i18n::t("chat-action-open-conversation"),
@@ -1913,9 +1986,14 @@ fn build_channel_resource(
     ));
 
     // Post a message (Send, from the palette). Id + timestamp minted in the
-    // closure at authoring time so the payload is self-contained.
-    channel = channel.with_action(
-        participation_prompt(
+    // closure at authoring time so the payload is self-contained. Only a text
+    // channel has a timeline anyone can see (opening a voice channel joins the
+    // call), so post/attach are offered there alone, exactly like the composer.
+    // `@Name` of a room member becomes a structured mention (`mention::resolve`
+    // against the room roster), the same as typing it in the composer.
+    let timeline = ch.kind != ChannelKind::Voice;
+    if timeline {
+        channel = channel.with_action(participation_prompt(
             "post",
             &crate::i18n::t("chat-action-post-message"),
             &crate::i18n::t("chat-action-message"),
@@ -1928,47 +2006,49 @@ fn build_channel_resource(
                 move |text: &str| {
                     let id = format!("m_{}", uuid::Uuid::new_v4().simple());
                     let mentions = crate::mention::resolve(text, &room);
-                    encode(&send_message_action(
-                        &cid,
-                        &id,
+                    encode(&agent_authored(
                         &me,
-                        unix_now_i64(),
-                        text,
-                        None,
-                        None,
-                        mentions,
+                        &room,
+                        send_message_action(
+                            &cid,
+                            &id,
+                            &me,
+                            unix_now_i64(),
+                            text,
+                            None,
+                            None,
+                            mentions,
+                        ),
                     ))
                 }
             },
-        )
-        // Posting is a comment on the room: a Commenter may post and react.
-        .requiring(PermissionRequirement::Comment),
-    );
+        ));
 
-    // An agent and the picker use the same local import lifecycle. The path
-    // stays local to the machine that can read it; only the resulting bytes
-    // and canonical SendMessage action are collaborative.
-    channel = channel.with_action(ActionSpec::prompted_operation(
-        "attach",
-        crate::i18n::t("chat-action-attach-file"),
-        crate::i18n::t("chat-action-file-path"),
-        "/var/workspace/report.pdf",
-        OperationKind::Effect,
-        CHAT_OPERATION_TYPE,
-        {
-            let channel = ch.id.clone();
-            move |path: &str| {
-                EncodedAction::encode_operation(
-                    CHAT_OPERATION_TYPE,
-                    &ChatOperation::ImportAttachment {
-                        channel: channel.clone(),
-                        path: path.trim().to_owned(),
-                    },
-                )
-                .expect("ChatOperation is always serializable")
-            }
-        },
-    ));
+        // An agent and the picker use the same local import lifecycle. The path
+        // stays local to the machine that can read it; only the resulting bytes
+        // and canonical SendMessage action are collaborative.
+        channel = channel.with_action(ActionSpec::prompted_operation(
+            "attach",
+            crate::i18n::t("chat-action-attach-file"),
+            crate::i18n::t("chat-action-file-path"),
+            "/var/workspace/report.pdf",
+            OperationKind::Effect,
+            CHAT_OPERATION_TYPE,
+            {
+                let channel = ch.id.clone();
+                move |path: &str| {
+                    EncodedAction::encode_operation(
+                        CHAT_OPERATION_TYPE,
+                        &ChatOperation::ImportAttachment {
+                            channel: channel.clone(),
+                            path: path.trim().to_owned(),
+                        },
+                    )
+                    .expect("ChatOperation is always serializable")
+                }
+            },
+        ));
+    }
 
     // A remark composed elsewhere — something said about a resource, with the
     // recording of what happened — posted as an ordinary message here.
@@ -2035,10 +2115,8 @@ fn build_channel_resource(
         &delete_channel_action(&ch.id),
     ));
 
-    // A voice channel owns one durable call resource. The call's capture and
-    // transport remain local effects, but every shared membership/control fact
-    // lives beneath this same canonical address for history, collaboration, and
-    // palette invocation.
+    // A stable channel address exposes local call effects. Durable history
+    // remains separate from current call authority, presence, and consent.
     if ch.kind == ChannelKind::Voice {
         channel = channel.with_child(build_call_resource(ctx, doc, workspace_id, ch));
     }
@@ -2051,99 +2129,105 @@ fn build_channel_resource(
     channel
 }
 
-/// The shared-state half of a voice call. The ticket and screen-capture source
-/// deliberately have no prompted action: both are opaque local transport
-/// outputs, not values a caller can safely invent. Join/leave and each visible
-/// call preference are ordinary replayable document actions.
+/// Governed call controls are local effects. Durable legacy membership rows
+/// never establish a live session or microphone permission.
 fn build_call_resource(
-    ctx: &ChatResourceCtx,
-    doc: &AutoCommit,
+    _ctx: &ChatResourceCtx,
+    _doc: &AutoCommit,
     workspace_id: &str,
     ch: &ChannelResource,
 ) -> Resource {
-    let member = ChatDoc::list_voice_members(doc, &ch.id)
-        .into_iter()
-        .find(|member| member.user == ctx.me);
+    use ui::native_media::Command;
     let mut call = Resource::new(
         format!("chat.call:{}", ch.id),
         "chat.call",
-        format!("Call: {}", channel_label(ch)),
+        crate::i18n::t_args(
+            "chat-action-call-resource",
+            &[("channel", crate::i18n::text(channel_label(ch)))],
+        ),
     )
     .with_action(view_operation(
         "open",
         &crate::i18n::t("chat-action-open-call-conversation"),
         &ChatOperation::OpenChannel {
-            workspace: workspace_id.to_string(),
+            workspace: workspace_id.into(),
             channel: ch.id.clone(),
         },
     ));
-    if let Some(member) = member {
-        call = call.with_action(immediate_spec(
-            "leave",
-            &crate::i18n::t("chat-action-leave-call"),
-            &leave_call_action(&ch.id, &ctx.me),
-        ));
-        call = call.with_action(immediate_spec(
-            if member.muted { "unmute" } else { "mute" },
-            &crate::i18n::t(if member.muted {
-                "chat-action-unmute"
-            } else {
-                "chat-action-mute"
-            }),
-            &call_state_action(
-                &ch.id,
-                &ctx.me,
-                !member.muted,
-                member.deafened,
-                member.audio_only,
-            ),
-        ));
-        call = call.with_action(immediate_spec(
-            if member.deafened {
-                "undeafen"
-            } else {
-                "deafen"
-            },
-            &crate::i18n::t(if member.deafened {
-                "chat-action-undeafen"
-            } else {
-                "chat-action-deafen"
-            }),
-            &call_state_action(
-                &ch.id,
-                &ctx.me,
-                member.muted,
-                !member.deafened,
-                member.audio_only,
-            ),
-        ));
-        call = call.with_action(immediate_spec(
-            if member.audio_only {
-                "enable-camera"
-            } else {
-                "audio-only"
-            },
-            &crate::i18n::t(if member.audio_only {
-                "chat-action-enable-camera"
-            } else {
-                "chat-action-audio-only"
-            }),
-            &call_state_action(
-                &ch.id,
-                &ctx.me,
-                member.muted,
-                member.deafened,
-                !member.audio_only,
-            ),
-        ));
-    } else {
-        call = call.with_action(immediate_spec(
+    for (id, label, command) in [
+        (
             "join",
-            &crate::i18n::t("chat-action-join-call"),
-            &join_call_action(&ch.id, &ctx.me),
-        ));
+            "chat-action-join-muted",
+            Command::Join {
+                channel_id: ch.id.clone(),
+            },
+        ),
+        ("leave", "chat-action-leave-call", Command::Leave),
+        (
+            "mute",
+            "chat-action-mute-microphone",
+            Command::SetMuted { muted: true },
+        ),
+        (
+            "unmute",
+            "chat-action-request-microphone",
+            Command::SetMuted { muted: false },
+        ),
+        ("status", "chat-action-call-status", Command::Status),
+    ] {
+        call = call.with_action(voice_operation(id, &crate::i18n::t(label), &ch.id, command));
     }
-    call
+    call.with_action(ActionSpec::prompted_operation(
+        "select-input",
+        crate::i18n::t("chat-action-select-microphone"),
+        crate::i18n::t("chat-action-input"),
+        crate::i18n::t("chat-action-input-from-call-status"),
+        OperationKind::Effect,
+        CHAT_OPERATION_TYPE,
+        {
+            let channel = ch.id.clone();
+            move |input: &str| {
+                EncodedAction::encode_operation(
+                    CHAT_OPERATION_TYPE,
+                    &ChatOperation::NativeVoice {
+                        channel: channel.clone(),
+                        request: ui::native_media::Request::new(Command::SelectInput {
+                            input_id: input.trim().into(),
+                        }),
+                    },
+                )
+                // Unreachable for these bounded string fields; refuse at
+                // invocation rather than panicking the resource builder.
+                .unwrap_or_else(|error| EncodedAction {
+                    type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                    payload: error.to_string().into_bytes(),
+                })
+            }
+        },
+    ))
+}
+
+#[allow(
+    clippy::expect_used,
+    reason = "native call commands contain only serializable bounded values"
+)]
+pub(crate) fn voice_operation(
+    id: &str,
+    label: &str,
+    channel: &str,
+    command: ui::native_media::Command,
+) -> ActionSpec {
+    ActionSpec::operation(
+        id,
+        label,
+        OperationKind::Effect,
+        CHAT_OPERATION_TYPE,
+        &ChatOperation::NativeVoice {
+            channel: channel.into(),
+            request: ui::native_media::Request::new(command),
+        },
+    )
+    .expect("native call request is serializable")
 }
 
 /// A message resource: edit/react (prompted), pin-or-unpin, and delete.
@@ -2794,7 +2878,25 @@ fn message_label(
 
 impl ResourceProvider for crate::app::ChatApp {
     fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        provide_resources(&self.chat_resource_ctx(), doc)
+        let ctx = self.chat_resource_ctx();
+        // Heads identify the committed document exactly; frames with pending
+        // (uncommitted) operations rebuild.
+        if automerge::transaction::Transactable::pending_ops(doc) != 0 {
+            return provide_resources(&ctx, doc);
+        }
+        let heads: Vec<String> = automerge::transaction::Transactable::base_heads(doc)
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        let key = format!("{heads:?}|{ctx:?}");
+        if let Some((cached, resources)) = self.resource_memo.borrow().as_ref()
+            && *cached == key
+        {
+            return resources.clone();
+        }
+        let resources = provide_resources(&ctx, doc);
+        *self.resource_memo.borrow_mut() = Some((key, resources.clone()));
+        resources
     }
 
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
@@ -2832,6 +2934,23 @@ mod tests {
         let mut doc = AutoCommit::new();
         ChatDoc::seed_if_empty(&mut doc);
         doc
+    }
+
+    #[test]
+    fn native_voice_resources_are_local_effects_despite_legacy_membership() {
+        let mut doc = seeded();
+        ChatDoc::voice_join(&mut doc, "c_standup", model::ME);
+        let call = resolve_resource(&ctx_from(&doc), &doc, "chat.call:c_standup").unwrap();
+        let leave = call.actions.iter().find(|a| a.id == "leave").unwrap();
+        assert_eq!(leave.kind, OperationKind::Effect);
+        assert_eq!(leave.operation_type.as_deref(), Some(CHAT_OPERATION_TYPE));
+        assert!(
+            call.actions.iter().any(|a| a.id == "join"),
+            "durable rows cannot claim a local session"
+        );
+        assert!(!call.actions.iter().any(|a| a.id == "enable-camera"));
+        assert!(call.actions.iter().any(|a| a.id == "status"));
+        assert!(call.actions.iter().any(|a| a.id == "select-input"));
     }
 
     fn ctx_from(doc: &AutoCommit) -> ChatResourceCtx {
@@ -2905,10 +3024,8 @@ mod tests {
     )]
     fn resources_publish_a_bounded_snapshot_with_lazy_canonical_children() {
         // Phase: ctrl_k_publishes_workspace_channel_and_message_tree.
-        // Ctrl+K keeps the workspace/channel snapshot small while message actions
-        // remain available through stable lazy resolution.
         {
-            let mut doc = seeded();
+            let doc = seeded();
             let resources = provide_resources(&ctx_from(&doc), &doc);
             let ws = resources
                 .iter()
@@ -2976,23 +3093,25 @@ mod tests {
                 .iter()
                 .find(|action| action.id == "join")
                 .expect("join action");
-            let mut call_doc = AutoCommit::load(&doc.save()).unwrap();
-            let join = ui::testing::action_contract::spec_encoding(join, None);
-            let joined = registry().decode(&join).unwrap();
-            let mut transport = LocalTransport::new();
-            tilo_actions::dispatch(&mut call_doc, joined.as_ref(), join, &mut transport).unwrap();
-            let joined_call = resolve_resource(&ctx, &call_doc, "chat.call:c_huddle").unwrap();
-            let joined_actions: Vec<_> = joined_call
-                .actions
-                .iter()
-                .map(|action| action.id.as_str())
-                .collect();
-            for want in ["leave", "mute", "deafen", "audio-only"] {
-                assert!(
-                    joined_actions.contains(&want),
-                    "call missing {want}: {joined_actions:?}"
-                );
+            assert_eq!(join.kind, OperationKind::Effect);
+            let operation: ChatOperation = serde_json::from_slice(
+                &ui::testing::action_contract::spec_encoding(join, None).payload,
+            )
+            .unwrap();
+            assert!(matches!(
+                operation,
+                ChatOperation::NativeVoice {
+                    request: ui::native_media::Request {
+                        command: ui::native_media::Command::Join { .. },
+                        ..
+                    },
+                    ..
+                }
+            ));
+            for want in ["leave", "mute", "unmute", "status"] {
+                assert!(call_actions.contains(&want));
             }
+            assert!(!call_actions.contains(&"deafen") && !call_actions.contains(&"audio-only"));
 
             // Every exported action is reachable — flatten the forest (parents before
             // children) and confirm the message + workspace actions are present.
@@ -3001,10 +3120,8 @@ mod tests {
             assert!(flat_labels.contains(&"New channel"), "{flat_labels:?}");
             assert!(!flat_labels.contains(&"Delete message"), "{flat_labels:?}");
         }
+
         // Phase: attachment_and_reaction_resources_resolve_with_canonical_actions.
-        // Attachments and reaction aggregates are durable parts of a message, so
-        // both must have a stable lazy address rather than being discoverable only
-        // by scanning the painted timeline.
         {
             let doc = seeded();
             let ctx = ctx_from(&doc);
@@ -3038,6 +3155,7 @@ mod tests {
                 expected.payload
             );
         }
+
         // Phase: ten_thousand_messages_do_not_expand_the_open_snapshot.
         {
             let doc = seeded();
@@ -3062,6 +3180,7 @@ mod tests {
                         .all(|child| child.kind != "chat.message"))
             );
         }
+
         // Phase: large_organisation_keeps_context_bounded_and_resolves_omitted_room.
         {
             fn resource_count(resources: &[Resource]) -> usize {
@@ -3097,6 +3216,7 @@ mod tests {
             assert!(lazy.actions.iter().any(|action| action.id == "open"));
             assert!(lazy.actions.iter().any(|action| action.id == "post"));
         }
+
         // Phase: resource_actions_declare_undo_and_delete_confirmation.
         {
             let doc = seeded();
@@ -3161,6 +3281,97 @@ mod tests {
         }
     }
 
+    /// A voice channel has no timeline anyone sees (opening it joins the
+    /// call), so it offers no `post`/`attach`, and a `SendMessage` into it is
+    /// refused: an agent's post can never land where no member can read it.
+    #[test]
+    fn voice_channels_offer_no_post_and_refuse_messages() {
+        let mut doc = seeded();
+        let voice = ChatDoc::list_channels(&doc)
+            .into_iter()
+            .find(|c| c.workspace == "ws_acme" && c.kind == ChannelKind::Voice)
+            .expect("seeded voice channel");
+        let resources = provide_resources(&ctx_from(&doc), &doc);
+        let ws = resources
+            .iter()
+            .find(|resource| resource.id.as_str() == "chat.workspace:ws_acme")
+            .unwrap();
+        let channel = |id: &str| {
+            ws.children
+                .iter()
+                .find(|c| c.id.as_str() == format!("chat.channel:{id}"))
+                .unwrap_or_else(|| panic!("{id} published"))
+        };
+        let ids = |r: &Resource| r.actions.iter().map(|a| a.id.clone()).collect::<Vec<_>>();
+        let voice_actions = ids(channel(&voice.id));
+        assert!(
+            !voice_actions.iter().any(|a| a == "post" || a == "attach"),
+            "{voice_actions:?}"
+        );
+        let text_actions = ids(channel("c_crit"));
+        assert!(text_actions.iter().any(|a| a == "post"), "{text_actions:?}");
+        assert!(
+            text_actions.iter().any(|a| a == "attach"),
+            "{text_actions:?}"
+        );
+        dispatch(
+            &mut doc,
+            &send_message_action(
+                &voice.id,
+                "m_voice_post",
+                model::ME,
+                TS,
+                "unseen",
+                None,
+                None,
+                Vec::new(),
+            ),
+        );
+        assert!(
+            ChatDoc::list_messages(&doc, &voice.id)
+                .iter()
+                .all(|m| m.id != "m_voice_post")
+        );
+    }
+
+    /// `@Name` in a catalogue `post` resolves against the room roster the
+    /// caller supplies (workspace members under their room names), not only
+    /// document users: a member who never posted is still mentionable.
+    #[test]
+    fn post_resolves_mentions_of_roster_members_without_document_rows() {
+        let doc = seeded();
+        let mut ctx = ctx_from(&doc);
+        ctx.participants.push(crate::mention::Participant {
+            id: "member-ada".into(),
+            name: "Ada Lovelace".into(),
+            is_agent: false,
+        });
+        let resources = provide_resources(&ctx, &doc);
+        let crit = resources
+            .iter()
+            .find(|resource| resource.id.as_str() == "chat.workspace:ws_acme")
+            .and_then(|ws| {
+                ws.children
+                    .iter()
+                    .find(|c| c.id.as_str() == "chat.channel:c_crit")
+            })
+            .unwrap();
+        let post = crit.actions.iter().find(|a| a.id == "post").unwrap();
+        // The message id is minted per build, so read the palette's build
+        // directly rather than comparing it with the external path.
+        let tilo_actions::ActionInput::Prompted { build, .. } = &post.input else {
+            panic!("post is a prompted action");
+        };
+        let encoded = build("thanks @Ada Lovelace, done");
+        let decoded: ChatAction = serde_json::from_slice(&encoded.payload).unwrap();
+        let ChatAction::SendMessage { mentions, text, .. } = decoded else {
+            panic!("post encodes a SendMessage")
+        };
+        assert_eq!(mentions.len(), 1, "{mentions:?}");
+        assert_eq!(mentions[0].user, "member-ada");
+        assert_eq!(mentions[0].slice(&text), "@Ada Lovelace");
+    }
+
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -3168,8 +3379,6 @@ mod tests {
     )]
     fn message_actions_mutate_the_document_exactly_once() {
         // Phase: send_message_action_appends_the_row.
-        // Sending a message through the action appends a row carrying the payload's
-        // id, author and text.
         {
             let mut doc = seeded();
             let before = ChatDoc::list_messages(&doc, "c_general").len();
@@ -3192,6 +3401,7 @@ mod tests {
             assert_eq!(m.text, "hello");
             assert_eq!(m.author, model::ME);
         }
+
         // Phase: send_message_retries_are_exactly_once_and_reject_invalid_targets.
         {
             let mut doc = seeded();
@@ -3231,10 +3441,8 @@ mod tests {
             );
             assert!(ChatDoc::list_messages(&doc, "c_missing").is_empty());
         }
+
         // Phase: set_agent_work_action_records_progress_and_only_ever_supplies_empty_words.
-        // An agent's progress on a summons, through the same action/doc path a
-        // real dispatch takes: posted as an empty reply, taken, then finished
-        // with words — and a body that already has words is never overwritten.
         {
             use crate::model::{AgentReasoning, AgentRoute, AgentWork, AgentWorkState};
 
@@ -3297,9 +3505,8 @@ mod tests {
                 "an already-written body must never be overwritten"
             );
         }
+
         // Phase: reaction_add_and_remove_actions_round_trip.
-        // Add then remove a reaction through the action path (both mutating), and
-        // the reaction comes and goes.
         {
             let mut doc = seeded();
             dispatch(
@@ -3325,9 +3532,8 @@ mod tests {
                 "remove cleared it"
             );
         }
+
         // Phase: add_reaction_is_idempotent_at_the_doc_level.
-        // Idempotency is a doc-level guarantee: a duplicate add does not
-        // double-count (this is what makes a duplicate action safe to apply twice).
         {
             let mut doc = seeded();
             ChatDoc::add_reaction(&mut doc, "c_crit", "m_me1", "🔥", model::ME);
@@ -3339,8 +3545,8 @@ mod tests {
             let fire = m.reactions.iter().find(|r| r.emoji == "🔥").unwrap();
             assert_eq!(fire.count(), 1, "a repeated add does not double-count");
         }
+
         // Phase: pin_and_delete_message_actions.
-        // Pin then delete a message through their actions.
         {
             let mut doc = seeded();
             dispatch(&mut doc, &pin_message_action("c_crit", "m_me1", true));
@@ -3362,7 +3568,6 @@ mod tests {
     #[test]
     fn channel_and_category_actions_round_trip_and_target_history() {
         // Phase: channel_crud_actions_round_trip.
-        // Channel create / rename / archive / delete round-trip through actions.
         {
             let mut doc = seeded();
             dispatch(
@@ -3395,6 +3600,7 @@ mod tests {
             dispatch(&mut doc, &delete_channel_action("c_new"));
             assert!(ChatDoc::list_channels(&doc).iter().all(|c| c.id != "c_new"));
         }
+
         // Phase: category_mutations_replay_through_resources_and_history.
         {
             let mut doc = seeded();
@@ -3433,6 +3639,7 @@ mod tests {
                 "chat.category:cat_action"
             );
         }
+
         // Phase: message_action_history_targets_the_message.
         {
             let context = history_context(&ChatAction::DeleteMessage {
@@ -3471,7 +3678,7 @@ mod tests {
         seed: seeded(),
         registry: registry(),
         resources: |doc| published(doc),
-        palette: ["New channel", "Rename channel", "Pin message", "Join call"],
+        palette: ["New channel", "Rename channel", "Pin message", "Join muted"],
         replay: [
             send_message => |_| encode(&send_message_action(
                 "c_general",

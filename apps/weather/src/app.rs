@@ -113,7 +113,7 @@ impl WeatherApp {
             doc,
             crate::actions::WEATHER_ACTION_TYPE,
             &dispatched,
-            tilo_actions::ActionContext::for_action("org.tilo.Weather", "Weather", action),
+            tilo_actions::ActionContext::for_action("so.tilo.weather", "Weather", action),
         );
     }
 

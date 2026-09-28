@@ -116,7 +116,7 @@ impl GroupTap {
                     .playback_streams
                     .iter()
                     .find(|stream| stream.serial == stream_serial)
-                    .ok_or_else(|| "that application stopped playing".to_string())?;
+                    .ok_or_else(|| crate::shell::i18n::t("speaker-error-app-stopped"))?;
                 control.route_stream(stream.id, serial)?;
                 tap.moved_streams.push(stream.id);
             }
@@ -160,13 +160,13 @@ fn taps() -> &'static Mutex<Vec<Weak<GroupTap>>> {
 pub fn acquire(selection: TapSelection) -> Result<Arc<GroupTap>, String> {
     let mut taps = taps()
         .lock()
-        .map_err(|_| "speaker group audio is unavailable".to_string())?;
+        .map_err(|_| crate::shell::i18n::t("speaker-error-audio-unavailable"))?;
     taps.retain(|tap| tap.strong_count() > 0);
     if let Some(live) = taps.iter().find_map(Weak::upgrade) {
         return if live.selection == selection {
             Ok(live)
         } else {
-            Err("another speaker group session is already playing from this device".into())
+            Err(crate::shell::i18n::t("speaker-error-other-session"))
         };
     }
     let tap = Arc::new(GroupTap::open(selection)?);

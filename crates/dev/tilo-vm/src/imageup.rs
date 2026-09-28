@@ -183,6 +183,68 @@ pub fn parse_inspect(json: &str) -> Result<(String, Option<String>), String> {
     Ok((id, flavour))
 }
 
+/// Where `tilo-vm image build` writes, under its output directory.
+pub const BUILT_LAYOUT: &str = "image";
+/// The dev disk `tilo-vm image build --disk` writes there.
+pub const BUILT_DISK: &str = "disk.qcow2";
+
+/// The script `image disk` runs (relative to the worktree): the build's disk
+/// step, with `TILO_SKIP_BUILD=1`.
+pub const DISK_SCRIPT: &str = "os/dev/build-image.sh";
+
+/// Copy a layout [`BUILT_LAYOUT`]-style (tag [`LAYOUT_TAG`]) into podman's
+/// storage as `image`.
+pub fn import_layout_command(layout: &Path, image: &str) -> CommandLine {
+    CommandLine::new("skopeo", &["copy", "--quiet"])
+        .arg(format!("oci:{}:{LAYOUT_TAG}", layout.display()))
+        .arg(format!("containers-storage:{image}"))
+}
+
+/// Did bootc refuse a switch because the VM already boots that image? The
+/// same image can carry another manifest digest (compressed or not), which
+/// only bootc's composefs digest sees through.
+pub fn is_already_booted(bootc_stderr: &str) -> bool {
+    bootc_stderr.contains("same fs-verity digest as the existing Some(Booted) deployment")
+}
+
+/// Is `path` an OCI image layout directory (what `--image <dir>` takes)?
+pub fn is_layout(path: &Path) -> bool {
+    path.join("oci-layout").is_file() && path.join("index.json").is_file()
+}
+
+/// What `vm upgrade --image <layout>` checks, saved beside the layout as
+/// `<layout>.facts`: [`inspect_command`]'s output, a `@@probe` line and
+/// [`probe_command`]'s, as they were where the image was built.
+pub fn layout_facts_text(inspect: &str, probe: &str) -> String {
+    format!("{}\n@@probe\n{probe}", inspect.trim_end())
+}
+
+/// The image's name and facts from [`layout_facts_text`].
+///
+/// # Errors
+/// Text without the marker, or inspect output that does not parse.
+pub fn parse_layout_facts(text: &str) -> Result<(String, ImageFacts), String> {
+    let (inspect, probe) = text
+        .split_once("\n@@probe\n")
+        .ok_or("no @@probe section in the layout's facts")?;
+    let (id, flavour) = parse_inspect(inspect)?;
+    let name = serde_json::from_str::<Value>(inspect)
+        .ok()
+        .and_then(|v| {
+            v.pointer("/0/RepoTags/0")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| LOCAL_DEV_IMAGE.to_owned());
+    let mut facts = ImageFacts {
+        id,
+        flavour,
+        ..ImageFacts::default()
+    };
+    parse_probe(probe, &mut facts);
+    Ok((name, facts))
+}
+
 /// Apply [`probe_command`]'s output to `facts`.
 pub fn parse_probe(output: &str, facts: &mut ImageFacts) {
     let (base, uki) = output.split_once("@@uki").unwrap_or((output, ""));
@@ -772,6 +834,46 @@ mod tests {
             .unwrap();
             assert!(note.contains("the VM's image"), "{note}");
         }
+    }
+
+    /// A built layout's facts read back as the image's own would, and a layout directory is told
+    /// apart from a registry reference.
+    #[test]
+    fn built_layout_facts_read_as_the_images_own() {
+        let inspect = "[{\"Id\": \"abc\", \"RepoTags\": [\"localhost/tilo-vm:latest\"], \"Labels\": {\"sh.tilo.image.flavour\": \"dev\"}}]\n";
+        let written = layout_facts_text(
+            inspect,
+            "{\"base_created\": \"2026-09-20T10:00:00Z\"}\n@@uki\n",
+        );
+        let (name, facts) = parse_layout_facts(&written).unwrap();
+        assert_eq!(name, "localhost/tilo-vm:latest");
+        assert_eq!(facts.id, "abc");
+        assert_eq!(facts.flavour.as_deref(), Some("dev"));
+        assert!(!facts.sealed);
+        assert_eq!(
+            text(facts.base.as_ref(), "base_created"),
+            Some("2026-09-20T10:00:00Z")
+        );
+        check_image(&name, &facts).unwrap();
+        let (_, sealed) =
+            parse_layout_facts(&layout_facts_text(inspect, "{}\n@@uki\ntilo.efi\n")).unwrap();
+        assert!(sealed.sealed);
+        assert!(parse_layout_facts(inspect).is_err());
+
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!is_layout(dir.path()));
+        std::fs::write(dir.path().join("oci-layout"), "{}").unwrap();
+        std::fs::write(dir.path().join("index.json"), "{}").unwrap();
+        assert!(is_layout(dir.path()));
+        assert!(!is_layout(Path::new("registry.tilo.so/tilo/tilo-vm:main")));
+
+        // The VM already boots this image under another manifest digest.
+        assert!(is_already_booted(
+            "error: Switching: Composefs Switching: Target image has the same fs-verity digest as the existing Some(Booted) deployment."
+        ));
+        assert!(!is_already_booted(
+            "error: Switching: pulling: connection refused"
+        ));
     }
 
     /// `--from ci:` and `--from sha:` name a CI tag, which resolves to published dev images, then

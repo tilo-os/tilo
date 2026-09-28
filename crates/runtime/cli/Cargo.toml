@@ -26,7 +26,6 @@ runtime-portal   = { path = "../runtime-portal" }
 xdg-paths        = { path = "../../system/xdg-paths" }
 
 anyhow.workspace = true
-workspace-hack = { version = "0.1" }
 
 [target.'cfg(unix)'.dependencies]
 # Direct service-FD access is a Unix capability. Native Windows callers keep
@@ -39,3 +38,7 @@ tilo-test-env = { path = "../../dev/test-env" }
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

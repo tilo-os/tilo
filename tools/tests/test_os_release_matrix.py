@@ -172,7 +172,7 @@ class OsReleaseMatrixTests(unittest.TestCase):
                     publish, _, _ = plan(ref, event, requested)
                     group = concurrency_group(ref, event, requested)
                     if publish:
-                        self.assertEqual(group, "tilo-os-image-series")
+                        self.assertEqual(group, "tilo-os-image-series-2")
                     else:
                         self.assertEqual(group, f"tilo-os-image-validate-{ref}")
 

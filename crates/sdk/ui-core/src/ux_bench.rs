@@ -1,8 +1,10 @@
 //! Goal-oriented UX scenarios driven through the real widget host.
 
 mod checks;
+#[cfg(not(target_arch = "wasm32"))]
 mod runner;
 pub use checks::{gap, overlap_area, pixel_contrast};
+#[cfg(not(target_arch = "wasm32"))]
 pub use runner::{Report, run, run_with_state};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

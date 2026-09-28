@@ -75,7 +75,8 @@ impl SearchField {
         Self::with_input(TextInput::local())
     }
 
-    pub(crate) fn with_language(language: &str) -> Self {
+    #[doc(hidden)]
+    pub fn with_language(language: &str) -> Self {
         Self::with_input(TextInput::local_with_language(language))
     }
 

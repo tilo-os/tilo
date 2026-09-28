@@ -13,10 +13,13 @@
     clippy::unreachable,
     reason = "test assertions and isolated fixture keys"
 )]
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "relays, fixtures and guards deliberately stay alive until each test ends"
+)]
 
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
 
 use ed25519_dalek::SigningKey;
 use tilo_relay::daemon::RelayIdentity;
@@ -28,25 +31,14 @@ use tilo_user_identity::{
 use crate::common::client_endpoint;
 
 const FILE_WORKSPACE: u64 = 42;
-/// How long the enrolled device waits for the host's `Ready`. The host
-/// persists the membership (fsynced) before it answers, so this only turns a
-/// hang into a named failure; it is not a latency budget.
-const REPLY: Duration = Duration::from_secs(120);
-
 /// Nearby approval binds the fixed LAN pairing port, so the tests in this
 /// binary that run one take turns.
 static LAN_PAIRING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 fn wait_for_file(path: &std::path::Path, what: &str) {
-    let started = Instant::now();
-    while !path.is_file() {
-        assert!(
-            started.elapsed() < Duration::from_secs(60),
-            "timed out waiting for {what} at {}",
-            path.display()
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    tilo_test_env::wait_until(format_args!("{what} at {}", path.display()), || {
+        path.is_file()
+    });
 }
 
 fn signed_cert(
@@ -371,11 +363,11 @@ async fn ordinary_device_enrollment_survives_approver_offline_with_home_peer_rou
         })
         .unwrap();
     assert!(matches!(
-        tokio::time::timeout(REPLY, client.recv()).await,
-        Ok(Some(Envelope::Ready {
+        tilo_test_env::within("the file workspace's Ready", client.recv()).await,
+        Some(Envelope::Ready {
             workspace_id: FILE_WORKSPACE,
             ..
-        }))
+        })
     ));
     let continuity = tilo_relay::personal_continuity_workspace_id(&root.verifying_key().to_bytes());
     relay
@@ -393,8 +385,8 @@ async fn ordinary_device_enrollment_survives_approver_offline_with_home_peer_rou
         })
         .unwrap();
     assert!(matches!(
-        tokio::time::timeout(REPLY, client.recv()).await,
-        Ok(Some(Envelope::Ready { workspace_id, .. })) if workspace_id == continuity
+        tilo_test_env::within("the continuity workspace's Ready", client.recv()).await,
+        Some(Envelope::Ready { workspace_id, .. }) if workspace_id == continuity
     ));
 }
 
@@ -623,12 +615,11 @@ trap 'kill "$requester" 2>/dev/null || true' EXIT
 # setpriv executes. Do not race the helper's ownership validation against that
 # transition.
 requester_uid=
-attempts=0
 while [ "$requester_uid" != 42424 ]; do
     requester_uid=$(/proc/self/fd/6 '$1 == "Uid:" { print $2; exit }' "/proc/$requester/status" 2>/dev/null) || requester_uid=
-    attempts=$((attempts + 1))
-    if [ "$attempts" -ge 500 ]; then
-        echo "requester did not assume uid 42424 (observed ${requester_uid:-missing})" >&2
+    if [ "$SECONDS" -ge "$TILO_HANG_BOUND_SECS" ]; then
+        state=$(/proc/self/fd/6 '$1 == "State:" { print $2 $3; exit }' "/proc/$requester/status" 2>/dev/null) || state=
+        echo "requester did not assume uid 42424 within ${TILO_HANG_BOUND_SECS}s (observed ${requester_uid:-missing}, state ${state:-missing})" >&2
         exit 1
     fi
     /proc/self/fd/7 0.01
@@ -646,6 +637,10 @@ wait "$approval"
             .arg("bash")
             .arg("-ceu")
             .arg(script)
+            .env(
+                "TILO_HANG_BOUND_SECS",
+                tilo_test_env::hang_bound().as_secs().to_string(),
+            )
             .env("TILO_ENROLL_BIN", enroll)
             .env("TILO_HELPER", helper)
             .env("TILO_SCOPE", scope.path())

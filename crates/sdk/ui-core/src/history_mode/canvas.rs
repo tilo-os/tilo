@@ -21,6 +21,7 @@ pub(super) struct PreviewCanvas {
     cursor: Point,
     error: Option<String>,
     pub(super) status: Option<String>,
+    dirty: bool,
 }
 impl PreviewCanvas {
     pub(super) fn install(&mut self, result: Result<Box<dyn HistoryPreview>, String>) {
@@ -35,6 +36,21 @@ impl PreviewCanvas {
                 self.error = Some(error);
             }
         }
+        self.dirty = true;
+    }
+    pub(super) fn set_status(&mut self, status: Option<String>) {
+        if self.status != status {
+            self.status = status;
+            self.dirty = true;
+        }
+    }
+    pub(super) fn navigate(&mut self, command: PreviewNavigation) -> bool {
+        let handled = self
+            .preview
+            .as_mut()
+            .is_some_and(|preview| preview.navigate(command));
+        self.dirty |= handled;
+        handled
     }
     pub(super) fn new() -> Self {
         Self {
@@ -43,6 +59,7 @@ impl PreviewCanvas {
             cursor: Point::new(-1.0, -1.0),
             error: None,
             status: None,
+            dirty: true,
         }
     }
 }
@@ -77,13 +94,17 @@ impl Widget for PreviewCanvas {
     }
     fn apply_layout(&mut self, tree: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = tree.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::from_origin_size(
+        let rect = Rect::from_origin_size(
             (
                 origin.x + f64::from(layout.location.x),
                 origin.y + f64::from(layout.location.y),
             ),
             (f64::from(layout.size.width), f64::from(layout.size.height)),
         );
+        if self.rect != rect {
+            self.rect = rect;
+            self.dirty = true;
+        }
     }
     #[allow(
         clippy::arithmetic_side_effects,
@@ -142,9 +163,7 @@ impl Widget for PreviewCanvas {
                 MouseScrollDelta::LineDelta(x, y) => (f64::from(*x) * 32.0, f64::from(*y) * 32.0),
                 MouseScrollDelta::PixelDelta(point) => (point.x, point.y),
             };
-            if let Some(preview) = &mut self.preview {
-                *handled = preview.navigate(PreviewNavigation::Scroll { dx, dy });
-            }
+            *handled = self.navigate(PreviewNavigation::Scroll { dx, dy });
         }
     }
     fn get_rect(&self) -> Rect {
@@ -164,5 +183,11 @@ impl Widget for PreviewCanvas {
                     }),
             ),
         )
+    }
+    fn needs_redraw(&self) -> bool {
+        self.dirty
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
     }
 }

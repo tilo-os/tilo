@@ -1283,7 +1283,11 @@ fn driver_tiles_route_root_callbacks_and_paint_with_current_permissions() {
                 Callback::Search => tile.activate_search_result("result", &mut shell, &ROOT),
                 Callback::External => tile.on_external_event("probe", &mut shell, &ROOT),
                 Callback::Control => {
-                    tile.take_control_invocation();
+                    // A tile with its own document owner is drained through that
+                    // owner's control custody, never by the generic outer drain.
+                    assert!(tile.take_control_invocation().is_none());
+                    assert!(CAPTURES.with_borrow_mut(std::mem::take).is_empty());
+                    continue;
                 }
                 Callback::Capture => {
                     tile.view_state();
@@ -2497,7 +2501,9 @@ fn driver_controls_resolve_bound_targets_to_their_record_owner() {
             for (index, checkout) in records.iter().enumerate() {
                 host.records
                     .read_history(&checkout.id, |doc, history| {
-                        let changed = authorized == 1 && index == 0;
+                        // An outer control never reselects a component owner
+                        // from its address, however many would authorize it.
+                        let changed = false;
                         assert_eq!(
                             doc.get(ROOT, "body").unwrap().unwrap().0.as_str(),
                             Some(if changed { "edited" } else { "initialized" })
@@ -2516,17 +2522,8 @@ fn driver_controls_resolve_bound_targets_to_their_record_owner() {
             }
             assert_eq!(driver.state_mut().doc.get_heads(), outer);
             assert!(!driver.state_mut().can_undo_as(None));
-            if authorized != 1 {
-                let diagnostics = String::from_utf8(diagnostics.lock().unwrap().clone()).unwrap();
-                assert!(
-                    diagnostics.contains(if authorized == 2 {
-                        "ambiguous_action_target"
-                    } else {
-                        "unknown_action"
-                    }),
-                    "{diagnostics}"
-                );
-            }
+            let diagnostics = String::from_utf8(diagnostics.lock().unwrap().clone()).unwrap();
+            assert!(diagnostics.contains("unknown_action"), "{diagnostics}");
         }
         assert_same_name_inline_wrapper_refused();
     }

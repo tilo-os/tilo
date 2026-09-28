@@ -76,7 +76,10 @@ concurrency:
   # freshness check sees a publication queued ahead of it. Validation builds
   # allocate nothing and must not hold up a release, so they serialize per ref.
   # Job outputs are unavailable here; this mirrors the plan job's rule.
-  group: ${{ (startsWith(github.ref, 'refs/tags/v') || (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.publish == 'true')))) && 'tilo-os-image-series' || format('tilo-os-image-validate-{0}', github.ref) }}
+  # Epoch 2 retires the lock held by cancelled run 36454. Forgejo left one
+  # failed release's ARM worker active after cancellation and queued later
+  # signed releases behind it. The old run cannot enter promotion.
+  group: ${{ (startsWith(github.ref, 'refs/tags/v') || (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.publish == 'true')))) && 'tilo-os-image-series-2' || format('tilo-os-image-validate-{0}', github.ref) }}
   cancel-in-progress: false
 
 env:
@@ -916,6 +919,36 @@ jobs:
           fi
           echo "::notice::OS integration validation: $validate; publication: $publish"
 
+      # The browser-only bundle and tapp are built in the OS image. Both
+      # independently compiled publication lanes must sign their bytes with
+      # the same protected identities as the pinned app collection. Their
+      # public keys enter the BuildKit cache key; private keys are secrets.
+      - name: Require pinned browser publishers for reproduction
+        if: steps.release-mode.outputs.publish == 'true'
+        env:
+          RUNTIME_BUNDLE_SIGNING_KEY: ${{ secrets.RUNTIME_BUNDLE_SIGNING_KEY }}
+          TAPP_PUBLISHER_IDENTITY: ${{ secrets.TAPP_PUBLISHER_IDENTITY }}
+        run: |
+          set -euo pipefail
+          [[ "$TILO_PREBUILT_APPS" == 1 ]] || {
+            echo '::error::reproducible publication requires a pinned prebuilt app collection'; exit 1;
+          }
+          [[ "$TILO_WITH_BROWSER" == 1 ]] || exit 0
+          for name in RUNTIME_BUNDLE_SIGNING_KEY TAPP_PUBLISHER_IDENTITY; do
+            value="${!name:-}"
+            [[ -n "$value" ]] || { echo "::error::$name is required for reproducible publication"; exit 1; }
+          done
+          publisher="$(cat os/app-runtime/runtime-bundle-publisher.hex)"
+          [[ "$publisher" =~ ^[0-9a-f]{64}$ ]] || {
+            echo '::error::pinned app collection lacks a runtime publisher'; exit 1;
+          }
+          runtime_public="$(printf '%s' "$RUNTIME_BUNDLE_SIGNING_KEY" | python3 os/dev/identity-public-key.py)"
+          app_public="$(printf '%s' "$TAPP_PUBLISHER_IDENTITY" | python3 os/dev/identity-public-key.py)"
+          [[ "$runtime_public" == "$publisher" && "$app_public" == "$TILO_APP_COLLECTION_PUBLISHER" ]] || {
+            echo '::error::protected browser identities do not match the pinned app collection'; exit 1;
+          }
+          echo "TILO_BROWSER_RUNTIME_PUBLISHER=$publisher" >> "$GITHUB_ENV"
+
       # runner-large jobs are Kata-confined but start with a static /dev. The
       # guest kernel has FUSE and loop devices; expose its devtmpfs and prove a
       # real loop mount before spending hours building the sealed image.
@@ -1191,6 +1224,8 @@ jobs:
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         env:
           SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
+          RUNTIME_BUNDLE_SIGNING_KEY: ${{ steps.release-mode.outputs.publish == 'true' && secrets.RUNTIME_BUNDLE_SIGNING_KEY || '' }}
+          TAPP_PUBLISHER_IDENTITY: ${{ steps.release-mode.outputs.publish == 'true' && secrets.TAPP_PUBLISHER_IDENTITY || '' }}
         with:
           context: .
           build-contexts: |
@@ -1217,6 +1252,7 @@ jobs:
             TILO_RUST_LTO=${{ env.TILO_RUST_LTO }}
             TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=${{ env.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
             TILO_APP_COLLECTION_PUBLISHER=${{ env.TILO_APP_COLLECTION_PUBLISHER }}
+            TILO_BROWSER_RUNTIME_PUBLISHER=${{ env.TILO_BROWSER_RUNTIME_PUBLISHER }}
             TILO_GENERATION=${{ env.TILO_GENERATION }}
             TILO_CFS_DIGEST=00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
             SCCACHE_BUCKET=${{ steps.compiler-cache.outputs.bucket }}
@@ -1229,7 +1265,10 @@ jobs:
           # The runner injects this bucket-scoped credential from a
           # least-privilege Kubernetes Secret. BuildKit exposes them only to
           # the Rust compile RUN; they never enter an image layer or build arg.
-          secret-envs: ${{ steps.compiler-cache.outputs.secret-envs }}
+          secret-envs: |
+            browser_runtime_identity=RUNTIME_BUNDLE_SIGNING_KEY
+            browser_app_identity=TAPP_PUBLISHER_IDENTITY
+            ${{ steps.compiler-cache.outputs.secret-envs }}
           # buildkit clamps layer timestamps to SOURCE_DATE_EPOCH for
           # reproducible image digests.
           provenance: false
@@ -1250,6 +1289,8 @@ jobs:
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         env:
           SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
+          RUNTIME_BUNDLE_SIGNING_KEY: ${{ steps.release-mode.outputs.publish == 'true' && secrets.RUNTIME_BUNDLE_SIGNING_KEY || '' }}
+          TAPP_PUBLISHER_IDENTITY: ${{ steps.release-mode.outputs.publish == 'true' && secrets.TAPP_PUBLISHER_IDENTITY || '' }}
         with:
           context: .
           build-contexts: |
@@ -1287,6 +1328,7 @@ jobs:
             TILO_RUST_LTO=${{ env.TILO_RUST_LTO }}
             TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=${{ env.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
             TILO_APP_COLLECTION_PUBLISHER=${{ env.TILO_APP_COLLECTION_PUBLISHER }}
+            TILO_BROWSER_RUNTIME_PUBLISHER=${{ env.TILO_BROWSER_RUNTIME_PUBLISHER }}
             TILO_GENERATION=${{ env.TILO_GENERATION }}
             TILO_CFS_DIGEST=00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
             SCCACHE_BUCKET=${{ steps.compiler-cache.outputs.bucket }}
@@ -1299,7 +1341,10 @@ jobs:
           # The runner injects this bucket-scoped credential from a
           # least-privilege Kubernetes Secret. BuildKit exposes them only to
           # the Rust compile RUN; they never enter an image layer or build arg.
-          secret-envs: ${{ steps.compiler-cache.outputs.secret-envs }}
+          secret-envs: |
+            browser_runtime_identity=RUNTIME_BUNDLE_SIGNING_KEY
+            browser_app_identity=TAPP_PUBLISHER_IDENTITY
+            ${{ steps.compiler-cache.outputs.secret-envs }}
           # buildkit clamps layer timestamps to SOURCE_DATE_EPOCH for
           # reproducible image digests.
           provenance: false
@@ -1331,6 +1376,8 @@ jobs:
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         env:
           SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
+          RUNTIME_BUNDLE_SIGNING_KEY: ${{ steps.release-mode.outputs.publish == 'true' && secrets.RUNTIME_BUNDLE_SIGNING_KEY || '' }}
+          TAPP_PUBLISHER_IDENTITY: ${{ steps.release-mode.outputs.publish == 'true' && secrets.TAPP_PUBLISHER_IDENTITY || '' }}
         with:
           context: .
           build-contexts: |
@@ -1359,6 +1406,7 @@ jobs:
             TILO_RUST_LTO=${{ env.TILO_RUST_LTO }}
             TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=${{ env.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
             TILO_APP_COLLECTION_PUBLISHER=${{ env.TILO_APP_COLLECTION_PUBLISHER }}
+            TILO_BROWSER_RUNTIME_PUBLISHER=${{ env.TILO_BROWSER_RUNTIME_PUBLISHER }}
             TILO_GENERATION=${{ env.TILO_GENERATION }}
             TILO_CFS_DIGEST=00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
             SCCACHE_BUCKET=${{ steps.compiler-cache.outputs.bucket }}
@@ -1368,7 +1416,10 @@ jobs:
             SCCACHE_S3_USE_SSL=${{ steps.compiler-cache.outputs.use_ssl }}
             TILO_COMPILER_CACHE=${{ steps.compiler-cache.outputs.mode }}
             TILO_REQUIRE_COMPILER_CACHE=${{ steps.compiler-cache.outputs.required }}
-          secret-envs: ${{ steps.compiler-cache.outputs.secret-envs }}
+          secret-envs: |
+            browser_runtime_identity=RUNTIME_BUNDLE_SIGNING_KEY
+            browser_app_identity=TAPP_PUBLISHER_IDENTITY
+            ${{ steps.compiler-cache.outputs.secret-envs }}
           provenance: false
           cache-to: |
             type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/tilo/tilo-buildcache:${{ matrix.arch }}-wpe,mode=max,ignore-error=true
@@ -1433,6 +1484,8 @@ jobs:
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         env:
           SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
+          RUNTIME_BUNDLE_SIGNING_KEY: ${{ steps.release-mode.outputs.publish == 'true' && secrets.RUNTIME_BUNDLE_SIGNING_KEY || '' }}
+          TAPP_PUBLISHER_IDENTITY: ${{ steps.release-mode.outputs.publish == 'true' && secrets.TAPP_PUBLISHER_IDENTITY || '' }}
         with:
           context: .
           build-contexts: |
@@ -1462,10 +1515,14 @@ jobs:
             TILO_RUST_LTO=${{ env.TILO_RUST_LTO }}
             TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=${{ env.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
             TILO_APP_COLLECTION_PUBLISHER=${{ env.TILO_APP_COLLECTION_PUBLISHER }}
+            TILO_BROWSER_RUNTIME_PUBLISHER=${{ env.TILO_BROWSER_RUNTIME_PUBLISHER }}
             TILO_GENERATION=${{ env.TILO_GENERATION }}
             TILO_CFS_DIGEST=00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
             TILO_COMPILER_CACHE=off
             TILO_REQUIRE_COMPILER_CACHE=0
+          secret-envs: |
+            browser_runtime_identity=RUNTIME_BUNDLE_SIGNING_KEY
+            browser_app_identity=TAPP_PUBLISHER_IDENTITY
           provenance: false
           no-cache: true
 

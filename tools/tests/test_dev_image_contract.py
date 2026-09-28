@@ -65,11 +65,22 @@ class DevImageContractTests(unittest.TestCase):
             self.edit(dev, pinned, "ARG RUST_TOOLCHAIN_IMAGE=registry.tilo.so/tilo/tilo-builder:latest")
             self.assertIn("RUST_TOOLCHAIN_IMAGE is not a digest-pinned tilo-builder image",
                           "\n".join(self.findings(root)))
-        with self.subTest(phase='builder packages leave out fedora rust'):
-            listed = (REPO / "os/scripts/builder-packages.txt").read_text(encoding="utf-8").split()
-            self.assertNotIn("rust", listed)
-            self.assertNotIn("cargo", listed)
-            self.assertIn("sccache", listed)
+        with self.subTest(phase='image builder takes no fedora rust'):
+            root = self.fixture()
+            self.edit(root / "os/Containerfile", "        sccache capnproto \\\n",
+                      "        rust cargo sccache capnproto \\\n")
+            packages = check.load("builder_packages_fixture", root / "os/scripts/builder-packages.py")
+            (root / "os/scripts/builder-packages.txt").write_text(
+                packages.render(packages.builder_packages(root / "os/Containerfile")), encoding="utf-8")
+            self.assertIn("the builder stage installs Fedora's cargo, rust", "\n".join(self.findings(root)))
+        with self.subTest(phase='image and dev image share one toolchain pin'):
+            root = self.fixture()
+            image = root / "os/Containerfile"
+            pinned = next(line for line in image.read_text(encoding="utf-8").splitlines()
+                          if line.startswith("ARG RUST_TOOLCHAIN_IMAGE="))
+            self.edit(image, pinned, "ARG RUST_TOOLCHAIN_IMAGE=registry.tilo.so/tilo/tilo-builder@sha256:" + "0" * 64)
+            self.assertIn("RUST_TOOLCHAIN_IMAGE (registry.tilo.so/tilo/tilo-builder@sha256:000",
+                          "\n".join(self.findings(root)))
         with self.subTest(phase='builder package drift fails'):
             root = self.fixture()
             self.edit(root / "os/Containerfile", "        nasm \\\n", "        nasm mold \\\n")
@@ -119,8 +130,8 @@ class DevImageContractTests(unittest.TestCase):
         with self.subTest(phase='production dev feature fails'):
             root = self.fixture()
             self.edit(root / "os/Containerfile", "--bin tilo-projector ",
-                      "--bin tilo-projector --features shell/dev-overrides ")
-            self.assertIn("dev feature 'shell/dev-overrides'", "\n".join(self.findings(root)))
+                      "--bin tilo-projector --features dev-overrides ")
+            self.assertIn("dev feature 'dev-overrides'", "\n".join(self.findings(root)))
         with self.subTest(phase='production policy must reject dev repository'):
             root = self.fixture()
             path = root / "os/etc/containers/policy.json"

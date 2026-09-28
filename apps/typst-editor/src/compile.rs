@@ -137,25 +137,14 @@ impl WorldParts {
             let fonts: Vec<Font> = typst_assets::fonts()
                 .flat_map(|data| Font::iter(Bytes::new(data)))
                 .collect();
-            #[cfg(target_os = "windows")]
-            let fonts = {
-                let mut fonts = fonts;
-                // The toolkit already validates and shares the installed font
-                // catalog. Reuse its emoji face instead of bundling a second
-                // copy or relying on machine-specific Windows font discovery.
-                let system = ui::text_render::configured_font_system();
-                let database = system.db();
-                if let Some(face) = database.faces().find(|face| {
-                    face.families
-                        .iter()
-                        .any(|(name, _)| name == "Noto Color Emoji")
-                }) && let Some(Some(font)) = database.with_face_data(face.id, |data, index| {
-                    Font::new(Bytes::new(data.to_vec()), index)
-                }) {
-                    fonts.push(font);
-                }
-                fonts
-            };
+            let mut fonts = fonts;
+            // Reuse the toolkit's emoji face where it ships one instead of
+            // bundling a second copy.
+            if let Some((data, index)) = ui::text_render::bundled_emoji_face()
+                && let Some(font) = Font::new(Bytes::new(data), index)
+            {
+                fonts.push(font);
+            }
             let book = FontBook::from_fonts(fonts.iter());
             Arc::new(Self {
                 library: LazyHash::new(Library::builder().build()),

@@ -511,15 +511,18 @@ pub fn build_accessibility_tree(
 pub fn narration_tree(view: &LockView<'_>) -> ui::a11y::AccessNode {
     use ui::a11y::{AccessNode, AccessState, Politeness, Role, Sensitivity};
     let clock = match (view.clock.is_empty(), view.date.is_empty()) {
-        (true, _) => "Session locked".to_string(),
-        (false, true) => format!("Session locked, {}", view.clock),
-        (false, false) => format!("Session locked, {}, {}", view.clock, view.date),
+        (true, _) => t("lock-screen-locked"),
+        (false, true) => t_args("lock-screen-locked-at", &[("clock", view.clock.into())]),
+        (false, false) => t_args(
+            "lock-screen-locked-at-date",
+            &[("clock", view.clock.into()), ("date", view.date.into())],
+        ),
     };
-    let mut status = AccessNode::new(Role::StaticText).with_name("Lock status");
+    let mut status = AccessNode::new(Role::StaticText).with_name(t("lock-screen-status"));
     if view.verifying {
         status = status
             .with_live(Politeness::Polite)
-            .with_value("Verifying password");
+            .with_value(t("lock-screen-verifying-password"));
     } else if let Some(error) = view.error {
         status = status
             .with_live(Politeness::Assertive)
@@ -533,12 +536,12 @@ pub fn narration_tree(view: &LockView<'_>) -> ui::a11y::AccessNode {
     let mut password_state = AccessState::new().focused(!view.verifying);
     password_state.disabled = view.verifying;
     AccessNode::new(Role::Window)
-        .with_name("Tilo lock screen")
+        .with_name(t("lock-screen-a11y-name"))
         .with_children(vec![
             AccessNode::new(Role::StaticText).with_name(clock),
             AccessNode::new(Role::TextInput)
-                .with_name("Password")
-                .with_description("Type your password and press Enter")
+                .with_name(t("lock-screen-password"))
+                .with_description(t("lock-screen-help"))
                 .with_state(password_state)
                 .with_sensitivity(Sensitivity::Secret),
             status,

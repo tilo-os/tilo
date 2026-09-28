@@ -31,7 +31,7 @@ const UNCHECKED_BOOTC: &str = "whether it runs a bootc dev image could not be ch
 pub fn no_disk_help(local_build: Option<&str>) -> String {
     let local = match local_build {
         Some(script) => format!(
-            "or build a disk locally: {script}, then tilo-vm vm create <name> --image <disk.qcow2>"
+            "or build a disk locally: {script}, then tilo-vm vm create <name> --image <disk.qcow2>   |   or build the image on the rcargo builder: rcargo --on-builder --fetch tilo-vm run -p tilo-vm -- image build, write its disk here: tilo-vm image disk, then tilo-vm vm create <name> --image target/tilo-vm/disk.qcow2 (tilo-vm guide images)"
         ),
         None => format!(
             "no local dev-image build is available in this checkout ({LOCAL_BUILD_SCRIPT} is missing)"

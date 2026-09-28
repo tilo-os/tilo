@@ -10,6 +10,10 @@
     clippy::expect_used,
     reason = "test harness failures are assertions"
 )]
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 
 use std::os::unix::net::UnixStream;
 use std::sync::Arc;

@@ -227,7 +227,15 @@ fn workspace_store(
         .map_err(Into::into)
 }
 
-fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<std::process::ExitCode> {
+    // Automerge isolation workers re-enter this binary; serve them first.
+    if let Some(code) = tilo_automerge_isolate::dispatch_early() {
+        return Ok(std::process::ExitCode::from(code));
+    }
+    run().map(|()| std::process::ExitCode::SUCCESS)
+}
+
+fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.cmd {
         Cmd::HomePeerRetryRemovals { identity_root } => retry_pending_removals(&identity_root),
@@ -641,7 +649,7 @@ fn cmd_home_peer_remove(
         )?),
         label: "Removed".into(),
         files_ready: false,
-        services: tilo_relay::ServiceCapabilities::default(),
+        services: tilo_relay_protocol::ServiceCapabilities::default(),
         decommissioned: false,
     });
     println!("{}", serde_json::to_string(&response)?);

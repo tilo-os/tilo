@@ -55,7 +55,6 @@ zeroize.workspace = true
 # Content keys, key-history bundles and persisted state are sealed through
 # the shared construction.
 tilo-seal = { path = "../../system/tilo-seal" }
-workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 # Used in the integration test that wraps a ciphertext inside a
@@ -72,3 +71,10 @@ path = "tests/it.rs"
 
 [lints]
 workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+openmls = { version = "0.9", features = ["js"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

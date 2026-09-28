@@ -872,9 +872,7 @@ async fn checked_restore_late_acl_replacement_buffer_aba_and_rebinding_are_zero_
                     let _runtime = handle.enter();
                     fixture.fs.checked_history_restore(fixture.ino, request)
                 });
-                entered
-                    .recv_timeout(std::time::Duration::from_secs(10))
-                    .unwrap();
+                entered.recv_timeout(tilo_test_env::hang_bound()).unwrap();
                 let expected = match change {
                     0 => {
                         acl.replace(crate::acl::WorkspaceAcl::new());
@@ -986,9 +984,7 @@ async fn checked_restore_expiry_and_storage_interleavings_complete_safely() {
                 let _runtime = handle.enter();
                 fixture.fs.checked_history_restore(fixture.ino, request)
             });
-            entered
-                .recv_timeout(std::time::Duration::from_secs(10))
-                .unwrap();
+            entered.recv_timeout(tilo_test_env::hang_bound()).unwrap();
             let (finished, wait) = std::sync::mpsc::channel();
             scope.spawn(move || {
                 acl.replace(crate::acl::WorkspaceAcl::new());
@@ -1009,8 +1005,7 @@ async fn checked_restore_expiry_and_storage_interleavings_complete_safely() {
             }
             resume.send(()).unwrap();
             assert_eq!(worker.join().unwrap(), Outcome::NotVisible);
-            wait.recv_timeout(std::time::Duration::from_secs(5))
-                .unwrap();
+            wait.recv_timeout(tilo_test_env::hang_bound()).unwrap();
         });
         assert_eq!(fixture.durable_bytes(), before);
         fixture.endpoint.close().await;
@@ -1039,9 +1034,7 @@ async fn checked_restore_expiry_and_storage_interleavings_complete_safely() {
                     .send(fixture.fs.checked_history_restore(fixture.ino, request))
                     .unwrap();
             });
-            entered
-                .recv_timeout(std::time::Duration::from_secs(10))
-                .unwrap();
+            entered.recv_timeout(tilo_test_env::hang_bound()).unwrap();
             let storage_namespace = fixture
                 .fs
                 .namespace
@@ -1054,7 +1047,7 @@ async fn checked_restore_expiry_and_storage_interleavings_complete_safely() {
                 acl_done.send(()).unwrap();
             });
             acl_result
-                .recv_timeout(std::time::Duration::from_secs(5))
+                .recv_timeout(tilo_test_env::hang_bound())
                 .expect("ACL replacement must not wait on admission before B/N");
             resume.send(()).unwrap();
             assert!(
@@ -1066,9 +1059,7 @@ async fn checked_restore_expiry_and_storage_interleavings_complete_safely() {
             drop(storage_namespace);
             drop(storage_buffers);
             assert_eq!(
-                result
-                    .recv_timeout(std::time::Duration::from_secs(5))
-                    .unwrap(),
+                result.recv_timeout(tilo_test_env::hang_bound()).unwrap(),
                 Outcome::ReadOnly
             );
         });

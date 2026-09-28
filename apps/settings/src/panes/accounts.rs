@@ -2473,6 +2473,71 @@ mod tests {
         }
     }
 
+    #[test]
+    fn vault_save_failure_preserves_existing_account_metadata() {
+        // Isolate custody selection from an actual session Secret Service, and
+        // isolate ConfigGuard's environment from other tests in this process.
+        const CHILD: &str = "TILO_SETTINGS_VAULT_FAILURE_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "panes::accounts::tests::vault_save_failure_preserves_existing_account_metadata", "--nocapture"])
+                .env(CHILD, "1")
+                .env("PATH", "")
+                .status().unwrap();
+            assert!(status.success());
+            return;
+        }
+        let (_dir, account_root) = scratch_root();
+        let root = account_root.path().unwrap();
+        let old_id = accounts::AccountId::from("existing@example.test");
+        let mut store = accounts::AccountStore::new();
+        store.upsert(accounts::Account::new(old_id.clone(), "email"));
+        account_root.save_store(&store).unwrap();
+        let store_path = accounts::store_path_in(&root);
+        let metadata_before = std::fs::read(&store_path).unwrap();
+        let mut vault = accounts::SecretVault::open_in(&root);
+        vault.put(&old_id, &accounts::Secret::password("old-password"));
+        vault.try_save().unwrap();
+        assert_eq!(
+            accounts::SecretVault::open_in(&root).custody(),
+            accounts::SecretCustody::LocalFile
+        );
+        let dir = accounts::vault_dir_in(&root);
+        let ciphertext_before = std::fs::read(dir.join("vault.enc")).unwrap();
+        let malformed_key = [7u8; 31];
+        std::fs::write(dir.join("vault.key"), malformed_key).unwrap();
+
+        let error = AccountsPane::save_account(
+            &account_root,
+            AccountKind::Mail,
+            None,
+            "New account",
+            "new@example.test",
+            "new@example.test",
+            "",
+            "new-password",
+        )
+        .unwrap_err();
+        assert!(
+            error.starts_with("could not save credential:"),
+            "must reach vault save, not fail account intent: {error}"
+        );
+        assert_eq!(std::fs::read(dir.join("vault.key")).unwrap(), malformed_key);
+        assert_eq!(
+            std::fs::read(dir.join("vault.enc")).unwrap(),
+            ciphertext_before
+        );
+        assert_eq!(std::fs::read(&store_path).unwrap(), metadata_before);
+        let saved = account_root.store();
+        assert_eq!(saved.all().len(), 1);
+        assert!(saved.get(&old_id).is_some());
+        assert!(
+            saved
+                .get(&accounts::AccountId::from("new@example.test"))
+                .is_none()
+        );
+    }
+
     /// Edits keep unknown config and toggles; re-authentication probes before persisting.
     #[test]
     fn account_edits_preserve_config_and_probe_before_persisting() {

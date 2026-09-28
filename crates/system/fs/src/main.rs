@@ -3532,7 +3532,7 @@ async fn run_mount(
     // consuming it in `join()`: a rebind must unmount the old FUSE session and
     // wait for its worker before this process can return to systemd.
     let mut mount_task = tokio::task::spawn_blocking(move || {
-        let session = fuser::spawn_mount2(fs, &mp, &config)?;
+        let session = fuser::spawn_mount(fs, &mp, &config)?;
         if signal_recipient_ready {
             use std::io::Write;
             println!("{}", fs::recipient_mount::RECIPIENT_MOUNT_READY_LINE);

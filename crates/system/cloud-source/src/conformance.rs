@@ -415,14 +415,22 @@ pub fn replace_with_revision(fixture: &dyn Fixture) {
     put_remote(fixture, "doc.txt", b"v1");
     let source = fixture.source();
     let item = must(source, "doc.txt");
-    let replaced = upload_bytes(
+    let replaced = try_upload(
         source,
         UploadTarget::Replace {
             id: item.id.clone(),
             expect: item.revision.clone(),
         },
         b"version two",
-    );
+    )
+    .unwrap_or_else(|error| {
+        let before_read = source.stat(&item.id);
+        let bytes = read_all(source, &item.id);
+        let after_read = source.stat(&item.id);
+        panic!(
+            "replace failed: {error:?}; original={item:?}; before_read={before_read:?}; bytes={bytes:?}; after_read={after_read:?}"
+        );
+    });
     assert_eq!(replaced.id, item.id, "a replace keeps the item's identity");
     assert_ne!(replaced.revision, item.revision);
     assert_eq!(replaced.size, Some(11));

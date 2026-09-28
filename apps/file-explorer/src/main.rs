@@ -32,7 +32,7 @@
     )
 )]
 
-use file_explorer::filesystem_metadata as xattr;
+use host_fs::attributes as xattr;
 use std::io::{Read, Write};
 
 use file_explorer::FileExplorerWidget;
@@ -144,8 +144,7 @@ fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
     let size = args.value("--size").and_then(parse_size);
     let viewport = shot_viewport(args.viewport, size);
     let scenario = args.scenario.as_deref();
-    #[cfg(not(unix))]
-    if matches!(scenario, Some("sync" | "thumbnails-fs" | "history")) {
+    if !xattr::SUPPORTED && matches!(scenario, Some("sync" | "thumbnails-fs" | "history")) {
         return Err(LaunchError::Operation(
             "this scenario requires the Tilo filesystem projection".into(),
         ));

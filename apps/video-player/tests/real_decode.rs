@@ -129,7 +129,7 @@ fn real_file_decodes_and_reaches_the_player_surface() {
         let mut ptss: Vec<u64> = Vec::new();
         let mut saw_duration = false;
         let mut first_frame_dims: Option<(u32, u32)> = None;
-        let deadline = Instant::now() + Duration::from_secs(20);
+        let deadline = tilo_test_env::hang_deadline();
         while Instant::now() < deadline {
             for ev in engine.poll() {
                 if let media::MediaEvent::DurationKnown { .. } = ev {
@@ -203,7 +203,7 @@ fn real_file_decodes_and_reaches_the_player_surface() {
         let mut doc = automerge::AutoCommit::new();
         let root = automerge::ROOT;
 
-        let deadline = Instant::now() + Duration::from_secs(20);
+        let deadline = tilo_test_env::hang_deadline();
         while Instant::now() < deadline {
             app.sync(&mut doc, &root);
             if app.player().latest_frame().is_some() {

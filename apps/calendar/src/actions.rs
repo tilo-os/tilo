@@ -26,8 +26,8 @@
 
 use automerge::AutoCommit;
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
+use qdoc_rich_text::RichTextAction;
 use serde::{Deserialize, Serialize};
-use ui::widget::BlockEditOp;
 use uuid::Uuid;
 
 use tilo_actions::{
@@ -828,7 +828,7 @@ fn parse_opt_id(s: &str) -> Option<Id> {
 ///
 /// Each variant is a whole-item write or delete carrying enough payload to
 /// replay deterministically from a shared base state.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum CalendarAction {
     /// Create or replace a Calendar task project. Only creation/import-like
     /// paths use this full snapshot; ordinary edits use [`ProjectPatch`].
@@ -891,11 +891,11 @@ pub enum CalendarAction {
     /// Delete a task and each of its listed subtasks (resolved at authoring
     /// time from the model, carried here so `apply` needs no lookup).
     DeleteTask { id: String, subtasks: Vec<String> },
-    /// Apply UUID-addressed rich-text changes to an event or task note. This
-    /// is the only Calendar path allowed to mutate note blocks.
-    ApplyNoteOps {
+    /// One rich-text edit of an event's or a task's notes. This is the only
+    /// Calendar path allowed to change notes.
+    EditNotes {
         owner: NoteOwner,
-        ops: Vec<BlockEditOp>,
+        edit: RichTextAction,
     },
     /// A single deterministic import batch. The external file is parsed before
     /// this action is authored; replay only writes the exact payload captured
@@ -921,7 +921,7 @@ pub enum NoteOwner {
 )]
 pub fn history_context(action: &CalendarAction) -> tilo_actions::ActionContext {
     let mut context =
-        tilo_actions::ActionContext::for_action("org.tilo.Calendar", "Calendar", action);
+        tilo_actions::ActionContext::for_action("so.tilo.calendar", "Calendar", action);
     let (label, id, kind, title) = match action {
         CalendarAction::UpsertProject(project) => (
             "Update project",
@@ -1006,7 +1006,7 @@ pub fn history_context(action: &CalendarAction) -> tilo_actions::ActionContext {
         CalendarAction::DeleteTask { id, .. } => {
             ("Delete task", id.clone(), "calendar.task", id.clone())
         }
-        CalendarAction::ApplyNoteOps { owner, .. } => match owner {
+        CalendarAction::EditNotes { owner, .. } => match owner {
             NoteOwner::Event { id } => {
                 ("Edit event notes", id.clone(), "calendar.event", id.clone())
             }
@@ -1487,9 +1487,7 @@ fn apply_import_ics(
         .collect::<Result<Vec<_>, ActionError>>()?;
     for event in events {
         CalDoc::update_event(doc, &event);
-        if let Some(notes) = CalDoc::event_notes(doc, event.id) {
-            CalDoc::seed_notes_if_empty(doc, &notes, &["Imported from .ics"]);
-        }
+        CalDoc::seed_notes_if_empty(doc, true, event.id, &["Imported from .ics"]);
     }
     for task in tasks {
         CalDoc::update_task(doc, &task);
@@ -1497,10 +1495,10 @@ fn apply_import_ics(
     Ok(())
 }
 
-fn apply_note_ops(
+fn apply_edit_notes(
     doc: &mut Doc,
     owner: &NoteOwner,
-    ops: &[BlockEditOp],
+    edit: &RichTextAction,
 ) -> Result<(), ActionError> {
     let (event, id) = match owner {
         NoteOwner::Event { id } => (true, id),
@@ -1509,7 +1507,8 @@ fn apply_note_ops(
     let id = id
         .parse::<Id>()
         .map_err(|_| refused("note owner id is invalid"))?;
-    CalDoc::apply_note_ops(doc, event, id, ops).map_err(|message| refused(&message))
+    let notes = CalDoc::notes(doc, event, id).ok_or_else(|| refused("notes no longer exist"))?;
+    edit.apply_under(doc, &notes)
 }
 
 impl Action for CalendarAction {
@@ -1549,7 +1548,7 @@ impl Action for CalendarAction {
             CalendarAction::PatchTask { id, patch } => apply_patch_task(doc, id, patch)?,
             CalendarAction::SetTaskDone { id, done } => apply_set_task_done(doc, id, *done)?,
             CalendarAction::DeleteTask { id, subtasks } => apply_delete_task(doc, id, subtasks)?,
-            CalendarAction::ApplyNoteOps { owner, ops } => apply_note_ops(doc, owner, ops)?,
+            CalendarAction::EditNotes { owner, edit } => apply_edit_notes(doc, owner, edit)?,
             CalendarAction::ImportIcs { events, tasks } => apply_import_ics(doc, events, tasks)?,
         }
         Ok(())
@@ -1938,24 +1937,23 @@ fn immediate_spec(id: &str, label: &str, action: &CalendarAction) -> ActionSpec 
 fn note_resource(parent_resource: &str, owner: NoteOwner) -> Resource {
     Resource::new(format!("{parent_resource}:notes"), "calendar.note", "Notes").with_action(
         ActionSpec::typed(
-            "apply-ops",
-            "Apply note operations",
-            "JSON array of UUID-addressed block operations",
+            "edit",
+            "Edit notes",
+            "One rich-text edit of the notes",
             ExecutionLocus::ClientLocal,
             vec![ActionParam::required(
-                "ops",
+                "edit",
                 ParamType::Text,
-                "Semantic note operations",
+                "The rich-text edit, as JSON",
             )],
             move |args| {
-                let payload = args.text("ops").unwrap_or_default();
-                match serde_json::from_str::<Vec<BlockEditOp>>(payload) {
-                    Ok(ops) if !ops.is_empty() => encode(&CalendarAction::ApplyNoteOps {
+                let payload = args.text("edit").unwrap_or_default();
+                match serde_json::from_str::<RichTextAction>(payload) {
+                    Ok(edit) => encode(&CalendarAction::EditNotes {
                         owner: owner.clone(),
-                        ops,
+                        edit,
                     }),
-                    Ok(_) => invalid_arguments("at least one note operation is required"),
-                    Err(_) => invalid_arguments("ops must be a JSON array of note operations"),
+                    Err(_) => invalid_arguments("edit must be a rich-text edit as JSON"),
                 }
             },
         ),
@@ -3251,7 +3249,9 @@ mod tests {
     fn prompted_encode(spec: &ActionSpec, arg: &str) -> EncodedAction {
         match &spec.input {
             ActionInput::Prompted { build, .. } => build(arg),
-            ActionInput::Immediate(_) => panic!("expected a prompted action: {}", spec.id),
+            ActionInput::Immediate(_) | ActionInput::Deferred { .. } => {
+                panic!("expected a prompted action: {}", spec.id)
+            }
         }
     }
 
@@ -3592,8 +3592,14 @@ mod tests {
                     Widget::invoke_resource_operation(
                         &mut app,
                         operation.kind,
-                        &operation.encoded.type_id,
-                        &operation.encoded.payload,
+                        &operation
+                            .encoded()
+                            .expect("test requires prepared encoding")
+                            .type_id,
+                        &operation
+                            .encoded()
+                            .expect("test requires prepared encoding")
+                            .payload,
                         &doc,
                         &ROOT,
                     )
@@ -3791,16 +3797,13 @@ mod tests {
                 event.title = "Renamed via action".into();
                 encode(&upsert_event_action(&event))
             },
-            note_ops => |doc| encode(&CalendarAction::ApplyNoteOps {
+            edit_notes => |doc| encode(&CalendarAction::EditNotes {
                 owner: NoteOwner::Event {
                     id: first_event(doc).id.to_string(),
                 },
-                ops: vec![BlockEditOp::Insert {
-                    block_id: Uuid::from_u128(0x5eed).to_string(),
-                    after: None,
-                    kind: "paragraph".to_string(),
+                edit: RichTextAction::AppendParagraph {
                     text: "Résumé ✓".to_string(),
-                }],
+                },
             }),
         ],
         undo: [

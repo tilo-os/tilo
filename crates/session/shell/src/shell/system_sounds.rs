@@ -4,8 +4,8 @@
 //! "System sounds" preference and the quiet state (Do Not Disturb, focus
 //! time, presenting) from the shared settings document, applies
 //! [`settings_store::system_sounds::should_play`], and hands a cue to the
-//! bounded [`EventSoundPlayer`] worker (libcanberra event ids, `pw-play` of
-//! the theme file as the fallback). Nothing here blocks the render thread.
+//! bounded [`EventSoundPlayer`] worker (`pw-play` of the resolved theme
+//! file). Nothing here blocks the render thread.
 
 use chrono::{Datelike, Timelike};
 use media::event_sound::{EventSoundPlayer, SoundCue};

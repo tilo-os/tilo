@@ -23,6 +23,9 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 accounts = { path = "../../crates/system/accounts" }
 # Tilo action model for serializable, replayable document mutations.
 tilo-actions = { path = "../../crates/collab/actions" }
+# Notes are rich text, edited in the SDK rich-text editor.
+qdoc-rich-text = { path = "../../crates/doc/qdoc-rich-text" }
+tilo-rich-text = { path = "../../crates/sdk/tilo-rich-text" }
 chrono = { workspace = true, features = ["std", "clock"] }
 # RFC 5545 TZID values are IANA names.  Keep the transition database in the
 # app so imported wall times resolve identically on every peer, including DST

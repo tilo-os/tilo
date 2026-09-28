@@ -65,11 +65,16 @@ fn step_request(prompted: &PromptedStep) -> ShortcutStepRequest {
     let handle = format!("shortcut-step:{}", uuid::Uuid::new_v4());
     match &prompted.prompt {
         StepPrompt::Confirm(request) => {
-            let mut detail = format!(
-                "“{}” wants to {} on {}.",
-                prompted.shortcut,
-                request.descriptor.action_label,
-                request.descriptor.resource_label
+            let mut detail = crate::shell::i18n::t_args(
+                "shortcut-step-confirm-detail",
+                &[
+                    ("shortcut", prompted.shortcut.as_str().into()),
+                    ("action", request.descriptor.action_label.as_str().into()),
+                    (
+                        "resource",
+                        request.descriptor.resource_label.as_str().into(),
+                    ),
+                ],
             );
             for (name, value) in &request.arguments {
                 let shown = value
@@ -79,7 +84,11 @@ fn step_request(prompted: &PromptedStep) -> ShortcutStepRequest {
             }
             let field = match &request.policy {
                 ConfirmationPolicy::Phrase { phrase } => {
-                    let _ = write!(detail, "\nType “{phrase}” to confirm.");
+                    detail.push('\n');
+                    detail.push_str(&crate::shell::i18n::t_args(
+                        "shortcut-step-type-phrase",
+                        &[("phrase", phrase.as_str().into())],
+                    ));
                     Some(ShortcutStepField { masked: false })
                 }
                 ConfirmationPolicy::Confirm | ConfirmationPolicy::None => None,
@@ -87,9 +96,12 @@ fn step_request(prompted: &PromptedStep) -> ShortcutStepRequest {
             ShortcutStepRequest {
                 handle,
                 shortcut: prompted.shortcut.clone(),
-                title: format!("{}?", request.descriptor.action_label),
+                title: crate::shell::i18n::t_args(
+                    "shortcut-step-confirm-title",
+                    &[("action", request.descriptor.action_label.as_str().into())],
+                ),
                 detail,
-                confirm_label: "Confirm".into(),
+                confirm_label: crate::shell::i18n::t("shortcut-step-confirm"),
                 choices: Vec::new(),
                 field,
             }
@@ -104,8 +116,14 @@ fn step_request(prompted: &PromptedStep) -> ShortcutStepRequest {
                 } else {
                     request.param.description.to_string()
                 },
-                detail: format!("“{}” asks for {}.", prompted.shortcut, request.param.name),
-                confirm_label: "Continue".into(),
+                detail: crate::shell::i18n::t_args(
+                    "shortcut-step-ask-detail",
+                    &[
+                        ("shortcut", prompted.shortcut.as_str().into()),
+                        ("param", request.param.name.to_string().into()),
+                    ],
+                ),
+                confirm_label: crate::shell::i18n::t("shortcut-step-continue"),
                 field: choices.is_empty().then_some(ShortcutStepField {
                     masked: request.param.ty == ParamType::Secret,
                 }),
@@ -121,7 +139,10 @@ fn choices_of(param: &ActionParam) -> Vec<String> {
         return param.choices.iter().map(ToString::to_string).collect();
     }
     if param.ty == ParamType::Boolean {
-        return vec!["Yes".into(), "No".into()];
+        return vec![
+            crate::shell::i18n::t("shortcut-step-yes"),
+            crate::shell::i18n::t("shortcut-step-no"),
+        ];
     }
     Vec::new()
 }

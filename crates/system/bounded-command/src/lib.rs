@@ -9,7 +9,7 @@ use std::ffi::OsStr;
 use std::io::{Read, Write as _};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt as _;
-use std::process::{Command, ExitStatus, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError};
@@ -17,6 +17,61 @@ use std::time::{Duration, Instant};
 
 use thiserror::Error;
 use zeroize::Zeroizing;
+
+/// Start `command`'s child as the leader of its own process tree, so
+/// [`kill_tree`] also reaches every descendant it starts. On Unix this is a
+/// new process group named after the child's pid.
+pub fn own_process_tree(command: &mut Command) -> &mut Command {
+    #[cfg(unix)]
+    command.process_group(0);
+    command
+}
+
+/// Start `command`'s child without a console window of its own. On Windows a
+/// console program otherwise opens one; elsewhere this changes nothing.
+pub fn without_console_window(command: &mut Command) -> &mut Command {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt as _;
+        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    command
+}
+
+/// Kill a child started with [`own_process_tree`] together with its
+/// descendants, and the child itself as a fallback. The caller still reaps it.
+pub fn kill_tree(child: &mut Child) {
+    #[cfg(unix)]
+    if let Ok(pid) = i32::try_from(child.id())
+        && let Some(group) = pid.checked_neg()
+    {
+        // SAFETY: the child was placed in its own pid-named process group; a
+        // negative pid targets exactly that group.
+        unsafe { libc::kill(group, libc::SIGKILL) };
+    }
+    let _ = child.kill();
+}
+
+/// Mark a script or program file executable for everyone and writable only
+/// by its owner (mode `0755` on Unix). A no-op where executability is not a
+/// file permission.
+///
+/// # Errors
+/// Returns the metadata lookup's or permission change's error.
+pub fn make_executable(path: &std::path::Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mut permissions = std::fs::metadata(path)?.permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(path, permissions)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        Ok(())
+    }
+}
 
 /// Maximum secret/request body accepted by this narrow helper.
 pub const MAX_INPUT_BYTES: usize = 64 * 1024;
@@ -289,8 +344,7 @@ fn run_prepared_inner(
         })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    #[cfg(unix)]
-    command.process_group(0);
+    own_process_tree(&mut command);
     let mut child = command.spawn()?;
     let input_writer = if let Some(bytes) = input {
         let mut stdin = child
@@ -321,15 +375,7 @@ fn run_prepared_inner(
         }
         let cancelled = cancel.is_some_and(|flag| flag.load(Ordering::Acquire));
         if cancelled || Instant::now() >= deadline {
-            #[cfg(unix)]
-            if let Ok(pid) = i32::try_from(child.id())
-                && let Some(group) = pid.checked_neg()
-            {
-                // SAFETY: the child was placed in its own pid-named process
-                // group; a negative pid targets exactly that group.
-                unsafe { libc::kill(group, libc::SIGKILL) };
-            }
-            let _ = child.kill();
+            kill_tree(&mut child);
             let _ = child.wait();
             break None;
         }
@@ -373,6 +419,10 @@ mod tests {
     use std::fs;
     use std::os::unix::fs::PermissionsExt as _;
 
+    /// For tests of anything but the timeout: long enough that a loaded
+    /// machine never turns the expected error into `Error::Timeout`.
+    const UNTESTED_TIMEOUT: Duration = Duration::from_secs(60);
+
     #[test]
     fn input_and_output_limits_are_enforced_independently() {
         // Phase `rejects_input_and_both_output_stream_overflows`.
@@ -383,7 +433,7 @@ mod tests {
                     &[],
                     Some(&vec![0; MAX_INPUT_BYTES + 1]),
                     16,
-                    Duration::from_secs(1)
+                    UNTESTED_TIMEOUT
                 ),
                 Err(Error::InputTooLarge)
             ));
@@ -395,14 +445,8 @@ mod tests {
                 let helper = directory.path().join("helper");
                 fs::write(&helper, script).unwrap();
                 fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).unwrap();
-                let error = run(
-                    helper.to_str().unwrap(),
-                    &[],
-                    None,
-                    4096,
-                    Duration::from_secs(1),
-                )
-                .unwrap_err();
+                let error =
+                    run(helper.to_str().unwrap(), &[], None, 4096, UNTESTED_TIMEOUT).unwrap_err();
                 assert!(
                     matches!(error, Error::OutputTooLarge { stream: got, .. } if got == stream)
                 );
@@ -412,8 +456,8 @@ mod tests {
         {
             let mut command = Command::new("sh");
             command.args(["-c", "head -c 32 /dev/zero; head -c 128 /dev/zero >&2"]);
-            let error = run_prepared_with_limits(command, None, 64, 32, Duration::from_secs(1))
-                .unwrap_err();
+            let error =
+                run_prepared_with_limits(command, None, 64, 32, UNTESTED_TIMEOUT).unwrap_err();
             assert!(matches!(
                 error,
                 Error::OutputTooLarge {
@@ -431,7 +475,7 @@ mod tests {
                 bytes.len(),
                 bytes.len(),
                 64,
-                Duration::from_secs(1),
+                UNTESTED_TIMEOUT,
             )
             .unwrap();
             assert!(output.status.success());
@@ -444,7 +488,7 @@ mod tests {
                     bytes.len() - 1,
                     bytes.len(),
                     64,
-                    Duration::from_secs(1),
+                    UNTESTED_TIMEOUT,
                 ),
                 Err(Error::InputTooLarge)
             ));
@@ -511,7 +555,7 @@ mod tests {
             &[("TILO_BOUNDED_COMMAND_TEST", "isolated")],
             None,
             64,
-            Duration::from_secs(1),
+            UNTESTED_TIMEOUT,
         )
         .unwrap();
         assert!(output.status.success());

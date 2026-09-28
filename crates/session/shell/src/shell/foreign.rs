@@ -1934,10 +1934,10 @@ impl ForeignSurfaceWidget {
     /// *buffer* couldn't be shown stays in [`ForeignFrameStore::last_error`] for whoever is debugging, not on this card.
     fn unshowable_text(&self) -> (String, String) {
         let detail = match store().last_error(self.surface_id) {
-            Some(_) => "This window can't be shown.",
-            None => "This app isn't responding.",
+            Some(_) => crate::shell::i18n::t("foreign-window-unshowable"),
+            None => crate::shell::i18n::t("foreign-window-not-responding"),
         };
-        (self.display_name().to_string(), detail.to_string())
+        (self.display_name().to_string(), detail)
     }
 
     fn draw_collaboration_overlay(
@@ -4219,7 +4219,7 @@ mod tests {
             // Meanwhile a peer still based on the old document reorders another
             // group. Its change contains the now-closed group in its old list,
             // which is the regression that used to resurrect windows.
-            assert!(source.reorder_group_within_strip(strip_id, reordered_group, 0));
+            assert!(source.reorder_group_for_tests(strip_id, reordered_group, 0));
             let stale_revision = source.export_changes_since(&base_heads);
             rendered
                 .apply_changes(&stale_revision)
@@ -4414,12 +4414,12 @@ mod tests {
                 .and_then(|strip| strip.window_groups.last())
                 .expect("another group remains")
                 .id;
-            let _ = rendered.reorder_group_within_strip(strip, moved_group, 0);
+            let _ = rendered.reorder_group_for_tests(strip, moved_group, 0);
 
             // The old peer only reorders an unrelated surviving group.  Its
             // change was authored while both the duplicate and closed group
             // still existed; neither may be revived when that revision arrives.
-            assert!(stale_peer.reorder_group_within_strip(strip, reorder_group, 0));
+            assert!(stale_peer.reorder_group_for_tests(strip, reorder_group, 0));
             let stale_changes = stale_peer.export_changes_since(&stale_base);
             rendered
                 .apply_changes(&stale_changes)
@@ -4462,7 +4462,7 @@ mod tests {
                 .position(|tab| tab.id == local_tab)
                 .expect("local tab index");
             let to = usize::from(from == 0);
-            assert!(future_peer.reorder_tab_within_group(local_group, from, to));
+            assert!(future_peer.reorder_tab_for_tests(local_group, from, to));
             let future_changes = future_peer.export_changes_since(&future_base);
             rendered
                 .apply_changes(&future_changes)

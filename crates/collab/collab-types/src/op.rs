@@ -15,7 +15,7 @@
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::time::SystemTime;
+use web_time::SystemTime;
 
 use crate::canonical::{CanonicalError, canonical_bytes};
 use crate::channel::{ArtifactId, ChannelId};
@@ -23,7 +23,6 @@ use crate::crypto::{Ed25519PublicKey, Signature};
 use crate::identity::AttestationId;
 use crate::role::OpClass;
 
-pub(crate) const DOCUMENT_MUTATION_V1_PREFIX: &[u8] = b"tilo-document-mutation-v1\0";
 pub(crate) const DOCUMENT_MUTATION_V2_PREFIX: &[u8] = b"tilo-document-mutation-v2\0";
 pub(crate) const DOCUMENT_SNAPSHOT_TAG: u8 = 1;
 pub(crate) const DOCUMENT_INCREMENTAL_TAG: u8 = 2;
@@ -78,9 +77,6 @@ pub enum DocumentMutationError {
     /// A segment header is inconsistent with the bytes it carries.
     #[error("document segment is invalid: {0}")]
     InvalidSegment(&'static str),
-    /// The versioned payload body is malformed.
-    #[error("typed document mutation is malformed: {0}")]
-    Malformed(postcard::Error),
 }
 
 /// Failure to encode a typed document mutation.
@@ -91,6 +87,29 @@ pub enum DocumentMutationEncodeError {
 }
 
 impl DocumentMutation {
+    /// Visit the exact snapshot encoding without allocating a payload buffer.
+    /// The visitor owns any destination allocation or digest state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DocumentMutationEncodeError::TooLarge`] when `bytes` exceed
+    /// [`MAX_DOCUMENT_MUTATION_BYTES`].
+    pub fn visit_snapshot_encoding(
+        bytes: &[u8],
+        mut write: impl FnMut(&[u8]),
+    ) -> Result<(), DocumentMutationEncodeError> {
+        if bytes.len() > MAX_DOCUMENT_MUTATION_BYTES {
+            return Err(DocumentMutationEncodeError::TooLarge {
+                actual: bytes.len(),
+                max: MAX_DOCUMENT_MUTATION_BYTES,
+            });
+        }
+        write(DOCUMENT_MUTATION_V2_PREFIX);
+        write(&[DOCUMENT_SNAPSHOT_TAG]);
+        write(bytes);
+        Ok(())
+    }
+
     /// Encode the kind and Automerge bytes into the payload carried by one
     /// [`SignedOp`]. Use [`Self::encode_frames`] for mutations that may
     /// exceed a single frame.
@@ -123,17 +142,17 @@ impl DocumentMutation {
     }
 
     /// Decode a complete versioned document mutation, either a single frame
-    /// or a payload reassembled from segments. Raw pre-migration payloads
-    /// fail explicitly rather than being guessed to be an incremental update.
+    /// or a payload reassembled from segments. Unprefixed payloads fail
+    /// explicitly rather than being guessed to be an incremental update.
     /// Wire frames are checked with the tighter
     /// [`crate::document_transfer::DocumentFrame::decode`].
     ///
     /// # Errors
     ///
-    /// Returns [`DocumentMutationError::MissingPrefix`] for legacy raw bytes,
+    /// Returns [`DocumentMutationError::MissingPrefix`] for unprefixed bytes,
     /// [`DocumentMutationError::Segmented`] for one segment of a larger
-    /// mutation, or [`DocumentMutationError::Malformed`] for a corrupt typed
-    /// body.
+    /// mutation, or [`DocumentMutationError::UnknownKind`] /
+    /// [`DocumentMutationError::Truncated`] for a corrupt typed body.
     pub fn decode(payload: &[u8]) -> Result<Self, DocumentMutationError> {
         if payload.len() > MAX_ENCODED_DOCUMENT_MUTATION_BYTES {
             return Err(DocumentMutationError::TooLarge {
@@ -141,18 +160,15 @@ impl DocumentMutation {
                 max: MAX_ENCODED_DOCUMENT_MUTATION_BYTES,
             });
         }
-        let mutation = if let Some(body) = payload.strip_prefix(DOCUMENT_MUTATION_V2_PREFIX) {
-            let (&kind, data) = body.split_first().ok_or(DocumentMutationError::Truncated)?;
-            match kind {
-                DOCUMENT_SNAPSHOT_TAG => Self::Snapshot(data.to_vec()),
-                DOCUMENT_INCREMENTAL_TAG => Self::Incremental(data.to_vec()),
-                DOCUMENT_SEGMENT_TAG => return Err(DocumentMutationError::Segmented),
-                other => return Err(DocumentMutationError::UnknownKind(other)),
-            }
-        } else if let Some(body) = payload.strip_prefix(DOCUMENT_MUTATION_V1_PREFIX) {
-            postcard::from_bytes(body).map_err(DocumentMutationError::Malformed)?
-        } else {
-            return Err(DocumentMutationError::MissingPrefix);
+        let body = payload
+            .strip_prefix(DOCUMENT_MUTATION_V2_PREFIX)
+            .ok_or(DocumentMutationError::MissingPrefix)?;
+        let (&kind, data) = body.split_first().ok_or(DocumentMutationError::Truncated)?;
+        let mutation = match kind {
+            DOCUMENT_SNAPSHOT_TAG => Self::Snapshot(data.to_vec()),
+            DOCUMENT_INCREMENTAL_TAG => Self::Incremental(data.to_vec()),
+            DOCUMENT_SEGMENT_TAG => return Err(DocumentMutationError::Segmented),
+            other => return Err(DocumentMutationError::UnknownKind(other)),
         };
         let actual = mutation.data().len();
         if actual > crate::document_transfer::MAX_DOCUMENT_TRANSFER_BYTES {
@@ -229,6 +245,14 @@ pub enum RoutedDocumentPayload {
     },
 }
 
+/// Single-frame form used by durable admission and authoring state, which
+/// never accepts a segment in place of a whole mutation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WholeDocumentPayload {
+    Cleartext(DocumentMutation),
+    Encrypted { channel: ChannelId, epoch: u64 },
+}
+
 /// Validate the fields a broker is allowed to inspect for a document route.
 ///
 /// Encrypted payloads are intentionally not decoded.  Their signed channel id
@@ -253,25 +277,74 @@ pub fn validate_document_payload_route(
     {
         return Err(DocumentMutationError::RouteMismatch);
     }
+    // Segments only exist in the current format; brokers route them like any
+    // other validated envelope and endpoints reassemble them.
+    if op.encryption.is_none()
+        && op
+            .payload
+            .strip_prefix(DOCUMENT_MUTATION_V2_PREFIX)
+            .and_then(<[u8]>::first)
+            == Some(&DOCUMENT_SEGMENT_TAG)
+        && let crate::document_transfer::DocumentFrame::Segment(segment) =
+            crate::document_transfer::DocumentFrame::decode(&op.payload)?
+    {
+        return Ok(RoutedDocumentPayload::CleartextSegment(segment));
+    }
+    match validate_whole_document_payload_route(app_id, workspace_id, record_id, op)? {
+        WholeDocumentPayload::Cleartext(mutation) => Ok(RoutedDocumentPayload::Cleartext(mutation)),
+        WholeDocumentPayload::Encrypted { channel, epoch } => {
+            if channel != document_channel_id(app_id, workspace_id, record_id) {
+                return Err(DocumentMutationError::RouteMismatch);
+            }
+            Ok(RoutedDocumentPayload::Encrypted { channel, epoch })
+        }
+    }
+}
+
+/// Validate the route binding of a single-frame payload; clear segments are
+/// refused.
+///
+/// # Errors
+///
+/// Returns [`DocumentMutationError::RouteMismatch`] when the signed metadata
+/// does not bind the envelope to this route, or the decode error of a
+/// malformed clear payload.
+pub fn validate_whole_document_payload_route(
+    app_id: &str,
+    workspace_id: &str,
+    record_id: &str,
+    op: &SignedOp,
+) -> Result<WholeDocumentPayload, DocumentMutationError> {
+    if op.artifact != document_artifact_id(app_id, workspace_id, record_id)
+        || op.attestation_id != document_attestation_id(app_id, workspace_id, record_id)
+    {
+        return Err(DocumentMutationError::RouteMismatch);
+    }
     match op.encryption {
-        None => match crate::document_transfer::DocumentFrame::decode(&op.payload)? {
-            crate::document_transfer::DocumentFrame::Whole(mutation) => {
-                Ok(RoutedDocumentPayload::Cleartext(mutation))
+        None => {
+            let mutation = DocumentMutation::decode(&op.payload)?;
+            // One signed frame carries at most one frame's worth of data;
+            // larger mutations travel as segments (see `document_transfer`).
+            let actual = mutation.data().len();
+            if actual > MAX_DOCUMENT_MUTATION_BYTES {
+                return Err(DocumentMutationError::TooLarge {
+                    actual,
+                    max: MAX_DOCUMENT_MUTATION_BYTES,
+                });
             }
-            crate::document_transfer::DocumentFrame::Segment(segment) => {
-                Ok(RoutedDocumentPayload::CleartextSegment(segment))
+            Ok(WholeDocumentPayload::Cleartext(mutation))
+        }
+        Some(meta) => {
+            if meta.channel != document_channel_id(app_id, workspace_id, record_id)
+                || op.payload.is_empty()
+            {
+                return Err(DocumentMutationError::RouteMismatch);
             }
-        },
-        Some(meta)
-            if meta.channel == document_channel_id(app_id, workspace_id, record_id)
-                && !op.payload.is_empty() =>
-        {
-            Ok(RoutedDocumentPayload::Encrypted {
+            Ok(WholeDocumentPayload::Encrypted {
                 channel: meta.channel,
                 epoch: meta.epoch,
             })
         }
-        Some(_) => Err(DocumentMutationError::RouteMismatch),
     }
 }
 
@@ -573,7 +646,7 @@ impl SignedOp {
     /// `encryption`. Sign with [`crate::crypto::sign_op`] as usual.
     #[allow(
         clippy::too_many_arguments,
-        reason = "the operation constructor records every signed collaboration field explicitly"
+        reason = "The signed envelope constructor binds payload, artifact, author, attestation, clocks and encryption in one explicit wire contract."
     )]
     pub fn new_unsigned_with_encryption(
         payload: Vec<u8>,
@@ -807,11 +880,6 @@ mod tests {
                 DOCUMENT_SNAPSHOT_TAG,
                 "the signed wire kind is explicit rather than serde enum order"
             );
-
-            let legacy = DocumentMutation::Incremental(vec![9, 10]);
-            let mut legacy_wire = DOCUMENT_MUTATION_V1_PREFIX.to_vec();
-            legacy_wire.extend(postcard::to_allocvec(&legacy).unwrap());
-            assert_eq!(DocumentMutation::decode(&legacy_wire).unwrap(), legacy);
         }
 
         // Phase: typed_document_mutations_enforce_wire_budget_before_decode.
@@ -884,6 +952,30 @@ mod tests {
                 "artifact and MLS channel domains must not alias"
             );
             assert_eq!(first.0.get_version_num(), 8);
+            assert_eq!(first.0.to_string(), "0231a3fb-e6d4-89fc-9fc4-160d44d242bf");
+            assert_eq!(
+                document_artifact_id("dev.tilo.notes", "room-a", "record-b")
+                    .0
+                    .to_string(),
+                "fd9e9e68-54c3-8ae2-bfc6-cb06b0816e07"
+            );
+            assert_eq!(
+                document_attestation_id("dev.tilo.notes", "room-a", "record-b")
+                    .0
+                    .to_string(),
+                "fe8b6b90-8390-8f45-923c-e78d2a15cb9c"
+            );
+            assert_eq!(
+                document_channel_id("dev.tilo.notes", "room-a", "record-b")
+                    .0
+                    .to_string(),
+                "f36e8478-33d6-8069-b327-1971d231a822"
+            );
+            let golden = DocumentMutation::Snapshot(vec![0, 1, 2, 0xff]);
+            assert_eq!(
+                golden.encode().unwrap(),
+                b"tilo-document-mutation-v2\0\x01\0\x01\x02\xff"
+            );
         }
 
         // Phase: encrypted_document_route_is_bound_without_decoding_ciphertext.

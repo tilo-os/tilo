@@ -3,7 +3,6 @@
 //! (`wp_cursor_shape_v1`) and handing over its own cursor surface. The
 //! result is read from the frame builder, which is where captures and the
 //! control socket's state dump read it.
-
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -347,6 +346,7 @@ fn a_client_cursor_surface_is_shown_with_its_hotspot() {
     h.pump();
 
     let shown = shown(&h, &mut fb);
+    drop(fb);
     assert_eq!(shown["kind"], "surface", "{shown}");
     assert_eq!(shown["width"], 16);
     assert_eq!(shown["hotspot"], serde_json::json!([3, 5]));

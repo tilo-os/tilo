@@ -133,9 +133,7 @@ fn frame(fb: &mut FrameBuilder) -> vello::Scene {
 /// cross-fade is over, so samples measure the client and not the card.
 fn show_client(fb: &mut FrameBuilder, surface_id: u64) {
     let _ = frame(fb);
-    let deadline = std::time::Instant::now()
-        .checked_add(std::time::Duration::from_secs(3))
-        .unwrap_or_else(std::time::Instant::now);
+    let deadline = tilo_test_env::hang_deadline();
     let mut published = false;
     while std::time::Instant::now() < deadline {
         if !published && let Some((bw, bh)) = store().viewport(surface_id) {
@@ -302,6 +300,7 @@ fn a_protected_window_is_captured_as_the_placeholder_and_an_unprotected_one_as_i
     let scene = frame(&mut fb);
     let (shot, width, _) =
         CaptureExecutor::render_screenshot(&mut fb, &scene, &whole_screen()).expect("screenshot");
+    drop(fb);
     assert!(count_near(&interior_samples(&shot, width, rect), CLIENT) >= 12);
 
     store().forget(SURFACE);
@@ -324,6 +323,7 @@ fn a_protected_app_does_not_withhold_other_apps() {
     let scene = frame(&mut fb);
     let (shot, width, _) =
         CaptureExecutor::render_screenshot(&mut fb, &scene, &whole_screen()).expect("screenshot");
+    drop(fb);
     store().release_capture_protection(CONNECTION);
     assert!(
         count_near(&interior_samples(&shot, width, rect), CLIENT) >= 12,
@@ -389,7 +389,9 @@ fn the_lock_screen_is_never_captured() {
     // An App capture has no desktop to repaint while locked.
     let mut app_capture = intent(CaptureExtent::FullApp, vec![everywhere]);
     app_capture.targets = fb.capture_targets();
-    assert!(CaptureExecutor::render_screenshot(&mut fb, &lock, &app_capture).is_err());
+    let captured = CaptureExecutor::render_screenshot(&mut fb, &lock, &app_capture);
+    drop(fb);
+    assert!(captured.is_err());
 }
 
 /// Whether a shell prompt at `rect` is withheld: every sample of it in the
@@ -442,7 +444,7 @@ fn assert_prompt_withheld(
 
 /// Paint, then check every secret prompt the shell reports is withheld from
 /// a screenshot and a screen-share frame while the local display shows it.
-fn assert_secret_prompts_withheld(fb: &mut FrameBuilder, what: &str) {
+pub(crate) fn assert_secret_prompts_withheld(fb: &mut FrameBuilder, what: &str) {
     let scene = frame(fb);
     let prompts = fb.host().secret_prompt_rects();
     assert!(!prompts.is_empty(), "{what}: the prompt is a secret prompt");
@@ -525,6 +527,7 @@ fn the_shells_secret_prompts_are_never_captured() {
         });
         fb.host_mut().force_quick_settings_settled();
         assert_secret_prompts_withheld(&mut fb, "the Wi-Fi passphrase");
+        drop(fb);
     }
 
     // Phase `identity_restore_and_backup`: the steps that take a backup's
@@ -556,10 +559,15 @@ fn the_shells_secret_prompts_are_never_captured() {
                 );
             }
         }
+        drop(fb);
     }
 }
 
 #[test]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the harness and frame builder drive every phase of the one keyboard session"
+)]
 fn the_on_screen_keyboard_is_withheld_while_a_password_field_has_focus() {
     use super::emoji_picker_commit::Harness;
     use wayland_protocols::wp::text_input::zv3::client::zwp_text_input_v3::{

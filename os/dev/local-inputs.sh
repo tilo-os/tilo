@@ -118,7 +118,7 @@ else
       else
         msg "local inputs: no usable CI kernel; building os/kernel/Containerfile locally (long, cold)"
         "$TILO_OS_DIR/dev/cache-github-assets.sh" v4l2loopback-0.15.3-a7e4a4d.tar.gz >&2
-        podman build -f "$TILO_OS_DIR/kernel/Containerfile" \
+        podman build "${TILO_PODMAN_BUILD_FLAGS[@]}" -f "$TILO_OS_DIR/kernel/Containerfile" \
           --build-context "github-assets=$TILO_OS_DIR/external-assets/cache" \
           --build-arg "KERNEL_BUILDROOT_REF=$_li_buildroot" \
           --build-arg "SOURCE_DATE_EPOCH=$(git -C "$TILO_REPO" log -1 --format=%ct)" \

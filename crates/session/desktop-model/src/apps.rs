@@ -4,16 +4,16 @@ use std::collections::BTreeMap;
 
 use automerge::{AutoCommit, ObjId, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
 
-use crate::app::{APP_ID_PREFIX, AppId};
+use crate::app::AppId;
 use crate::ids::{GroupId, StripId, TabId};
 use crate::layout::TileContent;
-use crate::projection::{ROOM_CONTENTS_KEY, contents_key, contents_key_id};
+use crate::projection::{ROOM_CONTENTS_KEY, contents_key, tab_entries};
 
 /// Key on a room document's tab entry naming the record the tab shows.
 pub const TAB_RECORD_KEY: &str = "record_id";
 
 /// The exact app a tile belongs to, as grants and launchers key it:
-/// built-in kinds under [`crate::APP_ID_PREFIX`], every other app by its
+/// built-in kinds by their package id, every other app by its
 /// own id. `None` for a device-local surface that belongs to no app.
 pub fn canonical_app_id(tile: &TileContent) -> Option<AppId> {
     match tile {
@@ -27,48 +27,16 @@ pub fn canonical_app_id(tile: &TileContent) -> Option<AppId> {
     }
 }
 
-/// What to call an app on screen, derived from its canonical id alone: a
-/// built-in shows its name without the [`APP_ID_PREFIX`] namespace
-/// (`org.tilo.Files` → `Files`), any other app its full id. Agrees with
-/// [`crate::AppKind::as_str`] for every kind, so one id never gets two
-/// names.
-pub fn app_label(app_id: &str) -> &str {
-    app_id
-        .strip_prefix(APP_ID_PREFIX)
-        .and_then(|rest| rest.strip_prefix('.'))
-        .filter(|name| !name.is_empty() && !name.contains('.'))
-        .unwrap_or(app_id)
-}
-
 /// Every tab in a room document that names the record it shows, as the
-/// raw record id string. Parsing it is the reader's business.
+/// raw record id string. Parsing it is the reader's business. Concurrently
+/// created containers are joined, as [`crate::projection::contents_of`] does.
 pub fn record_routes(doc: &AutoCommit) -> BTreeMap<TabId, String> {
     let mut routes = BTreeMap::new();
-    let Some((_, contents)) = doc.get(&ROOT, ROOM_CONTENTS_KEY).ok().flatten() else {
-        return routes;
-    };
-    for strip in doc.keys(&contents) {
-        let Some(groups) = child(doc, &contents, &strip).and_then(|s| child(doc, &s, "groups"))
-        else {
-            continue;
-        };
-        for group in doc.keys(&groups) {
-            let Some(tabs) = child(doc, &groups, &group).and_then(|g| child(doc, &g, "tabs"))
-            else {
-                continue;
-            };
-            for tab in doc.keys(&tabs) {
-                let (Some(id), Some(entry)) = (contents_key_id(&tab), child(doc, &tabs, &tab))
-                else {
-                    continue;
-                };
-                if let Some((Value::Scalar(value), _)) =
-                    doc.get(&entry, TAB_RECORD_KEY).ok().flatten()
-                    && let ScalarValue::Str(record) = value.as_ref()
-                {
-                    routes.insert(id, record.to_string());
-                }
-            }
+    for (_, _, tab, entry) in tab_entries(doc) {
+        if let Some((Value::Scalar(value), _)) = doc.get(&entry, TAB_RECORD_KEY).ok().flatten()
+            && let ScalarValue::Str(record) = value.as_ref()
+        {
+            routes.insert(tab, record.to_string());
         }
     }
     routes
@@ -126,4 +94,33 @@ pub fn bind_tab_record(
 
 fn child(doc: &AutoCommit, parent: &ObjId, key: &str) -> Option<ObjId> {
     doc.get(parent, key).ok().flatten().map(|(_, id)| id)
+}
+
+/// An application a desktop can open, as launchers and "Open <App>" actions
+/// name it: its durable app id and display title.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OpenableApp {
+    pub app_id: &'static str,
+    pub title: &'static str,
+}
+
+/// The applications one host can open. Each data source (the browser's
+/// bundled apps, a workspace host's checked record factories) implements it
+/// once; everything that lists, validates or titles an open asks it.
+pub trait AppCatalogue {
+    fn openable(&self) -> Vec<OpenableApp>;
+
+    /// The entry for `app`, when this host can open it.
+    fn find(&self, app: &str) -> Option<OpenableApp> {
+        self.openable()
+            .into_iter()
+            .find(|entry| entry.app_id == app)
+    }
+}
+
+/// A host that opens nothing.
+impl AppCatalogue for () {
+    fn openable(&self) -> Vec<OpenableApp> {
+        Vec::new()
+    }
 }

@@ -495,7 +495,7 @@ impl TubeApp {
         let changed = Cell::new(false);
         let context = |action: &crate::actions::TubeAction| {
             tilo_actions::ActionContext::for_action(
-                "org.tilo.Tube",
+                "so.tilo.tube",
                 "Tube device sync import",
                 action,
             )
@@ -2949,7 +2949,7 @@ impl Widget for TubeApp {
                     state,
                     crate::actions::TUBE_ACTION_TYPE,
                     &operation,
-                    tilo_actions::ActionContext::for_action("org.tilo.Tube", "Tube", &operation),
+                    tilo_actions::ActionContext::for_action("so.tilo.tube", "Tube", &operation),
                 );
             }
             changed |= self.apply(a, state, path);

@@ -4,6 +4,10 @@
 //! The app is a real `ui::App` on the production Cap'n Proto client; it
 //! answers from its own retained semantic tree, and the broker checks the
 //! caller may read the room and redacts the answer for its audience.
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 
 use std::os::fd::IntoRawFd as _;
 use std::os::unix::net::UnixStream;
@@ -179,6 +183,12 @@ fn announced_peer(
 #[test]
 fn the_shell_inspects_a_live_app_through_the_broker() {
     let dir = tempfile::tempdir().expect("socket dir");
+    // The broker binds only inside an owner-only directory.
+    std::fs::set_permissions(
+        dir.path(),
+        std::os::unix::fs::PermissionsExt::from_mode(0o700),
+    )
+    .expect("owner-only socket directory");
     let path = dir.path().join("collab.sock");
     let handle = broker(&path);
     let broker = handle.app_action_broker().expect("typed broker state");

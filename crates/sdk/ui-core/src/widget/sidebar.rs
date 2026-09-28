@@ -874,6 +874,7 @@ fn mix(a: Color, b: Color, t: f64) -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::HANG_BOUND;
     use vello::kurbo::Affine;
 
     fn wide() -> Rect {
@@ -1030,7 +1031,8 @@ mod tests {
                 "a mid-slide drawer keeps requesting frames"
             );
 
-            for _ in 0..300 {
+            let deadline = crate::time::now() + HANG_BOUND;
+            while crate::time::now() < deadline {
                 std::thread::sleep(crate::time::Duration::from_millis(1));
                 d.tick(false);
                 if !d.is_animating() {

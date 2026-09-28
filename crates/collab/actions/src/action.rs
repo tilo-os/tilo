@@ -189,3 +189,26 @@ impl EncodedAction {
         })
     }
 }
+
+#[cfg(test)]
+mod operation_kind_tests {
+    use super::OperationKind;
+
+    /// Only the canonical form round-trips; other spellings are refused.
+    #[test]
+    fn operation_kind_accepts_only_the_canonical_spelling() {
+        for (kind, canonical, lower) in [
+            (OperationKind::Document, "Document", "document"),
+            (OperationKind::Effect, "Effect", "effect"),
+            (OperationKind::View, "View", "view"),
+        ] {
+            assert_eq!(serde_json::to_value(kind).unwrap(), canonical);
+            assert_eq!(
+                serde_json::from_value::<OperationKind>(serde_json::json!(canonical)).unwrap(),
+                kind
+            );
+            assert!(serde_json::from_value::<OperationKind>(serde_json::json!(lower)).is_err());
+        }
+        assert!(serde_json::from_value::<OperationKind>(serde_json::json!("EFFECT")).is_err());
+    }
+}

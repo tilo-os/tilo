@@ -46,6 +46,7 @@ impl OwnerAliases {
 /// widget callbacks. The inverse resolves back through the current admission.
 pub(crate) struct ExportedNodes {
     pub(crate) nodes: HashMap<NodeId, *mut dyn Widget>,
+    pub(crate) names: crate::a11y_tree::AdmittedNodeNames,
     /// Whose lifetime each exported node answers to, which scopes its
     /// AccessKit id.
     pub(crate) custody: crate::accesskit_bridge::Custody,
@@ -62,9 +63,14 @@ impl ExportedNodes {
         self.actual.get(&exported).copied()
     }
 
-    pub(crate) fn resolve(&self, root: &dyn Widget, id: accesskit::NodeId) -> Option<A11yTarget> {
+    /// Resolve `id` against the presentation `roots` it was exported from.
+    pub(crate) fn resolve(
+        &self,
+        roots: &[&dyn Widget],
+        id: accesskit::NodeId,
+    ) -> Option<A11yTarget> {
         let target =
-            crate::accesskit_bridge::resolve_node_id_bound(root, &self.nodes, id, &self.custody)?;
+            crate::accesskit_bridge::resolve_node_id_bound(roots, &self.nodes, id, &self.custody)?;
         Some(match target {
             A11yTarget::Root => A11yTarget::Root,
             A11yTarget::Widget(node) => A11yTarget::Widget(*self.actual.get(&node)?),
@@ -83,9 +89,32 @@ impl ExportedNodes {
     }
 }
 impl BoundNodeMap {
+    pub(crate) fn semantic_node_names(
+        &self,
+        nodes: &HashMap<NodeId, *mut dyn Widget>,
+    ) -> crate::a11y_tree::AdmittedNodeNames {
+        let mut names = crate::a11y_tree::AdmittedNodeNames::default();
+        for (&node, &pointer) in nodes {
+            let Some(admitted) = self.nodes.get(&node) else {
+                continue;
+            };
+            if !std::ptr::eq(admitted.pointer, pointer)
+                || admitted.inactive
+                || admitted
+                    .legacy
+                    .as_ref()
+                    .is_some_and(|owner| owner.lifetime_id().is_none())
+            {
+                continue;
+            }
+            names.insert(node, pointer, admitted.semantic_name.clone());
+        }
+        names
+    }
     pub(crate) fn exported_nodes(&self, nodes: &HashMap<NodeId, *mut dyn Widget>) -> ExportedNodes {
         let mut exported = ExportedNodes {
             nodes: HashMap::new(),
+            names: crate::a11y_tree::AdmittedNodeNames::default(),
             custody: HashMap::new(),
             actual: HashMap::new(),
             exported: HashMap::new(),
@@ -112,6 +141,9 @@ impl BoundNodeMap {
             if exported.nodes.insert(alias, pointer).is_some() {
                 collisions.insert(alias);
             }
+            exported
+                .names
+                .insert(alias, pointer, admitted.semantic_name.clone());
             exported.actual.insert(alias, node);
             exported.exported.insert(node, alias);
             if let Some(lifetime) = admitted
@@ -131,6 +163,7 @@ impl BoundNodeMap {
         // Alias exhaustion/collision is unavailable, never a raw-id fallback.
         for alias in collisions {
             exported.nodes.remove(&alias);
+            exported.names.remove(alias);
             exported.custody.remove(&alias);
             exported.actual.remove(&alias);
             exported.exported.retain(|_, candidate| *candidate != alias);

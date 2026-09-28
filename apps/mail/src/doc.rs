@@ -9,6 +9,8 @@
 //! │     └── <id> (Map) { read: bool, starred: bool, folder: Str }
 //! ├── "messages" (Map)  externally-ingested ids `{ present, purged }`
 //! └── "draft"   (Map)  the message currently being composed
+//!       ├── to, cc, bcc, subject, body, html_body, … (Str) as last saved
+//!       └── "rich_body" (Map) the body being written: qdoc rich text
 //! ```
 //!
 //! The immutable message corpus (headers/bodies/attachments) is *not* stored
@@ -21,8 +23,15 @@ use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 use ui::doc::{read_bool, read_str};
 
+use qdoc_rich_text::RichText;
+use ui::widget::{BlockContent, BlockKind};
+
+use crate::actions::DraftBodySeed;
 use crate::attachment_store;
 use crate::model::{Draft, DraftAttachment, Folder, Mailbox, Message};
+
+/// The draft's key holding the body being written.
+const RICH_BODY: &str = "rich_body";
 
 pub struct MailDoc;
 
@@ -167,6 +176,50 @@ impl MailDoc {
         }
     }
 
+    /// The body being written: rich text under the draft's `rich_body`,
+    /// once started. Never writes.
+    pub fn draft_body(doc: &AutoCommit) -> Option<ObjId> {
+        let Ok(Some((Value::Object(ObjType::Map), d))) = doc.get(&ROOT, "draft") else {
+            return None;
+        };
+        match doc.get(&d, RICH_BODY) {
+            Ok(Some((Value::Object(ObjType::Map), body))) => Some(body),
+            _ => None,
+        }
+    }
+
+    /// Start the body being written afresh from `seed`. Backs
+    /// [`crate::actions::MailAction::StartDraftBody`].
+    pub fn start_draft_body(doc: &mut AutoCommit, seed: &DraftBodySeed) {
+        let d = Self::map(doc, &ROOT, "draft");
+        let Ok(body) = doc.put_object(&d, RICH_BODY, ObjType::Map) else {
+            return;
+        };
+        if let Some(html) = seed.html.as_deref().filter(|html| !html.trim().is_empty()) {
+            // Mail bodies carry no inline images; any the HTML embeds are left out.
+            let mut images = tilo_content::ContentInputs::new();
+            qdoc_codecs::html::import_html_under(doc, &body, html, &mut images);
+            return;
+        }
+        if RichText::initialize_under(doc, &body).is_err() {
+            return;
+        }
+        let blocks: Vec<BlockContent> = seed
+            .text
+            .split('\n')
+            .map(|line| match line.strip_prefix("> ") {
+                Some(quoted) => BlockContent {
+                    kind: BlockKind::Quote,
+                    ..BlockContent::paragraph("", quoted)
+                },
+                None => BlockContent::paragraph("", line),
+            })
+            .collect();
+        if let Err(error) = tilo_rich_text::fill_under(doc, &body, &blocks) {
+            tracing::warn!(%error, "draft body could not be started");
+        }
+    }
+
     /// Clear the persisted draft so a later open no longer re-materialises it.
     /// Backs [`crate::actions::MailAction::DiscardDraft`].
     pub fn clear_draft(doc: &mut AutoCommit) {
@@ -180,6 +233,7 @@ impl MailDoc {
             "html_body",
             "calendar_ics",
             "attachments",
+            RICH_BODY,
         ] {
             if doc.get(&d, key).ok().flatten().is_some() {
                 let _ = doc.delete(&d, key);

@@ -1,4 +1,5 @@
 mod animation_frame;
+mod animation_frame_request;
 mod canvas;
 pub mod event;
 mod event_handle;
@@ -7,6 +8,7 @@ mod intersection_handle;
 mod media_query_handle;
 mod pointer;
 mod resize_scaling;
+mod resize_size;
 mod schedule;
 
 use std::sync::OnceLock;

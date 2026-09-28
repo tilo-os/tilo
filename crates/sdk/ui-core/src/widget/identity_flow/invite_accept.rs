@@ -401,11 +401,11 @@ impl InviteAcceptScreen {
             "{} invited you to #{} as {:?}",
             env.inviter_label, env.channel_name, env.role
         );
-        let when = chrono::DateTime::<chrono::Utc>::from(
-            SystemTime::UNIX_EPOCH
-                .checked_add(crate::time::Duration::from_secs(env.expires_unix))
-                .unwrap_or(SystemTime::UNIX_EPOCH),
+        let when = chrono::DateTime::<chrono::Utc>::from_timestamp(
+            i64::try_from(env.expires_unix).unwrap_or(i64::MAX),
+            0,
         )
+        .unwrap_or_default()
         .to_rfc3339();
         Some((banner, format!("Expires {when}")))
     }

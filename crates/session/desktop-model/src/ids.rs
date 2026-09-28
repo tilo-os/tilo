@@ -196,6 +196,26 @@ impl IdMinter {
     /// Advance past `id` if it was minted under this minter's salt, so a
     /// reloaded tree never re-mints an id it already holds. Ids under
     /// another salt belong to another peer and leave the counter alone.
+    /// [`Self::mint`] for a durable owner, which must never reuse or wrap
+    /// an id: refuses salt `0` (no namespace), a counter of `0`, and a
+    /// counter beyond the 48 bits an id carries. The owner persists
+    /// [`Self::next_counter`] before publishing what it minted.
+    ///
+    /// # Errors
+    ///
+    /// A description when the namespace is invalid or exhausted.
+    pub fn mint_in_namespace(&mut self) -> Result<u64, String> {
+        if self.salt == 0 || self.counter == 0 || self.counter > PEER_ID_COUNTER_MASK {
+            return Err("invalid or exhausted desktop identity namespace".into());
+        }
+        let id = compose_id(self.salt, self.counter);
+        self.counter = self
+            .counter
+            .checked_add(1)
+            .ok_or("desktop identity namespace exhausted")?;
+        Ok(id)
+    }
+
     pub fn observe(&mut self, id: u64) {
         if peer_salt_of(id) == self.salt {
             self.counter = self.counter.max(counter_of(id).saturating_add(1));
@@ -213,6 +233,21 @@ impl MintIds for IdMinter {
     fn mint_id(&mut self) -> u64 {
         self.mint()
     }
+}
+
+/// [`IdMinter::mint_in_namespace`] for an owner that keeps its counter as a
+/// plain value (read from and written back to its room document): mints
+/// under `salt` from `*counter` and advances it.
+///
+/// # Errors
+///
+/// A description when the namespace is invalid or exhausted; `*counter` is
+/// then unchanged.
+pub fn mint_in_namespace(salt: u16, counter: &mut u64) -> Result<u64, String> {
+    let mut minter = IdMinter::resume(salt, *counter);
+    let id = minter.mint_in_namespace()?;
+    *counter = minter.next_counter();
+    Ok(id)
 }
 
 #[cfg(test)]
@@ -251,5 +286,17 @@ mod tests {
             assert_eq!(peer_salt_of(id), 0xFFFF);
             assert_eq!(counter_of(id), PEER_ID_COUNTER_MASK);
         }
+    }
+
+    #[test]
+    fn a_durable_namespace_refuses_to_wrap_or_run_unsalted() {
+        let mut minter = IdMinter::resume(0x0a, PEER_ID_COUNTER_MASK);
+        assert_eq!(
+            minter.mint_in_namespace(),
+            Ok(compose_id(0x0a, PEER_ID_COUNTER_MASK))
+        );
+        assert!(minter.mint_in_namespace().is_err());
+        assert!(IdMinter::new(0).mint_in_namespace().is_err());
+        assert!(IdMinter::resume(0x0a, 0).mint_in_namespace().is_err());
     }
 }

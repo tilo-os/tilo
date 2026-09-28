@@ -19,6 +19,8 @@ files-shortcuts-context = Kontextmenü: Menütaste oder Rechtsklick
 files-shortcuts-close = Diese Hilfe öffnen: ? oder F1 · Blätter und Menüs schließen: Esc
 
 ## Verfügbarkeit: Aktionen und Status
+files-opening-document = Dokument wird geöffnet…
+files-document-opening-cancelled = Das Öffnen des Dokuments wurde abgebrochen
 files-keep-offline = Offline verfügbar halten
 files-use-automatic-storage = Automatische Speicherverwaltung verwenden
 files-pinned-by-parent = Durch übergeordneten Ordner offline gehalten

@@ -70,14 +70,37 @@ ARG TILO_WITH_WINDOWS=1
 # out is how you get an image to boot-test in minutes while the browser's own
 # build is being repaired.
 ARG TILO_WITH_BROWSER=1
+# Where the Rust compiler comes from: a registry.tilo.so/tilo/tilo-builder
+# index, pinned by digest, the same one os/Containerfile.dev and the CI check
+# lanes compile with. .forgejo/workflows/build-builder-image.yml installs the
+# channel rust-toolchain.toml names into it for both architectures, and the
+# builder stage takes exactly that channel out of it and fails when the image
+# lacks it. Not Fedora's rust package: its version moves whenever the RPM
+# snapshot is refreshed, and a different compiler emits different code, so
+# the tapps this image packs came out ~1.7 MB larger each than what rcargo and
+# CI measure. The runtime dylib, its libstd and every thin app are linked
+# with -C prefer-dynamic, so all of them must come from this one compiler.
+ARG RUST_TOOLCHAIN_IMAGE=registry.tilo.so/tilo/tilo-builder@sha256:568fca1f8b4a4b1700c871cca033d2d291a5eb02c4b3be9681410f456b5a7bc9
 FROM scratch AS public-trust
 COPY keys/cosign.pub keys/tpm2-pcr-signing.public.pem /
 
 FROM ${RPMS_REF} AS rpms
+FROM ${RUST_TOOLCHAIN_IMAGE} AS rust-toolchain
+
+# The toolchain pin alone, so the builder's toolchain layer is keyed on it and
+# not on the whole workspace.
+FROM scratch AS rust-toolchain-pin
+COPY rust-toolchain.toml /
 
 # Public trust parsing is a build-only operation. The pinned base supplies the
 # OpenSSL CLI while its ABI libraries remain part of the runtime package policy.
 FROM ${BASE_REF} AS public-trust-tools
+
+# Restore the runtime resolver only after transient-state cleanup. A RUN with
+# /etc/resolv.conf pointing into /run/NetworkManager makes BuildKit mount its
+# build-time DNS file there, so /run cannot be emptied by bootc's lint gate.
+FROM ${BASE_REF} AS runtime-resolver-link
+RUN mkdir -p /out && ln -s ../run/NetworkManager/resolv.conf /out/resolv.conf
 
 # ---- Custom kernel repo ----------------------------------------------------
 # Same "OCI image with /repo" shape as the frozen RPM repo (see
@@ -321,8 +344,8 @@ COPY os/app-runtime /build/os/app-runtime
 # BASE_REF, re-run `snapshot-rpms`.
 FROM ${BASE_REF} AS builder
 
-# Rust toolchain + the C/-devel deps the workspace's *-sys crates link or build
-# against. Superset of the my-distrobox dev deps (repo CLAUDE.md) plus the base
+# The C toolchain and -devel deps the workspace's *-sys crates link or build
+# against (the Rust compiler is the pinned release, installed below). Superset of the my-distrobox dev deps (repo CLAUDE.md) plus the base
 # toolchain a minimal bootc image lacks: cmake/perl/clang etc. that
 # vendored crates (aws-lc-sys, the freetype/harfbuzz/fontconfig font stack,
 # jemalloc, sqlite) need to build. `sccache` honours the project's
@@ -346,7 +369,7 @@ FROM ${BASE_REF} AS builder
 #     flite; shell links the same engine when the browser is built, because
 #     both share one Cargo invocation.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
-        rust cargo sccache capnproto \
+        sccache capnproto \
         gcc gcc-c++ make cmake perl perl-FindBin python3 git \
         clang clang-devel pkgconf-pkg-config \
         libxkbcommon-devel wayland-devel \
@@ -362,6 +385,30 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
         nasm \
         gstreamer1-devel gstreamer1-plugins-base-devel \
     && dnf clean all
+
+# The Rust release rust-toolchain.toml pins, out of RUST_TOOLCHAIN_IMAGE (top of
+# file), linked into /usr/local/bin. No rustup: nothing here switches
+# toolchains, and a proxy that read rust-toolchain.toml would try to download.
+RUN --mount=type=bind,from=rust-toolchain,source=/usr/local/rustup/toolchains,target=/run/tilo-rust-toolchains,ro \
+    --mount=type=bind,from=rust-toolchain-pin,source=/rust-toolchain.toml,target=/run/tilo-rust-toolchain.toml,ro \
+    channel="$(sed -n 's/^channel *= *"\([^"]*\)".*/\1/p' /run/tilo-rust-toolchain.toml)" \
+    && [ -n "$channel" ] \
+    && toolchain="$channel-$(uname -m)-unknown-linux-gnu" \
+    && if [ ! -x "/run/tilo-rust-toolchains/$toolchain/bin/rustc" ]; then \
+         printf 'RUST_TOOLCHAIN_IMAGE has no %s toolchain, which rust-toolchain.toml pins (it has: %s).\n' \
+           "$toolchain" "$(ls /run/tilo-rust-toolchains | tr '\n' ' ')" >&2; \
+         printf 'Pin a tilo-builder index built from this rust-toolchain.toml (build-builder-image.yml tags it %s).\n' \
+           "$channel" >&2; \
+         exit 1; \
+       fi \
+    && cp -a "/run/tilo-rust-toolchains/$toolchain" /usr/local/lib/rust-toolchain \
+    && for tool in /usr/local/lib/rust-toolchain/bin/*; do ln -s "$tool" "/usr/local/bin/${tool##*/}"; done \
+    && actual="$(rustc --version | awk '{print $2}')" \
+    && if [ "$actual" != "$channel" ]; then \
+         printf 'the image builder compiles with rustc %s, but rust-toolchain.toml pins %s\n' "$actual" "$channel" >&2; \
+         exit 1; \
+       fi \
+    && cargo --version
 
 # Fedora's sccache RPM is built without the S3 backend. Use the same pinned,
 # full-feature static client as the canonical CI builder so the nested image
@@ -834,18 +881,29 @@ RUN if [ "${TILO_PREBUILT_APPS}" = 1 ]; then \
 # the browser the same app-store and sandbox route as every other app. The
 # special runtime is needed only when the main app collection was prebuilt;
 # source builds already make the browser thin in the unified runtime graph.
-RUN : > /out/browser-runtime-publisher.hex \
+ARG TILO_BROWSER_RUNTIME_PUBLISHER=""
+RUN --mount=type=secret,id=browser_runtime_identity \
+    : > /out/browser-runtime-publisher.hex \
     && if [ "${TILO_PREBUILT_APPS}" = 1 ] && [ "${TILO_WITH_BROWSER}" != 0 ]; then \
          test "${RUNTIME_VERSION}" = 2026.07 \
          && test -x /out/optional/browser \
-         && /out/tilo-runtime-bundle key generate --out /out/browser-runtime-identity.json \
+         && if [ -n "$TILO_BROWSER_RUNTIME_PUBLISHER" ]; then \
+              test -s /run/secrets/browser_runtime_identity \
+              && actual="$(/out/tilo-runtime-bundle key pubkey \
+                   --identity /run/secrets/browser_runtime_identity)" \
+              && test "$actual" = "$TILO_BROWSER_RUNTIME_PUBLISHER" \
+              && identity=/run/secrets/browser_runtime_identity; \
+            else \
+              /out/tilo-runtime-bundle key generate --out /out/browser-runtime-identity.json \
+              && identity=/out/browser-runtime-identity.json; \
+            fi \
          && /out/tilo-runtime-bundle build \
               --version 2026.7.0-browser --arch "$(uname -m)" --from / \
               --include /out/optional/browser \
-              --identity /out/browser-runtime-identity.json \
+              --identity "$identity" \
               --out /usr/lib/tilo-runtime/2026.7.0-browser \
          && /out/tilo-runtime-bundle key pubkey \
-              --identity /out/browser-runtime-identity.json \
+              --identity "$identity" \
               > /out/browser-runtime-publisher.hex \
          && /out/tilo-runtime-bundle verify \
               /usr/lib/tilo-runtime/2026.7.0-browser \
@@ -872,7 +930,9 @@ RUN : > /out/browser-runtime-publisher.hex \
 # Packages take the ordinary route — `tilo-app-package pack` then `tilo-install install`
 # — so a preinstalled app is described exactly as a user-installed one is, and
 # the launcher grants it exactly the same thing. See os/scripts/pack-apps.sh.
-RUN BIN_DIR=/out/thin-apps \
+RUN --mount=type=secret,id=browser_app_identity \
+    export TILO_IMAGE_BUILD=1 \
+    && BIN_DIR=/out/thin-apps \
     TAPP_DIR=/out/prebuilt-apps \
     EXPECTED_PUBKEY="${TILO_APP_COLLECTION_PUBLISHER}" \
     PKG_BIN=/out/tilo-app-package \
@@ -889,9 +949,19 @@ RUN BIN_DIR=/out/thin-apps \
                  > /tmp/browser-package-repo/apps/browser/tilo-app.toml \
             && grep -Eq '^runtime[[:space:]]*=[[:space:]]*"tilo-runtime/2026\.7\.0-browser"$' \
                  /tmp/browser-package-repo/apps/browser/tilo-app.toml \
+            && if [ -n "$TILO_BROWSER_RUNTIME_PUBLISHER" ]; then \
+                 test -s /run/secrets/browser_app_identity \
+                 && browser_app_identity=/run/secrets/browser_app_identity \
+                 && browser_app_publisher="$TILO_APP_COLLECTION_PUBLISHER"; \
+               else \
+                 browser_app_identity= \
+                 browser_app_publisher=; \
+               fi \
             && REPO=/tmp/browser-package-repo \
             BIN_DIR=/out/browser-app \
             TAPP_DIR= \
+            IDENTITY_JSON="$browser_app_identity" \
+            EXPECTED_PUBKEY="$browser_app_publisher" \
             PKG_BIN=/out/tilo-app-package \
             INSTALL_BIN=/out/tilo-install \
             BUNDLE_BIN=/out/tilo-runtime-bundle \
@@ -1143,7 +1213,6 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     sane-backends-drivers-scanners \
     tesseract \
     tesseract-langpack-eng \
-    libcanberra-gtk3 \
     sound-theme-freedesktop \
     && dnf clean all && ${FINALIZE_RPMDB}
 
@@ -1159,7 +1228,15 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 # on AMD). Cisco's openh264 GStreamer plugin is deliberately NOT baked in:
 # Cisco's patent licence covers only binaries the user downloads from Cisco.
 # It arrives with the opt-in additional-codecs pack, downloaded on the device.
+#
+# -bad-free's gtkwaylandsink plugin makes GTK 3 a hard dependency (see
+# os/scripts/verify-no-ui-toolkits.sh). Fedora's GTK sound-event helper and
+# desktop-portal backend supplement GTK 3; Tilo plays event sounds with pw-play
+# and serves its own portal backend, so the transactions that could pull them
+# in exclude them, and the toolkit gate fails the build if one still arrives.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
+    --exclude=libcanberra-gtk3 \
+    --exclude=xdg-desktop-portal-gtk \
     gstreamer1 \
     gstreamer1-plugins-base \
     gstreamer1-plugins-good \
@@ -1271,15 +1348,22 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 # tilo-mimeapps.list the compositor publishes; `xdg-user-dirs` names the
 # Documents/Downloads/… folders host apps expect. `geoclue2` is the service
 # xdg-desktop-portal's Location portal asks; without it every request fails.
-# Fcitx5 is the composing input method the compositor starts when a Pinyin,
-# Anthy or Hangul input source is active; it reaches apps through
-# input-method-v2 on a private display, so neither its toolkit IM modules nor
-# its Qt configuration tool (the session writes its configuration) are wanted.
-RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
+# Fcitx5 is the composing input method the compositor starts when a Rime
+# (Simplified Chinese Pinyin), Anthy or Hangul input source is active; it
+# reaches apps through input-method-v2 on a private display, so neither its
+# toolkit IM modules nor its Qt configuration tool (the session writes its
+# configuration) are wanted. These engines link no UI toolkit; Chinese Addons'
+# Pinyin would bring Qt6 and QtWebEngine for its dictionary tools. Rime's
+# shared configuration makes Simplified Chinese Pinyin its only schema.
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
+    --mount=type=bind,source=os/usr/share/rime-data/default.custom.yaml,target=/run/tilo-rime-default.custom.yaml,ro \
+    dnf install -y --setopt=reposdir=/repo \
     --exclude=fcitx5-configtool \
     --exclude=fcitx5-gtk \
     --exclude=fcitx5-qt \
     --exclude=fcitx5-qt-module \
+    --exclude=libcanberra-gtk3 \
+    --exclude=xdg-desktop-portal-gtk \
     xdg-desktop-portal \
     dconf \
     gsettings-desktop-schemas \
@@ -1287,10 +1371,11 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     xdg-user-dirs \
     geoclue2 \
     fcitx5 \
-    fcitx5-chinese-addons \
+    fcitx5-rime \
     fcitx5-anthy \
     fcitx5-hangul \
-    && dnf clean all && ${FINALIZE_RPMDB}
+    && dnf clean all && ${FINALIZE_RPMDB} \
+    && install -D -m 0644 /run/tilo-rime-default.custom.yaml /usr/share/rime-data/default.custom.yaml
 
 # ---------------------------------------------------------------------------
 # OS infrastructure (C2-C8)
@@ -1531,6 +1616,7 @@ COPY os/usr/share/plymouth/themes/tilo/ /usr/share/plymouth/themes/tilo/
 COPY \
     os/dev/make-plymouth-assets.py \
     os/scripts/verify-runtime-crypto-packages.sh \
+    os/scripts/verify-no-ui-toolkits.sh \
     /usr/local/bin/
 
 # Splash rendering needs Pillow once. The frozen snapshot already carries it
@@ -1605,16 +1691,13 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 # tilo-rpm-snapshot-package[x86_64]: wine
 # tilo-rpm-snapshot-package[x86_64]: wine-dxvk
 # tilo-rpm-snapshot-package[aarch64]: edk2-aarch64
-# Native FEX executable/Qt frontend dependencies and host graphics/audio thunks.
+# Native FEX executable dependencies and host graphics/audio thunks.
 # tilo-rpm-snapshot-package[aarch64]: glibc
 # tilo-rpm-snapshot-package[aarch64]: libgcc
 # tilo-rpm-snapshot-package[aarch64]: libstdc++
 # tilo-rpm-snapshot-package[aarch64]: libglvnd-glx
 # tilo-rpm-snapshot-package[aarch64]: libglvnd-opengl
 # tilo-rpm-snapshot-package[aarch64]: libglvnd-egl
-# tilo-rpm-snapshot-package[aarch64]: qt6-qtbase
-# tilo-rpm-snapshot-package[aarch64]: qt6-qtbase-gui
-# tilo-rpm-snapshot-package[aarch64]: qt6-qtdeclarative
 # tilo-rpm-snapshot-package[aarch64]: alsa-lib
 # tilo-rpm-snapshot-package[aarch64]: libdrm
 # tilo-rpm-snapshot-package[aarch64]: libwayland-client
@@ -1622,18 +1705,41 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 ARG TILO_WINDOWS_ARCH
 # wine only recommends dosbox-staging, a DOS emulator no Tilo Windows path
 # uses. It would bring opusfile, whose HTTP stream reader links OpenSSL.
+# QEMU is the core emulator plus the SPICE and virtio display modules the
+# appliance's domain uses, and libvirt the KVM daemon set without the
+# `qemu-kvm`/`libvirt-daemon-kvm` metapackages: those add QEMU's GTK and SDL
+# front ends and network block drivers no Tilo path opens.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     test "$(uname -m)" = "$TILO_WINDOWS_ARCH" && \
     case "$(uname -m)" in \
       x86_64) vm_firmware=edk2-ovmf; windows_packages='wine wine-dxvk' ;; \
-      aarch64) vm_firmware=edk2-aarch64; windows_packages='glibc libgcc libstdc++ libglvnd-glx libglvnd-opengl libglvnd-egl qt6-qtbase qt6-qtbase-gui qt6-qtdeclarative alsa-lib libdrm libwayland-client vulkan-loader' ;; \
+      aarch64) vm_firmware=edk2-aarch64; windows_packages='glibc libgcc libstdc++ libglvnd-glx libglvnd-opengl libglvnd-egl alsa-lib libdrm libwayland-client vulkan-loader' ;; \
       *) echo 'unsupported Windows VM firmware architecture' >&2; exit 1 ;; \
     esac && dnf install -y --setopt=reposdir=/repo \
     --exclude=dosbox-staging \
+    --exclude=libcanberra-gtk3 \
+    --exclude=xdg-desktop-portal-gtk \
     $windows_packages \
-    qemu-kvm \
+    qemu-kvm-core \
+    qemu-ui-spice-core \
+    qemu-char-spice \
+    qemu-audio-spice \
+    qemu-device-display-virtio-gpu \
+    qemu-device-display-virtio-gpu-pci \
+    qemu-device-display-virtio-vga \
     libvirt-client \
-    libvirt-daemon-kvm \
+    libvirt-daemon-common \
+    libvirt-daemon-driver-interface \
+    libvirt-daemon-driver-network \
+    libvirt-daemon-driver-nodedev \
+    libvirt-daemon-driver-nwfilter \
+    libvirt-daemon-driver-qemu \
+    libvirt-daemon-driver-secret \
+    libvirt-daemon-driver-storage \
+    libvirt-daemon-lock \
+    libvirt-daemon-log \
+    libvirt-daemon-plugin-lockd \
+    libvirt-daemon-proxy \
     libvirt-daemon-config-nwfilter \
     swtpm \
     swtpm-tools \
@@ -2531,6 +2637,9 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/frozen-repo \
       | grep -q . || { echo 'signed Ext4 rescue module is missing' >&2; exit 1; }; \
     find "/usr/lib/modules/$kver" -type f -path '*/fs/xfs/xfs.ko*' -print -quit \
       | grep -q . || { echo 'signed XFS rescue module is missing' >&2; exit 1; }; \
+    # ldconfig -r in dracut requires absolute include patterns. Fedora's
+    # default relative pattern resolves to the same directory without -r.
+    sed -i 's@^include ld\.so\.conf\.d/\*\.conf$@include /etc/ld.so.conf.d/*.conf@' /etc/ld.so.conf; \
     dracut --force --reproducible --compress zstd -v --kver "$kver" \
         --omit "network network-legacy network-manager nfs iscsi nvmf nbd fcoe fcoe-uefi nbde clevis clevis-pin-null clevis-pin-sss clevis-pin-tang clevis-pin-tpm2 crypt-ssh" \
         --omit-drivers "ext4 xfs" \
@@ -2703,10 +2812,9 @@ RUN case "${TILO_GENERATION}" in \
 # carries OpenSSL-backed DTLS, curl, and Icecast/Shoutcast plugins; its WebRTC,
 # ICE and SRTP companions are unusable here and likewise serve no Tilo path.
 # libevent's OpenSSL adapter is a separate optional DSO; retain the event-loop
-# libraries for distro consumers but remove that unused TLS integration. Qt's ARM compatibility frontend is also
-# offline and does not need its optional OpenSSL TLS backend. Rust-native code
-# owns network security, while foundational distro consumers use the built-in
-# provider. The Shoutcast library has no remaining consumer after its plugin is
+# libraries for distro consumers but remove that unused TLS integration.
+# Rust-native code owns network security, while foundational distro consumers
+# use the built-in provider. The Shoutcast library has no remaining consumer after its plugin is
 # removed, so delete its payload and package metadata too. The aggregate
 # GStreamer bundle retains a dependency on libshout for the deleted plugin;
 # `--nodeps` is therefore intentional and bounded by the absence audit below.
@@ -2719,7 +2827,10 @@ RUN case "${TILO_GENERATION}" in \
 # does not retain nonempty-run-tmp, var-log or unpackaged var-tmpfiles
 # warnings. greetd's portal mask is declared in tmpfiles.d/tilo.conf and is
 # recreated on first boot rather than baked into the image.
-RUN --mount=type=bind,source=os/scripts/clean-bootc-transient-state.py,target=/run/tilo-clean-bootc-transient-state.py,ro \
+# Replace the runtime symlink with a build-only regular file in a separate
+# layer. Its current RUN may still mount DNS under /run; the next one will not.
+RUN rm -f /etc/resolv.conf && printf '# build-only resolver placeholder\n' > /etc/resolv.conf
+RUN --mount=type=bind,source=os/scripts/clean-bootc-transient-state.py,target=/usr/local/libexec/tilo-clean-bootc-transient-state.py,ro \
     find /usr/lib /usr/lib64 \
       \( -path '*/ossl-modules/legacy.so' -o -path '*/engines-3/*.so' \
          -o -name 'libshout.so*' \
@@ -2729,8 +2840,7 @@ RUN --mount=type=bind,source=os/scripts/clean-bootc-transient-state.py,target=/r
          -o -path '*/gstreamer-1.0/libgstshout2.so' \
          -o -path '*/gstreamer-1.0/libgstwebrtc.so' \
          -o -path '*/gstreamer-1.0/libgstnice.so' \
-         -o -path '*/gstreamer-1.0/libgstsrtp.so' \
-         -o -path '*/qt6/plugins/tls/libqopensslbackend.so' \) \
+         -o -path '*/gstreamer-1.0/libgstsrtp.so' \) \
       \( -type f -o -type l \) -delete \
     && rpm -e --nodeps libshout \
     && rpm -qa --qf '%{NAME}\n' perl-IO-Socket-SSL perl-Net-SSLeay qatlib-service qatlib \
@@ -2744,13 +2854,19 @@ RUN --mount=type=bind,source=os/scripts/clean-bootc-transient-state.py,target=/r
          -o -path '*/gstreamer-1.0/libgstshout2.so' \
          -o -path '*/gstreamer-1.0/libgstwebrtc.so' \
          -o -path '*/gstreamer-1.0/libgstnice.so' \
-         -o -path '*/gstreamer-1.0/libgstsrtp.so' \
-         -o -path '*/qt6/plugins/tls/libqopensslbackend.so' \) \
+         -o -path '*/gstreamer-1.0/libgstsrtp.so' \) \
       \( -type f -o -type l \) -print -quit | grep -q . \
     && bash /usr/local/bin/verify-runtime-crypto-packages.sh \
-    && rm -f /usr/local/bin/verify-runtime-crypto-packages.sh \
-    && python3 /run/tilo-clean-bootc-transient-state.py \
+    && bash /usr/local/bin/verify-no-ui-toolkits.sh \
+    && rm -f /usr/local/bin/verify-runtime-crypto-packages.sh /usr/local/bin/verify-no-ui-toolkits.sh \
+    && python3 /usr/local/libexec/tilo-clean-bootc-transient-state.py \
     && bootc container lint
+
+# COPY is a separate build operation, with no DNS mount in /run. Copy the
+# containing directory so builders preserve its only entry, the symlink,
+# instead of dereferencing a single-file source with an absent /run target.
+# Restore the NetworkManager resolver before split/ukify seal the rootfs.
+COPY --from=runtime-resolver-link /out/ /etc/
 
 # ---------------------------------------------------------------------------
 # The sealed layout: split the kernel out, build the UKI over what remains
@@ -2771,7 +2887,8 @@ RUN --mount=type=bind,source=os/scripts/clean-bootc-transient-state.py,target=/r
 # os/dev/build-image.sh instead of being copied into the image.
 
 FROM rootfs AS split
-RUN mkdir /kernel && bootc container split-kernel-and-rootfs --rootfs / --output /kernel
+RUN test "$(readlink /etc/resolv.conf)" = ../run/NetworkManager/resolv.conf \
+    && mkdir /kernel && bootc container split-kernel-and-rootfs --rootfs / --output /kernel
 
 # A throwaway builder, so ukify and binutils do not ship in the OS image. It comes
 # out of the same digest-pinned base and the same frozen RPM snapshot as

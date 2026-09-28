@@ -46,9 +46,7 @@ fn run(root: &Path, host: &Path, target: Option<&Path>, dump: &Path) -> serde_js
         .stdout(Stdio::from(std::fs::File::create(&stdout).unwrap()))
         .stderr(Stdio::from(std::fs::File::create(&stderr).unwrap()));
     let mut child = command.spawn().unwrap();
-    let deadline = std::time::Instant::now()
-        .checked_add(std::time::Duration::from_secs(30))
-        .expect("a 30 s deadline is representable");
+    let deadline = tilo_test_env::hang_deadline();
     let status = loop {
         if let Some(status) = child.try_wait().unwrap() {
             break status;
@@ -74,6 +72,16 @@ fn run(root: &Path, host: &Path, target: Option<&Path>, dump: &Path) -> serde_js
         "widget-owned notebook must not open a substitute host document"
     );
     serde_json::from_slice(&std::fs::read(dump).unwrap()).unwrap()
+}
+
+/// The paragraphs of a page in a dumped notebook, in no particular order.
+fn texts(page: &serde_json::Value) -> Vec<String> {
+    page["body"]["blocks"]
+        .as_object()
+        .unwrap()
+        .values()
+        .filter_map(|block| block["text"].as_str().map(str::to_owned))
+        .collect()
 }
 
 #[test]
@@ -103,10 +111,7 @@ fn positional_markdown_imports_and_persists_without_synthetic_input() {
     );
     assert_eq!(second["pages"].as_object().unwrap().len(), 2);
     assert_eq!(second["pages"][old_id]["title"], old_page["title"]);
-    assert_eq!(
-        second["pages"][old_id]["blocks"][1]["text"],
-        "Keep this body."
-    );
+    assert!(texts(&second["pages"][old_id]).contains(&"Keep this body.".to_owned()));
     let restored = run(&notebook, &host, None, &temp.path().join("restart.json"));
     assert_eq!(restored["pages"].as_object().unwrap().len(), 2);
     let new_page = restored["pages"]
@@ -115,8 +120,9 @@ fn positional_markdown_imports_and_persists_without_synthetic_input() {
         .values()
         .find(|page| page["title"] == "Grüße 日本語")
         .unwrap();
-    assert_eq!(new_page["blocks"][0]["text"], "Imported");
-    assert_eq!(new_page["blocks"][1]["text"], "Unicode body.");
+    let mut body = texts(new_page);
+    body.sort();
+    assert_eq!(body, ["Imported", "Unicode body."]);
     assert_eq!(
         std::fs::read_to_string(existing).unwrap(),
         "# Existing\n\nKeep this body."

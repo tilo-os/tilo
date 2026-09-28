@@ -297,6 +297,11 @@ fn parent(path: &str) -> &str {
     path.rsplit_once('/').map_or("", |(p, _)| p)
 }
 
+fn whole_seconds(time: SystemTime) -> u64 {
+    time.duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs())
+}
+
 fn encode_path(path: &str) -> String {
     let mut out = String::new();
     for (i, segment) in path.split('/').enumerate() {
@@ -388,6 +393,19 @@ impl State {
     }
 
     fn write(&mut self, path: &str, bytes: Vec<u8>) {
+        self.write_with(path, bytes, false);
+    }
+
+    /// A write through the files endpoint (`PUT`, or a chunked upload's
+    /// assembly). Nextcloud's scanner then keeps the file's `ETag` while its
+    /// whole-second storage mtime is unchanged, even across an overwrite.
+    /// Out-of-band writes ([`FakeDav::put`], version restores) always get a
+    /// new `ETag`, as a writer in another second would.
+    fn upload(&mut self, path: &str, bytes: Vec<u8>) {
+        self.write_with(path, bytes, true);
+    }
+
+    fn write_with(&mut self, path: &str, bytes: Vec<u8>, same_second_reuse: bool) {
         let etag = self.bump();
         let nextcloud = self.nextcloud;
         if let Some(node) = self.nodes.get_mut(path) {
@@ -398,9 +416,15 @@ impl State {
                     modified: node.modified,
                 });
             }
+            let now = SystemTime::now();
             node.bytes = bytes;
-            node.etag = etag;
-            node.modified = SystemTime::now();
+            if !(nextcloud
+                && same_second_reuse
+                && whole_seconds(node.modified) == whole_seconds(now))
+            {
+                node.etag = etag;
+            }
+            node.modified = now;
             self.log(path);
         } else {
             self.seq = self.seq.saturating_sub(1);
@@ -708,7 +732,7 @@ fn files(state: &mut State, request: &Request, path: &str, truncate: bool) -> Re
                 return Reply::status(412);
             }
             let created = existing.is_none();
-            state.write(path, request.body.clone());
+            state.upload(path, request.body.clone());
             let etag = state
                 .nodes
                 .get(path)
@@ -764,6 +788,38 @@ fn files(state: &mut State, request: &Request, path: &str, truncate: bool) -> Re
             Reply::status(204)
         }
         "REPORT" => sync_collection(state, request),
+        // Nextcloud sets a file's mtime from `{DAV:}lastmodified`, and a
+        // changed mtime gives the file a new ETag.
+        "PROPPATCH" if state.nextcloud => {
+            let Some(node) = state.nodes.get(path) else {
+                return Reply::status(404);
+            };
+            if !etag_matches(request, Some(node)) {
+                return Reply::status(412);
+            }
+            let body = request.body_text();
+            let Some(secs) = body
+                .split_once("<d:lastmodified>")
+                .and_then(|(_, rest)| rest.split_once("</d:lastmodified>"))
+                .and_then(|(secs, _)| secs.trim().parse::<u64>().ok())
+            else {
+                return Reply::status(400);
+            };
+            let etag = state.bump();
+            if let Some(node) = state.nodes.get_mut(path) {
+                node.modified = SystemTime::UNIX_EPOCH
+                    .checked_add(Duration::from_secs(secs))
+                    .unwrap_or(node.modified);
+                node.etag = etag;
+            }
+            state.log(path);
+            let body = state
+                .nodes
+                .get(path)
+                .map(|node| state.propstat(path, node, prefix))
+                .unwrap_or_default();
+            multistatus(&body, None)
+        }
         _ => Reply::status(405),
     }
 }
@@ -868,7 +924,7 @@ fn uploads(state: &mut State, request: &Request, path: &str) -> Reply {
             let chunks = state.uploads.remove(&transfer).unwrap_or_default();
             let bytes: Vec<u8> = chunks.into_values().flatten().collect();
             let created = !state.nodes.contains_key(&to);
-            state.write(&to, bytes);
+            state.upload(&to, bytes);
             let etag = state
                 .nodes
                 .get(&to)

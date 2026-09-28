@@ -358,6 +358,10 @@ fn protocol_error(code: i32, message: &str) -> Value {
 /// Returns an error when the runtime, session or action broker cannot start,
 /// an app cannot be launched or exits, the input stream fails, or a reply
 /// cannot be written.
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the session holds the profile lock and services until the server loop ends"
+)]
 pub fn serve<R, W>(
     profile: &Path,
     manifest: ValidatedManifest,
@@ -370,11 +374,14 @@ where
 {
     let runtime = tilo_rt::try_app().map_err(io::Error::other)?;
     let session = Session::start(profile)?;
-    let broker = session
-        .broker
-        .app_action_broker()
-        .ok_or_else(|| io::Error::other("runtime action broker is unavailable"))?;
-    let mut server = McpServer::new(broker, session.room.clone(), session.actor.clone());
+    let mut server = McpServer::new(
+        session
+            .broker
+            .app_action_broker()
+            .ok_or_else(|| io::Error::other("runtime action broker is unavailable"))?,
+        session.room.clone(),
+        session.actor.clone(),
+    );
     let mut children = launch_apps(&session, profile, manifest)?;
     let input = spawn_reader(reader)?;
     loop {

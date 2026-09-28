@@ -4,11 +4,10 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use tilo_automerge::ApplyIncoming;
 use tilo_clock::{unix_now, unix_now_i64};
 
-mod fs_authority;
 mod local_app_records;
-use fs_authority::schedule_fs_authority_publication;
+use super::fs_authority::schedule_fs_authority_publication;
 #[cfg(test)]
-use fs_authority::wait_for_fs_authority_publication_idle;
+use super::fs_authority::wait_for_fs_authority_publication_idle;
 pub use local_app_records::LocalAppRecord;
 
 fn now_unix_nanos() -> u64 {
@@ -35,7 +34,7 @@ pub use tilo_desktop_model::{
     TileContent, UserId, WORKSPACE_GOVERNANCE_APP_ID, WindowGroup, WindowWidth, Workspace,
     WorkspaceDefaultError, WorkspaceEffectReceipt, WorkspaceId, WorkspaceTask,
     WorkspaceTaskAuditEvent, WorkspaceTaskResource, WorkspaceTaskRoute, WorkspaceTaskStatus,
-    compose_id, counter_of, peer_salt_of, role_label,
+    compose_id, counter_of, peer_salt_of, role_from_id, role_id,
 };
 pub use tilo_desktop_model::{
     DesktopTree, Display, DropTarget, OutputPartition, STATE_SCHEMA_VERSION, TabMove,
@@ -67,6 +66,9 @@ fn merge_schedule_claims(
 
 #[cfg(test)]
 mod identity_fs_tests {
+    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+    const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
     use super::*;
 
     #[test]
@@ -112,7 +114,10 @@ mod identity_fs_tests {
                 ..WorkspaceTree::default()
             };
             tree.export_fs_capabilities();
-            for _ in 0..100 {
+            let deadline = std::time::Instant::now()
+                .checked_add(HANG_BOUND)
+                .expect("the hang bound fits in an Instant");
+            while std::time::Instant::now() < deadline {
                 if started.exists() {
                     break;
                 }
@@ -124,7 +129,10 @@ mod identity_fs_tests {
                 "publication returned while the deliberately blocked publisher was unfinished"
             );
             std::fs::write(&release, b"release").expect("release publisher");
-            for _ in 0..100 {
+            let deadline = std::time::Instant::now()
+                .checked_add(HANG_BOUND)
+                .expect("the hang bound fits in an Instant");
+            while std::time::Instant::now() < deadline {
                 if log.exists() {
                     break;
                 }
@@ -139,16 +147,20 @@ mod identity_fs_tests {
                     && arguments.contains(config.to_str().unwrap()),
                 "the governor signs through the session's personal identity: {arguments}"
             );
-            assert!(
-                wait_for_fs_authority_publication_idle(Duration::from_secs(1)),
-                "the publisher worker must retire before its fixture is removed"
+            // The released publisher only has to exit; the budget is a
+            // backstop, and a stall reports the worker's attempt history.
+            wait_for_fs_authority_publication_idle(tilo_test_env::hang_bound()).unwrap_or_else(
+                |report| {
+                    panic!(
+                        "the publisher worker must retire before its fixture is removed: {report}"
+                    )
+                },
             );
         }
 
         // Phase `capability_export_retries_until_a_late_authority_service_is_ready`.
         {
             use std::os::unix::fs::PermissionsExt;
-            use std::time::Duration;
 
             let temp = tempfile::tempdir().expect("temp");
             let publisher = temp.path().join("late-publisher.sh");
@@ -178,9 +190,8 @@ mod identity_fs_tests {
             // retirement is the event to wait on. Four backed-off failures take
             // about 1.5 s of sleeps plus five process spawns; the budget is only
             // a backstop for a worker that never succeeds.
-            assert!(
-                wait_for_fs_authority_publication_idle(Duration::from_secs(60)),
-                "the retry worker never published the queued ACL"
+            wait_for_fs_authority_publication_idle(tilo_test_env::hang_bound()).unwrap_or_else(
+                |report| panic!("the retry worker never published the queued ACL: {report}"),
             );
             assert!(
                 log.exists(),
@@ -482,6 +493,10 @@ pub struct GovernedPeerIdentity {
     pub revocations: Vec<tilo_user_identity::RevocationEntry>,
 }
 
+/// Former name of [`WorkspaceAuthority`], still imported (`as _`) by
+/// shell modules written against the Cloud-side extension trait.
+pub use self::WorkspaceAuthority as WorkspaceExt;
+
 /// The model's authority questions answered at this machine's clock. The
 /// model takes `now` explicitly; this is the one place the compositor
 /// supplies it.
@@ -654,7 +669,7 @@ impl WorkspaceAuthority for Workspace {
 
 use std::sync::atomic::{AtomicU16, AtomicU64, Ordering as AtomicOrdering};
 
-/// Process-wide counter behind [`FreshId::new`] and [`next_id`] — this
+/// Process-wide counter behind [`FreshId::new`] and `next_id` — this
 /// compositor's host-side [`tilo_desktop_model::IdMinter`], kept as two
 /// atomics because every subsystem mints through it concurrently.
 /// [`WorkspaceTree::seed_next_id_from_self`] advances it past the highest
@@ -665,7 +680,7 @@ use std::sync::atomic::{AtomicU16, AtomicU64, Ordering as AtomicOrdering};
 /// workspaces with the same id into one.
 pub(crate) static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
-/// High-16-bit peer salt for every id [`next_id`] mints. Default `0`
+/// High-16-bit peer salt for every id `next_id` mints. Default `0`
 /// keeps tests on `0x0001, 0x0002, …`; the hosted entry point overwrites
 /// it at startup with a hash of the local Iroh key. `Relaxed`: written
 /// once at boot, nothing piggy-backs on visibility.
@@ -873,6 +888,11 @@ const MAX_OWNERSHIP_OFFER_SECONDS: u64 = 7 * 24 * 60 * 60;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WorkspaceTree {
+    /// Native authority is never re-derived from desktop caches.
+    #[serde(default)]
+    pub native_authority: super::native_workspace_owner::NativeAuthorityStorage,
+    #[serde(skip)]
+    pub native_runtime: super::native_workspace_owner::NativeStateRuntime,
     /// The host-independent desktop: workspaces, focus pointers and the
     /// schema version. Flattened, so `state.json` keeps its shape.
     #[serde(flatten)]
@@ -963,6 +983,8 @@ impl Default for WorkspaceTree {
     fn default() -> Self {
         Self {
             desktop: DesktopTree::default(),
+            native_authority: super::native_workspace_owner::NativeAuthorityStorage::default(),
+            native_runtime: super::native_workspace_owner::NativeStateRuntime::default(),
             doc: AutoCommit::new(),
             room_docs: HashMap::new(),
             room_authority: HashMap::new(),
@@ -1035,6 +1057,19 @@ pub trait WorkspaceTreeHandleExt: Sized {
     fn test_default() -> Self;
 }
 
+impl std::ops::Deref for WorkspaceTree {
+    type Target = DesktopTree;
+    fn deref(&self) -> &DesktopTree {
+        &self.desktop
+    }
+}
+
+impl std::ops::DerefMut for WorkspaceTree {
+    fn deref_mut(&mut self) -> &mut DesktopTree {
+        &mut self.desktop
+    }
+}
+
 impl WorkspaceTreeHandleExt for WorkspaceTreeHandle {
     fn test_default() -> Self {
         std::sync::Arc::new(parking_lot::RwLock::new(WorkspaceTree::default()))
@@ -1050,18 +1085,56 @@ impl WorkspaceTree {
     }
 }
 
-/// Owner, capability blobs, peer-name claims, identities and channel class
-/// read from a room document's governance keys. See
-/// [`WorkspaceTree::governance_of`].
-type RoomGovernance = (
-    Option<String>,
-    std::collections::BTreeMap<String, Vec<u8>>,
-    std::collections::BTreeMap<String, String>,
-    std::collections::BTreeMap<String, Vec<u8>>,
-    Option<collab_types::ChannelClass>,
-);
+/// Owner, capability blobs, peer-name and identity claims, coverage,
+/// invitation receipts and media policy read from a room document's
+/// governance keys. See [`WorkspaceTree::governance_of`].
+type RoomGovernance = tilo_peer_state::room::RoomGovernance;
 
 impl WorkspaceTree {
+    pub(crate) fn installed_native_owner(
+        &self,
+    ) -> Option<super::native_workspace_owner::NativeWorkspaceOwner> {
+        self.native_runtime.owner()
+    }
+
+    pub(crate) fn requires_native_owner(&self, room: RoomId) -> bool {
+        self.native_authority.requires(room) || self.native_runtime.requires_uncertain(room)
+    }
+
+    /// Presentation projection from the actual admitted owner, never a second admission.
+    pub(crate) fn project_native_room(&mut self, room: RoomId, peer: &tilo_peer_state::StatePeer) {
+        let Some(document) = peer.admitted_room() else {
+            return;
+        };
+        if let Ok(endpoint) = iroh::EndpointId::from_bytes(&peer.authority().device_public_key) {
+            self.room_authority
+                .insert(room, RoomAuthority::Peer(PeerOrigin::peer(&endpoint)));
+        }
+        let (name, owner, caps) = Self::extract_governed_fields(document);
+        let tasks = projection::workspace_tasks_of(document);
+        let receipts = projection::workspace_effect_receipts_of(document);
+        self.room_docs.insert(room, document.clone());
+        self.queue_inbound_records(room, document);
+        self.merge_room_contents(room);
+        if let Some(ws) = self
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|ws| ws.room == room)
+        {
+            if let Some(name) = name {
+                ws.name = name;
+            }
+            if let Some(owner) = owner {
+                ws.owner = Some(owner);
+            }
+            ws.capabilities = caps;
+            ws.tasks = tasks;
+            ws.effect_receipts = receipts;
+        }
+        self.desktop.room_epoch = self.desktop.room_epoch.wrapping_add(1);
+    }
+
     /// Set the process-wide peer salt `next_id` stamps into the high
     /// 16 bits of every freshly-allocated id. Default `0` keeps
     /// `WorkspaceId(1)`-style test literals working; two peers under
@@ -1650,15 +1723,25 @@ impl WorkspaceTree {
     /// map so the revocation reaches a peer already holding the grant —
     /// but the room document is not persisted, so that deletion has to
     /// be re-issued after a restart.
+    pub fn sync_room_doc(&mut self, room: RoomId) {
+        self.try_sync_room_doc(room);
+    }
+
+    /// Projection must not partly install governance when a policy fence fails.
     #[allow(
         clippy::too_many_lines,
         reason = "room-document projection keeps all capability map updates in one Automerge transaction"
     )]
-    pub fn sync_room_doc(&mut self, room: RoomId) {
+    fn try_sync_room_doc(&mut self, room: RoomId) -> bool {
         use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
+        use tilo_peer_state::room::media;
+
+        if self.requires_native_owner(room) {
+            return false;
+        }
 
         let Some(ws) = self.workspace_in_room(room) else {
-            return;
+            return false;
         };
         let name = ws.name.clone();
         let owner = ws.owner.clone();
@@ -1703,7 +1786,11 @@ impl WorkspaceTree {
                 .map(|key| seal_room_record_act(key, room, act))
         };
 
-        let doc = self.room_docs.entry(room).or_default();
+        // The cache contains no media definitions. Preserve the admitted field
+        // on a candidate; only the committed native owner may supply it anew.
+        let before = self.room_docs.get(&room).cloned().unwrap_or_default();
+        let mut candidate = before.clone();
+        let doc = &mut candidate;
 
         // Identity first: the receiver checks this field against the
         // room it asked for, so an unlabelled document could be applied
@@ -1764,8 +1851,13 @@ impl WorkspaceTree {
         self.desktop
             .room_records_projected
             .insert(room, held.clone());
-        if let Err(err) = projection::project_owned_contents(doc, &strips, local_salt, share_floor)
-        {
+        if let Err(err) = projection::project_owned_contents(
+            doc,
+            &strips,
+            local_salt,
+            share_floor,
+            projection::EmptyStrips::Skip,
+        ) {
             tracing::error!(?err, "room doc: contents map");
         }
         if let Err(error) = projection::project_workspace_tasks(doc, &tasks) {
@@ -1784,7 +1876,13 @@ impl WorkspaceTree {
         if !governs {
             let _ = tilo_resource::history::commit_stamped(doc);
             doc.reset_diff_cursor();
-            return;
+            if media::validate_transition(Some(&before), doc, media::TransitionMode::Authoring)
+                .is_err()
+            {
+                return false;
+            }
+            self.room_docs.insert(room, candidate);
+            return true;
         }
 
         let caps_id = match doc.get(&ROOT, "capabilities").ok().flatten() {
@@ -1793,7 +1891,7 @@ impl WorkspaceTree {
                 Ok(id) => id,
                 Err(err) => {
                     tracing::error!(?err, room = %room_str, "room doc: capabilities map");
-                    return;
+                    return false;
                 }
             },
         };
@@ -1825,6 +1923,13 @@ impl WorkspaceTree {
         // overhead — worse, `PatchLog::migrate_actors` panics when a
         // peer's actor can't be spliced into it in sort order.
         doc.reset_diff_cursor();
+        if let Err(error) = media::refresh_authorization(&before, doc) {
+            tracing::warn!(?error, room = %room, "room projection refused: invalid media policy");
+            return false;
+        }
+        doc.reset_diff_cursor();
+        self.room_docs.insert(room, candidate);
+        true
     }
 
     /// Key the room document stores its peers' names under.
@@ -1910,7 +2015,10 @@ impl WorkspaceTree {
             let unchanged = matches!(
                 doc.get(&object, peer).ok().flatten(),
                 Some((Value::Scalar(value), _))
-                    if matches!(value.as_ref(), ScalarValue::Bytes(current) if current == &bytes)
+                    if matches!(value.as_ref(), ScalarValue::Bytes(current)
+                        if current == &bytes
+                            || serde_json::from_slice::<GovernedPeerIdentity>(current)
+                                .is_ok_and(|admitted| admitted == *identity))
             );
             if !unchanged {
                 let _ = doc.put(&object, peer, ScalarValue::Bytes(bytes));
@@ -2002,7 +2110,12 @@ impl WorkspaceTree {
             return false;
         };
         let replicated = projection::contents_of(doc);
-        projection::merge_room_contents(&mut self.desktop, room, replicated, local_salt)
+        projection::merge_room_contents(
+            &mut self.desktop,
+            room,
+            replicated,
+            projection::Reader::Owner(local_salt),
+        )
     }
 
     /// Tell the tree which records `room`'s index holds. Returns whether
@@ -2060,69 +2173,14 @@ impl WorkspaceTree {
     /// policy. The room's **name** is deliberately not governed. The
     /// **id** is stricter still: a mismatched payload is refused outright.
     fn governance_of(doc: Option<&AutoCommit>) -> RoomGovernance {
-        use automerge::{ROOT, ReadDoc, ScalarValue, Value};
-        let Some(doc) = doc else {
-            return (
-                None,
-                std::collections::BTreeMap::new(),
-                std::collections::BTreeMap::new(),
-                std::collections::BTreeMap::new(),
-                None,
-            );
-        };
-        let owner = match doc.get(&ROOT, "owner").ok().flatten() {
-            Some((Value::Scalar(s), _)) => match s.as_ref() {
-                ScalarValue::Str(v) => Some(v.to_string()),
-                _ => None,
-            },
-            _ => None,
-        };
-        let mut caps = std::collections::BTreeMap::new();
-        if let Some((_, caps_id)) = doc.get(&ROOT, "capabilities").ok().flatten() {
-            let keys: Vec<String> = doc.keys(&caps_id).collect();
-            for key in keys {
-                if let Some((Value::Scalar(s), _)) = doc.get(&caps_id, &key).ok().flatten()
-                    && let ScalarValue::Bytes(blob) = s.as_ref()
-                {
-                    caps.insert(key, blob.clone());
-                }
-            }
-        }
-        // Peer names fold in beside the capability list, the same kind
-        // of claim — left out, it'd be the one governance key a guest
-        // could write, and an impostor's first target.
-        let mut peers = std::collections::BTreeMap::new();
-        if let Some((_, peers_id)) = doc.get(&ROOT, Self::ROOM_PEERS_KEY).ok().flatten() {
-            let keys: Vec<String> = doc.keys(&peers_id).collect();
-            for key in keys {
-                if let Some((Value::Scalar(s), _)) = doc.get(&peers_id, &key).ok().flatten()
-                    && let ScalarValue::Str(v) = s.as_ref()
-                {
-                    peers.insert(key, v.to_string());
-                }
-            }
-        }
-        let mut identities = std::collections::BTreeMap::new();
-        if let Some((_, object)) = doc
-            .get(&ROOT, Self::ROOM_PEER_IDENTITIES_KEY)
-            .ok()
-            .flatten()
-        {
-            for key in doc.keys(&object) {
-                if let Some((Value::Scalar(value), _)) = doc.get(&object, &key).ok().flatten()
-                    && let ScalarValue::Bytes(bytes) = value.as_ref()
-                {
-                    identities.insert(key, bytes.clone());
-                }
-            }
-        }
-        (
-            owner,
-            caps,
-            peers,
-            identities,
-            projection::channel_class_of(doc),
-        )
+        tilo_peer_state::room::governance_of(doc)
+    }
+
+    /// The channel class a room document's governance states, if it states
+    /// one. Governed beside [`Self::governance_of`]: only the room's
+    /// authority may state it, and never change it once stated.
+    fn channel_class_in(doc: Option<&AutoCommit>) -> Option<collab_types::ChannelClass> {
+        doc.and_then(projection::channel_class_of)
     }
 
     /// Current heads of `room`'s replication document — the baseline a
@@ -2130,8 +2188,17 @@ impl WorkspaceTree {
     /// for a room this machine is not in.
     pub fn room_heads(&mut self, room: RoomId) -> Vec<ChangeHash> {
         match self.room_docs.get_mut(&room) {
-            Some(doc) => doc.get_heads(),
-            None => Vec::new(),
+            Some(doc)
+                if tilo_peer_state::room::media::validate_transition(
+                    None,
+                    doc,
+                    tilo_peer_state::room::media::TransitionMode::Restore,
+                )
+                .is_ok() =>
+            {
+                doc.get_heads()
+            }
+            _ => Vec::new(),
         }
     }
 
@@ -2144,8 +2211,16 @@ impl WorkspaceTree {
         since: &[ChangeHash],
     ) -> Option<Vec<Vec<u8>>> {
         self.workspace_in_room(room)?;
-        self.sync_room_doc(room);
+        if !self.try_sync_room_doc(room) {
+            return None;
+        }
         let doc = self.room_docs.get_mut(&room)?;
+        tilo_peer_state::room::media::validate_transition(
+            None,
+            doc,
+            tilo_peer_state::room::media::TransitionMode::Restore,
+        )
+        .ok()?;
         Some(
             doc.get_changes(since)
                 .into_iter()
@@ -2172,11 +2247,11 @@ impl WorkspaceTree {
         }
     }
 
-    /// True (and logs a warning, or pins an unpinned authority) if
+    /// True (and logs a warning) if
     /// `from` is not entitled to write the governance changes
     /// `candidate` carries relative to what's currently held for `room`.
     fn governance_write_refused(
-        &mut self,
+        &self,
         room: RoomId,
         candidate: &AutoCommit,
         from: &PeerOrigin,
@@ -2186,15 +2261,17 @@ impl WorkspaceTree {
         // re-states it under its own actor, which is not a change.
         let before = Self::governance_of(self.room_docs.get(&room));
         let after = Self::governance_of(Some(candidate));
-        if before == after {
+        let class_before = Self::channel_class_in(self.room_docs.get(&room));
+        let class_after = Self::channel_class_in(Some(candidate));
+        if before == after && class_before == class_after {
             return false;
         }
         // A room's channel class is fixed once governance has stated it —
         // not even its authority may re-label it. Members were told whether
         // what they post is encrypted, and an encrypted room turned public
         // would make that promise untrue after the fact.
-        if let Some(held) = before.4
-            && let Err(error) = held.may_become(after.4.unwrap_or(held))
+        if let Some(held) = class_before
+            && let Err(error) = held.may_become(class_after.unwrap_or(held))
         {
             tracing::warn!(
                 target: "shell::state",
@@ -2230,24 +2307,93 @@ impl WorkspaceTree {
                 );
                 true
             }
-            RoomAuthority::Peer(_) => false,
-            // Joined without an invite naming an administrator —
-            // the first peer to supply governance becomes it, and
-            // is pinned so the second is refused above.
-            RoomAuthority::Unpinned => {
-                tracing::info!(
-                    target: "shell::state",
-                    room = %room,
-                    from = %from,
-                    "room sync: pinning this peer as the room's \
-                     governance authority (joined without an invite \
-                     naming one)",
-                );
-                self.room_authority
-                    .insert(room, RoomAuthority::Peer(from.clone()));
-                false
+            // `Unpinned`: joined without an invite naming an administrator —
+            // the first peer to supply governance becomes it. Legacy TOFU is
+            // installed by `apply_room_changes` only after every candidate
+            // check passes, so a refused batch never pins its sender.
+            RoomAuthority::Peer(_) | RoomAuthority::Unpinned => false,
+        }
+    }
+
+    /// A media snapshot cannot bootstrap its own authority. The invite path
+    /// verifies the device signature before persisting the exact endpoint pin;
+    /// transport authenticates `from` independently of the incoming document.
+    /// Room documents are not durable, so that pin also authorizes rehydration.
+    /// Network certificate checks and native media authorization remain mandatory.
+    fn media_authority_admitted(
+        &self,
+        room: RoomId,
+        candidate: &AutoCommit,
+        from: &PeerOrigin,
+    ) -> bool {
+        let RoomAuthority::Peer(pinned) = self.room_authority(room) else {
+            // Local rooms refuse any remote governance change separately. An
+            // unchanged echo can preserve an already admitted local policy.
+            return self.governs_room(room)
+                && self.room_docs.get(&room).is_some_and(|before| {
+                    tilo_peer_state::room::media::parse(before).is_ok_and(|policy| policy.is_some())
+                });
+        };
+        let Some(endpoint) = pinned.as_str().strip_prefix("iroh:") else {
+            return false;
+        };
+        let Ok(endpoint_key) = endpoint.parse::<iroh::EndpointId>() else {
+            return false;
+        };
+        let before = Self::governance_of(self.room_docs.get(&room));
+        let after = Self::governance_of(Some(candidate));
+        let Some(proposed) = after
+            .3
+            .get(endpoint)
+            .and_then(|bytes| serde_json::from_slice::<GovernedPeerIdentity>(bytes).ok())
+        else {
+            return false;
+        };
+        let Ok(admitted) = before
+            .3
+            .get(endpoint)
+            .map(|bytes| serde_json::from_slice::<GovernedPeerIdentity>(bytes))
+            .transpose()
+        else {
+            return false;
+        };
+        // A first snapshot must arrive from the preexisting invite-pinned
+        // endpoint. An existing certificate cannot be replaced by the snapshot.
+        if admitted.is_none() && from != &pinned {
+            return false;
+        }
+        let certificate = &proposed.device_cert;
+        let now = now_unix_nanos();
+        let prior_owner = before.0.as_deref().or_else(|| {
+            self.workspace_in_room(room)
+                .and_then(|workspace| workspace.owner.as_deref())
+        });
+        if admitted
+            .as_ref()
+            .is_some_and(|admitted| admitted.device_cert != *certificate)
+            || certificate.device_public_key != *endpoint_key.as_bytes()
+            || certificate.is_expired_at(now)
+            || certificate.issued_at_ns > now
+            || tilo_user_identity::verify_device_cert(certificate).is_err()
+            || after.0.as_deref() != Some(hex::encode(certificate.user_public_key).as_str())
+            || prior_owner.is_some_and(|owner| after.0.as_deref() != Some(owner))
+        {
+            return false;
+        }
+        let mut revocations = tilo_user_identity::RevocationList::new();
+        for bytes in before.3.values().chain(after.3.values()) {
+            let Ok(identity) = serde_json::from_slice::<GovernedPeerIdentity>(bytes) else {
+                return false;
+            };
+            for entry in identity.revocations {
+                if entry.user_public_key != identity.device_cert.user_public_key
+                    || revocations.insert(entry).is_err()
+                {
+                    return false;
+                }
             }
         }
+        !revocations.is_revoked_at(&certificate.device_public_key, now)
     }
 
     /// True (and logs a warning) if `candidate` would rewrite windows
@@ -2497,9 +2643,9 @@ impl WorkspaceTree {
     /// Returns the underlying `automerge::AutomergeError` if any blob in
     /// `changes` fails to decode, or if applying them to the room's
     /// document fails.
-    #[expect(
+    #[allow(
         clippy::too_many_lines,
-        reason = "one admission sequence: every replicated workspace field is checked on the merged candidate before any governed field lands"
+        reason = "one candidate-then-commit admission: every governance check runs before the batch installs"
     )]
     pub fn apply_room_changes(
         &mut self,
@@ -2507,28 +2653,46 @@ impl WorkspaceTree {
         changes: &[Vec<u8>],
         from: &PeerOrigin,
     ) -> Result<bool, automerge::AutomergeError> {
+        if self.requires_native_owner(room) {
+            return Ok(false);
+        }
         if self.workspace_in_room(room).is_none() {
             return Ok(false);
         }
-        let parsed: Result<Vec<automerge::Change>, _> = changes
-            .iter()
-            .map(|b| automerge::Change::try_from(b.as_slice()))
-            .collect();
-        let parsed = parsed?;
-
         // Applied to a copy first: a check that runs after the merge has
-        // already happened is not a check.
-        let mut candidate = self
-            .room_docs
-            .get(&room)
-            .cloned()
-            .unwrap_or_else(AutoCommit::new);
-        // See `sync_room_doc`: a patch log carried into `apply_changes`
-        // is what turns a peer's first delta into a panic.
-        candidate.reset_diff_cursor();
-        candidate.apply_incoming(parsed)?;
+        // already happened is not a check. `candidate` admits the batch
+        // through automerge's checked path under the shared incoming
+        // resource limits (and resets the patch log, see `sync_room_doc`);
+        // it reports a refusal as text, so keep this API's error type and
+        // the detail in the log.
+        let candidate = tilo_peer_state::room::candidate(self.room_docs.get(&room), changes)
+            .map_err(|error| {
+                tracing::warn!(%error, room = %room, "room changes refused");
+                automerge::AutomergeError::Fail
+            })?;
 
         if Self::declared_room_mismatches(&candidate, room) {
+            return Ok(false);
+        }
+        // Parsing and consistency are independent of the writer check, including
+        // equal-value echoes. Never let a bad first snapshot establish TOFU.
+        let media = match tilo_peer_state::room::media::validate_transition(
+            self.room_docs.get(&room),
+            &candidate,
+            tilo_peer_state::room::media::TransitionMode::Admission,
+        ) {
+            Ok(media) => media,
+            Err(error) => {
+                tracing::warn!(?error, room = %room, "room sync refused: invalid media policy");
+                return Ok(false);
+            }
+        };
+        if media.is_some() && !self.media_authority_admitted(room, &candidate, from) {
+            return Ok(false);
+        }
+        let media_changed = tilo_peer_state::room::media::governed_value(self.room_docs.get(&room))
+            != tilo_peer_state::room::media::governed_value(Some(&candidate));
+        if tilo_peer_state::coverage::monotonic(self.room_docs.get(&room), &candidate).is_err() {
             return Ok(false);
         }
         if self.governance_write_refused(room, &candidate, from) {
@@ -2565,6 +2729,25 @@ impl WorkspaceTree {
                     None => effect_receipts.push(existing.clone()),
                 }
             }
+        }
+        // Joined without an invite naming an administrator: the first peer
+        // to supply governance becomes it, pinned only now that every
+        // candidate check has passed.
+        if self.room_authority(room) == RoomAuthority::Unpinned
+            && (Self::governance_of(self.room_docs.get(&room))
+                != Self::governance_of(Some(&candidate))
+                || Self::channel_class_in(self.room_docs.get(&room)) != channel_class)
+        {
+            tracing::info!(
+                target: "shell::state",
+                room = %room,
+                from = %from,
+                "room sync: pinning this peer as the room's \
+                 governance authority (joined without an invite \
+                 naming one)",
+            );
+            self.room_authority
+                .insert(room, RoomAuthority::Peer(from.clone()));
         }
         let records_changed = self.queue_inbound_records(room, &candidate);
 
@@ -2641,7 +2824,7 @@ impl WorkspaceTree {
             self.seed_doc_from_cache();
             self.flush_to_disk();
         }
-        let landed = fields_changed || records_changed;
+        let landed = fields_changed || records_changed || media_changed;
         if landed {
             // A peer's window is in the tree now but not on screen yet —
             // this runs on the network thread, and only the frame
@@ -2680,6 +2863,7 @@ impl WorkspaceTree {
             && let Err(e) = crate::shell::persist::save_tree_to(self, path)
         {
             tracing::warn!("capability persistence failed: {e}");
+            return;
         }
         self.export_fs_capabilities();
     }
@@ -2916,6 +3100,16 @@ impl WorkspaceTree {
     /// ([`Workspace::surrender_governance`]), since the joined room
     /// already has an administrator.
     pub fn set_room(&mut self, workspace_id: WorkspaceId, room: RoomId) -> bool {
+        let changed = self.set_room_in_memory(workspace_id, room);
+        if changed {
+            self.flush_to_disk();
+        }
+        changed
+    }
+
+    /// Existing join semantics for an unpublished owner candidate. No state,
+    /// filesystem authority, relay export or publisher side effects occur here.
+    pub(crate) fn set_room_in_memory(&mut self, workspace_id: WorkspaceId, room: RoomId) -> bool {
         if room.is_nil() {
             return false;
         }
@@ -2956,7 +3150,6 @@ impl WorkspaceTree {
             // owner back out of it.
             self.seed_doc_from_cache();
         }
-        self.flush_to_disk();
         true
     }
 
@@ -4798,51 +4991,148 @@ impl WorkspaceTree {
         }
     }
 
-    /// Reorder the window group `group_id` within `strip_id`; the whole
-    /// group moves as a unit, unlike [`Self::move_tab_across_strips`].
-    /// `new_index` is clamped to the post-removal index space, so a
-    /// caller may pass a raw gap index. `true` only when the order
-    /// actually changed. Mirrors into the doc afterwards, the same
-    /// cache-then-doc shape as `move_tab_across_strips`.
-    pub fn reorder_group_within_strip(
+    /// Commit `command` as this device's topology owner: the shared
+    /// [`tilo_desktop_model::commands::apply_command`] reduction on the
+    /// cache, mirrored into the room document so peer sync ships it, and
+    /// into the restart snapshot. `Ok(false)` when the order did not change.
+    ///
+    /// Only reorders inside one strip commit here; a close runs its own
+    /// lifecycle ([`crate::shell::window_actions::close_tab`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns a description when the command no longer matches the tree or
+    /// is not a reorder.
+    pub fn commit_command(
         &mut self,
-        strip_id: StripId,
-        group_id: u64,
-        new_index: usize,
-    ) -> bool {
-        let Some((moved, dest)) = self
+        command: &tilo_desktop_model::commands::DesktopCommand,
+    ) -> Result<bool, String> {
+        use tilo_desktop_model::commands::{DesktopCommand, apply_command};
+        let strip_id = match command {
+            DesktopCommand::ReorderTab { location, .. } => location.strip,
+            DesktopCommand::ReorderGroup { strip, .. } => *strip,
+            _ => return Err("this desktop commits only reorders as commands".into()),
+        };
+        let strip_id = StripId(strip_id);
+        let (ws_idx, strip_idx) = self
             .desktop
-            .reorder_group_within_strip(strip_id, group_id, new_index)
+            .strip_position(strip_id)
+            .ok_or("strip was removed")?;
+        let workspace = self
+            .desktop
+            .workspaces
+            .get_mut(ws_idx)
+            .ok_or("workspace was removed")?;
+        let order = |workspace: &Workspace| {
+            workspace.strips.get(strip_idx).map(|strip| {
+                strip
+                    .window_groups
+                    .iter()
+                    .map(|group| (group.id, group.tabs.iter().map(|tab| tab.id).collect()))
+                    .collect::<Vec<(GroupId, Vec<TabId>)>>()
+            })
+        };
+        let before = order(workspace);
+        apply_command(
+            workspace,
+            command,
+            &mut || Err("a reorder mints no identity".into()),
+            &mut |_, _| Err("a reorder creates no record".into()),
+        )?;
+        if order(workspace) == before {
+            return Ok(false);
+        }
+        let groups = &workspace
+            .strips
+            .get(strip_idx)
+            .ok_or("strip was removed")?
+            .window_groups;
+        match command {
+            DesktopCommand::ReorderTab { location, .. } => {
+                let tabs = groups
+                    .iter()
+                    .find(|group| group.id == location.group)
+                    .map(|group| group.tabs.clone())
+                    .unwrap_or_default();
+                tilo_desktop_model::desktop_doc::rewrite_group_tabs(
+                    &mut self.doc,
+                    location.group,
+                    &tabs,
+                );
+            }
+            DesktopCommand::ReorderGroup { group, .. } => {
+                if let Some(dest) = groups.iter().position(|candidate| candidate.id == *group)
+                    && let Some(moved) = groups.get(dest).cloned()
+                {
+                    tilo_desktop_model::desktop_doc::reorder_group(
+                        &mut self.doc,
+                        strip_id,
+                        &moved,
+                        dest,
+                    );
+                }
+            }
+            _ => {}
+        }
+        self.flush_to_disk();
+        Ok(true)
+    }
+
+    /// Bind a group reorder the way the desktop surface reports it (the
+    /// post-removal slot) and commit it.
+    #[cfg(test)]
+    pub(crate) fn reorder_group_for_tests(
+        &mut self,
+        strip: StripId,
+        group: GroupId,
+        to: usize,
+    ) -> bool {
+        self.commit_intent_for_tests(tilo_desktop::intents::SessionIntent::ReorderGroup {
+            strip,
+            group,
+            to,
+        })
+    }
+
+    /// Bind an in-group tab reorder the way the desktop surface reports it
+    /// and commit it.
+    #[cfg(test)]
+    pub(crate) fn reorder_tab_for_tests(&mut self, group: GroupId, from: usize, to: usize) -> bool {
+        self.commit_intent_for_tests(tilo_desktop::intents::SessionIntent::ReorderTab {
+            group,
+            from,
+            to,
+        })
+    }
+
+    #[cfg(test)]
+    fn commit_intent_for_tests(&mut self, intent: tilo_desktop::intents::SessionIntent) -> bool {
+        let group = match &intent {
+            tilo_desktop::intents::SessionIntent::ReorderGroup { group, .. }
+            | tilo_desktop::intents::SessionIntent::ReorderTab { group, .. } => *group,
+            _ => return false,
+        };
+        let Some(room) = self
+            .desktop
+            .workspaces
+            .iter()
+            .find(|workspace| {
+                workspace
+                    .strips
+                    .iter()
+                    .any(|strip| strip.window_groups.iter().any(|g| g.id == group))
+            })
+            .map(|workspace| workspace.room.to_string())
         else {
             return false;
         };
-        // Mirror from the tree's copy, so the document entry carries the
-        // group's full content at the new slot. Tolerant of an unseeded doc.
-        tilo_desktop_model::desktop_doc::reorder_group(&mut self.doc, strip_id, &moved, dest);
-        self.flush_to_disk();
-        true
-    }
-
-    /// Move the tab at `from` to index `to` inside `group_id`'s tab
-    /// list — the persisted half of an intra-group tab drag, mirroring
-    /// what the widget tree already reordered. `to` is clamped to the
-    /// last slot; `true` only when the order actually changed.
-    pub fn reorder_tab_within_group(&mut self, group_id: u64, from: usize, to: usize) -> bool {
-        let Some(tabs) = self.desktop.reorder_tab_within_group(group_id, from, to) else {
-            return false;
+        let source = tilo_desktop_model::commands::CommandSource {
+            room,
+            heads: Vec::new(),
         };
-        // Mirror the reordered list into the doc so peer-sync ships the new order.
-        self.doc_rewrite_group_tabs(group_id, &tabs);
-        self.flush_to_disk();
-        true
-    }
-
-    /// Replace `group_id`'s doc-side `tabs` list with `tabs`, in order
-    /// — rewrites the whole list to stay in step with
-    /// [`Self::doc_reorder_group_within_strip`]. No-op on an unseeded
-    /// doc.
-    fn doc_rewrite_group_tabs(&mut self, group_id: u64, tabs: &[Tab]) {
-        tilo_desktop_model::desktop_doc::rewrite_group_tabs(&mut self.doc, group_id, tabs);
+        tilo_desktop::session_commands::bind_intent(&self.desktop, source, intent)
+            .and_then(|bound| self.commit_command(&bound.command))
+            .unwrap_or(false)
     }
 }
 
@@ -7747,7 +8037,7 @@ mod active_group_tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn reordering_tabs_and_groups_persists_and_mirrors_into_the_doc() {
-        // Phase `reorder_tab_within_group_persists_and_mirrors_into_the_doc`.
+        // Phase `reorder_tab_persists_and_mirrors_into_the_doc`.
         // Dragging a tab to a new slot must persist into the tree and
         // mirror into the doc, or the reorder resets on the next restart.
         {
@@ -7783,13 +8073,13 @@ mod active_group_tests {
             assert_eq!(tab_order(&tree), vec![10, 11, 12]);
 
             // Drag the first tab to the last slot → [11, 12, 10].
-            let changed = tree.reorder_tab_within_group(group_id, 0, 2);
+            let changed = tree.reorder_tab_for_tests(group_id, 0, 2);
             assert!(changed, "moving a tab to a new slot reports a change");
             assert_eq!(tab_order(&tree), vec![11, 12, 10], "cache order updated");
 
             // Same slot is a no-op; unknown group is a no-op.
-            assert!(!tree.reorder_tab_within_group(group_id, 1, 1));
-            assert!(!tree.reorder_tab_within_group(999, 0, 1));
+            assert!(!tree.reorder_tab_for_tests(group_id, 1, 1));
+            assert!(!tree.reorder_tab_for_tests(999, 0, 1));
             assert_eq!(tab_order(&tree), vec![11, 12, 10]);
 
             // The doc must carry the new order too, so peers/persistence agree.
@@ -7827,7 +8117,7 @@ mod active_group_tests {
             // Strip [1, 2, 3]. Drag group 1 to index 2 → [2, 3, 1].
             let (mut tree, strip_id, ids) = tree_with_n_groups(3);
             assert_eq!(group_order(&tree, strip_id), vec![1, 2, 3]);
-            let changed = tree.reorder_group_within_strip(strip_id, ids[0], 2);
+            let changed = tree.reorder_group_for_tests(strip_id, ids[0], 2);
             assert!(changed, "moving group 1 to a new slot must report a change");
             assert_eq!(
                 group_order(&tree, strip_id),
@@ -7840,17 +8130,17 @@ mod active_group_tests {
         {
             let (mut tree, strip_id, ids) = tree_with_n_groups(4); // [1,2,3,4]
             // Move last group (4) to the front.
-            assert!(tree.reorder_group_within_strip(strip_id, ids[3], 0));
+            assert!(tree.reorder_group_for_tests(strip_id, ids[3], 0));
             assert_eq!(group_order(&tree, strip_id), vec![4, 1, 2, 3]);
-            // Move it back to the end (index >= len clamps to last slot).
-            assert!(tree.reorder_group_within_strip(strip_id, 4, 99));
+            // Move it back to the last slot.
+            assert!(tree.reorder_group_for_tests(strip_id, 4, 3));
             assert_eq!(group_order(&tree, strip_id), vec![1, 2, 3, 4]);
         }
 
         // Phase `reorder_group_to_same_index_is_a_noop`.
         {
             let (mut tree, strip_id, ids) = tree_with_n_groups(3);
-            let changed = tree.reorder_group_within_strip(strip_id, ids[1], 1);
+            let changed = tree.reorder_group_for_tests(strip_id, ids[1], 1);
             assert!(!changed, "moving a group to its own slot reports no change");
             assert_eq!(group_order(&tree, strip_id), vec![1, 2, 3]);
         }
@@ -7858,7 +8148,7 @@ mod active_group_tests {
         // Phase `reorder_group_unknown_group_is_a_noop`.
         {
             let (mut tree, strip_id, _ids) = tree_with_n_groups(2);
-            assert!(!tree.reorder_group_within_strip(strip_id, 999, 0));
+            assert!(!tree.reorder_group_for_tests(strip_id, 999, 0));
             assert_eq!(group_order(&tree, strip_id), vec![1, 2]);
         }
 
@@ -7884,7 +8174,7 @@ mod active_group_tests {
             tree.seed_doc_from_cache();
             let state_dir = tempfile::tempdir().expect("state dir");
             tree.persist_path = Some(state_dir.path().join("state.json"));
-            tree.reorder_group_within_strip(strip_id, ids[0], 2); // [2,3,1]
+            tree.reorder_group_for_tests(strip_id, ids[0], 2); // [2,3,1]
 
             let (_, workspaces_id) = tree.doc.get(&ROOT, "workspaces").unwrap().unwrap();
             let (_, ws0) = tree.doc.get(&workspaces_id, 0_usize).unwrap().unwrap();
@@ -7974,7 +8264,7 @@ mod active_group_tests {
             .active_group_for(second_strip)
             .expect("second group");
 
-        assert!(tree.reorder_group_within_strip(second_strip, second_group, 0));
+        assert!(tree.reorder_group_for_tests(second_strip, second_group, 0));
         let reloaded = load_tree_from(&state_path).expect("group reorder persisted");
         assert_eq!(
             group_order(&reloaded, second_strip),
@@ -8042,6 +8332,10 @@ mod active_group_tests {
 }
 
 #[cfg(test)]
+#[path = "state/media_policy_tests.rs"]
+mod shell_media_policy;
+
+#[cfg(test)]
 mod active_workspace_peer_count_tests {
     //! Coverage for [`active_workspace_peer_count`] — the shared helper
     //! used by chrome that summarizes the active workspace roster.
@@ -8106,7 +8400,7 @@ mod active_workspace_peer_count_tests {
             Collaborator::new("alice", "Alice"),
         ]);
 
-        let topbar = TopBarChrome::from_tree(&tree);
+        let topbar = TopBarChrome::from_tree_with_local_user(&tree.desktop, local_user_id());
         assert_eq!(active_workspace_peer_count(&tree), 1);
         assert_eq!(topbar.collaborator_initials().len(), 1);
     }
@@ -8501,6 +8795,8 @@ mod workspace_tree_lifecycle_tests {
             .unwrap();
             tree.propose_workspace_ownership_transfer(workspace_id, proposal.clone(), 100)
                 .unwrap();
+            // A restart ends the process that held the state file's single writer.
+            drop(tree);
             let mut tree = crate::shell::persist::load_tree_from(&state_path).unwrap();
             tree.persist_path = Some(state_path);
             let wrong_acceptance =

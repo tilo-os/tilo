@@ -52,6 +52,13 @@
     reason = "migration stack lint debt is scoped to this target"
 )]
 #![cfg_attr(
+    target_arch = "wasm32",
+    allow(
+        dead_code,
+        reason = "the browser build omits the native App runner, broker transport and offscreen renderer, which are the only callers of much shared plumbing"
+    )
+)]
+#![cfg_attr(
     test,
     allow(
         clippy::disallowed_methods,
@@ -117,13 +124,16 @@ extern crate self as tilo_ui;
 #[path = "../tests/support/application.rs"]
 pub(crate) mod application_test_support;
 
+#[cfg(not(target_arch = "wasm32"))]
 pub mod app;
 pub mod auth_backdrop;
 pub mod caps_lock;
 pub mod chart_palette;
 pub mod charts;
 pub mod chrome;
+pub mod clock;
 pub mod collaboration;
+pub use runtime_collab::native_media;
 pub mod collection_transition;
 pub mod color;
 pub mod color_compat;
@@ -156,9 +166,13 @@ pub mod history_mode;
 pub mod history_source;
 #[cfg(all(windows, feature = "notifications"))]
 pub use native::host_notifications;
+#[cfg(not(all(windows, feature = "notifications")))]
+#[path = "host_notifications_unsupported.rs"]
+pub mod host_notifications;
 pub mod i18n;
 pub mod icons;
 pub mod image_store;
+pub mod ime;
 pub mod input;
 pub mod interaction;
 pub mod launch;
@@ -169,6 +183,7 @@ pub mod math;
 pub mod native;
 pub mod nav_stack;
 pub mod num;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod offscreen;
 pub mod overlay;
 pub mod paint;
@@ -176,7 +191,9 @@ pub mod paragraph;
 pub mod permissions;
 pub mod persist;
 pub mod platform;
+pub mod portable_storage;
 pub mod presence;
+pub mod priority_contacts;
 pub mod profiling;
 pub mod query_text;
 pub mod realtime_continuity;
@@ -190,6 +207,7 @@ pub mod close_admission;
 pub mod reader_hud;
 pub mod record;
 pub mod remote_actions;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod render_thread;
 pub mod reorder;
 pub mod richtext;
@@ -231,6 +249,10 @@ pub use tilo_host::{
     background, capture, clipboard, host, location, mpris, png, portal, time, wake,
 };
 
+/// Bounds a test wait that ends as soon as its condition holds; only a hang reaches it.
+#[cfg(test)]
+pub(crate) const HANG_BOUND: time::Duration = time::Duration::from_secs(30);
+
 // `kurbo` and `peniko` come through `vello`, where the geometry and paint
 // types in every `draw` signature live.
 /// The AccessKit types the bridge and [`headless::Driver`] hand back,
@@ -241,11 +263,13 @@ pub use automerge;
 pub use taffy;
 /// The async runtime model: the app runtime off the UI thread, the CPU pool,
 /// the file-I/O pool and `block_on` for synchronous entry points.
+#[cfg(not(target_arch = "wasm32"))]
 pub use tilo_rt as rt;
 pub use vello;
 pub use vello::{kurbo, peniko};
 pub use winit;
 
+#[cfg(not(target_arch = "wasm32"))]
 pub use app::{ActionUiRoute, App, local_surface_id};
 pub use caps_lock::CapsLockEstimate;
 pub use collection_transition::{
@@ -428,12 +452,26 @@ pub use permissions::{
     Actor, CapDecision, CapOverride, PermissionContext, PermissionScope, ResourceRef, Role,
     Scope as CapScope, Subject, UserId, Verb,
 };
+pub use widget::ParticipantPresence;
 
 pub mod application;
 pub mod application_view;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod host_worker;
+pub mod invocation_scope;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod native_scenario;
+pub mod semantic_document_read;
 pub mod synthetic_input;
 
 pub mod bound_dispatch;
 
+#[cfg(not(target_arch = "wasm32"))]
 mod presentation_feedback;
+
+/// Emission-time local control custody.
+pub mod control_custody;
+pub use control_custody::{
+    ControlCoverage, ControlDomain, ControlOutbox, ControlProducerDiscipline,
+};
+mod focus_navigation;

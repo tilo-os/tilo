@@ -103,6 +103,8 @@ pub fn process_environment() -> crate::host::HostEnvironment {
             account_name: text("USER"),
             continuity_resume,
             continuity_instance: text("TILO_CONTINUITY_INSTANCE"),
+            collab_service_configured: std::env::var_os("TILO_SVC_COLLAB_FD").is_some(),
+            managed_agent_context: std::env::var_os("TILO_MANAGED_AGENT_CONTEXT").is_some(),
         },
         paths: crate::host::HostPaths {
             user_home: path("TILO_USER_HOME"),
@@ -135,6 +137,11 @@ pub fn process_environment() -> crate::host::HostEnvironment {
             ),
             window_no_activate: std::env::var("TILO_PROFILE_WINDOW_NO_ACTIVATE").as_deref()
                 == Ok("1"),
+            host_perf_baseline: ["TILO_HOST_PERF_BASELINE", "TILO_HOST_PERF2_BASELINE"]
+                .iter()
+                .any(|name| std::env::var_os(name).is_some_and(|v| v == "1")),
+            hosted_pump_timing: std::env::var_os("TILO_HOSTED_PUMP_TIMING")
+                .is_some_and(|v| v == "1"),
         },
         dev_session: path("TILO_DEV_SESSION"),
         ui_graph_dir: path("TILO_UI_GRAPH_DIR"),

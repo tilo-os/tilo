@@ -38,7 +38,7 @@
 //!                      "show_previews": true, "play_sounds": true,
 //!                      "show_on_lock_screen": false },
 //!   "accessibility": { "large_cursor": false, "cursor_size": 24,
-//!                      "screen_reader": false, "on_screen_keyboard": false,
+//!                      "screen_reader": false, "on_screen_keyboard": "auto",
 //!                      "sticky_keys": false, "slow_keys": false,
 //!                      "bounce_keys": false, "bounce_keys_delay_ms": 300,
 //!                      "bounce_keys_alert": false, "mouse_keys": false,
@@ -727,9 +727,10 @@ pub struct AccessibilityPrefs {
     /// Run the AT-SPI screen reader.
     #[serde(default)]
     pub screen_reader: bool,
-    /// Show the on-screen keyboard for text entry without a physical keyboard.
+    /// When the on-screen keyboard runs: automatically on touch-only use,
+    /// always, or never.
     #[serde(default)]
-    pub on_screen_keyboard: bool,
+    pub on_screen_keyboard: OnScreenKeyboard,
     /// Latch modifier keys so chords can be typed one key at a time.
     #[serde(default)]
     pub sticky_keys: bool,
@@ -813,6 +814,39 @@ impl ColorFilter {
             "Grayscale" => Self::Grayscale,
             "Inverted" => Self::Inverted,
             "Grayscale + inverted" => Self::GrayscaleInverted,
+            _ => return None,
+        })
+    }
+}
+
+/// When the compositor runs the on-screen keyboard. `Auto` follows the
+/// hardware in use: a touchscreen with no physical typing since the last
+/// touch, or a convertible folded into tablet mode.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OnScreenKeyboard {
+    #[default]
+    Auto,
+    Always,
+    Never,
+}
+
+impl OnScreenKeyboard {
+    pub const OPTIONS: &'static [&'static str] = &["Automatic", "Always", "Never"];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Auto => "Automatic",
+            Self::Always => "Always",
+            Self::Never => "Never",
+        }
+    }
+
+    pub fn from_label(label: &str) -> Option<Self> {
+        Some(match label {
+            "Automatic" => Self::Auto,
+            "Always" => Self::Always,
+            "Never" => Self::Never,
             _ => return None,
         })
     }
@@ -928,7 +962,7 @@ impl Default for AccessibilityPrefs {
             large_cursor: false,
             cursor_size: default_cursor_size(),
             screen_reader: false,
-            on_screen_keyboard: false,
+            on_screen_keyboard: OnScreenKeyboard::Auto,
             sticky_keys: false,
             slow_keys: false,
             bounce_keys: false,

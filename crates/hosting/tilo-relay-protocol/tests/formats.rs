@@ -14,6 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
+use tilo_relay_protocol::config::CheckpointPrefixRecovery;
 use tilo_relay_protocol::{
     ComputeAccelerator, DeviceMeshProfile, DeviceRole, HomePeerRegistration, MetricsSnapshot,
     PeerRelayConfig, PowerAvailability, ProcessLease, RelayConfig, RelayLimits, ReplicationIntent,
@@ -54,6 +55,7 @@ where
     assert_eq!(&from_postcard_hex::<T>(encoded), value);
 }
 
+#[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
 #[test]
 fn json_encodings_are_pinned() {
     // Device mesh profile.
@@ -138,6 +140,11 @@ fn json_encodings_are_pinned() {
         deltas_received: 4,
         bytes_queued: 5,
         deltas_fanned_out: 6,
+        subscribes: 7,
+        replayed_retained: 8,
+        replayed_pending: 9,
+        subscriber_dropped: 10,
+        subscriber_dropped_backpressure: 11,
     };
     let encoded = r#"{
   "conns_accepted": 1,
@@ -145,7 +152,12 @@ fn json_encodings_are_pinned() {
   "auth_rejected": 3,
   "deltas_received": 4,
   "bytes_queued": 5,
-  "deltas_fanned_out": 6
+  "deltas_fanned_out": 6,
+  "subscribes": 7,
+  "replayed_retained": 8,
+  "replayed_pending": 9,
+  "subscriber_dropped": 10,
+  "subscriber_dropped_backpressure": 11
 }"#;
     assert_eq!(
         String::from_utf8(serde_json::to_vec_pretty(&snapshot).unwrap()).unwrap(),
@@ -283,12 +295,16 @@ fn toml_encodings_are_pinned() {
                 pin: true,
                 replication: ReplicationIntent::FullWorkspace,
                 admitted_users: vec!["cd".repeat(32)],
+                shell_authority: None,
+                checkpoint_prefix_recovery: CheckpointPrefixRecovery::default(),
             },
             WorkspaceBinding {
                 id: 42,
                 pin: false,
                 replication: selected_resources(),
                 admitted_users: Vec::new(),
+                shell_authority: None,
+                checkpoint_prefix_recovery: CheckpointPrefixRecovery::default(),
             },
         ],
         peer_relays: vec![PeerRelayConfig {
@@ -362,6 +378,8 @@ priority = 100
             pin: true,
             replication: ReplicationIntent::WorkspaceOnly,
             admitted_users: Vec::new(),
+            shell_authority: None,
+            checkpoint_prefix_recovery: CheckpointPrefixRecovery::default(),
         }
     );
 }

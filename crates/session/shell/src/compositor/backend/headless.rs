@@ -460,6 +460,10 @@ impl Backend for HeadlessBackend {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 mod tests {
     //! Unit coverage for the headless backend. Each test acquires its
     //! own wgpu adapter (via `OffscreenRenderer::try_new`); on machines

@@ -12,6 +12,10 @@
     clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "relays, fixtures and guards deliberately stay alive until each test ends"
+)]
 
 use std::time::Duration;
 
@@ -96,6 +100,8 @@ async fn community() -> Community {
             pin: false,
             replication: tilo_relay::ReplicationIntent::FullWorkspace,
             admitted_users: Vec::new(),
+            shell_authority: None,
+            checkpoint_prefix_recovery: tilo_relay::CheckpointPrefixRecovery::Disabled,
         }],
         ..RelayConfig::default()
     };
@@ -136,9 +142,8 @@ async fn stranger(community: &Community, label: &str) -> (TestDevice, RelayClien
 }
 
 async fn next(client: &RelayClient) -> Envelope {
-    tokio::time::timeout(Duration::from_secs(5), client.recv())
+    tilo_test_env::within("the relay's answer", client.recv())
         .await
-        .expect("the relay answers")
         .expect("the connection stays open")
 }
 
@@ -324,16 +329,18 @@ async fn a_member_cannot_publish_presence_as_another_endpoint() {
         .unwrap();
     // Anything already queued for Ada (Bea's admission, fanned out live) may
     // still arrive; the session must then end rather than carry on.
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while let Some(envelope) = ada_client.recv().await {
-            assert!(
-                !matches!(envelope, Envelope::Presence { .. }),
-                "the forger receives nothing further from the room"
-            );
-        }
-    })
-    .await
-    .expect("a forged presence author ends the forger's session");
+    tilo_test_env::within(
+        "a forged presence author ending the forger's session",
+        async {
+            while let Some(envelope) = ada_client.recv().await {
+                assert!(
+                    !matches!(envelope, Envelope::Presence { .. }),
+                    "the forger receives nothing further from the room"
+                );
+            }
+        },
+    )
+    .await;
     assert!(
         tokio::time::timeout(Duration::from_millis(500), bea_client.recv())
             .await

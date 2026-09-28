@@ -3276,7 +3276,7 @@ mod tests {
 
     fn wait_for_password_prompt(pane: &mut NetworkPane, doc: &mut AutoCommit, root: &ObjId) {
         // A hang guard for the worker thread, not a latency budget.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let deadline = tilo_test_env::hang_deadline();
         while std::time::Instant::now() < deadline {
             pane.sync(doc, root);
             if pane.expanded_ssid.is_some() {
@@ -3386,9 +3386,7 @@ mod tests {
                 let pending = pane.snapshot_request.is_pending();
                 // Each wake is followed by the sync the host would run.
                 while pane.snapshot_request.is_pending() {
-                    wakes
-                        .recv_timeout(std::time::Duration::from_secs(30))
-                        .unwrap();
+                    wakes.recv_timeout(tilo_test_env::hang_bound()).unwrap();
                     pane.sync(&mut doc, &root);
                 }
                 (before, pending, pane.networks().to_vec())
@@ -3436,9 +3434,7 @@ mod tests {
                 let inert = rec.calls().is_empty();
                 release.send(()).unwrap();
                 while !pane.loaded {
-                    wakes
-                        .recv_timeout(std::time::Duration::from_secs(30))
-                        .unwrap();
+                    wakes.recv_timeout(tilo_test_env::hang_bound()).unwrap();
                     pane.sync(&mut doc, &root);
                 }
                 (
@@ -3515,9 +3511,7 @@ mod tests {
                 pane.sync(&mut doc, &root);
                 assert!(!read_bool(&doc, &root, DIAGNOSTICS_KEY).unwrap_or(true));
                 assert!(pane.diagnostics_request.is_pending());
-                wakes
-                    .recv_timeout(std::time::Duration::from_secs(10))
-                    .unwrap();
+                wakes.recv_timeout(tilo_test_env::hang_bound()).unwrap();
                 pane.sync(&mut doc, &root);
                 (pane.diagnostics.is_some(), pane.connection_notice.clone())
             })
@@ -3650,9 +3644,7 @@ mod tests {
     fn settle(pane: &mut NetworkPane, doc: &mut AutoCommit, wakes: &std::sync::mpsc::Receiver<()>) {
         let root = automerge::ROOT;
         while pane.actions_busy() || pane.snapshot_request.is_pending() {
-            wakes
-                .recv_timeout(std::time::Duration::from_secs(30))
-                .unwrap();
+            wakes.recv_timeout(tilo_test_env::hang_bound()).unwrap();
             pane.sync(doc, &root);
         }
     }
@@ -3848,7 +3840,7 @@ mod tests {
             // asserting immediately races the worker and can falsely report that
             // the visible Connect button did nothing.
             // A hang guard for the worker thread, not a latency budget.
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            let deadline = tilo_test_env::hang_deadline();
             while std::time::Instant::now() < deadline {
                 if !rec.calls().is_empty() {
                     break;
@@ -3904,7 +3896,7 @@ mod tests {
             let _ = doc.put(&root, connect_key("Neighbour_5G"), true);
             pane.sync(&mut doc, &root);
             // A hang guard for the worker thread, not a latency budget.
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            let deadline = tilo_test_env::hang_deadline();
             while std::time::Instant::now() < deadline {
                 pane.sync(&mut doc, &root);
                 if !rec.calls.lock().unwrap().is_empty() {
@@ -3954,7 +3946,7 @@ mod tests {
             );
             pane.sync(&mut doc, &root);
             // A hang guard for the worker thread, not a latency budget.
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            let deadline = tilo_test_env::hang_deadline();
             while std::time::Instant::now() < deadline {
                 pane.sync(&mut doc, &root);
                 if !commands.lock().unwrap().is_empty() {
@@ -3995,7 +3987,7 @@ mod tests {
             let _ = doc.put(&root, join_key("Neighbour_5G").as_str(), true);
             pane.sync(&mut doc, &root);
             // A hang guard for the worker thread, not a latency budget.
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            let deadline = tilo_test_env::hang_deadline();
             while std::time::Instant::now() < deadline {
                 if !rec.calls.lock().unwrap().is_empty() {
                     break;

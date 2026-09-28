@@ -7,7 +7,7 @@
 //!
 //! - [`landlock`] — a declarative [`landlock::RulesetSpec`] and the one
 //!   function that installs it on the calling process.
-//! - [`seccomp`] — deny-list compilation to a raw BPF blob, and the
+//! - [`seccomp`] — deny-list and allow-list compilation to BPF, and the
 //!   baseline application policy ([`seccomp::SeccompProfile`]).
 //!
 //! What stays with each caller is policy input: which paths an app may

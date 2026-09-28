@@ -168,25 +168,18 @@ mod tests {
 
             let mut shell_doc = AutoCommit::new();
             host.update(&mut shell_doc, &automerge::ROOT);
-            // Nothing but the frame offers the edit to the debounced writer, so
-            // the record reaches `Saved` only if the frame did. The deadline is
-            // a hang guard, far past the writer's debounce.
+            // Nothing but the frame offers the edit to the debounced writer, and
+            // awaiting the writer submits nothing, so the record reaches
+            // `Saved` only if the frame did.
             let tab_a = RecordId::for_tab(TAB_A);
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-            loop {
-                match store.save_status(&tab_a) {
-                    Ok(ui::record::RecordSaveStatus::Saved) => break,
-                    Ok(ui::record::RecordSaveStatus::Failed(error)) => {
-                        panic!("the tab's writer failed: {error}")
-                    }
-                    _ => {}
-                }
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "a frame must offer each open tab's document to its writer"
-                );
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
+            store
+                .await_submitted(&tab_a)
+                .unwrap_or_else(|error| panic!("the tab's writer failed: {error}"));
+            assert_eq!(
+                store.save_status(&tab_a).unwrap(),
+                ui::record::RecordSaveStatus::Saved,
+                "a frame must offer each open tab's document to its writer"
+            );
 
             let reader = store_at(tmp.path(), PACKAGE);
             reader.open_record(&scratch_tab_record(TAB_A));
@@ -459,7 +452,15 @@ mod tests {
                 let mut b = Tile::notes(TAB_B, &store);
                 a.type_str(&mut shared, "first tab");
                 b.type_str(&mut shared, "second tab");
-                store.flush();
+                assert_eq!(
+                    tab_body(&store, TAB_A, BODY_KEY).as_deref(),
+                    Some("first tab")
+                );
+                assert_eq!(
+                    tab_body(&store, TAB_B, BODY_KEY).as_deref(),
+                    Some("second tab")
+                );
+                store.try_flush().expect("both tab records reached storage");
             }
 
             // A fresh session: same tab ids out of the persisted window tree,

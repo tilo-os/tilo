@@ -35,6 +35,11 @@
 #                            export this dev disk's installed UKI sections
 #                            and ESP PARTUUID for WHPX direct kernel boot
 #
+#   TILO_ROOT_PODMAN_STORE=DIR  root podman, which runs bootc, keeps its image
+#                            store and scratch in DIR instead of
+#                            /var/lib/containers and /var/tmp (a build host
+#                            whose root filesystem is small)
+#
 # Why not bib: bib has no composefs, UKI or backend-selection surface anywhere
 # in its config, and the request for one (osbuild/bootc-image-builder#1164) has
 # been idle since December. What bib does at this step is wrap the two commands
@@ -81,6 +86,22 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
+
+# Root podman runs bootc out of the image, so it holds a copy of it: by default
+# in /var/lib/containers, staged through /var/tmp.
+ROOT_PODMAN_ARGS=(); ROOT_PODMAN_ENV=(); ROOT_CONTAINERS=/var/lib/containers
+if [ -n "${TILO_ROOT_PODMAN_STORE:-}" ]; then
+  mkdir -p "$TILO_ROOT_PODMAN_STORE"
+  TILO_ROOT_PODMAN_STORE="$(cd "$TILO_ROOT_PODMAN_STORE" && pwd)"
+  ROOT_CONTAINERS="$TILO_ROOT_PODMAN_STORE/containers"
+  sudo -n mkdir -p "$ROOT_CONTAINERS/storage" "$TILO_ROOT_PODMAN_STORE/run" "$TILO_ROOT_PODMAN_STORE/tmp"
+  ROOT_PODMAN_ARGS=(--root "$ROOT_CONTAINERS/storage" --runroot "$TILO_ROOT_PODMAN_STORE/run")
+  ROOT_PODMAN_ENV=("TMPDIR=$TILO_ROOT_PODMAN_STORE/tmp")
+fi
+root_podman() {
+  sudo -n env "${ROOT_PODMAN_ENV[@]+"${ROOT_PODMAN_ENV[@]}"}" \
+    podman "${ROOT_PODMAN_ARGS[@]+"${ROOT_PODMAN_ARGS[@]}"}" "$@"
+}
 
 IMAGE=""; OUTDIR=""
 COMPOSEFS=auto; BOOTLOADER=""; SIZE=""; ROOT_MIN=12G; ROOT_MAX=""; ROOTFS=btrfs; ESP_SIZE=2G
@@ -512,9 +533,9 @@ elif [ "$COMPOSEFS" = yes ]; then
   TLS_ARGS=(--tls-verify=false)
   REGCONF="$OUTDIR/.registries.conf"
   printf '[[registry]]\nlocation = "%s"\ninsecure = true\n' "$REG" > "$REGCONF"
-elif ! sudo -n podman image exists "$IMAGE" 2>/dev/null; then
+elif ! root_podman image exists "$IMAGE" 2>/dev/null; then
   msg "transfer $IMAGE into root container storage"
-  podman save "$IMAGE" | sudo -n podman load
+  podman save "$IMAGE" | root_podman load
 fi
 
 # The installed system updates from the image it was built from, not from the
@@ -613,7 +634,7 @@ install_args+=("/run/tilo-install-target")
 # The recursive bind includes the ESP mounted below $MNT at /boot.
 run_args=(--rm --privileged --pid=host
   --security-opt label=type:unconfined_t
-  -v /var/lib/containers:/var/lib/containers
+  -v "$ROOT_CONTAINERS:/var/lib/containers"
   -v /dev:/dev -v "$MNT:/run/tilo-install-target:rbind")
 # Bootc compares /run/udev with /proc/1/root/run/udev even without a udev
 # database. Kata CI has no udev daemon, so create the parent-namespace path
@@ -643,7 +664,7 @@ if [ -n "$SOURCE_POLICY" ]; then
 fi
 
 msg "3/4 bootc install ${install_args[*]}"
-if ! sudo -n podman run "${run_args[@]}" "${TLS_ARGS[@]+"${TLS_ARGS[@]}"}" \
+if ! root_podman run "${run_args[@]}" "${TLS_ARGS[@]+"${TLS_ARGS[@]}"}" \
        "$RUNREF" "${bootc_argv[@]}" install "${install_args[@]}" 2>&1 | tee "$LOG"; then
   # The two failures that are specific to dropping bib get named, because
   # neither message says what to do about it.
@@ -698,7 +719,7 @@ if [ -n "$USERSPEC" ]; then
     user_run_args+=(--network host
       -v "$REGCONF:/etc/containers/registries.conf.d/98-local.conf:ro")
   fi
-  sudo -n podman run "${user_run_args[@]}" "${TLS_ARGS[@]+"${TLS_ARGS[@]}"}" \
+  root_podman run "${user_run_args[@]}" "${TLS_ARGS[@]+"${TLS_ARGS[@]}"}" \
     "$RUNREF" \
     bash -c "set -e
       mount --bind /target-etc /etc
@@ -749,7 +770,7 @@ if [ -n "$ETC_OVERLAY" ]; then
       -v "$REGCONF:/etc/containers/registries.conf.d/98-local.conf:ro")
   fi
   # Offline labelling with the image's own policy, as for the account above.
-  sudo -n podman run "${overlay_label_args[@]}" "${TLS_ARGS[@]+"${TLS_ARGS[@]}"}" \
+  root_podman run "${overlay_label_args[@]}" "${TLS_ARGS[@]+"${TLS_ARGS[@]}"}" \
     "$RUNREF" bash -c '
       set -e
       fc=/etc/selinux/targeted/contexts/files/file_contexts
@@ -781,7 +802,7 @@ if [ -n "$OFFLINE_TARGET_DIR" ]; then
     label_args+=(--network host
       -v "$REGCONF:/etc/containers/registries.conf.d/98-local.conf:ro")
   fi
-  sudo -n podman run "${label_args[@]}" "${TLS_ARGS[@]+"${TLS_ARGS[@]}"}" \
+  root_podman run "${label_args[@]}" "${TLS_ARGS[@]+"${TLS_ARGS[@]}"}" \
     "$RUNREF" bash -c '
       set -e
       mount --bind /target-var /var

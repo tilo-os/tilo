@@ -1,15 +1,12 @@
-//! Per-workspace runtime state: the pinned CRDT (if any), the set
-//! of live subscribers, and the fan-out routing rule.
+//! Per-workspace routing and authorization metadata. Live state storage and
+//! the pinned document transfer lazily to the bounded ordered persistence
+//! owner. Synchronous persistence methods remain compatibility helpers for
+//! runtimes that have not entered shared live service.
 //!
-//! `WorkspaceRuntime` is owned by the daemon and shared with the
-//! connection tasks via `Arc<Mutex<_>>`. Each connection task, on
-//! subscribe, registers a bounded `mpsc::Sender<OutboundFrame>` here;
-//! on receive-a-delta, the daemon encodes the envelope once and hands the
-//! same shared bytes to every subscriber ≠ author with `try_send`. A
-//! saturated subscriber is disconnected and its durable traffic is replayed
-//! on reconnect. Offline members get non-retained deltas enqueued to disk;
-//! retained document traffic (checkpoints and their tails) is stored once
-//! per channel and replayed to every subscriber, never copied per member.
+//! Retained document traffic (checkpoints and their tails) is stored once per
+//! channel and replayed to every subscriber, never copied per member; only
+//! non-retained deltas are queued per offline member, and those queues are
+//! bounded (see [`crate::store::QueueBounds`]).
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -19,24 +16,11 @@ use automerge::{AutoCommit, ChangeHash};
 use tokio::sync::{Mutex as AsyncMutex, mpsc};
 
 use crate::auth::PeerRole;
-use crate::store::{LogEntry, MembershipStamp, WorkspaceStore};
+use crate::store::{AUTOMERGE_MAGIC, LogEntry, MembershipStamp, WorkspaceStore};
 use crate::transport::Envelope;
 
-/// One framed, encoded envelope as written to the wire. Shared by every
-/// subscriber it is fanned out to, so a delta costs one encode and one
-/// allocation however many members receive it.
-pub type OutboundFrame = Arc<[u8]>;
-
-/// Encode `envelope` once into a shareable wire frame.
-///
-/// # Errors
-///
-/// Returns an error if postcard cannot serialize the envelope.
-pub fn encode_frame(envelope: &Envelope) -> Result<OutboundFrame, postcard::Error> {
-    crate::frame::encode(envelope).map(Arc::from)
-}
-
-use crate::store::AUTOMERGE_MAGIC;
+/// Least time between two checkpoint requests to one device.
+pub const CHECKPOINT_REQUEST_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Membership set for a workspace on this relay. Populated by the
 /// admin (`bind-workspace`) via the workspace-directory CRDT and
@@ -77,6 +61,20 @@ impl Membership {
     pub fn devices(&self) -> &[[u8; 32]] {
         &self.devices
     }
+
+    /// Keep only the members `keep` accepts.
+    pub fn retain(&mut self, mut keep: impl FnMut(&[u8; 32]) -> bool) {
+        self.devices.retain(|device| keep(device));
+        self.index.retain(|device| keep(device));
+    }
+}
+
+impl From<Vec<[u8; 32]>> for Membership {
+    fn from(devices: Vec<[u8; 32]>) -> Self {
+        let mut membership = Self::default();
+        membership.set(devices);
+        membership
+    }
 }
 
 /// One live subscription — the outbound envelope channel a
@@ -90,48 +88,54 @@ pub struct Subscriber {
     /// as a federated relay — the fan-out rule skips it when the
     /// author is itself a `PeerRelay`, to prevent echo loops.
     pub role: PeerRole,
-    /// Bounded outbound frame channel. Closed or full means the peer can
-    /// no longer keep up and is pruned immediately.
-    pub tx: mpsc::Sender<OutboundFrame>,
+    /// Bounded outbound envelope channel. A full channel is backpressure:
+    /// durable traffic spills to the subscriber's pending queue. A closed
+    /// channel means the peer task is gone and the subscriber is pruned.
+    pub tx: mpsc::Sender<Envelope>,
     /// Signals the owning peer task when this subscriber cannot keep up. A
     /// reconnect replays its durable queue instead of growing RAM without
     /// bound or leaving the connection silently stale.
     pub disconnect: mpsc::Sender<()>,
 }
 
-/// What one [`WorkspaceRuntime::fanout_delta`] did.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Fanout {
-    /// Live subscribers the frame was handed to.
-    pub delivered: usize,
-    /// Per-device pending entries written for offline members and relays.
-    pub queued: usize,
-}
-
 /// Per-workspace runtime.
 pub struct WorkspaceRuntime {
+    pub(crate) sync_refresh: Option<crate::peer::sync_refresh::Mailbox>,
     /// On-disk state.
     pub store: WorkspaceStore,
-    /// Pinned CRDT — only `Some` when the config marks this
-    /// workspace `pin = true`. Reloaded from disk on start and
-    /// materialized forward as raw Automerge deltas arrive (see
-    /// `WorkspaceRuntime::materialize`), so the host holds
-    /// authoritative current state that [`WorkspaceRuntime::changes_since`]
-    /// serves as the anti-entropy source of truth — independent of the
-    /// per-peer pending queues.
+    /// Initial pinned document. Transferred to `persistence` on first live
+    /// state operation; live anti-entropy accesses that owner, never this field.
     pub doc: Option<AutoCommit>,
+    pub(crate) persistence: Option<crate::persistence::Persistence>,
     /// Which of the user's devices are workspace members. Used to
     /// gate subscribes AND to decide who gets store-and-forward
     /// on delta receive.
     pub membership: Membership,
+    /// Serializes filesystem authority operations independently of state IO.
+    pub(crate) authorization: Arc<AsyncMutex<()>>,
+    /// Failed/pending replacements cap what an old external file may grant.
+    pub(crate) membership_ceiling: Option<HashSet<[u8; 32]>>,
+    pub(crate) membership_revision: u64,
     /// Whether any connection already admitted by the relay's trust policy may
     /// join this workspace. Enabled automatically for matching-user home hosts;
     /// shared/multi-tenant hosts use an explicit membership list.
     pub admit_authenticated: bool,
     /// Cross-user roots admitted by the signed authority for this exact room.
     pub admitted_users: HashSet<[u8; 32]>,
+    /// User roots needed only to pass the relay-wide handshake for devices in
+    /// this native-governed room. Exact room admission still uses
+    /// `membership`; keeping this separate from `admitted_users` prevents an
+    /// ungoverned sibling device under the same root from joining.
+    pub governed_user_roots: HashSet<[u8; 32]>,
+    /// Whether native governance owns this room's admission. Once set, the
+    /// same-owner autobind path must not auto-enrol handshake-admitted devices.
+    pub governed_access: bool,
+    pub(crate) checkpoint_prefix_recovery: crate::config::CheckpointPrefixRecovery,
     /// Current live subscribers keyed by device pubkey.
     pub subscribers: HashMap<[u8; 32], Subscriber>,
+    pub(crate) outbound_federation: HashMap<[u8; 32], Arc<std::sync::atomic::AtomicBool>>,
+    pub(crate) state_sessions: HashMap<[u8; 32], crate::peer::StateSession>,
+    pub(crate) action_targets: HashMap<[u8; 32], crate::peer::ActionTarget>,
     /// Device pubkeys of peer relays this workspace has federated
     /// with at least once since the daemon started. Ops arriving
     /// while such a relay is offline are queued via the same
@@ -140,145 +144,23 @@ pub struct WorkspaceRuntime {
     pub known_peer_relays: HashSet<[u8; 32]>,
     /// Ephemeral eligible workers plus durable exact-route job bindings.
     pub compute: crate::compute_transport::ComputeTransportState,
-    /// The membership file as last loaded, so the per-second access audit
-    /// of every subscriber re-parses it only after it actually changed.
-    membership_stamp: Option<MembershipStamp>,
+    /// The membership files as last loaded, so a fresh read of an unchanged
+    /// file (every subscriber's periodic access audit) skips re-parsing it.
+    pub(crate) membership_stamp: Option<MembershipStamp>,
     /// Last store sequence handed out; see [`Self::next_seq`].
     last_seq: u64,
-    /// What is retained per document channel; see [`RetainedTail`].
-    tails: HashMap<[u8; 32], RetainedTail>,
-    /// When a retained tail asks for a checkpoint and when it disconnects.
-    pub tail_bounds: TailBounds,
-}
-
-/// Bounds on one channel's retained tail.
-///
-/// A tail is trimmed only from its front, and only while each entry is
-/// named by a newer checkpoint's [`Coverage::Entries`] — what its publisher
-/// read from the bytes it saved. Dropping any other entry would hand a
-/// joiner changes whose dependencies never arrive. Past the soft bound the
-/// relay asks a connected member for a fresh checkpoint; past the hard bound
-/// it disconnects the connected member that retained the most bytes, whose
-/// reconnect publishes a checkpoint.
-///
-/// [`Coverage::Entries`]: crate::coedit::Coverage::Entries
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct TailBounds {
-    /// Entries after which a checkpoint is requested.
-    pub soft_entries: usize,
-    /// Bytes after which a checkpoint is requested.
-    pub soft_bytes: u64,
-    /// Entries after which the heaviest connected sender is disconnected.
-    pub hard_entries: usize,
-    /// Bytes after which the heaviest connected sender is disconnected.
-    pub hard_bytes: u64,
-    /// Least time between two checkpoint requests for one channel.
-    pub request_interval: std::time::Duration,
-}
-
-impl Default for TailBounds {
-    fn default() -> Self {
-        Self {
-            soft_entries: 16_384,
-            soft_bytes: 256 * 1024 * 1024,
-            hard_entries: 65_536,
-            hard_bytes: 1024 * 1024 * 1024,
-            request_interval: std::time::Duration::from_secs(30),
-        }
-    }
-}
-
-/// One retained tail entry, as accounted in memory.
-#[derive(Clone, Copy, Debug)]
-struct TailEntry {
-    seq: u64,
-    bytes: u64,
-    author: [u8; 32],
-    /// The publisher's identity for this message.
-    entry: [u8; 32],
-}
-
-/// The retained base checkpoint of a channel.
-#[derive(Clone, Copy, Debug)]
-struct RetainedBase {
-    entry: [u8; 32],
-    /// Digest of the body. Members re-publish their whole document whenever
-    /// they attach; a byte-identical republish is not fanned out or
-    /// retained again.
-    digest: [u8; 32],
-}
-
-/// The retained state of one document channel: a base checkpoint plus the
-/// tail after it, oldest first.
-#[derive(Debug, Default)]
-struct RetainedTail {
-    entries: std::collections::VecDeque<TailEntry>,
-    bytes: u64,
-    base: Option<RetainedBase>,
-    last_request: Option<std::time::Instant>,
-}
-
-impl RetainedTail {
-    fn push(&mut self, entry: TailEntry) {
-        self.bytes = self.bytes.saturating_add(entry.bytes);
-        self.entries.push_back(entry);
-    }
-
-    /// Forget front entries while `covered` names them; returns the
-    /// sequence of the last one forgotten.
-    fn trim_front(&mut self, covered: &HashSet<[u8; 32]>) -> Option<u64> {
-        let mut through = None;
-        while let Some(front) = self.entries.front().copied() {
-            if !covered.contains(&front.entry) {
-                break;
-            }
-            self.entries.pop_front();
-            self.bytes = self.bytes.saturating_sub(front.bytes);
-            through = Some(front.seq);
-        }
-        through
-    }
-}
-
-/// What an arriving checkpoint does to its channel's retained state.
-struct CheckpointPlan {
-    base: RetainedBase,
-    /// Whether it may replace the base: there is none, it supersedes
-    /// everything, or it names the base as covered.
-    replaces_base: bool,
-    /// The entries it names as covered; `None` for a whole-state baseline.
-    covered: Option<HashSet<[u8; 32]>>,
-}
-
-/// A retained envelope as the tail accounts it.
-struct RetainedParts {
-    author: [u8; 32],
-    entry: [u8; 32],
-    /// Body digest, for a checkpoint.
-    checkpoint_digest: Option<[u8; 32]>,
-}
-
-fn retained_frame_parts(frame: &[u8]) -> Option<RetainedParts> {
-    let Envelope::Delta {
-        author_device_public_key,
-        delta,
-        ..
-    } = crate::frame::decode(frame.get(4..)?).ok()?
-    else {
-        return None;
-    };
-    Some(match crate::coedit::CoeditPayload::decode(&delta)? {
-        crate::coedit::CoeditPayload::Checkpoint { entry, body, .. } => RetainedParts {
-            author: author_device_public_key,
-            entry,
-            checkpoint_digest: Some(*blake3::hash(&body).as_bytes()),
-        },
-        crate::coedit::CoeditPayload::RetainedDelta { entry, .. } => RetainedParts {
-            author: author_device_public_key,
-            entry,
-            checkpoint_digest: None,
-        },
-    })
+    /// When each device was last asked for a checkpoint.
+    checkpoint_asked: HashMap<[u8; 32], std::time::Instant>,
+    /// Per live device subscriber: the retained-checkpoint channels a live
+    /// checkpoint has already been fanned to since the device last asked for a
+    /// baseline. A device asks on subscribe and whenever it sends a presence
+    /// frame (the browser sends presence only for its hello, a `SyncReq`, and a
+    /// rejected checkpoint), which resets its served set. The native publishes
+    /// its checkpoint as one set of messages — one per channel (the room plus
+    /// each record) — so the gate is per channel: a full bootstrap set passes
+    /// once, and the next idle set, on the same channels, is withheld from a
+    /// device that already holds every delta — see `fanout_delta`.
+    checkpoint_served: HashMap<[u8; 32], HashSet<[u8; 32]>>,
 }
 
 impl WorkspaceRuntime {
@@ -296,84 +178,84 @@ impl WorkspaceRuntime {
         pinned: bool,
         membership: Membership,
     ) -> Result<Self, crate::store::StoreError> {
+        Self::open_inner(state_root, workspace_id, pinned, membership, false)
+    }
+
+    /// Open a pinned workspace only when its durable snapshot already exists.
+    /// Native interactive hosting uses this path so a missing baseline cannot
+    /// silently become a new empty authoritative document.
+    pub(crate) fn open_with_required_snapshot(
+        state_root: &std::path::Path,
+        workspace_id: u64,
+        pinned: bool,
+        membership: Membership,
+    ) -> Result<Self, crate::store::StoreError> {
+        Self::open_inner(state_root, workspace_id, pinned, membership, true)
+    }
+
+    fn open_inner(
+        state_root: &std::path::Path,
+        workspace_id: u64,
+        pinned: bool,
+        membership: Membership,
+        require_snapshot: bool,
+    ) -> Result<Self, crate::store::StoreError> {
         let store = WorkspaceStore::open(state_root, workspace_id, pinned)?;
+        let governed_access_record = store.load_governed_access()?;
+        let governed_access = governed_access_record.is_some();
+        let governed_user_roots = governed_access_record.map_or_else(HashSet::new, |access| {
+            access.member_user_roots.into_iter().collect()
+        });
         let mut membership = membership;
-        for device in store.load_membership()? {
+        let stored_membership = store.load_membership()?;
+        for device in stored_membership {
             membership.insert(device);
         }
         let doc = if pinned {
-            match store.load_snapshot()? {
+            let snapshot = store.load_snapshot()?;
+            match snapshot {
                 Some(bytes) => Some(AutoCommit::load(&bytes).map_err(|e| {
                     crate::store::StoreError::Io(std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
                         format!("automerge load: {e}"),
                     ))
                 })?),
+                None if require_snapshot => {
+                    return Err(crate::store::StoreError::Io(std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        "required durable workspace snapshot is missing",
+                    )));
+                }
                 None => Some(AutoCommit::new()),
             }
         } else {
             None
         };
-        let mut last_seq = 0u64;
-        let mut tails = HashMap::new();
-        for retained in store.load_retained_channels()? {
-            let mut tail = RetainedTail {
-                base: retained
-                    .checkpoint
-                    .as_deref()
-                    .and_then(retained_frame_parts)
-                    .and_then(|parts| {
-                        Some(RetainedBase {
-                            entry: parts.entry,
-                            digest: parts.checkpoint_digest?,
-                        })
-                    }),
-                ..RetainedTail::default()
-            };
-            for (seq, frame) in retained.tail {
-                last_seq = last_seq.max(seq);
-                let parts = retained_frame_parts(&frame);
-                tail.push(TailEntry {
-                    seq,
-                    bytes: frame.len() as u64,
-                    author: parts.as_ref().map_or([0; 32], |parts| parts.author),
-                    entry: parts.as_ref().map_or([0; 32], |parts| parts.entry),
-                });
-            }
-            tails.insert(retained.channel, tail);
-        }
         Ok(Self {
             store,
             doc,
+            persistence: None,
             membership,
+            authorization: Arc::new(AsyncMutex::new(())),
+            membership_ceiling: None,
+            membership_revision: 0,
             admit_authenticated: false,
             admitted_users: HashSet::new(),
+            governed_user_roots,
+            governed_access,
+            checkpoint_prefix_recovery: crate::config::CheckpointPrefixRecovery::Disabled,
             subscribers: HashMap::new(),
             known_peer_relays: HashSet::new(),
             compute: crate::compute_transport::ComputeTransportState::default(),
             membership_stamp: None,
-            last_seq,
-            tails,
-            tail_bounds: TailBounds::default(),
+            last_seq: 0,
+            checkpoint_asked: HashMap::new(),
+            action_targets: HashMap::new(),
+            state_sessions: HashMap::new(),
+            outbound_federation: HashMap::new(),
+            checkpoint_served: HashMap::new(),
+            sync_refresh: None,
         })
-    }
-
-    /// Reload membership from its durable file when (and only when) the file
-    /// changed since the last load. Admin tools and admission rewrite it by
-    /// atomic rename, so the stamp changes with every rewrite.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the file's metadata or contents can't be read.
-    pub fn refresh_membership(&mut self) -> Result<(), crate::store::StoreError> {
-        let stamp = self.store.membership_stamp()?;
-        if stamp.is_some() && stamp == self.membership_stamp {
-            return Ok(());
-        }
-        let devices = self.store.load_membership()?;
-        self.membership.set(devices);
-        self.membership_stamp = stamp;
-        Ok(())
     }
 
     /// A store sequence strictly greater than every earlier one in this
@@ -396,18 +278,99 @@ impl WorkspaceRuntime {
     /// Register a subscription. Replaces any prior subscription
     /// from the same device.
     pub fn add_subscriber(&mut self, sub: Subscriber) {
+        if !self
+            .subscribers
+            .get(&sub.device_public_key)
+            .is_some_and(|current| current.tx.same_channel(&sub.tx))
+        {
+            self.action_targets.remove(&sub.device_public_key);
+            if let Some(session) = self.state_sessions.remove(&sub.device_public_key) {
+                session
+                    .live
+                    .store(false, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        self.checkpoint_served
+            .insert(sub.device_public_key, HashSet::new());
         self.subscribers.insert(sub.device_public_key, sub);
     }
 
-    /// Remember an authenticated device so deltas received while it is offline
-    /// are queued across daemon restarts.
+    /// A device asked for a baseline (its hello, a `SyncReq`, or a rejected
+    /// checkpoint arrive as presence): the next live checkpoint on every
+    /// channel reaches it once more.
+    pub fn request_checkpoint(&mut self, device: &[u8; 32]) {
+        if self.subscribers.contains_key(device) {
+            self.checkpoint_served.insert(*device, HashSet::new());
+        }
+    }
+
+    /// Whether a live checkpoint for `channel` would currently be fanned to
+    /// `device`.
+    pub fn needs_checkpoint(&self, device: &[u8; 32], channel: &[u8; 32]) -> bool {
+        self.checkpoint_served
+            .get(device)
+            .is_some_and(|served| !served.contains(channel))
+    }
+
+    /// Ask `device` for a fresh checkpoint of what it holds: the next live
+    /// checkpoint on every channel reaches it again, and a connected device
+    /// is sent `Ready` once more — which a member answers with its full
+    /// checkpoints, exactly as after subscribing. Returns whether the request
+    /// reached a live connection. A full connection queue skips the `Ready`;
+    /// the next overflow or subscribe asks again. Never disconnects.
+    pub fn ask_for_checkpoint(&mut self, device: &[u8; 32]) -> bool {
+        self.request_checkpoint(device);
+        let Some(sub) = self.subscribers.get(device) else {
+            return false;
+        };
+        sub.tx
+            .try_send(Envelope::Ready {
+                workspace_id: self.store.workspace_id(),
+                pending_deltas: 0,
+            })
+            .is_ok()
+    }
+
+    /// Ask every device the store recorded as needing a checkpoint
+    /// ([`WorkspaceStore::want_checkpoint`]), each at most once per
+    /// [`CHECKPOINT_REQUEST_INTERVAL`] while its request is answered.
+    pub fn serve_checkpoint_wants(&mut self) {
+        let now = std::time::Instant::now();
+        for device in self.store.take_checkpoint_wants() {
+            if self
+                .checkpoint_asked
+                .get(&device)
+                .is_some_and(|asked| now.duration_since(*asked) < CHECKPOINT_REQUEST_INTERVAL)
+            {
+                continue;
+            }
+            if self.ask_for_checkpoint(&device) {
+                self.checkpoint_asked.insert(device, now);
+            }
+        }
+    }
+
+    /// Record that one live checkpoint reached the current device session.
+    /// Call only after the delivery queue accepted the checkpoint.
+    pub(crate) fn mark_checkpoint_served(&mut self, device: &[u8; 32], channel: [u8; 32]) {
+        if let Some(served) = self.checkpoint_served.get_mut(device) {
+            served.insert(channel);
+        }
+    }
+
+    /// Remember an authenticated device before sharing this runtime, so deltas
+    /// received while it is offline are queued across daemon restarts. Live
+    /// sessions use the serialized async admission in `workspace_io`.
     ///
     /// # Errors
     ///
     /// Returns an error if persisting the updated membership list fails.
     pub fn admit_device(&mut self, device: [u8; 32]) -> Result<(), crate::store::StoreError> {
-        if self.membership.insert(device) {
-            self.store.save_membership(self.membership.devices())?;
+        if !self.membership.contains(&device) {
+            let mut devices = self.membership.devices().to_vec();
+            devices.push(device);
+            self.store.save_membership(&devices)?;
+            self.membership.insert(device);
         }
         Ok(())
     }
@@ -415,6 +378,30 @@ impl WorkspaceRuntime {
     /// Drop a subscription for `device`. Idempotent.
     pub fn remove_subscriber(&mut self, device: &[u8; 32]) {
         self.subscribers.remove(device);
+        self.action_targets.remove(device);
+        if let Some(session) = self.state_sessions.remove(device) {
+            session
+                .live
+                .store(false, std::sync::atomic::Ordering::SeqCst);
+        }
+        self.checkpoint_served.remove(device);
+        self.checkpoint_asked.remove(device);
+    }
+
+    /// Remove only the session that registered this queue. An old connection
+    /// must not unregister its replacement when its delayed teardown runs.
+    pub(crate) fn remove_subscriber_session(
+        &mut self,
+        device: &[u8; 32],
+        tx: &mpsc::Sender<Envelope>,
+    ) {
+        if self
+            .subscribers
+            .get(device)
+            .is_some_and(|sub| sub.tx.same_channel(tx))
+        {
+            self.remove_subscriber(device);
+        }
     }
 
     /// Whether `device` currently holds a subscription here.
@@ -424,9 +411,9 @@ impl WorkspaceRuntime {
 
     /// Route a delta envelope to every subscriber that is NOT the
     /// author, AND make it durable: retained document traffic is stored
-    /// once per channel, everything else is enqueued per offline member.
-    /// Returns how many live subscribers took it and how many per-device
-    /// queue entries were written.
+    /// once per channel, everything else is enqueued per offline member,
+    /// in queues bounded by [`crate::store::QueueBounds`]. Returns how many
+    /// live subscribers took it.
     ///
     /// `from_role` is the role of the sending peer. A `PeerRelay`
     /// origin is not re-forwarded to other peer relays — that filter
@@ -439,6 +426,10 @@ impl WorkspaceRuntime {
     /// Returns an error if `envelope` can't be re-encoded for the
     /// durable queue, or if persisting it (pending, checkpoint, or
     /// retained tail) fails.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one ordered protocol state machine; splitting it would scatter the invariants each step relies on"
+    )]
     pub fn fanout_delta(
         &mut self,
         author: &[u8; 32],
@@ -446,107 +437,145 @@ impl WorkspaceRuntime {
         envelope: &Envelope,
         raw_delta_bytes: &[u8],
         seq: u64,
-    ) -> Result<Fanout, crate::store::StoreError> {
+    ) -> Result<usize, crate::store::StoreError> {
+        use tokio::sync::mpsc::error::TrySendError;
         let seq = self.next_seq(seq);
-        let payload = crate::coedit::CoeditPayload::decode(raw_delta_bytes);
-        let checkpoint = match &payload {
-            Some(crate::coedit::CoeditPayload::Checkpoint {
-                channel,
-                entry,
-                coverage,
-                body,
-            }) => match self.plan_checkpoint(channel, *entry, coverage, body)? {
-                Some(plan) => Some(plan),
-                None => return Ok(Fanout::default()),
-            },
-            _ => None,
-        };
-        // One encode and one allocation for every recipient below.
-        let frame = encode_frame(envelope).map_err(|error| {
+        // Shared retained coverage is the durable delivery obligation for
+        // every reconnect (including newly admitted devices). Commit before
+        // live publication, and never duplicate these payloads per member.
+        let raw = crate::transport::encode(envelope).map_err(|error| {
             crate::store::StoreError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("encode: {error}"),
             ))
         })?;
-        // 1. Live fan-out — prune closed subscribers as we go.
-        let delivered = self.fanout_frame(author, from_role, &frame);
-        let mut queued = 0usize;
-        // 2. Retained document traffic is stored once per channel. Every
-        //    subscriber — a first-time guest, a reconnecting member, a
-        //    federating relay — receives the retained checkpoints and tails
-        //    on Subscribe, so a per-member pending copy would only duplicate
-        //    it across every offline member.
-        if let Some(payload) = &payload {
-            match (payload, checkpoint) {
-                (
-                    crate::coedit::CoeditPayload::Checkpoint { channel, .. },
-                    Some(CheckpointPlan {
-                        base,
-                        replaces_base: true,
-                        covered,
-                    }),
-                ) => {
-                    self.store.retain_checkpoint(channel, &frame)?;
-                    self.tails.entry(*channel).or_default().base = Some(base);
-                    match covered {
-                        Some(covered) => self.trim_tail(channel, &covered)?,
-                        None => self.clear_tail(channel)?,
+        let retained = if let Envelope::Delta {
+            workspace_id,
+            author_device_public_key,
+            delta,
+            ..
+        } = envelope
+        {
+            if workspace_id != &self.store.workspace_id() || author_device_public_key != author {
+                return Err(crate::store::StoreError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "delta workspace or authenticated author mismatch",
+                )));
+            }
+            crate::coedit::CoeditPayload::decode(delta)
+        } else {
+            None
+        };
+        match &retained {
+            Some(crate::coedit::CoeditPayload::Checkpoint { channel, .. }) => {
+                self.store.retain_checkpoint(channel, &raw)?;
+            }
+            Some(crate::coedit::CoeditPayload::RetainedDelta { channel, .. }) => {
+                self.store.retain_delta(channel, seq, &raw)?;
+            }
+            None => {}
+        }
+        // 1. Live fan-out. A FULL queue is backpressure, never a disconnect:
+        //    the durable delta spills to the slow subscriber's
+        //    store-and-forward queue below and the subscriber stays connected.
+        //    Only a CLOSED channel (the receiving task is gone) prunes the
+        //    subscriber. Dropping slow subscribers here caused the native host
+        //    to be disconnected mid-checkpoint, reconnect, receive the room's
+        //    retained baselines as a replay, republish, and storm.
+        // A retained checkpoint is a bootstrap/compaction artifact. A
+        // device that is connected and current holds every delta already, so
+        // the native's periodic (idle) full checkpoint — multi-megabyte, and a
+        // >100 ms frame for a browser that must rebuild its room doc — is fanned
+        // live to a device only while that device needs one: on subscribe (its
+        // retained replay may be stale) and after it asks again via presence
+        // (hello / SyncReq / rejected checkpoint). Peer relays always receive
+        // it so they can federate; retention and offline queues are unchanged.
+        let checkpoint_channel = match &retained {
+            Some(crate::coedit::CoeditPayload::Checkpoint { channel, .. }) => Some(*channel),
+            _ => None,
+        };
+        let mut delivered = 0usize;
+        let mut dead: Vec<[u8; 32]> = Vec::new();
+        let mut backpressured: Vec<[u8; 32]> = Vec::new();
+        let mut satisfied: Vec<[u8; 32]> = Vec::new();
+        for (peer, sub) in &self.subscribers {
+            if peer == author {
+                continue;
+            }
+            // Federation echo-suppression: a message originating on a
+            // peer relay must not bounce onto other peer relays.
+            if from_role == PeerRole::PeerRelay && sub.role == PeerRole::PeerRelay {
+                continue;
+            }
+            let gated_checkpoint = checkpoint_channel.is_some() && sub.role == PeerRole::Device;
+            if let Some(channel) = checkpoint_channel
+                && sub.role == PeerRole::Device
+                && !self.needs_checkpoint(peer, &channel)
+            {
+                continue;
+            }
+            match sub.tx.try_send(envelope.clone()) {
+                Ok(()) => {
+                    delivered = delivered.saturating_add(1);
+                    if gated_checkpoint {
+                        satisfied.push(*peer);
                     }
                 }
-                // A checkpoint that does not name the retained base would
-                // lose whatever of the base it lacks if it replaced it. As a
-                // tail entry it adds its state without removing any.
-                (
-                    crate::coedit::CoeditPayload::Checkpoint { channel, entry, .. }
-                    | crate::coedit::CoeditPayload::RetainedDelta { channel, entry, .. },
-                    _,
-                ) => {
-                    self.store.retain_delta(channel, seq, &frame)?;
-                    self.tails.entry(*channel).or_default().push(TailEntry {
-                        seq,
-                        bytes: frame.len() as u64,
-                        author: *author,
-                        entry: *entry,
-                    });
-                    self.enforce_tail_bounds(channel, author);
-                }
+                // A full queue leaves the need in place: the next checkpoint
+                // (or the pending spill below) still serves it.
+                Err(TrySendError::Full(_)) => backpressured.push(*peer),
+                Err(TrySendError::Closed(_)) => dead.push(*peer),
             }
-        } else {
-            // 3. Materialize into the pinned doc so the host holds
+        }
+        for d in dead {
+            self.remove_subscriber(&d);
+        }
+        if let Some(channel) = checkpoint_channel {
+            for d in satisfied {
+                self.mark_checkpoint_served(&d, channel);
+            }
+        }
+        if retained.is_none() {
+            // 2. Materialize into the pinned doc so the host holds
             //    authoritative current state (the source for anti-entropy
             //    resync and for compacting an overflowing pending queue).
             //    Best-effort and no-op when the workspace is unpinned or the
-            //    bytes are not a raw Automerge delta.
+            //    bytes are not a raw Automerge delta (a non-CRDT test blob, …).
             self.materialize(raw_delta_bytes);
-            // 4. Store-and-forward for offline members (any pubkey in
-            //    `membership` that is not the author and not subscribed) and
-            //    offline peer relays — the same per-device queue, suppressed
-            //    when the origin is itself a peer relay (echo prevention
-            //    across a chain of relays).
-            let mut overflowing = Vec::new();
-            for member in self.membership.devices() {
-                if member == author || self.subscribers.contains_key(member) {
-                    continue;
-                }
-                if self.store.enqueue_pending(member, seq, &frame)? {
-                    overflowing.push(*member);
-                }
-                queued = queued.saturating_add(1);
-            }
+            // 3. Store-and-forward for offline members AND for live
+            //    subscribers the queue could not accept this instant. A member
+            //    is any pubkey in `membership` that is not the author and not
+            //    currently draining live; a backpressured subscriber is treated
+            //    as briefly offline for this one delta and reconciles it on its
+            //    next reconnect or anti-entropy, so no durable delta is lost to
+            //    a slow consumer. Offline peer relays reuse the same queue,
+            //    suppressed when the origin is itself a peer relay (echo
+            //    prevention across a chain of federated relays).
+            let mut queue_for: Vec<[u8; 32]> = self
+                .membership
+                .devices()
+                .iter()
+                .filter(|member| **member != *author && !self.subscribers.contains_key(*member))
+                .chain(backpressured.iter())
+                .copied()
+                .collect();
             if from_role == PeerRole::Device {
-                for pr in &self.known_peer_relays {
-                    if pr == author || self.subscribers.contains_key(pr) {
-                        continue;
-                    }
-                    if self.store.enqueue_pending(pr, seq, &frame)? {
-                        overflowing.push(*pr);
-                    }
-                    queued = queued.saturating_add(1);
+                queue_for.extend(
+                    self.known_peer_relays
+                        .iter()
+                        .filter(|pr| **pr != *author && !self.subscribers.contains_key(*pr)),
+                );
+            }
+            let mut overflowing = Vec::new();
+            for member in &queue_for {
+                self.store.enqueue_pending(member, seq, &raw)?;
+                if self.store.pending_over_bounds(member)? {
+                    overflowing.push(*member);
                 }
             }
             self.compact_pending(&overflowing, seq)?;
         }
-        // Audit log — best-effort; failure does not block routing.
+        // 4. Audit log — best-effort; failure does not block routing.
         let _ = self.store.append_log(&LogEntry {
             workspace_id: self.store.workspace_id(),
             received_at_ns: seq,
@@ -554,7 +583,9 @@ impl WorkspaceRuntime {
             authored_at_ns: seq,
             delta_len: raw_delta_bytes.len() as u64,
         });
-        Ok(Fanout { delivered, queued })
+        // 5. Ask whoever reached a bound for a checkpoint.
+        self.serve_checkpoint_wants();
+        Ok(delivered)
     }
 
     /// Compact the pending queues of `devices`, which just overflowed. In a
@@ -562,7 +593,8 @@ impl WorkspaceRuntime {
     /// carrying the whole materialized document — encoded once for all of
     /// them — so a returning device receives no change whose dependencies
     /// were dropped. An unpinned workspace has no such state and drops the
-    /// oldest entries instead.
+    /// oldest entries instead. Each device is then asked for a checkpoint
+    /// ([`Self::ask_for_checkpoint`]).
     fn compact_pending(
         &mut self,
         devices: &[[u8; 32]],
@@ -573,7 +605,7 @@ impl WorkspaceRuntime {
         }
         let document = match self.doc.as_mut() {
             Some(doc) => Some(
-                encode_frame(&Envelope::Delta {
+                crate::transport::encode(&Envelope::Delta {
                     workspace_id: self.store.workspace_id(),
                     author_device_public_key: [0; 32],
                     authored_at_ns: seq,
@@ -592,218 +624,10 @@ impl WorkspaceRuntime {
         for device in devices {
             self.store
                 .compact_pending(device, document.as_deref().map(|frame| (seq, frame)))?;
+            self.store.want_checkpoint(*device);
         }
+        self.serve_checkpoint_wants();
         Ok(())
-    }
-
-    /// Decide what an arriving checkpoint does. What it covers is only ever
-    /// what it says: a whole-state baseline supersedes everything retained;
-    /// a document merge names the retained entries its publisher read from
-    /// the bytes it saved. `None` for the exact checkpoint already retained
-    /// (every member republishes on attach), which is neither fanned out nor
-    /// retained again — though what it names as covered still holds.
-    fn plan_checkpoint(
-        &mut self,
-        channel: &[u8; 32],
-        entry: [u8; 32],
-        coverage: &crate::coedit::Coverage,
-        body: &[u8],
-    ) -> Result<Option<CheckpointPlan>, crate::store::StoreError> {
-        let digest = *blake3::hash(body).as_bytes();
-        let covered: Option<HashSet<[u8; 32]>> = match coverage {
-            crate::coedit::Coverage::Supersedes => None,
-            crate::coedit::Coverage::Entries(entries) => Some(entries.iter().copied().collect()),
-        };
-        let tail = self.tails.entry(*channel).or_default();
-        let replaces_base = match (&tail.base, &covered) {
-            (None, _) | (_, None) => true,
-            (Some(base), Some(covered)) => covered.contains(&base.entry),
-        };
-        if tail.base.is_some_and(|base| base.digest == digest) {
-            if replaces_base && let Some(covered) = &covered {
-                self.trim_tail(channel, covered)?;
-            }
-            return Ok(None);
-        }
-        Ok(Some(CheckpointPlan {
-            base: RetainedBase { entry, digest },
-            replaces_base,
-            covered,
-        }))
-    }
-
-    /// Drop the front of `channel`'s tail while the base checkpoint just
-    /// retained names each entry as covered.
-    fn trim_tail(
-        &mut self,
-        channel: &[u8; 32],
-        covered: &HashSet<[u8; 32]>,
-    ) -> Result<(), crate::store::StoreError> {
-        let Some(tail) = self.tails.get_mut(channel) else {
-            return Ok(());
-        };
-        if let Some(through) = tail.trim_front(covered) {
-            self.store.trim_tail(channel, through)?;
-            tail.last_request = None;
-        }
-        Ok(())
-    }
-
-    /// Drop all of `channel`'s tail: a whole-state baseline superseded it.
-    fn clear_tail(&mut self, channel: &[u8; 32]) -> Result<(), crate::store::StoreError> {
-        let Some(tail) = self.tails.get_mut(channel) else {
-            return Ok(());
-        };
-        if let Some(last) = tail.entries.back().map(|entry| entry.seq) {
-            tail.entries.clear();
-            tail.bytes = 0;
-            self.store.trim_tail(channel, last)?;
-        }
-        Ok(())
-    }
-
-    /// Past the soft bound ask a member for a covering checkpoint; past the
-    /// hard bound disconnect the connected member that retained the most.
-    fn enforce_tail_bounds(&mut self, channel: &[u8; 32], author: &[u8; 32]) {
-        let bounds = self.tail_bounds;
-        let Some(tail) = self.tails.get(channel) else {
-            return;
-        };
-        let (entries, bytes) = (tail.entries.len(), tail.bytes);
-        if entries <= bounds.soft_entries && bytes <= bounds.soft_bytes {
-            return;
-        }
-        self.request_checkpoint(channel);
-        if entries <= bounds.hard_entries && bytes <= bounds.hard_bytes {
-            return;
-        }
-        let mut retained_by: HashMap<[u8; 32], u64> = HashMap::new();
-        for entry in self
-            .tails
-            .get(channel)
-            .into_iter()
-            .flat_map(|tail| &tail.entries)
-        {
-            let total = retained_by.entry(entry.author).or_default();
-            *total = total.saturating_add(entry.bytes);
-        }
-        let heaviest = retained_by
-            .into_iter()
-            .filter(|(device, _)| {
-                self.subscribers
-                    .get(device)
-                    .is_some_and(|sub| sub.role == PeerRole::Device)
-            })
-            .max_by_key(|(device, bytes)| (*bytes, device == author));
-        let Some((heaviest, heaviest_bytes)) = heaviest else {
-            tracing::warn!(
-                workspace_id = self.store.workspace_id(),
-                channel = %hex::encode(channel),
-                entries,
-                bytes,
-                "retained tail is over its hard bound and no sender of it is connected"
-            );
-            return;
-        };
-        tracing::warn!(
-            workspace_id = self.store.workspace_id(),
-            channel = %hex::encode(channel),
-            device = %hex::encode(heaviest),
-            retained_bytes = heaviest_bytes,
-            "retained tail is over its hard bound; disconnecting its heaviest sender"
-        );
-        if let Some(sub) = self.subscribers.get(&heaviest) {
-            let _ = sub.disconnect.try_send(());
-        }
-        self.remove_subscriber(&heaviest);
-    }
-
-    /// Ask one connected member for a fresh checkpoint of every document it
-    /// holds, by sending it `Ready` again — what a shell answers with full
-    /// checkpoints, exactly as after subscribing. Prefers the most recent
-    /// sender on `channel`, which certainly holds that document. At most one
-    /// request per channel per [`TailBounds::request_interval`].
-    fn request_checkpoint(&mut self, channel: &[u8; 32]) {
-        let interval = self.tail_bounds.request_interval;
-        let Some(tail) = self.tails.get(channel) else {
-            return;
-        };
-        if tail
-            .last_request
-            .is_some_and(|last| last.elapsed() < interval)
-        {
-            return;
-        }
-        let is_device = |device: &[u8; 32]| {
-            self.subscribers
-                .get(device)
-                .is_some_and(|sub| sub.role == PeerRole::Device)
-        };
-        let target = tail
-            .entries
-            .iter()
-            .rev()
-            .map(|entry| entry.author)
-            .find(|author| is_device(author))
-            .or_else(|| {
-                self.subscribers
-                    .iter()
-                    .find(|(_, sub)| sub.role == PeerRole::Device)
-                    .map(|(device, _)| *device)
-            });
-        let Some(target) = target else {
-            return;
-        };
-        let request = Envelope::Ready {
-            workspace_id: self.store.workspace_id(),
-            pending_deltas: 0,
-        };
-        let Ok(frame) = encode_frame(&request) else {
-            return;
-        };
-        let Some(sub) = self.subscribers.get(&target) else {
-            return;
-        };
-        if sub.tx.try_send(frame).is_err() {
-            return;
-        }
-        if let Some(tail) = self.tails.get_mut(channel) {
-            tail.last_request = Some(std::time::Instant::now());
-        }
-    }
-
-    /// Hand one shared frame to every live subscriber except `author`
-    /// (and, for peer-relay traffic, except other peer relays). A full or
-    /// closed subscriber is told to disconnect and pruned. Returns how many
-    /// subscribers took the frame.
-    fn fanout_frame(
-        &mut self,
-        author: &[u8; 32],
-        from_role: PeerRole,
-        frame: &OutboundFrame,
-    ) -> usize {
-        let mut delivered = 0usize;
-        let mut dead: Vec<[u8; 32]> = Vec::new();
-        for (peer, sub) in &self.subscribers {
-            if peer == author {
-                continue;
-            }
-            // Federation echo-suppression: a message originating on a
-            // peer relay must not bounce onto other peer relays.
-            if from_role == PeerRole::PeerRelay && sub.role == PeerRole::PeerRelay {
-                continue;
-            }
-            if sub.tx.try_send(Arc::clone(frame)).is_err() {
-                let _ = sub.disconnect.try_send(());
-                dead.push(*peer);
-            } else {
-                delivered = delivered.saturating_add(1);
-            }
-        }
-        for d in dead {
-            self.subscribers.remove(&d);
-        }
-        delivered
     }
 
     /// Apply an incoming raw Automerge delta into the pinned doc and
@@ -915,26 +739,38 @@ impl WorkspaceRuntime {
         from_role: PeerRole,
         envelope: &Envelope,
     ) -> usize {
-        match encode_frame(envelope) {
-            Ok(frame) => self.fanout_frame(author, from_role, &frame),
-            Err(error) => {
-                tracing::warn!(%error, "presence envelope could not be encoded");
-                0
+        let mut delivered = 0usize;
+        let mut dead: Vec<[u8; 32]> = Vec::new();
+        for (peer, sub) in &self.subscribers {
+            if peer == author {
+                continue;
+            }
+            if from_role == PeerRole::PeerRelay && sub.role == PeerRole::PeerRelay {
+                continue;
+            }
+            match sub.tx.try_send(envelope.clone()) {
+                Ok(()) => delivered = delivered.saturating_add(1),
+                // Presence is ephemeral: a full queue simply drops this frame
+                // (backpressure), it never disconnects the subscriber. A closed
+                // channel means the task is gone, so prune it.
+                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {}
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => dead.push(*peer),
             }
         }
+        for d in dead {
+            self.remove_subscriber(&d);
+        }
+        delivered
     }
 
     /// Deliver a directed envelope to the live subscriber `target` only.
     /// Never queued: a directed request is live traffic. Returns whether it
     /// was handed to that subscriber's connection.
-    pub fn route_directed(&mut self, target: &[u8; 32], envelope: &Envelope) -> bool {
+    pub fn route_directed(&mut self, target: &[u8; 32], envelope: Envelope) -> bool {
         let Some(sub) = self.subscribers.get(target) else {
             return false;
         };
-        let Ok(frame) = encode_frame(envelope) else {
-            return false;
-        };
-        if sub.tx.try_send(frame).is_ok() {
+        if sub.tx.try_send(envelope).is_ok() {
             return true;
         }
         let _ = sub.disconnect.try_send(());
@@ -947,6 +783,14 @@ impl WorkspaceRuntime {
 pub type SharedWorkspace = Arc<AsyncMutex<WorkspaceRuntime>>;
 
 #[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "relays, fixtures and guards deliberately stay alive until each test ends"
+)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "each test spells out one end-to-end scenario"
+)]
 mod tests {
     use super::*;
     use crate::transport::Envelope;
@@ -961,15 +805,7 @@ mod tests {
         }
     }
 
-    /// The envelope a subscriber's wire frame carries.
-    fn decoded(frame: &OutboundFrame) -> Envelope {
-        crate::frame::decode(&frame[4..]).unwrap()
-    }
-
-    fn subscriber(
-        device: [u8; 32],
-        capacity: usize,
-    ) -> (Subscriber, mpsc::Receiver<OutboundFrame>) {
+    fn subscriber(device: [u8; 32], capacity: usize) -> (Subscriber, mpsc::Receiver<Envelope>) {
         let (tx, rx) = mpsc::channel(capacity);
         let (disconnect, _disconnect_rx) = mpsc::channel(1);
         (
@@ -1009,17 +845,17 @@ mod tests {
     }
 
     /// A public room: a thousand member devices, a few hundred of them
-    /// online. A retained chat message reaches every live subscriber as the
-    /// same shared allocation, is stored exactly once on disk, and writes no
-    /// per-member pending copy for the offline majority — which still
-    /// receive it on subscribe from the retained store.
+    /// online. A retained chat message reaches every live subscriber, is
+    /// stored exactly once on disk, and writes no per-member pending copy
+    /// for the offline majority — which still receive it on subscribe from
+    /// the retained store.
     #[test]
-    fn retained_fanout_to_a_large_room_shares_one_frame_and_writes_no_per_member_copies() {
+    fn retained_fanout_to_a_large_room_writes_no_per_member_copies() {
         let tmp = tempfile::tempdir().unwrap();
         let members: Vec<[u8; 32]> = (0..1000).map(device).collect();
-        let mut membership = Membership::default();
-        membership.set(members.clone());
-        let mut rt = WorkspaceRuntime::open(tmp.path(), 90, true, membership).unwrap();
+        let mut rt =
+            WorkspaceRuntime::open(tmp.path(), 90, true, Membership::from(members.clone()))
+                .unwrap();
         let mut receivers = Vec::new();
         for member in &members[..300] {
             let (sub, rx) = subscriber(*member, 8);
@@ -1029,27 +865,15 @@ mod tests {
         let author = members[0];
         let channel = [0x5C; 32];
         let (env, raw) = coedit_delta(90, author, &retained(channel, vec![0xEE; 4096]));
-        let fanout = rt
+        let delivered = rt
             .fanout_delta(&author, PeerRole::Device, &env, &raw, 10)
             .unwrap();
-        assert_eq!(fanout.delivered, 299, "every live member but the author");
-        assert_eq!(
-            fanout.queued, 0,
-            "retained traffic is never copied per member"
-        );
+        assert_eq!(delivered, 299, "every live member but the author");
 
-        let frames: Vec<OutboundFrame> = receivers[1..]
-            .iter_mut()
-            .map(|rx| rx.try_recv().unwrap())
-            .collect();
         assert!(receivers[0].try_recv().is_err(), "the author is excluded");
-        assert!(
-            frames
-                .windows(2)
-                .all(|pair| Arc::ptr_eq(&pair[0], &pair[1])),
-            "one encoded frame is shared by every subscriber"
-        );
-        assert_eq!(decoded(&frames[0]), env);
+        for rx in &mut receivers[1..] {
+            assert_eq!(rx.try_recv().unwrap(), env);
+        }
 
         for offline in &members[300..] {
             assert_eq!(rt.store.count_pending(offline).unwrap(), 0);
@@ -1062,12 +886,121 @@ mod tests {
         );
         let retained = rt.store.load_retained().unwrap();
         assert_eq!(retained.len(), 1, "the message is stored once for the room");
-        assert_eq!(retained[0].as_slice(), &frames[0][..]);
+        assert_eq!(retained[0], crate::transport::encode(&env).unwrap());
+    }
+
+    /// Hundreds of members online, none of them draining, and one offline,
+    /// under a burst. Every live member takes the retained message once, with
+    /// the same payload bytes; it is stored once and copied into nobody's
+    /// pending queue. The burst of document changes that follows fills each
+    /// live connection's bounded queue and spills to pending, which stays
+    /// within its bound for every member; the offline member catches up from
+    /// its bounded queue with no change missing.
+    #[test]
+    fn a_large_room_keeps_live_queues_and_pending_bounded_under_a_burst() {
+        const ONLINE: u16 = 200;
+        const LIVE_QUEUE: usize = 4;
+        const BOUND: u64 = 4;
+        let tmp = tempfile::tempdir().unwrap();
+        let members: Vec<[u8; 32]> = (0..=ONLINE).map(device).collect();
+        let offline = members[usize::from(ONLINE)];
+        let mut rt =
+            WorkspaceRuntime::open(tmp.path(), 89, true, Membership::from(members.clone()))
+                .unwrap();
+        rt.store.set_bounds(crate::store::QueueBounds {
+            pending_entries: BOUND,
+            pending_bytes: 64 * 1024 * 1024,
+        });
+        let mut receivers = Vec::new();
+        for member in &members[..usize::from(ONLINE)] {
+            let (sub, rx) = subscriber(*member, LIVE_QUEUE);
+            rt.add_subscriber(sub);
+            receivers.push(rx);
+        }
+        let author = members[0];
+        let channel = [0x5D; 32];
+        let (env, raw) = coedit_delta(89, author, &retained(channel, vec![0xEF; 4096]));
+        assert_eq!(
+            rt.fanout_delta(&author, PeerRole::Device, &env, &raw, 1)
+                .unwrap(),
+            usize::from(ONLINE) - 1,
+            "every live member but the author"
+        );
+        let expected = crate::transport::encode(&env).unwrap();
+        for rx in &mut receivers[1..] {
+            let got = rx.try_recv().unwrap();
+            assert_eq!(
+                crate::transport::encode(&got).unwrap(),
+                expected,
+                "each connection carries the identical payload bytes"
+            );
+        }
+        assert_eq!(
+            std::fs::read_dir(rt.store.root().join("pending"))
+                .unwrap()
+                .count(),
+            0,
+            "the retained message is copied into nobody's pending queue"
+        );
+
+        let mut doc = AutoCommit::new();
+        doc.set_actor(automerge::ActorId::from(b"author".as_slice()));
+        for n in 0..12 {
+            let delta = edit(&mut doc, n);
+            let env = Envelope::Delta {
+                workspace_id: 89,
+                author_device_public_key: author,
+                authored_at_ns: 1,
+                delta: delta.clone(),
+                signature: [0; 64],
+            };
+            rt.fanout_delta(&author, PeerRole::Device, &env, &delta, 2)
+                .unwrap();
+            for member in &members[1..] {
+                let queued = rt.store.count_pending(member).unwrap();
+                assert!(
+                    u64::from(queued) <= BOUND,
+                    "every member's pending queue stays within its bound \
+                     (change {n}: {queued} queued)"
+                );
+            }
+        }
+        for rx in &receivers {
+            assert!(
+                rx.len() <= LIVE_QUEUE,
+                "a live queue never grows past its bound"
+            );
+        }
+        assert_eq!(
+            rt.subscribers.len(),
+            usize::from(ONLINE),
+            "a full live queue never disconnects its member"
+        );
+        assert_eq!(
+            rt.store.load_retained_channel(&channel).unwrap(),
+            vec![expected],
+            "the retained message is still stored exactly once"
+        );
+
+        let mut caught_up = AutoCommit::new();
+        for frame in rt.store.drain_pending(&offline).unwrap() {
+            let Envelope::Delta { delta, .. } = crate::frame::decode(&frame[4..]).unwrap() else {
+                panic!("pending frames are deltas");
+            };
+            caught_up.load_incoming(&delta).unwrap();
+        }
+        assert!(caught_up.get_missing_deps(&[]).is_empty());
+        assert_eq!(
+            caught_up.get_heads(),
+            doc.get_heads(),
+            "the offline member catches up from its bounded queue"
+        );
     }
 
     /// Every member republishes its whole document when it attaches to the
     /// host. A byte-identical republish of the retained checkpoint is not
-    /// fanned out again and does not discard the tail retained after it.
+    /// fanned out again, is not retained again, and does not discard the
+    /// tail retained after it.
     #[test]
     fn identical_checkpoint_republish_is_neither_fanned_out_nor_retained_again() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1079,8 +1012,7 @@ mod tests {
         let (first, raw) = coedit_delta(91, device(1), &state);
         assert_eq!(
             rt.fanout_delta(&device(1), PeerRole::Device, &first, &raw, 1)
-                .unwrap()
-                .delivered,
+                .unwrap(),
             1
         );
         rx.try_recv().unwrap();
@@ -1089,11 +1021,12 @@ mod tests {
             .unwrap();
         rx.try_recv().unwrap();
 
-        let (again, again_raw) = coedit_delta(91, device(2), &state);
-        let fanout = rt
-            .fanout_delta(&device(2), PeerRole::Device, &again, &again_raw, 3)
-            .unwrap();
-        assert_eq!(fanout, Fanout::default());
+        let (again, again_raw) = coedit_delta(91, device(1), &state);
+        assert_eq!(
+            rt.fanout_delta(&device(1), PeerRole::Device, &again, &again_raw, 3)
+                .unwrap(),
+            0
+        );
         assert!(rx.try_recv().is_err(), "nothing new reached the subscriber");
         assert_eq!(
             rt.store.load_retained().unwrap().len(),
@@ -1101,6 +1034,9 @@ mod tests {
             "checkpoint and its tail are both still retained"
         );
 
+        // Another member's checkpoint naming nothing as covered is kept
+        // beside them instead of replacing either. The subscriber already
+        // took a live checkpoint on this channel, so it is not fanned again.
         let (changed, changed_raw) = coedit_delta(
             91,
             device(2),
@@ -1108,12 +1044,9 @@ mod tests {
         );
         assert_eq!(
             rt.fanout_delta(&device(2), PeerRole::Device, &changed, &changed_raw, 4)
-                .unwrap()
-                .delivered,
-            1
+                .unwrap(),
+            0
         );
-        // The new checkpoint names nothing as covered — not the retained base
-        // either — so it is kept after them instead of replacing either.
         assert_eq!(rt.store.load_retained().unwrap().len(), 3);
     }
 
@@ -1134,11 +1067,11 @@ mod tests {
         doc
     }
 
-    fn publish(
+    fn publish_payload(
         rt: &mut WorkspaceRuntime,
         author: [u8; 32],
         payload: &crate::coedit::CoeditPayload,
-    ) -> Fanout {
+    ) -> usize {
         let (env, raw) = coedit_delta(rt.store.workspace_id(), author, payload);
         rt.fanout_delta(&author, PeerRole::Device, &env, &raw, 1)
             .unwrap()
@@ -1176,23 +1109,22 @@ mod tests {
         }
     }
 
-    /// A tail past its soft bound is never cut in the middle, and is
-    /// trimmed only by what a checkpoint names as covered — never by when it
-    /// arrived. Here the answer to the relay's checkpoint request was saved
-    /// before two later edits reached the relay (the race a sequence would
-    /// over-credit): it names only what it holds, those two stay, and a
-    /// member joining at any point converges with no change left waiting for
-    /// a dependency.
+    /// A tail is never cut in the middle, and is trimmed only by what a
+    /// checkpoint covers — never by when it arrived. Here a member's answer
+    /// was saved before two later edits reached the relay (the race a
+    /// sequence would over-credit): it names only what it holds, those two
+    /// stay, and a member joining at any point converges with no change left
+    /// waiting for a dependency.
     #[test]
     fn a_joiner_after_tail_trimming_converges_with_no_parked_changes() {
+        const SOFT: u64 = 4;
         let tmp = tempfile::tempdir().unwrap();
         let mut rt = WorkspaceRuntime::open(tmp.path(), 94, false, Membership::default()).unwrap();
-        rt.tail_bounds = TailBounds {
-            soft_entries: 4,
-            hard_entries: 1000,
-            request_interval: std::time::Duration::from_secs(3600),
-            ..TailBounds::default()
-        };
+        rt.store
+            .set_retention_bounds(crate::store::RetentionBounds {
+                soft_entries: SOFT,
+                soft_bytes: 256 * 1024 * 1024,
+            });
         let writer = device(1);
         let (sub, mut writer_rx) = subscriber(writer, 64);
         rt.add_subscriber(sub);
@@ -1202,18 +1134,16 @@ mod tests {
         edit(&mut doc, 0);
         let base_body = doc.save();
         let mut ids = vec![entry_of(&base_body)];
-        publish(&mut rt, writer, &checkpoint(channel, base_body, Vec::new()));
+        publish_payload(&mut rt, writer, &checkpoint(channel, base_body, Vec::new()));
         for n in 1..=7 {
             let body = edit(&mut doc, n);
             ids.push(entry_of(&body));
-            publish(&mut rt, writer, &retained(channel, body));
+            publish_payload(&mut rt, writer, &retained(channel, body));
         }
 
-        // Over the soft bound: one checkpoint request reached the writer,
-        // and nothing was dropped while it is outstanding.
-        let requests: Vec<Envelope> = std::iter::from_fn(|| writer_rx.try_recv().ok())
-            .map(|frame| decoded(&frame))
-            .collect();
+        // Past the bound: one checkpoint request reached the writer, and
+        // nothing was dropped while it is outstanding.
+        let requests: Vec<Envelope> = std::iter::from_fn(|| writer_rx.try_recv().ok()).collect();
         assert_eq!(
             requests,
             vec![Envelope::Ready {
@@ -1232,13 +1162,21 @@ mod tests {
         // Two more edits reach the relay before the answer does.
         for n in 8..=9 {
             let body = edit(&mut doc, n);
-            publish(&mut rt, writer, &retained(channel, body));
+            publish_payload(&mut rt, writer, &retained(channel, body));
         }
-        publish(&mut rt, writer, &checkpoint(channel, answer, answer_covers));
+        publish_payload(&mut rt, writer, &checkpoint(channel, answer, answer_covers));
         assert_eq!(
             rt.store.load_retained().unwrap().len(),
             1 + 2,
             "the answer replaced the base and the seven edits it holds; the two it lacks stay"
+        );
+        assert!(
+            rt.store.load_retained().unwrap().len() as u64 <= SOFT,
+            "the covering checkpoint brought the history back under its bound"
+        );
+        assert!(
+            writer_rx.try_recv().is_err(),
+            "back under the bound, nobody is asked again"
         );
         let mut joiner = join(&rt);
         assert!(
@@ -1247,19 +1185,19 @@ mod tests {
         );
         assert_eq!(joiner.get_heads(), doc.get_heads());
 
-        // A restarted relay rebuilds the same accounting from disk.
+        // A restarted relay replays the same retained state from disk.
         drop(rt);
         let reopened =
             WorkspaceRuntime::open(tmp.path(), 94, false, Membership::default()).unwrap();
-        assert_eq!(reopened.tails[&channel].entries.len(), 2);
-        assert!(reopened.tails[&channel].base.is_some());
+        assert_eq!(reopened.store.load_retained().unwrap().len(), 3);
         assert_eq!(join(&reopened).get_heads(), doc.get_heads());
     }
 
-    /// Coverage that skips the oldest tail entry trims nothing — the tail is
-    /// cut only from its front.
+    /// Coverage that skips the oldest tail entry still leaves a joiner with
+    /// every change and no missing dependency. (That a declaration never
+    /// retires names behind a surviving record is `store::retained::tests`.)
     #[test]
-    fn coverage_with_a_hole_at_the_front_trims_nothing() {
+    fn coverage_with_a_hole_at_the_front_still_converges() {
         let tmp = tempfile::tempdir().unwrap();
         let mut rt = WorkspaceRuntime::open(tmp.path(), 98, false, Membership::default()).unwrap();
         let channel = [0x7A; 32];
@@ -1268,22 +1206,21 @@ mod tests {
         edit(&mut doc, 0);
         let base_body = doc.save();
         let base = entry_of(&base_body);
-        publish(
+        publish_payload(
             &mut rt,
             device(1),
             &checkpoint(channel, base_body, Vec::new()),
         );
         let first = edit(&mut doc, 1);
-        publish(&mut rt, device(1), &retained(channel, first));
+        publish_payload(&mut rt, device(1), &retained(channel, first));
         let second = edit(&mut doc, 2);
         let second_id = entry_of(&second);
-        publish(&mut rt, device(1), &retained(channel, second));
-        publish(
+        publish_payload(&mut rt, device(1), &retained(channel, second));
+        publish_payload(
             &mut rt,
             device(1),
             &checkpoint(channel, doc.save(), vec![base, second_id]),
         );
-        assert_eq!(rt.store.load_retained().unwrap().len(), 3);
         let mut joiner = join(&rt);
         assert!(joiner.get_missing_deps(&[]).is_empty());
         assert_eq!(joiner.get_heads(), doc.get_heads());
@@ -1296,9 +1233,13 @@ mod tests {
     fn an_overflowing_pending_queue_is_replaced_by_the_whole_document() {
         let tmp = tempfile::tempdir().unwrap();
         let (writer, offline) = (device(1), device(2));
-        let mut membership = Membership::default();
-        membership.set(vec![writer, offline]);
-        let mut rt = WorkspaceRuntime::open(tmp.path(), 97, true, membership).unwrap();
+        let mut rt = WorkspaceRuntime::open(
+            tmp.path(),
+            97,
+            true,
+            Membership::from(vec![writer, offline]),
+        )
+        .unwrap();
         rt.store.set_bounds(crate::store::QueueBounds {
             pending_entries: 4,
             pending_bytes: 1024 * 1024,
@@ -1342,7 +1283,7 @@ mod tests {
         let mut base = AutoCommit::new();
         base.set_actor(automerge::ActorId::from(b"base".as_slice()));
         edit(&mut base, 1);
-        publish(
+        publish_payload(
             &mut rt,
             device(1),
             &checkpoint(channel, base.save(), Vec::new()),
@@ -1367,57 +1308,14 @@ mod tests {
         );
     }
 
-    /// Past the hard bound the relay keeps accepting but disconnects the
-    /// connected sender that retained the most, whose reconnect publishes
-    /// the checkpoint that lets the tail be trimmed.
-    #[test]
-    fn a_tail_over_its_hard_bound_disconnects_the_heaviest_connected_sender() {
-        let tmp = tempfile::tempdir().unwrap();
-        let mut rt = WorkspaceRuntime::open(tmp.path(), 96, false, Membership::default()).unwrap();
-        rt.tail_bounds = TailBounds {
-            soft_entries: 2,
-            hard_entries: 4,
-            request_interval: std::time::Duration::from_secs(3600),
-            ..TailBounds::default()
-        };
-        let (heavy, light) = (device(1), device(2));
-        let (heavy_tx, _heavy_rx) = mpsc::channel(64);
-        let (heavy_disconnect, mut heavy_disconnected) = mpsc::channel(1);
-        rt.add_subscriber(Subscriber {
-            device_public_key: heavy,
-            role: PeerRole::Device,
-            tx: heavy_tx,
-            disconnect: heavy_disconnect,
-        });
-        let (sub, _light_rx) = subscriber(light, 64);
-        rt.add_subscriber(sub);
-        let channel = [0x79; 32];
-        for (author, size) in [(light, 8), (heavy, 512), (heavy, 512), (light, 8)] {
-            publish(&mut rt, author, &retained(channel, vec![0; size]));
-        }
-        assert!(rt.has_subscriber(&heavy), "at the hard bound, not over it");
-        publish(&mut rt, light, &retained(channel, vec![0; 8]));
-        assert_eq!(
-            rt.store.load_retained().unwrap().len(),
-            5,
-            "the delta over the bound is still accepted"
-        );
-        heavy_disconnected
-            .try_recv()
-            .expect("the heaviest sender is told to disconnect");
-        assert!(!rt.has_subscriber(&heavy));
-        assert!(rt.has_subscriber(&light));
-    }
-
     /// Deltas that arrive in the same relay-clock nanosecond still get
     /// distinct queue entries, in arrival order.
     #[test]
     fn same_nanosecond_deltas_never_share_a_pending_entry() {
         let tmp = tempfile::tempdir().unwrap();
         let offline = device(3);
-        let mut membership = Membership::default();
-        membership.set(vec![offline]);
-        let mut rt = WorkspaceRuntime::open(tmp.path(), 92, false, membership).unwrap();
+        let mut rt =
+            WorkspaceRuntime::open(tmp.path(), 92, false, Membership::from(vec![offline])).unwrap();
         for body in [b"one".as_slice(), b"two", b"three"] {
             let env = Envelope::Delta {
                 workspace_id: 92,
@@ -1443,29 +1341,6 @@ mod tests {
             bodies,
             vec![b"one".to_vec(), b"two".to_vec(), b"three".to_vec()]
         );
-    }
-
-    /// The per-second access audit of every subscriber re-reads membership
-    /// only after the file changed, and still sees every rewrite.
-    #[test]
-    fn membership_refresh_reloads_only_a_changed_file() {
-        let tmp = tempfile::tempdir().unwrap();
-        let mut rt = WorkspaceRuntime::open(tmp.path(), 93, false, Membership::default()).unwrap();
-        rt.store.save_membership(&[device(1)]).unwrap();
-        rt.refresh_membership().unwrap();
-        assert!(rt.membership.contains(&device(1)));
-
-        // An in-memory change the file does not carry survives a refresh of
-        // the unchanged file: nothing was re-read.
-        rt.membership.insert(device(9));
-        rt.refresh_membership().unwrap();
-        assert!(rt.membership.contains(&device(9)));
-
-        // A rewrite (an admin `add-member`) is picked up.
-        rt.store.save_membership(&[device(1), device(2)]).unwrap();
-        rt.refresh_membership().unwrap();
-        assert!(rt.membership.contains(&device(2)));
-        assert!(!rt.membership.contains(&device(9)));
     }
 
     #[test]
@@ -1502,9 +1377,9 @@ mod tests {
             let delivered = rt
                 .fanout_delta(&[1u8; 32], PeerRole::Device, &env, b"1 2 3", 111)
                 .unwrap();
-            assert_eq!(delivered.delivered, 1);
+            assert_eq!(delivered, 1);
             // Peer 2 saw the delta live.
-            assert_eq!(decoded(&rx2.try_recv().unwrap()), env);
+            assert_eq!(rx2.try_recv().unwrap(), env);
             // Peer 3 has one pending delta on disk.
             let peer3 = [3u8; 32];
             assert_eq!(rt.store.count_pending(&peer3).unwrap(), 1);
@@ -1527,44 +1402,8 @@ mod tests {
             let delivered = rt
                 .fanout_delta(&[1u8; 32], PeerRole::Device, &env, b"", 1)
                 .unwrap();
-            assert_eq!(delivered.delivered, 0);
+            assert_eq!(delivered, 0);
             assert!(rt.subscribers.is_empty());
-        }
-        // Phase `fanout_disconnects_saturated_subscriber_and_queues_durable_delta`.
-        {
-            let tmp = tempfile::tempdir().unwrap();
-            let author = [1u8; 32];
-            let slow_peer = [2u8; 32];
-            let mut membership = Membership::default();
-            membership.set(vec![author, slow_peer]);
-            let mut rt = WorkspaceRuntime::open(tmp.path(), 6, false, membership).unwrap();
-            let (tx, _rx) = mpsc::channel(1);
-            let (disconnect, mut disconnect_rx) = mpsc::channel(1);
-            tx.try_send(encode_frame(&env_delta(6, [9u8; 32])).unwrap())
-                .unwrap();
-            rt.add_subscriber(Subscriber {
-                device_public_key: slow_peer,
-                role: PeerRole::Device,
-                tx,
-                disconnect,
-            });
-
-            let delivered = rt
-                .fanout_delta(
-                    &author,
-                    PeerRole::Device,
-                    &env_delta(6, author),
-                    b"durable",
-                    2,
-                )
-                .unwrap();
-
-            assert_eq!(delivered.delivered, 0);
-            assert!(!rt.subscribers.contains_key(&slow_peer));
-            disconnect_rx
-                .try_recv()
-                .expect("slow peer task must be told to disconnect");
-            assert_eq!(rt.store.count_pending(&slow_peer).unwrap(), 1);
         }
         // Phase `fanout_from_peer_relay_skips_other_peer_relays`.
         {
@@ -1595,8 +1434,8 @@ mod tests {
                 .fanout_delta(&author, PeerRole::PeerRelay, &env, b"x", 1)
                 .unwrap();
             // Only the local device saw it.
-            assert_eq!(delivered.delivered, 1);
-            assert_eq!(decoded(&rx_dev.try_recv().unwrap()), env);
+            assert_eq!(delivered, 1);
+            assert_eq!(rx_dev.try_recv().unwrap(), env);
             assert!(rx_pr.try_recv().is_err(), "peer relay must not echo");
         }
         // Phase `known_peer_relay_gets_pending_when_offline_and_origin_is_device`.
@@ -1733,10 +1572,7 @@ mod tests {
             let delivered = rt
                 .fanout_delta(&a, PeerRole::Device, &env, &d1, 111)
                 .unwrap();
-            assert_eq!(
-                delivered.delivered, 1,
-                "delta fanned out to the live subscriber B"
-            );
+            assert_eq!(delivered, 1, "delta fanned out to the live subscriber B");
 
             // The gap: a delivered delta is NOT queued, so the pending tier
             // holds nothing to recover B from.
@@ -1772,5 +1608,525 @@ mod tests {
                 "anti-entropy reconciles B to convergence despite the lost fan-out and empty queue"
             );
         }
+    }
+
+    fn retained_envelope(
+        author: [u8; 32],
+        channel: [u8; 32],
+        checkpoint: bool,
+        value: u8,
+    ) -> Envelope {
+        let body = vec![value; 4096];
+        let payload = if checkpoint {
+            crate::coedit::CoeditPayload::checkpoint_of(channel, body)
+        } else {
+            crate::coedit::CoeditPayload::retained_of(channel, body)
+        };
+        Envelope::Delta {
+            workspace_id: 7,
+            author_device_public_key: author,
+            authored_at_ns: 1,
+            delta: payload.encode().unwrap(),
+            signature: [0; 64],
+        }
+    }
+
+    fn publish(rt: &mut WorkspaceRuntime, env: &Envelope, seq: u64) {
+        let Envelope::Delta {
+            author_device_public_key,
+            delta,
+            ..
+        } = env
+        else {
+            panic!("delta")
+        };
+        rt.fanout_delta(author_device_public_key, PeerRole::Device, env, delta, seq)
+            .unwrap();
+    }
+
+    fn disk_usage(path: &std::path::Path) -> (u64, usize) {
+        let mut total = (0_u64, 0_usize);
+        for entry in std::fs::read_dir(path).unwrap() {
+            let path = entry.unwrap().path();
+            let (bytes, files) = if path.is_dir() {
+                disk_usage(&path)
+            } else {
+                (path.metadata().unwrap().len(), 1)
+            };
+            total.0 = total.0.saturating_add(bytes);
+            total.1 = total.1.saturating_add(files);
+        }
+        total
+    }
+
+    #[test]
+    fn retained_growth_is_independent_of_obsolete_checkpoints_and_offline_peers() {
+        use automerge::transaction::Transactable;
+        let tmp = tempfile::tempdir().unwrap();
+        let membership = Membership::from((10..42).map(|key| [key; 32]).collect::<Vec<_>>());
+        let mut rt = WorkspaceRuntime::open(tmp.path(), 7, false, membership).unwrap();
+        let other_author = retained_envelope([2; 32], [3; 32], true, 201);
+        let other_channel = retained_envelope([1; 32], [4; 32], true, 202);
+        publish(&mut rt, &other_author, 1);
+        publish(&mut rt, &other_channel, 2);
+        let opaque = env_delta(7, [1; 32]);
+        publish(&mut rt, &opaque, 3);
+        let mut document = AutoCommit::new();
+        document.set_actor(automerge::ActorId::from(b"retained-growth".as_slice()));
+        document
+            .put(automerge::ROOT, "payload", "x".repeat(4096))
+            .unwrap();
+        let mut latest = Vec::new();
+        for round in 1..=24u8 {
+            document
+                .put(automerge::ROOT, "checkpoint", u64::from(round))
+                .unwrap();
+            let checkpoint = crate::coedit::CoeditPayload::checkpoint_of([3; 32], document.save());
+            document
+                .put(automerge::ROOT, "tail", u64::from(round))
+                .unwrap();
+            let tail =
+                crate::coedit::CoeditPayload::retained_of([3; 32], document.save_incremental());
+            latest.clear();
+            for (offset, payload) in [checkpoint, tail].into_iter().enumerate() {
+                let envelope = Envelope::Delta {
+                    workspace_id: 7,
+                    author_device_public_key: [1; 32],
+                    authored_at_ns: u64::from(round),
+                    delta: payload.encode().unwrap(),
+                    signature: [0; 64],
+                };
+                publish(
+                    &mut rt,
+                    &envelope,
+                    10 + u64::from(round) * 2 + offset as u64,
+                );
+                latest.push(envelope);
+            }
+        }
+        let (bytes, files) = disk_usage(rt.store.root());
+        eprintln!("retained growth fixture: {bytes} logical bytes in {files} files");
+        assert!(
+            bytes < 100_000 && files < 100,
+            "retained payload amplification: {bytes} bytes in {files} files"
+        );
+        let retained = rt.store.load_retained().unwrap();
+        assert_eq!(retained.len(), 4);
+        for env in [other_author, other_channel].into_iter().chain(latest) {
+            assert!(retained.contains(&crate::transport::encode(&env).unwrap()));
+        }
+        for peer in rt.membership.devices() {
+            assert_eq!(
+                rt.store.drain_pending(peer).unwrap(),
+                vec![crate::transport::encode(&opaque).unwrap()]
+            );
+        }
+    }
+
+    #[test]
+    fn opaque_retained_history_is_shared_without_claiming_checkpoint_supersedence() {
+        let mut sizes = Vec::new();
+        for offline_peers in [1, 32] {
+            let tmp = tempfile::tempdir().unwrap();
+            let membership = Membership::from(
+                (10..10 + offline_peers)
+                    .map(|key| [key; 32])
+                    .collect::<Vec<_>>(),
+            );
+            let mut runtime = WorkspaceRuntime::open(tmp.path(), 7, false, membership).unwrap();
+            for round in 1..=24u8 {
+                publish(
+                    &mut runtime,
+                    &retained_envelope([1; 32], [3; 32], true, round),
+                    u64::from(round),
+                );
+            }
+            assert_eq!(
+                runtime.store.load_retained().unwrap().len(),
+                24,
+                "unknown checkpoints have no causal supersedence proof"
+            );
+            for peer in runtime.membership.devices() {
+                assert_eq!(runtime.store.count_pending(peer).unwrap(), 0);
+            }
+            sizes.push(disk_usage(runtime.store.root()));
+        }
+        assert_eq!(
+            sizes[0], sizes[1],
+            "opaque retained storage multiplied by offline membership"
+        );
+        eprintln!(
+            "opaque retained fixture: {} logical bytes in {} files for either 1 or 32 offline peers",
+            sizes[0].0, sizes[0].1
+        );
+    }
+
+    #[test]
+    fn failed_retained_commit_never_publishes_to_live_subscriber() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut rt = WorkspaceRuntime::open(tmp.path(), 7, false, Membership::default()).unwrap();
+        let (tx, mut rx) = mpsc::channel(8);
+        let (disconnect, _) = mpsc::channel(1);
+        rt.add_subscriber(Subscriber {
+            device_public_key: [8; 32],
+            role: PeerRole::Device,
+            tx,
+            disconnect,
+        });
+        std::fs::remove_dir_all(rt.store.root().join("retained")).unwrap();
+        std::fs::write(rt.store.root().join("retained"), b"blocked").unwrap();
+        let env = retained_envelope([1; 32], [3; 32], true, 1);
+        let Envelope::Delta { delta, .. } = &env else {
+            panic!("delta")
+        };
+        assert!(
+            rt.fanout_delta(&[1; 32], PeerRole::Device, &env, delta, 1)
+                .is_err()
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "uncommitted checkpoint reached live queue"
+        );
+    }
+
+    #[test]
+    fn fanout_backpressures_saturated_subscriber_without_dropping_it() {
+        // A full live queue is backpressure, never a disconnect: a
+        // slow subscriber (a browser on a busy main thread, or the native host
+        // publishing a large checkpoint) must stay subscribed while the missed
+        // durable delta spills to its store-and-forward queue. Dropping it here
+        // caused the reconnect -> retained-replay -> republish storm.
+        let tmp = tempfile::tempdir().unwrap();
+        let author = [1u8; 32];
+        let slow_peer = [2u8; 32];
+        let mut membership = Membership::default();
+        membership.set(vec![author, slow_peer]);
+        let mut rt = WorkspaceRuntime::open(tmp.path(), 6, false, membership).unwrap();
+        let (tx, _rx) = mpsc::channel(1);
+        let (disconnect, mut disconnect_rx) = mpsc::channel(1);
+        // Saturate the one-slot live queue so the next fan-out cannot be sent.
+        tx.try_send(env_delta(6, [9u8; 32])).unwrap();
+        rt.add_subscriber(Subscriber {
+            device_public_key: slow_peer,
+            role: PeerRole::Device,
+            tx,
+            disconnect,
+        });
+
+        // Fan out several durable deltas past the queue bound.
+        for seq in 2..5 {
+            rt.fanout_delta(
+                &author,
+                PeerRole::Device,
+                &env_delta(6, author),
+                b"durable",
+                seq,
+            )
+            .unwrap();
+        }
+
+        // Never dropped, never told to disconnect, and every missed durable
+        // delta is preserved in the subscriber's pending queue.
+        assert!(
+            rt.subscribers.contains_key(&slow_peer),
+            "a slow subscriber must not be dropped within its queue bound"
+        );
+        assert!(
+            disconnect_rx.try_recv().is_err(),
+            "a full queue must apply backpressure, never signal a disconnect"
+        );
+        assert_eq!(
+            rt.store.count_pending(&slow_peer).unwrap(),
+            3,
+            "each durable delta the slow subscriber missed live is store-and-forwarded"
+        );
+    }
+
+    fn checkpoint_envelope(author: [u8; 32], seq: u64, body: Vec<u8>) -> (Envelope, Vec<u8>) {
+        checkpoint_on(author, seq, [9u8; 32], body)
+    }
+
+    fn checkpoint_on(
+        author: [u8; 32],
+        seq: u64,
+        channel: [u8; 32],
+        body: Vec<u8>,
+    ) -> (Envelope, Vec<u8>) {
+        let raw = crate::coedit::CoeditPayload::checkpoint_of(channel, body)
+            .encode()
+            .unwrap();
+        (
+            Envelope::Delta {
+                workspace_id: 6,
+                author_device_public_key: author,
+                authored_at_ns: seq,
+                delta: raw.clone(),
+                signature: [7u8; 64],
+            },
+            raw,
+        )
+    }
+
+    fn retained_delta_envelope(author: [u8; 32], seq: u64) -> (Envelope, Vec<u8>) {
+        let raw = crate::coedit::CoeditPayload::retained_of([9u8; 32], vec![4, 5])
+            .encode()
+            .unwrap();
+        (
+            Envelope::Delta {
+                workspace_id: 6,
+                author_device_public_key: author,
+                authored_at_ns: seq,
+                delta: raw.clone(),
+                signature: [7u8; 64],
+            },
+            raw,
+        )
+    }
+
+    #[test]
+    fn live_checkpoint_reaches_a_device_once_per_request_then_stops() {
+        // A connected device already holds every delta, so the
+        // native's idle checkpoint (2-3 MB, thousands of frames, a 124 ms frame
+        // when measured during pointer input) must not be fanned to it live. A device
+        // needs a live checkpoint exactly when it subscribes (its retained
+        // replay may be stale) and after it asks again; each request is served
+        // by one checkpoint, and the flag clears once one has been fanned.
+        let tmp = tempfile::tempdir().unwrap();
+        let author = [1u8; 32];
+        let device = [2u8; 32];
+        let mut membership = Membership::default();
+        membership.set(vec![author, device]);
+        let mut rt = WorkspaceRuntime::open(tmp.path(), 6, false, membership).unwrap();
+        let (tx, mut rx) = mpsc::channel(8);
+        let (disconnect, _drx) = mpsc::channel(1);
+        rt.add_subscriber(Subscriber {
+            device_public_key: device,
+            role: PeerRole::Device,
+            tx,
+            disconnect,
+        });
+        let (room, record) = ([9u8; 32], [10u8; 32]);
+        assert!(
+            rt.needs_checkpoint(&device, &room),
+            "a fresh subscriber needs its first live checkpoint"
+        );
+        assert!(rt.needs_checkpoint(&device, &record));
+
+        // The native publishes its checkpoint as one message per channel (the
+        // room plus each record); the whole first set after subscribe passes.
+        let (env, raw) = checkpoint_on(author, 2, room, vec![1]);
+        assert_eq!(
+            rt.fanout_delta(&author, PeerRole::Device, &env, &raw, 2)
+                .unwrap(),
+            1
+        );
+        let (env, raw) = checkpoint_on(author, 3, record, vec![1]);
+        assert_eq!(
+            rt.fanout_delta(&author, PeerRole::Device, &env, &raw, 3)
+                .unwrap(),
+            1
+        );
+        assert!(
+            rx.try_recv().is_ok() && rx.try_recv().is_ok(),
+            "every channel of the first set is delivered live"
+        );
+        assert!(
+            !rt.needs_checkpoint(&device, &room),
+            "one fanned checkpoint serves its channel"
+        );
+        assert!(!rt.needs_checkpoint(&device, &record));
+
+        // The next (idle) set on the same channels is NOT fanned to the still-connected device.
+        let (env, raw) = checkpoint_on(author, 4, room, vec![2]);
+        assert_eq!(
+            rt.fanout_delta(&author, PeerRole::Device, &env, &raw, 4)
+                .unwrap(),
+            0
+        );
+        let (env, raw) = checkpoint_on(author, 5, record, vec![2]);
+        assert_eq!(
+            rt.fanout_delta(&author, PeerRole::Device, &env, &raw, 5)
+                .unwrap(),
+            0
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "an idle checkpoint must not reach a device that holds every delta"
+        );
+        assert!(
+            rt.subscribers.contains_key(&device),
+            "the device stays subscribed"
+        );
+        // The synthetic bodies are opaque rather than valid Automerge documents,
+        // so bounded retention preserves both versions without inventing causal
+        // supersedence. The live fanout gate remains one checkpoint per channel.
+        assert_eq!(rt.store.load_retained().unwrap().len(), 4);
+        // A checkpoint on a channel this device has never been served passes.
+        let (env, raw) = checkpoint_on(author, 6, [11u8; 32], vec![3]);
+        assert_eq!(
+            rt.fanout_delta(&author, PeerRole::Device, &env, &raw, 6)
+                .unwrap(),
+            1
+        );
+        rx.try_recv().unwrap();
+
+        // Retained deltas keep flowing live regardless.
+        let (env, raw) = retained_delta_envelope(author, 4);
+        assert_eq!(
+            rt.fanout_delta(&author, PeerRole::Device, &env, &raw, 4)
+                .unwrap(),
+            1
+        );
+        assert!(
+            rx.try_recv().is_ok(),
+            "retained deltas are always delivered live"
+        );
+
+        // The device asks again (a presence frame: hello / SyncReq / rejected
+        // checkpoint): one more checkpoint per channel is delivered, then it stops.
+        rt.request_checkpoint(&device);
+        assert!(rt.needs_checkpoint(&device, &room));
+        let (env, raw) = checkpoint_on(author, 7, room, vec![3]);
+        assert_eq!(
+            rt.fanout_delta(&author, PeerRole::Device, &env, &raw, 7)
+                .unwrap(),
+            1
+        );
+        assert!(
+            rx.try_recv().is_ok(),
+            "a requested checkpoint is delivered once"
+        );
+        let (env, raw) = checkpoint_on(author, 8, room, vec![4]);
+        assert_eq!(
+            rt.fanout_delta(&author, PeerRole::Device, &env, &raw, 8)
+                .unwrap(),
+            0
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "the request is satisfied by one checkpoint per channel"
+        );
+    }
+
+    #[test]
+    fn bootstrap_stale_retained_then_sync_req_gets_exactly_one_live_checkpoint() {
+        // The bootstrap path the browser actually takes: it subscribes, the
+        // subscribe-time retained replay is stale (>300 s attestation window)
+        // and rejected, so it sends a SyncReq as presence; the native answers
+        // with a fresh checkpoint that must reach it live — once. Model the
+        // stale replay as the first (unsatisfying) checkpoint having already
+        // been consumed by the subscribe, i.e. the flag cleared, then presence.
+        let tmp = tempfile::tempdir().unwrap();
+        let native = [1u8; 32];
+        let browser = [2u8; 32];
+        let mut membership = Membership::default();
+        membership.set(vec![native, browser]);
+        let mut rt = WorkspaceRuntime::open(tmp.path(), 6, false, membership).unwrap();
+        let (tx, mut rx) = mpsc::channel(8);
+        let (disconnect, _drx) = mpsc::channel(1);
+        rt.add_subscriber(Subscriber {
+            device_public_key: browser,
+            role: PeerRole::Device,
+            tx,
+            disconnect,
+        });
+        let (room, record) = ([9u8; 32], [10u8; 32]);
+        // The stale baseline set was replayed on subscribe and rejected by the browser.
+        for (seq, ch) in [(1u64, room), (2, record)] {
+            let (env, raw) = checkpoint_on(native, seq, ch, b"stale".to_vec());
+            rt.fanout_delta(&native, PeerRole::Device, &env, &raw, seq)
+                .unwrap();
+            rx.try_recv().unwrap();
+        }
+        assert!(!rt.needs_checkpoint(&browser, &room) && !rt.needs_checkpoint(&browser, &record));
+        // Browser: "checkpoint does not match" -> SyncReq (a presence frame).
+        rt.request_checkpoint(&browser);
+        // Native: refresh + publish a fresh SET (room + record) -> the whole set is delivered live, once.
+        for (seq, ch) in [(3u64, room), (4, record)] {
+            let (env, raw) = checkpoint_on(native, seq, ch, b"fresh".to_vec());
+            assert_eq!(
+                rt.fanout_delta(&native, PeerRole::Device, &env, &raw, seq)
+                    .unwrap(),
+                1,
+                "every channel of the fresh set reaches the requester"
+            );
+            let Envelope::Delta { delta, .. } = rx.try_recv().unwrap() else {
+                panic!("delta")
+            };
+            assert!(
+                matches!(crate::coedit::CoeditPayload::decode(&delta), Some(crate::coedit::CoeditPayload::Checkpoint { body, .. }) if body == b"fresh")
+            );
+        }
+        // The native's next idle set is not fanned to the now-current browser.
+        for (seq, ch) in [(5u64, room), (6, record)] {
+            let (env, raw) = checkpoint_on(native, seq, ch, b"idle".to_vec());
+            assert_eq!(
+                rt.fanout_delta(&native, PeerRole::Device, &env, &raw, seq)
+                    .unwrap(),
+                0
+            );
+        }
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn peer_relays_keep_receiving_every_checkpoint_live() {
+        // Federation is unchanged: a peer relay must be able to forward every
+        // checkpoint onward, so the device-only gate does not apply to it.
+        let tmp = tempfile::tempdir().unwrap();
+        let author = [1u8; 32];
+        let relay_peer = [3u8; 32];
+        let mut membership = Membership::default();
+        membership.set(vec![author, relay_peer]);
+        let mut rt = WorkspaceRuntime::open(tmp.path(), 6, false, membership).unwrap();
+        let (tx, mut rx) = mpsc::channel(8);
+        let (disconnect, _drx) = mpsc::channel(1);
+        rt.add_subscriber(Subscriber {
+            device_public_key: relay_peer,
+            role: PeerRole::PeerRelay,
+            tx,
+            disconnect,
+        });
+        for seq in 2..5u64 {
+            let (env, raw) = checkpoint_envelope(author, seq, vec![u8::try_from(seq).unwrap()]);
+            assert_eq!(
+                rt.fanout_delta(&author, PeerRole::Device, &env, &raw, seq)
+                    .unwrap(),
+                1
+            );
+            assert!(rx.try_recv().is_ok());
+        }
+    }
+
+    #[test]
+    fn fanout_still_prunes_a_subscriber_whose_wire_is_closed() {
+        // Backpressure covers a full queue; a genuinely dead receiver (its task
+        // and rx dropped) is still pruned so fan-out does not keep cloning into
+        // a channel no one will ever read.
+        let tmp = tempfile::tempdir().unwrap();
+        let author = [1u8; 32];
+        let dead_peer = [2u8; 32];
+        let mut membership = Membership::default();
+        membership.set(vec![author, dead_peer]);
+        let mut rt = WorkspaceRuntime::open(tmp.path(), 6, false, membership).unwrap();
+        let (tx, rx) = mpsc::channel(1);
+        let (disconnect, _disconnect_rx) = mpsc::channel(1);
+        drop(rx); // the receiving task is gone
+        rt.add_subscriber(Subscriber {
+            device_public_key: dead_peer,
+            role: PeerRole::Device,
+            tx,
+            disconnect,
+        });
+        rt.fanout_delta(
+            &author,
+            PeerRole::Device,
+            &env_delta(6, author),
+            b"durable",
+            2,
+        )
+        .unwrap();
+        assert!(!rt.subscribers.contains_key(&dead_peer));
+        assert_eq!(rt.store.count_pending(&dead_peer).unwrap(), 1);
     }
 }

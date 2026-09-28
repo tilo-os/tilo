@@ -208,9 +208,7 @@ fn pump(
     predicate: impl Fn(&ClientAppState) -> bool,
     label: &str,
 ) {
-    let deadline = Instant::now()
-        .checked_add(Duration::from_secs(3))
-        .unwrap_or_else(Instant::now);
+    let deadline = tilo_test_env::hang_deadline();
     while Instant::now() < deadline {
         let _ = conn.flush();
         let _ = display.dispatch_clients(server_state);
@@ -467,9 +465,7 @@ fn color_management_protocol_negotiates_records_and_survives_unsupported_request
         // 4. Read the surface's `ColorManagementSurfaceData` server-side.
         let surface_protocol_id = surface.id().protocol_id();
         let _ = conn.flush();
-        let deadline = Instant::now()
-            .checked_add(Duration::from_secs(3))
-            .unwrap_or_else(Instant::now);
+        let deadline = tilo_test_env::hang_deadline();
         let mut server_saw_it = false;
         while Instant::now() < deadline {
             let _ = display.dispatch_clients(&mut server_state);

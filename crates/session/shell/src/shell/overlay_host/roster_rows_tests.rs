@@ -127,10 +127,10 @@ fn roster_agent_rows_report_only_granted_live_agents_with_their_recorded_role() 
             rows[0].role, None,
             "a peer the room recorded nothing about must not acquire a role",
         );
-        assert_eq!(rows[1].role.as_deref(), Some("editor"));
+        assert_eq!(rows[1].role.as_deref(), Some("Editor"));
         assert_eq!(
             rows[2].role.as_deref(),
-            Some("commenter"),
+            Some("Commenter"),
             "an agent's row must show the verb its membership grant carries, \
              which is the whole of what revoking it takes back: {rows:?}",
         );

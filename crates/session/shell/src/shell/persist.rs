@@ -20,8 +20,8 @@ pub enum StateNotice {
 impl StateNotice {
     pub fn title(&self) -> String {
         match self {
-            Self::NewerSchema { .. } => "Your workspaces were not opened".into(),
-            Self::Unreadable { .. } => "Your workspaces could not be read".into(),
+            Self::NewerSchema { .. } => crate::shell::i18n::t("state-notice-newer-title"),
+            Self::Unreadable { .. } => crate::shell::i18n::t("state-notice-unreadable-title"),
         }
     }
 
@@ -29,10 +29,8 @@ impl StateNotice {
     /// that must survive the trim is "your work is still there".
     pub fn body(&self) -> String {
         match self {
-            Self::NewerSchema { .. } => {
-                "Saved by a newer version of Tilo. Nothing was changed.".into()
-            }
-            Self::Unreadable { .. } => "The file could not be read. Nothing was changed.".into(),
+            Self::NewerSchema { .. } => crate::shell::i18n::t("state-notice-newer-body"),
+            Self::Unreadable { .. } => crate::shell::i18n::t("state-notice-unreadable-body"),
         }
     }
 
@@ -42,19 +40,20 @@ impl StateNotice {
                 path,
                 found,
                 understood,
-            } => format!(
-                "{} was written by a newer version of Tilo (layout {found}; this \
-                 one understands {understood}). It has not been changed, and \
-                 nothing has been written over it — this session runs without \
-                 saving, so it cannot be. Update again, or roll forward, to get \
-                 back to your own workspaces.",
-                path.display()
+            } => crate::shell::i18n::t_args(
+                "state-notice-newer-detail",
+                &[
+                    ("path", path.display().to_string().into()),
+                    ("found", (*found).into()),
+                    ("understood", (*understood).into()),
+                ],
             ),
-            Self::Unreadable { path, error } => format!(
-                "{} exists but could not be read ({error}). It has not been \
-                 changed, and this session runs without saving, so it cannot \
-                 be.",
-                path.display()
+            Self::Unreadable { path, error } => crate::shell::i18n::t_args(
+                "state-notice-unreadable-detail",
+                &[
+                    ("path", path.display().to_string().into()),
+                    ("error", error.as_str().into()),
+                ],
             ),
         }
     }
@@ -117,25 +116,24 @@ pub fn fs_capability_export_path() -> PathBuf {
     )
 }
 
-/// Atomic. Capabilities whose expiry doesn't survive a restart
-/// (`EndOfSession`, `AfterUse`) are dropped, or persisting a session
-/// grant would quietly promote it to a permanent one.
-///
-/// # Errors
-///
-/// Returns an error if the parent directory can't be created, `tree`
-/// can't be serialised, or the atomic write fails.
-pub fn save_tree_to(tree: &WorkspaceTree, path: &Path) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
+/// Native file envelope; the portable desktop schema remains independently versioned.
+pub const NATIVE_STATE_SCHEMA_VERSION: u32 = 3;
+
+pub(crate) fn encode_tree(tree: &WorkspaceTree) -> std::io::Result<Vec<u8>> {
+    use super::native_workspace_owner::store::{LimitedWriter, MAX_STATE_BYTES};
+    // Prove encoded refusal bounds before cloning any tree or serialization buffer.
+    super::native_workspace_owner::publication::validate_file_layout(
+        NATIVE_STATE_SCHEMA_VERSION,
+        &tree.native_authority,
+    )
+    .map_err(std::io::Error::other)?;
+    super::native_workspace_owner::publication::preflight_tree(tree)
+        .map_err(std::io::Error::other)?;
     // An ephemeral room is never written; reloading one would resurrect a
     // replay as if it were a workspace.
     let mut durable = tree.without_ephemeral_rooms();
-    // A Wayland surface id belongs to this compositor process. Preserve the
-    // user's open-app topology as symbolic local launch records, never as
-    // dead protocol ids; startup rebinds the replacement surface into the
-    // same tab.
+    durable.desktop.schema_version = NATIVE_STATE_SCHEMA_VERSION;
+    // Native process surface IDs become durable symbolic launch records.
     symbolise_foreign_surfaces(&mut durable);
     clear_transient_launch_notes(&mut durable);
     durable.prune_local_app_records();
@@ -143,32 +141,71 @@ pub fn save_tree_to(tree: &WorkspaceTree, path: &Path) -> std::io::Result<()> {
         ws.capabilities
             .retain(ui::CapOverride::persists_across_restart);
     }
-    let json = serde_json::to_string_pretty(&durable)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    atomic_file::write(path, json.as_bytes())
+    // Symbolic launch records may grow (for example, copying a foreign title
+    // into its durable label). Preserve the reserve on the exact output shape.
+    super::native_workspace_owner::publication::preflight_tree(&durable)
+        .map_err(std::io::Error::other)?;
+    let mut output = LimitedWriter::new(Vec::new(), MAX_STATE_BYTES);
+    serde_json::to_writer_pretty(&mut output, &durable).map_err(std::io::Error::other)?;
+    Ok(output.into_inner())
+}
+
+/// Publish the complete native state file through its shared writer.
+/// Session-only capabilities and native process surface IDs are not persisted.
+///
+/// # Errors
+/// Refuses stale authority snapshots, encoded limits, competing writers, and
+/// publication failures. Uncertain publication fences subsequent writes.
+pub fn save_tree_to(tree: &WorkspaceTree, path: &Path) -> std::io::Result<()> {
+    let bytes = encode_tree(tree)?;
+    tree.native_runtime
+        .publish(path, &tree.native_authority, &tree.native_authority, &bytes)
 }
 
 /// # Errors
 ///
 /// Returns an error if `path` can't be read, its contents don't parse as
 /// a [`WorkspaceTree`], or its `schema_version` is newer than
-/// [`STATE_SCHEMA_VERSION`].
+/// [`NATIVE_STATE_SCHEMA_VERSION`].
 pub fn load_tree_from(path: &Path) -> std::io::Result<WorkspaceTree> {
-    let s = std::fs::read_to_string(path)?;
+    use std::io::Read;
+    let file = std::fs::File::open(path)?;
+    let mut s = String::new();
+    file.take((super::native_workspace_owner::store::MAX_STATE_BYTES as u64).saturating_add(1))
+        .read_to_string(&mut s)?;
+    if s.len() > super::native_workspace_owner::store::MAX_STATE_BYTES {
+        return Err(std::io::Error::other(
+            "native encoded state refusal cap exceeded",
+        ));
+    }
     let mut tree: WorkspaceTree = serde_json::from_str::<WorkspaceTree>(&s)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     // Refuse before anything else touches it: mutators here write the
     // whole tree back, so "load it and see" is "overwrite it and see".
-    if tree.desktop.schema_version > STATE_SCHEMA_VERSION {
+    if tree.desktop.schema_version > NATIVE_STATE_SCHEMA_VERSION {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             format!(
-                "state file layout {} is newer than the {STATE_SCHEMA_VERSION} \
+                "state file layout {} is newer than the {NATIVE_STATE_SCHEMA_VERSION} \
                  this build understands",
                 tree.desktop.schema_version
             ),
         ));
     }
+    if tree.desktop.schema_version < 2 && !tree.native_authority.is_empty() {
+        return Err(std::io::Error::other(
+            "native authority requires state file layout 2",
+        ));
+    }
+    super::native_workspace_owner::publication::validate_file_layout(
+        tree.desktop.schema_version,
+        &tree.native_authority,
+    )
+    .map_err(std::io::Error::other)?;
+    super::native_workspace_owner::store::preflight(
+        &tree.native_authority,
+        super::native_workspace_owner::store::MAX_AUTHORITY_BYTES,
+    )?;
     // Normalise so the next write stamps the current version rather
     // than carrying an old one forward for ever.
     tree.desktop.schema_version = STATE_SCHEMA_VERSION;
@@ -178,7 +215,7 @@ pub fn load_tree_from(path: &Path) -> std::io::Result<WorkspaceTree> {
     // Notes/Files/Terminal/Browser layout to be restored on every login. This
     // signature is deliberately much stricter than a name or tab-count check:
     // any genuine furniture edit makes it a near miss and preserves it.
-    if is_legacy_demo_bootstrap(&tree) {
+    if tree.native_authority.is_empty() && is_legacy_demo_bootstrap(&tree) {
         tracing::warn!(
             path = %path.display(),
             "replacing the legacy synthetic demo workspace with an empty desktop"
@@ -396,9 +433,9 @@ fn symbolise_foreign_surfaces(tree: &mut WorkspaceTree) {
             for group in &mut strip.window_groups {
                 for tab in &mut group.tabs {
                     if let TileContent::Foreign { app_id, surface_id } = &tab.tile {
-                        let durable_app_id = durable_app_id(*surface_id, app_id);
+                        let launch_app_id = durable_app_id(*surface_id, app_id);
                         tab.tile = TileContent::LocalApp {
-                            app_id: durable_app_id,
+                            app_id: launch_app_id,
                             label: tab.title.clone(),
                             note: String::new(),
                         };
@@ -526,10 +563,10 @@ pub fn load_or_default(path: &Path) -> (WorkspaceTree, Option<StateNotice>) {
             // A newer layout means the data is intact and this build is
             // the wrong one; an unreadable file may be damage.
             let notice = match schema_version_in(path) {
-                Some(found) if found > STATE_SCHEMA_VERSION => StateNotice::NewerSchema {
+                Some(found) if found > NATIVE_STATE_SCHEMA_VERSION => StateNotice::NewerSchema {
                     path: path.to_path_buf(),
                     found,
-                    understood: STATE_SCHEMA_VERSION,
+                    understood: NATIVE_STATE_SCHEMA_VERSION,
                 },
                 _ => StateNotice::Unreadable {
                     path: path.to_path_buf(),
@@ -683,6 +720,7 @@ mod tests {
                 "automatic collaboration governance changes remain part of the escaped demo signature"
             );
             save_tree_to(&fixture, &path).expect("save escaped fixture");
+            drop(fixture); // Simulate the old process releasing its state-file writer.
 
             let first = load_tree_from(&path).expect("migrate escaped fixture");
             assert_eq!(first.desktop.workspaces.len(), 1);
@@ -1261,6 +1299,9 @@ mod tests {
 
             let original = WorkspaceTree::bootstrap_demo();
             save_tree_to(&original, &path).expect("save");
+            // Simulate the writing process exiting and releasing its state-file
+            // writer; the load below may migrate and rewrite the file.
+            drop(original);
 
             let (mut loaded, notice) = load_or_default(&path);
             assert!(
@@ -1312,6 +1353,8 @@ mod tests {
             }
             std::fs::write(&path, serde_json::to_string_pretty(&raw).expect("re-json"))
                 .expect("write legacy state");
+            // The writer of the fixture is gone before the first boot.
+            drop(original);
 
             let (mut first_boot, _) = load_or_default(&path);
             // Identify the tree by the id the fixture wrote, not by its
@@ -1346,6 +1389,7 @@ mod tests {
 
             // The mint and the write are one operation, so the *next* boot
             // reads the same value rather than minting again.
+            drop(first_boot);
             let (mut second_boot, _) = load_or_default(&path);
             assert_eq!(
                 second_boot.desktop.workspaces[0].room, room,
@@ -1387,7 +1431,7 @@ mod tests {
             assert_eq!(
                 raw.get("schema_version")
                     .and_then(serde_json::Value::as_u64),
-                Some(u64::from(STATE_SCHEMA_VERSION)),
+                Some(u64::from(NATIVE_STATE_SCHEMA_VERSION)),
                 "the writer must stamp the current schema version"
             );
         }
@@ -1416,7 +1460,7 @@ mod tests {
             save_tree_to(&original, &path).expect("save");
             let mut raw: serde_json::Value =
                 serde_json::from_str(&std::fs::read_to_string(&path).expect("read")).expect("json");
-            let future = STATE_SCHEMA_VERSION + 1;
+            let future = NATIVE_STATE_SCHEMA_VERSION + 1;
             raw["schema_version"] = serde_json::json!(future);
             let on_disk = serde_json::to_string_pretty(&raw).expect("re-json");
             std::fs::write(&path, &on_disk).expect("write future state");
@@ -1440,7 +1484,7 @@ mod tests {
                     found, understood, ..
                 } => {
                     assert_eq!(*found, future);
-                    assert_eq!(*understood, STATE_SCHEMA_VERSION);
+                    assert_eq!(*understood, NATIVE_STATE_SCHEMA_VERSION);
                 }
                 other @ StateNotice::Unreadable { .. } => panic!(
                     "expected NewerSchema so the person is told their data is \
@@ -1524,7 +1568,8 @@ mod tests {
                 "the workspaces in a pre-versioning file must still be loaded"
             );
             assert_eq!(
-                tree.desktop.schema_version, STATE_SCHEMA_VERSION,
+                tree.desktop.schema_version,
+                crate::shell::state::STATE_SCHEMA_VERSION,
                 "and the loaded tree must carry the current version, so the next \
                  write stamps it rather than leaving the file unversioned for ever"
             );

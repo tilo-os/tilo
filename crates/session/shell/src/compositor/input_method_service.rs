@@ -7,7 +7,9 @@
 //! process group the compositor itself started — the on-screen keyboard through
 //! the ordinary package sandbox, the composer as the image's own executable,
 //! which the socket checks by path as well. [`super::input_method::arbitrate`]
-//! decides which of them runs; stopping one terminates its whole process group,
+//! decides which of them runs, from the active input source and — through
+//! [`super::input_method::osk_wanted`] — the on-screen keyboard preference and
+//! the input hardware in use. Stopping one terminates its whole process group,
 //! so an old input method cannot linger after it lost the seat.
 
 use std::os::unix::io::AsRawFd;
@@ -23,7 +25,10 @@ use std::time::{Duration, Instant};
 use smithay::reexports::calloop::LoopHandle;
 use smithay::wayland::socket::ListeningSocketSource;
 
-use super::input_method::{InputMethodOwner, TrustedInputMethod};
+use settings_store::hardware::InputMethodEngine;
+
+use super::input_environment::InputEnvironment;
+use super::input_method::{InputMethodOwner, OskInput, OskPreference, TrustedInputMethod};
 use super::state::{ClientState, State};
 use crate::shell::state::RoomId;
 
@@ -31,11 +36,10 @@ const PACKAGE_ID: &str = super::state::OSK_APP_ID;
 const PACKAGE_KIND: &str = "service";
 const RETRY_BACKOFF: Duration = Duration::from_secs(5);
 
-pub fn preference_enabled() -> bool {
-    settings_store::load_section("accessibility")
-        .get("on_screen_keyboard")
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false)
+pub fn osk_preference() -> OskPreference {
+    OskPreference::from_setting(
+        settings_store::load_section("accessibility").get("on_screen_keyboard"),
+    )
 }
 
 /// What one service should be running: the owner it serves and, for the
@@ -406,7 +410,9 @@ fn is_descendant_of(mut pid: libc::pid_t, ancestor: libc::pid_t) -> bool {
     false
 }
 
-fn service_launch_command(socket: &Path) -> Result<crate::shell::launcher::LaunchCommand, String> {
+/// The installed on-screen keyboard package, if it is a graphical service in
+/// its signed manifest.
+fn installed_osk() -> Result<crate::shell::launcher::InstalledApp, String> {
     let app = crate::shell::launcher::read_installed_apps()
         .map_err(|e| e.to_string())?
         .into_iter()
@@ -419,6 +425,11 @@ fn service_launch_command(socket: &Path) -> Result<crate::shell::launcher::Launc
             "{PACKAGE_ID} is not a graphical service in its signed manifest"
         ));
     }
+    Ok(app)
+}
+
+fn service_launch_command(socket: &Path) -> Result<crate::shell::launcher::LaunchCommand, String> {
+    let app = installed_osk()?;
     let launcher = crate::shell::launcher::resolve_launcher_bin().map_err(|e| e.to_string())?;
     Ok(crate::shell::launcher::build_launch_command(
         &app,
@@ -469,6 +480,16 @@ fn terminate_group(child: &mut std::process::Child, pgid: libc::pid_t) {
 pub struct InputMethodServices {
     services: Vec<InputMethodService>,
     sockets: Vec<PathBuf>,
+    /// The saved settings the owner follows, re-read by [`Self::reload`].
+    primary_layout: String,
+    engine: Option<InputMethodEngine>,
+    osk_preference: OskPreference,
+    /// Whether the on-screen keyboard package can run at all. Without it an
+    /// automatic keyboard must never take the seat, or nothing would answer
+    /// the focused field.
+    osk_installed: bool,
+    /// The input hardware facts, followed by [`Self::follow_input`].
+    osk_input: OskInput,
 }
 
 impl InputMethodServices {
@@ -514,33 +535,74 @@ impl InputMethodServices {
             tracing::info!(target: "tilo::input_method", ?kind, socket = %path.display(), "private input-method display ready");
             services.push(service);
         }
-        Self { services, sockets }
+        Self {
+            services,
+            sockets,
+            primary_layout: "us".to_string(),
+            engine: None,
+            osk_preference: OskPreference::default(),
+            osk_installed: false,
+            osk_input: OskInput::default(),
+        }
     }
 
-    /// Re-read the preferences that decide the owner and apply the decision:
-    /// the seat's global gate first (disconnecting the previous owner), then
-    /// the services, so the new owner is never refused by a stale gate.
+    /// Re-read the preferences that decide the owner and apply the decision.
     pub fn reload(&mut self, state: &mut State) {
         let input = settings_store::hardware::RichInputConfig::from_section(
             &settings_store::load_section("input"),
         );
-        let primary = input
+        self.primary_layout = input
             .sources()
             .first()
             .map_or_else(|| "us".to_string(), |source| source.id.clone());
-        let engine = input.active_input_method();
+        self.engine = input.active_input_method();
+        self.osk_preference = osk_preference();
+        self.osk_installed = self.has(TrustedInputMethod::OnScreenKeyboard)
+            && match installed_osk() {
+                Ok(_) => true,
+                Err(error) => {
+                    tracing::debug!(target: "tilo::input_method", %error, "on-screen keyboard unavailable");
+                    false
+                }
+            };
+        self.apply(state);
+    }
+
+    /// Follow the input hardware in use. Only a change in whether the
+    /// on-screen keyboard is wanted re-arbitrates the seat.
+    pub fn follow_input(&mut self, state: &mut State, input: &InputEnvironment) {
+        let facts = OskInput::from_environment(input);
+        if facts == self.osk_input {
+            return;
+        }
+        let before = self.osk_wanted();
+        self.osk_input = facts;
+        if self.osk_wanted() != before {
+            self.apply(state);
+        }
+    }
+
+    fn osk_wanted(&self) -> bool {
+        self.osk_installed && super::input_method::osk_wanted(self.osk_preference, self.osk_input)
+    }
+
+    /// Apply the ownership decision: the seat's global gate first
+    /// (disconnecting the previous owner), then the services, so the new
+    /// owner is never refused by a stale gate.
+    fn apply(&mut self, state: &mut State) {
         let owner = super::input_method::arbitrate(
-            engine,
-            engine.is_some_and(super::input_method::engine_installed)
+            self.engine,
+            self.engine
+                .is_some_and(super::input_method::engine_installed)
                 && self.has(TrustedInputMethod::Composer),
-            preference_enabled() && self.has(TrustedInputMethod::OnScreenKeyboard),
+            self.osk_wanted(),
         );
         if state.input_method_owner_kind() != owner.kind() {
             tracing::info!(target: "tilo::input_method", ?owner, "input method owner changed");
         }
         state.set_input_method_owner(owner.kind());
         for service in &mut self.services {
-            service.set_owner(owner, &primary);
+            service.set_owner(owner, &self.primary_layout);
         }
     }
 
@@ -599,7 +661,7 @@ mod tests {
         service.accepting.store(true, Ordering::Release);
         service.process_group.store(42, Ordering::Release);
         service.set_owner(
-            InputMethodOwner::Composer(settings_store::hardware::InputMethodEngine::Pinyin),
+            InputMethodOwner::Composer(settings_store::hardware::InputMethodEngine::Rime),
             "us",
         );
         assert!(!service.accepting.load(Ordering::Acquire));

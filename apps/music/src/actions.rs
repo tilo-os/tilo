@@ -348,7 +348,7 @@ pub enum MusicAction {
 
 /// Durable, browseable history metadata for a library mutation.
 pub fn history_context(action: &MusicAction) -> tilo_actions::ActionContext {
-    let mut context = tilo_actions::ActionContext::for_action("org.tilo.Music", "Music", action);
+    let mut context = tilo_actions::ActionContext::for_action("so.tilo.music", "Music", action);
     let (label, id, kind, resource_label): (&str, &str, &str, &str) = match action {
         MusicAction::CreatePlaylist { id, name } => ("Create playlist", id, "music.playlist", name),
         MusicAction::RenamePlaylist { id, name } => ("Rename playlist", id, "music.playlist", name),
@@ -1827,7 +1827,9 @@ mod tests {
     fn prompted_encode(spec: &ActionSpec, arg: &str) -> EncodedAction {
         match &spec.input {
             ActionInput::Prompted { build, .. } => build(arg),
-            ActionInput::Immediate(_) => panic!("expected a prompted action: {}", spec.id),
+            ActionInput::Immediate(_) | ActionInput::Deferred { .. } => {
+                panic!("expected a prompted action: {}", spec.id)
+            }
         }
     }
 

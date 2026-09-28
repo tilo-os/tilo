@@ -47,6 +47,7 @@ workspace-hack = { version = "0.1" }
 serial_test.workspace = true
 # Two distinct files for the multi-document test.
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
+tilo-test-env = { path = "../../crates/dev/test-env" }
 
 [[test]]
 name = "it"

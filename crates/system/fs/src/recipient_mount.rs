@@ -566,7 +566,7 @@ mod tests {
                 let supervisor = Arc::clone(&supervisor);
                 std::thread::spawn(move || supervisor.start(&subscribed))
             };
-            let deadline = std::time::Instant::now() + Duration::from_secs(30);
+            let deadline = tilo_test_env::hang_deadline();
             while !supervisor
                 .starting
                 .lock()

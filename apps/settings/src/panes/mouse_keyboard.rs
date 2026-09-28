@@ -26,8 +26,9 @@
 
 use automerge::{AutoCommit, ObjId, transaction::Transactable};
 use settings_store::hardware::{
-    InputDeviceKind, InputDeviceSnapshot, InputHardwareSnapshot, ShortcutAction,
-    StylusButtonAction, TouchpadClickMethod, TouchpadScrollMethod,
+    EraserAction, InputDeviceKind, InputDeviceSnapshot, InputHardwareSnapshot, PadDial,
+    PadDialAction, ShortcutAction, StylusButtonAction, TabletConfig, TouchpadClickMethod,
+    TouchpadScrollMethod,
 };
 use std::collections::HashMap;
 use taffy::{NodeId, TaffyTree};
@@ -43,7 +44,9 @@ use winit::event::{Modifiers, WindowEvent};
 use crate::i18n::{t, t_args};
 use crate::input_sources::{CatalogEntry, installed_catalog};
 use crate::prefs::{InputPrefs, SystemPrefs};
-use crate::widgets::{El, caption, card, choice_row, rows, setting_row, setting_row_described};
+use crate::widgets::{
+    El, caption, card, choice_row, choice_row_described, rows, setting_row, setting_row_described,
+};
 
 fn bool_action(id: &str) -> tilo_actions::ActionBinding<bool> {
     match crate::actions::input_bool_binding(id) {
@@ -204,6 +207,12 @@ pub const WHOLE_DESKTOP: &str = "desktop";
 pub const MAX_PAD_BUTTONS: u32 = 32;
 /// The Pad-button choice for a button that does nothing.
 const PAD_BUTTON_NONE: &str = "none";
+/// The Pad-button choice for the button that shows the pad's map.
+const PAD_BUTTON_SHOW_MAP: &str = "show-map";
+/// Rings and strips Settings offers a mapping for, of each kind.
+pub const MAX_PAD_DIALS: u32 = 4;
+/// Modes per ring or strip Settings offers a mapping for.
+pub const MAX_PAD_MODES: u32 = 8;
 
 /// Resource id of a tablet's card and actions.
 pub fn tablet_resource_id(device: &str) -> String {
@@ -328,23 +337,188 @@ pub fn stylus_button_for_id(id: &str) -> Option<StylusButtonAction> {
         .or_else(|| shortcut_for_id(id).map(StylusButtonAction::Shortcut))
 }
 
-/// What a pad button can do: nothing, or any shortcut.
-pub fn pad_button_choices() -> Vec<(String, String)> {
-    std::iter::once((PAD_BUTTON_NONE.to_string(), t("input-pad-button-none")))
+/// Eraser choices as `(id, label key, action)`, before the shortcuts.
+const ERASER_CHOICES: [(&str, &str, EraserAction); 6] = [
+    ("native", "input-eraser-native", EraserAction::Native),
+    ("left", "input-pen-button-left", EraserAction::Left),
+    ("middle", "input-pen-button-middle", EraserAction::Middle),
+    ("right", "input-pen-button-right", EraserAction::Right),
+    ("back", "input-pen-button-back", EraserAction::Back),
+    ("forward", "input-pen-button-forward", EraserAction::Forward),
+];
+
+/// What the eraser end can do: erase, click a mouse button, or any shortcut.
+pub fn eraser_choices() -> Vec<(String, String)> {
+    localized_choices(&ERASER_CHOICES)
+        .into_iter()
         .chain(shortcut_choices())
         .collect()
 }
 
-pub fn pad_button_id(shortcut: Option<ShortcutAction>) -> String {
-    shortcut.map_or_else(|| PAD_BUTTON_NONE.to_string(), shortcut_id)
+pub fn eraser_id(action: EraserAction) -> String {
+    match action {
+        EraserAction::Shortcut(shortcut) => shortcut_id(shortcut),
+        other => ERASER_CHOICES
+            .iter()
+            .find(|(_, _, value)| *value == other)
+            .map_or("native", |(id, _, _)| id)
+            .to_string(),
+    }
 }
 
-/// `Some(None)` clears the button; `None` is not a choice.
-pub fn pad_button_for_id(id: &str) -> Option<Option<ShortcutAction>> {
-    if id == PAD_BUTTON_NONE {
-        return Some(None);
+pub fn eraser_for_id(id: &str) -> Option<EraserAction> {
+    ERASER_CHOICES
+        .iter()
+        .find(|(choice, _, _)| *choice == id)
+        .map(|(_, _, value)| *value)
+        .or_else(|| shortcut_for_id(id).map(EraserAction::Shortcut))
+}
+
+/// Ring and strip choices as `(id, label key, action)`.
+const DIAL_CHOICES: [(&str, &str, PadDialAction); 6] = [
+    ("nothing", "input-pad-dial-nothing", PadDialAction::Nothing),
+    ("scroll", "input-pad-dial-scroll", PadDialAction::Scroll),
+    ("zoom", "input-pad-dial-zoom", PadDialAction::Zoom),
+    (
+        "brush-size",
+        "input-pad-dial-brush-size",
+        PadDialAction::BrushSize,
+    ),
+    ("volume", "input-pad-dial-volume", PadDialAction::Volume),
+    (
+        "brightness",
+        "input-pad-dial-brightness",
+        PadDialAction::Brightness,
+    ),
+];
+
+/// What a ring or strip does in apps without tablet support.
+pub fn dial_choices() -> Vec<(String, String)> {
+    localized_choices(&DIAL_CHOICES)
+}
+
+pub fn dial_id(action: PadDialAction) -> &'static str {
+    DIAL_CHOICES
+        .iter()
+        .find(|(_, _, value)| *value == action)
+        .map_or("scroll", |(id, _, _)| id)
+}
+
+pub fn dial_for_id(id: &str) -> Option<PadDialAction> {
+    DIAL_CHOICES
+        .iter()
+        .find(|(choice, _, _)| *choice == id)
+        .map(|(_, _, value)| *value)
+}
+
+/// The resource action id of a ring or strip in one mode.
+pub fn dial_action_id(dial: PadDial, mode: u32) -> String {
+    match dial {
+        PadDial::Ring(index) => format!("ring-{index}-mode-{mode}"),
+        PadDial::Strip(index) => format!("strip-{index}-mode-{mode}"),
     }
-    shortcut_for_id(id).map(Some)
+}
+
+/// A pad's rings then strips, each with how many modes Settings offers.
+pub fn pad_dials(device: &InputDeviceSnapshot) -> Vec<(PadDial, u32)> {
+    let offered = |controls: &[u32]| {
+        (0..MAX_PAD_DIALS)
+            .zip(controls.iter().copied())
+            .map(|(index, modes)| (index, modes.clamp(1, MAX_PAD_MODES)))
+            .collect::<Vec<_>>()
+    };
+    offered(&device.pad_rings)
+        .into_iter()
+        .map(|(index, modes)| (PadDial::Ring(index), modes))
+        .chain(
+            offered(&device.pad_strips)
+                .into_iter()
+                .map(|(index, modes)| (PadDial::Strip(index), modes)),
+        )
+        .collect()
+}
+
+/// What a pad button does in an app without tablet support.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PadButtonChoice {
+    Nothing,
+    /// Shows what every control does while held.
+    ShowMap,
+    Shortcut(ShortcutAction),
+}
+
+/// What a pad button can do: nothing, show the pad's map, or any shortcut.
+pub fn pad_button_choices() -> Vec<(String, String)> {
+    [
+        (PAD_BUTTON_NONE.to_string(), t("input-pad-button-none")),
+        (
+            PAD_BUTTON_SHOW_MAP.to_string(),
+            t("input-pad-button-show-map"),
+        ),
+    ]
+    .into_iter()
+    .chain(shortcut_choices())
+    .collect()
+}
+
+/// The choice `config` makes for pad button `button`.
+pub fn pad_button_id(config: &TabletConfig, button: u32) -> String {
+    if config.pad_map_button == Some(button) {
+        return PAD_BUTTON_SHOW_MAP.to_string();
+    }
+    config.pad_buttons.get(&button).map_or_else(
+        || PAD_BUTTON_NONE.to_string(),
+        |shortcut| shortcut_id(*shortcut),
+    )
+}
+
+/// The choice an id names; `None` when it is not one.
+pub fn pad_button_for_id(id: &str) -> Option<PadButtonChoice> {
+    match id {
+        PAD_BUTTON_NONE => Some(PadButtonChoice::Nothing),
+        PAD_BUTTON_SHOW_MAP => Some(PadButtonChoice::ShowMap),
+        _ => shortcut_for_id(id).map(PadButtonChoice::Shortcut),
+    }
+}
+
+/// Make pad button `button` do `choice`. One button shows the map: picking
+/// it for another moves it there.
+pub fn set_pad_button(config: &mut TabletConfig, button: u32, choice: PadButtonChoice) {
+    if config.pad_map_button == Some(button) {
+        config.pad_map_button = None;
+    }
+    match choice {
+        PadButtonChoice::Nothing => {
+            config.pad_buttons.remove(&button);
+        }
+        PadButtonChoice::ShowMap => {
+            config.pad_buttons.remove(&button);
+            config.pad_map_button = Some(button);
+        }
+        PadButtonChoice::Shortcut(shortcut) => {
+            config.pad_buttons.insert(button, shortcut);
+        }
+    }
+}
+
+/// "Ring 1", or "Ring 1 · Mode 2" when its group has several modes.
+fn dial_label(dial: PadDial, mode: u32, modes: u32) -> String {
+    let (key, index) = match dial {
+        PadDial::Ring(index) => ("input-pad-ring", index),
+        PadDial::Strip(index) => ("input-pad-strip", index),
+    };
+    let number = ArgValue::from(i64::from(index) + 1);
+    if modes > 1 {
+        t_args(
+            &format!("{key}-mode"),
+            &[
+                ("number", number),
+                ("mode", ArgValue::from(i64::from(mode) + 1)),
+            ],
+        )
+    } else {
+        t_args(key, &[("number", number)])
+    }
 }
 
 /// A tablet or pad device's card title: its name without the kernel's
@@ -1087,7 +1261,7 @@ impl MouseKeyboardPane {
             ));
         }
         source_rows.push(caption(
-            "Input methods (Pinyin, Anthy, Hangul) compose text on your first keyboard layout. While one is active, the on-screen keyboard steps aside.",
+            "Input methods (Rime, Anthy, Hangul) compose text on your first keyboard layout. While one is active, the on-screen keyboard steps aside.",
         ));
         card("Input sources", rows(source_rows))
     }
@@ -1171,13 +1345,37 @@ impl MouseKeyboardPane {
                                 &t("input-tablet-upper-button"),
                             )),
                         ),
+                        choice_row_described(
+                            &t("input-tablet-third-button"),
+                            &t("input-tablet-third-button-description"),
+                            Box::new(device_dropdown(
+                                &resource,
+                                "third-button",
+                                stylus_button_choices(),
+                                &stylus_button_id(config.third_button),
+                                &t("input-tablet-third-button"),
+                            )),
+                        ),
+                        choice_row_described(
+                            &t("input-tablet-eraser"),
+                            &t("input-tablet-eraser-description"),
+                            Box::new(device_dropdown(
+                                &resource,
+                                "eraser",
+                                eraser_choices(),
+                                &eraser_id(config.eraser),
+                                &t("input-tablet-eraser"),
+                            )),
+                        ),
                     ]),
                 )
             })
             .collect()
     }
 
-    /// One card per tablet pad: a shortcut for each of its buttons.
+    /// One card per tablet pad: a shortcut for each of its buttons, then
+    /// what each ring and strip does in each mode. Tablet-aware apps get
+    /// the unmapped buttons, rings and strips themselves.
     fn pad_cards(&self) -> Vec<El> {
         self.pads
             .iter()
@@ -1190,13 +1388,20 @@ impl MouseKeyboardPane {
                             "input-pad-button",
                             &[("number", ArgValue::from(i64::from(button) + 1))],
                         );
+                        if device.pad_mode_buttons.contains(&button) {
+                            return setting_row_described(
+                                &label,
+                                &t("input-pad-mode-button-description"),
+                                Box::new(Spacer::new()),
+                            );
+                        }
                         choice_row(
                             &label,
                             Box::new(device_dropdown(
                                 &resource,
                                 &format!("button-{button}"),
                                 pad_button_choices(),
-                                &pad_button_id(config.pad_buttons.get(&button).copied()),
+                                &pad_button_id(&config, button),
                                 &label,
                             )),
                         )
@@ -1204,6 +1409,24 @@ impl MouseKeyboardPane {
                     .collect();
                 if items.is_empty() {
                     items.push(caption(&t("input-pad-no-buttons")));
+                }
+                for (dial, modes) in pad_dials(device) {
+                    for mode in 0..modes {
+                        let label = dial_label(dial, mode, modes);
+                        items.push(choice_row(
+                            &label,
+                            Box::new(device_dropdown(
+                                &resource,
+                                &dial_action_id(dial, mode),
+                                dial_choices(),
+                                dial_id(config.dial_action(dial, mode)),
+                                &label,
+                            )),
+                        ));
+                    }
+                }
+                if !pad_dials(device).is_empty() {
+                    items.push(caption(&t("input-pad-dials-caption")));
                 }
                 card(&device_title(device), rows(items))
             })
@@ -1897,12 +2120,40 @@ mod tests {
             "every listed shortcut can go on a pen button"
         );
 
-        assert_eq!(pad_button_for_id("none"), Some(None));
+        assert_eq!(pad_button_for_id("none"), Some(PadButtonChoice::Nothing));
+        let mut pad = TabletConfig::default();
+        set_pad_button(&mut pad, 2, PadButtonChoice::Shortcut(ShortcutAction::Lock));
         assert_eq!(
-            pad_button_for_id(&pad_button_id(Some(ShortcutAction::Lock))),
-            Some(Some(ShortcutAction::Lock))
+            pad_button_for_id(&pad_button_id(&pad, 2)),
+            Some(PadButtonChoice::Shortcut(ShortcutAction::Lock))
         );
+        set_pad_button(&mut pad, 2, PadButtonChoice::ShowMap);
+        assert_eq!(pad_button_id(&pad, 2), "show-map");
+        assert!(
+            pad.pad_buttons.is_empty(),
+            "the map button runs no shortcut"
+        );
+        set_pad_button(&mut pad, 0, PadButtonChoice::ShowMap);
+        assert_eq!(pad.pad_map_button, Some(0), "one button shows the map");
+        assert_eq!(pad_button_id(&pad, 2), "none");
         assert_eq!(pad_button_for_id("left"), None, "a pad runs shortcuts only");
+
+        for id in ["native", "left", "back", "shortcut:search"] {
+            let action = eraser_for_id(id).expect("an offered eraser choice");
+            assert_eq!(eraser_id(action), id);
+        }
+        assert!(
+            eraser_choices()
+                .iter()
+                .any(|(id, _)| id == "shortcut:search"),
+            "every listed shortcut can go on the eraser"
+        );
+        assert_eq!(eraser_for_id("disabled"), None);
+        for (id, _) in dial_choices() {
+            let action = dial_for_id(&id).expect("an offered dial choice");
+            assert_eq!(dial_id(action), id);
+        }
+        assert_eq!(dial_for_id("shortcut:search"), None);
 
         assert_eq!(tablet_output_for_id(WHOLE_DESKTOP), Some(None));
         assert_eq!(tablet_output_choices()[0].0, WHOLE_DESKTOP);
@@ -1917,11 +2168,16 @@ mod tests {
                 name: name.into(),
                 kind,
                 pad_buttons,
+                ..Default::default()
             };
+        let mut pad = device(InputDeviceKind::TabletPad, "Wacom Intuos S Pad", 4);
+        pad.pad_rings = vec![4];
+        pad.pad_strips = vec![1, 1];
+        pad.pad_mode_buttons = vec![0];
         let snapshot = InputHardwareSnapshot {
             devices: vec![
                 device(InputDeviceKind::Tablet, "Wacom Intuos S Pen", 0),
-                device(InputDeviceKind::TabletPad, "Wacom Intuos S Pad", 4),
+                pad,
                 device(InputDeviceKind::Mouse, "Mouse", 0),
             ],
             ..Default::default()
@@ -1935,6 +2191,17 @@ mod tests {
         assert_eq!(device_title(&pane.pads[0]), "Wacom Intuos S buttons");
         assert_eq!(pane.tablet_cards().len(), 1);
         assert_eq!(pane.pad_cards().len(), 1);
+        assert_eq!(
+            pad_dials(&pane.pads[0]),
+            [
+                (PadDial::Ring(0), 4),
+                (PadDial::Strip(0), 1),
+                (PadDial::Strip(1), 1)
+            ],
+            "a row per ring mode and per strip"
+        );
+        assert_eq!(dial_label(PadDial::Ring(0), 1, 4), "Ring 1 · Mode 2");
+        assert_eq!(dial_label(PadDial::Strip(1), 0, 1), "Strip 2");
         pane.observe_devices(Some(&snapshot));
         assert!(
             !pane.take_structure_dirty(),

@@ -20,18 +20,23 @@ clap.workspace = true
 fluent.workspace = true
 fluent-syntax.workspace = true
 libc.workspace = true
-notify.workspace = true
+notify = { workspace = true, default-features = true }
 image = { workspace = true, features = ["png"] }
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
 atomic-file = { path = "../../system/atomic-file" }
 # serde comes in through serde_json. A direct dependency is unused and fails machete.
 serde_json.workspace = true
-syn = { version = "2.0", features = ["full"] }
+proc-macro2 = { version = "1.0", features = ["span-locations"] }
+quote = "1.0"
+syn = { version = "2.0", features = ["full", "visit-mut"] }
 tempfile.workspace = true
 toml.workspace = true
 tilo-ui-graph = { path = "../ui-graph" }
 tilo-headless-schema = { path = "../headless-schema" }
 workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tilo-test-env = { path = "../test-env" }
 
 [lints]
 workspace = true

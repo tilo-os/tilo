@@ -19,17 +19,24 @@
 
 set -uo pipefail
 
-readonly REAL_CARGO="${HOME}/.cargo/bin/cargo"
+real_cargo="${CARGO_HOME:-${HOME}/.cargo}/bin/cargo"
 
 # Fall back to any other cargo on PATH that is not this shim (rustup-less environments).
-if [ ! -x "$REAL_CARGO" ]; then
+if [ ! -x "$real_cargo" ]; then
   self="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+  real_cargo=""
   while IFS= read -r cand; do
-    [ "$(readlink -f "$cand" 2>/dev/null)" != "$self" ] && exec "$cand" "$@"
-  done < <(command -v -a cargo 2>/dev/null)
-  echo "cargo: no cargo binary found" >&2
-  exit 127
+    if [ "$(readlink -f "$cand" 2>/dev/null || echo "$cand")" != "$self" ]; then
+      real_cargo="$cand"
+      break
+    fi
+  done < <(type -a -p cargo 2>/dev/null)
+  if [ -z "$real_cargo" ]; then
+    echo "cargo: no cargo binary found" >&2
+    exit 127
+  fi
 fi
+readonly REAL_CARGO="$real_cargo"
 
 [ -n "${QCARGO_BYPASS:-}" ] && exec "$REAL_CARGO" "$@"
 
@@ -65,9 +72,18 @@ use_sccache() {
   # `${name+x}` is deliberate: an explicitly empty wrapper means "plain
   # rustc".  `${name:-}` cannot distinguish that choice from an unset value
   # and used to silently turn sccache back on in nested packaging builds.
-  [ "${RUSTC_WRAPPER+x}" = x ] && return 0
-  command -v sccache >/dev/null 2>&1 || return 0   # not installed; a plain build is fine
-  export RUSTC_WRAPPER=sccache
+  if [ "${RUSTC_WRAPPER+x}" != x ]; then
+    command -v sccache >/dev/null 2>&1 || return 0
+    export RUSTC_WRAPPER=sccache
+  fi
+  case "${RUSTC_WRAPPER##*/}" in
+    sccache) ;;
+    *) return 0 ;;
+  esac
+  # sccache cannot cache incremental rustc invocations. Scope this policy to
+  # cache users, so native builds can reuse work within changed crates. An
+  # explicit caller choice still wins, including CARGO_INCREMENTAL=1.
+  export CARGO_INCREMENTAL="${CARGO_INCREMENTAL:-0}"
   export SCCACHE_CACHE_SIZE="${SCCACHE_CACHE_SIZE:-$(derive_cache_size)}"
 }
 

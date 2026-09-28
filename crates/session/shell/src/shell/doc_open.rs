@@ -105,12 +105,18 @@ impl OpenError {
                     |n| n.to_string_lossy().to_string(),
                 );
                 match ext {
-                    Some(ext) => format!("no app on this desktop opens .{ext} files ({name})"),
-                    None => format!("{name} has no file type to open it by"),
+                    Some(ext) => crate::shell::i18n::t_args(
+                        "doc-open-no-handler",
+                        &[("ext", ext.as_str().into()), ("name", name.into())],
+                    ),
+                    None => crate::shell::i18n::t_args(
+                        "doc-open-no-file-type",
+                        &[("name", name.into())],
+                    ),
                 }
             }
             OpenError::Launch(e) => e.user_message(),
-            OpenError::NoWorkspace => "there is no active workspace to open it in".to_string(),
+            OpenError::NoWorkspace => crate::shell::i18n::t("doc-open-no-workspace"),
         }
     }
 }
@@ -578,8 +584,9 @@ pub fn report_open_failure(chrome: &Chrome, path: &Path, detail: &str, surface: 
         || path.display().to_string(),
         |n| n.to_string_lossy().to_string(),
     );
-    let mut n = Notification::new(format!("Couldn't open {name}"), detail.to_string())
-        .with_severity(NotificationSeverity::Error);
+    let title = crate::shell::i18n::t_args("doc-open-failed", &[("name", name.into())]);
+    let mut n =
+        Notification::new(title, detail.to_string()).with_severity(NotificationSeverity::Error);
     if let Some(surface) = surface {
         n = n.with_app_name(surface);
     }
@@ -737,7 +744,7 @@ pub fn continuity_file_reference_label(
             .map(|name| name.to_string_lossy().into_owned())
     })
     .filter(|name| !name.trim().is_empty())
-    .unwrap_or_else(|| "File".to_string())
+    .unwrap_or_else(|| crate::shell::i18n::t("doc-open-unnamed-file"))
 }
 
 /// Production activation for a synchronized file-reference tab.  Resolution
@@ -887,6 +894,9 @@ fn grant_read_for_open(package_id: &str, path: &Path, chrome: &Chrome) -> Result
 
 #[cfg(test)]
 mod tests {
+    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+    const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
     use super::*;
     use crate::shell::chrome_state::ChromeState;
     use crate::shell::state::{WorkspaceTree, WorkspaceTreeHandle};
@@ -953,7 +963,10 @@ mod tests {
     /// Waits for at least `want` — a launch runs on its own thread, not
     /// observable the instant `open` returns.
     fn launched_commands(log: &Path, want: usize) -> Vec<String> {
-        for _ in 0..400 {
+        let deadline = std::time::Instant::now()
+            .checked_add(HANG_BOUND)
+            .expect("the hang bound fits in an Instant");
+        while std::time::Instant::now() < deadline {
             if let Ok(s) = std::fs::read_to_string(log) {
                 let lines: Vec<String> = s.lines().map(str::to_string).collect();
                 if lines.len() >= want {

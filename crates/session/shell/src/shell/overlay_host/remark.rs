@@ -576,6 +576,7 @@ impl ShellOverlayHost {
                 entry.generation = Some(app.semantic_generation);
             }
         }
+        drop(broker);
         self.remark.surfaces.retain(|key, _| live.contains(key));
         let mut answered = false;
         for surface in self.remark.surfaces.values_mut() {
@@ -626,32 +627,31 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
-        let (flow, known, recorder) = {
+        let (flow, known) = {
             let st = chrome.borrow();
-            (
-                st.remark.flow.clone(),
-                st.remark.known_sessions.clone(),
-                st.recorder().cloned(),
-            )
+            (st.remark.flow.clone(), st.remark.known_sessions.clone())
         };
         // The pill's clock runs from when this session saw the recording
         // start, whether or not a recorder is attached to read it from.
         if matches!(flow, Flow::Recording { .. }) {
             self.remark.recording_since.get_or_insert_with(Instant::now);
         }
-        let Some(recorder) = recorder else {
-            return false;
-        };
-        let newest = || {
-            recorder
+        // Whether it still records, then the newest session sealed since the
+        // composer opened: a recording that stopped has sealed by now.
+        let Some((recording, newest)) = self.session_services.recorder().map(|recorder| {
+            let recording = recorder.is_recording();
+            let newest = recorder
                 .awaiting_review()
                 .into_iter()
                 .rev()
-                .find(|(checkout, _)| !known.iter().any(|id| id == checkout.id.as_str()))
+                .find(|(checkout, _)| !known.iter().any(|id| id == checkout.id.as_str()));
+            (recording, newest)
+        }) else {
+            return false;
         };
         match flow {
             Flow::Capturing => {
-                if let Some((checkout, summary)) = newest() {
+                if let Some((checkout, summary)) = newest {
                     chrome.borrow_mut().remark.flow = Flow::Attached {
                         record: checkout.id.as_str().to_string(),
                         summary,
@@ -662,11 +662,11 @@ impl ShellOverlayHost {
             }
             Flow::Recording { .. } => {
                 let since = *self.remark.recording_since.get_or_insert_with(Instant::now);
-                if !recorder.is_recording() {
+                if !recording {
                     self.remark.recording_since = None;
                     let mut st = chrome.borrow_mut();
                     st.remark.flow =
-                        newest().map_or(Flow::None, |(checkout, summary)| Flow::Attached {
+                        newest.map_or(Flow::None, |(checkout, summary)| Flow::Attached {
                             record: checkout.id.as_str().to_string(),
                             summary,
                         });
@@ -700,18 +700,19 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
-        let (record, recorder) = {
+        let record = {
             let st = chrome.borrow();
             let Flow::Attached { record, .. } = &st.remark.flow else {
                 return;
             };
-            (record.clone(), st.recorder().cloned())
+            record.clone()
         };
         let Some(id) = ui::record::RecordId::parse(&record) else {
             return;
         };
-        let trace = recorder
-            .as_ref()
+        let trace = self
+            .session_services
+            .recorder()
             .and_then(|recorder| {
                 recorder.with_pending(&id, crate::shell::recorder::PendingSession::trace)
             })
@@ -723,8 +724,9 @@ impl ShellOverlayHost {
             });
             return;
         };
-        let frames = recorder
-            .as_ref()
+        let frames = self
+            .session_services
+            .recorder()
             .and_then(|recorder| recorder.with_pending(&id, |pending| pending.frames().cloned()))
             .flatten();
         self.begin_remark_review(&record, &trace, frames);
@@ -785,9 +787,9 @@ impl ShellOverlayHost {
         frames: Option<&session_trace::frames::FrameStrip>,
     ) -> Verdict {
         let checked = self
-            .chrome
-            .as_ref()
-            .and_then(|chrome| chrome.borrow().recorder().cloned())
+            .session_services
+            .recorder()
+            .cloned()
             .zip(ui::record::RecordId::parse(record))
             .and_then(|(recorder, id)| {
                 recorder.with_pending(&id, |pending| pending.divergence().cloned())
@@ -877,14 +879,15 @@ impl ShellOverlayHost {
             return false;
         };
         let mut st = chrome.borrow_mut();
-        let recorder = st.recorder().cloned();
         let Some(review) = st.remark.review.as_mut() else {
             return false;
         };
         review.verdict = match outcome {
             Ok(report) => {
-                if let Some((recorder, id)) =
-                    recorder.zip(ui::record::RecordId::parse(&review.record))
+                if let Some((recorder, id)) = self
+                    .session_services
+                    .recorder()
+                    .zip(ui::record::RecordId::parse(&review.record))
                 {
                     recorder.record_divergence(&id, report.clone());
                 }
@@ -1241,11 +1244,10 @@ impl ShellOverlayHost {
             .ok_or_else(|| crate::shell::i18n::t("remark-blocked-review"))?;
         let id = ui::record::RecordId::parse(record)
             .ok_or_else(|| "the recording's id does not parse".to_string())?;
-        let recorder = st
+        let trace = self
+            .session_services
             .recorder()
-            .cloned()
-            .ok_or_else(|| "this session has no recorder".to_string())?;
-        let trace = recorder
+            .ok_or_else(|| "this session has no recorder".to_string())?
             .with_pending(&id, crate::shell::recorder::PendingSession::trace)
             .ok_or_else(|| "the recording is no longer in memory".to_string())?
             .map_err(|error| error.to_string())?;
@@ -1397,6 +1399,7 @@ impl ShellOverlayHost {
                 outcome = Some(Err(crate::shell::i18n::t("remark-send-failed")));
             }
         }
+        drop(host);
         let Some(outcome) = outcome else {
             return false;
         };
@@ -1408,8 +1411,10 @@ impl ShellOverlayHost {
             Ok(()) => {
                 // Delivered: the in-memory session has done its job.
                 if let Flow::Attached { record, .. } = &st.remark.flow
-                    && let (Some(recorder), Some(id)) =
-                        (st.recorder().cloned(), ui::record::RecordId::parse(record))
+                    && let (Some(recorder), Some(id)) = (
+                        self.session_services.recorder().cloned(),
+                        ui::record::RecordId::parse(record),
+                    )
                 {
                     drop(recorder.take_session(&id));
                 }
@@ -1498,8 +1503,10 @@ impl ShellOverlayHost {
             Stage::Compose | Stage::Sending => {
                 let options = st.remark_directory().options();
                 let recent = st
-                    .recorder()
-                    .is_some_and(|recorder| recorder.recent_buffer_enabled());
+                    .session_view()
+                    .recorder
+                    .as_ref()
+                    .is_some_and(|recorder| recorder.recent_buffer);
                 self.remark.view.draw_composer(
                     scene,
                     transform,

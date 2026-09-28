@@ -313,7 +313,8 @@ pub fn history_context(
     file_name: &str,
     project_id: &str,
 ) -> tilo_actions::ActionContext {
-    let mut context = tilo_actions::ActionContext::for_action("org.tilo.Code", "Code", action);
+    let mut context =
+        tilo_actions::ActionContext::for_action("so.tilo.code-editor", "Code", action);
     let (id, kind, label) = match action {
         CodeEditorAction::EditText { file_id, .. } => (file_id.as_str(), "file", "Edit text"),
         CodeEditorAction::CreateFile { id, .. } => (id.as_str(), "file", "Create file"),

@@ -1910,7 +1910,7 @@ mod tests {
                 )
                 .expect("connect to simulator");
             connected_rx
-                .recv_timeout(Duration::from_secs(5))
+                .recv_timeout(tilo_test_env::hang_bound())
                 .expect("connected event")
                 .expect("successful connection");
             device
@@ -2069,7 +2069,7 @@ mod tests {
                     .expect("push projection frame");
                 std::thread::sleep(Duration::from_millis(34));
             }
-            let deadline = Instant::now() + Duration::from_secs(3);
+            let deadline = tilo_test_env::hang_deadline();
             while !paths.playlist.exists() && Instant::now() < deadline {
                 std::thread::sleep(Duration::from_millis(20));
             }
@@ -2122,7 +2122,7 @@ mod tests {
             let session = std::thread::spawn(move || {
                 run_airplay_process(&sender_path, &[], &worker_paths, Some("4821"))
             });
-            let deadline = Instant::now() + Duration::from_secs(3);
+            let deadline = tilo_test_env::hang_deadline();
             while !paths.ready.exists() && Instant::now() < deadline {
                 std::thread::sleep(Duration::from_millis(20));
             }
@@ -2186,7 +2186,7 @@ mod tests {
                     None,
                 )
             });
-            let deadline = Instant::now() + Duration::from_secs(3);
+            let deadline = tilo_test_env::hang_deadline();
             while !paths.ready.exists() && Instant::now() < deadline {
                 std::thread::sleep(Duration::from_millis(20));
             }

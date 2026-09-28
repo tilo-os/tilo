@@ -34,7 +34,11 @@ atomic-file = { path = "../../crates/system/atomic-file" }
 # Content store for draft attachments. Drafts carry only a verified content
 # identity; the bytes live in the app's content store.
 tilo-content = { path = "../../crates/system/content" }
-qdoc-codecs = { path = "../../crates/doc/qdoc-codecs", default-features = false }
+# The draft body is rich text, edited in the SDK rich-text editor and sent as
+# its HTML part.
+qdoc-codecs = { path = "../../crates/doc/qdoc-codecs", default-features = false, features = ["html"] }
+qdoc-rich-text = { path = "../../crates/doc/qdoc-rich-text" }
+tilo-rich-text = { path = "../../crates/sdk/tilo-rich-text" }
 # Calendar invitations are validated as parsed iCalendar content lines.
 pim-lines = { path = "../../crates/text/pim-lines" }
 automerge.workspace = true
@@ -85,7 +89,7 @@ default = ["live"]
 live = ["account-custody/custody", "dep:async-imap", "dep:lettre", "dep:reqwest", "dep:tokio", "dep:tokio-rustls", "dep:rustls", "dep:tilo-net", "dep:futures-util"]
 # Render HTML mail bodies with WPE WebKit; requires the stack from
 # os/dev/build-wpe.sh.
-html-webview = ["ui/webview-wpe"]
+html-webview = ["ui/webview"]
 
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
@@ -94,6 +98,7 @@ rcgen.workspace = true
 # The fake authorization server and browser for the Gmail and Outlook
 # sign-in tests.
 tilo-oauth = { path = "../../crates/system/tilo-oauth", features = ["fake"] }
+tilo-test-env = { path = "../../crates/dev/test-env" }
 
 [lints]
 workspace = true

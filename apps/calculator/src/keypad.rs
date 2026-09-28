@@ -48,6 +48,8 @@ pub struct CalcScreen {
     clear_hist_rect: Rect,
     /// Toggle pill that shows/hides the history sidebar.
     toggle_rect: Rect,
+    /// Expression line used to anchor the platform IME candidate window.
+    expression_rect: Rect,
     pub hovered_key: Option<usize>,
     pub hovered_mem: Option<usize>,
     pub pressed_key: Option<usize>,
@@ -75,6 +77,7 @@ impl Default for CalcScreen {
             history_rects: Vec::new(),
             clear_hist_rect: Rect::ZERO,
             toggle_rect: Rect::ZERO,
+            expression_rect: Rect::ZERO,
             hovered_key: None,
             hovered_mem: None,
             pressed_key: None,
@@ -152,6 +155,17 @@ impl CalcScreen {
     }
     pub fn toggle_rect(&self) -> Rect {
         self.toggle_rect
+    }
+
+    pub fn expression_ime_rect(&self) -> Option<Rect> {
+        (self.expression_rect != Rect::ZERO).then(|| {
+            Rect::new(
+                self.expression_rect.x1 - 1.0,
+                self.expression_rect.y0,
+                self.expression_rect.x1,
+                self.expression_rect.y1,
+            )
+        })
     }
 
     /// Pick the keypad layout for `keypad_w` and rebuild the key list if the
@@ -239,6 +253,12 @@ impl CalcScreen {
         let mem_h = 44.0;
         let gap = 12.0;
         let display_top = left.y0 + header_h;
+        self.expression_rect = Rect::new(
+            left.x0 + 16.0,
+            display_top + 30.0,
+            left.x1 - 16.0,
+            display_top + 78.0,
+        );
         let mem_top = display_top + display_h + gap;
         let grid_top = mem_top + mem_h + gap;
 

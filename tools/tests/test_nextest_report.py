@@ -67,6 +67,18 @@ class NextestReportTests(unittest.TestCase):
         self.assertLess(slow.index("presence"), slow.index("checked_restore"))
         self.assertLess(slow.index("checked_restore"), slow.index("fast"))
 
+    def test_the_twenty_slowest_tests_are_listed_openly(self) -> None:
+        cases = "".join(f'<testcase name="t{index:02}" classname="a" time="{index}"/>'
+                        for index in range(30))
+        summary, _ = self.run_report(f'<testsuites><testsuite name="a">{cases}'
+                                     '</testsuite></testsuites>')
+        self.assertNotIn("<details>", summary)
+        slow = summary.split("Slowest tests (20):", 1)[1]
+        listed = [line for line in slow.splitlines() if line.startswith("| ") and "`t" in line]
+        self.assertEqual(len(listed), 20)
+        self.assertTrue(listed[0].startswith("| 29.0 |"))
+        self.assertTrue(listed[-1].startswith("| 10.0 |"))
+
     def test_clean_run_has_no_retry_table(self) -> None:
         summary, annotations = self.run_report(
             '<testsuites><testsuite name="a"><testcase name="t" classname="a" time="1"/>'

@@ -71,6 +71,7 @@ pub mod document_transfer;
 pub mod event;
 pub mod file_invite;
 pub mod files;
+pub mod first_party_app_ids;
 pub mod history;
 pub mod host_admission;
 pub mod identity;
@@ -157,8 +158,8 @@ pub use mls_governance::{
 pub use op::{
     ContentRetention, DocumentMutation, DocumentMutationEncodeError, DocumentMutationError,
     EncryptionMetadata, EncryptionScheme, MAX_DOCUMENT_MUTATION_BYTES, RoutedDocumentPayload,
-    SignedOp, document_artifact_id, document_attestation_id, document_channel_id,
-    validate_document_payload_route,
+    SignedOp, WholeDocumentPayload, document_artifact_id, document_attestation_id,
+    document_channel_id, validate_document_payload_route, validate_whole_document_payload_route,
 };
 pub use ownership_transfer::{
     OWNERSHIP_TRANSFER_VERSION, OwnershipTransferAcceptanceV1, OwnershipTransferAuditV1,
@@ -188,3 +189,5 @@ pub use space::{Space, SpaceId};
 pub use validator::{
     ChannelState, ValidationError, validate_admitted_inbound_op, validate_inbound_op,
 };
+
+pub mod local_transport;

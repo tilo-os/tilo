@@ -731,7 +731,7 @@ fn runtime_bundles_and_the_dbus_proxy_shape_the_launch_argv() {
 
         // Drop the guard: the proxy is SIGTERMed + reaped.
         drop(guard);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        let deadline = tilo_test_env::hang_deadline();
         while std::path::Path::new(&format!("/proc/{pid}")).exists()
             && std::time::Instant::now() < deadline
         {

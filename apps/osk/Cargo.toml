@@ -52,12 +52,12 @@ libc.workspace = true
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+tilo-automerge.workspace = true
 tempfile.workspace = true
 # Compile the synthetic keymap with libxkbcommon so tests validate generated
 # keymaps and symbol resolution.
 xkbcommon = "0.8"
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
-tilo-test-env = { path = "../../crates/dev/test-env" }
 
 [[test]]
 name = "it"

@@ -2996,8 +2996,8 @@ mod search_screen_tests {
     use crate::model::Route;
     use std::collections::HashMap;
     use std::sync::Arc;
-    use std::time::Duration;
     use taffy::prelude::*;
+
     use ui::presence::PresenceCtx;
     use ui::text_render::TextRenderer;
     use ui::widget::Widget;
@@ -3166,7 +3166,7 @@ mod search_screen_tests {
 
             // Pre-warm the store so the build captures the decoded image.
             store.get(&thumb);
-            store.block_until_idle(Duration::from_secs(5));
+            store.block_until_idle(tilo_test_env::hang_bound());
             assert!(
                 store.get(&thumb).is_some(),
                 "the result thumbnail decoded + cached"

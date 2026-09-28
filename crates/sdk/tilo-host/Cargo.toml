@@ -15,6 +15,8 @@ license.workspace = true
 # The native desktop backends (`native`): the Wayland/X11 clipboard and the
 # OS URI handler. Without it the crate is the host vocabulary only, and a host
 # installs its own `host::HostServices`.
+# Thread-local chooser and URI backends a test selects for scoped requests.
+test-support = []
 native = ["dep:arboard", "dep:open", "dep:smithay-clipboard", "dep:smithay-client-toolkit"]
 # Host-native file open/save, OpenURI, location and screen capture through
 # the XDG Desktop Portal on Unix and the Common Item Dialogs on Windows. The
@@ -32,7 +34,6 @@ notifications = ["native", "dep:windows", "windows/UI_Notifications", "windows/D
 hex.workspace = true
 image = { workspace = true, features = ["png"] }
 libc.workspace = true
-tilo-rt.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 tts = { path = "../../system/tts" }
@@ -53,10 +54,14 @@ arboard = { workspace = true, features = ["image-data"], optional = true }
 # without the `portal` feature). Unix builds with `portal` hand URIs to the
 # OpenURI portal instead.
 open = { workspace = true, features = ["shellexecute-on-windows"], optional = true }
-workspace-hack = { version = "0.1" }
 
+# The app runtime and full tokio the native backends run on. The browser
+# (wasm32) build has neither; it installs its own host services.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tilo-rt.workspace = true
 tokio = { workspace = true, features = ["full"] }
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
 
 # The browser has no sockets, processes or signals: tokio's `net` pulls mio,
 # which refuses to build for wasm32-unknown-unknown.
@@ -86,6 +91,7 @@ windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Stora
 
 [dev-dependencies]
 tempfile.workspace = true
+tilo-test-env = { path = "../../dev/test-env" }
 
 [lints]
 workspace = true

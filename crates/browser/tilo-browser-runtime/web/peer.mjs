@@ -1,0 +1,13 @@
+import init,* as runtime from './pkg/tilo_browser_runtime.js';
+import {mountDesktop} from './host.mjs';
+import {acquireStorage,createIdentityStore} from './storage.mjs';
+import {createIdentityCustodian} from './identity-custody.mjs';
+import {createInvitedIdentityCustodian} from './invited-identity-custody.mjs';
+import {createCloudIdentityCustodian,createCloudMachineLinker} from './cloud-identity-custody.mjs';
+import {createConnectPeer} from './peer-session.mjs';
+import {retryableMemo} from './asset-recovery.mjs';
+const identityStore=createIdentityStore(),locks=globalThis.navigator?.locks,ready=retryableMemo(init);
+export const connectPeer=createConnectPeer({init:ready,runtime,mountDesktop,acquireStorage,acquireIdentity:createIdentityCustodian({runtime,locks,store:identityStore}),acquireInvitedIdentity:createInvitedIdentityCustodian({runtime,locks,store:identityStore}),acquireCloudIdentity:createCloudIdentityCustodian({runtime,locks,store:identityStore})});
+export const signCloudMachineMesh=createCloudMachineLinker({runtime,locks,store:identityStore,ready});
+export {CLOUD_MACHINE_LINK_ERROR_CODES} from './cloud-identity-custody.mjs';
+export {pendingPeerRecoveryCount,retryPendingPeerRecovery} from './peer-session.mjs';

@@ -365,7 +365,7 @@ pub fn install_and_launch(
         push_failure(
             &package_id,
             &display_name,
-            "this system has no app catalogue (app is missing)".to_string(),
+            crate::shell::i18n::t("catalogue-error-missing"),
         );
         return;
     };
@@ -381,14 +381,20 @@ pub fn install_and_launch(
                 push_failure(
                     &package_id,
                     &display_name,
-                    format!("could not run the app catalogue: {e}"),
+                    crate::shell::i18n::t_args(
+                        "catalogue-error-run",
+                        &[("error", e.to_string().into())],
+                    ),
                 );
                 return;
             }
             Ok(o) if !o.status.success() => {
                 let detail = safe_diagnostic(&o.stderr);
                 let detail = if detail.is_empty() {
-                    format!("the app catalogue exited {}", o.status)
+                    crate::shell::i18n::t_args(
+                        "catalogue-error-exited",
+                        &[("status", o.status.to_string().into())],
+                    )
                 } else {
                     detail
                 };
@@ -410,7 +416,7 @@ pub fn install_and_launch(
         push_failure(
             &identity.0,
             &identity.1,
-            "could not start loading it".to_string(),
+            crate::shell::i18n::t("catalogue-error-spawn"),
         );
     }
 }

@@ -8,6 +8,12 @@
 //! failure instead of appearing to crash. [`compile_deny_list`] is that
 //! shape; callers supply only the rule map.
 //!
+//! The exception is a process whose whole syscall surface is known because
+//! it runs no foreign program and loads nothing after it is confined: a
+//! worker that computes over bytes on a pipe. [`allow_list_program`] builds
+//! its filter, default-kill, so anything outside the list ends the process
+//! rather than giving hostile input a second try.
+//!
 //! ## Baseline application policy
 //!
 //! Based on Flatpak's published seccomp profile (`common/flatpak-run.c`'s
@@ -83,6 +89,28 @@ pub fn deny_list_program(
         rules,
         SeccompAction::Allow,
         SeccompAction::Errno(libc::EPERM as u32),
+        host_target_arch()?,
+    )?;
+    Ok(filter.try_into()?)
+}
+
+/// Compile an allow-list to a BPF program: every call not matched by a rule
+/// kills the whole process with `SIGSYS`. A syscall mapped to an empty rule
+/// list is allowed unconditionally; otherwise any one matching rule allows
+/// the call.
+///
+/// # Errors
+///
+/// Returns [`SeccompError`] for an unsupported architecture or a rule set
+/// seccompiler refuses to compile.
+#[cfg(target_os = "linux")]
+pub fn allow_list_program(
+    rules: BTreeMap<i64, Vec<SeccompRule>>,
+) -> Result<BpfProgram, SeccompError> {
+    let filter = SeccompFilter::new(
+        rules,
+        SeccompAction::KillProcess,
+        SeccompAction::Allow,
         host_target_arch()?,
     )?;
     Ok(filter.try_into()?)
@@ -685,5 +713,38 @@ mod tests {
                 "10 = a socket was created, 11 = exec was allowed, 12 = the filter would not install"
             );
         }
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn allow_list_kills_on_any_other_syscall_in_the_kernel() {
+        let mut rules = BTreeMap::new();
+        for nr in [libc::SYS_getpid, libc::SYS_exit_group, libc::SYS_exit] {
+            rules.insert(nr, Vec::new());
+        }
+        let program = allow_list_program(rules).expect("compile filter");
+        // SAFETY: the child installs a filter, makes raw syscalls and exits
+        // without returning into the test harness.
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0, "fork failed");
+        if pid == 0 {
+            if seccompiler::apply_filter(&program).is_err() {
+                // SAFETY: `_exit` does not unwind.
+                unsafe { libc::_exit(12) };
+            }
+            // SAFETY: getpid has no arguments; allowed by the filter.
+            unsafe { libc::syscall(libc::SYS_getpid) };
+            // SAFETY: getppid is not listed, so the filter kills us here.
+            unsafe { libc::syscall(libc::SYS_getppid) };
+            // SAFETY: `_exit` does not unwind.
+            unsafe { libc::_exit(0) };
+        }
+        let mut status = 0;
+        // SAFETY: waiting on our own child.
+        unsafe { libc::waitpid(pid, &raw mut status, 0) };
+        assert!(
+            libc::WIFSIGNALED(status) && libc::WTERMSIG(status) == libc::SIGSYS,
+            "the unlisted syscall must kill with SIGSYS (status {status:#x})"
+        );
     }
 }

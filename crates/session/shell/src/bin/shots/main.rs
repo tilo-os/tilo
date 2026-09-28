@@ -556,6 +556,7 @@ fn run_capture_one(args: &Args, viewport: (u32, u32), out: &std::path::Path) -> 
                 args.fps,
                 args.step_duration,
             )?;
+            drop(driver);
             if summary.first_unit.is_none() {
                 return Err(format!("recording {} contains no frames", out.display()));
             }

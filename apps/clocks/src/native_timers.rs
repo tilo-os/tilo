@@ -148,6 +148,7 @@ mod tests {
         }
     }
 
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
     fn reconcile_touches_only_owned_timers_and_persists_ownership_before_the_host() {
         // Case: opening an empty profile preserves another profile's timer.

@@ -46,6 +46,7 @@ mod paint_context;
 mod recovery_banner;
 mod review_overlay;
 mod ruler;
+pub mod semantic_read;
 mod style_color_picker;
 mod style_menu;
 mod template_picker;
@@ -250,32 +251,66 @@ pub fn open_document(
     path: &Path,
     content: tilo_content::ContentStore,
 ) -> std::io::Result<(ui::State, WordProcessorWidget, WpFormat)> {
+    let records = ui::RecordSet::for_local_files("so.tilo.word-processor").map_err(invalid_data)?;
+    open_document_with_records(path, &records, content)
+}
+
+/// Open through the launch owner's retained file scope. Required history is
+/// consumed before importing the selected file; the file remains its sole
+/// local writer.
+///
+/// # Errors
+///
+/// Fails if the retained file history cannot be read, if `path` cannot be read,
+/// or if the codec for its format rejects the bytes.
+pub fn open_document_with_records(
+    path: &Path,
+    records: &ui::RecordSet,
+    content: tilo_content::ContentStore,
+) -> std::io::Result<(ui::State, WordProcessorWidget, WpFormat)> {
+    let reader = records.file_history_reader().map_err(invalid_data)?;
+    let want = ui::RecordCheckout::new(
+        ui::RecordId::for_file(path),
+        ui::RecordKind::new("document"),
+    );
+    let history = reader.read(&want).map_err(invalid_data)?;
     let bytes = std::fs::read(path)?;
     let format = WpFormat::from_path(path);
     let mut state = ui::State::new();
-    let containers = qdoc::model::init(&mut state.doc, &state.root);
-    let mut ids = qdoc::IdGen::new(state.doc.get_actor().to_hex_string());
-    let mut inputs = tilo_content::ContentInputs::new();
-    {
-        let mut dm = qdoc::DocMut {
-            doc: &mut state.doc,
-            c: &containers,
-            ids: &mut ids,
-        };
-        format
-            .import(&bytes, &mut dm, &mut inputs)
-            .map_err(invalid_data)?;
-    }
-    // The document only names the file's images; they are kept before it is.
-    content.put_inputs(&inputs).map_err(invalid_data)?;
-    start_history_here(&mut state);
     let mut widget = WordProcessorWidget::new();
+    widget.retain_file_history(reader);
     widget.model_mut().set_content_store(content);
-    widget.set_file(path.to_path_buf(), format);
-    widget.remember_open_document(&state.doc);
-    // If a previous session crashed before saving this document, a recovery copy
-    // is still on disk — surface the crash-recovery banner (Restore / Discard).
-    widget.check_for_recovery();
+    if let Some(history) = history {
+        history.install_into(&mut state.doc).map_err(invalid_data)?;
+        widget
+            .adopt_existing_file(&state.doc, path.to_path_buf(), bytes, format)
+            .map_err(invalid_data)?;
+    } else {
+        let containers = qdoc::model::init(&mut state.doc, &state.root);
+        let mut ids = qdoc::IdGen::new(state.doc.get_actor().to_hex_string());
+        let mut inputs = tilo_content::ContentInputs::new();
+        {
+            let mut dm = qdoc::DocMut {
+                doc: &mut state.doc,
+                c: &containers,
+                ids: &mut ids,
+            };
+            format
+                .import(&bytes, &mut dm, &mut inputs)
+                .map_err(invalid_data)?;
+        }
+        // The document only names the file's images; they are kept before it is.
+        widget
+            .model()
+            .content_store()
+            .put_inputs(&inputs)
+            .map_err(invalid_data)?;
+        // The opened file is where undo begins: the import is not an edit.
+        start_history_here(&mut state);
+        widget.set_file(path.to_path_buf(), format);
+        widget.remember_open_document(&state.doc);
+        widget.check_for_recovery();
+    }
     Ok((state, widget, format))
 }
 
@@ -427,36 +462,15 @@ pub mod recovery {
 
     /// The directory recovery copies live in. Resolution order:
     /// 1. `$TILO_WP_RECOVERY_DIR` (test / explicit override), used verbatim;
-    ///
-    /// On Windows, the default is `%LOCALAPPDATA%/tilo/word-processor/recovery`,
-    /// falling back to `%USERPROFILE%/AppData/Local` when necessary.
-    ///
-    /// On other hosts, the remaining resolution order is:
-    /// 2. `$XDG_STATE_HOME/tilo/word-processor/recovery`;
-    /// 3. `$HOME/.local/state/tilo/word-processor/recovery`;
-    /// 4. `./.tilo-wp-recovery` as a last resort (no HOME at all).
+    /// 2. the per-user state directory (`$XDG_STATE_HOME`, else
+    ///    `$HOME/.local/state`; Windows: `%LOCALAPPDATA%`), joined with
+    ///    `tilo/word-processor/recovery`;
+    /// 3. `./.tilo-wp-recovery` as a last resort (no home directory at all).
     pub fn base_dir() -> PathBuf {
         if let Some(dir) = std::env::var_os(RECOVERY_BASE_ENV) {
             return PathBuf::from(dir);
         }
-        #[cfg(windows)]
-        let state_home = std::env::var_os("LOCALAPPDATA")
-            .map(PathBuf::from)
-            .filter(|path| path.is_absolute())
-            .or_else(|| {
-                std::env::var_os("USERPROFILE")
-                    .map(PathBuf::from)
-                    .filter(|path| path.is_absolute())
-                    .map(|path| path.join("AppData").join("Local"))
-            });
-        #[cfg(not(windows))]
-        let state_home = std::env::var_os("XDG_STATE_HOME")
-            .map(PathBuf::from)
-            .filter(|p| !p.as_os_str().is_empty())
-            .or_else(|| {
-                std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local").join("state"))
-            });
-        match state_home {
+        match xdg_paths::state_home_or_local_app_data() {
             Some(p) => p.join("tilo").join("word-processor").join("recovery"),
             None => PathBuf::from(".tilo-wp-recovery"),
         }
@@ -509,18 +523,9 @@ pub mod recovery {
                     }
                     resolved
                 });
-                // Windows canonicalization adds a verbatim path prefix once a
-                // file exists. File URLs normalize both spellings, keeping the
-                // recovery slot stable across the document's first save.
-                #[cfg(windows)]
-                {
-                    url::Url::from_file_path(&abs).map_or_else(
-                        |()| abs.to_string_lossy().into_owned(),
-                        |url| url.to_string(),
-                    )
-                }
-                #[cfg(not(windows))]
-                abs.to_string_lossy().into_owned()
+                // Keep the recovery slot stable across the document's first
+                // save, when canonicalization starts to succeed.
+                ui::uri::stable_path_key(&abs)
             }
             None => ":untitled:".to_string(),
         };
@@ -1339,4 +1344,15 @@ mod tests {
             );
         }
     }
+}
+
+pub mod component;
+pub use component::definition;
+/// Initialize a checked New record as an empty Writer document.
+///
+/// # Errors
+///
+/// Never fails today; the `Result` matches the record-initializer contract.
+pub fn initialize_empty_document(doc: &mut AutoCommit) -> Result<(), String> {
+    WordProcessor::initialize_empty_document(doc)
 }

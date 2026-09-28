@@ -3,7 +3,7 @@
 //! This is the in-memory source of truth. It is mirrored into the
 //! Automerge document by [`crate::doc`] (events / tasks / projects as
 //! CRDT objects), and each event/task's rich-text **notes** live in the
-//! CRDT as a real block list bound to a `BlockEditor`.
+//! CRDT as rich text edited in the SDK rich-text editor.
 //!
 //! No rendering, no IO — just types, filters, and recurrence expansion.
 

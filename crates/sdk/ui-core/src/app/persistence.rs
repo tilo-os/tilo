@@ -83,18 +83,60 @@ impl App {
 
     pub fn record_tick(&mut self) -> bool {
         let _entry = self.enter_wake_scope();
+        let native = self.collaboration.manager.has_native_committed_primary();
+        let initial = if native {
+            let Some(want) = self.root_widget.record_intent() else {
+                return false;
+            };
+            if self
+                .persistence
+                .records
+                .as_ref()
+                .is_some_and(|records| records.active() == Some(&want.id))
+            {
+                return false;
+            }
+            let Some(read) = self.collaboration.manager.prepare_native_record(&want.id) else {
+                return false;
+            };
+            Some((want, read))
+        } else {
+            None
+        };
         let Some(set) = self.persistence.records.as_mut() else {
             return false;
         };
-        let switched = crate::record::tick(
-            set,
-            &mut self.state,
-            self.persistence
-                .room_index
-                .as_mut()
-                .map(crate::state::DocumentReplica::document_mut),
-            &*self.root_widget,
-        );
+        let switched = if let Some((want, read)) = &initial {
+            let accepted = read
+                .with_mutation(|mutation| {
+                    set.checkout_with_initial(
+                        &mut self.state,
+                        self.persistence
+                            .room_index
+                            .as_mut()
+                            .map(crate::state::DocumentReplica::document_mut),
+                        want,
+                        mutation,
+                    )
+                })
+                .unwrap_or(false);
+            if accepted {
+                read.applied();
+                Some(want.id.clone())
+            } else {
+                None
+            }
+        } else {
+            crate::record::tick(
+                set,
+                &mut self.state,
+                self.persistence
+                    .room_index
+                    .as_mut()
+                    .map(crate::state::DocumentReplica::document_mut),
+                &*self.root_widget,
+            )
+        };
         match switched {
             Some(id) => {
                 self.advance_autosave_generation();
@@ -110,11 +152,25 @@ impl App {
                 // index before moving the editable document to its record
                 // route. The two Automerge graphs never share a channel or
                 // an apply target.
-                // One connection: the primary route moves to the record and the
-                // route it leaves stays joined for the room index.
-                let left = self.collaboration.manager.move_primary_to_record(&id);
-                if self.collaboration.room_route.is_none() {
-                    self.collaboration.room_route = left;
+                if native {
+                    if self.native_room_route.is_none() {
+                        self.native_room_route = self
+                            .collaboration
+                            .manager
+                            .primary_route()
+                            .map(|witness| witness.route.clone());
+                    }
+                    if let Err(error) = self.collaboration.manager.switch_native_record(&id) {
+                        tracing::warn!(%error,"native document route switch remains unavailable");
+                        return false;
+                    }
+                } else {
+                    // One connection: the primary route moves to the record and
+                    // the route it leaves stays joined for the room index.
+                    let left = self.collaboration.manager.move_primary_to_record(&id);
+                    if self.collaboration.room_route.is_none() {
+                        self.collaboration.room_route = left;
+                    }
                 }
                 tracing::debug!(
                     target: "tilo.state",

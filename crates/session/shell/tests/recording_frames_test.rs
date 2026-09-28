@@ -169,6 +169,10 @@ fn assert_frames_show_the_client(strip: &FrameStrip, (width, height): (u32, u32)
     }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one recording, from the first frame to the stored blob, asserted as one scenario"
+)]
 #[test]
 fn recording_with_pixels_keeps_the_recorded_surface_as_a_frames_blob() {
     let surface_id = 0x5EED_F4A3_0001;
@@ -190,6 +194,12 @@ fn recording_with_pixels_keeps_the_recorded_surface_as_a_frames_blob() {
     present(&mut fb, surface_id);
 
     let dir = tempfile::tempdir().unwrap();
+    // The broker binds only inside an owner-only directory.
+    std::fs::set_permissions(
+        dir.path(),
+        std::os::unix::fs::PermissionsExt::from_mode(0o700),
+    )
+    .expect("owner-only socket directory");
     let broker = shell::shell::collab_broker::spawn_native_harness(
         dir.path().join("collab.sock"),
         fb.chrome().tree_handle(),
@@ -197,7 +207,12 @@ fn recording_with_pixels_keeps_the_recorded_surface_as_a_frames_blob() {
     )
     .unwrap();
     fb.host_mut().attach_collab_broker(&broker);
-    let recorder = fb.chrome().recorder().cloned().expect("recorder attached");
+    let recorder = fb
+        .host()
+        .session_services()
+        .recorder()
+        .cloned()
+        .expect("recorder attached");
     let owner = OWNER.to_string();
     recorder
         .start(
@@ -302,6 +317,12 @@ fn a_scaled_surface_is_kept_at_the_pixels_it_renders() {
     present(&mut fb, surface_id);
 
     let dir = tempfile::tempdir().unwrap();
+    // The broker binds only inside an owner-only directory.
+    std::fs::set_permissions(
+        dir.path(),
+        std::os::unix::fs::PermissionsExt::from_mode(0o700),
+    )
+    .expect("owner-only socket directory");
     let broker = shell::shell::collab_broker::spawn_native_harness(
         dir.path().join("collab.sock"),
         fb.chrome().tree_handle(),
@@ -309,7 +330,12 @@ fn a_scaled_surface_is_kept_at_the_pixels_it_renders() {
     )
     .unwrap();
     fb.host_mut().attach_collab_broker(&broker);
-    let recorder = fb.chrome().recorder().cloned().expect("recorder attached");
+    let recorder = fb
+        .host()
+        .session_services()
+        .recorder()
+        .cloned()
+        .expect("recorder attached");
     let owner = OWNER.to_string();
     recorder
         .start(
@@ -529,6 +555,12 @@ fn a_personal_field_of_a_real_app_is_masked_in_every_kept_frame() {
     let (width, height) = laid_out(&mut fb, surface_id);
 
     let dir = tempfile::tempdir().unwrap();
+    // The broker binds only inside an owner-only directory.
+    std::fs::set_permissions(
+        dir.path(),
+        std::os::unix::fs::PermissionsExt::from_mode(0o700),
+    )
+    .expect("owner-only socket directory");
     let socket = dir.path().join("collab.sock");
     let broker = shell::shell::collab_broker::spawn_native_harness(
         socket.clone(),
@@ -539,7 +571,12 @@ fn a_personal_field_of_a_real_app_is_masked_in_every_kept_frame() {
     let mut app = committed_app(&socket, &broker, surface_id, (width, height));
     present(&mut fb, surface_id);
     fb.host_mut().attach_collab_broker(&broker);
-    let recorder = fb.chrome().recorder().cloned().expect("recorder attached");
+    let recorder = fb
+        .host()
+        .session_services()
+        .recorder()
+        .cloned()
+        .expect("recorder attached");
     recorder
         .start(
             &[ROOM.to_string()],

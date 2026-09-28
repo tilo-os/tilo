@@ -1,0 +1,676 @@
+//! Exercise the service with the real lifecycle owner, prompt queue and lease broker.
+//! The device backend is controlled; these tests do not qualify physical audio.
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
+use super::super::collab_broker_capnp::LocalSessionAuthority;
+use super::*;
+use crate::portal::{LocalCaptureHandle, PromptOutcome, PromptResolver};
+use std::sync::atomic::AtomicUsize;
+
+#[derive(Default)]
+struct Device {
+    starts: AtomicUsize,
+    stops: AtomicUsize,
+    closes: AtomicUsize,
+    reconnecting: AtomicBool,
+    pending: AtomicBool,
+    ticks: AtomicUsize,
+}
+struct BackendFixture(Arc<Device>);
+impl MediaSession for BackendFixture {
+    fn capture_ready(&self) -> bool {
+        self.0.starts.load(Ordering::SeqCst) > 0 && !self.0.pending.load(Ordering::SeqCst)
+    }
+    fn inventory(&self) -> Inventory {
+        Inventory::default()
+    }
+    fn tick(&mut self, _: Instant) -> Result<State, Issue> {
+        self.0.ticks.fetch_add(1, Ordering::SeqCst);
+        Ok(if self.0.reconnecting.load(Ordering::SeqCst) {
+            State::Reconnecting
+        } else {
+            State::Live
+        })
+    }
+    #[allow(
+        clippy::panic_in_result_fn,
+        reason = "the test backend asserts the broker handed it exactly the leased synthetic source"
+    )]
+    fn start_capture(
+        &mut self,
+        source_id: &str,
+        source: BorrowedCaptureHandle<'_>,
+        current: Arc<dyn Fn() -> bool + Send + Sync>,
+    ) -> Result<(), Issue> {
+        assert_eq!(source_id, "mic");
+        assert!(matches!(source, BorrowedCaptureHandle::PipeWireNode(17)));
+        assert!(current());
+        self.0.starts.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+    fn capture_stop(&self) -> Option<Arc<dyn Fn() + Send + Sync>> {
+        let device = self.0.clone();
+        Some(Arc::new(move || {
+            device.stops.fetch_add(1, Ordering::SeqCst);
+        }))
+    }
+    fn stop_capture(&mut self) {
+        self.0.stops.fetch_add(1, Ordering::SeqCst);
+    }
+    fn pause_capture(&mut self) {
+        self.0.stops.fetch_add(1, Ordering::SeqCst);
+    }
+    fn close(&mut self) {
+        self.0.closes.fetch_add(1, Ordering::SeqCst);
+    }
+}
+struct Factory(Arc<Device>);
+impl MediaFactory for Factory {
+    fn prepare(&self, target: CallTarget) -> Prepare {
+        assert_eq!(target.app, "so.tilo.chat");
+        assert_eq!(target.record, ""); // Primary record remains an exact binding.
+        assert_eq!(target.channel, "voice");
+        let backend = BackendFixture(Arc::clone(&self.0));
+        Box::pin(async move { Ok(Box::new(backend) as Box<dyn MediaSession>) })
+    }
+}
+struct Fixture {
+    owner: LocalSessionAuthority,
+    lifecycle: LocalSessionLifecycle,
+    service: NativeMediaService,
+    caller: Caller,
+    prompts: PromptQueueHandle,
+    device: Arc<Device>,
+    next: std::sync::atomic::AtomicU64,
+}
+impl Fixture {
+    fn tick(&self) {
+        let generation = {
+            let mut calls = self.service.0.calls.lock().unwrap();
+            let Some(entry) = calls.entries.get_mut(&self.caller.key()) else {
+                return;
+            };
+            if let Some(worker) = entry.worker.take() {
+                worker.abort();
+            }
+            entry.generation
+        };
+        self.service.0.tick(&self.caller.key(), generation);
+    }
+    fn new() -> Self {
+        let owner = LocalSessionAuthority::new();
+        let lifecycle = owner.lifecycle();
+        lifecycle.publish_native_state(false, false);
+        let workspace = super::super::state::WorkspaceTree::bootstrap_demo()
+            .desktop
+            .workspaces
+            .remove(0);
+        let room = workspace.room.to_string();
+        let (grants, _) = GrantStoreHandle::test_with_workspace(workspace);
+        let prompts = PromptQueueHandle::new(PromptResolver::Channel);
+        let mut capture = CaptureBroker::new();
+        capture
+            .register_source(
+                "mic",
+                "Microphone",
+                CaptureKind::Microphone,
+                LocalCaptureHandle::PipeWireNode(17),
+            )
+            .unwrap();
+        let service = NativeMediaService::new(
+            lifecycle.clone(),
+            Arc::new(Mutex::new(capture)),
+            super::super::personal_continuity::DeviceId::new("device-test").unwrap(),
+        );
+        assert!(service.install_consent(grants, prompts.clone()));
+        let device = Arc::new(Device::default());
+        assert!(service.install_factory(Arc::new(Factory(Arc::clone(&device)))));
+        let caller = Caller {
+            peer: 11,
+            app: "so.tilo.chat".into(),
+            workspace: room,
+            record: String::new(),
+            current: Arc::new(|| Ok(())),
+        };
+        Self {
+            owner,
+            lifecycle,
+            service,
+            caller,
+            prompts,
+            device,
+            next: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+    fn command(&self, command: Command) -> Snapshot {
+        self.service
+            .command_for(self.caller.clone(), self.request(command))
+            .unwrap()
+    }
+    fn request(&self, command: Command) -> Request {
+        let mut request = Request::new(command);
+        if !matches!(request.command, Command::Status) {
+            request.intent = self.next.fetch_add(1, Ordering::SeqCst).saturating_add(1);
+        }
+        request
+    }
+    async fn join(&self) {
+        let joined = self.command(Command::Join {
+            channel_id: "voice".into(),
+        });
+        assert!(joined.muted);
+        for _ in 0..100 {
+            tokio::task::yield_now().await;
+            if self.command(Command::Status).state == State::Live {
+                return;
+            }
+        }
+        panic!("controlled backend did not become ready");
+    }
+    async fn approve_unmute(&self) {
+        let before = self.device.starts.load(Ordering::SeqCst);
+        self.command(Command::SetMuted { muted: false });
+        let prompt = self
+            .prompts
+            .drain()
+            .pop()
+            .expect("real local consent queued");
+        prompt.reply.send(PromptOutcome::AllowOnce).unwrap();
+        for _ in 0..100 {
+            tokio::task::yield_now().await;
+            if self.device.starts.load(Ordering::SeqCst) > before {
+                return;
+            }
+        }
+        panic!("approved capture request was not accepted");
+    }
+    async fn unmute(&self) {
+        self.approve_unmute().await;
+        assert!(self.command(Command::Status).capture_active);
+    }
+}
+
+#[tokio::test]
+async fn accepted_pending_capture_is_inactive_until_backend_observes_readiness() {
+    let fixture = Fixture::new();
+    fixture.join().await;
+    fixture.device.pending.store(true, Ordering::SeqCst);
+    fixture.approve_unmute().await;
+    for _ in 0..3 {
+        fixture.tick();
+        let pending = fixture.command(Command::Status);
+        assert_eq!(pending.state, State::Live);
+        assert!(!pending.muted);
+        assert!(!pending.capture_active);
+        assert_eq!(
+            fixture.device.starts.load(Ordering::SeqCst),
+            1,
+            "pending is not paused recovery and must not request another start"
+        );
+    }
+    fixture.device.pending.store(false, Ordering::SeqCst);
+    fixture.tick();
+    assert!(fixture.command(Command::Status).capture_active);
+    fixture.command(Command::Leave);
+    assert!(!fixture.command(Command::Status).capture_active);
+}
+
+#[tokio::test]
+async fn every_pending_tick_requires_the_exact_existing_capture_binding() {
+    let fixture = Fixture::new();
+    fixture.join().await;
+    fixture.device.pending.store(true, Ordering::SeqCst);
+    fixture.approve_unmute().await;
+    fixture.tick();
+    let other = Fixture::new();
+    other.join().await;
+    let other_binding = other
+        .service
+        .0
+        .calls
+        .lock()
+        .unwrap()
+        .entries
+        .get(&other.caller.key())
+        .unwrap()
+        .binding
+        .clone();
+    {
+        let mut calls = fixture.service.0.calls.lock().unwrap();
+        let entry = calls.entries.get_mut(&fixture.caller.key()).unwrap();
+        let capture = entry.capture.as_ref().unwrap();
+        assert!((capture.fence)());
+        let broker = fixture.service.0.capture.lock().unwrap();
+        assert!(
+            broker
+                .resolve(capture.lease, &entry.binding, Instant::now())
+                .is_ok()
+        );
+        assert!(
+            broker
+                .resolve(capture.lease, &other_binding, Instant::now())
+                .is_err()
+        );
+        // Fault-inject an actual second local session's binding. The lease is
+        // still live, but must never be used by this queued backend operation.
+        entry.binding = other_binding;
+    }
+    let before = fixture.device.ticks.load(Ordering::SeqCst);
+    fixture.device.pending.store(false, Ordering::SeqCst);
+    fixture.tick();
+    assert_eq!(fixture.device.ticks.load(Ordering::SeqCst), before);
+    assert!(!fixture.command(Command::Status).capture_active);
+    assert!(fixture.device.stops.load(Ordering::SeqCst) > 0);
+}
+
+#[tokio::test]
+async fn transport_recovery_pauses_then_resolves_the_same_lease_without_new_consent() {
+    let fixture = Fixture::new();
+    fixture.join().await;
+    fixture.unmute().await;
+    let lease = fixture
+        .service
+        .0
+        .calls
+        .lock()
+        .unwrap()
+        .entries
+        .get(&fixture.caller.key())
+        .unwrap()
+        .capture
+        .as_ref()
+        .unwrap()
+        .lease;
+    fixture.device.reconnecting.store(true, Ordering::SeqCst);
+    fixture.tick();
+    let paused = fixture.command(Command::Status);
+    assert_eq!(paused.state, State::Reconnecting);
+    assert!(!paused.capture_active);
+    assert!(
+        !paused.muted,
+        "same explicit unmute intent survives transport pause"
+    );
+    assert!(fixture.device.stops.load(Ordering::SeqCst) > 0);
+    assert_eq!(fixture.prompts.queued_len(), 0);
+    fixture.device.reconnecting.store(false, Ordering::SeqCst);
+    fixture.tick();
+    assert!(fixture.command(Command::Status).capture_active);
+    assert_eq!(fixture.device.starts.load(Ordering::SeqCst), 2);
+    assert_eq!(fixture.prompts.queued_len(), 0);
+    assert_eq!(
+        fixture
+            .service
+            .0
+            .calls
+            .lock()
+            .unwrap()
+            .entries
+            .get(&fixture.caller.key())
+            .unwrap()
+            .capture
+            .as_ref()
+            .unwrap()
+            .lease,
+        lease
+    );
+}
+
+#[tokio::test]
+async fn terminal_local_invalidation_wins_over_transport_recovery() {
+    for invalidation in 0..5 {
+        let fixture = Fixture::new();
+        fixture.join().await;
+        fixture.unmute().await;
+        fixture.device.reconnecting.store(true, Ordering::SeqCst);
+        fixture.tick();
+        match invalidation {
+            0 => {
+                fixture.command(Command::Leave);
+            }
+            1 => {
+                fixture.command(Command::SetMuted { muted: true });
+            }
+            2 => fixture
+                .service
+                .0
+                .apply_privacy(&crate::portal::lockdown::LockdownPolicy {
+                    disable_microphone: true,
+                    ..Default::default()
+                }),
+            3 => {
+                fixture
+                    .service
+                    .0
+                    .capture
+                    .lock()
+                    .unwrap()
+                    .remove_source("mic");
+            }
+            _ => fixture.lifecycle.set_locked(true),
+        }
+        fixture.device.reconnecting.store(false, Ordering::SeqCst);
+        fixture.tick();
+        assert!(!fixture.command(Command::Status).capture_active);
+        assert_eq!(fixture.device.starts.load(Ordering::SeqCst), 1);
+        assert_eq!(fixture.prompts.queued_len(), 0);
+    }
+}
+
+#[tokio::test]
+async fn join_is_listening_and_muted_until_fresh_local_consent() {
+    let fixture = Fixture::new();
+    fixture.join().await;
+    assert_eq!(fixture.device.starts.load(Ordering::SeqCst), 0);
+    assert_eq!(fixture.prompts.queued_len(), 0);
+    fixture.unmute().await;
+    assert_eq!(fixture.device.starts.load(Ordering::SeqCst), 1);
+    fixture.command(Command::SetMuted { muted: true });
+    assert!(fixture.device.stops.load(Ordering::SeqCst) > 0);
+    fixture.command(Command::SetMuted { muted: false });
+    assert_eq!(fixture.prompts.queued_len(), 1);
+    assert_eq!(fixture.device.starts.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn declined_or_late_consent_cannot_create_capture() {
+    for leave in [false, true] {
+        let fixture = Fixture::new();
+        fixture.join().await;
+        fixture.command(Command::SetMuted { muted: false });
+        let prompt = fixture.prompts.drain().pop().unwrap();
+        if leave {
+            fixture.command(Command::Leave);
+        }
+        let _ = prompt.reply.send(if leave {
+            PromptOutcome::AllowOnce
+        } else {
+            PromptOutcome::Deny
+        });
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(fixture.device.starts.load(Ordering::SeqCst), 0);
+        assert!(!fixture.command(Command::Status).capture_active);
+    }
+}
+
+#[tokio::test]
+async fn actual_lock_transition_stops_device_and_revokes_lease_before_return() {
+    let fixture = Fixture::new();
+    fixture.join().await;
+    fixture.unmute().await;
+    let (lease, binding) = {
+        let calls = fixture.service.0.calls.lock().unwrap();
+        let entry = calls.entries.get(&fixture.caller.key()).unwrap();
+        (entry.capture.as_ref().unwrap().lease, entry.binding.clone())
+    };
+    fixture.lifecycle.set_locked(true);
+    assert!(fixture.device.stops.load(Ordering::SeqCst) > 0);
+    assert!(fixture.device.closes.load(Ordering::SeqCst) > 0);
+    assert!(
+        fixture
+            .service
+            .0
+            .capture
+            .lock()
+            .unwrap()
+            .resolve(lease, &binding, Instant::now())
+            .is_err()
+    );
+    fixture.lifecycle.set_locked(false);
+    assert_eq!(fixture.device.starts.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.command(Command::Status).state, State::Idle);
+}
+
+#[tokio::test]
+async fn broker_source_loss_and_privacy_switch_stop_capture_without_another_rpc() {
+    for privacy in [false, true] {
+        let fixture = Fixture::new();
+        fixture.join().await;
+        fixture.unmute().await;
+        let before = fixture.device.stops.load(Ordering::SeqCst);
+        let mut broker = fixture.service.0.capture.lock().unwrap();
+        if privacy {
+            broker.set_kill_switch(CaptureKind::Microphone, true);
+        } else {
+            assert!(broker.remove_source("mic"));
+        }
+        assert!(fixture.device.stops.load(Ordering::SeqCst) > before);
+    }
+}
+
+#[tokio::test]
+async fn disconnect_and_owner_drop_stop_capture_synchronously() {
+    let fixture = Fixture::new();
+    fixture.join().await;
+    fixture.unmute().await;
+    fixture.service.disconnect(fixture.caller.peer);
+    assert!(fixture.device.stops.load(Ordering::SeqCst) > 0);
+    assert!(fixture.device.closes.load(Ordering::SeqCst) > 0);
+    assert!(fixture.service.0.calls.lock().unwrap().entries.is_empty());
+    let fixture = Fixture::new();
+    fixture.join().await;
+    fixture.unmute().await;
+    drop(fixture.owner);
+    assert!(fixture.device.stops.load(Ordering::SeqCst) > 0);
+}
+
+#[tokio::test]
+async fn absent_real_adapter_is_unavailable_and_never_prompts() {
+    let fixture = Fixture::new();
+    let service = NativeMediaService::new(
+        fixture.lifecycle.clone(),
+        fixture.service.capture_broker(),
+        super::super::personal_continuity::DeviceId::new("device-test").unwrap(),
+    );
+    let snapshot = service
+        .command_for(
+            fixture.caller.clone(),
+            fixture.request(Command::Join {
+                channel_id: "voice".into(),
+            }),
+        )
+        .unwrap();
+    assert_eq!(snapshot.state, State::Unavailable);
+    assert_eq!(fixture.prompts.queued_len(), 0);
+    assert_eq!(fixture.device.starts.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn reordered_effects_cannot_cross_a_later_leave_or_mute() {
+    for leave in [false, true] {
+        let fixture = Fixture::new();
+        fixture.join().await;
+        let old_unmute = fixture.request(Command::SetMuted { muted: false });
+        let old_join = fixture.request(Command::Join {
+            channel_id: "voice".into(),
+        });
+        fixture.command(if leave {
+            Command::Leave
+        } else {
+            Command::SetMuted { muted: true }
+        });
+        for stale in [old_unmute, old_join] {
+            assert!(
+                fixture
+                    .service
+                    .command_for(fixture.caller.clone(), stale)
+                    .unwrap_err()
+                    .contains("stale")
+            );
+        }
+        assert_eq!(fixture.prompts.queued_len(), 0);
+        assert_eq!(fixture.device.starts.load(Ordering::SeqCst), 0);
+        assert!(!fixture.command(Command::Status).capture_active);
+    }
+}
+
+#[tokio::test]
+async fn pending_consent_is_fenced_by_newer_mute_and_live_admission_loss() {
+    for mute in [false, true] {
+        let mut fixture = Fixture::new();
+        let admitted = Arc::new(AtomicBool::new(true));
+        let checked = admitted.clone();
+        fixture.caller.current = Arc::new(move || {
+            checked
+                .load(Ordering::Acquire)
+                .then_some(())
+                .ok_or_else(|| "admission ended".into())
+        });
+        fixture.join().await;
+        fixture.command(Command::SetMuted { muted: false });
+        let prompt = fixture.prompts.drain().pop().unwrap();
+        if mute {
+            fixture.command(Command::SetMuted { muted: true });
+        } else {
+            admitted.store(false, Ordering::Release);
+        }
+        let _ = prompt.reply.send(PromptOutcome::AllowOnce);
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(fixture.device.starts.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[tokio::test]
+async fn source_revocation_does_not_acquire_the_outer_backend_mutex() {
+    let fixture = Fixture::new();
+    fixture.join().await;
+    fixture.unmute().await;
+    let backend = fixture
+        .service
+        .0
+        .calls
+        .lock()
+        .unwrap()
+        .entries
+        .get(&fixture.caller.key())
+        .unwrap()
+        .backend
+        .clone()
+        .unwrap();
+    let _held = backend.lock().unwrap();
+    let before = fixture.device.stops.load(Ordering::SeqCst);
+    let capture = fixture.service.capture_broker();
+    let (stopped, observed) = std::sync::mpsc::channel();
+    let thread = std::thread::spawn(move || {
+        assert!(capture.lock().unwrap().remove_source("mic"));
+        stopped.send(()).unwrap();
+    });
+    tilo_test_env::recv(
+        "lease revocation must not wait on the outer backend lock",
+        &observed,
+    );
+    assert!(fixture.device.stops.load(Ordering::SeqCst) > before);
+    thread.join().unwrap();
+}
+
+#[tokio::test]
+async fn committed_local_privacy_policy_stops_capture_before_setter_returns() {
+    let fixture = Fixture::new();
+    fixture.join().await;
+    fixture.unmute().await;
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("lockdown.json");
+    let shared = Arc::downgrade(&fixture.service.0);
+    let listener: Arc<dyn Fn(&crate::portal::lockdown::LockdownPolicy) + Send + Sync> =
+        Arc::new(move |policy| {
+            if let Some(shared) = shared.upgrade() {
+                shared.apply_privacy(policy);
+            }
+        });
+    crate::portal::lockdown::watch_policy_at(path.clone(), &listener).unwrap();
+    let before = fixture.device.stops.load(Ordering::SeqCst);
+    let backend = crate::portal::lockdown::LockdownBackend::at_path(path);
+    backend
+        .set_policy(crate::portal::lockdown::LockdownPolicy {
+            disable_microphone: true,
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(fixture.device.stops.load(Ordering::SeqCst) > before);
+    assert!(!fixture.command(Command::Status).capture_active);
+    backend
+        .set_policy(crate::portal::lockdown::LockdownPolicy::default())
+        .unwrap();
+    assert_eq!(
+        fixture.device.starts.load(Ordering::SeqCst),
+        1,
+        "restoring policy cannot implicitly unmute"
+    );
+    fixture.command(Command::SetMuted { muted: false });
+    let prompt = fixture.prompts.drain().pop().unwrap();
+    backend
+        .set_policy(crate::portal::lockdown::LockdownPolicy {
+            disable_microphone: true,
+            ..Default::default()
+        })
+        .unwrap();
+    backend
+        .set_policy(crate::portal::lockdown::LockdownPolicy::default())
+        .unwrap();
+    let _ = prompt.reply.send(PromptOutcome::AllowOnce);
+    for _ in 0..10 {
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(
+        fixture.device.starts.load(Ordering::SeqCst),
+        1,
+        "privacy revocation must fence pending consent even after policy is restored"
+    );
+}
+
+struct GatedFactory {
+    device: Arc<Device>,
+    ready: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+}
+impl MediaFactory for GatedFactory {
+    fn prepare(&self, _: CallTarget) -> Prepare {
+        let ready = self.ready.lock().unwrap().take().unwrap();
+        let device = self.device.clone();
+        Box::pin(async move {
+            ready.await.map_err(|_| Issue::TransportFailed)?;
+            Ok(Box::new(BackendFixture(device)) as Box<dyn MediaSession>)
+        })
+    }
+}
+
+#[tokio::test]
+async fn pending_join_cannot_install_a_backend_after_leave() {
+    let fixture = Fixture::new();
+    let service = NativeMediaService::new(
+        fixture.lifecycle.clone(),
+        fixture.service.capture_broker(),
+        super::super::personal_continuity::DeviceId::new("device-test").unwrap(),
+    );
+    let consent = fixture.service.0.consent.get().unwrap().clone();
+    assert!(service.install_consent(consent.grants, consent.prompts));
+    let (ready, waiting) = tokio::sync::oneshot::channel();
+    assert!(service.install_factory(Arc::new(GatedFactory {
+        device: fixture.device.clone(),
+        ready: Mutex::new(Some(waiting))
+    })));
+    let joining = service
+        .command_for(
+            fixture.caller.clone(),
+            fixture.request(Command::Join {
+                channel_id: "voice".into(),
+            }),
+        )
+        .unwrap();
+    assert_eq!(joining.state, State::Joining);
+    tokio::task::yield_now().await;
+    service
+        .command_for(fixture.caller.clone(), fixture.request(Command::Leave))
+        .unwrap();
+    let _ = ready.send(());
+    for _ in 0..10 {
+        tokio::task::yield_now().await;
+    }
+    assert!(service.0.calls.lock().unwrap().entries.is_empty());
+    assert_eq!(fixture.device.starts.load(Ordering::SeqCst), 0);
+    assert_eq!(fixture.prompts.queued_len(), 0);
+}

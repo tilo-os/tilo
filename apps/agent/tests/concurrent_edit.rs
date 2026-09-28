@@ -172,7 +172,7 @@ fn drive_peer_and_type(
     head: &str,
 ) -> (usize, bool, String) {
     peer.set_read_timeout(Some(Duration::from_millis(200)));
-    let deadline = Instant::now() + Duration::from_secs(20);
+    let deadline = tilo_test_env::hang_deadline();
     let mut typed = 0usize;
     let mut table_done = false;
     let mut invocation_actor = None;
@@ -192,6 +192,7 @@ fn drive_peer_and_type(
                 argument,
                 actor,
                 context,
+                ..
             } => {
                 invocation_actor = Some(actor.clone());
                 let resources = word_processor_resources(replica);
@@ -367,14 +368,7 @@ fn a_person_typing_and_the_agent_working_both_land() {
     let dir = tempfile::tempdir().unwrap();
     let sock = dir.path().join("collab.sock");
     let _broker = typed_peer::spawn_with_agent_actions(&sock, &[(APP, "insert-table")]);
-    let started = Instant::now();
-    while !sock.exists() {
-        assert!(
-            started.elapsed() < Duration::from_secs(5),
-            "relay never bound"
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    tilo_test_env::wait_until("the relay to bind its socket", || sock.exists());
 
     let room = typed_peer::room();
 
@@ -399,6 +393,7 @@ fn a_person_typing_and_the_agent_working_both_land() {
         app_id: APP.into(),
         cluster: room,
         record: Some(RECORD.into()),
+        agent_id: "Scribe".into(),
         name: "Scribe".into(),
         // Slow enough that the person's keystrokes genuinely arrive
         // between the agent's actions rather than after all of them.
@@ -416,7 +411,7 @@ fn a_person_typing_and_the_agent_working_both_land() {
     };
     let agent = std::thread::spawn(move || {
         let mut s = Session::connect(cfg).expect("agent connects");
-        s.run_until(Instant::now() + Duration::from_secs(20))
+        s.run_until(tilo_test_env::hang_deadline())
             .expect("agent session")
     });
 

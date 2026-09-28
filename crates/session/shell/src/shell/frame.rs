@@ -2932,6 +2932,10 @@ pub fn walk_widget<S1: std::hash::BuildHasher, S2: std::hash::BuildHasher>(
     clippy::float_cmp,
     reason = "exact frame geometry is the behavior under test"
 )]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 mod tests {
     use super::*;
     use crate::shell::state::FreshId as _;
@@ -4351,6 +4355,10 @@ mod remark_pick_tests {
     /// Pick mode reads the apps the shell hosts in-process from the shell's
     /// own semantic tree, so the bootstrap desktop's apps can be picked.
     #[test]
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the frame builder is the fixture, read from to the end"
+    )]
     fn pick_mode_sees_the_in_process_apps() {
         let mut fb = FrameBuilder::new((1600, 900));
         fb.relayout();

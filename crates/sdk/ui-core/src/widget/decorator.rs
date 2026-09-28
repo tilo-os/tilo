@@ -34,7 +34,8 @@
 //! and visits every node exactly once. The only methods that describe the
 //! decorator rather than the inner widget are the identity ones:
 //! `concrete_type_name` names the decorator's type and
-//! [`as_any_mut`](Widget::as_any_mut) is `None` unless overridden.
+//! [`as_any`](Widget::as_any) and [`as_any_mut`](Widget::as_any_mut) are
+//! `None` unless overridden.
 //!
 //! A boxed [`Element`](super::Element) is wrapped with `type Inner = dyn
 //! Widget;` and accessors returning `&(dyn Widget + 'static)`.
@@ -79,9 +80,10 @@ use vello::kurbo::Affine;
 use winit::event::WindowEvent;
 
 use super::{
-    ActionDirectoryResourcePage, AudiencePresentationProvider, Collaborative,
-    CompleteContentProvider, Continuable, ControlBindingMetadata, EventCtx,
+    ActionDirectoryInvocationDomain, ActionDirectoryResourcePage, AudiencePresentationProvider,
+    Collaborative, CompleteContentProvider, Continuable, ControlBindingMetadata, EventCtx,
     FloatingSurfaceProvider, FullscreenProvider, LayoutInfo, ManualPolicy, NativeViewLifecycle,
+    ParticipantPresence, PrimaryScrollAction, PrimaryScrollRegion, PrimaryScrollResult,
     ResourceOperationStart, Widget, WindowCloseAdmission,
 };
 use crate::dnd::DragPayload;
@@ -440,6 +442,10 @@ pub trait Decorator {
 
     fn test_id(&self) -> Option<&str> {
         self.inner().test_id()
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        None
     }
 
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
@@ -965,6 +971,163 @@ pub trait Decorator {
         self.inner_mut()
             .draw_overlay(scene, transform, text_renderer, theme, presence);
     }
+
+    fn action_directory_invocation_domain(
+        &self,
+        doc: &AutoCommit,
+    ) -> ActionDirectoryInvocationDomain {
+        self.inner().action_directory_invocation_domain(doc)
+    }
+
+    fn apply_primary_vertical_scroll(
+        &mut self,
+        action: PrimaryScrollAction,
+    ) -> PrimaryScrollResult {
+        self.inner_mut().apply_primary_vertical_scroll(action)
+    }
+
+    fn caller_view_resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        self.inner().caller_view_resources(doc)
+    }
+
+    fn collaboration_children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        self.inner_mut().collaboration_children_mut()
+    }
+
+    fn focus_requested(&mut self, target: Option<NodeId>, tree: &TaffyTree<()>) {
+        self.inner_mut().focus_requested(target, tree)
+    }
+
+    fn history_restore_readiness(&self, scope: &str) -> Result<(), String> {
+        self.inner().history_restore_readiness(scope)
+    }
+
+    fn install_control_custody(
+        &mut self,
+        domain: &crate::ControlDomain,
+        attachment: crate::control_custody::CustodyAttachment,
+    ) {
+        self.inner_mut().install_control_custody(domain, attachment)
+    }
+
+    fn is_default_keyboard_focus(&self) -> bool {
+        self.inner().is_default_keyboard_focus()
+    }
+
+    fn join_participant(&mut self, participant: &tilo_actions::ParticipantId) -> bool {
+        self.inner_mut().join_participant(participant)
+    }
+
+    fn keyboard_input_scope(&self) -> Option<crate::application::InstanceId> {
+        self.inner().keyboard_input_scope()
+    }
+
+    fn leave_participant(&mut self, participant: &tilo_actions::ParticipantId) {
+        self.inner_mut().leave_participant(participant)
+    }
+
+    fn mount_native_views(&mut self, host: &crate::widget::native_view::NativeViewHost<'_>) {
+        self.inner_mut().mount_native_views(host)
+    }
+
+    fn native_view_frame_start(&mut self) {
+        self.inner_mut().native_view_frame_start()
+    }
+
+    fn participant_presence(&self, doc: &AutoCommit) -> Vec<ParticipantPresence> {
+        self.inner().participant_presence(doc)
+    }
+
+    fn primary_vertical_scroll(&self) -> Option<PrimaryScrollRegion> {
+        self.inner().primary_vertical_scroll()
+    }
+
+    fn release_record_scope(&mut self) -> Result<(), String> {
+        self.inner_mut().release_record_scope()
+    }
+
+    /// [`Self::resource`] in `participant`'s tree. The local view (`None`)
+    /// is this decorator's own [`Self::resource`], so an override there is
+    /// honoured; a participant's tree is the inner widget's. A decorator that
+    /// adds resources of its own overrides this too.
+    fn resource_for(
+        &self,
+        participant: Option<&tilo_actions::ParticipantId>,
+        doc: &AutoCommit,
+        id: &str,
+    ) -> Option<tilo_actions::Resource> {
+        match participant {
+            None => Decorator::resource(self, doc, id),
+            Some(_) => self.inner().resource_for(participant, doc, id),
+        }
+    }
+
+    /// [`Self::resources`] in `participant`'s tree, as [`Self::resource_for`].
+    fn resources_for(
+        &self,
+        participant: Option<&tilo_actions::ParticipantId>,
+        doc: &AutoCommit,
+    ) -> Vec<tilo_actions::Resource> {
+        match participant {
+            None => Decorator::resources(self, doc),
+            Some(_) => self.inner().resources_for(participant, doc),
+        }
+    }
+
+    fn semantic_readers(
+        &self,
+    ) -> &'static [crate::semantic_document_read::RegisteredSemanticReader] {
+        self.inner().semantic_readers()
+    }
+
+    fn set_participant_host(&mut self, host: bool) {
+        self.inner_mut().set_participant_host(host)
+    }
+
+    fn set_participant_label(&mut self, participant: &tilo_actions::ParticipantId, label: &str) {
+        self.inner_mut().set_participant_label(participant, label)
+    }
+
+    fn start_resource_operation_scoped(
+        &mut self,
+        scope: &crate::invocation_scope::ResourceInvocationScope,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ResourceOperationStart>, String> {
+        self.inner_mut()
+            .start_resource_operation_scoped(scope, kind, type_id, payload, doc, path)
+    }
+
+    fn unmount_native_views(&mut self) {
+        self.inner_mut().unmount_native_views()
+    }
+
+    #[doc(hidden)]
+    #[allow(
+        private_interfaces,
+        reason = "finite toolkit resource ownership requests"
+    )]
+    fn visit_resource_owners(
+        &self,
+        request: &mut crate::bound_dispatch::legacy_document::ResourceReadRequest<'_>,
+    ) -> Result<(), tilo_actions::DoorError> {
+        self.inner().visit_resource_owners(request)
+    }
+
+    #[doc(hidden)]
+    #[allow(
+        private_interfaces,
+        reason = "finite toolkit resource ownership requests"
+    )]
+    fn visit_resource_owners_mut(
+        &mut self,
+        request: &mut crate::bound_dispatch::legacy_document::ResourceRequest<'_>,
+    ) -> Result<(), tilo_actions::DoorError> {
+        self.inner_mut().visit_resource_owners_mut(request)
+    }
 }
 
 /// Every decorator is a widget: each method is the decorator's own, which
@@ -1279,6 +1442,10 @@ impl<T: Decorator> Widget for T {
 
     fn test_id(&self) -> Option<&str> {
         Decorator::test_id(self)
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Decorator::as_any(self)
     }
 
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
@@ -1793,6 +1960,151 @@ impl<T: Decorator> Widget for T {
         presence: &PresenceCtx,
     ) {
         Decorator::draw_overlay(self, scene, transform, text_renderer, theme, presence);
+    }
+
+    fn action_directory_invocation_domain(
+        &self,
+        doc: &AutoCommit,
+    ) -> ActionDirectoryInvocationDomain {
+        Decorator::action_directory_invocation_domain(self, doc)
+    }
+
+    fn apply_primary_vertical_scroll(
+        &mut self,
+        action: PrimaryScrollAction,
+    ) -> PrimaryScrollResult {
+        Decorator::apply_primary_vertical_scroll(self, action)
+    }
+
+    fn caller_view_resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        Decorator::caller_view_resources(self, doc)
+    }
+
+    fn collaboration_children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        Decorator::collaboration_children_mut(self)
+    }
+
+    fn focus_requested(&mut self, target: Option<NodeId>, tree: &TaffyTree<()>) {
+        Decorator::focus_requested(self, target, tree)
+    }
+
+    fn history_restore_readiness(&self, scope: &str) -> Result<(), String> {
+        Decorator::history_restore_readiness(self, scope)
+    }
+
+    fn install_control_custody(
+        &mut self,
+        domain: &crate::ControlDomain,
+        attachment: crate::control_custody::CustodyAttachment,
+    ) {
+        Decorator::install_control_custody(self, domain, attachment)
+    }
+
+    fn is_default_keyboard_focus(&self) -> bool {
+        Decorator::is_default_keyboard_focus(self)
+    }
+
+    fn join_participant(&mut self, participant: &tilo_actions::ParticipantId) -> bool {
+        Decorator::join_participant(self, participant)
+    }
+
+    fn keyboard_input_scope(&self) -> Option<crate::application::InstanceId> {
+        Decorator::keyboard_input_scope(self)
+    }
+
+    fn leave_participant(&mut self, participant: &tilo_actions::ParticipantId) {
+        Decorator::leave_participant(self, participant)
+    }
+
+    fn mount_native_views(&mut self, host: &crate::widget::native_view::NativeViewHost<'_>) {
+        Decorator::mount_native_views(self, host)
+    }
+
+    fn native_view_frame_start(&mut self) {
+        Decorator::native_view_frame_start(self)
+    }
+
+    fn participant_presence(&self, doc: &AutoCommit) -> Vec<ParticipantPresence> {
+        Decorator::participant_presence(self, doc)
+    }
+
+    fn primary_vertical_scroll(&self) -> Option<PrimaryScrollRegion> {
+        Decorator::primary_vertical_scroll(self)
+    }
+
+    fn release_record_scope(&mut self) -> Result<(), String> {
+        Decorator::release_record_scope(self)
+    }
+
+    fn resource_for(
+        &self,
+        participant: Option<&tilo_actions::ParticipantId>,
+        doc: &AutoCommit,
+        id: &str,
+    ) -> Option<tilo_actions::Resource> {
+        Decorator::resource_for(self, participant, doc, id)
+    }
+
+    fn resources_for(
+        &self,
+        participant: Option<&tilo_actions::ParticipantId>,
+        doc: &AutoCommit,
+    ) -> Vec<tilo_actions::Resource> {
+        Decorator::resources_for(self, participant, doc)
+    }
+
+    fn semantic_readers(
+        &self,
+    ) -> &'static [crate::semantic_document_read::RegisteredSemanticReader] {
+        Decorator::semantic_readers(self)
+    }
+
+    fn set_participant_host(&mut self, host: bool) {
+        Decorator::set_participant_host(self, host)
+    }
+
+    fn set_participant_label(&mut self, participant: &tilo_actions::ParticipantId, label: &str) {
+        Decorator::set_participant_label(self, participant, label)
+    }
+
+    fn start_resource_operation_scoped(
+        &mut self,
+        scope: &crate::invocation_scope::ResourceInvocationScope,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ResourceOperationStart>, String> {
+        Decorator::start_resource_operation_scoped(self, scope, kind, type_id, payload, doc, path)
+    }
+
+    fn unmount_native_views(&mut self) {
+        Decorator::unmount_native_views(self)
+    }
+
+    #[doc(hidden)]
+    #[allow(
+        private_interfaces,
+        reason = "finite toolkit resource ownership requests"
+    )]
+    fn visit_resource_owners(
+        &self,
+        request: &mut crate::bound_dispatch::legacy_document::ResourceReadRequest<'_>,
+    ) -> Result<(), tilo_actions::DoorError> {
+        Decorator::visit_resource_owners(self, request)
+    }
+
+    #[doc(hidden)]
+    #[allow(
+        private_interfaces,
+        reason = "finite toolkit resource ownership requests"
+    )]
+    fn visit_resource_owners_mut(
+        &mut self,
+        request: &mut crate::bound_dispatch::legacy_document::ResourceRequest<'_>,
+    ) -> Result<(), tilo_actions::DoorError> {
+        Decorator::visit_resource_owners_mut(self, request)
     }
 }
 

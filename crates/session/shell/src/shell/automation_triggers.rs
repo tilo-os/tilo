@@ -61,8 +61,7 @@ use tilo_automation::{
 /// A fire time this far in the past counts as missed rather than on time.
 pub const MISSED_AFTER: ChronoDuration = ChronoDuration::seconds(90);
 
-/// The shortest interval a schedule may repeat at.
-pub const MIN_INTERVAL_SECONDS: u64 = 60;
+pub use tilo_action_broker::automation::{MIN_INTERVAL_SECONDS, readable_folder, validate_trigger};
 
 /// How long each device waits, per device ranked before it, for a fire
 /// time to be claimed before it takes it.
@@ -608,43 +607,6 @@ pub fn watched_folders(
     folders
 }
 
-/// The folder capability `capability` of `workspace` shares, when `saver`
-/// may read through it.
-///
-/// # Errors
-///
-/// Why it cannot be watched, for the person saving the trigger.
-pub fn readable_folder(
-    workspace: &crate::shell::state::Workspace,
-    capability: &str,
-    saver: &str,
-) -> Result<PathBuf, String> {
-    use crate::shell::state::WorkspaceAuthority as _;
-
-    let granted = workspace
-        .capabilities
-        .iter()
-        .find(|granted| granted.id == capability)
-        .ok_or_else(|| format!("the workspace has no capability `{capability}`"))?;
-    let collab_types::Scope::FsPath(path) = &granted.scope else {
-        return Err(format!("capability `{capability}` does not share a folder"));
-    };
-    let role = workspace
-        .role_of(&saver.to_string())
-        .ok_or("the saver is not a member of the workspace")?;
-    let actor = collab_types::Actor::person(Some(role), saver).in_room(workspace.room.to_string());
-    if !workspace.allows(
-        &actor,
-        &collab_types::ResourceRef::FsPath(path.clone()),
-        collab_types::Verb::Read,
-    ) {
-        return Err(format!(
-            "the saver may not read the folder capability `{capability}` shares"
-        ));
-    }
-    Ok(PathBuf::from(path))
-}
-
 /// One schedule's persisted state.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct LedgerEntry {
@@ -909,64 +871,6 @@ fn weekday_of(date: NaiveDate) -> Weekday {
         chrono::Weekday::Fri => Weekday::Friday,
         chrono::Weekday::Sat => Weekday::Saturday,
         chrono::Weekday::Sun => Weekday::Sunday,
-    }
-}
-
-/// Why a trigger cannot be saved on a shortcut, when it cannot.
-///
-/// # Errors
-///
-/// The reason, for the person saving it.
-pub fn validate_trigger(trigger: &TriggerSpec) -> Result<(), String> {
-    match trigger {
-        TriggerSpec::Keyboard { chord } => KeyChord::parse(chord)
-            .map(drop)
-            .map_err(|reason| format!("keyboard trigger `{chord}`: {reason}")),
-        TriggerSpec::Schedule {
-            schedule: Schedule::Interval { seconds },
-            ..
-        } => {
-            if *seconds < MIN_INTERVAL_SECONDS {
-                Err(format!(
-                    "a schedule repeats at most once every {MIN_INTERVAL_SECONDS} seconds"
-                ))
-            } else {
-                Ok(())
-            }
-        }
-        TriggerSpec::Schedule {
-            schedule: Schedule::Calendar { at, .. },
-            ..
-        } => {
-            if at.hour < 24 && at.minute < 60 {
-                Ok(())
-            } else {
-                Err(format!(
-                    "{:02}:{:02} is not a time of day",
-                    at.hour, at.minute
-                ))
-            }
-        }
-        TriggerSpec::AppOpened { app_id } if app_id.trim().is_empty() => {
-            Err("an app-opened trigger names the application".into())
-        }
-        TriggerSpec::FileChanged { capability } if capability.trim().is_empty() => {
-            Err("a file-changed trigger names the capability sharing its folder".into())
-        }
-        TriggerSpec::FocusMode { mode, .. } if FocusState::default().is_on(mode).is_none() => {
-            Err(format!(
-                "`{mode}` is not a focus mode; `{FOCUS_DO_NOT_DISTURB}` and `{FOCUS_SCHEDULE}` are"
-            ))
-        }
-        TriggerSpec::AppOpened { .. }
-        | TriggerSpec::WorkspaceJoined { .. }
-        | TriggerSpec::FileChanged { .. }
-        | TriggerSpec::FocusMode { .. } => Ok(()),
-        other => Err(format!(
-            "`{}` triggers cannot be saved yet; keyboard, schedule, app-opened, \
-             workspace-joined, file-changed and focus-mode triggers can",
-            other.kind()
-        )),
     }
 }
 

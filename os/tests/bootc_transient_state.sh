@@ -30,7 +30,7 @@ else
 fi
 
 if grep -Fq 'clean-bootc-transient-state.py' "$containerfile" \
-   && grep -Fq 'python3 /run/tilo-clean-bootc-transient-state.py' "$containerfile" \
+   && grep -Fq 'python3 /usr/local/libexec/tilo-clean-bootc-transient-state.py' "$containerfile" \
    && awk '
         /tilo-clean-bootc-transient-state[.]py/ { seen_clean = 1 }
         seen_clean && /bootc container lint/ { found = 1 }
@@ -39,6 +39,19 @@ if grep -Fq 'clean-bootc-transient-state.py' "$containerfile" \
   ok 'rootfs Containerfile clears transient state immediately before bootc lint'
 else
   bad 'rootfs Containerfile does not run transient-state cleanup before bootc lint'
+fi
+
+if grep -Fq "target=/usr/local/libexec/tilo-clean-bootc-transient-state.py,ro" "$containerfile" \
+   && awk '
+      /^RUN rm -f \/etc\/resolv.conf && printf / { placeholder = NR }
+      /python3 \/usr\/local\/libexec\/tilo-clean-bootc-transient-state[.]py/ { clean = NR }
+      /^COPY --from=runtime-resolver-link \/out\/ \/etc\/$/ { restored = NR }
+      /^FROM rootfs AS split$/ { split_line = NR }
+      END { exit (placeholder && clean && restored && split_line && placeholder < clean && clean < restored && restored < split_line) ? 0 : 1 }
+   ' "$containerfile"; then
+  ok 'build DNS mount is outside /run during cleanup; runtime resolver is restored before sealing'
+else
+  bad 'rootfs resolver ordering may pin /run during cleanup or alter the sealed image'
 fi
 
 work="$(mktemp -d)"
@@ -94,6 +107,31 @@ if [ "${#still_present[@]}" -eq 0 ] && [ -d "$root/var" ] && [ -d "$root/run" ];
   ok 'fixture rootfs loses bootc lint transient paths while keeping /var and /run'
 else
   bad "cleanup left transient paths: ${still_present[*]:-none}; var/run missing?"
+fi
+
+# Build-time mounts under /run (the image build's /run mounts, the cleaner's
+# own bind mount) are not image content and cannot be removed: the cleaner
+# must leave them and still empty everything around them.
+mounted="$work/mounted"
+mkdir -p "$mounted/var/log" "$mounted/run/NetworkManager" "$mounted/run/cups/certs" "$mounted/run/stale"
+printf 'log\n' >"$mounted/var/log/dnf5.log"
+printf 'cert\n' >"$mounted/run/cups/certs/0"
+: >"$mounted/run/cleaner.py"
+if unshare -rm true 2>/dev/null; then
+  if unshare -rm sh -c '
+      mount -t tmpfs tmpfs "$1/run/NetworkManager" &&
+      mkdir "$1/run/stale/mnt" && mount -t tmpfs tmpfs "$1/run/stale/mnt" &&
+      mount --bind "$2" "$1/run/cleaner.py" &&
+      python3 "$2" "$1" &&
+      mountpoint -q "$1/run/NetworkManager" && mountpoint -q "$1/run/stale/mnt" &&
+      [ ! -e "$1/run/cups" ] && [ ! -e "$1/var/log" ]
+    ' sh "$mounted" "$cleaner"; then
+    ok 'cleanup leaves build-time mount points under /run and empties the rest'
+  else
+    bad 'cleanup failed on, or removed, build-time mount points under /run'
+  fi
+else
+  ok 'skipped mount-point check: no unprivileged mount namespace here'
 fi
 
 # Negative control: a check that cannot observe /var must fail, not skip.

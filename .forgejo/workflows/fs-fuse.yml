@@ -59,11 +59,13 @@ on:
   pull_request:
     branches: ["main"]
     paths:
+      - "crates/doc/tilo-automerge-isolate/**"
       - ".cargo/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - "crates/workspace-hack/**"
       - "vendor/wayland-backend/**"
+      - "vendor/git/rustypipe-0.11.4/**"
       - "crates/system/fs/**"
       - "crates/system/cloud-source/**"
       - "crates/system/cloud-source-dav/**"

@@ -5,6 +5,9 @@ use taffy::{AvailableSpace, Dimension, Size, Style};
 use tilo_automerge::ApplyIncoming;
 use vello::kurbo::Point;
 
+/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Sample seeding, view, edit, popup and importing frames render without panicking and with legible chips and a busy announcement.
 #[test]
 fn every_view_mode_renders_legibly() {
@@ -297,8 +300,14 @@ fn resource_and_search_providers_bound_large_books() {
             Widget::invoke_resource_operation(
                 &mut app,
                 operation.kind,
-                &operation.encoded.type_id,
-                &operation.encoded.payload,
+                &operation
+                    .encoded()
+                    .expect("test requires prepared encoding")
+                    .type_id,
+                &operation
+                    .encoded()
+                    .expect("test requires prepared encoding")
+                    .payload,
                 &doc,
                 &ROOT,
             )
@@ -344,7 +353,10 @@ fn resource_and_search_providers_bound_large_books() {
             .expect("the search address resolves in the agent-visible tree");
         let encoded = match &spec.input {
             tilo_actions::ActionInput::Immediate(encoded) => encoded,
-            tilo_actions::ActionInput::Prompted { .. } => panic!("open takes no arguments"),
+            tilo_actions::ActionInput::Prompted { .. }
+            | tilo_actions::ActionInput::Deferred { .. } => {
+                panic!("open takes no arguments")
+            }
         };
         assert!(
             Widget::invoke_resource_operation(
@@ -658,6 +670,7 @@ fn text_scale_reflows_geometry_and_names_fit() {
             notes.ti_rect().height() >= field_h * 3.0,
             "notes reserve multiple large-text lines"
         );
+        assert_eq!(notes.ti_rect().height(), 3.0 * field_h);
     }
 
     // --- phase: detail_name_row_fits_every_full_name_at_moderate_width ---
@@ -3560,7 +3573,8 @@ fn import_export_jobs_are_brokered_and_generation_fenced() {
         // The picker is drained on this frame; parsing happens on a worker so
         // a slow vCard cannot block rendering. Drive a few frames instead of
         // assuming the scheduler has already run that worker.
-        for _ in 0..500 {
+        let deadline = std::time::Instant::now() + HANG_BOUND;
+        while std::time::Instant::now() < deadline {
             app.sync(&mut doc, &ROOT);
             if !app.portal_in_flight() {
                 break;
@@ -4596,4 +4610,68 @@ fn metrics_follow_the_text_scale_and_presets() {
         }
         assert!(app.hit.export.x1 < app.hit.new.x0 && app.hit.import.x1 < app.hit.export.x0);
     }
+}
+
+#[test]
+fn duplicate_review_face_owns_its_drawn_hit_and_semantic_rect() {
+    let mut app = ContactsApp::new();
+    app.rect = Rect::new(0.0, 0.0, 1200.0, 800.0);
+    let contacts = sample_contacts();
+    for contact in &contacts {
+        app.store.upsert(contact.clone());
+    }
+    app.duplicate_candidate = Some(crate::actions::DuplicateCandidate {
+        survivor_id: contacts[0].id,
+        source_id: contacts[1].id,
+        reasons: vec![crate::actions::DuplicateReason::Name],
+    });
+
+    app.layout();
+    let duplicate = app.hit.duplicates;
+    assert_eq!(
+        duplicate.width(),
+        TOOLBAR_DUPLICATE_W,
+        "wide toolbar draws the authored face at 1×"
+    );
+    assert!(app.hit.import.x1 <= duplicate.x0);
+    assert!(duplicate.x1 <= app.hit.export.x0);
+    let tree = app.accessibility().expect("contacts has semantics");
+    let action = access_target(&tree, "contacts.duplicates")
+        .expect("duplicate review is exposed as an action");
+    assert_eq!(
+        action.bounds.map(ui::a11y::AccessBounds::to_rect),
+        Some(duplicate),
+        "paint, pointer, and semantic routes share one rectangle"
+    );
+
+    let mut tr = TextRenderer::new();
+    tr.set_text_scale(2.0);
+    app.text_scale = 2.0;
+    app.refresh_label_growth(&mut tr);
+    app.layout();
+    let scaled = app.hit.duplicates;
+    assert_eq!(
+        scaled.width(),
+        (TOOLBAR_DUPLICATE_W + app.label_growth.duplicate).ceil(),
+        "the drawn duplicate label and its target grow together at 2×"
+    );
+    assert!(scaled.width() > duplicate.width());
+    assert!(app.hit.import.x1 <= scaled.x0);
+    assert!(scaled.x1 <= app.hit.export.x0);
+    let tree = app.accessibility().expect("contacts has semantics");
+    assert_eq!(
+        access_target(&tree, "contacts.duplicates")
+            .and_then(|action| action.bounds)
+            .map(ui::a11y::AccessBounds::to_rect),
+        Some(scaled),
+        "scaled paint, pointer, and semantic routes share one rectangle"
+    );
+
+    app.duplicate_candidate = None;
+    app.layout();
+    assert_eq!(
+        app.hit.duplicates,
+        Rect::ZERO,
+        "removing the candidate clears the prior frame's hit target"
+    );
 }

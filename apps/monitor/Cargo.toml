@@ -19,6 +19,7 @@ path = "src/main.rs"
 
 [features]
 thin = ["dep:runtime-dylib"]
+test-support = ["ui/test-support"]
 
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
@@ -31,6 +32,7 @@ vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
 sysinfo.workspace = true
+host-info = { path = "../../crates/system/host-info" }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]

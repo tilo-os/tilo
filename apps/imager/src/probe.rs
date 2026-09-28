@@ -794,7 +794,7 @@ mod tests {
             .stdout(std::fs::File::create(root.path().join("child.stdout")).unwrap())
             .spawn()
             .unwrap();
-        let deadline = Instant::now() + crate::HANG_BOUND;
+        let deadline = tilo_test_env::hang_deadline();
         let status = loop {
             match child.try_wait() {
                 Ok(Some(status)) => break Some(status),

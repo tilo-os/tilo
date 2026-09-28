@@ -8,7 +8,6 @@ publish = false
 
 [dependencies]
 rustls-pki-types = { version = "1.10", features = ["std"] }
-workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tempfile.workspace = true

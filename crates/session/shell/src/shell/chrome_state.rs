@@ -240,20 +240,6 @@ fn clock_activity_active_default() -> bool {
     true
 }
 
-/// Device-local reduction of the active workspace's collaborative history.
-/// The history document remains authoritative; this is only the small piece
-/// of presentation state needed by passive chrome.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct ActivityGlance {
-    pub headline: Option<String>,
-    pub unread: usize,
-    /// Changes whenever a new latest entry is observed, even when the text is
-    /// coincidentally identical. The top bar uses it to restart its brief
-    /// transient reveal without stealing the user's selected center widget.
-    pub pulse: u64,
-    pub focus: Option<ActivityFocus>,
-}
-
 #[derive(Debug)]
 struct PendingNotificationHistoryClear {
     notifications: Vec<Notification>,
@@ -274,39 +260,34 @@ fn notification_clear_deadline(now: std::time::Instant) -> std::time::Instant {
         .unwrap_or(now)
 }
 
-/// Intent-addressable destination inside History. Kept device-local; links
-/// from chrome/search/agents all resolve through the same shape.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct ActivityFocus {
-    pub author: Option<String>,
-    pub group_id: Option<String>,
-    pub entry_id: Option<[u8; 16]>,
-    /// Stable record/resource identity. Paths are deliberately excluded:
-    /// rename and move must not break a Files → Activity hand-off.
-    pub resource_id: Option<String>,
-    /// App-native immutable version identity, retained for detail renderers.
-    pub resource_version: Option<[u8; 16]>,
+/// The history glance, its focus and screen exposures are the shared
+/// desktop's chrome vocabulary; the shell holds them as the desktop reads
+/// them. Exposures are session-local and never persisted or replicated.
+pub use tilo_desktop::chrome::{ActiveExposure, ActivityFocus, ActivityGlance};
+pub use ui::search::system::SearchScope;
+
+/// The placeholder line for a new tab whose document could not be created.
+fn new_document_unavailable(error: &impl std::fmt::Display) -> String {
+    crate::shell::i18n::t_args(
+        "new-document-unavailable",
+        &[("error", error.to_string().into())],
+    )
 }
 
-/// Seeded by which chord opened the palette: `Ctrl+K` →
-/// [`SearchScope::ActiveApp`]; `Super+K` / `Super+Space` / `Alt+Space` →
-/// [`SearchScope::All`] (`Alt+Space` because a nested Wayland client can't
-/// claim Super from the host DE). Degrades rather than empties: no
-/// provider claiming the focused tab widens `ActiveApp` to every
-/// provider; nothing focused widens the palette to `All`.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum SearchScope {
-    ActiveApp,
-    #[default]
-    Workspace,
-    All,
-}
-
-impl SearchScope {
+/// The shell's localized and addressable view of a [`SearchScope`].
+pub trait SearchScopeText {
     /// `ActiveApp` renders the tab's title instead of this static
     /// string. Must not share a word with the kind-filter chips —
     /// those name result sorts, this names places.
-    pub fn label(self) -> String {
+    fn localized_label(self) -> String;
+
+    /// Stable, language-independent address of the scope segment
+    /// (`palette:scope:<slug>`).
+    fn slug(self) -> &'static str;
+}
+
+impl SearchScopeText for SearchScope {
+    fn localized_label(self) -> String {
         match self {
             SearchScope::ActiveApp => crate::shell::i18n::t("search-scope-this-app"),
             SearchScope::Workspace => crate::shell::i18n::t("search-scope-workspace"),
@@ -314,26 +295,17 @@ impl SearchScope {
         }
     }
 
-    /// Stable, language-independent address of the scope segment
-    /// (`palette:scope:<slug>`).
-    pub const fn slug(self) -> &'static str {
+    fn slug(self) -> &'static str {
         match self {
             SearchScope::ActiveApp => "this-app",
             SearchScope::Workspace => "workspace",
             SearchScope::All => "everywhere",
         }
     }
-
-    /// The pill renders a narrowing scope with an explicit `Only …`
-    /// prefix so an empty result list is attributable to the scope,
-    /// not the query.
-    pub fn narrows_results(self) -> bool {
-        matches!(self, SearchScope::ActiveApp)
-    }
 }
 
 /// Normally decided by
-/// [`crate::shell::placement::placement_for_new_window`].
+/// [`crate::shell::placement::placement_for`].
 /// [`OpenTarget::Here`] is the explicit override the tab strip's "+"
 /// sets — one-shot, cleared on palette close, so a later launch is
 /// never silently aimed at a stale group.
@@ -448,16 +420,6 @@ pub struct QuickSettingsState {
     /// its brightness, audio, network and power controls belong to the host
     /// system, so the panel shows them as managed there rather than acting.
     pub host_managed: bool,
-}
-
-/// One compositor-authoritative screen exposure projected into trusted
-/// chrome. This is session-local: it must never be persisted or replicated,
-/// because a stale viewer is worse than no disclosure at all.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct ActiveExposure {
-    pub peer: u64,
-    pub surface: u64,
-    pub can_control: bool,
 }
 
 /// Session-local drill-down into one app-published resource directory.
@@ -645,6 +607,9 @@ pub struct ChromeState {
     /// At most one — an OSD counts a value up, so eight volume presses
     /// show one slab, not eight banners. See [`crate::shell::osd`].
     pub osd: Option<crate::shell::osd::Osd>,
+    /// What a tablet pad's controls do, while its mode button (or the
+    /// button its settings pick) is held. See [`crate::shell::pad_map`].
+    pub pad_map: Option<crate::shell::pad_map::PadMap>,
     pub ws_settings_tab: WsTab,
     /// Window-logical bounds of the top-bar workspace pill. Published by the
     /// top bar without bumping revision so the workspace lens can animate
@@ -664,6 +629,7 @@ pub struct ChromeState {
     /// into or replicated with [`WorkspaceTree`].
     pub activity_glance: ActivityGlance,
     activity_focus_request: Option<ActivityFocus>,
+    workspace_view_request: Option<(WorkspaceId, tilo_desktop::activity::WorkspaceViewRequest)>,
     /// The portal D-Bus backend's prompt queue drains onto the back
     /// every frame; the overlay host renders `front()` and drains it
     /// on click. Entries carry the portal's reply channel when a D-Bus
@@ -750,9 +716,15 @@ pub struct ChromeState {
     /// Drained once per frame by `ShellOverlayHost::pump_peer_sync`.
     peer_sync_requests: Vec<crate::shell::overlay_host::PeerSyncAction>,
     presence_requests: Vec<PresenceRequest>,
-    /// The session recorder, once the collaboration broker is up. Absent in
-    /// bare and headless hosts, where recording actions refuse.
-    recorder: Option<std::sync::Arc<crate::shell::recorder::Recorder>>,
+    /// What the session's recorder and replay look like, written back by
+    /// the host each frame. Their parts are `None` in bare and headless
+    /// hosts, where recording and replay actions refuse.
+    session_view: crate::shell::session_services::SessionView,
+    /// Asked of the session's services; drained once per frame by the host.
+    service_intents: Vec<(u64, crate::shell::session_services::ServiceIntent)>,
+    /// How each carried-out intent ended, until its invocation reads it.
+    service_results: BTreeMap<u64, Result<(), String>>,
+    next_service_intent_id: u64,
     /// The remark being written: what it is about, what it says, where it
     /// goes, and the recording that may travel with it.
     pub remark: crate::shell::remark::Composer,
@@ -766,10 +738,6 @@ pub struct ChromeState {
     /// composer closed: what `state-dump` reports and the conversation a
     /// notification opens.
     pub last_remark: Option<crate::shell::remark::Sending>,
-    /// The session's replay and its transport, once the broker is up.
-    replay: Option<std::sync::Arc<crate::shell::replay::ReplayController>>,
-    /// Serves the shell's own records to the rooms that reference them.
-    custody: Option<std::sync::Arc<crate::shell::record_custody::RecordCustody>>,
     /// "Send…" requests for the last screenshot from the action door,
     /// drained into the capture studio by the overlay host.
     screenshot_sends: Vec<ui::widget::ScreenshotSendTarget>,
@@ -801,7 +769,7 @@ pub struct ChromeState {
     wheel_summon: Option<vello::kurbo::Point>,
     /// Last layout pass, so placement can ask "which border can the
     /// user actually see" without reaching into the widget tree.
-    strip_viewport: Option<crate::shell::placement::StripViewport>,
+    strip_viewport: Option<tilo_desktop_model::commands::StripViewport>,
     /// Logical desktop bounds from the overlay host's latest layout pass.
     viewport_size: Option<(f64, f64)>,
     /// The offer to continue a tab from another of this person's devices.
@@ -885,6 +853,7 @@ impl ChromeState {
             status: crate::shell::status::SystemStatus::default(),
             clock_activity: None,
             osd: None,
+            pad_map: None,
             ws_settings_tab: WsTab::default(),
             workspace_settings_anchor: vello::kurbo::Rect::ZERO,
             ws_grant_draft: crate::shell::workspace_settings::GrantDraft::default(),
@@ -892,6 +861,7 @@ impl ChromeState {
             observed_external_tree_revision: 0,
             activity_glance: ActivityGlance::default(),
             activity_focus_request: None,
+            workspace_view_request: None,
             pending_grants: VecDeque::new(),
             test_only_owner_override: None,
             local_user_id,
@@ -918,14 +888,15 @@ impl ChromeState {
             collab_unavailable: None,
             peer_sync_requests: Vec::new(),
             presence_requests: Vec::new(),
-            recorder: None,
+            session_view: crate::shell::session_services::SessionView::default(),
+            service_intents: Vec::new(),
+            service_results: BTreeMap::new(),
+            next_service_intent_id: 1,
             remark: crate::shell::remark::Composer::default(),
             pick: crate::shell::remark::pick::PickState::default(),
             remark_directory: crate::shell::remark::Directory::default(),
             remark_requests: Vec::new(),
             last_remark: None,
-            replay: None,
-            custody: None,
             screenshot_sends: Vec::new(),
             wheel_summon: None,
             legacy_record_requests: Vec::new(),
@@ -963,11 +934,14 @@ impl ChromeState {
 
     /// Called once per layout pass by the overlay host, so the
     /// placement rule can read the active strip's layout.
-    pub fn set_strip_viewport(&mut self, viewport: Option<crate::shell::placement::StripViewport>) {
+    pub fn set_strip_viewport(
+        &mut self,
+        viewport: Option<tilo_desktop_model::commands::StripViewport>,
+    ) {
         self.strip_viewport = viewport;
     }
 
-    pub fn strip_viewport(&self) -> Option<&crate::shell::placement::StripViewport> {
+    pub fn strip_viewport(&self) -> Option<&tilo_desktop_model::commands::StripViewport> {
         self.strip_viewport.as_ref()
     }
 
@@ -1019,12 +993,52 @@ impl ChromeState {
         self.peer_sync_request_results.insert(request_id, result);
     }
 
-    pub fn set_recorder(&mut self, recorder: std::sync::Arc<crate::shell::recorder::Recorder>) {
-        self.recorder = Some(recorder);
+    /// What the session's recorder and replay look like, as of the last
+    /// frame.
+    pub fn session_view(&self) -> &crate::shell::session_services::SessionView {
+        &self.session_view
     }
 
-    pub fn recorder(&self) -> Option<&std::sync::Arc<crate::shell::recorder::Recorder>> {
-        self.recorder.as_ref()
+    pub fn set_session_view(&mut self, view: crate::shell::session_services::SessionView) {
+        self.session_view = view;
+    }
+
+    /// Ask the session's services for `intent` on the host's next frame.
+    /// Returns the id its outcome is recorded under.
+    pub fn push_service_intent(
+        &mut self,
+        intent: crate::shell::session_services::ServiceIntent,
+    ) -> u64 {
+        let id = self.next_service_intent_id;
+        self.next_service_intent_id = self.next_service_intent_id.saturating_add(1);
+        self.service_intents.push((id, intent));
+        id
+    }
+
+    /// The id the next queued intent will get: every intent queued after
+    /// reading it has an id from here up.
+    pub fn next_service_intent_id(&self) -> u64 {
+        self.next_service_intent_id
+    }
+
+    pub fn take_service_intents(
+        &mut self,
+    ) -> Vec<(u64, crate::shell::session_services::ServiceIntent)> {
+        std::mem::take(&mut self.service_intents)
+    }
+
+    /// Record how intent `id` ended. Outcomes nobody reads are dropped
+    /// oldest first once enough pile up.
+    pub fn complete_service_intent(&mut self, id: u64, result: Result<(), String>) {
+        const KEPT: usize = 64;
+        self.service_results.insert(id, result);
+        while self.service_results.len() > KEPT {
+            self.service_results.pop_first();
+        }
+    }
+
+    pub fn take_service_result(&mut self, id: u64) -> Option<Result<(), String>> {
+        self.service_results.remove(&id)
     }
 
     /// Where a remark can go right now.
@@ -1047,25 +1061,6 @@ impl ChromeState {
 
     pub fn take_remark_requests(&mut self) -> Vec<crate::shell::remark::Request> {
         std::mem::take(&mut self.remark_requests)
-    }
-
-    pub fn set_replay(&mut self, replay: std::sync::Arc<crate::shell::replay::ReplayController>) {
-        self.replay = Some(replay);
-    }
-
-    pub fn set_custody(
-        &mut self,
-        custody: std::sync::Arc<crate::shell::record_custody::RecordCustody>,
-    ) {
-        self.custody = Some(custody);
-    }
-
-    pub fn custody(&self) -> Option<&std::sync::Arc<crate::shell::record_custody::RecordCustody>> {
-        self.custody.as_ref()
-    }
-
-    pub fn replay(&self) -> Option<&std::sync::Arc<crate::shell::replay::ReplayController>> {
-        self.replay.as_ref()
     }
 
     pub fn push_presence_request(&mut self, request: PresenceRequest) {
@@ -1269,10 +1264,8 @@ impl ChromeState {
                     });
             }
             Err(error) => {
-                self.failed_tab_records.insert(
-                    tab,
-                    (identity, format!("New document unavailable: {error}")),
-                );
+                self.failed_tab_records
+                    .insert(tab, (identity, new_document_unavailable(&error)));
             }
         }
     }
@@ -1306,10 +1299,7 @@ impl ChromeState {
                 Err(error) => {
                     self.failed_tab_records.insert(
                         pending.identity.tab,
-                        (
-                            pending.identity,
-                            format!("New document unavailable: {error}"),
-                        ),
+                        (pending.identity, new_document_unavailable(&error)),
                     );
                     changed = true;
                 }
@@ -1452,6 +1442,57 @@ impl ChromeState {
             self.activity_glance = next;
             self.bump();
         }
+    }
+
+    /// Private presentation requests share the portable descriptor contract.
+    /// The descriptor names workspaces by their raw id; the shell resolves it
+    /// against its own desktop model.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the named workspace or requested view is unavailable.
+    pub fn request_workspace_view(
+        &mut self,
+        request: tilo_desktop::activity::WorkspaceViewRequest,
+    ) -> Result<(), String> {
+        use tilo_desktop::activity::WorkspaceViewRequest;
+        let workspace = WorkspaceId(request.workspace().0);
+        if !self
+            .tree()
+            .desktop
+            .workspaces
+            .iter()
+            .any(|candidate| candidate.id == workspace)
+        {
+            return Err("Workspace unavailable".into());
+        }
+        let previous = self.tree().desktop.active;
+        match &request {
+            WorkspaceViewRequest::Select { .. } => {
+                self.tree_mut().desktop.active = workspace;
+                self.overlays.room_activity = false;
+            }
+            WorkspaceViewRequest::OpenActivity { .. } => {
+                if previous != workspace {
+                    return Err("Workspace is no longer active".into());
+                }
+                self.open_room_activity(None);
+            }
+            WorkspaceViewRequest::CloseActivity { .. } => {
+                if previous != workspace {
+                    return Err("Workspace is no longer active".into());
+                }
+                self.overlays.room_activity = false;
+            }
+        }
+        self.workspace_view_request = Some((previous, request));
+        self.bump();
+        Ok(())
+    }
+    pub fn take_workspace_view_request(
+        &mut self,
+    ) -> Option<(WorkspaceId, tilo_desktop::activity::WorkspaceViewRequest)> {
+        self.workspace_view_request.take()
     }
 
     pub fn open_room_activity(&mut self, focus: Option<ActivityFocus>) {
@@ -1876,7 +1917,7 @@ impl ChromeState {
     }
 
     /// Read by the search-scope pill so "This app" can show the tab's
-    /// title instead of the static [`SearchScope::label`].
+    /// title instead of the static [`SearchScopeText::localized_label`].
     pub fn active_app_title(&self) -> Option<String> {
         let tab = self.active_tab_ref()?;
         let title = tab.title.trim();
@@ -2026,6 +2067,15 @@ impl ChromeState {
         self.bump();
     }
 
+    /// Show, update or (with `None`) close the pad map, repainting only
+    /// when it changed.
+    pub fn set_pad_map(&mut self, map: Option<crate::shell::pad_map::PadMap>) {
+        if self.pad_map != map {
+            self.pad_map = map;
+            self.bump();
+        }
+    }
+
     /// Returns `true` when something was cleared, so the caller can
     /// bump once rather than every frame.
     pub fn expire_osd(&mut self, now: std::time::Instant) -> bool {
@@ -2126,8 +2176,11 @@ impl ChromeState {
             return;
         }
         self.push_error_notification(
-            "Collaboration unavailable",
-            format!("Apps in this session cannot share edits. {reason}"),
+            crate::shell::i18n::t("collab-unavailable-title"),
+            crate::shell::i18n::t_args(
+                "collab-unavailable-body",
+                &[("reason", reason.as_str().into())],
+            ),
         );
         self.collab_unavailable = Some(reason);
     }
@@ -2621,20 +2674,24 @@ impl ChromeState {
     /// automatic hold while presenting or sharing, or the focus schedule and
     /// when it ends. `None` when notifications show normally.
     pub fn quiet_status(&self, local_minute: u16, weekday_from_monday: u8) -> Option<String> {
+        use crate::shell::i18n::{t, t_args};
         if self.dnd() {
-            return Some("Do Not Disturb".into());
+            return Some(t("quiet-status-dnd"));
         }
         if self.notifications_auto_quiet() {
             return Some(if self.presenting {
-                "Do Not Disturb while presenting".into()
+                t("quiet-status-dnd-presenting")
             } else {
-                "Do Not Disturb while sharing".into()
+                t("quiet-status-dnd-sharing")
             });
         }
         self.notification_policy
             .focus
             .active_until(local_minute, weekday_from_monday)
-            .map(|end| format!("Focus until {:02}:{:02}", end / 60, end % 60))
+            .map(|end| {
+                let time = format!("{:02}:{:02}", end / 60, end % 60);
+                t_args("quiet-status-focus-until", &[("time", time.into())])
+            })
     }
 
     // ---------- D-Bus notification wiring ----------

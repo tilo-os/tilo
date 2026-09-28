@@ -24,7 +24,8 @@ use super::{
     OutputGeometry, STRIP_TRAILING_GUTTER_PX, ShellOverlayHost, sidebar_width_for_viewport,
     workspace_rail_clearance_for_viewport,
 };
-use crate::shell::state::{Display, GroupId, OutputPartition, Strip, StripId, WindowGroup};
+use crate::shell::display_bars::DisplayBars;
+use crate::shell::state::{Display, GroupId, StripId};
 use crate::shell::topbar_chrome::TOPBAR_HEIGHT_PX;
 
 /// What a display that doesn't touch the desktop's top edge keeps along its
@@ -127,32 +128,6 @@ fn in_band(lanes: &[StripLane], (share, column): StripBand) -> Vec<StripLane> {
         .collect()
 }
 
-/// A strip's groups in the order its row lays them out: display by display
-/// in reading order, each display's in strip order. The strip's own order
-/// when it isn't partitioned.
-pub(crate) fn display_ordered<'a>(
-    partition: &OutputPartition,
-    strip: &'a Strip,
-) -> Vec<&'a WindowGroup> {
-    let mut groups: Vec<&WindowGroup> = strip.window_groups.iter().collect();
-    if partition.displays.len() < 2 {
-        return groups;
-    }
-    let order = partition.reading_order();
-    groups.sort_by_key(|g| {
-        partition
-            .display_of(g.id)
-            .and_then(|d| order.iter().position(|id| *id == d))
-            .unwrap_or(0)
-    });
-    groups
-}
-
-/// The display a dragged group was dropped on and its neighbours there,
-/// before and after, so a partitioned row's reorder can be written back
-/// into the partition and the strip's order.
-pub(super) type ReorderNeighbours = Option<(Option<u32>, Option<u64>, Option<u64>)>;
-
 /// Where Super+Left/Right takes focus on a partitioned strip.
 enum Step {
     /// Another window on the same display.
@@ -212,8 +187,15 @@ impl ShellOverlayHost {
             tree.reconcile_displays(&displays)
         };
         if changed {
-            self.last_scrolled_active_group.clear();
+            self.reframe_desktop();
             chrome.borrow_mut().bump();
+        }
+    }
+
+    /// Frame each strip's focused group again on the next layout.
+    fn reframe_desktop(&mut self) {
+        if let Some(surface) = self.desktop_surface_mut() {
+            surface.reframe_all();
         }
     }
 
@@ -317,7 +299,7 @@ impl ShellOverlayHost {
     /// Push the partition to every row and place the top bars: the full
     /// one on the primary display, a compact one on each other display.
     /// Cheap when nothing changed, so it runs every layout pass.
-    pub(super) fn push_display_layout(&self) {
+    pub(super) fn push_display_layout(&mut self) {
         let lanes = self.display_lanes();
         let (assignment, focused, strips): (HashMap<u64, u32>, Option<u32>, Vec<StripId>) =
             match self.chrome.as_ref() {
@@ -384,13 +366,16 @@ impl ShellOverlayHost {
         } else {
             Vec::new()
         };
-        if let Some(parts) = self.workspace_scene_parts {
-            // SAFETY: `WorkspaceSceneParts` points into the workspace root
-            // owned by `self.content`, replaced with it on rebuild; layout
-            // runs sequentially under `&mut self`.
-            unsafe {
-                (&mut *parts.topbar).set_placement(primary.map(|p| p.rect()));
-                (&mut *parts.display_bars).set_displays(&others);
+        if let Some(surface) = self.desktop_surface_mut() {
+            if let Some(bar) = surface.topbar_mut() {
+                bar.set_placement(primary.map(|p| p.rect()));
+            }
+            if let Some(bars) = surface
+                .display_chrome_mut()
+                .and_then(ui::widget::Widget::as_any_mut)
+                .and_then(|layer| layer.downcast_mut::<DisplayBars>())
+            {
+                bars.set_displays(&others);
             }
         }
     }
@@ -398,17 +383,24 @@ impl ShellOverlayHost {
     /// Where each top bar is drawn: the full bar (flagged `true`) and every
     /// compact one, by display.
     pub fn top_bar_rects(&self) -> Vec<(u32, Rect, bool)> {
-        let Some(parts) = self.workspace_scene_parts else {
+        let Some(surface) = self.content.as_any().and_then(|content| {
+            content.downcast_ref::<tilo_desktop::composition::DesktopSurface>()
+        }) else {
+            return Vec::new();
+        };
+        let Some(full) = surface
+            .topbar()
+            .map(tilo_desktop::topbar::TopBarChrome::bar_rect)
+        else {
             return Vec::new();
         };
         let primary = self.primary_output().map_or(0, |p| p.id);
-        // SAFETY: read-only use of the stable scene-part pointers.
-        let (full, compact) = unsafe {
-            (
-                (&*parts.topbar).bar_rect(),
-                (&*parts.display_bars).bar_rects(),
-            )
-        };
+        let compact = surface
+            .display_chrome()
+            .and_then(ui::widget::Widget::as_any)
+            .and_then(|layer| layer.downcast_ref::<DisplayBars>())
+            .map(DisplayBars::bar_rects)
+            .unwrap_or_default();
         let mut rects = vec![(primary, full, true)];
         rects.extend(compact.into_iter().map(|(id, rect)| (id, rect, false)));
         rects
@@ -621,7 +613,7 @@ impl ShellOverlayHost {
             tree.move_group_to_display(group, to)
         };
         if moved {
-            self.last_scrolled_active_group.clear();
+            self.reframe_desktop();
             chrome.borrow_mut().bump();
         }
         moved

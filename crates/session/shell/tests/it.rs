@@ -16,6 +16,10 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+// Room admission decodes peer bytes in automerge worker processes started
+// from this test binary; this serves them.
+tilo_automerge_isolate::test_worker!();
+
 #[path = "support/mod.rs"]
 mod support;
 
@@ -27,6 +31,8 @@ mod advertised_globals;
 mod apps_integration;
 #[path = "blend_layer_cost.rs"]
 mod blend_layer_cost;
+#[path = "bluetooth_pairing.rs"]
+mod bluetooth_pairing;
 #[path = "capability_enforcement.rs"]
 mod capability_enforcement;
 #[path = "capture_protection.rs"]

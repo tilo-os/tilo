@@ -104,6 +104,12 @@ impl<R: Resource> SurfaceCx<R> {
     pub fn read_only(&self) -> bool {
         self.dispatch.read_only()
     }
+
+    /// The id of the app the surface is part of, which its presence keys
+    /// name ([`ResourceSelection::presence`]).
+    pub fn app_id(&self) -> &'static str {
+        self.dispatch.app_id()
+    }
 }
 
 /// Where a participant is inside a resource, in the resource's own terms, so

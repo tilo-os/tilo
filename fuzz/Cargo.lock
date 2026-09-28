@@ -7,7 +7,6 @@ name = "advisory-lock"
 version = "0.1.0"
 dependencies = [
  "rustix",
- "workspace-hack",
 ]
 
 [[package]]
@@ -141,6 +140,11 @@ checksum = "d3fb67a6e08acf24fdeccbac2cb6ac4305825bd1f117462e0e6f2f193345ad56"
 [[package]]
 name = "atomic-file"
 version = "0.1.0"
+dependencies = [
+ "advisory-lock",
+ "rustix",
+ "windows-sys",
+]
 
 [[package]]
 name = "atomic-polyfill"
@@ -301,7 +305,6 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "thiserror",
- "workspace-hack",
  "zeroize",
 ]
 
@@ -539,6 +542,7 @@ dependencies = [
  "sha2 0.11.0",
  "thiserror",
  "uuid",
+ "web-time",
  "wire-frame",
 ]
 
@@ -1099,9 +1103,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "300e883d756b2e4ec94e02791f39b04b522276138852cfc41d9fb7e904106099"
 dependencies = [
  "cfg-if",
+ "js-sys",
  "libc",
  "r-efi",
  "rand_core 0.10.1",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -1417,11 +1423,12 @@ dependencies = [
 
 [[package]]
 name = "js-sys"
-version = "0.3.85"
+version = "0.3.105"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8c942ebf8e95485ca0d52d97da7c5a2c387d0e7f0ba4c35e93bfcaee045955b3"
+checksum = "ce57d20d1ea864ce2ac172ab472d409214f4fd359f0b2a2775abdf522e2af99e"
 dependencies = [
- "once_cell",
+ "cfg-if",
+ "futures-util",
  "wasm-bindgen",
 ]
 
@@ -1471,7 +1478,6 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "wire-frame",
- "workspace-hack",
 ]
 
 [[package]]
@@ -1885,7 +1891,6 @@ dependencies = [
  "thiserror",
  "tilo-app-package",
  "toml",
- "workspace-hack",
 ]
 
 [[package]]
@@ -2006,7 +2011,6 @@ dependencies = [
  "atomic-file",
  "libc",
  "windows-sys",
- "workspace-hack",
 ]
 
 [[package]]
@@ -2138,20 +2142,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
-name = "registry-types"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "ed25519-dalek",
- "hex",
- "postcard",
- "semver",
- "serde",
- "serde_json",
- "thiserror",
-]
-
-[[package]]
 name = "runtime-bundle"
 version = "0.1.0"
 dependencies = [
@@ -2165,7 +2155,6 @@ dependencies = [
  "thiserror",
  "tilo-clock",
  "toml",
- "workspace-hack",
  "xdg-paths",
 ]
 
@@ -2189,7 +2178,6 @@ dependencies = [
  "tilo-seal",
  "tokio",
  "wire-frame",
- "workspace-hack",
  "zeroize",
 ]
 
@@ -2204,7 +2192,6 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-util",
- "workspace-hack",
 ]
 
 [[package]]
@@ -2224,9 +2211,9 @@ dependencies = [
 
 [[package]]
 name = "rustix"
-version = "1.1.5"
+version = "1.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "891efababe418670775f199f0d233d84843c227a0949a883ce15b37c78d6629d"
+checksum = "b6fe4565b9518b83ef4f91bb47ce29620ca828bd32cb7e408f0062e9930ba190"
 dependencies = [
  "bitflags",
  "errno",
@@ -2258,7 +2245,6 @@ dependencies = [
  "libc",
  "seccompiler",
  "thiserror",
- "workspace-hack",
 ]
 
 [[package]]
@@ -2564,7 +2550,6 @@ dependencies = [
  "serde_bytes",
  "sha2 0.11.0",
  "thiserror",
- "workspace-hack",
  "zeroize",
 ]
 
@@ -2578,7 +2563,6 @@ dependencies = [
  "ed25519-dalek",
  "getrandom",
  "hex",
- "registry-types",
  "semver",
  "serde",
  "tar",
@@ -2586,7 +2570,6 @@ dependencies = [
  "threshold-identity",
  "toml",
  "walkdir",
- "workspace-hack",
  "xdg-paths",
 ]
 
@@ -2600,16 +2583,12 @@ dependencies = [
 [[package]]
 name = "tilo-clock"
 version = "0.1.0"
-dependencies = [
- "web-time",
-]
 
 [[package]]
 name = "tilo-desktop-entry"
 version = "0.1.0"
 dependencies = [
  "thiserror",
- "workspace-hack",
  "xdg-paths",
 ]
 
@@ -2621,7 +2600,6 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
- "workspace-hack",
 ]
 
 [[package]]
@@ -2639,7 +2617,6 @@ dependencies = [
  "sha2 0.11.0",
  "subtle",
  "thiserror",
- "workspace-hack",
  "zeroize",
 ]
 
@@ -2678,7 +2655,6 @@ dependencies = [
  "serde_json",
  "thiserror",
  "tilo-automerge",
- "workspace-hack",
  "zeroize",
 ]
 
@@ -2964,9 +2940,9 @@ checksum = "ccf3ec651a847eb01de73ccad15eb7d99f80485de043efb2f370cd654f4ea44b"
 
 [[package]]
 name = "wasm-bindgen"
-version = "0.2.108"
+version = "0.2.128"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "64024a30ec1e37399cf85a7ffefebdb72205ca1c972291c51512360d90bd8566"
+checksum = "aecb87a33d3b0c5e3b7aa46336eaf486cffafbd281b195e4c8b80d50df2351bf"
 dependencies = [
  "cfg-if",
  "once_cell",
@@ -2977,9 +2953,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-macro"
-version = "0.2.108"
+version = "0.2.128"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "008b239d9c740232e71bd39e8ef6429d27097518b6b30bdf9086833bd5b6d608"
+checksum = "a690d511e3c1a8b3a55e33511e3c2c00c78415cd23650f32b808627f5696b9ed"
 dependencies = [
  "quote",
  "wasm-bindgen-macro-support",
@@ -2987,22 +2963,22 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-macro-support"
-version = "0.2.108"
+version = "0.2.128"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5256bae2d58f54820e6490f9839c49780dff84c65aeab9e772f15d5f0e913a55"
+checksum = "411e4887f0071ef2d2164a9d5fdf2d20efbef78fccd3a78b0c10a1dc5295e48a"
 dependencies = [
  "bumpalo",
  "proc-macro2",
  "quote",
- "syn 2.0.119",
+ "syn 3.0.4",
  "wasm-bindgen-shared",
 ]
 
 [[package]]
 name = "wasm-bindgen-shared"
-version = "0.2.108"
+version = "0.2.128"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1f01b580c9ac74c8d8f0c0e4afb04eeef2acf145458e52c03845ee9cd23e3d12"
+checksum = "81941cd78d0c92026c33e5e01312845a4cb1e9af3407f9134b100dd03144103e"
 dependencies = [
  "unicode-ident",
 ]
@@ -3014,6 +2990,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5a6580f308b1fad9207618087a65c04e7a10bc77e02c8e84e9b00dd4b12fa0bb"
 dependencies = [
  "js-sys",
+ "serde",
  "wasm-bindgen",
 ]
 
@@ -3055,12 +3032,6 @@ dependencies = [
  "serde",
  "tokio",
 ]
-
-[[package]]
-name = "workspace-hack"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "beffa227304dbaea3ad6a06ac674f9bc83a3dec3b7f63eeb442de37e7cb6bb01"
 
 [[package]]
 name = "x25519-dalek"
@@ -3142,3 +3113,7 @@ name = "zmij"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
+
+[[patch.unused]]
+name = "rustls-native-certs"
+version = "0.8.3"

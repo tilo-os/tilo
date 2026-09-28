@@ -88,7 +88,7 @@ mod real {
             "the pipeline refused a keyframe seek even after prerolling"
         );
         let mut landed = None;
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let deadline = tilo_test_env::hang_deadline();
         while std::time::Instant::now() < deadline {
             coarse.poll();
             if let Some(f) = coarse.latest()
@@ -99,7 +99,7 @@ mod real {
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        let keyframe_pts = landed.expect("the keyframe seek produced no new picture within 10s");
+        let keyframe_pts = landed.expect("the keyframe seek produced no new picture");
         let expected = MID_GOP_MS + base;
         let keyframe_err = Drift::between(keyframe_pts, expected).ms;
         println!(

@@ -81,6 +81,9 @@ pub struct Manifest {
 #[derive(Debug, Deserialize)]
 pub struct Asset {
     pub scope: Scope,
+    /// Whether a browser host must deliver this file before first paint.
+    #[serde(default)]
+    pub browser_startup: bool,
     /// Path relative to the catalog root.
     pub file: String,
     pub bytes: u64,

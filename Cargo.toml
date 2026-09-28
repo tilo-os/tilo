@@ -11,10 +11,12 @@ exclude = [
     "vendor/vello_encoding",
     "vendor/vello_shaders",
     "vendor/genawaiter-proc-macro",
+    "vendor/google-cast-protocol",
     "vendor/libspa-sys",
     "vendor/winit",
     "vendor/wgpu-hal",
     "vendor/wayland-backend",
+    "vendor/web-transport-quinn",
     "vendor/automerge",
 ]
 # Build `runtime-dylib` with `cargo build -p runtime-dylib --profile thin-app`;
@@ -31,6 +33,16 @@ default-members = [
     "crates/runtime/runtime",
 ]
 members = [
+    "crates/agent/control-protocol",
+    "crates/agent/control-service",
+    "crates/collab/tilo-action-broker",
+    "crates/session/desktop",
+    "crates/collab/tilo-peer-state",
+    "crates/browser/tilo-browser-runtime",
+    "crates/hosting/tilo-device-host",
+    "crates/hosting/tilo-workspace-host",
+    "crates/hosting/tilo-moq",
+    "crates/hosting/tilo-cloud-host",
     "crates/session/tilo-ntfs-helper",
     "crates/session/tilo-ntfs-protocol",
     "crates/browser/chromium-blocker",
@@ -107,6 +119,7 @@ members = [
     "crates/sdk/tilo-host",
     "crates/sdk/tilo-resource",
     "crates/sdk/tilo-resource-macros",
+    "crates/sdk/tilo-rich-text",
 
     # Collab
     "crates/collab/actions",
@@ -125,6 +138,7 @@ members = [
     # Dev
     "crates/dev/collab-link",
     "crates/dev/collab-probe",
+    "crates/dev/copy-lint",
     "crates/dev/frame-link",
     "crates/dev/headless-schema",
     "crates/dev/test-env",
@@ -148,8 +162,11 @@ members = [
     "crates/doc/qdoc-rich-text",
     "crates/doc/qdoc-pdf",
     "crates/doc/tilo-automerge",
+    "crates/doc/tilo-automerge-isolate",
 
     # Hosting
+    "crates/hosting/tilo-cloud-enrollment",
+    "crates/hosting/tilo-delivery-protocol",
     "crates/hosting/tilo-relay",
     "crates/hosting/tilo-relay-client",
     "crates/hosting/tilo-relay-protocol",
@@ -199,6 +216,8 @@ members = [
     "crates/session/greeter",
     "crates/session/installer",
     "crates/session/tilo-connected-protocol",
+    "crates/session/tilo-lockdown-policy",
+    "crates/session/tilo-native-media-control",
     "crates/session/tilo-unlock-helper",
 
     # System
@@ -223,12 +242,15 @@ members = [
     "crates/system/fs",
     "crates/system/fs-content",
     "crates/system/fs-native",
+    "crates/system/host-fs",
+    "crates/system/host-info",
     "crates/system/os-actions",
     "crates/system/power",
     "crates/system/projector",
     "crates/system/sandbox-core",
     "crates/system/secret-vault",
     "crates/system/settings-store",
+    "crates/system/ssh-agent-client",
     "crates/system/swipe",
     "crates/system/system-extension",
     "crates/system/tilo-bluez",
@@ -347,6 +369,7 @@ winit = "0.30.13"
 automerge = "0.12.0"
 # Every AutoCommit that takes in changes goes through its `ApplyIncoming`.
 tilo-automerge = { path = "crates/doc/tilo-automerge" }
+tilo-automerge-isolate = { path = "crates/doc/tilo-automerge-isolate" }
 pollster = "0.4.0"
 rustc-hash = "2.1"
 cosmic-text = { version = "0.19.0", default-features = false }
@@ -360,7 +383,6 @@ tokio-util = { version = "0.7.18", features = ["compat"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
 async-imap = { version = "0.10", default-features = false, features = ["runtime-tokio"] }
 futures = { version = "0.3", default-features = false }
-futures-lite = "2"
 futures-util = "0.3"
 # Defaults off keeps native-tls/OpenSSL and aws-lc-rs out of the tree. Build
 # clients through `tilo_net::http`, which installs the ring provider this
@@ -371,6 +393,8 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 rcgen = "0.14"
 rustls-native-certs = "0.8"
 url = "2"
+# Media over QUIC networking (moq-lite); driven over web-transport-quinn.
+moq-net = "0.3.3"
 
 # ---------------------------------------------------------------------------
 # Serialisation and encoding
@@ -392,6 +416,7 @@ data-encoding-macro = "0.1.19"
 hex = "0.4.3"
 bytes = "1.11.1"
 flate2 = "1"
+miniz_oxide = "0.8"
 zip = { version = "8.6", default-features = false, features = ["deflate-flate2"] }
 tar = "0.4"
 
@@ -474,7 +499,7 @@ zbus = { version = "5.16", default-features = false }
 # X11, Windows and macOS only; Wayland clients use focus-gated wl_data_device
 # through smithay-clipboard (see crates/sdk/tilo-host/src/clipboard.rs).
 arboard = { version = "3.6.1", default-features = false }
-fuser = "0.17.0"
+fuser = "0.18.0"
 notify = { version = "8", default-features = false }
 landlock = "0.4"
 seccompiler = "0.5"
@@ -679,6 +704,16 @@ debug-assertions = true
 # Vendored winit fork adds Wayland `zwp_pointer_gestures_v1` support and maps
 # pinch events to winit's existing `PinchGesture` API.
 [patch.crates-io]
+# The Google Cast message types with their prost code pre-generated, so the
+# build no longer compiles a protobuf compiler for one message.
+# See vendor/google-cast-protocol/PROVENANCE.md.
+google-cast-protocol = { path = "vendor/google-cast-protocol" }
+# Preserve raw HTTP/3 routing fields before URL normalization.
+# See vendor/web-transport-proto/PROVENANCE.md.
+web-transport-proto = { path = "vendor/web-transport-proto" }
+# Adds `Request::from_parts` so one QUIC endpoint serves plain HTTP/3 delivery
+# requests and WebTransport. See vendor/web-transport-quinn/PROVENANCE.md.
+web-transport-quinn = { path = "vendor/web-transport-quinn" }
 # libspa-sys 0.10.1 lets bindgen discover newer PipeWire inline functions
 # through transitive headers, but its emitted C wrapper includes only the
 # narrower wrapper.h. Keep the missing direct includes locally until upstream

@@ -34,6 +34,8 @@ pub struct ApplicationDefinition {
 #[non_exhaustive]
 pub enum LaunchTarget {
     New,
+    /// Explicit creation of the one room-scoped package-primary document.
+    PrimaryNew,
     Record {
         checkout: RecordCheckout,
         reveal: Option<tilo_actions::ActionAddress>,
@@ -48,6 +50,7 @@ pub enum RestoreInput {
 
 /// Explicit identity, authority and storage. Apps receive no ambient profile resolver.
 pub struct HostContext {
+    /// The app's package id, matching both its definition and its record namespace.
     app_id: String,
     instance_id: InstanceId,
     device_id: String,
@@ -62,8 +65,10 @@ pub struct HostContext {
     construction: Rc<()>,
     lifetime_id: uuid::Uuid,
     queued_controls: Rc<RefCell<std::collections::VecDeque<tilo_actions::ControlInvocation>>>,
+    control_domain: crate::ControlDomain,
     closing: Rc<Cell<bool>>,
     services: crate::host::HostServices,
+    retirement: Option<crate::semantic_document_read::retirement::MountRetirement>,
 }
 /// Presentation owned by a runner. Authority comes only from the component context.
 pub struct ComponentRunnerInputs {
@@ -78,6 +83,7 @@ pub struct ComponentRunnerInputs {
 impl ComponentRunnerInputs {
     /// Explicit native-runner discovery of the system's presentation settings
     /// and fonts. Factories and capture hosts should use supplied inputs instead.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn from_native_process() -> Self {
         crate::App::native_component_presentation()
     }
@@ -92,6 +98,26 @@ pub struct PreparedComponentInputs {
 }
 
 impl HostContext {
+    fn retire_semantic_mount(&self) {
+        if let Some(retirement) = &self.retirement {
+            retirement.retire();
+        }
+    }
+    pub(crate) fn bind_retirement(
+        &mut self,
+        retirement: crate::semantic_document_read::retirement::MountRetirement,
+    ) -> Result<(), LaunchError> {
+        if self.retirement.is_some() || self.closing.get() {
+            return Err(LaunchError::BindingMismatch);
+        }
+        self.retirement = Some(retirement);
+        Ok(())
+    }
+    pub(crate) fn require_invocation_provenance(&self) -> Result<(), crate::launch::LaunchError> {
+        self.records
+            .require_invocation_provenance(&self.record)
+            .map_err(crate::launch::LaunchError::Operation)
+    }
     /// Reserve New or open Existing before the factory, using only supplied identities.
     ///
     /// # Errors
@@ -208,9 +234,23 @@ impl HostContext {
                     .map_err(LaunchError::Record)?;
                 (checkout, Some(reservation))
             }
+            LaunchTarget::PrimaryNew => {
+                if new_record_id.is_some() {
+                    return Err(LaunchError::BindingMismatch);
+                }
+                let checkout = RecordCheckout::new(
+                    RecordId::package_primary(),
+                    definition.record_kind.clone(),
+                );
+                let reservation = records
+                    .reserve_record(&checkout)
+                    .map_err(LaunchError::Record)?;
+                (checkout, Some(reservation))
+            }
             LaunchTarget::Record { checkout, .. } => {
                 if checkout.kind != definition.record_kind
-                    || RecordId::parse(checkout.id.as_str()).as_ref() != Some(&checkout.id)
+                    || !checkout.id.is_package_primary()
+                        && RecordId::parse(checkout.id.as_str()).as_ref() != Some(&checkout.id)
                 {
                     return Err(LaunchError::BindingMismatch);
                 }
@@ -221,7 +261,7 @@ impl HostContext {
             }
         };
         Ok(Self {
-            app_id: definition.app_id.into(),
+            app_id: package,
             instance_id,
             device_id,
             records,
@@ -235,9 +275,26 @@ impl HostContext {
             construction: Rc::new(()),
             lifetime_id: uuid::Uuid::new_v4(),
             queued_controls: Rc::default(),
+            control_domain: crate::control_custody::ControlDomain::new(),
             closing: Rc::new(Cell::new(false)),
             services: crate::host::current(),
+            retirement: None,
         })
+    }
+    /// Explicit owner-bound producer capability, available before factory work.
+    pub fn control_domain(&self) -> crate::ControlDomain {
+        self.control_domain
+            .set_owner(crate::control_custody::ControlOwner::Component(
+                self.callback_binding(),
+            ));
+        self.control_domain.clone()
+    }
+    /// Establish presentation scope before constructing a nested component.
+    pub fn inherit_control_custody(
+        &self,
+        parent: &crate::ControlDomain,
+    ) -> Result<(), crate::control_custody::CustodyError> {
+        self.control_domain().attach_to(parent)
     }
     pub fn record(&self) -> &RecordCheckout {
         &self.record
@@ -296,6 +353,7 @@ impl HostContext {
             registry_owner: Rc::downgrade(&self.construction),
             lifetime_id: self.lifetime_id,
             queued_controls: self.queued_controls.clone(),
+            control_domain: self.control_domain.downgrade(),
             instance_id: self.instance_id,
             app_id: self.app_id.clone(),
             records: self.records.clone(),
@@ -349,8 +407,11 @@ impl HostContext {
         }
     }
 }
+
 impl Drop for HostContext {
     fn drop(&mut self) {
+        self.retire_semantic_mount();
+        self.control_domain.close();
         self.wake_scope.close();
     }
 }
@@ -394,8 +455,13 @@ impl ApplicationDefinition {
         if context.app_id != self.app_id || context.record.kind != self.record_kind {
             return Err(LaunchError::BindingMismatch);
         }
+        if matches!(target, LaunchTarget::New) && context.record.id.is_package_primary()
+            || matches!(target, LaunchTarget::PrimaryNew) && !context.record.id.is_package_primary()
+        {
+            return Err(LaunchError::BindingMismatch);
+        }
         match &target {
-            LaunchTarget::New if context.reservation.is_none() => {
+            LaunchTarget::New | LaunchTarget::PrimaryNew if context.reservation.is_none() => {
                 return Err(LaunchError::BindingMismatch);
             }
             LaunchTarget::Record { checkout, .. }
@@ -464,6 +530,14 @@ pub struct AppComponent {
     providers: Rc<RefCell<ProviderPayloads>>,
 }
 impl AppComponent {
+    pub(crate) fn take_root_retirement(
+        &mut self,
+    ) -> Option<crate::semantic_document_read::retirement::RootRetirementPrelude> {
+        self.context
+            .retirement
+            .as_mut()
+            .and_then(|retirement| retirement.take_app())
+    }
     /// Register presentation for this component's actual document custody. Every
     /// domain scope reads that record; external scopes retain their stated reason.
     /// This metadata carries no new authority and follows native/headless/tile mounts.
@@ -573,10 +647,22 @@ impl AppComponent {
 
     pub fn new(
         context: HostContext,
-        root: Box<dyn AppWidget>,
+        mut root: Box<dyn AppWidget>,
         registry: tilo_actions::ActionRegistry,
     ) -> Self {
+        // The actual root already exists. Retire before its destructor if its
+        // first SDK control-install callback unwinds, even before Self exists.
+        let construction =
+            crate::semantic_document_read::retirement::MountConstructionRetirement::new(
+                context.retirement.as_ref(),
+            );
+        root.install_control_custody(
+            &context.control_domain(),
+            crate::control_custody::CustodyAttachment::Initial,
+        );
+        context.control_domain().finish_initial_installation();
         let registry_owner = context.construction.clone();
+        construction.disarm();
         Self {
             history: None,
             context,
@@ -642,6 +728,12 @@ impl AppComponent {
         if !self.prepared {
             return Err(LaunchError::BindingMismatch);
         }
+        if let Some(root) = &mut self.root {
+            root.install_control_custody(
+                &self.context.control_domain(),
+                crate::control_custody::CustodyAttachment::Dynamic,
+            );
+        }
         self.context
             .wake_scope
             .bind(sink)
@@ -678,6 +770,12 @@ impl AppComponent {
         }
         view.validate()?;
         let application = root.capture_application_view()?;
+        if application
+            .as_ref()
+            .is_some_and(|local| local.app_id != self.context.app_id)
+        {
+            return Err(ThawError::BindingMismatch);
+        }
         self.context
             .envelope(view.clone(), application.clone())
             .validate()?;
@@ -696,6 +794,9 @@ impl AppComponent {
         self.context
             .read_record(|doc| {
                 let policy = if let Some(local) = &saved.application {
+                    if local.app_id != self.context.app_id {
+                        return Err(ThawError::BindingMismatch);
+                    }
                     root.restore_application_view(local, doc)?
                 } else {
                     ApplicationFocusRestore::Generic
@@ -791,6 +892,7 @@ impl AppComponent {
     /// Finalization after a successful host checkpoint. No second fallible
     /// write is introduced after the host has committed to destroying the tree.
     pub(crate) fn finish_admitted_close(&mut self) {
+        self.context.retire_semantic_mount();
         if self.close_report.is_some() {
             return;
         }
@@ -833,6 +935,7 @@ impl AppComponent {
         CloseComponentOnExit(self).0.close_owned()
     }
     fn close_owned(&mut self) -> ComponentCloseReport {
+        self.context.retire_semantic_mount();
         let mut report = ComponentCloseReport {
             recovery: None,
             view_error: None,
@@ -842,6 +945,7 @@ impl AppComponent {
             record_retry_target: None,
             teardown_error: None,
         };
+        self.context.control_domain.close();
         self.context.closing.set(true);
         match self.capture_local_pair_owned(&self.local_view) {
             Ok((view, application)) => {
@@ -905,6 +1009,8 @@ impl AppComponent {
         self.close_report.as_ref()
     }
     fn teardown(&mut self) -> Result<(), String> {
+        self.context.retire_semantic_mount();
+        self.context.control_domain.close();
         self.context.closing.set(true);
         self.context.wake_scope.close();
         let _entry = self.context.wake_scope.enter();
@@ -977,6 +1083,11 @@ impl crate::search::SearchProvider for ComponentProvider {
     fn action_directory_generation(&self) -> Option<u64> {
         self.invoke(|provider| provider.action_directory_generation())
             .flatten()
+    }
+
+    fn action_directory_invocation_domain(&self) -> crate::widget::ActionDirectoryInvocationDomain {
+        self.invoke(|provider| provider.action_directory_invocation_domain())
+            .unwrap_or_default()
     }
     fn action_directory_cursor_is_current(&self, cursor: &crate::search::SearchCursor) -> bool {
         self.invoke(|provider| provider.action_directory_cursor_is_current(cursor))
@@ -1289,6 +1400,104 @@ mod bound_lifetime_tests {
             tilo_actions::ActionRegistry::new(),
         ))
     }
+
+    #[test]
+    fn host_named_new_and_package_primary_keep_distinct_identity_contracts() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut owners = crate::record::RecordOwners::new(temp.path().into());
+        let records = owners.open("dev.tilo.mount-probe", "A").unwrap();
+        let views = Rc::new(InstanceViewStore::new(temp.path().into(), "D", "A").unwrap());
+        let definition = ApplicationDefinition {
+            app_id: "dev.tilo.mount-probe",
+            title: "Mount probe",
+            icon: IconDescriptor::Glyph("P"),
+            record_kind: RecordKind::new("probe"),
+            required: vec![],
+            optional: vec![],
+            create: factory,
+        };
+        let supplied = RecordId::for_tab(55);
+        let prepare = |target, supplied| {
+            HostContext::prepare_scoped(
+                &definition,
+                records.clone(),
+                views.clone(),
+                "D".into(),
+                7,
+                Rc::new(RefCell::new(PermissionContext::permissive())),
+                UserId("probe-author".into()),
+                tilo_actions::ActionContext::default(),
+                target,
+                supplied,
+            )
+        };
+
+        let named = prepare(&LaunchTarget::New, Some(supplied.clone())).unwrap();
+        assert_eq!(named.record.id, supplied);
+        drop(named);
+
+        assert!(matches!(
+            prepare(&LaunchTarget::PrimaryNew, Some(RecordId::for_tab(56))),
+            Err(LaunchError::BindingMismatch)
+        ));
+        let primary = prepare(&LaunchTarget::PrimaryNew, None).unwrap();
+        assert!(primary.record.id.is_package_primary());
+    }
+
+    #[test]
+    fn existing_package_primary_is_local_while_invalid_ordinary_records_are_rejected() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut owners = crate::record::RecordOwners::new(temp.path().into());
+        let records = owners.open("dev.tilo.mount-probe", "A").unwrap();
+        let views = Rc::new(InstanceViewStore::new(temp.path().into(), "D", "A").unwrap());
+        let definition = ApplicationDefinition {
+            app_id: "dev.tilo.mount-probe",
+            title: "Mount probe",
+            icon: IconDescriptor::Glyph("P"),
+            record_kind: RecordKind::new("probe"),
+            required: vec![],
+            optional: vec![],
+            create: factory,
+        };
+        let prepare = |checkout| {
+            HostContext::prepare(
+                &definition,
+                records.clone(),
+                views.clone(),
+                "D".into(),
+                7,
+                Rc::new(RefCell::new(PermissionContext::permissive())),
+                UserId("probe-author".into()),
+                tilo_actions::ActionContext::default(),
+                &LaunchTarget::Record {
+                    checkout,
+                    reveal: None,
+                },
+            )
+        };
+
+        let malformed = RecordCheckout::new(
+            RecordId::derived("invalid role", &RecordId::for_tab(55)),
+            definition.record_kind.clone(),
+        );
+        assert!(matches!(
+            prepare(malformed),
+            Err(LaunchError::BindingMismatch)
+        ));
+        let foreign = RecordCheckout::new(RecordId::for_tab(56), definition.record_kind.clone());
+        assert!(matches!(
+            prepare(foreign),
+            Err(LaunchError::Record(
+                crate::record::RecordOpenError::MissingRecord
+            ))
+        ));
+
+        let primary = RecordCheckout::package_primary(definition.record_kind.clone());
+        records.create_record(&primary).unwrap();
+        let context = prepare(primary).expect("an existing local package primary must reopen");
+        assert!(context.record.id.is_package_primary());
+    }
+
     #[test]
     fn component_lifetimes_refuse_stale_wakes_loans_and_busy_entries() {
         // Case `actual_component_reopen_refuses_queued_old_wakes_and_busy_store_entry`.
@@ -1427,5 +1636,75 @@ mod bound_lifetime_tests {
                 Err(crate::bound_dispatch::BoundDispatchError::ClosedLifetime)
             ));
         }
+    }
+}
+
+#[cfg(test)]
+mod portable_tests {
+    use super::*;
+    use crate::application_test_support as probe;
+    #[test]
+    fn portable_host_checks_namespaces_authority_and_persists_real_component() {
+        let cache =
+            crate::portable_storage::PortableStorage::new("profile", probe::DEVICE).unwrap();
+        let records = crate::record::RecordOwners::portable(cache.clone())
+            .open(probe::APP, probe::ROOM)
+            .unwrap();
+        let views = Rc::new(InstanceViewStore::portable(cache.clone(), probe::ROOM).unwrap());
+        let definition = probe::definition(probe::probe_factory);
+        let prepare = |views, permissions| {
+            HostContext::prepare(
+                &definition,
+                records.clone(),
+                views,
+                probe::DEVICE.into(),
+                7,
+                permissions,
+                probe::author(),
+                probe::provenance(),
+                &LaunchTarget::New,
+            )
+        };
+        let foreign =
+            crate::portable_storage::PortableStorage::new("foreign", probe::DEVICE).unwrap();
+        assert!(matches!(
+            prepare(
+                Rc::new(InstanceViewStore::portable(foreign, probe::ROOM).unwrap()),
+                probe::permissions()
+            ),
+            Err(LaunchError::BindingMismatch)
+        ));
+        let context = prepare(views.clone(), probe::permissions()).unwrap();
+        let mut component = definition
+            .instantiate(context, LaunchTarget::New, RestoreInput::None)
+            .unwrap();
+        let checkout = component.record().clone();
+        assert!(records.is_ready(&checkout.id));
+        let report = component.close();
+        assert!(report.record_error.is_some());
+        assert!(report.view_error.is_some());
+        for write in cache.pending_writes() {
+            cache.acknowledge(&write, Ok(())).unwrap();
+        }
+        records.try_flush().unwrap();
+        let saved = views.load(7).unwrap().unwrap();
+        assert_eq!(saved.record_id, checkout.id.as_str());
+        views.save(&saved).unwrap();
+        let mut denied = probe::definition(probe::probe_factory);
+        denied.required.push(probe::denied_scope());
+        assert!(matches!(
+            HostContext::prepare(
+                &denied,
+                records,
+                views,
+                probe::DEVICE.into(),
+                8,
+                probe::permissions(),
+                probe::author(),
+                probe::provenance(),
+                &LaunchTarget::New
+            ),
+            Err(LaunchError::CapabilityDenied(_))
+        ));
     }
 }

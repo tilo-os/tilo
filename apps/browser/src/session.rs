@@ -121,11 +121,7 @@ impl SessionStore {
         let next = self.root.join("session.next");
         let mut options = std::fs::OpenOptions::new();
         options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
+        private_fs::owner_only(&mut options);
         let result = (|| {
             let mut file = options.open(&next)?;
             file.write_all(&bytes)?;

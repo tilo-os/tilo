@@ -325,7 +325,7 @@ pub fn status_json(st: &crate::shell::chrome_state::ChromeState) -> serde_json::
             "redactions": review.redaction_count(),
             "verdict": verdict_json(&review.verdict),
             // The replays checked out of sight for it, and how far each got.
-            "checks": st.replay().map(|replay| replay.checks_json()),
+            "checks": st.session_view().replay.as_ref().map(|replay| replay.checks.clone()),
             "steps": review.steps.iter().map(|step| serde_json::json!({
                 "step": step.index,
                 "title": review.title(step.index),

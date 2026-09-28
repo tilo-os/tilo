@@ -27,8 +27,8 @@ use std::thread;
 use capnp::capability::Promise;
 use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
 use runtime_collab::raw::{
-    action_stream, channel_handle, collab_service, context_stream, presence_event, presence_handle,
-    presence_payload, presence_stream, stream,
+    action_catalogue_stream, action_stream, channel_handle, collab_service, context_stream,
+    presence_event, presence_handle, presence_payload, presence_stream, stream,
 };
 use tilo_ui::collaboration::CollaborationManager;
 use tokio::sync::mpsc;
@@ -150,6 +150,10 @@ impl TypedBroker {
     }
 
     pub fn connect(&self, user_id: &str) -> RawFd {
+        self.connect_peer(user_id).1
+    }
+
+    fn connect_peer(&self, user_id: &str) -> (u64, RawFd) {
         let peer = self.hub.next_peer.fetch_add(1, Ordering::Relaxed);
         let service = Service {
             hub: self.hub.clone(),
@@ -180,19 +184,67 @@ impl TypedBroker {
                 });
             })
             .unwrap();
-        client.into_raw_fd()
+        (peer, client.into_raw_fd())
     }
 
     /// Connect a production `CollaborationManager` to the shared test room.
+    ///
+    /// Returns once the manager's route is admitted and this service holds
+    /// its document and presence subscriptions, so traffic sent from then on
+    /// reaches it without any settling time.
     pub fn manager(&self, user_id: &str) -> CollaborationManager {
-        CollaborationManager::for_route_fd(
-            self.connect(user_id),
+        let (peer, fd) = self.connect_peer(user_id);
+        let manager = CollaborationManager::for_route_fd(
+            fd,
             TEST_APP_ID,
             Uuid::nil(),
             None,
             Some(user_id.to_owned()),
         )
-        .expect("typed test endpoint connects")
+        .expect("typed test endpoint connects");
+        assert!(
+            manager.is_connected(),
+            "{user_id} must connect to the typed broker"
+        );
+        self.wait_subscribed(TEST_APP_ID, peer, user_id);
+        manager
+    }
+
+    /// Wait until `peer` holds document and presence subscriptions on the
+    /// `app_id` room.
+    fn wait_subscribed(&self, app_id: &str, peer: u64, user_id: &str) {
+        let channel =
+            tilo_ui::collaboration::channel_key::format(app_id, &Uuid::nil().to_string(), "");
+        tilo_test_env::wait_until(
+            format!("{user_id}'s document and presence subscriptions on {channel}"),
+            || {
+                self.hub
+                    .channels
+                    .lock()
+                    .unwrap()
+                    .get(&channel)
+                    .is_some_and(|room| {
+                        room.ops.iter().any(|sub| sub.peer == peer)
+                            && room.presence.iter().any(|sub| sub.peer == peer)
+                    })
+            },
+        );
+    }
+
+    /// Connect a production `CollaborationManager` to its own `app_id` room,
+    /// returning once this service holds its subscriptions there.
+    pub fn route_manager(&self, user_id: &str, app_id: &str) -> CollaborationManager {
+        let (peer, fd) = self.connect_peer(user_id);
+        let manager = CollaborationManager::for_route_fd(
+            fd,
+            app_id,
+            Uuid::nil(),
+            None,
+            Some(user_id.to_owned()),
+        )
+        .expect("typed test endpoint connects");
+        self.wait_subscribed(app_id, peer, user_id);
+        manager
     }
 
     /// Publish an action as an external room participant. This drives the
@@ -429,6 +481,37 @@ impl channel_handle::Server for ChannelHandle {
         let client: action_stream::Client = capnp_rpc::new_client(ActionStream {
             rx: Rc::new(RefCell::new(rx)),
         });
+        results.get().set_stream(client);
+        Promise::ok(())
+    }
+
+    /// This harness stores no committed history: answer every open with the
+    /// explicit legacy mode so the route uses the incremental op stream.
+    fn committed_document(
+        self: Rc<Self>,
+        _params: channel_handle::CommittedDocumentParams,
+        mut results: channel_handle::CommittedDocumentResults,
+    ) -> Promise<(), capnp::Error> {
+        match runtime_collab::committed_document::Reply::Legacy.encode() {
+            Ok(reply) => {
+                results.get().set_reply(&reply);
+                Promise::ok(())
+            }
+            Err(error) => Promise::err(capnp::Error::failed(error.into())),
+        }
+    }
+
+    fn subscribe_action_catalogue(
+        self: Rc<Self>,
+        _params: channel_handle::SubscribeActionCatalogueParams,
+        mut results: channel_handle::SubscribeActionCatalogueResults,
+    ) -> Promise<(), capnp::Error> {
+        let client: action_catalogue_stream::Client =
+            capnp_rpc::new_client(EmptyActionCatalogueStream {
+                initial: RefCell::new(Some(
+                    serde_json::json!({"version": 1, "surfaces": []}).to_string(),
+                )),
+            });
         results.get().set_stream(client);
         Promise::ok(())
     }
@@ -688,5 +771,23 @@ impl action_stream::Server for ActionStream {
             out.set_from_user_id(&value.author);
             Ok(())
         })
+    }
+}
+
+struct EmptyActionCatalogueStream {
+    initial: RefCell<Option<String>>,
+}
+
+impl action_catalogue_stream::Server for EmptyActionCatalogueStream {
+    fn read(
+        self: Rc<Self>,
+        _params: action_catalogue_stream::ReadParams,
+        mut results: action_catalogue_stream::ReadResults,
+    ) -> Promise<(), capnp::Error> {
+        let Some(initial) = self.initial.borrow_mut().take() else {
+            return Promise::from_future(std::future::pending());
+        };
+        results.get().set_catalogue_json(&initial);
+        Promise::ok(())
     }
 }

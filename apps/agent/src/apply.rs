@@ -35,6 +35,9 @@ pub struct Editor {
     history_context: Option<tilo_actions::ActionContext>,
     /// Which app authored this document.
     contract: &'static AppContract,
+    /// Exact authenticated route that supplied this replica. It can differ
+    /// from the application definition `contract` comes from.
+    route_app_id: String,
 }
 
 /// Every block's text, keyed by block id, flattened across nesting.
@@ -135,12 +138,18 @@ impl Editor {
             author: actor_handle.to_string(),
             history_context: None,
             contract,
+            route_app_id: contract.app_id.to_string(),
         }
     }
 
     /// Which app authored the document this holds.
     pub fn contract(&self) -> &'static AppContract {
         self.contract
+    }
+
+    /// Exact app route that supplied this replica.
+    pub fn route_app_id(&self) -> &str {
+        &self.route_app_id
     }
 
     /// Set task context for subsequent commits. The session clears it after
@@ -209,8 +218,25 @@ impl Editor {
         bytes: &[u8],
         actor_handle: &str,
     ) -> Result<Self> {
+        Self::peer_from_snapshot_on_route(contract, contract.app_id, bytes, actor_handle)
+    }
+
+    /// Build a peer replica while retaining the exact authenticated route
+    /// that delivered it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `bytes` is not a loadable snapshot of the
+    /// contract's document.
+    pub fn peer_from_snapshot_on_route(
+        contract: &'static AppContract,
+        route_app_id: &str,
+        bytes: &[u8],
+        actor_handle: &str,
+    ) -> Result<Self> {
         Self::from_snapshot_as(
             contract,
+            route_app_id,
             bytes,
             actor_handle,
             &format!("{actor_handle}#{}", contract.namespace),
@@ -227,7 +253,7 @@ impl Editor {
         bytes: &[u8],
         actor_handle: &str,
     ) -> Result<Self> {
-        Self::from_snapshot_as(contract, bytes, actor_handle, actor_handle)
+        Self::from_snapshot_as(contract, contract.app_id, bytes, actor_handle, actor_handle)
     }
 
     /// The two above, with the replica's actor spelled out. `author` is who
@@ -235,6 +261,7 @@ impl Editor {
     /// replica is writing, and is per-document.
     fn from_snapshot_as(
         contract: &'static AppContract,
+        route_app_id: &str,
         bytes: &[u8],
         actor_handle: &str,
         actor_id: &str,
@@ -248,6 +275,7 @@ impl Editor {
             author: actor_handle.to_string(),
             history_context: None,
             contract,
+            route_app_id: route_app_id.to_string(),
         };
         this.drain();
         Ok(this)

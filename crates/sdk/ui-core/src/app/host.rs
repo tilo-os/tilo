@@ -1,16 +1,6 @@
 // Frame layout and drawing shared by every host of App, and App's host-facing
 // behaviour. The native event-loop runner is `app/native_runner.rs`.
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg(feature = "native")]
-struct ImeWindowState {
-    purpose: winit::window::ImePurpose,
-    x: u32,
-    y: u32,
-    width: u32,
-    height: u32,
-}
-
 /// Snapshot widget damage while its draw-updated geometry still describes the
 /// scene being submitted. Callers deliberately clear dirty flags afterwards.
 #[cfg(feature = "native")]
@@ -131,7 +121,12 @@ fn draw_frame_content(
             &app.presence_ctx,
         );
     }
-    if let Some(ap) = app.actions.action_palette.as_mut() {
+    if let Some(ap) = app
+        .actions
+        .action_palette
+        .as_mut()
+        .filter(|p| p.is_presented())
+    {
         let win_w = f64::from(width) / f64::from(scale_factor);
         let card_w = (win_w * 0.6).clamp(360.0, 640.0);
         let x0 = ((win_w - card_w) / 2.0).max(0.0);
@@ -195,6 +190,16 @@ fn draw_visible_tooltip(
         &text,
         viewport,
     );
+}
+
+/// Complete a native CPU frame only after drawing and damage collection.
+/// Deferred or aborted frames retain return custody for the next completed
+/// frame, so dirty state and accessibility publication stay tied to pixels.
+#[cfg(feature = "native")]
+fn complete_native_frame_content(app: &mut App, publish_accessibility: impl FnOnce(&mut App)) {
+    app.root_widget.mark_drawn();
+    publish_accessibility(app);
+    app.finish_history_return_frame();
 }
 
 /// Split out of `AppHandler::handle_redraw_requested` (`clippy::too_many_lines`).

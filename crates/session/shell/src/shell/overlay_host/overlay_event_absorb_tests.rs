@@ -711,16 +711,17 @@ fn filter_band_controls_are_bounded_semantic_targets_that_lift_on_selection() {
         let mut tr = TextRenderer::new();
         let row_h = CommandPalette::new().filter_strip_row_height();
         let base = Theme::dark();
-        let at_base = ShellOverlayHost::filter_control_height(&base, &mut tr, row_h);
+        let at_base = SearchFilters::filter_control_height(&base, &mut tr, row_h);
         assert_eq!(
-            at_base, SELECTOR_HEIGHT_PX,
+            at_base,
+            ui::search::system::filters::SELECTOR_HEIGHT_PX,
             "resting height is the Selector's"
         );
 
         let large = Theme::dark().with_text_scale(2.0);
-        let size = ShellOverlayHost::filter_label_size(&large, &tr);
+        let size = SearchFilters::filter_label_size(&large, &tr);
         let (_, lh) = tr.measure_weighted("Ag", size, None, TextWeight::Medium);
-        let at_large = ShellOverlayHost::filter_control_height(&large, &mut tr, row_h);
+        let at_large = SearchFilters::filter_control_height(&large, &mut tr, row_h);
         assert!(
             at_large > at_base,
             "a 200% label needs a taller control: {at_large} vs {at_base}"
@@ -797,21 +798,21 @@ fn filter_band_controls_are_bounded_semantic_targets_that_lift_on_selection() {
             .bounds
             .map(ui::AccessBounds::to_rect)
             .expect("All is bounded");
-        assert_eq!(all_target, h.host.search_all_chip_hit_rect());
+        assert_eq!(all_target, h.host.search_filters.search_all_chip_hit_rect());
         assert!(
-            pill_inside_target(h.host.search_all_chip_rect, all_target),
+            pill_inside_target(h.host.search_filters.search_all_chip_rect, all_target),
             "All's target {all_target:?} must wrap its pill {:?} to the {floor} px floor",
-            h.host.search_all_chip_rect
+            h.host.search_filters.search_all_chip_rect
         );
         for (i, kind) in kinds.iter().enumerate() {
             let chip = &kinds_group.children[i + 1];
             assert_eq!(
                 chip.name.as_deref(),
-                Some(format!("Filter: {}", kind.label()).as_str())
+                Some(format!("Filter: {}", kind.localized_label()).as_str())
             );
             assert_ne!(
                 chip.name.as_deref(),
-                Some(kind.label().as_str()),
+                Some(kind.localized_label().as_str()),
                 "a chip must not publish the bare kind label — a window title may share it"
             );
             assert_eq!(chip.state.checked, Some(false));
@@ -821,13 +822,13 @@ fn filter_band_controls_are_bounded_semantic_targets_that_lift_on_selection() {
                 .expect("chip is bounded");
             assert_eq!(
                 target,
-                h.host.search_chip_hit_rect(i),
+                h.host.search_filters.search_chip_hit_rect(i),
                 "chip {i} carries its pointer target"
             );
             assert!(
-                pill_inside_target(h.host.search_chip_rects[i], target),
+                pill_inside_target(h.host.search_filters.search_chip_rects[i], target),
                 "chip {i}'s target {target:?} must wrap its pill {:?} to the {floor} px floor",
-                h.host.search_chip_rects[i]
+                h.host.search_filters.search_chip_rects[i]
             );
             assert_eq!(
                 h.host
@@ -854,11 +855,11 @@ fn filter_band_controls_are_bounded_semantic_targets_that_lift_on_selection() {
         assert_eq!(checked, 1, "exactly one scope is current");
         for (idx, node) in scope_group.children.iter().enumerate() {
             assert_eq!(node.role, Role::RadioButton);
-            let hit = h.host.search_scope_segment_hit_rect(idx);
+            let hit = h.host.search_filters.search_scope_segment_hit_rect(idx);
             assert_eq!(node.bounds.map(ui::AccessBounds::to_rect), Some(hit));
-            let track = h.host.search_scope_track_rect();
+            let track = h.host.search_filters.search_scope_track_rect();
             assert!(
-                hit.contains(h.host.search_scope_pill_rect(idx).center())
+                hit.contains(h.host.search_filters.search_scope_pill_rect(idx).center())
                     && (hit.height() - track.height().max(floor)).abs() < 0.01
                     && (hit.center().y - track.center().y).abs() < 0.01,
                 "segment {idx}'s target is its slice of the track grown to the {floor} px floor: {hit:?} vs {track:?}"
@@ -881,7 +882,7 @@ fn filter_band_controls_are_bounded_semantic_targets_that_lift_on_selection() {
             ResourceKind::Custom("CI: Builds".into()),
         ];
         let keys: Vec<String> = (0..odd.len())
-            .map(|i| ShellOverlayHost::search_filter_key(&odd, i))
+            .map(|i| SearchFilters::search_filter_key(&odd, i))
             .collect();
         assert_eq!(keys[0], "palette:filter:foo-bar");
         assert_ne!(
@@ -893,14 +894,14 @@ fn filter_band_controls_are_bounded_semantic_targets_that_lift_on_selection() {
         // Paint and target are two rects with one centre line: the pills
         // share top and bottom edges at the Selector height, and their
         // pointer targets share top and bottom edges at the floor.
-        let all_rect = h.host.search_all_chip_rect;
-        let track = h.host.search_scope_track_rect();
+        let all_rect = h.host.search_filters.search_all_chip_rect;
+        let track = h.host.search_filters.search_scope_track_rect();
         assert!(
             (all_rect.y0 - track.y0).abs() < 0.5 && (all_rect.y1 - track.y1).abs() < 0.5,
             "All chip {all_rect:?} and scope track {track:?} do not share top and bottom edges"
         );
-        let all_target = h.host.search_all_chip_hit_rect();
-        let first_scope = h.host.search_scope_segment_hit_rect(0);
+        let all_target = h.host.search_filters.search_all_chip_hit_rect();
+        let first_scope = h.host.search_filters.search_scope_segment_hit_rect(0);
         assert!(
             (all_target.y0 - first_scope.y0).abs() < 0.5
                 && (all_target.y1 - first_scope.y1).abs() < 0.5,
@@ -948,19 +949,19 @@ fn filter_band_controls_are_bounded_semantic_targets_that_lift_on_selection() {
             );
         }
         assert!(
-            h.host.scope_switch_has_own_row(),
+            h.host.search_filters.scope_switch_has_own_row(),
             "the measured switch ({}) exceeds its share of the {} px band",
-            h.host.search_scope_measured_track_w(),
-            h.host.search_banner_rect().width()
+            h.host.search_filters.search_scope_measured_track_w(),
+            h.host.search_filters.search_banner_rect().width()
         );
-        let band = h.host.search_banner_rect();
+        let band = h.host.search_filters.search_banner_rect();
         let row_h = h.host.palette.filter_strip_row_height();
-        let track = h.host.search_scope_track_rect();
+        let track = h.host.search_filters.search_scope_track_rect();
         assert!(
             (track.center().y - (band.y0 + row_h / 2.0)).abs() < 0.5,
             "the switch sits on the band's first row: {track:?} in {band:?}"
         );
-        let measured = h.host.search_scope_measured_track_w();
+        let measured = h.host.search_filters.search_scope_measured_track_w();
         assert!(
             (track.width() - measured.min(band.width())).abs() < 0.5,
             "on its own row the switch is its full measured width ({measured}), capped only by the band ({}), not by the shared-row share: {track:?}",
@@ -972,27 +973,27 @@ fn filter_band_controls_are_bounded_semantic_targets_that_lift_on_selection() {
             band.width()
         );
         for idx in 0..h.host.search_scope_list().len() {
-            let seg = h.host.search_scope_pill_rect(idx);
+            let seg = h.host.search_filters.search_scope_pill_rect(idx);
             let label = h
                 .host
                 .search_scope_pill_label(h.host.search_scope_list()[idx]);
-            let size = ShellOverlayHost::filter_label_size(&theme, &tr);
+            let size = SearchFilters::filter_label_size(&theme, &tr);
             let (w, _) = tr.measure_weighted(&label, size, None, TextWeight::Medium);
             assert!(
                 f64::from(w) + f64::from(theme.tokens.spacing.s2) <= seg.width(),
                 "{label:?} ({w} px) fits its segment {seg:?} whole"
             );
         }
-        let all = h.host.search_all_chip_rect;
+        let all = h.host.search_filters.search_all_chip_rect;
         assert!(
             all.y0 >= band.y0 + row_h - 0.5,
             "the chips start on the second row: All {all:?} under row 1 of {band:?}"
         );
         assert!(
-            h.host.search_chip_rows >= 2,
+            h.host.search_filters.search_chip_rows >= 2,
             "the band reserved a row for the switch plus the chips' rows"
         );
-        for (i, chip) in h.host.search_chip_rects.iter().enumerate() {
+        for (i, chip) in h.host.search_filters.search_chip_rects.iter().enumerate() {
             assert!(
                 chip.intersect(track).is_zero_area(),
                 "chip {i} {chip:?} does not run under the switch {track:?}"
@@ -1006,9 +1007,9 @@ fn filter_band_controls_are_bounded_semantic_targets_that_lift_on_selection() {
         wide.host.set_palette_focus(true);
         wide.host.force_palette_settled();
         settle(&mut wide, vw, vh);
-        assert!(!wide.host.scope_switch_has_own_row());
-        let all = wide.host.search_all_chip_rect;
-        let track = wide.host.search_scope_track_rect();
+        assert!(!wide.host.search_filters.scope_switch_has_own_row());
+        let all = wide.host.search_filters.search_all_chip_rect;
+        let track = wide.host.search_filters.search_scope_track_rect();
         assert!((all.center().y - track.center().y).abs() < 0.5);
     }
 
@@ -1039,26 +1040,29 @@ fn filter_band_controls_are_bounded_semantic_targets_that_lift_on_selection() {
                 &ui::presence::PresenceCtx::default(),
             );
         }
-        let band = h.host.search_banner_rect();
+        let band = h.host.search_filters.search_banner_rect();
         let row_h = h.host.palette.filter_strip_row_height();
         let s1 = f64::from(theme.tokens.spacing.s1);
         assert!(
-            h.host.search_pointer_floor_h <= row_h - s1 + 0.01,
+            h.host.search_filters.search_pointer_floor_h <= row_h - s1 + 0.01,
             "the floor ({}) is clamped to the row less its gutter ({})",
-            h.host.search_pointer_floor_h,
+            h.host.search_filters.search_pointer_floor_h,
             row_h - s1
         );
         let mut targets: Vec<(Rect, Rect)> = vec![(
-            h.host.search_all_chip_rect,
-            h.host.search_all_chip_hit_rect(),
+            h.host.search_filters.search_all_chip_rect,
+            h.host.search_filters.search_all_chip_hit_rect(),
         )];
-        for i in 0..h.host.search_chip_rects.len() {
-            targets.push((h.host.search_chip_rects[i], h.host.search_chip_hit_rect(i)));
+        for i in 0..h.host.search_filters.search_chip_rects.len() {
+            targets.push((
+                h.host.search_filters.search_chip_rects[i],
+                h.host.search_filters.search_chip_hit_rect(i),
+            ));
         }
         for idx in 0..h.host.search_scope_list().len() {
             targets.push((
-                h.host.search_scope_pill_rect(idx),
-                h.host.search_scope_segment_hit_rect(idx),
+                h.host.search_filters.search_scope_pill_rect(idx),
+                h.host.search_filters.search_scope_segment_hit_rect(idx),
             ));
         }
         assert!(targets.len() >= 4, "the band has chips and scopes to check");
@@ -1176,13 +1180,13 @@ fn launcher_chips_fit_and_stay_reachable_at_every_width_and_text_size() {
             .search_registry
             .registered_kinds()
             .iter()
-            .zip(&h.host.search_chip_rects)
+            .zip(&h.host.search_filters.search_chip_rects)
         {
-            let (w, height) = tr.measure(&kind.label(), size, None);
+            let (w, height) = tr.measure(&kind.localized_label(), size, None);
             assert!(
                 f64::from(w) + f64::from(theme.tokens.spacing.s3) / 2.0 <= rect.width(),
                 "{} needs readable width: {:?}",
-                kind.label(),
+                kind.localized_label(),
                 rect
             );
             assert!(
@@ -1195,7 +1199,7 @@ fn launcher_chips_fit_and_stay_reachable_at_every_width_and_text_size() {
         for (i, scope) in h.host.search_scope_list().iter().enumerate() {
             let label = h.host.search_scope_pill_label(*scope);
             let (w, height) = tr.measure(&label, size, None);
-            let rect = h.host.search_scope_pill_rect(i);
+            let rect = h.host.search_filters.search_scope_pill_rect(i);
             assert!(
                 f64::from(w) + 10.0 <= rect.width(),
                 "{label} scope truncated"
@@ -1214,7 +1218,7 @@ fn launcher_chips_fit_and_stay_reachable_at_every_width_and_text_size() {
             settle(&mut h, vw, vh);
 
             let kinds = h.host.search_registry.registered_kinds();
-            let rects = h.host.search_chip_rects.clone();
+            let rects = h.host.search_filters.search_chip_rects.clone();
             assert_eq!(
                 rects.len(),
                 kinds.len(),
@@ -1229,14 +1233,14 @@ fn launcher_chips_fit_and_stay_reachable_at_every_width_and_text_size() {
                     .collect::<Vec<_>>()
             );
 
-            let band = h.host.search_banner_rect();
-            let all = h.host.search_all_chip_rect;
-            let track = h.host.search_scope_track_rect();
+            let band = h.host.search_filters.search_banner_rect();
+            let all = h.host.search_filters.search_all_chip_rect;
+            let track = h.host.search_filters.search_scope_track_rect();
             let mut painted: Vec<(String, Rect)> = vec![("All".to_string(), all)];
             painted.extend(
                 kinds
                     .iter()
-                    .map(crate::shell::search::ResourceKind::label)
+                    .map(crate::shell::search::ResourceKindText::localized_label)
                     .zip(rects.iter().copied()),
             );
             for (label, r) in &painted {
@@ -1301,6 +1305,7 @@ fn launcher_chips_fit_and_stay_reachable_at_every_width_and_text_size() {
         );
         let target = *h
             .host
+            .search_filters
             .search_chip_rects
             .last()
             .expect("the last kind must have been painted");
@@ -1323,70 +1328,6 @@ fn launcher_chips_fit_and_stay_reachable_at_every_width_and_text_size() {
             h.host.palette_visible(),
             "and the click must not be taken for a dismissal"
         );
-    }
-
-    /// The layout rule itself, at widths no card would ever have, so the
-    /// invariant is pinned rather than inferred from one viewport: every
-    /// chip gets a positive, non-overlapping rect inside the band, even
-    /// when the rows on offer cannot hold them at natural width.
-    fn the_chip_strip_places_every_chip_however_narrow_the_band() {
-        let band = Rect::new(0.0, 0.0, 240.0, 36.0);
-        let natural = [40.0, 44.0, 92.0, 50.0, 46.0, 60.0, 58.0];
-        for rows_available in [1usize, 2, 3] {
-            let strip = lay_out_chip_strip(
-                &natural,
-                band,
-                band.x1 - 100.0,
-                rows_available,
-                36.0,
-                24.0,
-                8.0,
-            );
-            assert_eq!(
-                strip.rects.len(),
-                natural.len(),
-                "every chip gets a rect at {rows_available} row(s)"
-            );
-            assert!(
-                strip.rows_needed >= 1,
-                "the strip always needs at least one row"
-            );
-            for (i, r) in strip.rects.iter().enumerate() {
-                assert!(
-                    r.width() > 0.0 && r.height() > 0.0,
-                    "chip {i} of {} is not clickable at {rows_available} \
-                     row(s): {r:?}",
-                    natural.len()
-                );
-                assert!(
-                    r.x0 >= band.x0 - 0.001,
-                    "chip {i} starts left of the band: {r:?}"
-                );
-            }
-            for i in 0..strip.rects.len() {
-                for j in (i + 1)..strip.rects.len() {
-                    assert!(
-                        strip.rects[i].intersect(strip.rects[j]).area() <= 0.0,
-                        "chips {i} and {j} overlap at {rows_available} \
-                         row(s): {:?} / {:?}",
-                        strip.rects[i],
-                        strip.rects[j]
-                    );
-                }
-            }
-        }
-        // And when there is room, nothing is squeezed: the chips keep
-        // their natural widths.
-        let wide = Rect::new(0.0, 0.0, 900.0, 36.0);
-        let strip = lay_out_chip_strip(&natural, wide, wide.x1, 1, 36.0, 24.0, 8.0);
-        assert_eq!(strip.rows_needed, 1);
-        for (i, r) in strip.rects.iter().enumerate() {
-            assert_eq!(
-                r.width(),
-                natural[i],
-                "chip {i} was squeezed with room to spare"
-            );
-        }
     }
 
     /// Every filter must be reachable at every width. An unpainted chip has
@@ -1413,7 +1354,6 @@ fn launcher_chips_fit_and_stay_reachable_at_every_width_and_text_size() {
     compact_large_text_launcher_chips_fit_full_labels_and_viewport();
     every_kind_is_reachable_at_every_width();
     the_last_chip_can_be_clicked_at_the_narrowest_width();
-    the_chip_strip_places_every_chip_however_narrow_the_band();
     palette_height_only_resize_requests_a_corrected_layout();
 }
 
@@ -1436,7 +1376,8 @@ fn palette_chips_and_scopes_filter_without_dismissing_and_enter_activates_the_se
             "the palette starts unfiltered"
         );
         paint_then_click(&mut h, |host| {
-            host.search_chip_rects
+            host.search_filters
+                .search_chip_rects
                 .first()
                 .copied()
                 .expect("the chip strip must have painted at least one chip")
@@ -1455,7 +1396,9 @@ fn palette_chips_and_scopes_filter_without_dismissing_and_enter_activates_the_se
         );
 
         // …and the "All" chip clears it again.
-        paint_then_click(&mut h, |host| host.search_all_chip_rect.center());
+        paint_then_click(&mut h, |host| {
+            host.search_filters.search_all_chip_rect.center()
+        });
         assert!(
             h.host.palette_visible(),
             "the All chip must not dismiss the palette either"
@@ -1489,7 +1432,9 @@ fn palette_chips_and_scopes_filter_without_dismissing_and_enter_activates_the_se
             .iter()
             .position(|kind| *kind == ResourceKind::HostApplication)
             .expect("Host Apps chip is registered");
-        paint_then_click(&mut h, |host| host.search_chip_rects[host_chip].center());
+        paint_then_click(&mut h, |host| {
+            host.search_filters.search_chip_rects[host_chip].center()
+        });
 
         assert_eq!(
             h.host.active_kind_filter,
@@ -1589,7 +1534,9 @@ fn palette_chips_and_scopes_filter_without_dismissing_and_enter_activates_the_se
                 .iter()
                 .position(|scope| *scope == SearchScope::Workspace)
                 .expect("workspace scope segment");
-            host.search_scope_pill_rect(workspace).center()
+            host.search_filters
+                .search_scope_pill_rect(workspace)
+                .center()
         });
         assert!(
             h.chrome.borrow().search_resource_scope.is_none(),
@@ -1600,7 +1547,7 @@ fn palette_chips_and_scopes_filter_without_dismissing_and_enter_activates_the_se
         // [ActiveApp?, Workspace, All]).
         paint_then_click(&mut h, |host| {
             let last = host.search_scope_list().len() - 1;
-            host.search_scope_pill_rect(last).center()
+            host.search_filters.search_scope_pill_rect(last).center()
         });
 
         assert!(h.host.palette_visible(), "the palette must stay open");

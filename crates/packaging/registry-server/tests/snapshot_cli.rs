@@ -18,7 +18,12 @@ use registry_types::{RegistryEntry, RegistryTarget, RegistryVersion, sign_entry}
 
 fn wait_for_registry_lock_waiter(pid: u32) {
     let pid = pid.to_string();
-    for _ in 0..200 {
+    // A freshly spawned CLI can take seconds to reach the lock on a loaded
+    // runner; this only bounds a process that never waits.
+    let deadline = std::time::Instant::now()
+        .checked_add(std::time::Duration::from_secs(30))
+        .unwrap();
+    while std::time::Instant::now() < deadline {
         let locks = std::fs::read_to_string("/proc/locks").unwrap();
         if locks.lines().any(|line| {
             line.contains("-> FLOCK") && line.split_whitespace().any(|field| field == pid)

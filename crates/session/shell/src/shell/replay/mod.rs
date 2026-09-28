@@ -494,7 +494,7 @@ impl ReplayController {
         self.tree.write().admit_collaborator_in_room(
             room,
             Collaborator::new(REPLAY_AGENT, format!("Replay of {}", peer.recorded())).with_role(
-                crate::shell::state::role_label(crate::shell::state::CapRole::Editor),
+                crate::shell::workspace_settings::role_label(crate::shell::state::CapRole::Editor),
             ),
         );
         Ok(peer)

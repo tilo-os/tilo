@@ -20,9 +20,9 @@ use std::collections::HashSet;
 use uuid::Uuid;
 
 use tilo_actions::{
-    Action, ActionArgs, ActionError, ActionRegistry, ActionSpec, ConfirmationPolicy, Doc,
-    EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, Resource, ResourceProvider,
-    ResultSpec, RetryPolicy, RiskLevel,
+    Action, ActionArgs, ActionError, ActionParam, ActionRegistry, ActionSpec, ConfirmationPolicy,
+    Doc, EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource,
+    ResourcePresentation, ResourceProvider, ResultSpec, RetryPolicy, RiskLevel,
 };
 
 use crate::doc::BooksDoc;
@@ -72,6 +72,17 @@ pub enum EbookOperation {
     HydrateSharedBook {
         book_id: String,
     },
+    /// Select a passage of the open book, as a drag would, and reveal its
+    /// page. Blocks count from 0 in the chapter; a character offset counts
+    /// in its block's text, and `end_char` is exclusive (`None`: block end).
+    SelectPassage {
+        book_id: String,
+        chapter: usize,
+        start_block: usize,
+        start_char: usize,
+        end_block: usize,
+        end_char: Option<usize>,
+    },
 }
 
 pub fn operation_kind(operation: &EbookOperation) -> OperationKind {
@@ -81,7 +92,8 @@ pub fn operation_kind(operation: &EbookOperation) -> OperationKind {
         | EbookOperation::ToggleContents
         | EbookOperation::ToggleNotes
         | EbookOperation::OpenSettings
-        | EbookOperation::Reveal { .. } => OperationKind::View,
+        | EbookOperation::Reveal { .. }
+        | EbookOperation::SelectPassage { .. } => OperationKind::View,
         EbookOperation::OpenBook
         | EbookOperation::ShareBook { .. }
         | EbookOperation::HydrateSharedBook { .. } => OperationKind::Effect,
@@ -1388,6 +1400,170 @@ pub struct BookResourceCtx {
     pub bookmark_block: usize,
     pub bookmark: BookmarkPlan,
     pub selection_highlight: Option<HighlightPlan>,
+    /// A note on the live selection, as the toolbar's Note button drafts it;
+    /// each invocation mints its own id and supplies the text.
+    pub selection_note: Option<NoteDraft>,
+    /// The open book's annotations, published as its child resources.
+    pub annotations: Vec<Annotation>,
+}
+
+#[allow(
+    clippy::expect_used,
+    reason = "EbookOperation contains only JSON-representable strings and integers"
+)]
+fn select_passage_operation(book_id: String, chapter: usize) -> ActionSpec {
+    let index = |name: &'static str, required: bool, description: &'static str| {
+        let param = if required {
+            ActionParam::required(name, ParamType::Integer, description)
+        } else {
+            ActionParam::optional(name, ParamType::Integer, description)
+        };
+        param.with_schema(serde_json::json!({"minimum": 0}))
+    };
+    ActionSpec::typed_operation(
+        "select-passage",
+        "Select passage",
+        "select a passage by paragraph and character",
+        OperationKind::View,
+        EBOOK_OPERATION_TYPE,
+        vec![
+            index(
+                "start_block",
+                true,
+                "Block (paragraph or heading) the selection starts in, counted from 0 in the chapter",
+            ),
+            index(
+                "start_char",
+                false,
+                "Character offset into the start block; 0 when omitted",
+            ),
+            index(
+                "end_block",
+                false,
+                "Block the selection ends in; the start block when omitted",
+            ),
+            index(
+                "end_char",
+                false,
+                "Exclusive character offset into the end block; the block's end when omitted",
+            ),
+            index(
+                "chapter",
+                false,
+                "Chapter, counted from 0; the open chapter when omitted",
+            ),
+        ],
+        move |args: &ActionArgs| {
+            let value = |name| args.integer(name).and_then(|v| usize::try_from(v).ok());
+            let start_block = value("start_block").unwrap_or(0);
+            let operation = EbookOperation::SelectPassage {
+                book_id: book_id.clone(),
+                chapter: value("chapter").unwrap_or(chapter),
+                start_block,
+                start_char: value("start_char").unwrap_or(0),
+                end_block: value("end_block").unwrap_or(start_block),
+                end_char: value("end_char"),
+            };
+            EncodedAction {
+                type_id: EBOOK_OPERATION_TYPE.into(),
+                payload: serde_json::to_vec(&operation).expect("EbookOperation serializes"),
+            }
+        },
+    )
+}
+
+/// The open book's annotations as resources: one per highlight (its comments
+/// beneath it), note and bookmark, with the ids search resolves, each opening
+/// its passage.
+fn annotation_resources(annotations: &[Annotation]) -> Vec<Resource> {
+    let open = |annotation: &Annotation| {
+        operation(
+            "open",
+            "Show in book",
+            OperationKind::View,
+            EbookOperation::Reveal {
+                book_id: annotation.doc_id.clone(),
+                chapter: annotation.chapter,
+                page: 0,
+                block: Some(annotation.block),
+            },
+        )
+    };
+    let presentation = |annotation: &Annotation| {
+        let mut preview: String = annotation.excerpt.trim().to_string();
+        while preview.len() > ResourcePresentation::MAX_PREVIEW_BYTES {
+            preview.pop();
+        }
+        ResourcePresentation {
+            detail: Some(format!(
+                "Chapter {} · {}",
+                annotation.chapter + 1,
+                annotation.color.as_str()
+            )),
+            badge: Some(annotation.kind.label().into()),
+            preview: (!preview.is_empty()).then_some(preview),
+        }
+    };
+    let label = |annotation: &Annotation| {
+        let text = if annotation.note.trim().is_empty() {
+            annotation.excerpt.trim()
+        } else {
+            annotation.note.trim()
+        };
+        text.split_whitespace().collect::<Vec<_>>().join(" ")
+    };
+    let mut resources: Vec<Resource> = Vec::new();
+    for annotation in annotations {
+        let comment = annotation.kind == AnnoKind::Note && annotation.group != annotation.id;
+        if comment {
+            continue;
+        }
+        let (id, kind) = match annotation.kind {
+            AnnoKind::Highlight => (
+                format!("ebook.highlight:{}", annotation.group),
+                "ebook.highlight",
+            ),
+            AnnoKind::Bookmark => (
+                format!("ebook.bookmark:{}", annotation.id),
+                "ebook.bookmark",
+            ),
+            AnnoKind::Note => (format!("ebook.note:{}", annotation.id), "ebook.note"),
+        };
+        if let Some(existing) = resources
+            .iter_mut()
+            .find(|resource| resource.id.as_str() == id)
+        {
+            // A later piece of a multi-block highlight extends its label.
+            existing.label = format!("{} {}", existing.label, label(annotation));
+            continue;
+        }
+        resources.push(
+            Resource::new(id, kind, label(annotation))
+                .with_presentation(presentation(annotation))
+                .with_action(open(annotation)),
+        );
+    }
+    for annotation in annotations {
+        if annotation.kind != AnnoKind::Note || annotation.group == annotation.id {
+            continue;
+        }
+        let parent = format!("ebook.highlight:{}", annotation.group);
+        if let Some(highlight) = resources
+            .iter_mut()
+            .find(|resource| resource.id.as_str() == parent)
+        {
+            highlight.children.push(
+                Resource::new(
+                    format!("ebook.comment:{}", annotation.id),
+                    "ebook.comment",
+                    label(annotation),
+                )
+                .with_presentation(presentation(annotation))
+                .with_action(open(annotation)),
+            );
+        }
+    }
+    resources
 }
 
 // Same infallibility as `encode` above: `ActionSpec::immediate` can only fail
@@ -1416,6 +1592,28 @@ pub(crate) fn current_book_actions(mut resource: Resource, ctx: &BookResourceCtx
             &plan.clone().into_action(),
         ));
     }
+    if let Some(draft) = &ctx.selection_note {
+        let draft = draft.clone();
+        resource = resource.with_action(ActionSpec::prompted(
+            "note-selection",
+            "Add note to selection",
+            "Note",
+            "your note…",
+            ExecutionLocus::ClientLocal,
+            move |text| {
+                encode(
+                    &NoteDraft {
+                        id: Uuid::new_v4(),
+                        text: text.to_string(),
+                        ..draft.clone()
+                    }
+                    .into_action(),
+                )
+            },
+        ));
+    }
+    resource = resource.with_action(select_passage_operation(ctx.book_id.clone(), ctx.chapter));
+    resource.children = annotation_resources(&ctx.annotations);
     let book_id = ctx.book_id.clone();
     let chapter = ctx.chapter;
     let block = ctx.bookmark_block;

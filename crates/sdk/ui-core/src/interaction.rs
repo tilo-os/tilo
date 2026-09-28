@@ -135,6 +135,12 @@ impl InputAvailability {
     pub const fn contains(self, device: InputDevice) -> bool {
         self.0 & device as u8 != 0
     }
+
+    /// Every device present in either set.
+    #[must_use]
+    pub const fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
 }
 
 impl Default for InputAvailability {
@@ -224,22 +230,30 @@ impl InteractionEnvironment {
         matches!(self.pointer_precision, PointerPrecision::Fine)
     }
 
-    /// Input language to lead with in shortcut help. A controller takes over
-    /// only after the person actually used it; otherwise a physical keyboard
-    /// is more efficient than touch, with touch as the no-keyboard fallback.
-    /// Pointer instructions accompany keyboard hints rather than becoming a
-    /// separate primary language.
+    /// Input language to lead with in shortcut help: the one the person used
+    /// last. Typing after touch leads with keyboard shortcuts, touching after
+    /// typing leads with gestures, and a controller leads only while it is
+    /// still connected. Pointer use carries no instructions of its own, so it
+    /// defers to keyboard hints when a keyboard exists and to gestures on a
+    /// touch-only device.
     pub const fn preferred_hint_modality(self) -> InputModality {
-        if matches!(self.modality, InputModality::Controller)
-            && self.available.contains(InputDevice::Controller)
-        {
-            InputModality::Controller
-        } else if self.available.contains(InputDevice::Keyboard) {
-            InputModality::Keyboard
-        } else if self.available.contains(InputDevice::Touch) {
-            InputModality::Touch
-        } else {
-            InputModality::Pointer
+        match self.modality {
+            InputModality::Controller if self.available.contains(InputDevice::Controller) => {
+                InputModality::Controller
+            }
+            InputModality::Touch => InputModality::Touch,
+            InputModality::Keyboard => InputModality::Keyboard,
+            InputModality::Pointer | InputModality::Controller => {
+                if self.available.contains(InputDevice::Keyboard) {
+                    InputModality::Keyboard
+                } else if self.available.contains(InputDevice::Touch)
+                    && !self.available.contains(InputDevice::Pointer)
+                {
+                    InputModality::Touch
+                } else {
+                    InputModality::Pointer
+                }
+            }
         }
     }
 
@@ -710,23 +724,72 @@ mod tests {
             assert_eq!(env.controller, Some(ControllerFamily::JoyConPair));
         }
 
-        // Case `hint_priority_is_used_controller_then_keyboard_then_touch`.
+        // Case `the_last_used_input_leads_shortcut_help`.
         {
             let all = InteractionEnvironment::POINTER
                 .with_touch_modality()
                 .with_controller(ControllerFamily::Xbox);
             assert_eq!(all.preferred_hint_modality(), InputModality::Controller);
-            let keyboard_last = all.with_keyboard_modality();
+            let typed = all.with_keyboard_modality();
+            assert_eq!(typed.preferred_hint_modality(), InputModality::Keyboard);
+            let touched_after_typing = typed.with_touch_modality();
             assert_eq!(
-                keyboard_last.preferred_hint_modality(),
+                touched_after_typing.preferred_hint_modality(),
+                InputModality::Touch,
+                "a connected keyboard must not hide gesture help from someone using touch"
+            );
+            assert_eq!(
+                touched_after_typing
+                    .with_keyboard_modality()
+                    .preferred_hint_modality(),
                 InputModality::Keyboard
             );
+        }
+
+        // Case `pointer_use_defers_to_keyboard_or_touch_by_available_devices`.
+        {
+            let desktop = InteractionEnvironment {
+                available: InputAvailability::NONE
+                    .with(InputDevice::Keyboard)
+                    .with(InputDevice::Pointer),
+                ..InteractionEnvironment::POINTER
+            };
+            assert_eq!(desktop.preferred_hint_modality(), InputModality::Keyboard);
+
             let touch_only = InteractionEnvironment {
-                modality: InputModality::Touch,
+                modality: InputModality::Pointer,
                 available: InputAvailability::NONE.with(InputDevice::Touch),
                 ..InteractionEnvironment::TOUCH
             };
             assert_eq!(touch_only.preferred_hint_modality(), InputModality::Touch);
+
+            let mouse_only = InteractionEnvironment {
+                available: InputAvailability::NONE.with(InputDevice::Pointer),
+                ..InteractionEnvironment::POINTER
+            };
+            assert_eq!(mouse_only.preferred_hint_modality(), InputModality::Pointer);
+
+            let nothing_known = InteractionEnvironment {
+                available: InputAvailability::NONE,
+                ..InteractionEnvironment::POINTER
+            };
+            assert_eq!(
+                nothing_known.preferred_hint_modality(),
+                InputModality::Pointer
+            );
+        }
+
+        // Case `a_disconnected_controller_no_longer_leads_help`.
+        {
+            let unplugged = InteractionEnvironment {
+                modality: InputModality::Controller,
+                available: InputAvailability::NONE
+                    .with(InputDevice::Keyboard)
+                    .with(InputDevice::Pointer),
+                controller: Some(ControllerFamily::Xbox),
+                ..InteractionEnvironment::POINTER
+            };
+            assert_eq!(unplugged.preferred_hint_modality(), InputModality::Keyboard);
         }
 
         // Case `availability_is_an_idempotent_set_of_independent_devices`.

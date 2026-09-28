@@ -180,6 +180,25 @@ impl RulesetSpec {
             trim_file_rights: true,
         }
     }
+
+    /// A ruleset for a process that needs no path and no network at all:
+    /// every filesystem right and TCP bind and connect handled, none
+    /// granted.
+    ///
+    /// Best effort, unlike [`RulesetSpec::application`]: a kernel without
+    /// some of these rights still enforces the rest. Meant for a process
+    /// whose seccomp allow-list already excludes every path and socket
+    /// syscall, so Landlock is a second layer there, not the only one.
+    pub fn deny_all() -> Self {
+        RulesetSpec {
+            compat: CompatLevel::BestEffort,
+            handled_fs: AccessFs::from_all(FS_ABI),
+            handled_net: AccessNet::from_all(ABI::V4),
+            connect_ports: Vec::new(),
+            rules: Vec::new(),
+            trim_file_rights: true,
+        }
+    }
 }
 
 /// Build the ruleset `spec` describes and restrict the calling process to it.
@@ -418,5 +437,13 @@ mod tests {
             "10 = write not blocked, 11 = granted read denied, \
              12 = the ruleset was not fully enforced"
         );
+    }
+
+    #[test]
+    fn deny_all_grants_nothing_it_handles() {
+        let spec = RulesetSpec::deny_all();
+        assert!(spec.rules.is_empty() && spec.connect_ports.is_empty());
+        assert_eq!(spec.handled_fs, AccessFs::from_all(FS_ABI));
+        assert_eq!(spec.handled_net, AccessNet::from_all(ABI::V4));
     }
 }

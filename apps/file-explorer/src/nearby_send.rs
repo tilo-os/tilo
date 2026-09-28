@@ -90,27 +90,20 @@ impl NearbySendState {
     /// Queue an exact Unix path for the shell-owned transfer service.
     ///
     /// # Errors
-    /// Other hosts cannot represent local paths in this Unix service protocol.
-    #[cfg(unix)]
+    /// Hosts whose paths are not Unix byte strings cannot represent local
+    /// paths in this service protocol; nothing is queued.
     pub fn send(&mut self, path: &Path, target: NearbyTargetHandle) -> Result<(), String> {
-        use std::os::unix::ffi::OsStrExt as _;
+        let Some(source_path) = host_fs::names::unix_path_bytes(path) else {
+            return Err(crate::i18n::t("files-share-not-available"));
+        };
         self.queue(
             NearbyTransferCommand::Send {
                 target,
-                source_path: path.as_os_str().as_bytes().to_vec(),
+                source_path: source_path.to_vec(),
             },
             Pending::Send,
         );
         Ok(())
-    }
-
-    /// Native Windows paths cannot be sent to the Unix-only file authority.
-    ///
-    /// # Errors
-    /// Returns the host's unavailable-service error without queuing a request.
-    #[cfg(not(unix))]
-    pub fn send(&mut self, _path: &Path, _target: NearbyTargetHandle) -> Result<(), String> {
-        Err(crate::i18n::t("files-share-not-available"))
     }
 
     pub fn decide(

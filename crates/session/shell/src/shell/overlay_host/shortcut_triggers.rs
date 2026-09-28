@@ -168,11 +168,14 @@ impl ShellOverlayHost {
                 state.local_user_for_room(&workspace.room)
             });
             let chords = trigger_chords(&armed);
-            let triggers = &mut self.shortcut_triggers;
-            let mut firings = triggers.triggers.observe(event, &armed);
+            let mut firings = self.shortcut_triggers.triggers.observe(event, &armed);
             if ticking {
                 if let Some(apps) = &apps {
-                    firings.extend(triggers.triggers.observe(TriggerEvent::Apps(apps), &armed));
+                    firings.extend(
+                        self.shortcut_triggers
+                            .triggers
+                            .observe(TriggerEvent::Apps(apps), &armed),
+                    );
                 }
                 let workspaces: BTreeMap<String, String> = tree
                     .desktop
@@ -181,23 +184,23 @@ impl ShellOverlayHost {
                     .map(|workspace| (workspace.room.to_string(), workspace.name.clone()))
                     .collect();
                 firings.extend(
-                    triggers
+                    self.shortcut_triggers
                         .triggers
                         .observe(TriggerEvent::Workspaces(&workspaces), &armed),
                 );
-                let focus = focus_state(&state, triggers.triggers.clock());
+                let focus = focus_state(&state, self.shortcut_triggers.triggers.clock());
                 firings.extend(
-                    triggers
+                    self.shortcut_triggers
                         .triggers
                         .observe(TriggerEvent::Focus(focus), &armed),
                 );
-                triggers
+                self.shortcut_triggers
                     .folders
                     .watch(watched_folders(&tree.desktop.workspaces, &armed));
-                let changes = triggers.folders.changes();
+                let changes = self.shortcut_triggers.folders.changes();
                 if !changes.is_empty() {
                     firings.extend(
-                        triggers
+                        self.shortcut_triggers
                             .triggers
                             .observe(TriggerEvent::Files(&changes), &armed),
                     );
@@ -277,7 +280,7 @@ impl ShellOverlayHost {
                         tilo_automation::TriggerSpec::Keyboard { .. }
                     ) {
                         chrome.borrow_mut().push_warning_notification(
-                            "The shortcut didn't run",
+                            crate::shell::i18n::t("shortcut-trigger-failed"),
                             error.to_string(),
                         );
                     }
@@ -401,10 +404,10 @@ impl ShellOverlayHost {
             confirmation: None,
             revision: None,
         };
-        let refusal = match BrokerActionHost::new(broker)
+        let outcome = BrokerActionHost::new(broker)
             .invoke_job(&caller, request)
-            .poll_ready()
-        {
+            .poll_ready();
+        let refusal = match outcome {
             PendingPoll::Ready(Ok(_)) => None,
             PendingPoll::Ready(Err(error)) => Some(error.to_string()),
             PendingPoll::Waiting | PendingPoll::Abandoned => {

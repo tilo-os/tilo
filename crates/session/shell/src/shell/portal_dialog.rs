@@ -763,7 +763,7 @@ impl PortalDialogQueue {
                 detail: action_grant_detail(request),
                 choices: AppActionConsent::ALLOWING
                     .iter()
-                    .map(|answer| answer.label())
+                    .map(|answer| crate::shell::app_action_consent::consent_label(*answer))
                     .collect(),
             }),
             PendingDialog::UsbDevices {
@@ -1312,7 +1312,9 @@ impl DialogView {
     /// The label of the button that answers no.
     pub fn cancel_label(&self) -> String {
         match self {
-            Self::ActionGrant { .. } => AppActionConsent::Deny.label(),
+            Self::ActionGrant { .. } => {
+                crate::shell::app_action_consent::consent_label(AppActionConsent::Deny)
+            }
             _ => t("portal-cancel"),
         }
     }

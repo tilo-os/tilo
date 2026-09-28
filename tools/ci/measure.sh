@@ -28,11 +28,15 @@ else
     "$(( $(date +%s) - start ))" > "$timing"
 fi
 
+# The container's peak memory so far, success or not: the headroom job
+# parallelism is tuned against.
+if [ -r "$cgroup_root/memory.peak" ]; then
+  echo "cgroup_memory_peak=$(cat "$cgroup_root/memory.peak")" >> "$timing"
+fi
 echo "==> ${label} measurements"
 sed 's/^/    /' "$timing"
 if [ "$status" -ne 0 ] && [ -r "$cgroup_root/memory.events" ]; then
   [ ! -r "$cgroup_root/memory.max" ] || echo "    cgroup_memory_max=$(cat "$cgroup_root/memory.max")"
-  [ ! -r "$cgroup_root/memory.peak" ] || echo "    cgroup_memory_peak=$(cat "$cgroup_root/memory.peak")"
   echo "    cgroup_memory_events_before=$(printf '%s' "$memory_events_before" | tr '\n' ' ')"
   echo "    cgroup_memory_events_after=$(tr '\n' ' ' < "$cgroup_root/memory.events")"
 fi
@@ -43,7 +47,6 @@ if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
     cat "$timing"
     if [ "$status" -ne 0 ] && [ -r "$cgroup_root/memory.events" ]; then
       [ ! -r "$cgroup_root/memory.max" ] || echo "cgroup_memory_max=$(cat "$cgroup_root/memory.max")"
-      [ ! -r "$cgroup_root/memory.peak" ] || echo "cgroup_memory_peak=$(cat "$cgroup_root/memory.peak")"
       echo "cgroup_memory_events_before=$(printf '%s' "$memory_events_before" | tr '\n' ' ')"
       echo "cgroup_memory_events_after=$(tr '\n' ' ' < "$cgroup_root/memory.events")"
     fi

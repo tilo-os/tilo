@@ -108,6 +108,11 @@ class PayloadTests(unittest.TestCase):
             self.write("usr/share/fex-emu/GuestThunks_32/libextra-guest.so", elf(2, 62))
             with self.assertRaisesRegex(PAYLOAD.InvalidPayload, "architecture"):
                 PAYLOAD.validate(self.root)
+        restart_fixture(self)
+        with self.subTest(phase="qt_configuration_frontend_rejected"):
+            self.write("usr/bin/FEXConfig", elf(2, 183, 2)).chmod(0o755)
+            with self.assertRaisesRegex(PAYLOAD.InvalidPayload, "BUILD_FEXCONFIG=OFF"):
+                PAYLOAD.validate(self.root)
 
     def test_entrypoint_and_symlinks(self):
         with self.subTest(phase="native_entrypoint_requires_execute_permission"):

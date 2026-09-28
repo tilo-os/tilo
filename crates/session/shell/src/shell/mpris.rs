@@ -1825,7 +1825,10 @@ mod tests {
 
             release_mutation_tx.send(()).unwrap();
             assert_eq!(mutation.join().unwrap(), Some(()));
-            assert!(cancelled_rx.recv_timeout(Duration::from_secs(1)).unwrap());
+            assert!(tilo_test_env::recv(
+                "a message on cancelled_rx",
+                &cancelled_rx
+            ));
             cancellation.join().unwrap();
             assert_eq!(mutate_now(&authority, || panic!("late mutation ran")), None);
             resumes.lock().unwrap().finish(&authority, true);

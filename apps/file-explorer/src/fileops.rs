@@ -7,8 +7,6 @@
 //! handling is centralised in [`unique_destination`] so copy/move never
 //! silently clobber an existing file.
 
-#[cfg(all(unix, not(target_os = "macos")))]
-use std::ffi::OsStr;
 use std::fmt::Write as _;
 use std::path::{Component, Path, PathBuf};
 
@@ -24,8 +22,7 @@ fn leaf_name(name: &str) -> Result<&str, String> {
     if name.is_empty() {
         return Err(crate::i18n::t("files-name-empty"));
     }
-    #[cfg(windows)]
-    if name.contains(':') || name.ends_with('.') {
+    if host_fs::names::rejected_by_host(name) {
         return Err(crate::i18n::t("files-name-invalid"));
     }
     let path = Path::new(name);
@@ -57,21 +54,7 @@ fn ensure_destination_is_outside_source(src: &Path, dest_dir: &Path) -> Result<(
 
 // --- trash ----------------------------------------------------------------
 
-/// The XDG "home trash" files directory (`~/.local/share/Trash/files`), where
-/// trashed files are kept. `None` when there is no data dir.
-pub fn trash_dir() -> Option<PathBuf> {
-    #[cfg(windows)]
-    {
-        None
-    }
-    #[cfg(not(windows))]
-    xdg_paths::data_dir().map(|d| d.join("Trash").join("files"))
-}
-
-/// Whether `path` is the home-trash files directory.
-pub fn is_trash_dir(path: &Path) -> bool {
-    trash_dir().is_some_and(|t| path == t)
-}
+pub use host_fs::trash::{is_trash_dir, trash_dir};
 
 /// Ensure the trash files directory exists, so opening an empty trash shows an
 /// empty listing rather than a "no such directory" error. Returns the dir.
@@ -104,39 +87,8 @@ pub fn trash_entries_snapshot() -> Option<Vec<PathBuf>> {
 ///
 /// Returns an error if the platform trash is unavailable, or listing or
 /// purging its items fails.
-#[cfg(not(target_os = "macos"))]
 pub fn empty_trash() -> Result<usize, String> {
-    let items = trash::os_limited::list().map_err(|e| e.to_string())?;
-    let n = items.len();
-    trash::os_limited::purge_all(items).map_err(|e| e.to_string())?;
-    Ok(n)
-}
-
-/// Whether trash `item` backs the in-trash file named `files_name` (the name
-/// shown in `Trash/files`). The item's `.trashinfo` file is
-/// `Trash/info/<files_name>.trashinfo`, so match on that.
-#[cfg(all(unix, not(target_os = "macos")))]
-fn trash_item_backs(item: &trash::TrashItem, files_name: &OsStr) -> bool {
-    Path::new(&item.id)
-        .file_name()
-        .and_then(|f| f.to_str())
-        .and_then(|f| f.strip_suffix(".trashinfo"))
-        .is_some_and(|stem| OsStr::new(stem) == files_name)
-}
-
-/// The trash items backing the given in-trash file paths (matched by their
-/// `.trashinfo` file name, which is robust to on-trash name deduplication).
-#[cfg(all(unix, not(target_os = "macos")))]
-fn trash_items_for(entries: &[PathBuf]) -> Result<Vec<trash::TrashItem>, String> {
-    let wanted: Vec<_> = entries
-        .iter()
-        .filter_map(|p| p.file_name().map(std::borrow::ToOwned::to_owned))
-        .collect();
-    Ok(trash::os_limited::list()
-        .map_err(|e| e.to_string())?
-        .into_iter()
-        .filter(|it| wanted.iter().any(|w| trash_item_backs(it, w)))
-        .collect())
+    host_fs::trash::empty()
 }
 
 /// Restore the trashed items backing `entries` to their original locations.
@@ -147,12 +99,8 @@ fn trash_items_for(entries: &[PathBuf]) -> Result<Vec<trash::TrashItem>, String>
 /// Returns an error if the platform trash is unavailable, or listing or
 /// restoring the matched items fails (e.g. the original location no longer
 /// exists).
-#[cfg(all(unix, not(target_os = "macos")))]
 pub fn restore_entries(entries: &[PathBuf]) -> Result<usize, String> {
-    let items = trash_items_for(entries)?;
-    let n = items.len();
-    trash::os_limited::restore_all(items).map_err(|e| e.to_string())?;
-    Ok(n)
+    host_fs::trash::restore(entries)
 }
 
 /// Permanently delete the trashed items backing `entries` (file + info).
@@ -162,12 +110,8 @@ pub fn restore_entries(entries: &[PathBuf]) -> Result<usize, String> {
 ///
 /// Returns an error if the platform trash is unavailable, or listing or
 /// purging the matched items fails.
-#[cfg(all(unix, not(target_os = "macos")))]
 pub fn purge_entries(entries: &[PathBuf]) -> Result<usize, String> {
-    let items = trash_items_for(entries)?;
-    let n = items.len();
-    trash::os_limited::purge_all(items).map_err(|e| e.to_string())?;
-    Ok(n)
+    host_fs::trash::purge(entries)
 }
 
 /// Pick a non-colliding path for `name` inside `dir`. If `dir/name` is
@@ -420,7 +364,7 @@ fn quarantine_source(src: &Path) -> std::io::Result<PathBuf> {
         let quarantine = parent.join(format!(".tilo-transfer-source-{}", uuid::Uuid::new_v4()));
         match rename_noreplace(src, &quarantine) {
             Ok(()) => {
-                if let Err(error) = mark_private_path(&quarantine) {
+                if let Err(error) = host_fs::mark_private(&quarantine) {
                     return match rename_noreplace(&quarantine, src) {
                         Ok(()) => Err(error),
                         Err(rollback_error) => Err(std::io::Error::new(
@@ -607,7 +551,7 @@ fn stage_private_copy(
 ) -> std::io::Result<StagingPath> {
     for _ in 0..32 {
         let container = dest_dir.join(format!(".tilo-transfer-{}", uuid::Uuid::new_v4()));
-        match create_private_container(&container) {
+        match host_fs::create_private_dir(&container) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(error) => return Err(error),
@@ -641,83 +585,10 @@ fn stage_private_copy(
     ))
 }
 
-/// Rename without replacement. These are the only host-specific pieces of the
-/// transfer algorithm; all staging, cleanup and retry policy is shared.
-#[cfg(target_os = "linux")]
-fn rename_noreplace(src: &Path, dest: &Path) -> std::io::Result<()> {
-    use std::os::unix::ffi::OsStrExt;
-
-    let src = std::ffi::CString::new(src.as_os_str().as_bytes())
-        .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
-    let dest = std::ffi::CString::new(dest.as_os_str().as_bytes())
-        .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
-    // SAFETY: both pointers refer to live, NUL-terminated path buffers.
-    let result = unsafe {
-        libc::syscall(
-            libc::SYS_renameat2,
-            libc::AT_FDCWD,
-            src.as_ptr(),
-            libc::AT_FDCWD,
-            dest.as_ptr(),
-            libc::RENAME_NOREPLACE,
-        )
-    };
-    if result == 0 {
-        Ok(())
-    } else {
-        Err(std::io::Error::last_os_error())
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn rename_noreplace(src: &Path, dest: &Path) -> std::io::Result<()> {
-    use std::os::unix::ffi::OsStrExt;
-
-    unsafe extern "C" {
-        fn renamex_np(
-            from: *const libc::c_char,
-            to: *const libc::c_char,
-            flags: u32,
-        ) -> libc::c_int;
-    }
-    const RENAME_EXCL: u32 = 0x0000_0004;
-    let src = std::ffi::CString::new(src.as_os_str().as_bytes())
-        .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
-    let dest = std::ffi::CString::new(dest.as_os_str().as_bytes())
-        .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
-    // SAFETY: both pointers refer to live, NUL-terminated path buffers.
-    let result = unsafe { renamex_np(src.as_ptr(), dest.as_ptr(), RENAME_EXCL) };
-    if result == 0 {
-        Ok(())
-    } else {
-        Err(std::io::Error::last_os_error())
-    }
-}
-
-#[cfg(windows)]
-fn rename_noreplace(src: &Path, dest: &Path) -> std::io::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
-
-    #[link(name = "Kernel32")]
-    unsafe extern "system" {
-        fn MoveFileW(existing: *const u16, new: *const u16) -> i32;
-    }
-
-    let src: Vec<u16> = src.as_os_str().encode_wide().chain(Some(0)).collect();
-    let dest: Vec<u16> = dest.as_os_str().encode_wide().chain(Some(0)).collect();
-    // SAFETY: both pointers refer to live, NUL-terminated UTF-16 path buffers.
-    let result = unsafe { MoveFileW(src.as_ptr(), dest.as_ptr()) };
-    if result != 0 {
-        Ok(())
-    } else {
-        Err(std::io::Error::last_os_error())
-    }
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
-fn rename_noreplace(_src: &Path, _dest: &Path) -> std::io::Result<()> {
-    Err(std::io::Error::from(std::io::ErrorKind::Unsupported))
-}
+// Rename without replacement, private staging and symlink copies are the only
+// host-specific pieces of the transfer algorithm; all staging, cleanup and
+// retry policy is shared.
+use host_fs::rename_noreplace;
 
 fn destination_inspection_error(path: &Path, error: &std::io::Error) -> String {
     crate::i18n::t_args(
@@ -809,94 +680,14 @@ fn copy_capability_entry(
     destination.set_permissions(metadata.permissions())
 }
 
-#[cfg(unix)]
 fn create_symlink(target: &Path, dest: &Path) -> std::io::Result<()> {
-    use std::os::unix::fs::symlink;
-    symlink(target, dest)
-}
-
-#[cfg(unix)]
-fn create_private_container(path: &Path) -> std::io::Result<()> {
-    use std::os::unix::fs::DirBuilderExt;
-    let mut builder = std::fs::DirBuilder::new();
-    builder.mode(0o700).create(path)
-}
-
-#[cfg(not(windows))]
-#[expect(
-    clippy::unnecessary_wraps,
-    reason = "signature matches the fallible Windows implementation so callers stay platform-neutral"
-)]
-fn mark_private_path(_path: &Path) -> std::io::Result<()> {
-    Ok(())
-}
-
-#[cfg(windows)]
-fn create_private_container(path: &Path) -> std::io::Result<()> {
-    std::fs::create_dir(path)?;
-    if let Err(error) = mark_private_path(path) {
-        let _ = std::fs::remove_dir(path);
-        return Err(error);
+    if !host_fs::HAS_SYMLINKS {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "copying symbolic links is not supported on this platform",
+        ));
     }
-    Ok(())
-}
-
-#[cfg(windows)]
-fn mark_private_path(path: &Path) -> std::io::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
-
-    #[link(name = "Kernel32")]
-    unsafe extern "system" {
-        fn GetFileAttributesW(path: *const u16) -> u32;
-        fn SetFileAttributesW(path: *const u16, attributes: u32) -> i32;
-    }
-    const FILE_ATTRIBUTE_HIDDEN: u32 = 0x0000_0002;
-    const INVALID_FILE_ATTRIBUTES: u32 = u32::MAX;
-
-    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
-    // SAFETY: `wide` is a live, NUL-terminated UTF-16 path buffer for both
-    // calls. Existing attributes are retained while adding Hidden.
-    let attributes = unsafe { GetFileAttributesW(wide.as_ptr()) };
-    if attributes == INVALID_FILE_ATTRIBUTES {
-        return Err(std::io::Error::last_os_error());
-    }
-    if unsafe { SetFileAttributesW(wide.as_ptr(), attributes | FILE_ATTRIBUTE_HIDDEN) } != 0 {
-        Ok(())
-    } else {
-        Err(std::io::Error::last_os_error())
-    }
-}
-
-#[cfg(not(any(unix, windows)))]
-fn create_private_container(path: &Path) -> std::io::Result<()> {
-    std::fs::create_dir(path)
-}
-
-#[cfg(not(unix))]
-fn create_symlink(_target: &Path, _dest: &Path) -> std::io::Result<()> {
-    Err(std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        "copying symbolic links is not supported on this platform",
-    ))
-}
-
-/// # Errors
-/// This host has no qualified trash-enumeration and purge provider.
-#[cfg(target_os = "macos")]
-pub fn empty_trash() -> Result<usize, String> {
-    Err("Trash management is unavailable on this host".into())
-}
-/// # Errors
-/// This host has no qualified trash-restore provider.
-#[cfg(any(windows, target_os = "macos"))]
-pub fn restore_entries(_entries: &[PathBuf]) -> Result<usize, String> {
-    Err("Trash restore is unavailable on this host".into())
-}
-/// # Errors
-/// This host has no qualified trash-item purge provider.
-#[cfg(any(windows, target_os = "macos"))]
-pub fn purge_entries(_entries: &[PathBuf]) -> Result<usize, String> {
-    Err("Trash purge is unavailable on this host".into())
+    host_fs::symlink(target, dest)
 }
 
 #[cfg(test)]

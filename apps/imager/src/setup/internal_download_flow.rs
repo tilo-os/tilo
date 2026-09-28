@@ -856,7 +856,7 @@ mod tests {
         atomic::{AtomicBool, Ordering},
         mpsc,
     };
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     fn release() -> InternalRelease {
         let bytes = internal_bundle::tests::bytes(&internal_bundle::tests::fixture());
@@ -872,15 +872,10 @@ mod tests {
     }
 
     fn wait_for(flow: &mut InternalDownloadFlow, phase: Phase) {
-        let deadline = Instant::now() + crate::HANG_BOUND;
-        loop {
+        tilo_test_env::wait_until(format_args!("the download flow to reach {phase:?}"), || {
             flow.poll();
-            if flow.presentation().phase == Some(phase) {
-                return;
-            }
-            assert!(Instant::now() < deadline, "timed out waiting for {phase:?}");
-            std::thread::sleep(Duration::from_millis(2));
-        }
+            flow.presentation().phase == Some(phase)
+        });
     }
 
     /// Saved and offered selection, preference round trip and failures.
@@ -1112,7 +1107,7 @@ mod tests {
                 "x86_64",
             );
             flow.start_selected(key.clone()).unwrap();
-            blocked_rx.recv_timeout(crate::HANG_BOUND).unwrap();
+            tilo_test_env::recv("the download to block", &blocked_rx);
             let token = flow.token.clone().unwrap();
             let preference_inode = std::fs::metadata(&preference_path).unwrap().ino();
             let catalogs = flow.catalogs.len();
@@ -1236,7 +1231,7 @@ mod tests {
                 "x86_64",
             );
             flow.start_selected(key).unwrap();
-            blocked_rx.recv_timeout(crate::HANG_BOUND).unwrap();
+            tilo_test_env::recv("the download to block", &blocked_rx);
             let first_token = flow.token.clone().unwrap();
             flow.pause().unwrap();
             assert!(flow.presentation().pending);
@@ -1312,7 +1307,7 @@ mod tests {
                 "x86_64",
             );
             flow.start_selected(key).unwrap();
-            blocked_rx.recv_timeout(crate::HANG_BOUND).unwrap();
+            tilo_test_env::recv("the download to block", &blocked_rx);
             let transfer_token = flow.token.clone().unwrap();
             flow.cancel().unwrap();
             flow.poll();
@@ -1408,7 +1403,7 @@ mod tests {
                 "x86_64",
             );
             flow.start_selected(key).unwrap();
-            entered_rx.recv_timeout(crate::HANG_BOUND).unwrap();
+            tilo_test_env::recv("the download request", &entered_rx);
             let unblock = std::thread::spawn(move || {
                 std::thread::sleep(Duration::from_millis(25));
                 continue_tx.send(()).unwrap();

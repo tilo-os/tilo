@@ -4254,31 +4254,28 @@ fn dev_build_cancels_when_a_newer_source_edit_arrives() {
     let leader_watch = leader.clone();
     let sleeper_watch = sleeper.clone();
     let source = app.join("src/main.rs");
-    std::thread::spawn(move || {
-        let Some(deadline) = Instant::now().checked_add(Duration::from_secs(2)) else {
-            return;
-        };
-        while Instant::now() < deadline {
-            if leader_watch.is_file() && sleeper_watch.is_file() {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
+    let edited = std::sync::Arc::new(std::sync::OnceLock::new());
+    let edited_at = edited.clone();
+    let watcher = std::thread::spawn(move || {
+        tilo_test_env::wait_until("the fake cargo and its child to start", || {
+            leader_watch.is_file() && sleeper_watch.is_file()
+        });
+        let _ = edited_at.set(Instant::now());
         let _ = sender.send(Ok(Event::new(EventKind::Modify(
             notify::event::ModifyKind::Any,
         ))
         .add_path(source)));
     });
-    let started = Instant::now();
     let outcome = build_dev_candidate_interruptible(&plan, Some(&events), &roots, |_| {}).unwrap();
+    watcher.join().unwrap();
     assert!(
         matches!(outcome, DevCandidate::Superseded),
         "a source edit during the build must cancel it"
     );
+    let cancel = edited.get().expect("the edit was sent").elapsed();
     assert!(
-        started.elapsed() < Duration::from_secs(2),
-        "cancelling a stale build took {:?}",
-        started.elapsed()
+        cancel < Duration::from_secs(2),
+        "cancelling a stale build took {cancel:?}"
     );
     let leader_pid = std::fs::read_to_string(&leader).unwrap_or_default();
     let sleeper_pid = std::fs::read_to_string(&sleeper).unwrap_or_default();
@@ -4422,16 +4419,193 @@ fn outcome_path(outcome: DevCandidate) -> PathBuf {
 /// that never writes it; a loaded runner can take seconds to start one.
 #[cfg(unix)]
 fn wait_for_file(path: &Path) {
-    let Some(deadline) = Instant::now().checked_add(Duration::from_secs(30)) else {
-        panic!("clock cannot represent the wait deadline");
-    };
-    while Instant::now() < deadline {
-        if path.is_file() {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(20));
+    tilo_test_env::wait_until(path.display(), || path.is_file());
+}
+
+#[test]
+fn doctor_accepts_the_cli_only_agent_without_a_published_surface() {
+    // The agent is a `type = "cli"` participant: it is never handed a
+    // surface, so it has no controls to publish, and packaging it must pass
+    // the same preflight as every graphical app.
+    let agent = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/agent");
+    let report = doctor_app(&agent).expect("doctor report");
+    assert!(report.is_ready(), "{}", report.summary());
+    assert!(report.checks.iter().any(|check| {
+        check.label == "resource/action surface" && check.status == DoctorStatus::Pass
+    }));
+}
+
+#[test]
+fn every_template_scaffolds_a_portable_app() {
+    for template in [
+        Template::Starter,
+        Template::Data,
+        Template::List,
+        Template::Tree,
+        Template::Graph,
+        Template::Async,
+        Template::Document,
+        Template::Qr,
+        Template::Workspace,
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let app = root.path().join(template.name());
+        let mut new_app = request(app.clone());
+        new_app.template = Some(template);
+        create_app(new_app).unwrap();
+        let report = lint_portability(&app).unwrap();
+        assert!(report.passed(), "{}: {}", template.name(), report.render());
+        assert!(report.files > 0);
+        assert!(report.render().starts_with("portability: ok"));
     }
-    panic!("timed out waiting for {}", path.display());
+}
+
+#[test]
+fn native_declaration_replaces_line_exceptions_and_must_be_needed() {
+    let root = tempfile::tempdir().unwrap();
+    let native = platform_specific_app(root.path());
+    let declare = |app: &Path| {
+        let manifest = std::fs::read_to_string(app.join("tilo-app.toml")).unwrap();
+        std::fs::write(
+            app.join("tilo-app.toml"),
+            format!("{manifest}\n[platform]\nnative = \"Needs the host's process table.\"\n"),
+        )
+        .unwrap();
+    };
+    declare(&native);
+    let report = lint_portability(&native).unwrap();
+    assert!(report.passed(), "{}", report.render());
+    assert!(
+        report
+            .render()
+            .contains("declared native in tilo-app.toml: \"Needs the host's process table.\"")
+    );
+
+    let portable = root.path().join("portable");
+    create_app(request(portable.clone())).unwrap();
+    declare(&portable);
+    let report = lint_portability(&portable).unwrap();
+    assert!(!report.passed());
+    assert!(report.render().contains("remove the [platform] table"));
+}
+
+fn platform_specific_app(root: &Path) -> PathBuf {
+    let app = root.join("platform");
+    create_app(request(app.clone())).unwrap();
+    let cargo = std::fs::read_to_string(app.join("Cargo.toml")).unwrap();
+    let cargo = cargo.replacen("[dependencies]\n", "[dependencies]\nlibc = \"0.2\"\n", 1);
+    std::fs::write(
+        app.join("Cargo.toml"),
+        format!(
+            "{cargo}\n[features]\nmedia = [\"ui/mpris\"]\n\n[dev-dependencies]\nnix = \"0.29\"\n"
+        ),
+    )
+    .unwrap();
+    let mut lib = std::fs::read_to_string(app.join("src/lib.rs")).unwrap();
+    lib.push_str(
+        r#"
+#[cfg(unix)]
+pub fn owner_only(file: &std::fs::File) {
+    use std::os::unix::fs::PermissionsExt as _;
+    let _ = file.set_permissions(std::fs::Permissions::from_mode(0o600));
+}
+
+pub fn pid() -> i32 {
+    unsafe { libc::getpid() }
+}
+
+pub fn separator() -> char {
+    if cfg!(windows) { '\\' } else { '/' }
+}
+
+unsafe extern "C" {
+    fn abs(value: i32) -> i32;
+}
+
+mod platform;
+
+#[cfg(test)]
+mod platform_tests;
+
+#[cfg(all(test, unix))]
+fn test_symlink() {
+    std::os::unix::fs::symlink("a", "b").unwrap();
+}
+"#,
+    );
+    std::fs::write(app.join("src/lib.rs"), lib).unwrap();
+    std::fs::write(
+        app.join("src/platform.rs"),
+        "pub use std::{fs, os::fd::AsRawFd};\n",
+    )
+    .unwrap();
+    std::fs::write(
+        app.join("src/platform_tests.rs"),
+        "use std::os::unix::net::UnixStream;\n",
+    )
+    .unwrap();
+    std::fs::write(
+        app.join("src/orphan.rs"),
+        "use std::os::unix::net::UnixStream;\n",
+    )
+    .unwrap();
+    let main = std::fs::read_to_string(app.join("src/main.rs")).unwrap();
+    std::fs::write(
+        app.join("src/main.rs"),
+        format!("#![cfg_attr(windows, windows_subsystem = \"windows\")]\n{main}"),
+    )
+    .unwrap();
+    app
+}
+
+#[test]
+fn portability_lint_reports_shipped_platform_code_with_remedies() {
+    use portability::FindingKind::{
+        Ffi, NativeCrate, NativeDependency, NativeSdkFeature, OsStd, TargetCfg,
+    };
+    let root = tempfile::tempdir().unwrap();
+    let app = platform_specific_app(root.path());
+    let report = lint_portability(&app).unwrap();
+    assert!(!report.passed());
+    let sites: Vec<(String, portability::FindingKind)> = report
+        .findings
+        .iter()
+        .map(|finding| (finding.path.display().to_string(), finding.kind))
+        .collect();
+    for expected in [
+        ("Cargo.toml", NativeDependency),
+        ("Cargo.toml", NativeSdkFeature),
+        ("src/lib.rs", TargetCfg),
+        ("src/lib.rs", OsStd),
+        ("src/lib.rs", NativeCrate),
+        ("src/lib.rs", Ffi),
+        ("src/platform.rs", OsStd),
+    ] {
+        assert!(
+            sites.contains(&(expected.0.to_owned(), expected.1)),
+            "missing {expected:?} in {sites:?}"
+        );
+    }
+    // Tests, unreachable files, dev-dependencies and the Windows subsystem
+    // linker setting are not shipped platform code.
+    assert!(sites.iter().all(|(path, _)| path != "src/platform_tests.rs"
+        && path != "src/orphan.rs"
+        && path != "src/main.rs"));
+    assert_eq!(
+        report
+            .findings
+            .iter()
+            .filter(|finding| finding.kind == NativeDependency)
+            .count(),
+        1,
+        "dev-dependencies are exempt"
+    );
+    let rendered = report.render();
+    assert!(rendered.contains("error[portability]: src/lib.rs:"));
+    assert!(rendered.contains("`std::os::unix::fs` is an OS-specific standard library module"));
+    assert!(rendered.contains("= help: call a platform crate instead"));
+    assert!(rendered.contains("enable the semantic SDK feature `ui/media-session`"));
+    assert!(rendered.contains("[platform]\n    native = \"<one-line reason>\""));
 }
 
 fn tilo_checkout() -> PathBuf {

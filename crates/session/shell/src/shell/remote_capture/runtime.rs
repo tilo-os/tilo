@@ -93,10 +93,10 @@ fn active_runtime() -> Result<SharedRemoteCaptureRuntime, String> {
     ACTIVE_RUNTIME
         .get_or_init(|| Mutex::new(None))
         .lock()
-        .map_err(|_| "remote capture service is unavailable".to_string())?
+        .map_err(|_| crate::shell::i18n::t("remote-capture-error-unavailable"))?
         .as_ref()
         .and_then(Weak::upgrade)
-        .ok_or_else(|| "remote capture service is unavailable".to_string())
+        .ok_or_else(|| crate::shell::i18n::t("remote-capture-error-unavailable"))
 }
 
 pub(crate) fn active_view() -> RemoteCaptureView {
@@ -105,7 +105,7 @@ pub(crate) fn active_view() -> RemoteCaptureView {
             runtime
                 .try_lock()
                 .map(|runtime| runtime.view())
-                .map_err(|_| "remote capture service is busy".to_string())
+                .map_err(|_| crate::shell::i18n::t("remote-capture-error-busy"))
         })
         .unwrap_or_default()
 }
@@ -119,12 +119,12 @@ pub(crate) fn request_remote_capture(
     let local = network
         .local_device_fabric_identity()
         .map(|(device, _)| device)
-        .ok_or_else(|| "this device has no certified personal identity".to_string())?;
+        .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-no-identity"))?;
     let label = app.app_id().to_string();
     let runtime = active_runtime()?;
     let action = runtime
         .try_lock()
-        .map_err(|_| "remote capture service is busy".to_string())?
+        .map_err(|_| crate::shell::i18n::t("remote-capture-error-busy"))?
         .request_standard(app, peer.clone(), local, label, kind)?;
     let request_id = match &action {
         PersonalFabricAction::RemoteCaptureSignal {
@@ -155,7 +155,7 @@ pub(crate) fn decide_remote_capture(
     let runtime = active_runtime()?;
     let (peer, action) = runtime
         .try_lock()
-        .map_err(|_| "remote capture service is busy".to_string())?
+        .map_err(|_| crate::shell::i18n::t("remote-capture-error-busy"))?
         .decide(request_id, approved, Instant::now())?;
     let session_id = match &action {
         PersonalFabricAction::RemoteCaptureSignal {
@@ -189,7 +189,7 @@ pub(crate) fn decide_remote_capture(
 pub(crate) fn approve_remote_capture_target(session_id: [u8; 16]) -> Result<(), String> {
     active_runtime()?
         .try_lock()
-        .map_err(|_| "remote capture service is busy".to_string())?
+        .map_err(|_| crate::shell::i18n::t("remote-capture-error-busy"))?
         .approve_target(session_id, Instant::now())
 }
 
@@ -200,7 +200,7 @@ pub(crate) fn stop_remote_capture(
     let runtime = active_runtime()?;
     let (peer, action) = runtime
         .try_lock()
-        .map_err(|_| "remote capture service is busy".to_string())?
+        .map_err(|_| crate::shell::i18n::t("remote-capture-error-busy"))?
         .stop_session(session_id)?;
     network.send_personal_fabric_action(&peer, action)?;
     Ok(())
@@ -314,7 +314,7 @@ impl RemoteCaptureFabricRuntime {
         profile: RemoteCaptureProfile,
     ) -> Result<PersonalFabricAction, String> {
         if source == target || self.outbound.len() >= MAX_REMOTE_CAPTURE_SESSIONS {
-            return Err("remote capture request capacity is exhausted".into());
+            return Err(crate::shell::i18n::t("remote-capture-error-capacity"));
         }
         let request_id = random_id(|id| self.outbound.contains_key(id));
         let request = RemoteCaptureRequest {
@@ -354,10 +354,10 @@ impl RemoteCaptureFabricRuntime {
         let available = self
             .adapter
             .try_lock()
-            .map_err(|_| "remote capture receiver is busy".to_string())?
+            .map_err(|_| crate::shell::i18n::t("remote-capture-error-receiver-busy"))?
             .availability();
         if !availability_supports(available, kind) {
-            return Err("this device cannot receive the requested remote input".into());
+            return Err(crate::shell::i18n::t("remote-capture-error-cannot-receive"));
         }
         self.request(
             app,
@@ -849,7 +849,7 @@ impl RemoteCaptureFabricRuntime {
         let pending = self
             .inbound
             .remove(&request_id)
-            .ok_or_else(|| "unknown remote capture request".to_string())?;
+            .ok_or_else(|| crate::shell::i18n::t("remote-capture-error-unknown-request"))?;
         if !accepted {
             return Ok((
                 pending.target,
@@ -927,7 +927,7 @@ impl RemoteCaptureFabricRuntime {
         let session = self
             .target_sessions
             .get(&session_id)
-            .ok_or_else(|| "unknown remote capture session".to_string())?;
+            .ok_or_else(|| crate::shell::i18n::t("remote-capture-error-unknown-session"))?;
         let approval = self
             .bridge
             .approve(
@@ -983,7 +983,9 @@ impl RemoteCaptureFabricRuntime {
             self.registry.revoke(session_id, session.grant);
             return Ok((session.target, stop_action(session_id, session.grant)));
         }
-        Err("unknown remote capture session".into())
+        Err(crate::shell::i18n::t(
+            "remote-capture-error-unknown-session",
+        ))
     }
 
     pub(crate) fn teardown_peer(&mut self, peer: &DeviceId) {
@@ -1221,6 +1223,9 @@ fn random_id(mut exists: impl FnMut(&[u8; 16]) -> bool) -> [u8; 16] {
 
 #[cfg(test)]
 mod tests {
+    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+    const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
     use super::*;
     use crate::shell::remote_capture::adapter::{RemoteCaptureAdapterError, RemoteCaptureEndpoint};
     use crate::shell::remote_capture::device::{
@@ -1427,7 +1432,10 @@ mod tests {
             };
             assert_eq!(chunk.grant, source_grant);
             assert_eq!(chunk.sequence, 1);
-            for _ in 0..100 {
+            let deadline = std::time::Instant::now()
+                .checked_add(HANG_BOUND)
+                .expect("the hang bound fits in an Instant");
+            while std::time::Instant::now() < deadline {
                 target_runtime.pump(now);
                 if target_runtime.target_sessions.contains_key(&session_id) {
                     break;
@@ -1558,7 +1566,10 @@ mod tests {
             let (_, decision) = source.decide(request_id, true, now).unwrap();
             target.handle_action(&envelope(&phone, &laptop, decision), now);
 
-            for _ in 0..100 {
+            let deadline = std::time::Instant::now()
+                .checked_add(HANG_BOUND)
+                .expect("the hang bound fits in an Instant");
+            while std::time::Instant::now() < deadline {
                 target.pump(now);
                 if !target.target_sessions.is_empty() {
                     break;
@@ -1684,7 +1695,10 @@ mod tests {
             source.handle_action(&envelope(&laptop, &phone, request), now);
             let (_, decision) = source.decide(request_id, true, now).unwrap();
             target.handle_action(&envelope(&phone, &laptop, decision), now);
-            for _ in 0..100 {
+            let deadline = std::time::Instant::now()
+                .checked_add(HANG_BOUND)
+                .expect("the hang bound fits in an Instant");
+            while std::time::Instant::now() < deadline {
                 target.pump(now);
                 if !target.outgoing.is_empty() {
                     break;

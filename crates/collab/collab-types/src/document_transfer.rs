@@ -20,9 +20,9 @@ use std::time::{Duration, Instant};
 use sha2::{Digest, Sha256};
 
 use crate::op::{
-    DOCUMENT_INCREMENTAL_TAG, DOCUMENT_MUTATION_V1_PREFIX, DOCUMENT_MUTATION_V2_PREFIX,
-    DOCUMENT_SEGMENT_TAG, DOCUMENT_SNAPSHOT_TAG, DocumentMutation, DocumentMutationEncodeError,
-    DocumentMutationError, MAX_DOCUMENT_MUTATION_BYTES,
+    DOCUMENT_INCREMENTAL_TAG, DOCUMENT_MUTATION_V2_PREFIX, DOCUMENT_SEGMENT_TAG,
+    DOCUMENT_SNAPSHOT_TAG, DocumentMutation, DocumentMutationEncodeError, DocumentMutationError,
+    MAX_DOCUMENT_MUTATION_BYTES,
 };
 use crate::{ArtifactId, Ed25519PublicKey, SignedOp};
 
@@ -241,11 +241,8 @@ impl DocumentFrame {
         {
             return DocumentSegment::decode(segment).map(Self::Segment);
         }
-        if payload.strip_prefix(DOCUMENT_MUTATION_V1_PREFIX).is_none()
-            && payload.strip_prefix(DOCUMENT_MUTATION_V2_PREFIX).is_none()
-        {
-            return Err(DocumentMutationError::MissingPrefix);
-        }
+        // Anything that is not a segment must be a whole frame; `decode`
+        // refuses anything unprefixed.
         let mutation = DocumentMutation::decode(payload)?;
         let actual = mutation.data().len();
         if actual > MAX_DOCUMENT_MUTATION_BYTES {

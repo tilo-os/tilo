@@ -7,6 +7,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from hang import HANG_BOUND
+
 
 ROOT = Path(__file__).resolve().parents[2]
 CI_RUN = ROOT / "scripts" / "ci-run.sh"
@@ -38,7 +40,7 @@ class CiRunSummaryTests(unittest.TestCase):
                 result = subprocess.run(
                     bash_command(shell_path(CI_RUN), "immediate", "--", "true"),
                     cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    timeout=10, check=False,
+                    timeout=HANG_BOUND, check=False,
                 )
                 self.assertEqual(result.returncode, 0, result.stdout)
 
@@ -49,7 +51,7 @@ class CiRunSummaryTests(unittest.TestCase):
         return subprocess.run(
             bash_command(shell_path(CI_RUN), "heartbeat", "--", "bash", shell_path(command)),
             cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            timeout=10, check=False,
+            timeout=HANG_BOUND, check=False,
         )
 
     def test_completion_stops_the_heartbeat_and_preserves_status(self):
@@ -68,9 +70,12 @@ class CiRunSummaryTests(unittest.TestCase):
             root = Path(directory)
             leftover = root / "leftover.pid"
             try:
+                # The leftover outlives the hang bound, so a heartbeat that
+                # waited for it would time the run out.
                 result = self.run_heartbeat_fixture(
                     root,
-                    f"sleep 30 >/dev/null 2>&1 &\necho $! > {shlex.quote(shell_path(leftover))}\nexit 0\n",
+                    f"sleep {int(HANG_BOUND) * 2} >/dev/null 2>&1 &\n"
+                    f"echo $! > {shlex.quote(shell_path(leftover))}\nexit 0\n",
                 )
                 self.assertEqual(result.returncode, 0, result.stdout)
             finally:
@@ -87,7 +92,7 @@ class CiRunMemoryTests(unittest.TestCase):
             bash_command("-c", 'export TILO_CGROUP_MEMORY_PATH="$1"; exec bash "$2" memory -- bash -c "$3"',
                          "fixture", shell_path(directory), shell_path(CI_RUN), command),
             cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            timeout=10, check=False,
+            timeout=HANG_BOUND, check=False,
         )
         self.assertEqual(result.returncode, status, result.stdout)
         return result.stdout
@@ -182,7 +187,7 @@ class CiRunMemoryTests(unittest.TestCase):
                     bash_command("-c", 'export PATH="$1:$PATH"; exec bash "$2" memory -- bash -c "exit 23"',
                                  "fixture", shell_path(root), shell_path(CI_RUN)),
                     cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    timeout=10, check=False,
+                    timeout=HANG_BOUND, check=False,
                 )
                 self.assertEqual(result.returncode, 23, result.stdout)
                 self.assertIn("CI_CGROUP_MEMORY=unavailable", result.stdout)

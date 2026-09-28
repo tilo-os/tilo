@@ -92,6 +92,18 @@ Full reference: [`docs/headless-testing.md`](docs/headless-testing.md).
 The required application-facing resource/action contract is documented in
 [`apps/README.md`](apps/README.md#application-contract-required).
 
+## Help Development!
+
+Turn on the repository's git hooks once in your clone:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+The pre-commit hook checks your staged change the way CI's quality job does
+(rustfmt, workspace membership, lint `#[allow]` reasons, secrets and more), so a
+formatting slip fails in a second on your machine instead of minutes later in CI.
+
 ## Where to read first
 
 - [`docs/getting-started.md`](docs/getting-started.md) — choose a VM, Linux desktop session, or complete-system install

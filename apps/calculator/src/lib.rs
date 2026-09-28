@@ -40,6 +40,7 @@
 
 pub mod actions;
 pub mod app;
+pub mod component;
 pub mod doc;
 pub mod draw;
 pub mod engine;
@@ -51,6 +52,7 @@ pub mod model;
 pub mod zoom;
 
 pub use app::CalculatorApp;
+pub use component::definition;
 
 use ui::widget::Widget;
 
@@ -65,6 +67,9 @@ pub fn app_root() -> Box<dyn Widget> {
 pub fn app_root_offline() -> Box<dyn Widget> {
     Box::new(CalculatorApp::seeded())
 }
+
+#[cfg(test)]
+mod component_tests;
 
 #[cfg(test)]
 mod framework_history_tests;

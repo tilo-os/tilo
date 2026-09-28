@@ -60,6 +60,8 @@ msg() { printf '%s\\n' "$*" >&2; }
 die() { printf '%s\\n' "$*" >&2; exit 1; }
 warn() { printf 'WARN: %s\\n' "$*" >&2; }
 warn_slow_podman_storage() { :; }
+cargo_build_jobs() { echo 4; }
+TILO_PODMAN_BUILD_FLAGS=()
 """)
         # These external checks are unrelated to forwarding inputs. A failing
         # podman stub ensures execution never reaches any disk-image operation.

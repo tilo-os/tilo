@@ -19,7 +19,9 @@ use crate::shell::chrome_state::{Chrome, ChromeState};
 use crate::shell::i18n::{t, t_args};
 use crate::shell::search::action_api::{ActionArgs, ActionError, ActionParam, ParamType};
 use crate::shell::search::{ResourceKind, SearchContext, SearchProvider, SearchResult};
+use crate::shell::session_services::ServiceIntent;
 
+mod native_identity;
 mod text_insert;
 
 /// What `record.bring` must be told.
@@ -113,16 +115,72 @@ const REPLAY_SPEED_PARAMS: &[ActionParam] = &[ActionParam::required(
     "Multiple of recorded time, from 0.125 to 16.",
 )];
 
-fn replay(
-    st: &ChromeState,
-) -> Result<std::sync::Arc<crate::shell::replay::ReplayController>, ActionError> {
-    st.replay().cloned().ok_or_else(|| {
-        ActionError::Refused("this session has no collaboration broker to replay through".into())
-    })
+/// Start `apply` as an invocation that finishes once the host carried out
+/// the service intents it queued, and refuses with the first of them that
+/// was refused. One that queued nothing is accepted at once.
+fn service_invocation(
+    action_id: &'static str,
+    apply: fn(&mut ChromeState, &ActionArgs) -> Result<(), ActionError>,
+) -> Rc<crate::shell::search::BeginInvokeFn> {
+    Rc::new(
+        move |_doc: &mut automerge::AutoCommit,
+              _root: &automerge::ObjId,
+              chrome: &Chrome,
+              args: &ActionArgs| {
+            let queued: Vec<u64> = {
+                let mut st = chrome.borrow_mut();
+                if !current_shell_action_authorized(&st, action_id) {
+                    return Err(ActionError::Refused(format!(
+                        "current workspace authority no longer permits {action_id}"
+                    )));
+                }
+                let first = st.next_service_intent_id();
+                apply(&mut st, args)?;
+                st.bump();
+                (first..st.next_service_intent_id()).collect()
+            };
+            if queued.is_empty() {
+                return Ok(crate::shell::search::InvocationDisposition::Accepted(
+                    crate::shell::search::ActionReceipt::completed(),
+                ));
+            }
+            let chrome = chrome.clone();
+            let waiting = std::cell::RefCell::new(queued);
+            let ticket: crate::shell::search::PendingInvocation = Rc::new(move || {
+                let mut waiting = waiting.borrow_mut();
+                let mut st = chrome.borrow_mut();
+                let mut refusal = None;
+                waiting.retain(|id| match st.take_service_result(*id) {
+                    None => true,
+                    Some(Ok(())) => false,
+                    Some(Err(error)) => {
+                        refusal.get_or_insert(error);
+                        false
+                    }
+                });
+                drop(st);
+                if let Some(error) = refusal {
+                    return Err(ActionError::Refused(error));
+                }
+                Ok(waiting
+                    .is_empty()
+                    .then(crate::shell::search::ActionReceipt::completed))
+            });
+            Ok(crate::shell::search::InvocationDisposition::Pending(ticket))
+        },
+    )
 }
 
-fn refused(error: impl std::fmt::Display) -> ActionError {
-    ActionError::Refused(error.to_string())
+/// Queue `intent` for the session's replay, refusing at once when the
+/// session has none.
+fn ask_replay(st: &mut ChromeState, intent: ServiceIntent) -> Result<(), ActionError> {
+    if st.session_view().replay.is_none() {
+        return Err(ActionError::Refused(
+            crate::shell::session_services::NO_REPLAY.into(),
+        ));
+    }
+    st.push_service_intent(intent);
+    Ok(())
 }
 
 /// Apply the shell action `id` with `values`, bound against its declared
@@ -154,12 +212,21 @@ fn comma_list(value: Option<&str>) -> Vec<String> {
         .collect()
 }
 
-fn recorder(
-    st: &ChromeState,
-) -> Result<std::sync::Arc<crate::shell::recorder::Recorder>, ActionError> {
-    st.recorder().cloned().ok_or_else(|| {
-        ActionError::Refused("this session has no collaboration broker to record through".into())
-    })
+/// Queue `intent` for the session's recorder, refusing at once when the
+/// session has none.
+fn ask_recorder(st: &mut ChromeState, intent: ServiceIntent) -> Result<(), ActionError> {
+    require_recorder(st)?;
+    st.push_service_intent(intent);
+    Ok(())
+}
+
+fn require_recorder(st: &ChromeState) -> Result<(), ActionError> {
+    if st.session_view().recorder.is_none() {
+        return Err(ActionError::Refused(
+            crate::shell::session_services::NO_RECORDER.into(),
+        ));
+    }
+    Ok(())
 }
 
 /// The agent this OS ships. Kept in step with `tilo-agent`'s own default by
@@ -271,7 +338,9 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         | "projection.open"
         | "capture.open"
         | "collaborators.open"
-        | "room.activity.open" => {
+        | "room.activity.open"
+        | "room.activity.explore"
+        | "room.activity.replay" => {
             contract = ActionContract::view();
         }
         "identity.connect" | "identity.select" | "identity.device.revoke" => {
@@ -295,7 +364,10 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         | "replay.open" => {
             contract.retry = RetryPolicy::AtMostOnce;
         }
-        "peer.invite" | "peer.connect" => contract = ActionContract::view(),
+        "peer.invite" | "peer.connect" => {
+            contract = ActionContract::view();
+            contract.permission = PermissionRequirement::Invite;
+        }
         // Moving a tab between groups is layout, undone by moving it back;
         // a close is undone by `tab.reopen`, which puts it back in place.
         "text.insert"
@@ -324,6 +396,10 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         | DISPLAY_EXTERNAL_ONLY_ID
         | DISPLAY_KEEP_ID
         | DISPLAY_REVERT_ID => contract = display_layout_contract(),
+        BLUETOOTH_PAIRING_DECLINE_ID => {
+            contract.permission = PermissionRequirement::Write;
+            contract.retry = RetryPolicy::AtMostOnce;
+        }
         _ => {}
     }
     contract
@@ -345,6 +421,8 @@ pub(crate) fn shell_action_kind(id: &str) -> tilo_actions::OperationKind {
         | "capture.open"
         | "collaborators.open"
         | "room.activity.open"
+        | "room.activity.explore"
+        | "room.activity.replay"
         | "peer.invite"
         | "peer.connect" => tilo_actions::OperationKind::View,
         "text.insert" | "record.bring" | "peer.invite.named" | "agent.invite" => {
@@ -1011,7 +1089,10 @@ impl Action {
                 crate::device_fleet::DeviceFleetStore::at(store.identity_dir(), identity_paths)
                     .register_current_device(&profile.id)
                     .map_err(|error| ActionError::Refused(error.to_string()))?;
-                let delegated = {
+                let enrolled = st.tree().requires_native_owner(room);
+                let delegated = if enrolled {
+                    Some(())
+                } else {
                     let mut tree = st.tree_mut();
                     tree.grant_in_workspace(
                         workspace_id,
@@ -1022,6 +1103,7 @@ impl Action {
                             crate::shell::state::Verb::Admin,
                         ),
                     )
+                    .map(|_| ())
                 };
                 if delegated.is_none() {
                     return Err(ActionError::Refused(
@@ -1032,6 +1114,7 @@ impl Action {
                 store
                     .bind_workspace(&room.to_string(), &profile.id)
                     .map_err(|error| ActionError::Refused(error.to_string()))?;
+                fence_native_selection(st, workspace_id, room, &profile.user_public_key)?;
                 st.tree().export_fs_capabilities();
                 st.bump();
                 Ok(())
@@ -1054,7 +1137,7 @@ impl Action {
                 let profile = registry.identities.get(identity_id).ok_or_else(|| {
                     ActionError::Refused("that identity is not connected to this device".into())
                 })?;
-                {
+                if !st.tree().requires_native_owner(room) {
                     let mut tree = st.tree_mut();
                     if tree
                         .grant_in_workspace(
@@ -1076,6 +1159,7 @@ impl Action {
                 store
                     .bind_workspace(&room.to_string(), identity_id)
                     .map_err(|error| ActionError::Refused(error.to_string()))?;
+                fence_native_selection(st, workspace_id, room, &profile.user_public_key)?;
                 st.tree().export_fs_capabilities();
                 st.bump();
                 Ok(())
@@ -1286,6 +1370,12 @@ impl Action {
             "search-action-display-change-revert",
             "search-action-display-change-revert-subtitle",
             |_, _| settle_display_change(false),
+        ),
+        chrome(
+            BLUETOOTH_PAIRING_DECLINE_ID,
+            "search-action-bluetooth-pairing-decline",
+            "search-action-bluetooth-pairing-decline-subtitle",
+            |_, _| decline_bluetooth_pairing(),
         ),
         chrome(
             "capture.open",
@@ -1536,7 +1626,7 @@ impl Action {
             subtitle: "search-action-feedback-record-start-subtitle",
             params: FEEDBACK_RECORD_START_PARAMS,
             apply: |st, args| {
-                let recorder = recorder(st)?;
+                require_recorder(st)?;
                 let user = st.active_local_user();
                 let mut rooms = comma_list(args.text("rooms"));
                 if rooms.is_empty() {
@@ -1562,9 +1652,15 @@ impl Action {
                         })?,
                     ),
                 };
-                recorder
-                    .start(&rooms, apps, pixels, &user)
-                    .map_err(|error| ActionError::Refused(error.to_string()))
+                ask_recorder(
+                    st,
+                    ServiceIntent::StartRecording {
+                        rooms,
+                        apps,
+                        pixels,
+                        user,
+                    },
+                )
             },
         },
         chrome(
@@ -1572,23 +1668,15 @@ impl Action {
             "search-action-feedback-record-stop",
             "search-action-feedback-record-stop-subtitle",
             |st, _| {
-                let recorder = recorder(st)?;
                 let user = st.active_local_user();
-                recorder
-                    .stop(&user)
-                    .map(|_| ())
-                    .map_err(|error| ActionError::Refused(error.to_string()))
+                ask_recorder(st, ServiceIntent::StopRecording { user })
             },
         ),
         chrome(
             "feedback.record.capture-recent",
             "search-action-feedback-record-capture-recent",
             "search-action-feedback-record-capture-recent-subtitle",
-            |st, _| {
-                recorder(st)?
-                    .capture_recent()
-                    .map_err(|error| ActionError::Refused(error.to_string()))
-            },
+            |st, _| ask_recorder(st, ServiceIntent::CaptureRecent),
         ),
         Action {
             id: "feedback.recent-buffer.set",
@@ -1600,9 +1688,7 @@ impl Action {
                     ActionError::Refused("say whether the recent buffer is enabled".into())
                 })?;
                 let user = st.active_local_user();
-                recorder(st)?
-                    .set_recent_buffer(enabled, &user)
-                    .map_err(|error| ActionError::Refused(format!("setting not saved: {error}")))
+                ask_recorder(st, ServiceIntent::SetRecentBuffer { enabled, user })
             },
         },
         // The remark surface: saying something about any part of any app,
@@ -1845,47 +1931,45 @@ impl Action {
                     crate::shell::replay::Presentation::Shown
                 };
                 let user = st.active_local_user();
-                replay(st)?
-                    .open_record(&record, &user, presentation)
-                    .map(|_| ())
-                    .map_err(refused)
+                ask_replay(
+                    st,
+                    ServiceIntent::OpenReplay {
+                        record,
+                        user,
+                        presentation,
+                    },
+                )
             },
         },
         chrome(
             "replay.close",
             "search-action-replay-close",
             "search-action-replay-close-subtitle",
-            |st, _| {
-                if replay(st)?.close() {
-                    Ok(())
-                } else {
-                    Err(ActionError::Refused("nothing is being replayed".into()))
-                }
-            },
+            |st, _| ask_replay(st, ServiceIntent::CloseReplay),
         ),
         chrome(
             "replay.play",
             "search-action-replay-play",
             "search-action-replay-play-subtitle",
-            |st, _| replay(st)?.play().map_err(refused),
+            |st, _| ask_replay(st, ServiceIntent::PlayReplay),
         ),
         chrome(
             "replay.pause",
             "search-action-replay-pause",
             "search-action-replay-pause-subtitle",
-            |st, _| replay(st)?.pause().map_err(refused),
+            |st, _| ask_replay(st, ServiceIntent::PauseReplay),
         ),
         chrome(
             "replay.step.next",
             "search-action-replay-step-next",
             "search-action-replay-step-next-subtitle",
-            |st, _| replay(st)?.step_next().map(|_| ()).map_err(refused),
+            |st, _| ask_replay(st, ServiceIntent::ReplayStepNext),
         ),
         chrome(
             "replay.step.previous",
             "search-action-replay-step-previous",
             "search-action-replay-step-previous-subtitle",
-            |st, _| replay(st)?.step_previous().map(|_| ()).map_err(refused),
+            |st, _| ask_replay(st, ServiceIntent::ReplayStepPrevious),
         ),
         Action {
             id: "replay.seek",
@@ -1893,11 +1977,13 @@ impl Action {
             subtitle: "search-action-replay-seek-subtitle",
             params: REPLAY_STEP_PARAMS,
             apply: |st, args| {
-                let replay = replay(st)?;
                 if let Some(at) = args.integer("at_ms").and_then(|at| u64::try_from(at).ok()) {
-                    return replay
-                        .seek_offset(session_trace::Offset(at.saturating_mul(1_000)))
-                        .map_err(refused);
+                    return ask_replay(
+                        st,
+                        ServiceIntent::ReplaySeekOffset(session_trace::Offset(
+                            at.saturating_mul(1_000),
+                        )),
+                    );
                 }
                 let step = args
                     .integer("step")
@@ -1905,7 +1991,7 @@ impl Action {
                     .ok_or_else(|| {
                         ActionError::Refused("name the step by its index, or a time".into())
                     })?;
-                replay.seek_step(step).map_err(refused)
+                ask_replay(st, ServiceIntent::ReplaySeekStep(step))
             },
         },
         Action {
@@ -1917,7 +2003,7 @@ impl Action {
                 let speed = args
                     .number("speed")
                     .ok_or_else(|| ActionError::Refused("say how fast to replay".into()))?;
-                replay(st)?.set_speed(speed).map(|_| ()).map_err(refused)
+                ask_replay(st, ServiceIntent::ReplaySpeed(speed))
             },
         },
         chrome(
@@ -2379,6 +2465,24 @@ pub(crate) const DISPLAY_BUILTIN_ONLY_ID: &str = "display.layout.builtin-only";
 pub(crate) const DISPLAY_EXTERNAL_ONLY_ID: &str = "display.layout.external-only";
 pub(crate) const DISPLAY_KEEP_ID: &str = "display.change.keep";
 pub(crate) const DISPLAY_REVERT_ID: &str = "display.change.revert";
+pub(crate) const BLUETOOTH_PAIRING_DECLINE_ID: &str = "bluetooth.pairing.decline";
+
+/// Decline the Bluetooth pairing question on screen, or stop the pairing
+/// whose code it displays.
+///
+/// There is deliberately no accepting counterpart. Confirming a pairing
+/// means comparing a code with the device in front of you, or typing the one
+/// it shows; only the person at this machine can do that, on the dialog
+/// itself. An agent or a script can always say no, and never yes.
+fn decline_bluetooth_pairing() -> Result<(), ActionError> {
+    if crate::bluetooth::PairingPromptHandle::global().dismiss() {
+        Ok(())
+    } else {
+        Err(ActionError::Refused(
+            "no Bluetooth pairing is waiting".into(),
+        ))
+    }
+}
 
 /// Stage a whole-desktop layout through the same confirm-or-restore
 /// transaction as Super+P, and open the display sheet so whoever is at the
@@ -2449,7 +2553,7 @@ fn quick_settings_contract_for(
     } else if !available {
         contract.availability = tilo_actions::Availability::Unavailable {
             code: "quick_settings_unavailable".into(),
-            reason: "Quick Settings service is unavailable".into(),
+            reason: t("search-action-quick-settings-unavailable"),
         };
     }
     contract
@@ -2751,7 +2855,9 @@ impl SearchProvider for ActionsProvider {
                             outcome
                         },
                     ) as Rc<crate::shell::search::OpenFn>;
-                    (on_open, None)
+                    let begin = crate::shell::session_services::may_queue_intents(action_id)
+                        .then(|| service_invocation(action_id, apply));
+                    (on_open, begin)
                 };
                 out.push(SearchResult {
                     kind: ResourceKind::Action,
@@ -2769,6 +2875,42 @@ impl SearchProvider for ActionsProvider {
                     on_begin_invoke,
                 });
             }
+        }
+        let descriptors = tilo_desktop::activity::view_actions::workspace_view_descriptors(
+            &ctx.chrome.tree().desktop,
+            true,
+        );
+        let view_keywords = t("search-action-workspace-view-keywords").to_lowercase();
+        for descriptor in descriptors {
+            let Some(score) = match_score(
+                &needle_lower,
+                &descriptor.label.to_lowercase(),
+                &view_keywords,
+                &descriptor.id,
+            ) else {
+                continue;
+            };
+            let request = descriptor.request;
+            out.push(SearchResult {
+                kind: ResourceKind::Action,
+                operation_kind: tilo_actions::OperationKind::View,
+                provider_id: self.id().into(),
+                id: descriptor.id,
+                title: descriptor.label,
+                subtitle: Some(t("search-action-workspace-view-subtitle")),
+                badge: None,
+                score,
+                params: vec![],
+                contract: Some(tilo_actions::ActionContract::view()),
+                on_open: Rc::new(move |_, _, chrome, _| {
+                    chrome
+                        .borrow_mut()
+                        .request_workspace_view(request.clone())
+                        .map_err(ActionError::Refused)
+                }),
+                on_invoke: None,
+                on_begin_invoke: None,
+            });
         }
         for &(id, label_key, subtitle_key) in QUICK_SETTINGS_ACTIONS {
             let label = t(label_key);
@@ -3189,6 +3331,39 @@ fn match_score(needle: &str, label: &str, subtitle: &str, id: &str) -> Option<i3
     )
 }
 
+#[allow(
+    unused_imports,
+    reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
+)]
+use crate::shell::state::WorkspaceExt as _;
+
+/// Called only after the existing identity registry accepted the selection.
+#[allow(
+    clippy::similar_names,
+    reason = "`room` and `root` are the protocol's own names for the room and its user root"
+)]
+fn fence_native_selection(
+    st: &ChromeState,
+    local: crate::shell::state::WorkspaceId,
+    room: crate::shell::state::RoomId,
+    root: &[u8; 32],
+) -> Result<(), ActionError> {
+    let owner = st.tree().installed_native_owner();
+    let Some(owner) = owner else { return Ok(()) };
+    let paths = crate::firstboot::collaboration_identity_paths();
+    let selected =
+        tilo_user_identity::persist::read_device_cert(&paths.device_cert_for_user(root)).ok();
+    native_identity::fence(&owner, room, selected.as_ref()).map_err(ActionError::Refused)?;
+    if let Some(pending) = owner
+        .pending_enrollment_for_slot(local)
+        .map_err(ActionError::Refused)?
+    {
+        native_identity::fence(&owner, pending.id().room(), selected.as_ref())
+            .map_err(ActionError::Refused)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3245,6 +3420,23 @@ mod tests {
         (result.on_open)(&mut document, &automerge::ROOT, chrome, &ActionArgs::none()).unwrap();
     }
 
+    fn begin_lifecycle_action(
+        results: &[crate::shell::search::SearchResult],
+        id: &str,
+        chrome: &Chrome,
+    ) -> crate::shell::search::InvocationDisposition {
+        let result = results
+            .iter()
+            .find(|result| result.id == id)
+            .unwrap_or_else(|| panic!("action provider did not return {id}"));
+        let begin = result
+            .on_begin_invoke
+            .as_ref()
+            .unwrap_or_else(|| panic!("{id} must use lifecycle dispatch"));
+        let mut document = AutoCommit::new();
+        begin(&mut document, &automerge::ROOT, chrome, &ActionArgs::none()).unwrap()
+    }
+
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -3291,39 +3483,27 @@ mod tests {
             chrome.borrow_mut().peer_sync_enabled = true;
             let results = action_results(&provider, &chrome);
 
-            let mut document = AutoCommit::new();
             for id in ["peer.invite", "peer.connect"] {
-                let result = results
-                    .iter()
-                    .find(|result| result.id == id)
-                    .unwrap_or_else(|| panic!("action provider did not return {id}"));
-                let disposition = result
-                    .on_begin_invoke
-                    .as_ref()
-                    .expect("peer actions have lifecycle admission")(
-                    &mut document,
-                    &automerge::ROOT,
-                    &chrome,
-                    &ActionArgs::none(),
-                )
-                .expect("peer action is admitted");
                 assert!(matches!(
-                    disposition,
+                    begin_lifecycle_action(&results, id, &chrome),
                     crate::shell::search::InvocationDisposition::Pending(_)
                 ));
             }
 
+            let queued = chrome.borrow_mut().take_peer_sync_requests();
+            assert_eq!(queued.len(), 2);
+            let actions = queued
+                .into_iter()
+                .map(|request| match request {
+                    crate::shell::overlay_host::PeerSyncAction::Tracked { action, .. } => *action,
+                    other => panic!("lifecycle request must remain tracked, got {other:?}"),
+                })
+                .collect::<Vec<_>>();
             assert_eq!(
-                chrome.borrow_mut().take_peer_sync_requests(),
+                actions,
                 vec![
-                    crate::shell::overlay_host::PeerSyncAction::Tracked {
-                        request_id: 1,
-                        action: Box::new(crate::shell::overlay_host::PeerSyncAction::PromptInvite),
-                    },
-                    crate::shell::overlay_host::PeerSyncAction::Tracked {
-                        request_id: 2,
-                        action: Box::new(crate::shell::overlay_host::PeerSyncAction::PromptConnect),
-                    },
+                    crate::shell::overlay_host::PeerSyncAction::PromptInvite,
+                    crate::shell::overlay_host::PeerSyncAction::PromptConnect,
                 ]
             );
         }
@@ -3626,6 +3806,32 @@ mod tests {
         let open = ids(&c.borrow());
         assert!(open.contains(&"remark.send".to_string()));
         assert!(open.contains(&"remark.pick.at".to_string()));
+    }
+
+    #[test]
+    fn workspace_activity_exact_local_actions_are_exported() {
+        let provider = ActionsProvider::new();
+        let chrome = chrome_with_room();
+        let doc = AutoCommit::new();
+        let state = chrome.borrow();
+        let out = provider.query(SearchContext {
+            needle: "activity",
+            wanted: &[ResourceKind::Action],
+            chrome: &state,
+            doc: &doc,
+            doc_root: &automerge::ROOT,
+        });
+        for id in [
+            "room.activity.open",
+            "room.activity.explore",
+            "room.activity.replay",
+        ] {
+            assert!(
+                out.iter().any(|action| action.id == id
+                    && action.operation_kind == tilo_actions::OperationKind::View),
+                "{id}"
+            );
+        }
     }
 
     #[test]

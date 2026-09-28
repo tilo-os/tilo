@@ -16,7 +16,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use automerge::{AutoCommit, ChangeHash, ObjId, ReadDoc, transaction::Transactable};
+use automerge::{AutoCommit, ChangeHash, ObjId, transaction::Transactable};
 use taffy::style_helpers::length;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -26,6 +26,7 @@ use winit::keyboard::{Key, NamedKey};
 
 use ui::Widget;
 use ui::collaboration::PresencePayload;
+use ui::invocation_scope::{ResourceEffectScope, ResourceInvocationScope};
 use ui::permissions::PermissionContext;
 use ui::presence::{PresenceCtx, PresenceKey};
 use ui::text_render::TextRenderer;
@@ -60,11 +61,11 @@ const NARROW_BREAKPOINT: f64 = 720.0;
 /// toggle and the current page title.
 const TOPBAR_HEIGHT: f64 = 44.0;
 
-fn workspace_image_store(root: &std::path::Path) -> ui::ImageStore {
+fn workspace_image_fetcher(root: &std::path::Path) -> ui::Fetcher {
     const MAX_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
     let base = root.join(storage::PAGES_DIR);
     let canonical_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-    let fetcher: ui::Fetcher = Arc::new(move |source: &str| {
+    Arc::new(move |source: &str| {
         if source.contains("://") || source.starts_with('/') {
             return None;
         }
@@ -78,11 +79,39 @@ fn workspace_image_store(root: &std::path::Path) -> ui::ImageStore {
             return None;
         }
         std::fs::read(candidate).ok()
-    });
+    })
+}
+
+fn workspace_image_store(root: &std::path::Path) -> ui::ImageStore {
+    let fetcher = workspace_image_fetcher(root);
     // Preserve document detail while allowing several large attachments to
     // remain resident together in the shared 64 MiB cache.
     ui::ImageStore::with_max_dimension(&fetcher, 2048)
 }
+fn canonical_image_fetcher(
+    assets: Arc<std::sync::RwLock<HashMap<String, Vec<u8>>>>,
+    legacy: Option<ui::Fetcher>,
+) -> ui::Fetcher {
+    Arc::new(move |source: &str| {
+        let embedded = assets.read().ok()?.get(source).cloned();
+        if embedded.is_some() || source.starts_with("asset:") {
+            return embedded;
+        }
+        legacy.as_ref().and_then(|fetch| fetch(source))
+    })
+}
+
+/// Draws notebook images from the canonical snapshot, falling back to a legacy
+/// workspace's page files for relative (non-`asset:`) sources.
+fn canonical_image_store(
+    assets: &Arc<std::sync::RwLock<HashMap<String, Vec<u8>>>>,
+    legacy_root: Option<&std::path::Path>,
+) -> ui::ImageStore {
+    let fetcher =
+        canonical_image_fetcher(Arc::clone(assets), legacy_root.map(workspace_image_fetcher));
+    ui::ImageStore::with_max_dimension(&fetcher, 2048)
+}
+
 /// Debounce window for the background save thread. Long enough that
 /// a burst of keystrokes during inline rename coalesces, short enough
 /// that the user's next "is this saved yet" sanity check doesn't have
@@ -111,15 +140,81 @@ enum MarkdownTransfer {
     },
 }
 
+/// The original operation owns every continuation until its one terminal outcome.
+struct PendingOperation {
+    invocation: tilo_actions::InvocationId,
+    scope: Option<ResourceInvocationScope>,
+}
+impl PendingOperation {
+    fn local(invocation: tilo_actions::InvocationId) -> Self {
+        Self {
+            invocation,
+            scope: None,
+        }
+    }
+    fn scoped(scope: &ResourceInvocationScope) -> Self {
+        Self {
+            invocation: scope.invocation(),
+            scope: Some(scope.clone()),
+        }
+    }
+}
+impl Drop for PendingOperation {
+    fn drop(&mut self) {
+        if let Some(scope) = &self.scope {
+            scope.cancel();
+        }
+    }
+}
+struct ExternalLinkJob {
+    receiver: std::sync::mpsc::Receiver<Result<(), String>>,
+    operation: Option<PendingOperation>,
+}
+type ImportedAssets = Vec<(String, Vec<u8>)>;
+type LoadedImage = (String, Option<Vec<u8>>);
+/// Document heads, pending operations, selected page and tag filter.
+type CanonicalProjectionKey = (Vec<ChangeHash>, usize, Option<PageId>, Option<TagId>);
+struct PendingMarkdownImport {
+    path: PathBuf,
+    body: String,
+    assets: Option<ImportedAssets>,
+}
 enum MarkdownJobResult {
     Imported {
         path: PathBuf,
-        result: Result<String, String>,
+        result: Result<(String, ImportedAssets), String>,
     },
     Exported {
         path: PathBuf,
         result: Result<(), String>,
     },
+    Image {
+        page: PageId,
+        path: PathBuf,
+        result: Result<LoadedImage, String>,
+    },
+}
+
+fn file_effect<R>(
+    scope: Option<&ResourceEffectScope>,
+    effect: impl FnOnce() -> R,
+) -> Result<R, String> {
+    match scope {
+        Some(scope) => scope.with_effect(|| Ok(effect())),
+        None => Ok(effect()),
+    }
+}
+
+/// Start a host file choice, retaining the admitting invocation's custody
+/// through the chooser when the request came from a scoped resource operation.
+fn send_markdown_pick(
+    request: ui::portal::PickRequest,
+    scope: Option<ResourceEffectScope>,
+) -> ui::portal::PortalChannel {
+    match scope {
+        Some(scope) => request.send_scoped(scope),
+        None => request.send(),
+    }
 }
 
 fn standalone_image_parts(line: &str) -> Option<(&str, &str, &str)> {
@@ -139,11 +234,13 @@ fn adopt_portable_markdown_assets(
     root: &std::path::Path,
     markdown_path: &std::path::Path,
     markdown: &str,
-) -> String {
+    scope: Option<&ResourceEffectScope>,
+) -> Result<String, String> {
     let Some(parent) = markdown_path.parent() else {
-        return markdown.to_string();
+        return Ok(markdown.to_string());
     };
-    let canonical_parent = std::fs::canonicalize(parent).unwrap_or_else(|_| parent.to_path_buf());
+    let canonical_parent = file_effect(scope, || std::fs::canonicalize(parent))?
+        .unwrap_or_else(|_| parent.to_path_buf());
     let mut output = String::with_capacity(markdown.len());
     for segment in markdown.split_inclusive('\n') {
         let (line, newline) = segment
@@ -157,30 +254,41 @@ fn adopt_portable_markdown_assets(
             output.push_str(segment);
             continue;
         }
-        let Some(candidate) = std::fs::canonicalize(parent.join(destination))
-            .ok()
-            .filter(|candidate| candidate.starts_with(&canonical_parent))
+        let Some(candidate) =
+            file_effect(scope, || std::fs::canonicalize(parent.join(destination)))?
+                .ok()
+                .filter(|candidate| candidate.starts_with(&canonical_parent))
         else {
             output.push_str(segment);
             continue;
         };
-        let Ok(managed) = import_image_asset(root, &candidate) else {
+        // Preserve best-effort asset errors, but never swallow a retired scope.
+        if let Some(scope) = scope {
+            scope.with_effect(|| Ok(()))?;
+        }
+        let managed = import_image_asset_scoped(root, &candidate, scope);
+        if let Some(scope) = scope {
+            scope.with_effect(|| Ok(()))?;
+        }
+        let Ok(managed) = managed else {
             output.push_str(segment);
             continue;
         };
         let _ = write!(output, "{indent}![{alt}]({managed}){newline}");
     }
-    output
+    Ok(output)
 }
 
 fn adopt_canonical_markdown_assets(
     markdown_path: &std::path::Path,
     markdown: &str,
-) -> (String, Vec<(String, Vec<u8>)>) {
+    scope: Option<&ResourceEffectScope>,
+) -> Result<(String, ImportedAssets), String> {
     let Some(parent) = markdown_path.parent() else {
-        return (markdown.to_string(), Vec::new());
+        return Ok((markdown.to_string(), Vec::new()));
     };
-    let canonical_parent = std::fs::canonicalize(parent).unwrap_or_else(|_| parent.to_path_buf());
+    let canonical_parent = file_effect(scope, || std::fs::canonicalize(parent))?
+        .unwrap_or_else(|_| parent.to_path_buf());
     let mut output = String::with_capacity(markdown.len());
     let mut assets = HashMap::<String, Vec<u8>>::new();
     let mut imported_paths = HashMap::<PathBuf, String>::new();
@@ -197,9 +305,10 @@ fn adopt_canonical_markdown_assets(
             output.push_str(segment);
             continue;
         }
-        let Some(candidate) = std::fs::canonicalize(parent.join(destination))
-            .ok()
-            .filter(|candidate| candidate.starts_with(&canonical_parent))
+        let Some(candidate) =
+            file_effect(scope, || std::fs::canonicalize(parent.join(destination)))?
+                .ok()
+                .filter(|candidate| candidate.starts_with(&canonical_parent))
         else {
             output.push_str(segment);
             continue;
@@ -208,7 +317,7 @@ fn adopt_canonical_markdown_assets(
             let _ = write!(output, "{indent}![{alt}]({source}){newline}");
             continue;
         }
-        let Ok((bytes, _)) = read_image_asset(&candidate) else {
+        let Ok((bytes, _)) = file_effect(scope, || read_image_asset(&candidate))? else {
             output.push_str(segment);
             continue;
         };
@@ -229,13 +338,20 @@ fn adopt_canonical_markdown_assets(
         imported_paths.insert(candidate, source.clone());
         let _ = write!(output, "{indent}![{alt}]({source}){newline}");
     }
-    (output, assets.into_iter().collect())
+    Ok((output, assets.into_iter().collect()))
 }
 
-fn available_export_asset_name(folder: &std::path::Path, name: &str, bytes: &[u8]) -> String {
+fn available_export_asset_name(
+    folder: &std::path::Path,
+    name: &str,
+    bytes: &[u8],
+    scope: Option<&ResourceEffectScope>,
+) -> Result<String, String> {
     let candidate = folder.join(name);
-    if !candidate.exists() || std::fs::read(&candidate).is_ok_and(|existing| existing == bytes) {
-        return name.to_string();
+    if !file_effect(scope, || candidate.exists())?
+        || file_effect(scope, || std::fs::read(&candidate))?.is_ok_and(|existing| existing == bytes)
+    {
+        return Ok(name.to_string());
     }
     let path = std::path::Path::new(name);
     let stem = path
@@ -248,11 +364,11 @@ fn available_export_asset_name(folder: &std::path::Path, name: &str, bytes: &[u8
         .unwrap_or("png");
     for suffix in 2_u32..=u32::MAX {
         let name = format!("{stem}-{suffix}.{extension}");
-        if !folder.join(&name).exists() {
-            return name;
+        if !file_effect(scope, || folder.join(&name).exists())? {
+            return Ok(name);
         }
     }
-    format!("{}.{extension}", uuid::Uuid::new_v4())
+    Ok(format!("{}.{extension}", uuid::Uuid::new_v4()))
 }
 
 fn managed_asset_file_name(source: &str) -> Option<&str> {
@@ -265,14 +381,26 @@ fn managed_asset_file_name(source: &str) -> Option<&str> {
     }
 }
 
+#[cfg(test)]
 fn write_portable_markdown_export(
     root: Option<&std::path::Path>,
     canonical_assets: &HashMap<String, Vec<u8>>,
     destination: &std::path::Path,
     markdown: &[u8],
 ) -> Result<(), String> {
+    write_portable_markdown_export_scoped(root, canonical_assets, destination, markdown, None)
+}
+
+fn write_portable_markdown_export_scoped(
+    root: Option<&std::path::Path>,
+    canonical_assets: &HashMap<String, Vec<u8>>,
+    destination: &std::path::Path,
+    markdown: &[u8],
+    scope: Option<&ResourceEffectScope>,
+) -> Result<(), String> {
     if root.is_none() && canonical_assets.is_empty() {
-        return atomic_file::write(destination, markdown).map_err(|error| error.to_string());
+        return file_effect(scope, || atomic_file::write(destination, markdown))?
+            .map_err(|error| error.to_string());
     }
     let source = std::str::from_utf8(markdown).map_err(|_| "export is not UTF-8".to_string())?;
     let stem = destination
@@ -308,8 +436,10 @@ fn write_portable_markdown_export(
                 output.push_str(segment);
                 continue;
             };
-            let bytes = std::fs::read(root.join("assets").join(source_name))
-                .map_err(|error| format!("read image {source_name}: {error}"))?;
+            let bytes =
+                file_effect(scope, || workspace_image_fetcher(root)(source))?.ok_or_else(|| {
+                    format!("image {source_name} is unavailable or outside its storage bounds")
+                })?;
             (source_name.to_owned(), bytes)
         } else if source.starts_with("asset:") {
             let Some(bytes) = canonical_assets.get(source).cloned() else {
@@ -332,9 +462,11 @@ fn write_portable_markdown_export(
         let exported_name = if let Some(name) = copied.get(&source_name) {
             name.clone()
         } else {
-            std::fs::create_dir_all(&folder).map_err(|error| error.to_string())?;
-            let name = available_export_asset_name(&folder, &source_name, &bytes);
-            atomic_file::write(&folder.join(&name), &bytes).map_err(|error| error.to_string())?;
+            file_effect(scope, || std::fs::create_dir_all(&folder))?
+                .map_err(|error| error.to_string())?;
+            let name = available_export_asset_name(&folder, &source_name, &bytes, scope)?;
+            file_effect(scope, || atomic_file::write(&folder.join(&name), &bytes))?
+                .map_err(|error| error.to_string())?;
             copied.insert(source_name, name.clone());
             name
         };
@@ -343,17 +475,8 @@ fn write_portable_markdown_export(
             "{indent}![{alt}]({folder_name}/{exported_name}){newline}"
         );
     }
-    atomic_file::write(destination, output.as_bytes()).map_err(|error| error.to_string())
-}
-
-/// Draws notebook images from the canonical snapshot.
-fn canonical_image_store(
-    assets: &Arc<std::sync::RwLock<HashMap<String, Vec<u8>>>>,
-) -> ui::ImageStore {
-    let assets = Arc::clone(assets);
-    let fetcher: ui::Fetcher =
-        Arc::new(move |source: &str| assets.read().ok()?.get(source).cloned());
-    ui::ImageStore::with_max_dimension(&fetcher, 2048)
+    file_effect(scope, || atomic_file::write(destination, output.as_bytes()))?
+        .map_err(|error| error.to_string())
 }
 
 fn read_image_asset(source: &std::path::Path) -> Result<(Vec<u8>, &'static str), String> {
@@ -378,13 +501,36 @@ fn read_image_asset(source: &std::path::Path) -> Result<(Vec<u8>, &'static str),
     Ok((bytes, extension))
 }
 
+#[cfg(test)]
 fn import_image_asset(root: &std::path::Path, source: &std::path::Path) -> Result<String, String> {
-    let (bytes, extension) = read_image_asset(source)?;
+    import_image_asset_scoped(root, source, None)
+}
+fn import_image_asset_scoped(
+    root: &std::path::Path,
+    source: &std::path::Path,
+    scope: Option<&ResourceEffectScope>,
+) -> Result<String, String> {
+    let (bytes, extension) = file_effect(scope, || read_image_asset(source))??;
     let assets = root.join("assets");
-    std::fs::create_dir_all(&assets).map_err(|error| error.to_string())?;
+    file_effect(scope, || std::fs::create_dir_all(&assets))?.map_err(|error| error.to_string())?;
     let name = format!("{}.{}", uuid::Uuid::new_v4(), extension);
-    atomic_file::write(&assets.join(&name), &bytes).map_err(|error| error.to_string())?;
+    file_effect(scope, || atomic_file::write(&assets.join(&name), &bytes))?
+        .map_err(|error| error.to_string())?;
     Ok(format!("../assets/{name}"))
+}
+fn load_image(
+    root: Option<&std::path::Path>,
+    path: &std::path::Path,
+    scope: Option<&ResourceEffectScope>,
+) -> Result<LoadedImage, String> {
+    if let Some(root) = root {
+        import_image_asset_scoped(root, path, scope).map(|destination| (destination, None))
+    } else {
+        file_effect(scope, || read_image_asset(path))?.map(|(bytes, _)| {
+            let digest = blake3::hash(&bytes).to_hex().to_string();
+            (format!("asset:{digest}"), Some(bytes))
+        })
+    }
 }
 
 fn read_bounded_markdown(path: &std::path::Path) -> Result<String, String> {
@@ -425,7 +571,7 @@ pub struct NotesApp {
     /// the editor spans to the window bottom.
     status_bubble: ui::StatusBubble,
     transfer_toasts: ui::widget::toast::ToastStack,
-    last_toast_tick: std::time::Instant,
+    last_toast_tick: ui::clock::Instant,
     /// `--shots` forces the bubble fully visible so a still frame captures it.
     shots_status: bool,
     /// Shot-only override for the real save progress/failure presentation.
@@ -460,25 +606,28 @@ pub struct NotesApp {
     /// workspace sandbox without an explicit portal grant.
     markdown_transfer: Option<(MarkdownTransfer, ui::portal::PortalChannel)>,
     markdown_job: ui::LatestRequest<MarkdownJobResult>,
-    markdown_invocation: Option<tilo_actions::InvocationId>,
+    markdown_invocation: Option<PendingOperation>,
     markdown_results: Vec<tilo_actions::InvocationUpdate>,
-    external_link_opens: Vec<std::sync::mpsc::Receiver<Result<(), String>>>,
+    external_link_opens: Vec<ExternalLinkJob>,
     canonical_assets: Arc<std::sync::RwLock<HashMap<String, Vec<u8>>>>,
     canonical_asset_manifest: Vec<(String, String)>,
     /// Some referenced image's bytes are still on their way from a
     /// collaborator's device; retried at most once a second.
-    canonical_assets_waiting: Option<std::time::Instant>,
+    canonical_assets_waiting: Option<ui::clock::Instant>,
     /// Whether this instance already offered to move inline images into the
     /// content store.
     inline_assets_offered: bool,
     /// Explicit local launch/picker input, held until the notebook has seeded/adopted.
     /// Never imported before then: its first page could replace the old tree.
-    pending_markdown_source: Option<(PathBuf, String)>,
+    pending_markdown_source: Option<PendingMarkdownImport>,
+    // Local pending-job identity, separate from authority and future page IDs.
+    pending_import_generation: u64,
     import_control_emitted: bool,
     /// View/legacy callback intents that must wait for a mutable bound record admission.
     pending_events: Vec<OutEvent>,
-    /// Last hydrated local spans distinguish input edits from stale projection.
-    canonical_marks: Vec<(String, Vec<actions::InlineMarkSpan>)>,
+    /// Dispatches the notebook upgrade when it opens. Its undo boundary is
+    /// never handed to the host: a format upgrade is not a person's edit.
+    upgrade_actions: ui::ActionHost,
     /// Last mouse position in logical coords. Used to hit-test
     /// link marks on mouse click without dragging the click event
     /// through every nested widget.
@@ -488,7 +637,7 @@ pub struct NotesApp {
     /// takes seconds, and measuring from spawn would let a late joiner's
     /// grace lapse before its first sync, making it seed its own welcome
     /// instead of adopting an existing peer's.
-    started: std::time::Instant,
+    started: ui::clock::Instant,
     /// Whether the first `sync` has run (which (re)bases `started`).
     synced_once: bool,
     /// True once we've taken on shared document state — either by
@@ -520,6 +669,10 @@ pub struct NotesApp {
     /// Forces a redraw when our own chrome (top bar / drawer) changes
     /// without any child widget flagging itself dirty.
     self_dirty: bool,
+    /// Inputs of the last canonical projection: document heads, pending
+    /// operations, selected page and tag filter. `sync` re-projects the
+    /// whole page tree only when one of them moved instead of every frame.
+    canonical_synced: Option<CanonicalProjectionKey>,
     /// Top-bar taffy node — present only while `built_narrow`.
     topbar_node: Option<NodeId>,
     /// Rect of the narrow-mode top bar, from `apply_layout`.
@@ -597,6 +750,24 @@ struct LegacyFixtureStorage {
     page_saver: PageSaver,
     // Declared last: both saver Drop implementations join before unlocking.
     _lock: advisory_lock::FileLock,
+}
+
+impl Drop for NotesApp {
+    fn drop(&mut self) {
+        // Retire queued effects before any widget fields or worker inboxes drop.
+        if let Some(scope) = self
+            .markdown_invocation
+            .as_ref()
+            .and_then(|job| job.scope.as_ref())
+        {
+            scope.cancel();
+        }
+        for job in &self.external_link_opens {
+            if let Some(scope) = job.operation.as_ref().and_then(|job| job.scope.as_ref()) {
+                scope.cancel();
+            }
+        }
+    }
 }
 
 impl NotesApp {
@@ -708,15 +879,14 @@ impl NotesApp {
         let snapshot = crate::notebook::asset_snapshot(doc)?;
         let waiting = !crate::notebook::assets_complete(doc, &snapshot)?;
         let canonical_assets = Arc::new(std::sync::RwLock::new(snapshot));
-        main.set_image_store(Some(canonical_image_store(&canonical_assets)));
+        main.set_image_store(Some(canonical_image_store(&canonical_assets, None)));
         let mut app = Self::build_widget(workspace, sidebar, main, None);
         app.canonical_assets = canonical_assets;
-        app.canonical_assets_waiting = waiting.then(std::time::Instant::now);
+        app.canonical_assets_waiting = waiting.then(ui::clock::Instant::now);
         app.canonical_asset_manifest = crate::notebook::asset_manifest(doc)?;
         app.main = app.main.project_canonical(doc, &app.workspace)?;
         app.bound_page = app.workspace.selected();
         app.refresh_link_pages();
-        app.canonical_marks = app.main.inline_marks();
         Ok(app)
     }
 
@@ -726,7 +896,10 @@ impl NotesApp {
         root: &std::path::Path,
     ) -> Result<(), String> {
         storage::ensure_layout(root).map_err(|error| error.to_string())?;
-        self.main.set_image_store(Some(workspace_image_store(root)));
+        self.main.set_image_store(Some(canonical_image_store(
+            &self.canonical_assets,
+            Some(root),
+        )));
         self.workspace_asset_root = Some(root.to_path_buf());
         Ok(())
     }
@@ -770,7 +943,7 @@ impl NotesApp {
             status: StatusModel::new(),
             status_bubble: ui::StatusBubble::new(),
             transfer_toasts: ui::widget::toast::ToastStack::new().with_max(3),
-            last_toast_tick: std::time::Instant::now(),
+            last_toast_tick: ui::clock::Instant::now(),
             shots_status: false,
             shots_save_status: None,
             shortcuts: ShortcutsOverlay::new(),
@@ -793,11 +966,12 @@ impl NotesApp {
             canonical_assets_waiting: None,
             inline_assets_offered: false,
             pending_markdown_source: None,
+            pending_import_generation: 0,
             import_control_emitted: false,
             pending_events: Vec::new(),
-            canonical_marks: Vec::new(),
+            upgrade_actions: ui::ActionHost::new(),
             last_mouse: Point::ZERO,
-            started: std::time::Instant::now(),
+            started: ui::clock::Instant::now(),
             synced_once: false,
             adopted: canonical,
             seeded: canonical,
@@ -812,6 +986,7 @@ impl NotesApp {
                 .breakpoint(NARROW_BREAKPOINT),
             pending_relayout: false,
             self_dirty: false,
+            canonical_synced: None,
             topbar_node: None,
             topbar_rect: Rect::ZERO,
             menu_btn_rect: Rect::ZERO,
@@ -895,7 +1070,7 @@ impl NotesApp {
         // Counts stay live when revealed, but each new word must not restart
         // a decorative animation while the user is concentrating on writing.
         if announce {
-            self.status_bubble.poke(std::time::Instant::now());
+            self.status_bubble.poke(ui::clock::Instant::now());
         }
     }
 
@@ -903,7 +1078,7 @@ impl NotesApp {
     /// frame captures the floating chip.
     pub fn arm_status_bubble_for_shots(&mut self) {
         self.shots_status = true;
-        self.status_bubble.poke(std::time::Instant::now());
+        self.status_bubble.poke(ui::clock::Instant::now());
     }
 
     /// `--shots`: capture an actual save-state presentation deterministically,
@@ -935,7 +1110,7 @@ impl NotesApp {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let now = std::time::Instant::now();
+        let now = ui::clock::Instant::now();
         // On a phone the full page/word summary becomes a wide obstruction.
         // Keep the transient edge affordance to the actionable save state;
         // wider layouts retain the richer summary.
@@ -1153,40 +1328,72 @@ impl NotesApp {
     }
 
     fn open_external_link(&mut self, url: String) {
-        if !crate::markdown::safe_external_url(&url) {
-            self.transfer_toasts.push(
-                "This link is not safe to open",
-                ui::widget::toast::ToastKind::Error,
-            );
-            return;
+        if let Err(error) = self.start_external_link(url, None) {
+            self.transfer_toasts
+                .push(error, ui::widget::toast::ToastKind::Error);
         }
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let result = ui::widget::try_open_external_url(&url).map_err(|error| error.to_string());
-            let _ = tx.send(result);
+    }
+    fn start_external_link(
+        &mut self,
+        url: String,
+        operation: Option<PendingOperation>,
+    ) -> Result<(), String> {
+        if !crate::markdown::safe_external_url(&url) {
+            return Err("This link is not safe to open".into());
+        }
+        let receiver = if let Some(scope) = operation.as_ref().and_then(|job| job.scope.as_ref()) {
+            ui::portal::open_uri_scoped(url, scope.effect_scope()?)
+        } else {
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let result =
+                    ui::widget::try_open_external_url(&url).map_err(|error| error.to_string());
+                let _ = tx.send(result);
+            });
+            rx
+        };
+        self.external_link_opens.push(ExternalLinkJob {
+            receiver,
+            operation,
         });
-        self.external_link_opens.push(rx);
         self.transfer_toasts
             .push("Opening link…", ui::widget::toast::ToastKind::Info);
+        Ok(())
     }
-
     fn drain_external_link_opens(&mut self) {
-        self.external_link_opens
-            .retain(|receiver| match receiver.try_recv() {
-                Ok(Ok(())) => false,
-                Ok(Err(error)) => {
-                    tracing::warn!(%error, "notes: external link portal failed");
-                    self.transfer_toasts
-                        .push("Could not open link", ui::widget::toast::ToastKind::Error);
-                    false
+        for mut job in std::mem::take(&mut self.external_link_opens) {
+            let expired = job
+                .operation
+                .as_ref()
+                .and_then(|operation| operation.scope.as_ref())
+                .and_then(|scope| scope.check().err());
+            let result = if let Some(error) = expired {
+                Some(Err(error))
+            } else {
+                match job.receiver.try_recv() {
+                    Ok(result) => Some(result),
+                    Err(std::sync::mpsc::TryRecvError::Empty) => None,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        Some(Err("Link portal disconnected".into()))
+                    }
                 }
-                Err(std::sync::mpsc::TryRecvError::Empty) => true,
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    self.transfer_toasts
-                        .push("Could not open link", ui::widget::toast::ToastKind::Error);
-                    false
-                }
-            });
+            };
+            let Some(result) = result else {
+                self.external_link_opens.push(job);
+                continue;
+            };
+            if let Err(error) = &result {
+                tracing::warn!(%error, "notes: external link portal failed");
+                self.transfer_toasts
+                    .push("Could not open link", ui::widget::toast::ToastKind::Error);
+            }
+            if let Some(operation) = job.operation.take() {
+                self.complete_operation(
+                    operation,
+                    result.map(|()| tilo_actions::ActionOutput::default()),
+                );
+            }
+        }
     }
 
     #[cfg(test)]
@@ -1382,17 +1589,26 @@ impl NotesApp {
             return Err("A file transfer is already pending".into());
         }
         let path = if target.to_ascii_lowercase().starts_with("file:") {
-            url::Url::parse(target)
-                .map_err(|error| format!("Invalid file URL: {error}"))?
-                .to_file_path()
-                .map_err(|()| "Markdown launch requires a local file URL".to_string())?
+            let url =
+                url::Url::parse(target).map_err(|error| format!("Invalid file URL: {error}"))?;
+            ui::portal::to_local_path(&url).ok_or_else(|| {
+                if cfg!(target_arch = "wasm32") {
+                    "Markdown launch does not support local file URLs in the browser".to_string()
+                } else {
+                    "Markdown launch requires a local file URL".to_string()
+                }
+            })?
         } else if target.contains("://") {
             return Err("Markdown launch requires a local file".into());
         } else {
             PathBuf::from(target)
         };
         let body = read_bounded_markdown(&path)?;
-        self.pending_markdown_source = Some((path, body));
+        self.stage_pending_import(PendingMarkdownImport {
+            path,
+            body,
+            assets: None,
+        })?;
         self.import_control_emitted = false;
         self.self_dirty = true;
         Ok(())
@@ -1406,7 +1622,7 @@ impl NotesApp {
         // Base the seed-grace window on the first sync (collab is live by
         // now), not spawn — see `started`'s doc comment.
         if !self.synced_once {
-            self.started = std::time::Instant::now();
+            self.started = ui::clock::Instant::now();
             self.synced_once = true;
         }
         // Apply local deletions through their canonical action BEFORE reading
@@ -1606,11 +1822,18 @@ impl NotesApp {
                 self.main.clear();
             }
             self.bound_page = None;
-            self.canonical_marks.clear();
             return;
         };
         if self.bound_page != Some(sel) {
             self.bind_selected_page(state, sel);
+            if self.sidebar.is_focused() {
+                // Opening a page from the page tree (a row, New note) keeps
+                // keyboard focus in the tree. The freshly bound editor keeps
+                // its caret position but must not also report focus: two
+                // focused siblings leave the host with no keyboard owner, so
+                // Ctrl+Z and browser text input would reach nothing.
+                self.main.editor_mut().set_focus(false);
+            }
         }
     }
 
@@ -1619,108 +1842,50 @@ impl NotesApp {
     /// we deliberately do NOT create it here, so binding can never fork
     /// the `pages` Map ahead of the handshake.
     fn bind_selected_page(&mut self, state: &mut AutoCommit, sel: PageId) {
-        let Some(list) = NotesDoc::page_blocks_list(state, sel) else {
+        if NotesDoc::page_body(state, sel).is_none() {
             return; // page not in the shared doc yet — wait for sync
-        };
+        }
         let title = self
             .workspace
             .get(sel)
             .map(|m| m.title.clone())
             .unwrap_or_default();
-        if self.legacy_fixture_storage.is_none() {
-            match self.main.bind_canonical_page(state, sel, &title, &list) {
-                Ok(()) => {
-                    self.bound_page = Some(sel);
-                    self.refresh_link_pages();
-                    self.canonical_marks = self.main.inline_marks();
+        if let Some(legacy) = &self.legacy_fixture_storage {
+            let body = match storage::read_page_body(&legacy.root, sel) {
+                Ok(body) => body,
+                Err(error) => {
+                    // Never turn an unreadable durable note into an editable
+                    // empty one: the saver would replace the original bytes.
+                    tracing::warn!(%error, page = %sel, "notes: page bind refused");
+                    if self.legacy_read_blocked != Some(sel) {
+                        self.report_page_read_failure(&error);
+                    }
+                    self.legacy_read_blocked = Some(sel);
+                    self.bound_page = None;
+                    return;
                 }
-                Err(error) => tracing::warn!(%error, "notes: canonical page bind refused"),
-            }
-            return;
-        }
-        let Some(legacy) = &self.legacy_fixture_storage else {
-            return;
-        };
-        let mut body = match storage::read_page_body(&legacy.root, sel) {
-            Ok(body) => body,
-            Err(error) => {
-                // Never turn an unreadable durable note into an editable empty
-                // one: the saver would replace the original bytes with it.
-                tracing::warn!(%error, page = %sel, "notes: page bind refused");
-                if self.legacy_read_blocked != Some(sel) {
-                    self.report_page_read_failure(&error);
-                }
-                self.legacy_read_blocked = Some(sel);
-                self.bound_page = None;
-                return;
-            }
-        };
-        if self.legacy_read_blocked.take() == Some(sel)
-            && self.main.page_id() == Some(sel)
-            && self.main.has_unsaved_body()
-        {
-            // The user may already have typed during the initial seed grace.
-            // Recover that draft, rather than replacing it with the disk copy.
-            body = self.main.take_body_snapshot();
-        }
-        // A page's first blocks are a durable mutation too. Seed them through
-        // the same action host that owns every subsequent editor delta; the
-        // panel only ever binds/adopts an already-action-owned list.
-        if state.length(&list) == 0 {
+            };
+            let body = if self.legacy_read_blocked.take() == Some(sel)
+                && self.main.page_id() == Some(sel)
+                && self.main.has_unsaved_body()
+            {
+                // The user may already have typed during the initial seed
+                // grace. Recover that draft rather than the disk copy.
+                self.main.take_body_snapshot()
+            } else {
+                body
+            };
+            // A page's first blocks are a durable mutation too. Seed them
+            // through the same action host that owns every later edit.
             self.seed_page_body(state, sel, &body);
         }
-        // Initial legacy seeding can happen after local typing. A same-page
-        // bind must not move its caret when the adopted content is identical.
-        let local_position = (self.main.page_id() == Some(sel)).then(|| {
-            let editor = self.main.editor();
-            let content = editor
-                .blocks()
-                .iter()
-                .map(|block| (block.kind.clone(), block.text().to_owned()))
-                .collect::<Vec<_>>();
-            let caret = editor.focused_index().and_then(|index| {
-                editor.blocks().get(index).map(|block| {
-                    (
-                        index,
-                        block.line.inner().caret_position(),
-                        block.line.selection_range(),
-                    )
-                })
-            });
-            (
-                content,
-                editor.is_focused(),
-                caret,
-                editor.document_selection(),
-            )
-        });
-        self.main.bind_page(state, sel, &title, list, &body);
-        if let Some((content, focused, caret, selection)) = local_position {
-            let editor = self.main.editor_mut();
-            if content.len() == editor.blocks().len()
-                && content
-                    .iter()
-                    .zip(editor.blocks())
-                    .all(|((kind, text), block)| *kind == block.kind && text == block.text())
-            {
-                if let Some(selection) = selection {
-                    editor.select_document_range(selection.anchor, selection.cursor);
-                } else if let Some((index, position, selection)) = caret {
-                    editor.focus_block(index, ui::widget::CursorPlacement::Byte(position.byte));
-                    if let Some(block) = editor.blocks_mut().get_mut(index) {
-                        let input = block.line.inner_mut();
-                        if let Some((start, end)) = selection {
-                            let anchor = if position.byte == start { end } else { start };
-                            input.set_selection(anchor, position.byte);
-                        } else {
-                            input.set_caret_position(position);
-                        }
-                    }
-                }
-                editor.set_focus(focused);
+        match self.main.bind_canonical_page(state, sel, &title) {
+            Ok(()) => {
+                self.bound_page = Some(sel);
+                self.refresh_link_pages();
             }
+            Err(error) => tracing::warn!(%error, "notes: page bind refused"),
         }
-        self.bound_page = Some(sel);
     }
 
     /// Adopt a legacy Markdown body only when the explicit disk adapter exists.
@@ -1745,11 +1910,14 @@ impl NotesApp {
     /// complete duplicate/imported content without the originating client
     /// having to open every descendant first.
     fn seed_page_body(&mut self, doc: &mut AutoCommit, page: PageId, body: &str) {
-        let Some(blocks) = NotesDoc::page_blocks_list(doc, page) else {
-            tracing::warn!(%page, "notes: refused to seed blocks for a missing page");
+        if NotesDoc::page_body(doc, page).is_none() {
+            tracing::warn!(%page, "notes: refused to seed a missing page");
             return;
-        };
-        if doc.length(&blocks) != 0 {
+        }
+        let empty = NotesDoc::page_block_snapshots(doc, page)
+            .iter()
+            .all(|(_, text)| text.is_empty());
+        if !empty || NotesDoc::page_blocks(doc, page).len() > 1 {
             return;
         }
         let titles = self
@@ -1758,9 +1926,11 @@ impl NotesApp {
             .iter()
             .map(|meta| (meta.title.clone(), meta.id))
             .collect::<HashMap<_, _>>();
-        let (ops, marks) =
-            MainPanel::seed_block_ops_with_marks(body, |title| titles.get(title).copied());
-        let action = actions::apply_block_ops_action(page, ops);
+        let blocks = MainPanel::seed_blocks(body, |title| titles.get(title).copied());
+        if blocks.iter().all(|block| block.text.is_empty()) && blocks.len() <= 1 {
+            return;
+        }
+        let action = actions::write_body_action(page, &blocks);
         if let Err(error) = self.actions.try_dispatch_with_context(
             doc,
             actions::NOTES_ACTION_TYPE,
@@ -1768,22 +1938,6 @@ impl NotesApp {
             actions::history_context(&action),
         ) {
             tracing::error!(%error, %page, "notes: could not seed page blocks");
-            return;
-        }
-        for (block_id, marks) in marks {
-            let action = actions::set_block_marks_action(page, block_id, marks);
-            if let Err(error) = self.actions.try_dispatch_with_context(
-                doc,
-                actions::NOTES_ACTION_TYPE,
-                &action,
-                actions::history_context(&action),
-            ) {
-                // The preceding insert action created this block. If a corrupt
-                // document still refuses it, retain the text and recover on a
-                // later bind rather than failing the whole workspace sync.
-                tracing::warn!(%error, %page, "notes: could not seed inline marks");
-                break;
-            }
         }
     }
 
@@ -1798,9 +1952,9 @@ impl NotesApp {
     /// seeds immediately (tests can't wait 800 ms of wall-clock).
     #[doc(hidden)]
     pub fn bypass_seed_grace_for_test(&mut self) {
-        self.started = std::time::Instant::now()
+        self.started = ui::clock::Instant::now()
             .checked_sub(SEED_GRACE + Duration::from_secs(1))
-            .unwrap_or_else(std::time::Instant::now);
+            .unwrap_or_else(ui::clock::Instant::now);
         // Mark first-sync as done so `sync` doesn't re-base `started`
         // back to "now" and undo the bypass.
         self.synced_once = true;
@@ -1974,10 +2128,27 @@ impl NotesApp {
         Ok(())
     }
 
-    fn drain_canonical_editor(&mut self, doc: &mut AutoCommit) {
-        self.drain_block_ops(doc);
-        if self.main.editor_is_dirty() && self.bound_page.is_some() {
-            self.drain_inline_marks(doc);
+    /// Bring a notebook still holding first-format pages to rich text, once
+    /// it is open. A no-op for a current notebook.
+    fn upgrade_notebook(&mut self, doc: &mut AutoCommit) {
+        if !NotesDoc::needs_upgrade(doc) {
+            return;
+        }
+        let action = NotesAction::UpgradeNotebook;
+        match self.upgrade_actions.try_dispatch_with_context(
+            doc,
+            actions::NOTES_ACTION_TYPE,
+            &action,
+            actions::history_context(&action),
+        ) {
+            Ok(()) => {
+                // Not a person's edit: no undo step for it.
+                let _ = self.upgrade_actions.take_committed();
+                self.bound_page = None;
+                self.canonical_synced = None;
+                self.self_dirty = true;
+            }
+            Err(error) => tracing::error!(%error, "notes: notebook upgrade refused"),
         }
     }
 
@@ -1997,13 +2168,89 @@ impl NotesApp {
         Ok(())
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one flat dispatch over every canonical Notes event kind"
+    )]
     fn apply_canonical_event(
         &mut self,
         doc: &mut AutoCommit,
         event: OutEvent,
     ) -> Result<(), String> {
-        self.drain_canonical_editor(doc);
         self.reconcile_canonical(doc)?;
+        // Direct title/create affordances use the current published contract,
+        // just like named actions. Check before any optimistic metadata edit.
+        let resource_action = match &event {
+            OutEvent::Rename { id, .. } => Some((actions::page_resource_id(*id), "rename")),
+            OutEvent::CreateChild { parent: Some(id) } => {
+                Some((actions::page_resource_id(*id), "new-child"))
+            }
+            OutEvent::CreateChild { parent: None } => Some(("notes.notebook".into(), "new-page")),
+            OutEvent::Delete(id) => Some((actions::page_resource_id(*id), "delete")),
+            OutEvent::Duplicate(id) => Some((actions::page_resource_id(*id), "duplicate")),
+            OutEvent::Reparent {
+                id,
+                new_parent,
+                before,
+            } => {
+                let published_action = (|| {
+                    let current = self.workspace.get(*id)?;
+                    if current.parent != *new_parent {
+                        let siblings = self.workspace.children_of(current.parent);
+                        let index = siblings.iter().position(|page| page.id == *id)?;
+                        if index
+                            .checked_sub(1)
+                            .and_then(|previous| siblings.get(previous))
+                            .is_some_and(|page| Some(page.id) == *new_parent)
+                            && before.is_none()
+                        {
+                            return Some("indent");
+                        }
+                        let parent = self.workspace.get(current.parent?)?;
+                        let parent_siblings = self.workspace.children_of(parent.parent);
+                        let expected_before = parent_siblings
+                            .iter()
+                            .skip_while(|page| page.id != parent.id)
+                            .nth(1)
+                            .map(|page| page.id);
+                        if *new_parent == parent.parent && *before == expected_before {
+                            return Some("outdent");
+                        }
+                        return None;
+                    }
+
+                    let siblings = self.workspace.children_of(current.parent);
+                    let old_index = siblings.iter().position(|page| page.id == *id)?;
+                    let without_current = siblings
+                        .into_iter()
+                        .filter(|page| page.id != *id)
+                        .collect::<Vec<_>>();
+                    let target_index = before
+                        .and_then(|before| {
+                            without_current.iter().position(|page| page.id == before)
+                        })
+                        .unwrap_or(without_current.len());
+                    if target_index.checked_add(1) == Some(old_index) {
+                        Some("move-up")
+                    } else if target_index == old_index.saturating_add(1) {
+                        Some("move-down")
+                    } else {
+                        None
+                    }
+                })()
+                // Arbitrary drag reparenting has no published named contract.
+                // Unbound legacy hosts allow it; bound custody fails closed.
+                .unwrap_or("direct-reparent");
+                Some((actions::page_resource_id(*id), published_action))
+            }
+            _ => None,
+        };
+        if let Some((resource_id, action_id)) = resource_action {
+            let resource = self
+                .resource(doc, &resource_id)
+                .ok_or("page action resource no longer exists")?;
+            ui::ActionHost::authorize_resource_action(doc, &resource, action_id)?;
+        }
         let before = self.meta_map();
         let tree_move = matches!(event, OutEvent::Reparent { .. });
         match event {
@@ -2329,7 +2576,7 @@ impl NotesApp {
             let page_exists = if self.legacy_fixture_storage.is_some() {
                 self.workspace.get(page).is_some()
             } else {
-                NotesDoc::page_blocks_list(doc, page).is_some()
+                NotesDoc::page_body(doc, page).is_some()
             };
             if !page_exists {
                 // Deleted history entries are skipped, just as a browser skips
@@ -2435,6 +2682,12 @@ impl NotesApp {
     }
 
     fn request_markdown_import(&mut self) -> Result<(), String> {
+        self.request_markdown_import_scoped(None)
+    }
+    fn request_markdown_import_scoped(
+        &mut self,
+        scope: Option<ResourceEffectScope>,
+    ) -> Result<(), String> {
         if self.markdown_transfer.is_some()
             || self.markdown_job.is_pending()
             || self.markdown_invocation.is_some()
@@ -2445,13 +2698,20 @@ impl NotesApp {
         let request = ui::portal::PickRequest::open("Import Markdown", "Import")
             .filter(ui::portal::FileFilter::new("Markdown").glob("*.md"))
             .thread_name("notes-import-markdown");
-        let channel = request.send();
+        let channel = send_markdown_pick(request, scope);
         self.markdown_transfer = Some((MarkdownTransfer::Import, channel));
         self.self_dirty = true;
         Ok(())
     }
 
     fn request_image_insert(&mut self, page: PageId) -> Result<(), String> {
+        self.request_image_insert_scoped(page, None)
+    }
+    fn request_image_insert_scoped(
+        &mut self,
+        page: PageId,
+        scope: Option<ResourceEffectScope>,
+    ) -> Result<(), String> {
         if self.markdown_transfer.is_some()
             || self.markdown_job.is_pending()
             || self.markdown_invocation.is_some()
@@ -2468,13 +2728,21 @@ impl NotesApp {
                     .glob("*.webp"),
             )
             .thread_name("notes-insert-image");
-        let channel = request.send();
+        let channel = send_markdown_pick(request, scope);
         self.markdown_transfer = Some((MarkdownTransfer::InsertImage { page }, channel));
         self.self_dirty = true;
         Ok(())
     }
 
     fn request_markdown_export(&mut self, doc: &AutoCommit, page: PageId) -> Result<(), String> {
+        self.request_markdown_export_scoped(doc, page, None)
+    }
+    fn request_markdown_export_scoped(
+        &mut self,
+        doc: &AutoCommit,
+        page: PageId,
+        scope: Option<ResourceEffectScope>,
+    ) -> Result<(), String> {
         if self.markdown_transfer.is_some()
             || self.markdown_job.is_pending()
             || self.markdown_invocation.is_some()
@@ -2510,14 +2778,13 @@ impl NotesApp {
         )
         .filter(ui::portal::FileFilter::new("Markdown").glob("*.md"))
         .thread_name("notes-export-markdown");
-        let channel = request.send();
+        let channel = send_markdown_pick(request, scope);
         self.markdown_transfer = Some((
             MarkdownTransfer::Export {
                 markdown: markdown.into_bytes(),
-                asset_root: self
-                    .legacy_fixture_storage
-                    .as_ref()
-                    .map(|legacy| legacy.root.clone()),
+                // Workspace-scoped attachments stay exportable beside embedded
+                // canonical assets, which are read from the authoritative document.
+                asset_root: self.workspace_asset_root.clone(),
                 canonical_assets: if self.legacy_fixture_storage.is_none() {
                     crate::notebook::asset_snapshot(doc)?
                 } else {
@@ -2531,9 +2798,27 @@ impl NotesApp {
     }
 
     fn complete_markdown_operation(&mut self, outcome: Result<tilo_actions::ActionOutput, String>) {
-        let Some(invocation) = self.markdown_invocation.take() else {
+        let Some(operation) = self.markdown_invocation.take() else {
             return;
         };
+        self.complete_operation(operation, outcome);
+    }
+    fn complete_operation(
+        &mut self,
+        mut operation: PendingOperation,
+        outcome: Result<tilo_actions::ActionOutput, String>,
+    ) {
+        let invocation = operation.invocation;
+        let outcome = match (&operation.scope, outcome) {
+            (Some(scope), Ok(output)) => scope.check().map(|()| output),
+            (_, outcome) => outcome,
+        };
+        if outcome.is_ok() {
+            // The SDK still owns this same scope until it delivers the terminal
+            // receipt. Success releases our clone without retiring that custody.
+            // Failed or abandoned jobs keep Drop's irreversible cancellation.
+            drop(operation.scope.take());
+        }
         self.markdown_results.push(match outcome {
             Ok(output) => tilo_actions::InvocationUpdate::Succeeded { invocation, output },
             Err(message) => tilo_actions::InvocationUpdate::Failed {
@@ -2548,15 +2833,29 @@ impl NotesApp {
         });
     }
 
-    fn finish_image_insert(&mut self, doc: &mut AutoCommit, page: PageId, path: &std::path::Path) {
-        let imported = if let Some(legacy) = self.legacy_fixture_storage.as_ref() {
-            import_image_asset(&legacy.root, path).map(|destination| (destination, None))
-        } else {
-            read_image_asset(path).map(|(bytes, _)| {
-                let digest = blake3::hash(&bytes).to_hex().to_string();
-                (format!("asset:{digest}"), Some(bytes))
-            })
-        };
+    #[cfg(test)]
+    fn finish_image_insert(
+        &mut self,
+        doc: &mut AutoCommit,
+        page: PageId,
+        path: &std::path::Path,
+    ) -> Result<(), String> {
+        let imported = load_image(
+            self.legacy_fixture_storage
+                .as_ref()
+                .map(|legacy| legacy.root.as_path()),
+            path,
+            None,
+        );
+        self.insert_loaded_image(doc, page, path, imported)
+    }
+    fn insert_loaded_image(
+        &mut self,
+        doc: &mut AutoCommit,
+        page: PageId,
+        path: &std::path::Path,
+        imported: Result<LoadedImage, String>,
+    ) -> Result<(), String> {
         let (destination, canonical_bytes) = match imported {
             Ok(imported) => imported,
             Err(error) => {
@@ -2564,7 +2863,7 @@ impl NotesApp {
                     format!("Image import failed: {error}"),
                     ui::widget::toast::ToastKind::Error,
                 );
-                return;
+                return Err(error);
             }
         };
         let alt = path
@@ -2582,55 +2881,103 @@ impl NotesApp {
                     .map(|block| block.id.clone())
             })
             .flatten();
-        let op = ui::widget::BlockEditOp::Insert {
-            block_id: uuid::Uuid::new_v4().to_string(),
-            after,
-            kind: "paragraph".into(),
-            text: format!("![{}]({destination})", alt.trim()),
+        let text = format!("![{}]({destination})", alt.trim());
+        let edit = match after {
+            Some(after) => qdoc_rich_text::RichTextAction::InsertParagraph { after, text },
+            None => qdoc_rich_text::RichTextAction::AppendParagraph { text },
         };
         let action = if let Some(bytes) = canonical_bytes {
-            actions::add_image_asset_action(page, bytes, op)
+            actions::add_image_asset_action(page, bytes, edit)
         } else {
-            actions::apply_block_ops_action(page, vec![op])
+            actions::edit_body_action(page, edit)
         };
-        match self.actions.try_dispatch_with_context(
-            doc,
-            actions::NOTES_ACTION_TYPE,
-            &action,
-            actions::history_context(&action),
-        ) {
+        let scope = self.markdown_scope();
+        let result = self.dispatch_transfer_action(doc, &action, scope.as_ref());
+        match result {
             Ok(()) => {
                 self.bound_page = None;
                 self.self_dirty = true;
                 self.transfer_toasts
                     .push("Image inserted", ui::widget::toast::ToastKind::Success);
+                Ok(())
             }
-            Err(error) => self.transfer_toasts.push(
-                format!("Image insert failed: {error}"),
-                ui::widget::toast::ToastKind::Error,
-            ),
+            Err(error) => {
+                self.transfer_toasts.push(
+                    format!("Image insert failed: {error}"),
+                    ui::widget::toast::ToastKind::Error,
+                );
+                Err(error)
+            }
         }
     }
 
+    fn markdown_scope(&self) -> Option<ResourceInvocationScope> {
+        self.markdown_invocation
+            .as_ref()
+            .and_then(|job| job.scope.clone())
+    }
+    fn markdown_effect_scope(&self) -> Result<Option<ResourceEffectScope>, String> {
+        self.markdown_scope()
+            .map(|scope| scope.effect_scope())
+            .transpose()
+    }
+    fn dispatch_transfer_action(
+        &mut self,
+        doc: &mut AutoCommit,
+        action: &NotesAction,
+        scope: Option<&ResourceInvocationScope>,
+    ) -> Result<(), String> {
+        let mut dispatch = |doc: &mut AutoCommit| {
+            self.actions
+                .try_dispatch_with_context(
+                    doc,
+                    actions::NOTES_ACTION_TYPE,
+                    action,
+                    actions::history_context(action),
+                )
+                .map_err(|error| error.to_string())
+        };
+        match scope {
+            Some(scope) => scope.with_document_mutation(doc, dispatch),
+            None => dispatch(doc),
+        }
+    }
+    fn retire_markdown_operation(&mut self, error: String) {
+        self.markdown_transfer = None;
+        self.markdown_job.cancel();
+        self.pending_markdown_source = None;
+        self.import_control_emitted = false;
+        self.complete_markdown_operation(Err(error));
+        self.self_dirty = true;
+    }
     #[allow(
         clippy::too_many_lines,
-        reason = "drains each asynchronous Markdown transfer outcome through one completion boundary"
+        reason = "one transfer inbox preserves original job custody through picker, file worker and canonical continuation"
     )]
     fn drain_markdown_transfer(&mut self, doc: &mut AutoCommit) {
+        if let Some(error) = self.markdown_scope().and_then(|scope| scope.check().err()) {
+            self.retire_markdown_operation(error);
+            return;
+        }
         if let Some(job) = self.markdown_job.try_take() {
             match job {
                 MarkdownJobResult::Imported { path, result } => match result {
-                    Ok(body) if self.pending_markdown_source.is_none() => {
-                        self.pending_markdown_source = Some((path, body));
-                        self.import_control_emitted = false;
-                        self.self_dirty = true;
+                    Ok((body, assets)) if self.pending_markdown_source.is_none() => {
+                        match self.stage_pending_import(PendingMarkdownImport {
+                            path,
+                            body,
+                            assets: Some(assets),
+                        }) {
+                            Ok(()) => {
+                                self.import_control_emitted = false;
+                                self.self_dirty = true;
+                            }
+                            Err(error) => self.complete_markdown_operation(Err(error)),
+                        }
                     }
-                    Ok(_) => {
-                        let error = "Another Markdown import is pending".to_string();
-                        self.transfer_toasts
-                            .push(&error, ui::widget::toast::ToastKind::Error);
-                        self.complete_markdown_operation(Err(error));
-                    }
+                    Ok(_) => self.complete_markdown_operation(Err(
+                        "Another Markdown import is pending".into(),
+                    )),
                     Err(error) => {
                         tracing::warn!(%error, path = %path.display(), "notes: Markdown import failed");
                         self.transfer_toasts.push(
@@ -2640,23 +2987,27 @@ impl NotesApp {
                         self.complete_markdown_operation(Err(error));
                     }
                 },
-                MarkdownJobResult::Exported { path, result } => match result {
-                    Ok(()) => {
-                        self.transfer_toasts.push(
+                MarkdownJobResult::Exported { path, result } => {
+                    match &result {
+                        Ok(()) => self.transfer_toasts.push(
                             format!("Exported {}", path.display()),
                             ui::widget::toast::ToastKind::Success,
-                        );
-                        self.complete_markdown_operation(Ok(tilo_actions::ActionOutput::default()));
-                    }
-                    Err(error) => {
-                        tracing::warn!(%error, path = %path.display(), "notes: Markdown export failed");
-                        self.transfer_toasts.push(
+                        ),
+                        Err(error) => self.transfer_toasts.push(
                             format!("Export failed: {error}"),
                             ui::widget::toast::ToastKind::Error,
-                        );
-                        self.complete_markdown_operation(Err(error));
+                        ),
                     }
-                },
+                    self.complete_markdown_operation(
+                        result.map(|()| tilo_actions::ActionOutput::default()),
+                    );
+                }
+                MarkdownJobResult::Image { page, path, result } => {
+                    let outcome = self
+                        .insert_loaded_image(doc, page, &path, result)
+                        .map(|()| tilo_actions::ActionOutput::default());
+                    self.complete_markdown_operation(outcome);
+                }
             }
             return;
         }
@@ -2672,9 +3023,18 @@ impl NotesApp {
                         ))
                     }
                 });
-        let Some(outcome) = outcome else { return };
+        let Some(outcome) = outcome else {
+            return;
+        };
         let Some((transfer, _)) = self.markdown_transfer.take() else {
             return;
+        };
+        let scope = match self.markdown_effect_scope() {
+            Ok(scope) => scope,
+            Err(error) => {
+                self.retire_markdown_operation(error);
+                return;
+            }
         };
         match (transfer, outcome) {
             (
@@ -2687,36 +3047,56 @@ impl NotesApp {
             ) => {
                 let completion = self.markdown_job.begin();
                 std::thread::spawn(move || {
-                    let result = write_portable_markdown_export(
+                    let result = write_portable_markdown_export_scoped(
                         asset_root.as_deref(),
                         &canonical_assets,
                         &path,
                         &markdown,
+                        scope.as_ref(),
                     );
                     completion.complete(MarkdownJobResult::Exported { path, result });
                 });
             }
             (MarkdownTransfer::Import, ui::portal::PortalOutcome::Opened(path)) => {
                 let completion = self.markdown_job.begin();
+                let root = self
+                    .legacy_fixture_storage
+                    .as_ref()
+                    .map(|legacy| legacy.root.clone());
                 std::thread::spawn(move || {
-                    let result = read_bounded_markdown(&path);
+                    let result = (|| {
+                        let body = file_effect(scope.as_ref(), || read_bounded_markdown(&path))??;
+                        if let Some(root) = root {
+                            adopt_portable_markdown_assets(&root, &path, &body, scope.as_ref())
+                                .map(|body| (body, Vec::new()))
+                        } else {
+                            adopt_canonical_markdown_assets(&path, &body, scope.as_ref())
+                        }
+                    })();
                     completion.complete(MarkdownJobResult::Imported { path, result });
                 });
             }
             (MarkdownTransfer::InsertImage { page }, ui::portal::PortalOutcome::Opened(path)) => {
-                self.finish_image_insert(doc, page, &path);
+                let completion = self.markdown_job.begin();
+                let root = self
+                    .legacy_fixture_storage
+                    .as_ref()
+                    .map(|legacy| legacy.root.clone());
+                std::thread::spawn(move || {
+                    let result = load_image(root.as_deref(), &path, scope.as_ref());
+                    completion.complete(MarkdownJobResult::Image { page, path, result });
+                });
             }
             (_, ui::portal::PortalOutcome::Cancelled) => {
-                if let Some(invocation) = self.markdown_invocation.take() {
+                if let Some(operation) = self.markdown_invocation.take() {
                     self.markdown_results
                         .push(tilo_actions::InvocationUpdate::Cancelled {
-                            invocation,
+                            invocation: operation.invocation,
                             message: None,
                         });
                 }
             }
             (_, ui::portal::PortalOutcome::Failed(error)) => {
-                tracing::warn!(%error, "notes: file chooser failed");
                 self.transfer_toasts.push(
                     format!("File chooser unavailable: {error}"),
                     ui::widget::toast::ToastKind::Error,
@@ -2725,25 +3105,51 @@ impl NotesApp {
             }
         }
     }
+    fn finish_pending_markdown_import(
+        &mut self,
+        doc: &mut AutoCommit,
+        fallback: Option<&ResourceInvocationScope>,
+    ) -> Result<(), String> {
+        let pending = self
+            .pending_markdown_source
+            .take()
+            .ok_or("No local file import is pending")?;
+        self.import_control_emitted = false;
+        let scope = self.markdown_scope().or_else(|| fallback.cloned());
+        self.finish_markdown_import(
+            doc,
+            &pending.path,
+            &pending.body,
+            pending.assets,
+            scope.as_ref(),
+        )
+    }
 
     fn finish_markdown_import(
         &mut self,
         doc: &mut AutoCommit,
         path: &std::path::Path,
         body: &str,
+        prepared_assets: Option<ImportedAssets>,
+        scope: Option<&ResourceInvocationScope>,
     ) -> Result<(), String> {
         if self.legacy_read_blocked.is_some() {
             return Err(
                 "The current note could not be read; its unsaved draft is still open".into(),
             );
         }
-        let (body, assets) = if let Some(legacy) = self.legacy_fixture_storage.as_ref() {
+        let effect = scope
+            .map(ResourceInvocationScope::effect_scope)
+            .transpose()?;
+        let (body, assets) = if let Some(assets) = prepared_assets {
+            (body.to_string(), assets)
+        } else if let Some(legacy) = self.legacy_fixture_storage.as_ref() {
             (
-                adopt_portable_markdown_assets(&legacy.root, path, body),
+                adopt_portable_markdown_assets(&legacy.root, path, body, effect.as_ref())?,
                 Vec::new(),
             )
         } else {
-            adopt_canonical_markdown_assets(path, body)
+            adopt_canonical_markdown_assets(path, body, effect.as_ref())?
         };
         let mut workspace = if self.legacy_fixture_storage.is_some() {
             let mut workspace = self.workspace.clone();
@@ -2761,7 +3167,7 @@ impl NotesApp {
         workspace.rename(page, title);
         workspace.set_selected(Some(page));
         let meta = workspace.get(page).ok_or("Imported page is unavailable")?;
-        let (ops, marks) = MainPanel::seed_block_ops_with_marks(&body, |title| {
+        let blocks = MainPanel::seed_blocks(&body, |title| {
             workspace
                 .pages()
                 .iter()
@@ -2770,18 +3176,10 @@ impl NotesApp {
         });
         let action = NotesAction::ImportPage {
             page: actions::PageData::from_meta(meta),
-            ops,
-            marks,
+            blocks: blocks.iter().map(actions::PageBlock::of).collect(),
             assets,
         };
-        self.actions
-            .try_dispatch_with_context(
-                doc,
-                actions::NOTES_ACTION_TYPE,
-                &action,
-                actions::history_context(&action),
-            )
-            .map_err(|error| error.to_string())?;
+        self.dispatch_transfer_action(doc, &action, scope)?;
         self.workspace = workspace;
         self.sidebar.sync_from_workspace(&self.workspace);
         if let Some(legacy) = &self.legacy_fixture_storage {
@@ -2815,7 +3213,7 @@ impl NotesApp {
         workspace.rename(page, title);
         workspace.set_selected(Some(page));
         let meta = workspace.get(page).ok_or("Imported page is unavailable")?;
-        let (ops, marks) = MainPanel::seed_block_ops_with_marks(&body, |target| {
+        let blocks = MainPanel::seed_blocks(&body, |target| {
             workspace
                 .pages()
                 .iter()
@@ -2824,8 +3222,7 @@ impl NotesApp {
         });
         let action = NotesAction::ImportPage {
             page: actions::PageData::from_meta(meta),
-            ops,
-            marks,
+            blocks: blocks.iter().map(actions::PageBlock::of).collect(),
             assets: Vec::new(),
         };
         self.dispatch_canonical_action(doc, &action)?;
@@ -2838,6 +3235,76 @@ impl NotesApp {
             ui::widget::toast::ToastKind::Success,
         );
         Ok(page)
+    }
+
+    fn stage_pending_import(&mut self, pending: PendingMarkdownImport) -> Result<(), String> {
+        if self.pending_markdown_source.is_some() {
+            return Err("Another Markdown import is pending".into());
+        }
+        let generation = self
+            .pending_import_generation
+            .checked_add(1)
+            .ok_or("Markdown import generation exhausted")?;
+        self.pending_import_generation = generation;
+        self.pending_markdown_source = Some(pending);
+        Ok(())
+    }
+
+    // Complete lazy resolution semantics are versioned alongside the actual
+    // document/owner witness retained by the SDK. No labels or callback hashes.
+    fn notes_invocation_domain(
+        &self,
+        doc: &AutoCommit,
+    ) -> ui::widget::ActionDirectoryInvocationDomain {
+        if self.legacy_fixture_storage.is_some() || self.legacy_read_blocked.is_some() {
+            return ui::widget::ActionDirectoryInvocationDomain::Unsupported;
+        }
+        let mut parts = vec![
+            chrono::Local::now()
+                .format("%Y-%m-%d")
+                .to_string()
+                .into_bytes(),
+            crate::continuation::optional_page(self.workspace.selected()),
+            crate::continuation::optional_page(self.active_tag_filter),
+            vec![u8::from(self.adopted)],
+            self.pending_import_generation.to_be_bytes().to_vec(),
+            vec![u8::from(self.pending_markdown_source.is_some())],
+        ];
+        match &self.markdown_invocation {
+            Some(job) => {
+                parts.push(vec![1]);
+                parts.push(job.invocation.0.as_bytes().to_vec());
+            }
+            None => parts.push(vec![0]),
+        }
+        // A different route with the same Back/Forward availability is a
+        // different relative navigation domain. Deleted targets are checked
+        // against the current document by the unchanged navigation handler.
+        for routes in [
+            self.route_history.past(),
+            std::slice::from_ref(self.route_history.current()),
+            self.route_history.future(),
+        ] {
+            parts.push((routes.len() as u64).to_be_bytes().to_vec());
+            parts.extend(
+                routes
+                    .iter()
+                    .copied()
+                    .map(crate::continuation::optional_page),
+            );
+        }
+        let heads = doc.base_heads();
+        parts.push((heads.len() as u64).to_be_bytes().to_vec());
+        parts.extend(heads.iter().map(|head| head.0.to_vec()));
+        parts.push(
+            (automerge::transaction::Transactable::pending_ops(doc) as u64)
+                .to_be_bytes()
+                .to_vec(),
+        );
+        crate::continuation::provider(
+            "notes-canonical-page-block-tag-backlink-local-dispatch/v1",
+            parts,
+        )
     }
 
     fn pending_import_resource(&self) -> Option<tilo_actions::Resource> {
@@ -2898,13 +3365,13 @@ impl NotesApp {
                 Err("Markdown content import requires mutable host admission".into())
             }
             actions::NotesOperation::InsertImage { page } => {
-                if NotesDoc::page_blocks_list(doc, page).is_none() {
+                if NotesDoc::page_body(doc, page).is_none() {
                     return Err("page no longer exists".into());
                 }
                 self.request_image_insert(page)
             }
             actions::NotesOperation::ExportMarkdown { page } => {
-                if NotesDoc::page_blocks_list(doc, page).is_none() {
+                if NotesDoc::page_body(doc, page).is_none() {
                     return Err("page no longer exists".into());
                 }
                 self.request_markdown_export(doc, page)
@@ -2937,7 +3404,7 @@ impl NotesApp {
                 Ok(())
             }
             actions::NotesOperation::OpenPage { page, block_id } => {
-                if NotesDoc::page_blocks_list(doc, page).is_none() {
+                if NotesDoc::page_body(doc, page).is_none() {
                     return Err("page no longer exists".into());
                 }
                 if let Some(block_id) = block_id.as_ref()
@@ -3031,109 +3498,6 @@ impl NotesApp {
         }
     }
 
-    /// Dispatch action-owned semantic editor deltas. A stale page/block is a
-    /// normal collaborative race, not a silent best-effort write: refuse it,
-    /// then force the panel to rebind from the document on the next sync.
-    fn drain_block_ops(&mut self, state: &mut AutoCommit) {
-        let ops = self.main.take_block_ops();
-        if ops.is_empty() {
-            return;
-        }
-        let Some(page) = self.main.page_id() else {
-            return;
-        };
-        let action = actions::apply_block_ops_action(page, ops);
-        if let Err(error) = self.actions.try_dispatch_with_context(
-            state,
-            actions::NOTES_ACTION_TYPE,
-            &action,
-            actions::history_context(&action),
-        ) {
-            tracing::warn!(%error, page = %page, "notes: rejected stale editor operation; reconciling");
-            self.bound_page = None;
-            self.self_dirty = true;
-        }
-    }
-
-    /// Persist the editor's rich inline spans as native Automerge text marks.
-    /// Text and structure already flow through `ApplyBlockOps`; formatting and
-    /// page links need their own typed action because they do not alter the
-    /// plain string. Comparing against the document avoids re-emitting an
-    /// action for ordinary typing: Automerge carries its native mark anchors
-    /// forward with the text splice.
-    fn drain_inline_marks(&mut self, state: &mut AutoCommit) {
-        if self.legacy_fixture_storage.is_none() && self.bound_page != self.main.page_id() {
-            return;
-        }
-        let local = self.main.inline_marks();
-        if self.legacy_fixture_storage.is_none() && local == self.canonical_marks {
-            return;
-        }
-        // Before the late-join handshake, the visible Markdown editor is a
-        // local preview and its page has deliberately not been created in the
-        // shared doc yet. Waiting for seed/adoption avoids a noisy stale-page
-        // action and then migrates the same spans on the first bound sync.
-        if !self.adopted {
-            return;
-        }
-        let Some(page) = self.main.page_id() else {
-            return;
-        };
-        let in_doc = NotesDoc::page_block_marks(state, page)
-            .into_iter()
-            .map(|(id, mut marks)| {
-                // RichTextLine retains spans in start order; native marks
-                // arrive grouped by mark name. Ordering is not an edit.
-                marks.sort_by_key(|mark| mark.start);
-                (id, marks)
-            })
-            .collect::<HashMap<_, _>>();
-        for (block_id, marks) in local.iter().cloned() {
-            if in_doc
-                .get(&block_id)
-                .is_some_and(|current| current == &marks)
-            {
-                continue;
-            }
-            let action = actions::set_block_marks_action(page, block_id, marks);
-            if let Err(error) = self.actions.try_dispatch_with_context(
-                state,
-                actions::NOTES_ACTION_TYPE,
-                &action,
-                actions::history_context(&action),
-            ) {
-                tracing::warn!(%error, page = %page, "notes: rejected inline-mark operation; reconciling");
-                self.bound_page = None;
-                self.self_dirty = true;
-                return;
-            }
-        }
-        if self.legacy_fixture_storage.is_none() {
-            self.canonical_marks = local;
-        }
-    }
-
-    /// Rehydrate the rich spans the shared widget intentionally does not own.
-    /// Native mark positions are read only for the bound page and only once a
-    /// page has crossed the explicit marks-action migration marker, keeping a
-    /// legacy local Markdown page's first bind intact long enough to migrate.
-    fn hydrate_inline_marks(&mut self, state: &AutoCommit) {
-        let Some(page) = self.main.page_id() else {
-            return;
-        };
-        if self.legacy_fixture_storage.is_some() && !NotesDoc::page_marks_are_canonical(state, page)
-        {
-            return;
-        }
-        let marks = NotesDoc::page_block_marks(state, page)
-            .into_iter()
-            .collect::<HashMap<_, _>>();
-        self.main.set_inline_marks(&marks);
-        if self.legacy_fixture_storage.is_none() {
-            self.canonical_marks = self.main.inline_marks();
-        }
-    }
-
     /// Complete a first-note request from the empty-state button. This runs
     /// from both the normal event path and `sync`, because an accessibility
     /// activation reaches the child widget directly and then asks the host for
@@ -3176,12 +3540,14 @@ impl NotesApp {
             *assets = snapshot;
         }
         self.canonical_asset_manifest = manifest;
-        self.canonical_assets_waiting = waiting.then(std::time::Instant::now);
+        self.canonical_assets_waiting = waiting.then(ui::clock::Instant::now);
         if arrived && retry {
             // The image store remembers a failed load; a fresh store draws the
             // images that were placeholders while their bytes were on the way.
-            self.main
-                .set_image_store(Some(canonical_image_store(&self.canonical_assets)));
+            self.main.set_image_store(Some(canonical_image_store(
+                &self.canonical_assets,
+                self.workspace_asset_root.as_deref(),
+            )));
             self.self_dirty = true;
         }
     }
@@ -3634,11 +4000,13 @@ impl ui::widget::AppWidget for NotesApp {
     ) -> Result<Option<ui::application_view::ApplicationLocalView>, ui::view::ThawError> {
         use crate::local_view::{BlockPosition, NotesFocus, NotesLocalViewV1};
         let editor = self.main.editor();
+        // Only blocks the note stores have a stable position; a placeholder
+        // in an empty note does not.
         let position = |index: usize, byte_offset| {
             editor
                 .blocks()
                 .get(index)
-                .filter(|block| block.line.bound_obj().is_some())
+                .filter(|block| self.main.stores_block(&block.id))
                 .map(|block| BlockPosition {
                     block_id: block.id.clone(),
                     byte_offset,
@@ -3709,7 +4077,16 @@ impl ui::widget::AppWidget for NotesApp {
             .main
             .project_canonical(doc, &workspace)
             .map_err(ui::view::ThawError::State)?;
-        let focus = PreparedFocus::resolve(&local, main.editor());
+        let stored = workspace
+            .selected()
+            .map(|page| {
+                NotesDoc::page_block_snapshots(doc, page)
+                    .into_iter()
+                    .map(|(id, _)| id)
+                    .collect::<std::collections::HashSet<_>>()
+            })
+            .unwrap_or_default();
+        let focus = PreparedFocus::resolve(&local, main.editor(), &|id| stored.contains(id));
         main.restore_scroll(local.editor_scroll);
         let mut sidebar = PageSidebar::new();
         sidebar.sync_from_workspace(&workspace);
@@ -3723,7 +4100,6 @@ impl ui::widget::AppWidget for NotesApp {
         self.sidebar = sidebar;
         self.active_tag_filter = active_tag;
         self.bound_page = self.workspace.selected();
-        self.canonical_marks = self.main.inline_marks();
         self.pending_events.clear();
         self.pending_block_reveal = None;
         self.drawer.snap(local.drawer_open);
@@ -3980,6 +4356,96 @@ impl Widget for NotesApp {
         }
     }
 
+    fn start_resource_operation_scoped(
+        &mut self,
+        scope: &ResourceInvocationScope,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        scope.check()?;
+        if self.legacy_fixture_storage.is_some() {
+            return Err("Scoped operations require the canonical Notes record owner".into());
+        }
+        let Some(operation) = actions::decode_operation(type_id, payload)? else {
+            for child in self.children_mut() {
+                if let Some(result) = child
+                    .start_resource_operation_scoped(scope, kind, type_id, payload, doc, path)?
+                {
+                    return Ok(Some(result));
+                }
+            }
+            return Ok(None);
+        };
+        if matches!(
+            operation,
+            actions::NotesOperation::ImportMarkdown
+                | actions::NotesOperation::ExportMarkdown { .. }
+                | actions::NotesOperation::InsertImage { .. }
+                | actions::NotesOperation::OpenExternalLink { .. }
+                | actions::NotesOperation::ImportMarkdownContent { .. }
+                | actions::NotesOperation::FinalizeImport
+        ) && kind != tilo_actions::OperationKind::Effect
+        {
+            return Err("This operation requires an Effect invocation".into());
+        }
+        let started = match operation {
+            actions::NotesOperation::ImportMarkdown => {
+                let pending = PendingOperation::scoped(scope);
+                self.request_markdown_import_scoped(Some(scope.effect_scope()?))?;
+                self.markdown_invocation = Some(pending);
+                ui::widget::ResourceOperationStart::Accepted
+            }
+            actions::NotesOperation::ExportMarkdown { page } => {
+                if NotesDoc::page_body(doc, page).is_none() {
+                    return Err("page no longer exists".into());
+                }
+                let pending = PendingOperation::scoped(scope);
+                self.request_markdown_export_scoped(doc, page, Some(scope.effect_scope()?))?;
+                self.markdown_invocation = Some(pending);
+                ui::widget::ResourceOperationStart::Accepted
+            }
+            actions::NotesOperation::InsertImage { page } => {
+                if NotesDoc::page_body(doc, page).is_none() {
+                    return Err("page no longer exists".into());
+                }
+                let pending = PendingOperation::scoped(scope);
+                self.request_image_insert_scoped(page, Some(scope.effect_scope()?))?;
+                self.markdown_invocation = Some(pending);
+                ui::widget::ResourceOperationStart::Accepted
+            }
+            actions::NotesOperation::OpenExternalLink { url } => {
+                self.start_external_link(url, Some(PendingOperation::scoped(scope)))?;
+                ui::widget::ResourceOperationStart::Accepted
+            }
+            actions::NotesOperation::FinalizeImport => {
+                self.finish_pending_markdown_import(doc, Some(scope))?;
+                ui::widget::ResourceOperationStart::Completed(tilo_actions::ActionOutput::default())
+            }
+            actions::NotesOperation::ImportMarkdownContent { title, body } => {
+                if body.len() > usize::try_from(MAX_MARKDOWN_IMPORT_BYTES).unwrap_or(usize::MAX) {
+                    return Err("Markdown content is larger than 1 MiB".into());
+                }
+                if crate::markdown::parse(&body).len() > MAX_MARKDOWN_IMPORT_BLOCKS {
+                    return Err("Markdown content contains more than 10,000 blocks".into());
+                }
+                let page = scope.with_document_mutation(doc, |doc| {
+                    self.finish_direct_markdown_import(doc, &title, &body)
+                })?;
+                let mut output = tilo_actions::ActionOutput::default();
+                output.resources.push(actions::page_resource_id(page));
+                ui::widget::ResourceOperationStart::Completed(output)
+            }
+            operation => {
+                scope.with_effect(|| self.open_notes_operation(operation, doc))?;
+                ui::widget::ResourceOperationStart::Completed(tilo_actions::ActionOutput::default())
+            }
+        };
+        Ok(Some(started))
+    }
+
     fn start_resource_operation_with_document(
         &mut self,
         invocation: tilo_actions::InvocationId,
@@ -3994,12 +4460,7 @@ impl Widget for NotesApp {
             if kind != tilo_actions::OperationKind::Effect {
                 return Err("Import completion requires an Effect invocation".into());
             }
-            let (source, body) = self
-                .pending_markdown_source
-                .take()
-                .ok_or("No local file import is pending")?;
-            self.import_control_emitted = false;
-            self.finish_markdown_import(doc, &source, &body)?;
+            self.finish_pending_markdown_import(doc, None)?;
             return Ok(Some(ui::widget::ResourceOperationStart::Completed(
                 tilo_actions::ActionOutput::default(),
             )));
@@ -4037,13 +4498,21 @@ impl Widget for NotesApp {
             Some(
                 actions::NotesOperation::ImportMarkdown
                     | actions::NotesOperation::ExportMarkdown { .. }
+                    | actions::NotesOperation::InsertImage { .. }
             )
         ) {
             if kind != tilo_actions::OperationKind::Effect {
                 return Err("File transfers require an Effect invocation".into());
             }
             self.open_notes_operation(operation.ok_or("Missing file operation")?, doc)?;
-            self.markdown_invocation = Some(invocation);
+            self.markdown_invocation = Some(PendingOperation::local(invocation));
+            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+        }
+        if let Some(actions::NotesOperation::OpenExternalLink { url }) = operation {
+            if kind != tilo_actions::OperationKind::Effect {
+                return Err("Opening a link requires an Effect invocation".into());
+            }
+            self.start_external_link(url, Some(PendingOperation::local(invocation)))?;
             return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
         }
         for child in self.children_mut() {
@@ -4076,6 +4545,16 @@ impl Widget for NotesApp {
         self.children_mut().into_iter().find_map(|child| {
             child.poll_resource_operation(invocation, cancellation_requested, doc, path)
         })
+    }
+
+    fn primary_vertical_scroll(&self) -> Option<ui::widget::PrimaryScrollRegion> {
+        self.main.primary_vertical_scroll()
+    }
+    fn apply_primary_vertical_scroll(
+        &mut self,
+        action: ui::widget::PrimaryScrollAction,
+    ) -> ui::widget::PrimaryScrollResult {
+        self.main.apply_primary_vertical_scroll(action)
     }
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
@@ -4125,17 +4604,40 @@ impl Widget for NotesApp {
         }
         self.drain_markdown_transfer(state);
         self.drain_external_link_opens();
+        self.upgrade_notebook(state);
         if self.legacy_fixture_storage.is_none() {
-            self.drain_canonical_editor(state);
             self.drain_title_rename(state);
             for event in std::mem::take(&mut self.pending_events) {
                 self.apply_and_dispatch(state, event);
             }
             self.drain_sidebar_events(state);
             self.drain_empty_note_request(state);
-            if let Err(error) = self.reconcile_canonical(state) {
-                tracing::warn!(%error, "notes: canonical projection refused");
-                return;
+            // Project the workspace only when its inputs moved: committed
+            // heads, an open transaction (the drains above may have written),
+            // the selected page or the tag filter. Re-projecting every frame
+            // re-listed every page and tag on each pointer move.
+            let heads = state.base_heads();
+            let pending = state.pending_ops();
+            let key = (
+                heads,
+                pending,
+                self.workspace.selected(),
+                self.active_tag_filter,
+            );
+            let unchanged = self.canonical_synced.as_ref().is_some_and(|synced| {
+                synced.0 == key.0
+                    && synced.1 == 0
+                    && key.1 == 0
+                    && synced.2 == key.2
+                    && synced.3 == key.3
+            });
+            if !unchanged {
+                if let Err(error) = self.reconcile_canonical(state) {
+                    tracing::warn!(%error, "notes: canonical projection refused");
+                    return;
+                }
+                self.canonical_synced = Some(key);
+                self.self_dirty = true;
             }
         } else {
             self.drain_empty_note_request(state);
@@ -4157,15 +4659,7 @@ impl Widget for NotesApp {
         self.refresh_transclusion_previews(state);
         self.sidebar.sync(state, path);
         self.main.sync(state, path);
-        // Synthetic accessibility buttons do not pass through handle_event;
-        // drain their retained UUID operations here through the same action
-        // host/history path as pointer and keyboard edits.
-        self.drain_block_ops(state);
         self.drain_transclusion_opens(state);
-        self.hydrate_inline_marks(state);
-        if self.legacy_fixture_storage.is_some() {
-            self.drain_inline_marks(state);
-        }
         self.refresh_search_blocks(state);
         self.main.set_backlinks(self.selected_backlink_chips());
         if let Some((page, block_id)) = self.pending_block_reveal.as_ref()
@@ -4184,6 +4678,13 @@ impl Widget for NotesApp {
     /// Ctrl+K action palette scopes to them. Delegates to the
     /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
     /// [`crate::actions`].
+    fn action_directory_invocation_domain(
+        &self,
+        doc: &AutoCommit,
+    ) -> ui::widget::ActionDirectoryInvocationDomain {
+        self.notes_invocation_domain(doc)
+    }
+
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
         let mut resources = <Self as tilo_actions::ResourceProvider>::resources(self, doc);
         resources.extend(self.pending_import_resource());
@@ -4201,7 +4702,16 @@ impl Widget for NotesApp {
     /// its page-tree action, so it records one undo boundary for it (see
     /// `Self::perform_action`). Rising-edge: cleared on read.
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
+        // A body edit dispatches through the page's editor; everything else
+        // through the app's own host. One event does one or the other.
+        let body = self.main.body_editor_mut().take_committed_action();
+        let notes = self.actions.take_committed();
+        body.or(notes)
+    }
+
+    /// Typing a word in a note is one undo step.
+    fn keeps_undo_step_open(&self) -> bool {
+        self.main.keeps_undo_step_open()
     }
 
     /// Fold the notebook into the unified Ctrl+K palette: a snapshot
@@ -4493,7 +5003,7 @@ impl Widget for NotesApp {
         // Transient floating status bubble (bottom-right), in place of the
         // old permanent bottom status strip.
         self.draw_status_bubble(scene, transform, text_renderer, theme);
-        let now = std::time::Instant::now();
+        let now = ui::clock::Instant::now();
         self.transfer_toasts
             .tick(now.saturating_duration_since(self.last_toast_tick));
         self.last_toast_tick = now;
@@ -4518,7 +5028,7 @@ impl Widget for NotesApp {
         // Keep frames coming only while the floating status bubble is lingering
         // / fading, so it hides itself without needing a stray pointer event.
         // Idle otherwise (no idle redraw spin).
-        (!self.motion_reduced && self.status_bubble.needs_frame(std::time::Instant::now()))
+        (!self.motion_reduced && self.status_bubble.needs_frame(ui::clock::Instant::now()))
             || !self.transfer_toasts.is_empty()
             || (self.pending_markdown_source.is_some() && !self.import_control_emitted)
     }
@@ -5343,9 +5853,7 @@ impl NotesApp {
                     state,
                     &automerge::ROOT,
                 );
-                self.drain_block_ops(state);
                 if self.main.editor_is_dirty() {
-                    self.drain_inline_marks(state);
                     self.save_current_editor_snapshot();
                 }
                 self.refresh_status();
@@ -5456,16 +5964,10 @@ impl NotesApp {
                 taffy,
             );
         }
-        // The panel has only produced local semantic deltas at this point.
-        // Apply them before its next sync so a widget never writes the shared
-        // document behind the action/history/undo path.
-        self.drain_block_ops(state);
-        // `editor_is_dirty` drains the widget's edit edge. Doing that before
-        // collecting rich spans means a pointer move or caret blink does not
-        // rescan every block in a long note; mark actions run only when an
-        // actual text/format/structure edit occurred.
+        // The body editor has applied the person's edit as a Notes action.
+        // `editor_is_dirty` drains the widget's edit edge, so a pointer move
+        // or caret blink never snapshots a long note for its Markdown file.
         if self.main.editor_is_dirty() {
-            self.drain_inline_marks(state);
             self.save_current_editor_snapshot();
         }
         // A committed edit of the note's in-page title renames the current
@@ -5496,23 +5998,11 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    /// Background file I/O can stall for many seconds on a loaded disk; this
-    /// bound only catches work that never finishes.
-    const IO_HANG_BOUND: Duration = Duration::from_secs(60);
-
     fn settle_markdown_io(app: &mut NotesApp, doc: &mut AutoCommit) {
-        let deadline = std::time::Instant::now() + IO_HANG_BOUND;
-        loop {
+        tilo_test_env::wait_until("Markdown background I/O", || {
             app.drain_markdown_transfer(doc);
-            if !app.markdown_job.is_pending() && app.markdown_transfer.is_none() {
-                return;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "Markdown background I/O did not finish"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(2));
-        }
+            !app.markdown_job.is_pending() && app.markdown_transfer.is_none()
+        });
     }
 
     fn admit_pending_import(app: &mut NotesApp, state: &mut ui::State) {
@@ -5737,10 +6227,10 @@ mod tests {
             let peer_page = peer.create_page(None);
             peer.rename(peer_page, "Peer note");
             NotesDoc::upsert_page_meta(&mut state.doc, peer.get(peer_page).unwrap());
-            NotesDoc::apply_block_ops(
+            NotesDoc::fill_page_body(
                 &mut state.doc,
                 peer_page,
-                &MainPanel::seed_block_ops("Peer contents"),
+                &MainPanel::seed_blocks("Peer contents", |_| None),
             )
             .unwrap();
             app.sync(&mut state.doc, &state.root);
@@ -5839,7 +6329,11 @@ mod tests {
             app.bypass_seed_grace_for_test();
             let mut state = ui::State::new();
             app.sync(&mut state.doc, &state.root);
-            assert!(NotesDoc::page_block_snapshots(&state.doc, page).is_empty());
+            assert!(
+                NotesDoc::page_block_snapshots(&state.doc, page)
+                    .iter()
+                    .all(|(_, text)| text.is_empty())
+            );
             assert_eq!(app.bound_page, None);
             assert_eq!(app.main.page_id(), Some(page));
             assert_eq!(app.main.editor().blocks()[0].text(), "Unsaved draft");
@@ -5893,7 +6387,7 @@ mod tests {
             .unwrap();
             let store = workspace_image_store(tmp.path());
             assert!(store.get("image.png").is_none());
-            store.block_until_idle(IO_HANG_BOUND);
+            store.block_until_idle(tilo_test_env::hang_bound());
             let image = store.get("image.png").expect("workspace image must decode");
             assert_eq!(
                 (image.width, image.height),
@@ -5901,7 +6395,7 @@ mod tests {
                 "document images retain readable source detail"
             );
             assert!(store.get("../../etc/passwd").is_none());
-            store.block_until_idle(IO_HANG_BOUND);
+            store.block_until_idle(tilo_test_env::hang_bound());
             assert!(store.get("../../etc/passwd").is_none());
         }
 
@@ -5919,12 +6413,18 @@ mod tests {
             let author = ui::permissions::UserId("canonical-assets-test".into());
             let mut app = NotesApp::from_document(&doc, &author).unwrap();
             app.configure_workspace_assets(workspace.path()).unwrap();
-            app.finish_markdown_import(&mut doc, &markdown, body.into())
+            let legacy_reference = import_image_asset(workspace.path(), &image).unwrap();
+            let legacy_path = workspace
+                .path()
+                .join(storage::PAGES_DIR)
+                .join(&legacy_reference);
+            let legacy_bytes = std::fs::read(&legacy_path).unwrap();
+            app.finish_markdown_import(&mut doc, &markdown, body, None, None)
                 .unwrap();
             let page = app.workspace.selected().unwrap();
             let imported = NotesDoc::page_block_snapshots(&doc, page);
             assert!(imported.iter().any(|(_, text)| text.contains("asset:")));
-            app.finish_image_insert(&mut doc, page, &image);
+            app.finish_image_insert(&mut doc, page, &image).unwrap();
             let images = NotesDoc::page_block_snapshots(&doc, page);
             assert_eq!(
                 images
@@ -5933,6 +6433,32 @@ mod tests {
                     .count(),
                 2
             );
+            // Retain a pre-existing scoped attachment beside the new embedded
+            // images; compatibility custody must not replace the canonical map.
+            let action = actions::edit_body_action(
+                page,
+                qdoc_rich_text::RichTextAction::InsertParagraph {
+                    after: images.last().map(|(id, _)| id.clone()).unwrap(),
+                    text: format!("![Existing]({legacy_reference})"),
+                },
+            );
+            app.actions
+                .try_dispatch_with_context(
+                    &mut doc,
+                    actions::NOTES_ACTION_TYPE,
+                    &action,
+                    actions::history_context(&action),
+                )
+                .unwrap();
+            app.sync(&mut doc, &automerge::ROOT);
+            let embedded = format!("asset:{}", blake3::hash(&legacy_bytes).to_hex());
+            let store = canonical_image_store(&app.canonical_assets, Some(workspace.path()));
+            assert!(store.get(&embedded).is_none());
+            assert!(store.get(&legacy_reference).is_none());
+            store.block_until_idle(tilo_test_env::hang_bound());
+            assert!(store.get(&embedded).is_some());
+            assert!(store.get(&legacy_reference).is_some());
+            assert_eq!(std::fs::read(&legacy_path).unwrap(), legacy_bytes);
             let destination = source.path().join("Exported.md");
             let (services, recorder) = ui::host::HostServices::recording();
             let _host = ui::host::enter(&services);
@@ -5945,7 +6471,7 @@ mod tests {
                 .lines()
                 .filter_map(standalone_image_parts)
                 .collect();
-            assert_eq!(references.len(), 2);
+            assert_eq!(references.len(), 3);
             for (_, _, reference) in references {
                 assert_eq!(
                     std::fs::read(source.path().join(reference)).unwrap(),
@@ -5985,12 +6511,73 @@ mod tests {
             let markdown = "![Repeated](image.png)\n".repeat(10);
 
             let (imported, assets) =
-                adopt_canonical_markdown_assets(&tmp.path().join("note.md"), &markdown);
+                adopt_canonical_markdown_assets(&tmp.path().join("note.md"), &markdown, None)
+                    .unwrap();
 
             assert_eq!(assets.len(), 1);
             let source = &assets[0].0;
             assert_eq!(imported, format!("![Repeated]({source})\n").repeat(10));
         }
+    }
+
+    #[test]
+    fn canonical_image_keys_cannot_fall_back_to_scoped_files() {
+        let bytes = include_bytes!("../../settings/shots/settings.png").to_vec();
+        let key = format!("asset:{}", blake3::hash(&bytes).to_hex());
+        let missing = format!("asset:{}", "0".repeat(64));
+        let mut assets = HashMap::new();
+        assets.insert(key.clone(), bytes.clone());
+        // Deliberately offer bytes for every scoped key. Even this fallback
+        // cannot shadow an embedded key or supply a missing asset: key.
+        let fallback: ui::Fetcher = Arc::new(|_| Some(vec![1, 2, 3]));
+        let fetch =
+            canonical_image_fetcher(Arc::new(std::sync::RwLock::new(assets)), Some(fallback));
+        assert_eq!(fetch(&key), Some(bytes));
+        assert_eq!(fetch(&missing), None);
+        assert_eq!(fetch("../assets/old.png"), Some(vec![1, 2, 3]));
+    }
+
+    #[test]
+    fn scoped_image_export_refuses_oversized_assets() {
+        let root = TempDir::new().unwrap();
+        storage::ensure_layout(root.path()).unwrap();
+        std::fs::create_dir_all(root.path().join("assets")).unwrap();
+        let file = std::fs::File::create(root.path().join("assets/oversized.png")).unwrap();
+        file.set_len(20 * 1024 * 1024 + 1).unwrap();
+        let destination = root.path().join("export.md");
+        assert!(
+            write_portable_markdown_export(
+                Some(root.path()),
+                &HashMap::new(),
+                &destination,
+                b"![oversized](../assets/oversized.png)\n",
+            )
+            .is_err()
+        );
+        assert!(!destination.exists());
+    }
+
+    #[cfg(all(test, unix))]
+    #[test]
+    fn scoped_image_export_refuses_a_symlink_outside_custody() {
+        let root = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        storage::ensure_layout(root.path()).unwrap();
+        std::fs::create_dir_all(root.path().join("assets")).unwrap();
+        let image = outside.path().join("private.png");
+        std::fs::write(&image, include_bytes!("../../settings/shots/settings.png")).unwrap();
+        std::os::unix::fs::symlink(&image, root.path().join("assets/escape.png")).unwrap();
+        let destination = root.path().join("export.md");
+        assert!(
+            write_portable_markdown_export(
+                Some(root.path()),
+                &HashMap::new(),
+                &destination,
+                b"![outside](../assets/escape.png)\n",
+            )
+            .is_err()
+        );
+        assert!(!destination.exists());
     }
 
     #[test]
@@ -6096,7 +6683,8 @@ mod tests {
             let delete_spec = page.actions.iter().find(|a| a.id == "delete").unwrap();
             let from_palette = match &delete_spec.input {
                 tilo_actions::ActionInput::Immediate(enc) => enc.clone(),
-                tilo_actions::ActionInput::Prompted { .. } => {
+                tilo_actions::ActionInput::Prompted { .. }
+                | tilo_actions::ActionInput::Deferred { .. } => {
                     panic!("delete is an immediate action")
                 }
             };
@@ -6115,9 +6703,6 @@ mod tests {
             );
         }
 
-        // Creating a page through the sidebar path dispatches the metadata and
-        // initial body through the action executor — a peer never receives a
-        // metadata-only note that becomes usable only after its creator opens it.
         eprintln!("phase creating_a_page_dispatches_an_upsert_into_the_doc");
         {
             let (mut app, mut state, _tmp, _welcome) = app_seeded_into_doc();
@@ -6135,16 +6720,11 @@ mod tests {
                 .selected()
                 .expect("new page becomes the active page");
             assert!(
-                NotesDoc::page_blocks_list(&state.doc, new_page)
-                    .is_some_and(|blocks| state.doc.length(&blocks) > 0),
+                !NotesDoc::page_blocks(&state.doc, new_page).is_empty(),
                 "the new page body also crossed the typed action executor"
             );
         }
 
-        // The full undo covenant at the app level: deleting a page through the
-        // sidebar path records exactly one undo boundary, and Ctrl+Z (the host's
-        // `undo`) reverts it in both the document and — after the next `sync`
-        // reconciles — the app's own page list.
         eprintln!("phase page_delete_records_one_undo_boundary_and_reverts_in_the_app");
         {
             let (mut app, mut state, _tmp, welcome) = app_seeded_into_doc();
@@ -6272,7 +6852,7 @@ mod tests {
         {
             let tmp = TempDir::new().unwrap();
             let mut app = NotesApp::spawn(tmp.path().into()).unwrap();
-            app.status_bubble.poke(std::time::Instant::now());
+            app.status_bubble.poke(ui::clock::Instant::now());
             assert!(app.needs_animation_frame(), "normal fade requests frames");
 
             Widget::set_motion_reduced(&mut app, true);
@@ -6336,7 +6916,7 @@ mod tests {
                 command.creation_flags(0x0800_0000);
             }
             let mut child = command.spawn().unwrap();
-            let deadline = std::time::Instant::now() + Duration::from_secs(30);
+            let deadline = tilo_test_env::hang_deadline();
             let status = loop {
                 if let Some(status) = child.try_wait().unwrap() {
                     break status;
@@ -6450,29 +7030,20 @@ mod tests {
                 .clone();
             app.perform_action(
                 &mut state.doc,
-                &actions::apply_block_ops_action(
+                &actions::edit_body_action(
                     source,
-                    vec![ui::widget::BlockEditOp::TextSplice {
-                        block_id: block.clone(),
-                        start: 0,
-                        end: 0,
-                        text: "Welcome".into(),
-                    }],
+                    qdoc_rich_text::RichTextAction::SpliceText {
+                        region: qdoc_rich_text::action::RegionKind::Body,
+                        block: block.clone(),
+                        at: 0,
+                        del: 0,
+                        ins: "Welcome".into(),
+                    },
                 ),
             );
             app.perform_action(
                 &mut state.doc,
-                &actions::set_block_marks_action(
-                    source,
-                    block,
-                    vec![actions::InlineMarkSpan {
-                        start: 0,
-                        end: 7,
-                        mark: actions::InlineMark::Link {
-                            page: target.to_string(),
-                        },
-                    }],
-                ),
+                &actions::set_mark_action(source, &block, 0..7, &ui::widget::Mark::Link(target)),
             );
             // Exercise the canonical reader rather than the legacy Markdown
             // fallback used by this fixture's launch path.
@@ -6494,7 +7065,10 @@ mod tests {
             ] {
                 let (mut app, _state, _tmp, _) = app_seeded_into_doc();
                 let (sender, receiver) = std::sync::mpsc::channel();
-                app.external_link_opens.push(receiver);
+                app.external_link_opens.push(ExternalLinkJob {
+                    receiver,
+                    operation: None,
+                });
                 app.drain_external_link_opens();
                 assert_eq!(app.external_link_opens.len(), 1);
                 if let Some(outcome) = outcome {
@@ -6526,16 +7100,11 @@ mod tests {
                 .expect("new page becomes the backlink destination");
             assert_ne!(source, target);
             let source_block = app.search_blocks[&source][0].id.clone();
-            let action = crate::actions::set_block_marks_action(
+            let action = crate::actions::set_mark_action(
                 source,
-                source_block,
-                vec![crate::actions::InlineMarkSpan {
-                    start: 0,
-                    end: 4,
-                    mark: crate::actions::InlineMark::Link {
-                        page: target.to_string(),
-                    },
-                }],
+                &source_block,
+                0..4,
+                &ui::widget::Mark::Link(target),
             );
             app.perform_action(&mut state.doc, &action);
 
@@ -6594,6 +7163,7 @@ mod tests {
         {
             let tmp = TempDir::new().unwrap();
             let root = tmp.path().join("workspace");
+            storage::ensure_layout(&root).unwrap();
             std::fs::create_dir_all(root.join("assets")).unwrap();
             std::fs::write(root.join("assets/picture.png"), b"png bytes").unwrap();
             let destination = tmp.path().join("Project brief.md");
@@ -6618,6 +7188,7 @@ mod tests {
         {
             let tmp = TempDir::new().unwrap();
             let root = tmp.path().join("workspace");
+            storage::ensure_layout(&root).unwrap();
             std::fs::create_dir_all(root.join("assets")).unwrap();
             std::fs::write(root.join("assets/picture.png"), b"new").unwrap();
             let folder = tmp.path().join("note-assets");
@@ -6669,6 +7240,7 @@ mod tests {
         {
             let tmp = TempDir::new().unwrap();
             let first = tmp.path().join("first");
+            storage::ensure_layout(&first).unwrap();
             std::fs::create_dir_all(first.join("assets")).unwrap();
             std::fs::write(
                 first.join("assets/picture.png"),
@@ -6690,7 +7262,9 @@ mod tests {
                 &second,
                 &exported,
                 &std::fs::read_to_string(&exported).unwrap(),
-            );
+                None,
+            )
+            .unwrap();
             let (_, managed) = imported.trim().split_once("](").unwrap();
             let managed = managed.strip_suffix(')').unwrap();
             assert!(managed.starts_with("../assets/"));
@@ -6720,7 +7294,7 @@ mod tests {
                 format!("![Diagram](portable-assets/{digest}.png)\n")
             );
             let (imported, imported_assets) =
-                adopt_canonical_markdown_assets(&destination, &exported);
+                adopt_canonical_markdown_assets(&destination, &exported, None).unwrap();
             assert_eq!(imported, format!("![Diagram]({source})\n"));
             assert_eq!(imported_assets, vec![(source, bytes)]);
         }
@@ -6828,6 +7402,106 @@ mod tests {
             "terminal result is delivered exactly once"
         );
         update
+    }
+
+    #[test]
+    fn link_receipts_keep_each_original_job_and_actual_backend_outcome() {
+        let (mut app, state, _temp, _) = app_seeded_into_doc();
+        let first = tilo_actions::InvocationId::new();
+        let second = tilo_actions::InvocationId::new();
+        let (first_tx, first_rx) = std::sync::mpsc::channel();
+        let (second_tx, second_rx) = std::sync::mpsc::channel();
+        app.external_link_opens.push(ExternalLinkJob {
+            receiver: first_rx,
+            operation: Some(PendingOperation::local(first)),
+        });
+        app.external_link_opens.push(ExternalLinkJob {
+            receiver: second_rx,
+            operation: Some(PendingOperation::local(second)),
+        });
+        app.drain_external_link_opens();
+        assert!(
+            app.poll_resource_operation(first, false, &state.doc, &state.root)
+                .is_none()
+        );
+        second_tx
+            .send(Err("actual backend refused".into()))
+            .unwrap();
+        app.drain_external_link_opens();
+        assert!(
+            matches!(take_markdown_receipt(&mut app, &state, second), tilo_actions::InvocationUpdate::Failed { invocation, .. } if invocation == second)
+        );
+        assert!(
+            app.poll_resource_operation(first, false, &state.doc, &state.root)
+                .is_none()
+        );
+        first_tx.send(Ok(())).unwrap();
+        app.drain_external_link_opens();
+        assert!(
+            matches!(take_markdown_receipt(&mut app, &state, first), tilo_actions::InvocationUpdate::Succeeded { invocation, .. } if invocation == first)
+        );
+        assert!(app.external_link_opens.is_empty());
+    }
+
+    #[test]
+    fn image_receipt_waits_for_actual_document_edit_and_reports_read_failure() {
+        for succeeds in [true, false] {
+            let (mut app, mut state, temp, page) = app_seeded_into_doc();
+            let source = temp.path().join("insert.png");
+            if succeeds {
+                std::fs::write(&source, include_bytes!("../../settings/shots/settings.png"))
+                    .unwrap();
+            }
+            let resource =
+                Widget::resource(&app, &state.doc, &format!("notes.page:{page}")).unwrap();
+            let spec = resource
+                .actions
+                .iter()
+                .find(|action| action.id == "insert-image")
+                .unwrap();
+            let encoded = spec.build_json(&serde_json::Map::new()).unwrap();
+            let invocation = tilo_actions::InvocationId::new();
+            let (services, recorder) = ui::host::HostServices::recording();
+            let _host = ui::host::enter(&services);
+            recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(source));
+            let before = state.doc.save();
+            let block_count = NotesDoc::page_block_snapshots(&state.doc, page).len();
+            assert_eq!(
+                app.start_resource_operation_with_document(
+                    invocation,
+                    spec.kind,
+                    &encoded.type_id,
+                    &encoded.payload,
+                    &mut state.doc,
+                    &state.root,
+                )
+                .unwrap(),
+                Some(ui::widget::ResourceOperationStart::Accepted)
+            );
+            assert!(
+                app.poll_resource_operation(invocation, false, &state.doc, &state.root)
+                    .is_none()
+            );
+            settle_markdown_io(&mut app, &mut state.doc);
+            let receipt = take_markdown_receipt(&mut app, &state, invocation);
+            assert_eq!(receipt.invocation(), invocation);
+            if succeeds {
+                assert!(matches!(
+                    receipt,
+                    tilo_actions::InvocationUpdate::Succeeded { .. }
+                ));
+                assert_eq!(
+                    NotesDoc::page_block_snapshots(&state.doc, page).len(),
+                    block_count + 1
+                );
+            } else {
+                assert!(matches!(
+                    receipt,
+                    tilo_actions::InvocationUpdate::Failed { .. }
+                ));
+                assert_eq!(state.doc.save(), before);
+            }
+        }
     }
 
     #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
@@ -7073,10 +7747,13 @@ mod tests {
                 end: 4,
                 mark: crate::actions::InlineMark::Underline,
             }];
-            let action =
-                crate::actions::set_block_marks_action(welcome, block.clone(), marks.clone());
+            let action = crate::actions::set_mark_action(
+                welcome,
+                &block,
+                0..4,
+                &ui::widget::marks::Mark::Underline,
+            );
             app.perform_action(&mut state.doc, &action);
-            assert!(NotesDoc::page_marks_are_canonical(&state.doc, welcome));
 
             // Simulate a remote structural refresh. The widget rebuilds plain
             // text/kinds, then Notes hydrates the native mark state back into the
@@ -7109,21 +7786,13 @@ mod tests {
             app.main.editor_mut().blocks_mut()[0].line.set_marks(vec![
                 ui::widget::marks::MarkSpan::new(0..4, ui::widget::marks::Mark::Underline),
             ]);
-            // Formatting changes no plain text, so exercise the exact dirty edge
-            // the event router observes after a Ctrl/Cmd formatting shortcut.
-            app.main.editor_mut().force_dirty_for_test();
-            assert!(app.main.editor_is_dirty());
-            app.drain_inline_marks(&mut state.doc);
-
-            let dispatched = app
-                .last_dispatched_for_test()
-                .expect("mark-only edit dispatched an action");
-            let action: crate::actions::NotesAction =
-                serde_json::from_slice(&dispatched.payload).expect("mark action payload decodes");
-            assert!(matches!(
-                action,
-                crate::actions::NotesAction::SetBlockMarks { .. }
-            ));
+            // Formatting changes no plain text; the editor still writes it as
+            // the page's own edit.
+            app.sync(&mut state.doc, &state.root);
+            assert!(
+                Widget::take_committed_action(&mut app).is_some(),
+                "the mark-only edit is an undoable Notes action"
+            );
             assert_eq!(
                 NotesDoc::page_block_marks(&state.doc, welcome)
                     .into_iter()
@@ -7139,8 +7808,7 @@ mod tests {
 
         eprintln!("phase collaborative_identical_insert_preserves_the_original_block_target");
         {
-            use automerge::ObjType;
-            use automerge::transaction::Transactable as _;
+            use tilo_actions::Action as _;
 
             let (mut app, mut state, _tmp, welcome) = app_seeded_into_doc();
             let original = app.search_blocks[&welcome][1].clone();
@@ -7152,15 +7820,32 @@ mod tests {
             let payload = serde_json::to_vec(&operation).unwrap();
 
             // A collaborator inserts an identical-text block before the target.
-            // Content and index cannot distinguish them; CRDT object identity can.
-            let list = NotesDoc::page_blocks_list(&state.doc, welcome).unwrap();
-            let inserted = state.doc.insert_object(&list, 0, ObjType::Map).unwrap();
-            state.doc.put(&inserted, "kind", "paragraph").unwrap();
-            let text = state
-                .doc
-                .put_object(&inserted, "text", ObjType::Text)
-                .unwrap();
-            state.doc.splice_text(&text, 0, 0, &original.text).unwrap();
+            // Content and index cannot distinguish them; block identity can.
+            let last = app.search_blocks[&welcome].last().unwrap().id.clone();
+            crate::actions::edit_body_action(
+                welcome,
+                qdoc_rich_text::RichTextAction::InsertParagraph {
+                    after: last.clone(),
+                    text: original.text,
+                },
+            )
+            .apply(&mut state.doc)
+            .unwrap();
+            let inserted = NotesDoc::page_block_snapshots(&state.doc, welcome)
+                .into_iter()
+                .skip_while(|(id, _)| *id != last)
+                .nth(1)
+                .unwrap()
+                .0;
+            crate::actions::edit_body_action(
+                welcome,
+                qdoc_rich_text::RichTextAction::MoveBlocks {
+                    blocks: vec![inserted],
+                    after: None,
+                },
+            )
+            .apply(&mut state.doc)
+            .unwrap();
             app.sync(&mut state.doc, &state.root);
 
             let resolved = Widget::resource(&app, &state.doc, &old_address.resource)
@@ -7186,3 +7871,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "app/continuation_tests.rs"]
+mod continuation_tests;

@@ -1755,6 +1755,10 @@ fn print_geometry_reuse_profile(telemetry: &GeometryReuseTelemetry) {
     clippy::too_many_lines,
     reason = "the benchmark keeps setup, all required samples, and final gate reporting in one auditable linear execution path"
 )]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the shell fixture owns long-lived permits by design and lives for the whole run"
+)]
 fn run() -> Result<(), String> {
     let diagnostic = profiling_requested();
     let profile_output_path = profile_output_path(diagnostic)?;

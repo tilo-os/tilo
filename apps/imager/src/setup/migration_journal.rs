@@ -1896,7 +1896,7 @@ mod tests {
                 .stderr(std::process::Stdio::null())
                 .spawn()
                 .unwrap();
-            let deadline = std::time::Instant::now() + crate::HANG_BOUND;
+            let deadline = tilo_test_env::hang_deadline();
             loop {
                 if let Some(status) = child.try_wait().unwrap() {
                     assert!(status.success());

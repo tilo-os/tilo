@@ -20,7 +20,7 @@
 use std::collections::HashMap;
 use std::os::unix::net::UnixStream;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use shell::compositor::input_method::TrustedInputMethod;
 use shell::compositor::state::{ClientState, State};
@@ -357,7 +357,7 @@ impl Harness {
 
     /// Tick until something reaches a field, failing after a generous bound.
     fn tick_until_delivered(&mut self, field: &Field) -> Vec<DeliveredText> {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             let delivered = self.tick(field);
             if !delivered.is_empty() {
@@ -549,12 +549,14 @@ fn super_period_thumbs_enter_commits_through_the_compositor_when_no_input_method
     }
     assert_eq!(h.state.input_method_owner_kind(), None);
     let later = h.connect(Some(TrustedInputMethod::OnScreenKeyboard));
+    let offers_input_method_manager = h.clients[later]
+        .peer
+        .globals
+        .iter()
+        .any(|(_, name, _)| name == "zwp_input_method_manager_v2");
+    drop(h);
     assert!(
-        !h.clients[later]
-            .peer
-            .globals
-            .iter()
-            .any(|(_, name, _)| name == "zwp_input_method_manager_v2"),
+        !offers_input_method_manager,
         "an idle seat is only ever lent to the compositor"
     );
 }
@@ -584,16 +586,17 @@ fn a_pick_is_committed_in_the_on_screen_keyboards_session_when_it_owns_the_seat(
         Some(TrustedInputMethod::OnScreenKeyboard),
         "the owner keeps the seat"
     );
+    let owner_connected = h
+        .display
+        .handle()
+        .backend_handle()
+        .get_client_data(h.clients[osk].server.id())
+        .is_ok();
+    let owner_activations = h.clients[osk].peer.activated;
+    drop(h);
+    assert!(owner_connected, "the owner stays connected");
     assert!(
-        h.display
-            .handle()
-            .backend_handle()
-            .get_client_data(h.clients[osk].server.id())
-            .is_ok(),
-        "the owner stays connected"
-    );
-    assert!(
-        h.clients[osk].peer.activated >= 2,
+        owner_activations >= 2,
         "the field re-activated the owner when it got the keyboard back"
     );
 }
@@ -621,7 +624,9 @@ fn escape_cancels_and_nothing_is_committed() {
     for _ in 0..16 {
         assert!(h.tick(&field).is_empty());
     }
-    assert!(h.peer(&field).committed.is_empty());
+    let committed_after_chord = h.peer(&field).committed.clone();
+    drop(h);
+    assert!(committed_after_chord.is_empty());
 }
 
 #[test]
@@ -641,9 +646,11 @@ fn recents_list_the_latest_pick_first() {
         ["🍕".to_string(), "👍".to_string()]
     );
     h.key(Key::Character(".".into()), ModifiersState::SUPER);
-    let items = h.host.emoji_picker().items();
+    let items = h.host.emoji_picker().items().to_vec();
+    let selected = h.host.emoji_picker().selected().map(str::to_owned);
+    drop(h);
     assert_eq!(&items[..2], ["🍕".to_string(), "👍".to_string()]);
-    assert_eq!(h.host.emoji_picker().selected(), Some("🍕"));
+    assert_eq!(selected.as_deref(), Some("🍕"));
 }
 
 #[test]
@@ -657,9 +664,99 @@ fn a_password_field_gets_the_emoji_but_it_is_not_remembered() {
     let delivered = h.tick_until_delivered(&field);
     assert_eq!(delivered.len(), 1);
     assert!(delivered[0].sensitive);
-    assert_eq!(h.peer(&field).committed, [Some("👍".to_string())]);
+    let committed = h.peer(&field).committed.clone();
+    let recents = h.host.emoji_picker().recents().to_vec();
+    drop(h);
+    assert_eq!(committed, [Some("👍".to_string())]);
     assert!(
-        h.host.emoji_picker().recents().is_empty(),
+        recents.is_empty(),
         "nothing typed into a secret field is remembered"
     );
+}
+
+#[test]
+fn the_picker_opens_at_the_caret_and_centred_when_the_field_reports_none() {
+    use shell::compositor::foreign::store;
+    use vello::kurbo::Rect;
+
+    let mut h = Harness::new();
+    // A field enables its text input, and reports its caret, only while an
+    // input method is there to hear it.
+    let _keyboard_session = h.own_seat_with_on_screen_keyboard();
+    let field = h.field(None);
+    assert!(h.state.text_input_active(), "the field takes text");
+    // Where the window is laid out on the desktop.
+    let window = Rect::new(200.0, 150.0, 1000.0, 650.0);
+    store().note_placement(field.surface_id, window);
+    let screen = Rect::new(0.0, 0.0, f64::from(W), f64::from(H));
+
+    // The field reports its caret in surface coordinates, as toolkits do on
+    // every enable and whenever the caret moves.
+    let open_with_caret = |h: &mut Harness, caret: Option<(i32, i32)>| -> Rect {
+        let text_input = field.text_input();
+        if let Some((x, y)) = caret {
+            text_input.set_cursor_rectangle(x, y, 2, 18);
+        } else {
+            // Re-enabling resets what the field declared.
+            text_input.disable();
+            text_input.commit();
+            text_input.enable();
+        }
+        text_input.commit();
+        h.pump();
+        assert!(h.tick(&field).is_empty());
+        h.key(Key::Character(".".into()), ModifiersState::SUPER);
+        assert!(h.host.emoji_picker_open());
+        let card = h.host.emoji_picker().card_rect();
+        assert!(card.area() > 0.0);
+        assert!(
+            card.x0 >= screen.x0
+                && card.y0 >= screen.y0
+                && card.x1 <= screen.x1
+                && card.y1 <= screen.y1,
+            "the card stays on the display: {card:?}"
+        );
+        h.key(Key::Named(NamedKey::Escape), ModifiersState::empty());
+        assert!(!h.host.emoji_picker_open());
+        card
+    };
+
+    // Phase `below_the_caret`.
+    let caret = Rect::new(320.0, 190.0, 322.0, 208.0);
+    let card = open_with_caret(&mut h, Some((120, 40)));
+    assert!(
+        (card.x0 - caret.x0).abs() < 0.5,
+        "the card starts at the caret: {card:?}"
+    );
+    assert!(
+        card.y0 >= caret.y1 && card.y0 <= caret.y1 + 24.0,
+        "the card opens just below the caret: {card:?}"
+    );
+
+    // Phase `above_a_caret_near_the_bottom`.
+    let caret = Rect::new(320.0, 630.0, 322.0, 648.0);
+    let card = open_with_caret(&mut h, Some((120, 480)));
+    assert!(
+        card.y1 <= caret.y0 && card.y1 >= caret.y0 - 24.0,
+        "the card flips above the caret when the display ends first: {card:?}"
+    );
+
+    // Phase `clamped_at_the_right_edge`.
+    let caret = Rect::new(990.0, 190.0, 992.0, 208.0);
+    let card = open_with_caret(&mut h, Some((790, 40)));
+    assert!(
+        card.x0 < caret.x0 && card.x1 < screen.x1,
+        "the card is pulled back onto the display: {card:?}"
+    );
+    assert!(card.y0 >= caret.y1);
+
+    // Phase `centred_without_a_caret`.
+    let card = open_with_caret(&mut h, None);
+    drop(h);
+    assert!(
+        (card.center().x - screen.center().x).abs() < 0.5,
+        "a field that reports no caret gets the card centred: {card:?}"
+    );
+
+    store().forget(field.surface_id);
 }

@@ -19,6 +19,10 @@
     clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 
 use shell::shell::state::FreshId as _;
 use std::collections::HashMap;
@@ -42,11 +46,12 @@ use winit::keyboard::{Key, ModifiersState, NamedKey};
 const W: f32 = 1280.0;
 const H: f32 = 800.0;
 
-/// Two-fifths of the display each, so the second group's trailing controls
-/// remain clickable while the group itself still crosses the viewport edge.
-/// Three plus the wheel-disc gutter overflow the
-/// viewport — content that fits cannot demonstrate anything about panning.
-const GROUP_WIDTH_PERMILLE: u16 = 400;
+/// Just over half the strip's usable width (the display minus the wheel-disc
+/// gutter and trailing gutter) each, so the second group's trailing controls
+/// remain clickable while the group itself still crosses the viewport edge
+/// and the third is entirely off screen — content that fits cannot
+/// demonstrate anything about panning.
+const GROUP_WIDTH_PERMILLE: u16 = 515;
 
 /// Enough groups that travelling to the far end pushes the near end
 /// entirely off screen; with fewer, the first would still poke in at
@@ -133,6 +138,32 @@ impl Harness {
     fn new() -> Self {
         let (tree, strip, groups, tabs) = strip_tree();
         let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+        // This fixture minted the tabs, so it explicitly creates their
+        // documents before presentation attempts existing-only admission.
+        let (records, rendered_tabs) = {
+            let chrome = chrome.borrow();
+            let rendered = chrome.tree();
+            let tabs = rendered
+                .desktop
+                .workspaces
+                .iter()
+                .flat_map(|workspace| &workspace.strips)
+                .flat_map(|strip| &strip.window_groups)
+                .flat_map(|group| &group.tabs)
+                .map(|tab| tab.id)
+                .collect::<Vec<_>>();
+            (chrome.records().clone(), tabs)
+        };
+        for tab in rendered_tabs {
+            let checkout = shell::shell::tab_documents::scratch_tab_record(tab);
+            shell::shell::tab_documents::create_scratch_tab_record(&records, tab)
+                .expect("the fixture must create each rendered tab's document");
+            assert_eq!(
+                records.read(&checkout.id, ui::record::identity),
+                Some(Some(checkout)),
+                "the rendered tab must have its own existing document before input"
+            );
+        }
         host.set_shortcut_config(settings_store::hardware::ShortcutConfig::default())
             .expect("the built-in shortcut table is valid");
         let mut h = Harness {
@@ -148,9 +179,21 @@ impl Harness {
         h
     }
 
-    /// The same three calls `App::layout` makes, so every group's rect is in
+    /// The same calls the shell frame makes, so every group's rect is in
     /// the screen space a click carries.
     fn lay_out(&mut self) {
+        // The frame names the display before every build, so window-group
+        // width fractions resolve against it on the very first pass. Without
+        // it the first pass sizes groups against the toolkit's fallback and
+        // the desktop rightly refuses to frame a selection on that stale
+        // geometry until a second layout settles it.
+        self.host
+            .set_output_geometry(&[shell::shell::overlay_host::OutputGeometry::unscaled(
+                0.0,
+                0.0,
+                f64::from(W),
+                f64::from(H),
+            )]);
         let theme = Theme::dark();
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
@@ -617,6 +660,10 @@ fn keyboard_and_swipe_stepping_walks_the_strip_without_wrapping() {
     // chord silently focuses a window the user cannot see.
     {
         let mut h = Harness::new();
+        // App's bounded composition settlement admits the final output-width
+        // basis before accepting input. This manual harness needs its next
+        // layout pass too, before advancing the resulting focus animation.
+        h.tick();
         let home = h.scroll_x();
         // The last group is entirely off the right of the viewport at rest.
         let g2 = h

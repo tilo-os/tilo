@@ -348,9 +348,14 @@ impl State {
         {
             return Ok(None);
         }
+        let before = self.doc.get_heads();
         let changed = crate::history_mode::routes::merge_committed(&mut self.doc, mutation)?;
         if changed {
             self.undo.rebase(&mut self.doc);
+            // Its sender and the host already hold what was merged: sent
+            // back as this peer's change it would be an echo, which a peer
+            // that may not write the document has refused outright.
+            self.outbound.observe_changes_after(&mut self.doc, &before);
         }
         Ok(Some(changed))
     }

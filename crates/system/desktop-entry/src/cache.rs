@@ -142,7 +142,7 @@ mod tests {
             // Keep mutating the directory until its timestamp advances, but put a
             // firm bound on the retry: production deliberately remains one cheap
             // `stat` per application directory and the TTL is its fallback.
-            let deadline = Instant::now() + Duration::from_secs(3);
+            let deadline = tilo_test_env::hang_deadline();
             let mut attempt = 0u32;
             loop {
                 std::fs::write(tmp.path().join(format!("entry-{attempt}.desktop")), []).unwrap();

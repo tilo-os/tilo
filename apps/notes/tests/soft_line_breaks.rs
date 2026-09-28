@@ -50,10 +50,9 @@ fn soft_and_hard_line_breaks_round_trip_in_paragraphs_and_lists() {
                         NotesDoc::page_block_snapshots(doc, f.child),
                         vec![(block.clone(), "Alpha\nBeta".into())]
                     );
-                    let list = NotesDoc::page_blocks_list(doc, f.child).unwrap();
-                    assert_eq!(NotesDoc::block_kind(doc, &list, 0), expected_kind);
+                    assert_eq!(kind_at(doc, f.child, 0), expected_kind);
                     let mut editor = BlockEditor::new();
-                    editor.bind_existing_blocks(doc, list).unwrap();
+                    editor.present_blocks(&NotesDoc::page_blocks(doc, f.child));
                     let specs = markdown::blocks_to_specs(editor.blocks());
                     let exported = markdown::serialize(&specs);
                     assert_eq!(markdown::parse(&exported), specs, "{exported:?}");

@@ -1,7 +1,7 @@
 //! `CalendarApp` — the root widget. Owns the in-memory [`Model`], the
-//! current view + selection, and a single [`BlockEditor`] used for the
-//! rich-text **notes** attached to the selected event/task (the same
-//! widget the Notes app is built on).
+//! current view + selection, and a single SDK rich-text editor
+//! ([`RichTextSurface`]) for the **notes** attached to the selected
+//! event/task.
 //!
 //! Layout is hand-positioned (like the Notes `MainPanel`) rather than
 //! delegated to taffy, because the month grid / week timeline / day
@@ -45,11 +45,13 @@ use ui::theme::Theme;
 use ui::{
     LocalState,
     widget::{
-        BlockEditor, Checkbox, CheckboxFace, DatePicker, Dropdown, ExternalDatePickerHit,
-        TextInput, Toggle, ToggleFace,
+        Checkbox, CheckboxFace, DatePicker, Dropdown, ExternalDatePickerHit, TextInput, Toggle,
+        ToggleFace,
         chip::{Chip, ChipLead, ChipStyle},
     },
 };
+
+use tilo_rich_text::{RichTextField, RichTextSurface};
 
 use crate::account::AccountStore;
 use crate::agenda::{AgendaAction, AgendaMetrics, AgendaView};
@@ -385,6 +387,9 @@ impl FormRects {
 /// Payload delivered by a finished background `CalDAV` sync worker: the pull
 /// result, the merged outcome, the ids that uploaded successfully, and the
 /// ids the server confirmed deleted.
+/// The notes of the selected event or task, edited as calendar actions.
+type NotesEditor = RichTextSurface<RichTextField<crate::actions::CalendarAction>>;
+
 type SyncWorkerResult = (
     caldav::SyncResult,
     SyncOutcome,
@@ -447,7 +452,7 @@ pub struct CalendarApp {
     /// shared [`AccountStore`]). Read-only here; Settings owns the lifecycle.
     accounts: AccountStore,
 
-    notes_editor: BlockEditor,
+    notes_editor: NotesEditor,
     bound: Option<Sel>,
     seeded: bool,
 
@@ -763,7 +768,7 @@ impl CalendarApp {
             selection,
             detail_open,
             accounts,
-            notes_editor: Self::new_notes_editor(),
+            notes_editor: Self::new_notes_editor(None),
             bound: None,
             seeded: false,
             title_input: TextInput::local()
@@ -1441,61 +1446,42 @@ impl CalendarApp {
         jobs
     }
 
-    /// The single notes-editor entry point. All notes rendering and editing for
-    /// the selected event/task goes through this widget; binding it to the
-    /// selected item's CRDT block list happens in [`Self::ensure_bound`]. This
-    /// is the seam the shared WYSIWYG editor will replace: swap the
-    /// [`BlockEditor`] field type and re-point `ensure_bound`/`notes_list_for`,
-    /// and nothing in the layout/draw/event code below needs to change.
-    fn notes_editor(&mut self) -> &mut BlockEditor {
-        &mut self.notes_editor
-    }
-
-    fn new_notes_editor() -> BlockEditor {
-        let mut editor = BlockEditor::new()
-            .with_empty_hint(NOTES_PLACEHOLDER)
-            .with_wrap_lines(true);
-        editor.set_action_interception(true);
-        editor
-    }
-
-    /// Convert the editor's UUID-addressed delta into the sole Calendar
-    /// mutation path. A refused stale/deleted target is reconciled from the
-    /// document and announced through the visible status message.
-    fn dispatch_note_ops(&mut self, doc: &mut AutoCommit, ops: Vec<ui::widget::BlockEditOp>) {
-        if ops.is_empty() {
-            return;
-        }
-        let Some(selection) = self.selection else {
-            return;
+    /// The notes editor, bound to `owner`'s notes: every edit is the
+    /// calendar's own [`EditNotes`](crate::actions::CalendarAction::EditNotes)
+    /// action on that event or task.
+    fn new_notes_editor(owner: Option<Sel>) -> NotesEditor {
+        let (event, id) = match owner {
+            Some(Sel::Event(id)) => (true, Some(id)),
+            Some(Sel::Task(id)) => (false, Some(id)),
+            None => (true, None),
         };
-        let owner = match selection {
-            Sel::Event(id) => crate::actions::NoteOwner::Event { id: id.to_string() },
-            Sel::Task(id) => crate::actions::NoteOwner::Task { id: id.to_string() },
+        let note_owner = {
+            let id = id.map(|id| id.to_string()).unwrap_or_default();
+            if event {
+                crate::actions::NoteOwner::Event { id }
+            } else {
+                crate::actions::NoteOwner::Task { id }
+            }
         };
-        let action = crate::actions::CalendarAction::ApplyNoteOps { owner, ops };
-        if let Err(error) = self.actions.try_dispatch_with_context(
-            doc,
+        let context = crate::actions::history_context(&crate::actions::CalendarAction::EditNotes {
+            owner: note_owner.clone(),
+            edit: qdoc_rich_text::RichTextAction::AppendParagraph {
+                text: String::new(),
+            },
+        });
+        let field = RichTextField::new(
             crate::actions::CALENDAR_ACTION_TYPE,
-            &action,
-            crate::actions::history_context(&action),
-        ) {
-            self.status = Some(format!("Couldn't edit notes: {error}"));
-            self.notes_editor = Self::new_notes_editor();
-            self.bound = None;
-            self.ensure_bound(doc);
-        }
-        self.dirty = true;
+            move |doc| id.and_then(|id| CalDoc::notes(doc, event, id)),
+            move |edit| crate::actions::CalendarAction::EditNotes {
+                owner: note_owner.clone(),
+                edit,
+            },
+        )
+        .with_context(context);
+        RichTextSurface::field(field).with_placeholder(NOTES_PLACEHOLDER)
     }
 
     // --- CRDT plumbing ---------------------------------------------------
-
-    fn notes_list_for(doc: &mut AutoCommit, sel: Sel) -> Option<ObjId> {
-        match sel {
-            Sel::Event(id) => CalDoc::event_notes(doc, id),
-            Sel::Task(id) => CalDoc::task_notes(doc, id),
-        }
-    }
 
     fn refresh_note_search(&mut self, doc: &AutoCommit) {
         #[cfg(test)]
@@ -1605,9 +1591,8 @@ impl CalendarApp {
                 .events
                 .iter()
                 .find(|e| e.title.starts_with(needle))
-                && let Some(list) = CalDoc::event_notes(doc, e.id)
             {
-                CalDoc::seed_notes_if_empty(doc, &list, lines);
+                CalDoc::seed_notes_if_empty(doc, true, e.id, lines);
             }
         }
     }
@@ -1617,7 +1602,7 @@ impl CalendarApp {
             Some(s) if self.detail_open => s,
             _ => {
                 if self.bound.is_some() {
-                    self.notes_editor = Self::new_notes_editor();
+                    self.notes_editor = Self::new_notes_editor(None);
                     self.bound = None;
                 }
                 return;
@@ -1626,12 +1611,12 @@ impl CalendarApp {
         if self.bound == Some(sel) {
             return;
         }
-        if let Some(list) = Self::notes_list_for(doc, sel) {
-            let mut ed = Self::new_notes_editor();
-            ed.bind_blocks(doc, list);
-            // Install the freshly-bound editor through the single notes-editor
-            // seam (the swap-point for the shared WYSIWYG editor).
-            *self.notes_editor() = ed;
+        let exists = match sel {
+            Sel::Event(id) => CalDoc::ensure_notes(doc, true, id),
+            Sel::Task(id) => CalDoc::ensure_notes(doc, false, id),
+        };
+        if exists.is_some() {
+            self.notes_editor = Self::new_notes_editor(Some(sel));
             self.bound = Some(sel);
             self.dirty = true;
         }
@@ -6552,7 +6537,6 @@ impl CalendarApp {
             self.location_input.set_focus(false);
             self.invite_input.set_focus(false);
             if let Some(n) = self.editor_node {
-                self.notes_editor.begin_action_intercept();
                 self.notes_editor.handle_event(
                     input.event,
                     input.scale_factor,
@@ -6564,8 +6548,6 @@ impl CalendarApp {
                     n,
                     input.taffy,
                 );
-                let ops = self.notes_editor.take_intercepted_ops();
-                self.dispatch_note_ops(input.state, ops);
             }
             self.dirty = true;
             return true;
@@ -6869,7 +6851,16 @@ impl Widget for CalendarApp {
     /// its calendar action, so it records one undo boundary for it (see
     /// `Self::perform_action`). Rising-edge: cleared on read.
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
+        // A notes edit dispatches through the editor's field; everything else
+        // through the calendar's own host. One event does one or the other.
+        let notes = self.notes_editor.take_committed_action();
+        let calendar = self.actions.take_committed();
+        notes.or(calendar)
+    }
+
+    /// Typing a word in the notes is one undo step.
+    fn keeps_undo_step_open(&self) -> bool {
+        self.notes_editor.keeps_undo_step_open()
     }
 
     #[allow(
@@ -7124,6 +7115,7 @@ impl Widget for CalendarApp {
             {
                 let _ = state.merge_incoming(&mut loaded);
             }
+            CalDoc::migrate_notes(state);
             // Seed sample content ONLY in the demo build, and only when the
             // document is still empty.
             if self.demo && CalDoc::is_empty(state) {
@@ -7166,6 +7158,10 @@ impl Widget for CalendarApp {
         // from what the model was last derived from, and events/tasks re-read to
         // the same values a handler would have set. (Notes live in the document
         // and are read by the editor directly, so this never disturbs them.)
+        if state.get_heads() != self.model_heads {
+            // A peer still writing notes in their first format.
+            CalDoc::migrate_notes(state);
+        }
         let heads = state.get_heads();
         if heads != self.model_heads {
             self.model = CalDoc::read_model(state);
@@ -7462,7 +7458,7 @@ impl Widget for CalendarApp {
                 .draw(scene, t, text_renderer, theme, presence);
             scene.pop_layer();
             self.notes_editor
-                .draw_overlay(scene, t, text_renderer, theme);
+                .draw_overlay(scene, t, text_renderer, theme, presence);
             // Transient date/time/calendar popovers paint on top of the form
             // and the notes, with a dismiss scrim beneath them.
             if editing_event {
@@ -7654,7 +7650,6 @@ impl Widget for CalendarApp {
         // Forward remaining events (key typing, mouse move) to the editor
         // when the notes panel is active so editing works.
         if editor_active && let Some(n) = self.editor_node {
-            self.notes_editor.begin_action_intercept();
             self.notes_editor.handle_event(
                 event,
                 scale_factor,
@@ -7666,8 +7661,6 @@ impl Widget for CalendarApp {
                 n,
                 taffy,
             );
-            let ops = self.notes_editor.take_intercepted_ops();
-            self.dispatch_note_ops(state, ops);
         }
         self.dirty = true;
     }

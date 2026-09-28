@@ -198,7 +198,7 @@ const SEED_DATE: &str = "2026-06-30";
 /// The current UTC date as `YYYY-MM-DD`, read from the system clock. This is
 /// the real signing date stamped on a signature the user places at runtime.
 /// The reader's app id, the scope its permissions are decided in.
-const APP_ID: &str = "org.tilo.PdfViewer";
+const APP_ID: &str = "so.tilo.pdf-viewer";
 
 /// Wall-clock unix milliseconds, for stamping authored markup.
 fn now_ms() -> i64 {
@@ -1186,7 +1186,7 @@ impl PdfApp {
             state,
             crate::actions::PDF_VIEWER_ACTION_TYPE,
             action,
-            tilo_actions::ActionContext::for_action("org.tilo.PdfViewer", "PDF Viewer", action),
+            tilo_actions::ActionContext::for_action("so.tilo.pdf-viewer", "PDF Viewer", action),
         );
     }
 
@@ -4939,6 +4939,27 @@ impl Widget for PdfApp {
         self.markup_record.clone()
     }
 
+    fn release_record_scope(&mut self) -> Result<(), String> {
+        if self.editing.is_some() {
+            return Err("Finish or cancel the active PDF edit before switching documents".into());
+        }
+        self.portal_rx = None;
+        self.portal_save_rx = None;
+        self.portal_import_rx = None;
+        self.cancel_pending_open();
+        self.pending_import = None;
+        if let Some(request) = self.pending_save.take() {
+            let _ = self
+                .raster_handle
+                .as_ref()
+                .and_then(|handle| handle.cancel_save(request).ok());
+        }
+        self.pending_worker_plan = None;
+        self.portal_action = None;
+        self.completed_portal_action = None;
+        Ok(())
+    }
+
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
         (self.has_document && !self.awaiting_markup_record)
             .then(|| {
@@ -5202,17 +5223,17 @@ impl Widget for PdfApp {
                 .with_bounds(bounds)
                 .with_state(focusable())
         };
-        if !self.has_document {
+        // A document is not open for interaction until the host admits its
+        // markup record: until then every event and action is refused, so it
+        // is still opening, not a page anyone can act on.
+        let opening = self.pending_open.is_some() || self.awaiting_markup_record;
+        if !self.has_document || self.awaiting_markup_record {
             let mut children = vec![
                 AccessNode::new(Role::Heading { level: 1 })
-                    .with_name(if self.pending_open.is_some() {
-                        "Opening PDF"
-                    } else {
-                        "Open a PDF"
-                    })
+                    .with_name(if opening { "Opening PDF" } else { "Open a PDF" })
                     .with_hashed_key("pdf.empty.heading"),
             ];
-            if self.pending_open.is_some() {
+            if opening {
                 children.push(
                     AccessNode::new(Role::StaticText)
                         .with_name("Opening PDF")
@@ -5932,7 +5953,81 @@ mod links_tests;
 mod tests {
     use super::*;
     use serial_test::serial;
+
+    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+    const HANG_BOUND: Duration = Duration::from_secs(30);
     use tilo_automerge::ApplyIncoming;
+
+    #[test]
+    fn owner_release_refuses_inline_draft_then_detaches_all_old_worker_requests() {
+        let mut app = PdfApp::loading_preview();
+        let selected = ui::RecordCheckout::new(
+            ui::RecordId::for_tab(9201),
+            ui::RecordKind::new("pdf-markup"),
+        );
+        app.markup_record = Some(selected.clone());
+        app.source_path = Some("selected.pdf".into());
+        app.begin_edit(EditTarget::Signer, "Draft signer");
+        assert!(app.release_record_scope().is_err());
+        assert!(app.pending_open.is_some());
+        assert_eq!(app.markup_record, Some(selected.clone()));
+        assert_eq!(
+            app.source_path.as_deref(),
+            Some(std::path::Path::new("selected.pdf"))
+        );
+
+        app.editing = None;
+        app.portal_rx = Some({
+            let (answer, channel) = std::sync::mpsc::channel();
+            let _ = answer.send(PortalOutcome::Cancelled);
+            channel
+        });
+        app.portal_save_rx = Some({
+            let (answer, channel) = std::sync::mpsc::channel();
+            let _ = answer.send(PortalOutcome::Cancelled);
+            channel
+        });
+        app.portal_import_rx = Some({
+            let (answer, channel) = std::sync::mpsc::channel();
+            let _ = answer.send(PortalOutcome::Cancelled);
+            channel
+        });
+        app.pending_import = Some(ImportRequest {
+            id: 2,
+            document_id: 1,
+            path: "import.pdf".into(),
+            at: 0,
+            after: None,
+        });
+        app.pending_save = Some(SaveRequest {
+            id: 3,
+            document_id: 1,
+            markup: crate::source::ExportMarkup::default(),
+            path: "save.pdf".into(),
+        });
+        app.pending_worker_plan = Some(Vec::new());
+        let invocation = tilo_actions::InvocationId::new();
+        app.portal_action = Some((invocation, PortalActionKind::Open));
+        app.completed_portal_action = Some(tilo_actions::InvocationUpdate::Succeeded {
+            invocation,
+            output: tilo_actions::ActionOutput::default(),
+        });
+        app.release_record_scope().unwrap();
+        assert!(app.portal_rx.is_none());
+        assert!(app.portal_save_rx.is_none());
+        assert!(app.portal_import_rx.is_none());
+        assert!(app.pending_open.is_none());
+        assert!(app.pending_import.is_none());
+        assert!(app.pending_save.is_none());
+        assert!(app.pending_worker_plan.is_none());
+        assert!(app.portal_action.is_none());
+        assert!(app.completed_portal_action.is_none());
+        assert_eq!(app.markup_record, Some(selected));
+        assert_eq!(
+            app.source_path.as_deref(),
+            Some(std::path::Path::new("selected.pdf"))
+        );
+    }
 
     /// Two real PDFs on disk, from the bundled fixture. "Open a second
     /// document" has to be a second *file* — the bug is about one document's
@@ -6121,7 +6216,7 @@ mod tests {
             // Exercise the production worker, not load_path's synchronous test
             // substitute. The host checks out records before calling sync.
             app.queue_worker_open(&b);
-            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            let deadline = tilo_test_env::hang_deadline();
             while app.pending_open.is_some() && std::time::Instant::now() < deadline {
                 record_frame(&mut app, &mut st, &mut set, &mut room);
                 std::thread::sleep(Duration::from_millis(5));
@@ -6161,7 +6256,7 @@ mod tests {
             let mut st = ui::State::new();
             let original = st.doc.get_heads();
             app.queue_worker_open(&path);
-            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            let deadline = tilo_test_env::hang_deadline();
             while app.pending_open.is_some() && std::time::Instant::now() < deadline {
                 app.sync(&mut st.doc, &st.root);
                 std::thread::sleep(Duration::from_millis(5));
@@ -6175,6 +6270,11 @@ mod tests {
                 assert!(app.awaiting_markup_record);
                 assert!(app.has_pending_visual_work());
                 assert!(Widget::resources(&app, &st.doc).is_empty());
+                let semantics = format!("{:?}", Widget::accessibility(&app));
+                assert!(
+                    semantics.contains("Opening PDF") && !semantics.contains("pdf.page:"),
+                    "a document awaiting its record offers no page to act on"
+                );
                 assert!(!app.perform_semantic_action(
                     "pdf.tool:2",
                     &ui::a11y::Action::Activate,
@@ -6207,7 +6307,7 @@ mod tests {
                 let mut state = AutoCommit::new();
                 app.queue_worker_open(&path);
                 assert!(app.pending_open.is_some(), "accepted request is loading");
-                let deadline = std::time::Instant::now() + Duration::from_secs(10);
+                let deadline = tilo_test_env::hang_deadline();
                 while app.pending_open.is_some() && std::time::Instant::now() < deadline {
                     std::thread::sleep(Duration::from_millis(5));
                     app.drain_raster_events(&mut state);
@@ -6230,7 +6330,8 @@ mod tests {
             let latest = std::path::Path::new("/definitely/not/a/tilo-pdf-b.pdf");
             app.queue_worker_open(first);
             app.queue_worker_open(latest);
-            for _ in 0..100 {
+            let deadline = std::time::Instant::now() + HANG_BOUND;
+            while std::time::Instant::now() < deadline {
                 std::thread::sleep(Duration::from_millis(5));
                 app.drain_raster_events(&mut state);
                 if app.pending_open.is_none() {
@@ -8947,7 +9048,7 @@ mod tests {
             let mut app = PdfApp::empty();
             let mut st = ui::State::new();
             app.queue_worker_open(std::path::Path::new(LATIN_PDF));
-            let deadline = std::time::Instant::now() + Duration::from_secs(20);
+            let deadline = tilo_test_env::hang_deadline();
             while app.pending_open.is_some() && std::time::Instant::now() < deadline {
                 app.sync(&mut st.doc, &st.root);
                 std::thread::sleep(Duration::from_millis(5));

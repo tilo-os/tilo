@@ -1,3 +1,7 @@
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 use super::*;
 use crate::shell::collab_broker_capnp::tests::{
     DirectoryResolveMode, drain_directory_bridge, local_directory_fixture_with_membership,
@@ -506,12 +510,11 @@ async fn invocation_targets_queue_limits_and_results_are_honest() {
             if name == "tilo_invoke" {
                 args["arguments"] = json!({});
             }
-            let reply = tokio::time::timeout(
-                std::time::Duration::from_millis(20),
+            let reply = tilo_test_env::within(
+                "invalid revision must be rejected without waiting for broker",
                 server.handle(call(name, &args)),
             )
             .await
-            .expect("invalid revision must be rejected without waiting for broker")
             .unwrap();
             assert_eq!(reply["result"]["isError"], true);
         }

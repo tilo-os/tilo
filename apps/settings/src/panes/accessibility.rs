@@ -34,7 +34,8 @@ use winit::event::{Modifiers, WindowEvent};
 
 use crate::panes::appearance::{TEXT_SIZES, text_size_label, text_size_scale};
 use crate::prefs::{
-    AccessibilityPrefs, AppearancePrefs, ColorFilter, ScreenReaderVoice, SwitchKeyPair, SystemPrefs,
+    AccessibilityPrefs, AppearancePrefs, ColorFilter, OnScreenKeyboard, ScreenReaderVoice,
+    SwitchKeyPair, SystemPrefs,
 };
 use crate::widgets::{El, caption, card, choice_row, rows, setting_row_described, value_row};
 
@@ -303,8 +304,19 @@ impl AccessibilityPane {
         let osk_row = if osk_service_available() {
             setting_row_described(
                 "On-screen keyboard",
-                "Show the keyboard automatically for focused text fields",
-                Self::toggle("a11y.on_screen_keyboard", OSK_KEY, "on-screen-keyboard"),
+                "Automatic shows it for text fields while you use touch without typing on a keyboard",
+                Box::new(
+                    Self::choice(
+                        OnScreenKeyboard::OPTIONS
+                            .iter()
+                            .map(|s| (*s).to_string())
+                            .collect(),
+                        OSK_KEY,
+                        "on-screen-keyboard",
+                    )
+                    .with_id("a11y.on_screen_keyboard")
+                    .with_placeholder(self.access.on_screen_keyboard.label()),
+                ),
             )
         } else {
             value_row(
@@ -538,7 +550,6 @@ impl AccessibilityPane {
             (BOUNCE_KEYS_KEY, self.access.bounce_keys),
             (BOUNCE_ALERT_KEY, self.access.bounce_keys_alert),
             (MOUSE_KEYS_KEY, self.access.mouse_keys),
-            (OSK_KEY, self.access.on_screen_keyboard),
             (VISUAL_ALERTS_KEY, self.access.visual_alerts),
             (SCREEN_READER_KEY, self.access.screen_reader),
             (CURSOR_CROSSHAIR_KEY, self.access.cursor_crosshair),
@@ -556,6 +567,7 @@ impl AccessibilityPane {
                 AccessibilityPrefs::cursor_size_label(self.access.cursor_size),
             ),
             (COLOR_FILTER_KEY, self.access.color_filter.label()),
+            (OSK_KEY, self.access.on_screen_keyboard.label()),
             (
                 MAGNIFIER_KEY,
                 magnifier::zoom_label(self.access.magnifier_zoom),
@@ -654,10 +666,6 @@ impl AccessibilityPane {
             read_bool(state, root, MOUSE_KEYS_KEY),
         );
         adopt(
-            &mut self.access.on_screen_keyboard,
-            read_bool(state, root, OSK_KEY),
-        );
-        adopt(
             &mut self.access.visual_alerts,
             read_bool(state, root, VISUAL_ALERTS_KEY),
         );
@@ -713,6 +721,13 @@ impl AccessibilityPane {
             && view != self.access.magnifier_view
         {
             self.access.magnifier_view = view;
+            changed = true;
+        }
+        if let Some(label) = read_str_or_text(state, root, OSK_KEY)
+            && let Some(mode) = OnScreenKeyboard::from_label(&label)
+            && mode != self.access.on_screen_keyboard
+        {
+            self.access.on_screen_keyboard = mode;
             changed = true;
         }
         if let Some(label) = read_str_or_text(state, root, MAGNIFIER_KEY) {
@@ -1068,18 +1083,18 @@ mod tests {
                 STICKY_KEYS_KEY,
                 automerge::ScalarValue::Boolean(true),
             );
-            let _ = doc.put(&root, OSK_KEY, automerge::ScalarValue::Boolean(true));
+            let _ = doc.put(&root, OSK_KEY, "Always");
             pane.sync(&mut doc, &root);
             assert!(pane.access().large_cursor);
             assert_eq!(pane.access().cursor_size, 64);
             assert!(pane.access().sticky_keys);
-            assert!(pane.access().on_screen_keyboard);
+            assert_eq!(pane.access().on_screen_keyboard, OnScreenKeyboard::Always);
             let loaded = SystemPrefs::load().accessibility;
             assert_eq!(
                 loaded.cursor_size, 64,
                 "persisted to the accessibility section"
             );
-            assert!(loaded.on_screen_keyboard);
+            assert_eq!(loaded.on_screen_keyboard, OnScreenKeyboard::Always);
         }
     }
 

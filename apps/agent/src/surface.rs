@@ -436,7 +436,7 @@ pub fn for_namespace(namespace: &str) -> Option<&'static AppContract> {
 
 /// The contract for an announced app id.
 pub fn for_app_id(app_id: &str) -> Option<&'static AppContract> {
-    CONTRACTS.iter().find(|c| c.app_id == app_id)
+    CONTRACTS.iter().find(|contract| contract.app_id == app_id)
 }
 
 /// Decoders for every app the agent speaks to, in one registry: the door
@@ -546,7 +546,81 @@ impl Offer {
 /// inert offers the planner already consumes. No application registry or
 /// document reconstruction is involved: arbitrary apps appear here solely
 /// because they published a descriptor to the authenticated broker.
-pub fn broker_offers(catalogue: &tilo_actions::remote::CataloguePage) -> Vec<Offer> {
+///
+/// Accepts either the action host's fetched [`tilo_actions::remote::CataloguePage`]
+/// or the broker's pushed [`ui::collaboration::BrokerActionSurface`] directory.
+pub fn broker_offers<C: BrokerCatalogue + ?Sized>(catalogue: &C) -> Vec<Offer> {
+    catalogue.broker_offers()
+}
+
+/// A live, permission-filtered action directory the broker supplies.
+pub trait BrokerCatalogue {
+    /// Every live action it names, as planner offers.
+    fn broker_offers(&self) -> Vec<Offer>;
+}
+
+impl BrokerCatalogue for tilo_actions::remote::CataloguePage {
+    fn broker_offers(&self) -> Vec<Offer> {
+        catalogue_page_offers(self)
+    }
+}
+
+impl BrokerCatalogue for [ui::collaboration::BrokerActionSurface] {
+    fn broker_offers(&self) -> Vec<Offer> {
+        surface_offers(self)
+    }
+}
+
+impl BrokerCatalogue for Vec<ui::collaboration::BrokerActionSurface> {
+    fn broker_offers(&self) -> Vec<Offer> {
+        surface_offers(self)
+    }
+}
+
+/// Offers from the broker's pushed surface directory: only live surfaces.
+fn surface_offers(surfaces: &[ui::collaboration::BrokerActionSurface]) -> Vec<Offer> {
+    surfaces
+        .iter()
+        .filter(|surface| surface.live)
+        .flat_map(|surface| {
+            surface.actions.iter().map(|action| {
+                let input = if action.input.kind == "text" {
+                    tilo_actions::InputSpec::Text {
+                        prompt: action.input.prompt.clone(),
+                        placeholder: action.input.placeholder.clone(),
+                        collects: if action.input.wants_content {
+                            tilo_actions::Collects::Content
+                        } else {
+                            tilo_actions::Collects::Words
+                        },
+                    }
+                } else {
+                    tilo_actions::InputSpec::None
+                };
+                Offer {
+                    app: surface.app_id.clone(),
+                    broker_peer_id: Some(surface.peer_id),
+                    descriptor: ActionDescriptor {
+                        address: ActionAddress::new(&action.resource, &action.action),
+                        resource_kind: action.resource_kind.clone(),
+                        resource_label: action.resource_label.clone(),
+                        resource_sensitivity: action.resource_sensitivity,
+                        action_label: action.action_label.clone(),
+                        description: action.description.clone(),
+                        locus: tilo_actions::ExecutionLocus::ServerPreferred,
+                        kind: action.operation_kind,
+                        contract: action.contract.clone(),
+                        params: action.params.clone(),
+                        input,
+                        view: None,
+                    },
+                }
+            })
+        })
+        .collect()
+}
+
+fn catalogue_page_offers(catalogue: &tilo_actions::remote::CataloguePage) -> Vec<Offer> {
     catalogue
         .rows
         .iter()
@@ -1228,13 +1302,6 @@ mod tests {
     )]
     fn a_room_offers_what_held_documents_publish_and_opens_only_missing_granted_apps() {
         // Case `a_document_with_no_blocks_is_still_something_to_act_on`.
-        // A word processor holding a document with nothing in it is still a
-        // word processor with something to be done to it.
-        //
-        // This used to report an empty tree: no blocks meant no anchor, no
-        // anchor meant nothing, so a room containing an open, untouched
-        // document looked exactly like a room containing no word processor at
-        // all.
         {
             let mut doc = AutoCommit::new();
             qdoc::model::init(&mut doc, &automerge::ROOT);
@@ -1263,9 +1330,6 @@ mod tests {
         }
 
         // Case `photos_requires_an_explicit_export_result_for_cross_app_content`.
-        // A shared Photos replica is mutable state, not the immutable output of
-        // a particular action. Only Photos' explicit export lifecycle may mint
-        // content for the next application step.
         {
             let png = photos::pixels::encode_png(&photos::shots_pattern(64, 32)).expect("fixture");
             let hash = tilo_content::hash_bytes(&png);
@@ -1288,9 +1352,6 @@ mod tests {
         }
 
         // Case `the_grants_that_open_an_application_and_the_one_that_does_not`.
-        // An open is asked about as the application, not as an operation
-        // inside it — which is what makes the three grants a room can write
-        // about it say three different things.
         {
             let open = open_address("chat");
             let post = ActionAddress::new("chat.channel:c1", "post");
@@ -1340,10 +1401,6 @@ mod tests {
         }
 
         // Case `only_the_apps_this_room_is_missing_are_offered_as_openable`.
-        // The set of applications offered as openable is exactly the ones this
-        // room has nothing open in — so it empties as the room fills, and an
-        // app that is here *with something in it* is never offered as
-        // something to open.
         {
             let perms = granting(vec![grant(Scope::Workspace)]);
             let view = View::default();
@@ -1403,8 +1460,6 @@ mod tests {
         }
 
         // Case `an_application_that_is_here_and_empty_is_not_yet_surveyable`.
-        // **Here is not the same as ready**, asked of one document at the two
-        // moments an open takes it through.
         {
             let view = View::default();
             let chat = chat_contract();
@@ -1442,9 +1497,6 @@ mod tests {
         }
 
         // Case `no_app_publishes_an_address_that_reads_as_an_open`.
-        // No app's own resource tree may publish an address that reads as an
-        // open, or opening would be indistinguishable from something an app
-        // exports.
         {
             let view = View::default();
             for contract in CONTRACTS {
@@ -1484,19 +1536,6 @@ mod tests {
         }
 
         // Case `a_supplied_value_tells_two_same_verb_operations_apart`.
-        // Which of two operations sharing a verb an instruction names is
-        // settled by whether the instruction supplied a value.
-        //
-        // Two offers, one verb, the way a real app can genuinely publish one —
-        // a crop that collects a region and a crop that collects nothing —
-        // which used to be an unconditional [`NoMatch::Ambiguous`] even when
-        // the instruction was not actually silent about the difference.
-        //
-        // Asserted in both directions: a rule that always preferred the
-        // prompted operation would pass the first half and leave the
-        // argument-less one unreachable, and one that always preferred the
-        // argument-less operation would pass the second while throwing away a
-        // value somebody had written down.
         {
             let offers = vec![
                 offer(
@@ -1637,6 +1676,18 @@ mod tests {
                 view: None,
             },
         }
+    }
+
+    #[test]
+    fn contract_lookup_accepts_only_the_exact_app_id() {
+        assert_eq!(
+            for_app_id("so.tilo.photos")
+                .expect("Photos contract")
+                .namespace,
+            "photos"
+        );
+        assert!(for_app_id("dev.tilo.photos").is_none());
+        assert!(for_app_id("so.tilo.unknown").is_none());
     }
 
     // -- opening an application ------------------------------------------

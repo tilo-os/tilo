@@ -754,7 +754,8 @@ impl UiGraphHandle {
         let document = UiDocument::from_json(&source)?;
         let live_mtime = std::fs::metadata(&path)
             .and_then(|metadata| metadata.modified())
-            .ok();
+            .ok()
+            .map(crate::time::from_file_time);
         Ok(Self {
             inner: Arc::new(RwLock::new(UiGraphState {
                 document,
@@ -790,7 +791,7 @@ impl UiGraphHandle {
         let Ok(mtime) = std::fs::metadata(path).and_then(|metadata| metadata.modified()) else {
             return false;
         };
-        state.live_mtime != Some(mtime)
+        state.live_mtime != Some(crate::time::from_file_time(mtime))
     }
 
     /// Reload from disk when the live file's mtime is newer than the last load.
@@ -813,7 +814,7 @@ impl UiGraphHandle {
             let Ok(mtime) = metadata.modified() else {
                 return Ok(false);
             };
-            if state.live_mtime == Some(mtime) {
+            if state.live_mtime == Some(crate::time::from_file_time(mtime)) {
                 return Ok(false);
             }
             path
@@ -823,7 +824,8 @@ impl UiGraphHandle {
         let document = UiDocument::from_json(&source)?;
         let mtime = std::fs::metadata(&path)
             .and_then(|metadata| metadata.modified())
-            .ok();
+            .ok()
+            .map(crate::time::from_file_time);
         let mut state = self.inner.write().map_err(|_| UiGraphError::Poisoned)?;
         if state.live_mtime == mtime && state.document == document {
             return Ok(false);
@@ -1186,7 +1188,8 @@ impl UiGraphHandle {
         write_live_graph_atomic(&path, &json)?;
         let mtime = std::fs::metadata(&path)
             .and_then(|metadata| metadata.modified())
-            .ok();
+            .ok()
+            .map(crate::time::from_file_time);
         let mut state = self.inner.write().map_err(|_| UiGraphError::Poisoned)?;
         state.live_mtime = mtime;
         drop(state);

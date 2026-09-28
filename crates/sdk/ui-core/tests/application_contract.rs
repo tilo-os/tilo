@@ -1559,9 +1559,7 @@ mod save_status_fixture {
                 .unwrap();
             assert!(pending.1 > 0);
             let path = self.path();
-            let deadline = std::time::Instant::now()
-                .checked_add(std::time::Duration::from_secs(3))
-                .unwrap();
+            let deadline = tilo_test_env::hang_deadline();
             loop {
                 let visible = std::fs::read(&path)
                     .ok()

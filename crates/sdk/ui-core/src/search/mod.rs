@@ -46,3 +46,5 @@ pub use rank::{
 };
 pub use registry::{FnProvider, SearchGroup, SearchRegistry};
 pub use tokenizer::{SearchTokenizer, UnicodeTokenizer, default_tokenizer, fold_search_text};
+
+pub mod system;

@@ -77,9 +77,12 @@
 pub mod approval;
 pub mod canonical;
 pub mod cert;
+pub mod cloud_enrollment;
 pub mod directory;
 pub mod enrollment;
 pub mod image;
+pub mod machine_mesh;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod persist;
 pub mod projection;
 pub mod revocation;
@@ -109,6 +112,7 @@ pub use image::{
     sign_image_signing_authorization, verify_image_endorsement_at,
     verify_image_endorsement_with_revocations_at, verify_image_signing_authorization_at,
 };
+#[cfg(not(target_arch = "wasm32"))]
 pub use persist::{
     DeviceKeyOutcome, IdentityPaths, PersistError, adopt_device_key, load_or_create_device_key,
 };

@@ -91,13 +91,13 @@ fn warmup_degrades_silently_when_no_wgpu_adapter_exists() {
 
     // Bounded wait: the child builds a throw-away FontSystem, which is
     // slow on a cold fontconfig cache but nowhere near this long.
-    let deadline = Instant::now() + Duration::from_secs(180);
+    let deadline = tilo_test_env::hang_deadline();
     let status = loop {
         match child.try_wait().expect("try_wait") {
             Some(status) => break status,
             None if Instant::now() >= deadline => {
                 let _ = child.kill();
-                panic!("warmup child did not finish within 180s");
+                panic!("warmup child did not finish");
             }
             None => std::thread::sleep(Duration::from_millis(50)),
         }

@@ -75,16 +75,96 @@ const TEXT_MIME: &str = "text/plain;charset=utf-8";
 /// is talking to *this* compositor and not a session one.
 const TILO_SEAT_NAME: &str = "tilo-desktop";
 
-/// How long any single wait-for-condition may take once the compositor is
-/// serving. Startup has its own budget, [`STARTUP_DEADLINE`].
-const DEADLINE: Duration = Duration::from_secs(25);
+/// Match the native session's launcher-less record scope explicitly, so
+/// inherited package/workspace variables cannot redirect fixture documents.
+const FIXTURE_RECORD_SCOPE: &str = "00000000-0000-0000-0000-000000000000";
 
-/// How long a spawned compositor may take to go from `exec` to answering its
-/// first test-control request with a laid-out frame. Cold start compiles the
-/// renderer's pipelines and shapes the first chrome, which a loaded CI runner
-/// can stretch well past [`DEADLINE`]. This only bounds a hang: a compositor
-/// that exits, or closes its stderr, fails the wait at once with its log.
-const STARTUP_DEADLINE: Duration = Duration::from_secs(120);
+/// How long any single wait-for-condition may take, startup included: the
+/// workspace-wide hang bound. Every wait here returns as soon as its condition
+/// holds, and a compositor that exits or closes its stderr fails the wait at
+/// once with its log, so this only decides when a stuck wait is called hung.
+fn deadline() -> Duration {
+    tilo_test_env::hang_bound()
+}
+
+/// Spacing of the grid [`TestClient::pointer_target`] probes for a client.
+const POINTER_GRID_STEP: i32 = 40;
+
+/// How often a layout is sampled while waiting for it to stop moving: about
+/// one frame, so two equal samples straddle a repaint.
+const LAYOUT_SAMPLE: Duration = Duration::from_millis(17);
+
+/// Consecutive equal samples that count as a settled layout.
+const SETTLED_SAMPLES: usize = 4;
+
+/// Block until one of `clients` receives an event, or `extra` becomes
+/// readable, for at most `timeout`, then dispatch whatever arrived.
+///
+/// Each client's pending requests are flushed first, so a wait never parks
+/// on an answer to a request that was never sent. Each park is capped
+/// because a connection another thread also reads (the app clipboard
+/// worker's) can take this queue's events off the socket.
+fn dispatch_any(
+    clients: &mut [&mut TestClient],
+    extra: Option<std::os::unix::io::BorrowedFd<'_>>,
+    timeout: Duration,
+) {
+    use std::os::unix::io::AsRawFd;
+    const PARK: Duration = Duration::from_millis(50);
+    let mut guards = Vec::with_capacity(clients.len());
+    let mut queued = false;
+    for client in clients.iter_mut() {
+        client
+            .queue
+            .dispatch_pending(&mut client.state)
+            .expect("dispatch queued client events");
+        client.queue.flush().expect("flush client requests");
+        let guard = client.queue.prepare_read();
+        queued |= guard.is_none();
+        guards.push(guard);
+    }
+    if !queued {
+        let mut fds: Vec<libc::pollfd> = guards
+            .iter()
+            .flatten()
+            .map(|guard| guard.connection_fd().as_raw_fd())
+            .chain(extra.map(|fd| fd.as_raw_fd()))
+            .map(|fd| libc::pollfd {
+                fd,
+                events: libc::POLLIN,
+                revents: 0,
+            })
+            .collect();
+        let park = i32::try_from(timeout.min(PARK).as_millis()).unwrap_or(i32::MAX);
+        let nfds = libc::nfds_t::try_from(fds.len()).expect("a handful of descriptors");
+        // SAFETY: `fds` is a live array of `nfds` initialised pollfds whose
+        // descriptors outlive the call.
+        let rc = unsafe { libc::poll(fds.as_mut_ptr(), nfds, park) };
+        let err = std::io::Error::last_os_error();
+        assert!(
+            rc >= 0 || err.kind() == std::io::ErrorKind::Interrupted,
+            "poll the client connections: {err}"
+        );
+        let mut readable = fds.iter().map(|fd| fd.revents != 0);
+        for guard in guards.iter_mut().filter_map(Option::take) {
+            if readable.next() == Some(true) {
+                match guard.read() {
+                    Ok(_) => {}
+                    Err(wayland_client::backend::WaylandError::Io(e))
+                        if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                    Err(e) => panic!("read client events: {e}"),
+                }
+            }
+        }
+    }
+    drop(guards);
+    for client in clients.iter_mut() {
+        client
+            .queue
+            .dispatch_pending(&mut client.state)
+            .expect("dispatch client events");
+    }
+}
 
 // Compositor harness
 
@@ -185,6 +265,7 @@ impl Compositor {
         fixture_tree.desktop.workspaces[0].name = "Clipboard test desktop".into();
         shell::shell::persist::save_tree_to(&fixture_tree, &state_path)
             .expect("seed the clipboard e2e desktop");
+        Self::seed_tab_records(&runtime_dir, &fixture_tree);
         let identity_root = Self::seed_identity(&runtime_dir);
 
         let mut child = Self::spawn_compositor(
@@ -221,6 +302,37 @@ impl Compositor {
             this.privileged_socket.display()
         );
         this
+    }
+
+    /// This fixture authored the saved tabs, so it also creates their
+    /// documents before native startup performs existing-only admission.
+    /// Restart deliberately reuses these files without creating them again.
+    fn seed_tab_records(runtime_dir: &Path, tree: &shell::shell::state::WorkspaceTree) {
+        let mut owners = ui::record::RecordOwners::new(runtime_dir.join("data"));
+        let records = owners
+            .open(shell::shell::SHELL_RECORDS_PACKAGE, FIXTURE_RECORD_SCOPE)
+            .expect("open the fixture's explicit Shell record namespace");
+        for tab in tree
+            .desktop
+            .workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.strips)
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+        {
+            shell::shell::tab_documents::create_scratch_tab_record(&records, tab.id)
+                .expect("create the authored fixture tab's document");
+            records
+                .try_open_record(&shell::shell::tab_documents::scratch_tab_record(tab.id))
+                .expect("the fixture tab must admit its existing document");
+        }
+        records
+            .try_flush()
+            .expect("persist every fixture tab document before starting the compositor");
+        // Release the writers and canonical ownership gates before the child
+        // opens these same records in its own session store.
+        drop(records);
+        drop(owners);
     }
 
     /// Kill and relaunch the native headless compositor on its existing
@@ -320,6 +432,9 @@ impl Compositor {
             .env("XDG_DATA_HOME", runtime_dir.join("data"))
             .env("XDG_STATE_HOME", runtime_dir.join("state"))
             .env("XDG_CACHE_HOME", runtime_dir.join("cache"))
+            // Match the namespace provisioned once by seed_tab_records.
+            .env("TILO_PACKAGE_ID", shell::shell::SHELL_RECORDS_PACKAGE)
+            .env("TILO_WORKSPACE_ID", FIXTURE_RECORD_SCOPE)
             // A CI checkout commonly lives at `/workspace`. It is not a Tilo
             // collaborative mount, and must not win over the fixture home as
             // the hosted Files app's initial directory.
@@ -403,7 +518,7 @@ impl Compositor {
     /// the whole cold start to the first request a test makes. Readiness is
     /// therefore a handshake: all three sockets announced, then a
     /// `list_targets` request answered with at least one laid-out target,
-    /// which only a completed frame produces. One [`STARTUP_DEADLINE`],
+    /// which only a completed frame produces. One [`deadline`],
     /// measured from spawn, bounds all of it; a compositor that dies fails
     /// the wait immediately.
     fn wait_until_serving(
@@ -424,7 +539,7 @@ impl Compositor {
 
         let mut found: HashMap<String, String> = HashMap::new();
         while found.len() < 3 {
-            let remaining = STARTUP_DEADLINE.saturating_sub(started.elapsed());
+            let remaining = deadline().saturating_sub(started.elapsed());
             match rx.recv_timeout(remaining) {
                 Ok((key, value)) => {
                     found.insert(key, value);
@@ -435,7 +550,7 @@ impl Compositor {
                 ),
                 Err(mpsc::RecvTimeoutError::Timeout) => fail(
                     child,
-                    &format!("it announced only {found:?} within {STARTUP_DEADLINE:?}"),
+                    &format!("it announced only {found:?} within the hang bound"),
                 ),
             }
         }
@@ -494,10 +609,10 @@ impl Compositor {
             if let Ok(Some(status)) = child.try_wait() {
                 return Err(format!("it exited with {status}"));
             }
-            if started.elapsed() >= STARTUP_DEADLINE {
-                return Err(format!(
-                    "its event loop did not answer test control within {STARTUP_DEADLINE:?}"
-                ));
+            if started.elapsed() >= deadline() {
+                return Err(
+                    "its event loop did not answer test control within the hang bound".into(),
+                );
             }
         }
         let value: serde_json::Value = serde_json::from_slice(&response).map_err(|e| {
@@ -518,7 +633,7 @@ impl Compositor {
         let mut stream =
             UnixStream::connect(&self.control_socket).expect("connect to the test-control socket");
         stream
-            .set_read_timeout(Some(DEADLINE))
+            .set_read_timeout(Some(deadline()))
             .expect("set control read timeout");
         let mut line = serde_json::to_vec(request).expect("encode control request");
         line.push(b'\n');
@@ -747,7 +862,7 @@ fn wait_for_foreign_surface_count(
             return ids;
         }
         assert!(
-            started.elapsed() < DEADLINE,
+            started.elapsed() < deadline(),
             "{label}; wanted {count} surfaces, got {ids:?}.\n{}",
             compositor.debug_state()
         );
@@ -1002,17 +1117,20 @@ impl TestClient {
         self.attach_buffer(320, 240);
 
         let started = Instant::now();
-        while started.elapsed() < DEADLINE {
+        while started.elapsed() < deadline() {
             if self.state.keyboard_focused {
                 self.step("focused");
                 return;
             }
-            self.pump();
-            std::thread::sleep(Duration::from_millis(10));
+            dispatch_any(
+                &mut [&mut *self],
+                None,
+                deadline().saturating_sub(started.elapsed()),
+            );
         }
         panic!(
             "the compositor never gave `{}` keyboard focus after mapping a toplevel \
-             (waited {DEADLINE:?}). Setting a selection requires focus, so nothing \
+             (waited out the hang bound). Setting a selection requires focus, so nothing \
              downstream can work without it.\n{}",
             self.app_id,
             compositor.debug_state(),
@@ -1037,23 +1155,61 @@ impl TestClient {
     }
 
     /// [`Self::pointer_target`] without the panic.
+    ///
+    /// The grid is visited in the same row-major order either way, and only
+    /// this client's `wl_pointer.enter` accepts a point. Grid points near a
+    /// laid-out client surface are tried first, which finds the same first
+    /// point as a whole-screen scan without moving the pointer across every
+    /// empty cell; the whole screen is still scanned when that finds nothing.
     fn try_pointer_target(&mut self, compositor: &Compositor) -> Option<(f64, f64)> {
-        const STEP: i32 = 40;
+        // A point found while the strip still scrolls is stale once it stops.
+        compositor.wait_for_layout_to_settle(
+            |name| name.starts_with("foreign-surface-"),
+            "client surfaces before aiming the pointer",
+        );
+        let surfaces = compositor.foreign_surface_rects();
+        let near_a_surface = |x: f64, y: f64| {
+            let margin = f64::from(POINTER_GRID_STEP);
+            surfaces.iter().any(|[sx, sy, sw, sh]| {
+                x >= sx - margin
+                    && x <= sx + sw + margin
+                    && y >= sy - margin
+                    && y <= sy + sh + margin
+            })
+        };
+        if !surfaces.is_empty()
+            && let Some(point) = self.scan_pointer_grid(compositor, near_a_surface)
+        {
+            return Some(point);
+        }
+        self.scan_pointer_grid(compositor, |_, _| true)
+    }
+
+    /// Move the pointer over the screen's grid points that `visit` admits, in
+    /// row-major order, and return the first at which this client reports a
+    /// `wl_pointer.enter`.
+    fn scan_pointer_grid(
+        &mut self,
+        compositor: &Compositor,
+        visit: impl Fn(f64, f64) -> bool,
+    ) -> Option<(f64, f64)> {
         let (w, h) = compositor.size;
         self.state.pointer_entered = false;
-        let mut y = STEP / 2;
+        let mut y = POINTER_GRID_STEP / 2;
         while y < h {
-            let mut x = STEP / 2;
+            let mut x = POINTER_GRID_STEP / 2;
             while x < w {
-                compositor.pointer_move(f64::from(x), f64::from(y));
-                self.pump();
-                if self.state.pointer_entered {
-                    self.step(&format!("receives pointer input at ({x}, {y})"));
-                    return Some((f64::from(x), f64::from(y)));
+                if visit(f64::from(x), f64::from(y)) {
+                    compositor.pointer_move(f64::from(x), f64::from(y));
+                    self.pump();
+                    if self.state.pointer_entered {
+                        self.step(&format!("receives pointer input at ({x}, {y})"));
+                        return Some((f64::from(x), f64::from(y)));
+                    }
                 }
-                x = x.saturating_add(STEP);
+                x = x.saturating_add(POINTER_GRID_STEP);
             }
-            y = y.saturating_add(STEP);
+            y = y.saturating_add(POINTER_GRID_STEP);
         }
         None
     }
@@ -1110,21 +1266,27 @@ impl TestClient {
         eprintln!("[clipboard-e2e] {}: {what}", self.app_id);
     }
 
-    /// Pump this client until `cond` holds, failing with `what` on timeout.
-    /// Built on `roundtrip` + sleep rather than `blocking_dispatch`: a blocking
-    /// dispatch parks until the compositor sends something, so a compositor
-    /// that sends *nothing* — the exact failure this suite catches — would hang
-    /// instead of failing.
+    /// Dispatch this client's events until `cond` holds, failing with `what`
+    /// on timeout. Each wait wakes on the next event from the compositor but
+    /// never parks past [`deadline()`]: a plain `blocking_dispatch` would park
+    /// forever on a compositor that sends *nothing* — the exact failure this
+    /// suite catches — instead of failing.
     fn wait_until(&mut self, cond: impl Fn(&ClientState) -> bool, what: &str) {
         let started = Instant::now();
-        while started.elapsed() < DEADLINE {
+        while started.elapsed() < deadline() {
             if cond(&self.state) {
                 return;
             }
-            self.pump();
-            std::thread::sleep(Duration::from_millis(10));
+            dispatch_any(
+                &mut [&mut *self],
+                None,
+                deadline().saturating_sub(started.elapsed()),
+            );
         }
-        panic!("{what} (waited {DEADLINE:?}, app_id {})", self.app_id);
+        if cond(&self.state) {
+            return;
+        }
+        panic!("{what} (waited out the hang bound, app_id {})", self.app_id);
     }
 
     /// Pump without requiring progress, for waits on something outside this client.
@@ -1192,18 +1354,23 @@ impl TestClient {
         String::from_utf8(bytes).expect("selection bytes were not UTF-8")
     }
 
+    /// A selection set just before this call may still be on its way, with
+    /// an earlier selection's offer already delivered, so wait for an offer
+    /// that advertises `mime` rather than taking the first one.
     fn read_clipboard_bytes(&mut self, mime: &str, peer: Option<&mut TestClient>) -> Vec<u8> {
+        // Successive copies each publish a new selection, and an earlier one
+        // (the text a caller copied before an image, say) can reach this
+        // client first. Wait for the offer that carries the wanted format
+        // rather than reading whichever selection happened to arrive.
         self.wait_until(
-            |s| s.clipboard_selection_seen && s.clipboard_offer.is_some(),
-            "no clipboard offer ever arrived",
-        );
-        assert!(
-            self.state
-                .clipboard_offer_mimes
-                .iter()
-                .any(|offered| offered == mime),
-            "clipboard offer did not advertise {mime}; got {:?}",
-            self.state.clipboard_offer_mimes,
+            |s| {
+                s.clipboard_selection_seen
+                    && s.clipboard_offer.is_some()
+                    && s.clipboard_offer_mimes
+                        .iter()
+                        .any(|offered| offered == mime)
+            },
+            &format!("no clipboard offer advertising {mime} ever arrived"),
         );
         self.step("clipboard offer received, requesting the bytes");
         let offer = self.state.clipboard_offer.clone().expect("clipboard offer");
@@ -1315,13 +1482,13 @@ fn clipboard_crosses_between_clients_and_in_process_chrome_as_text_and_png() {
         // client has to keep being dispatched while the mirror fills.
         let started = Instant::now();
         let mut seen = None;
-        while started.elapsed() < DEADLINE {
-            client.pump();
+        while started.elapsed() < deadline() {
             seen = compositor.chrome_paste(false);
             if seen.as_deref() == Some(payload) {
                 break;
             }
-            std::thread::sleep(Duration::from_millis(20));
+            // Serve the compositor's `send` request as soon as it arrives.
+            dispatch_any(&mut [&mut client], None, Duration::from_millis(5));
         }
         assert_eq!(
             seen.as_deref(),
@@ -1343,6 +1510,16 @@ fn clipboard_crosses_between_clients_and_in_process_chrome_as_text_and_png() {
         client.map_window(&compositor);
         compositor.chrome_copy("caption survives image copy", false);
         compositor.chrome_copy_image();
+        // The text copy's own selection may arrive first; the image copy
+        // replaces it with an offer advertising both formats.
+        client.wait_until(
+            |s| {
+                s.clipboard_offer_mimes
+                    .iter()
+                    .any(|mime| mime == "image/png")
+            },
+            "the image copy's selection never arrived",
+        );
 
         let png = client.read_clipboard_bytes("image/png", None);
         let decoded = ui::png::decode_rgba8(&png).expect("complete PNG");
@@ -1430,10 +1607,11 @@ fn third_direct_touch_contact_cancels_the_real_wayland_touch_client_without_leak
     for slot in [0, 1, 2] {
         compositor.touch("e2e-panel", slot, "up", x, y);
     }
-    for _ in 0..4 {
-        client.pump();
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    // Test control injects each edge before it answers, so every event it
+    // produced is queued ahead of this sync's reply; a second roundtrip also
+    // covers anything the compositor emits while handling the first.
+    client.roundtrip();
+    client.roundtrip();
     assert_eq!(
         client.state.touch_events,
         vec![TouchTrace::Down(0), TouchTrace::Down(1), TouchTrace::Cancel,],
@@ -1472,10 +1650,11 @@ fn a_touch_tap_on_a_client_activates_it_once() {
         |state| state.touch_events.contains(&TouchTrace::Up(0)),
         "the tapped client never received its wl_touch up",
     );
-    for _ in 0..4 {
-        client.pump();
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    // Test control injects each edge before it answers, so every event it
+    // produced is queued ahead of this sync's reply; a second roundtrip also
+    // covers anything the compositor emits while handling the first.
+    client.roundtrip();
+    client.roundtrip();
 
     assert_eq!(
         client.state.touch_events,
@@ -1497,6 +1676,57 @@ fn a_touch_tap_on_a_client_activates_it_once() {
         buttons, 0,
         "a tap already delivered as wl_touch must not also click the client: {:?}",
         client.state.pointer_events
+    );
+}
+
+/// The desktop help overlay speaks the input language in use. A headless
+/// session starts with no input devices at all; the first touch contact
+/// attaches its panel and switches help to gestures, and typing switches it
+/// back to keyboard shortcuts while the touchscreen stays available.
+#[test]
+fn desktop_help_follows_the_input_device_in_use() {
+    let compositor = Compositor::start();
+    let input = || {
+        let response = compositor.control(&serde_json::json!({"op": "state_dump"}));
+        response
+            .get("state")
+            .and_then(|state| state.get("chrome"))
+            .and_then(|chrome| chrome.get("input"))
+            .cloned()
+            .unwrap_or_else(|| panic!("state_dump carries no chrome input: {response}"))
+    };
+
+    let initial = input();
+    assert_eq!(
+        initial["available"],
+        serde_json::json!([]),
+        "no input device may be assumed before one exists: {initial}"
+    );
+    assert_eq!(initial["help_modality"], "pointer", "{initial}");
+
+    let (w, h) = compositor.size;
+    let (x, y) = (f64::from(w) / 2.0, f64::from(h) / 2.0);
+    compositor.touch("e2e-panel", 0, "down", x, y);
+    compositor.touch("e2e-panel", 0, "frame", x, y);
+    compositor.touch("e2e-panel", 0, "up", x, y);
+    compositor.touch("e2e-panel", 0, "frame", x, y);
+    let touched = input();
+    assert_eq!(touched["modality"], "touch", "{touched}");
+    assert_eq!(touched["help_modality"], "touch", "{touched}");
+    assert_eq!(
+        touched["available"],
+        serde_json::json!(["touch"]),
+        "{touched}"
+    );
+
+    compositor.key("F1");
+    let typed = input();
+    assert_eq!(typed["modality"], "keyboard", "{typed}");
+    assert_eq!(typed["help_modality"], "keyboard", "{typed}");
+    assert_eq!(
+        typed["available"],
+        serde_json::json!(["keyboard", "touch"]),
+        "{typed}"
     );
 }
 
@@ -1544,22 +1774,25 @@ fn drain_bytes(fd: Fd, reader: &mut TestClient, peer: Option<&mut TestClient>) -
     let mut chunk = [0u8; 4096];
     let started = Instant::now();
     let mut peer = peer;
-    while started.elapsed() < DEADLINE {
+    while started.elapsed() < deadline() {
         match file.read(&mut chunk) {
             Ok(0) => return out,
             Ok(n) => out.extend_from_slice(&chunk[..n]),
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                reader.pump();
-                if let Some(p) = peer.as_deref_mut() {
-                    p.pump();
+                // Wake on bytes in the pipe or on either client's next event
+                // (the owner's `send` request is what produces the bytes).
+                use std::os::unix::io::AsFd;
+                let remaining = deadline().saturating_sub(started.elapsed());
+                match peer.as_deref_mut() {
+                    Some(p) => dispatch_any(&mut [&mut *reader, p], Some(file.as_fd()), remaining),
+                    None => dispatch_any(&mut [&mut *reader], Some(file.as_fd()), remaining),
                 }
-                std::thread::sleep(Duration::from_millis(5));
             }
             Err(e) => panic!("reading the selection pipe failed: {e}"),
         }
     }
     panic!(
-        "the selection transfer never reached EOF within {DEADLINE:?}; \
+        "the selection transfer never reached EOF within the hang bound; \
          got {:?} so far",
         String::from_utf8_lossy(&out)
     );
@@ -2232,7 +2465,7 @@ fn private_x11_activation_facts(compositor: &Compositor) -> Vec<(u32, bool, bool
 )]
 fn private_xwayland_connection(compositor: &Compositor) -> Option<(String, PathBuf)> {
     let bridge = compositor.runtime_dir.join("tilo-session/xwayland");
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = tilo_test_env::hang_deadline();
     let authority = loop {
         let authority = std::fs::read_dir(&bridge).ok().and_then(|entries| {
             entries
@@ -2436,7 +2669,7 @@ fn spawn_isolated_x11_probe(
 #[ignore = "starts installed Electron with a compositor-minted token in a private Xwayland session; opt in for compatibility review"]
 #[allow(
     clippy::too_many_lines,
-    reason = "the opt-in Electron test preserves one end-to-end compositor and Xwayland lifecycle"
+    reason = "The opt-in compatibility test keeps native and Electron clients alive through one ordered mapping, focus, and placement lifecycle."
 )]
 fn installed_electron_client_maps_focuses_and_places_through_private_xwayland() {
     let compositor = Compositor::start_host_desktop();
@@ -2477,7 +2710,7 @@ fn installed_electron_client_maps_focuses_and_places_through_private_xwayland() 
             break;
         }
         assert!(
-            started.elapsed() < Duration::from_secs(45),
+            started.elapsed() < deadline(),
             "the installed Electron client never mapped through Tilo Xwayland.\nLast foreign-frame state:\n{}\nElectron log:\n{}\nCompositor log:\n{}",
             serde_json::to_string_pretty(&frames).unwrap_or_else(|_| frames.to_string()),
             log.lock().map(|lines| lines.join("\n")).unwrap_or_default(),
@@ -2590,7 +2823,7 @@ fn generic_x11_client_relays_compositor_token_through_private_satellite() {
             break;
         }
         assert!(
-            started.elapsed() < Duration::from_secs(15),
+            started.elapsed() < deadline(),
             "the private generic X11 probe did not map through satellite. compositor log:\n{}",
             compositor.recent_log()
         );
@@ -2889,7 +3122,7 @@ fn compositor_modes_take_and_return_client_input_cleanly() {
                 break;
             }
             assert!(
-                started.elapsed() < DEADLINE,
+                started.elapsed() < deadline(),
                 "power-menu Lock did not enter the Tilo locked state. {}",
                 compositor.debug_state()
             );
@@ -3061,7 +3294,7 @@ fn real_same_app_windows_close_exact_surface_without_resurrection_after_restart(
                 return;
             }
             assert!(
-                started.elapsed() < DEADLINE,
+                started.elapsed() < deadline(),
                 "{label}; wanted {want:?}, got {got:?}.\n{}",
                 compositor.debug_state()
             );
@@ -3108,7 +3341,7 @@ fn real_same_app_windows_close_exact_surface_without_resurrection_after_restart(
                 return;
             }
             assert!(
-                started.elapsed() < DEADLINE,
+                started.elapsed() < deadline(),
                 "{label}; selected {selected_surface:?} reappeared in {got:?}.\n{}",
                 compositor.debug_state()
             );
@@ -3323,13 +3556,13 @@ fn primary_selection_crosses_every_boundary_without_aliasing_the_clipboard() {
 
         let started = Instant::now();
         let mut seen = None;
-        while started.elapsed() < DEADLINE {
-            client.pump();
+        while started.elapsed() < deadline() {
             seen = compositor.chrome_paste(true);
             if seen.as_deref() == Some(payload) {
                 break;
             }
-            std::thread::sleep(Duration::from_millis(20));
+            // Serve the compositor's `send` request as soon as it arrives.
+            dispatch_any(&mut [&mut client], None, Duration::from_millis(5));
         }
         assert_eq!(
             seen.as_deref(),
@@ -3453,7 +3686,7 @@ fn client_text_drag_on_a_tiled_edge_opens_a_new_group() {
             break (shape, tree);
         }
         assert!(
-            started.elapsed() < DEADLINE,
+            started.elapsed() < deadline(),
             "the shell never opened the dragged text at the tiled edge.\n{}",
             compositor.debug_state()
         );
@@ -3574,7 +3807,7 @@ impl Compositor {
 
     fn named_center(&self, name: &str) -> (f64, f64) {
         let started = Instant::now();
-        while started.elapsed() < DEADLINE {
+        while started.elapsed() < deadline() {
             if let Some([x, y, w, h]) = self.named_rect(name)
                 && w > 0.0
                 && h > 0.0
@@ -3584,9 +3817,85 @@ impl Compositor {
             std::thread::sleep(Duration::from_millis(50));
         }
         panic!(
-            "chrome never laid out a target named {name:?} (waited {DEADLINE:?}).\n{}",
+            "chrome never laid out a target named {name:?} (waited out the hang bound).\n{}",
             self.debug_state()
         );
+    }
+
+    /// Every laid-out target whose name `pick` admits, with its rect.
+    fn target_rects(&self, pick: impl Fn(&str) -> bool) -> Vec<(String, [f64; 4])> {
+        let resp = self.control(&serde_json::json!({"op": "list_targets"}));
+        let mut rects: Vec<(String, [f64; 4])> = resp
+            .get("targets")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|t| {
+                let name = t.get("name")?.as_str()?;
+                if !pick(name) {
+                    return None;
+                }
+                let r = t.get("rect")?.as_array()?;
+                Some((
+                    name.to_string(),
+                    [
+                        r.first()?.as_f64()?,
+                        r.get(1)?.as_f64()?,
+                        r.get(2)?.as_f64()?,
+                        r.get(3)?.as_f64()?,
+                    ],
+                ))
+            })
+            .collect();
+        rects.sort_by(|a, b| a.0.cmp(&b.0));
+        rects
+    }
+
+    /// The on-screen rects of every laid-out client surface.
+    fn foreign_surface_rects(&self) -> Vec<[f64; 4]> {
+        self.target_rects(|name| name.starts_with("foreign-surface-"))
+            .into_iter()
+            .map(|(_, rect)| rect)
+            .filter(|[_, _, w, h]| *w > 0.0 && *h > 0.0)
+            .collect()
+    }
+
+    /// Wait until the targets `pick` admits stop moving: the same names at
+    /// the same rects for [`SETTLED_SAMPLES`] samples about a frame apart.
+    /// A position read mid-animation is clicked where the target used to be.
+    fn wait_for_layout_to_settle(&self, pick: impl Fn(&str) -> bool, what: &str) {
+        let started = Instant::now();
+        let mut last = self.target_rects(&pick);
+        let mut equal = 1usize;
+        while equal < SETTLED_SAMPLES {
+            assert!(
+                started.elapsed() < deadline(),
+                "{what}: the layout never stopped moving; last {last:?}.\n{}",
+                self.debug_state()
+            );
+            std::thread::sleep(LAYOUT_SAMPLE);
+            let next = self.target_rects(&pick);
+            equal = if next == last {
+                equal.saturating_add(1)
+            } else {
+                1
+            };
+            last = next;
+        }
+    }
+
+    /// Wait until `cond` holds on the compositor's control state, failing
+    /// with `what` and the compositor's state after [`deadline()`].
+    fn wait_for(&self, what: &str, mut cond: impl FnMut(&Self) -> bool) {
+        let started = Instant::now();
+        while !cond(self) {
+            assert!(
+                started.elapsed() < deadline(),
+                "{what} (waited out the hang bound).\n{}",
+                self.debug_state()
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
     }
 
     fn target_names(&self) -> Vec<String> {
@@ -3663,7 +3972,14 @@ fn narrow_demo_group_for_files(compositor: &Compositor) {
     // resize gesture commits, avoiding resize hit-testing as an unrelated
     // precondition for reaching the source row.
     compositor.set_group_width(250);
-    std::thread::sleep(Duration::from_millis(800));
+    compositor.wait_for_layout_to_settle(
+        |name| {
+            name.starts_with("tab:")
+                || name.starts_with("file_row:")
+                || name.starts_with("foreign-surface-")
+        },
+        "the resized groups",
+    );
     compositor.snapshot(Path::new("/tmp/tilo-dnd-e2e-after-resize.png"));
     assert!(
         files_tab_is_active(compositor),
@@ -3847,14 +4163,15 @@ fn a_file_dragged_out_of_hosted_files_opens_in_the_target_window_group() {
     // Let the strip finish making room for the new group before reading
     // where the pills are; a pill read mid-animation is clicked where it
     // used to be.
-    std::thread::sleep(Duration::from_secs(1));
+    compositor.wait_for_layout_to_settle(
+        |name| name.starts_with("tab:") || name.starts_with("foreign-surface-"),
+        "the strip making room for the new group",
+    );
     let files_pill = compositor.named_center("tab:Files");
     compositor.click_at(files_pill.0, files_pill.1);
-    std::thread::sleep(Duration::from_millis(500));
-    assert!(
-        files_tab_is_active(&compositor),
-        "clicking the Files pill at {files_pill:?} did not select the Files tab.\n{}",
-        compositor.debug_state()
+    compositor.wait_for(
+        &format!("clicking the Files pill at {files_pill:?} did not select the Files tab"),
+        files_tab_is_active,
     );
 
     // The demo group is laid out at full output width, so with Files focused
@@ -3905,7 +4222,7 @@ fn a_file_dragged_out_of_hosted_files_opens_in_the_target_window_group() {
             break (shape, tree);
         }
         assert!(
-            started.elapsed() < DEADLINE,
+            started.elapsed() < deadline(),
             "the shell never opened photo.png at the body target.\n{}",
             compositor.debug_state()
         );
@@ -3977,6 +4294,23 @@ fn spawn_word_processor(
     (app, app_log)
 }
 
+/// Whether any client surface has presented a frame yet.
+fn any_foreign_frame_presented(compositor: &Compositor) -> bool {
+    compositor
+        .control(&serde_json::json!({ "op": "foreign_frames" }))
+        .get("foreign_frames")
+        .and_then(|payload| payload.get("frames"))
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|frames| {
+            frames.iter().any(|frame| {
+                frame
+                    .get("frame_seq")
+                    .and_then(serde_json::Value::as_u64)
+                    .is_some_and(|seq| seq > 0)
+            })
+        })
+}
+
 /// Wait for the word processor's toplevel to be adopted into the tree — the
 /// chrome names every foreign tile it lays out. Split out of
 /// [`a_file_dragged_out_of_the_hosted_file_manager_lands_in_the_word_processor`]
@@ -3992,7 +4326,7 @@ fn wait_for_word_processor_mapped(compositor: &Compositor, app_log: &Arc<Mutex<V
             break;
         }
         assert!(
-            started.elapsed() < Duration::from_secs(90),
+            started.elapsed() < deadline(),
             "the word processor never mapped a window.\nApp log:\n{}\nCompositor log:\n{}",
             app_log.lock().map(|l| l.join("\n")).unwrap_or_default(),
             compositor.recent_log()
@@ -4036,14 +4370,24 @@ fn a_file_dragged_out_of_the_hosted_file_manager_lands_in_the_word_processor() {
 
     let (mut app, app_log) = spawn_word_processor(&compositor, &word_processor, &home);
     wait_for_word_processor_mapped(&compositor, &app_log);
-    // Let it paint its first frame, so the tile has a real size.
-    std::thread::sleep(Duration::from_secs(3));
+    // Let it present its first frame, so the tile has a real size.
+    compositor.wait_for(
+        "the word processor never presented a frame",
+        any_foreign_frame_presented,
+    );
 
     // Same recipe as the client test: select Files, narrow the demo group
     // by its seam handle so the app stays on screen while Files is focused.
+    compositor.wait_for_layout_to_settle(
+        |name| name.starts_with("tab:") || name.starts_with("foreign-surface-"),
+        "the strip making room for the word processor",
+    );
     let files_pill = compositor.named_center("tab:Files");
     compositor.click_at(files_pill.0, files_pill.1);
-    std::thread::sleep(Duration::from_millis(500));
+    compositor.wait_for(
+        "clicking the Files pill did not select the Files tab",
+        files_tab_is_active,
+    );
     let seam = compositor.named_center("group_resize_handle[0]");
     compositor.pointer_move(seam.0, seam.1);
     compositor.pointer_button(true);
@@ -4052,7 +4396,10 @@ fn a_file_dragged_out_of_the_hosted_file_manager_lands_in_the_word_processor() {
         std::thread::sleep(Duration::from_millis(30));
     }
     compositor.pointer_button(false);
-    std::thread::sleep(Duration::from_millis(800));
+    compositor.wait_for_layout_to_settle(
+        |name| name.starts_with("file_row:") || name.starts_with("foreign-surface-"),
+        "the resized groups",
+    );
     assert!(
         files_tab_is_active(&compositor),
         "the demo group must still show Files after the resize.\n{}",
@@ -4088,7 +4435,7 @@ fn a_file_dragged_out_of_the_hosted_file_manager_lands_in_the_word_processor() {
         if hit {
             break true;
         }
-        if started.elapsed() > DEADLINE {
+        if started.elapsed() > deadline() {
             break false;
         }
         std::thread::sleep(Duration::from_millis(100));

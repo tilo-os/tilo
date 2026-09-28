@@ -18,9 +18,10 @@
 //!   the focused field declares a password, a PIN or hidden text, marked per
 //!   surface by the compositor from the field's content type;
 //! - the shell's own secret prompts — administrator authentication, network
-//!   secrets, the Wi-Fi passphrase, an `AirPlay` PIN or password, and the setup
-//!   steps that restore or back up the identity (passphrases and a nearby
-//!   device's pairing code) — regardless of any request;
+//!   secrets, the Wi-Fi passphrase, an `AirPlay` PIN or password, a Bluetooth
+//!   pairing dialog, and the setup steps that restore or back up the identity
+//!   (passphrases and a nearby device's pairing code) — regardless of any
+//!   request;
 //! - the whole desktop while the session is locked.
 //!
 //! The session recorder applies the same rule to what is not pixels: a

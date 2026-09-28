@@ -26,7 +26,7 @@ pub(crate) fn installed_catalog() -> Vec<CatalogEntry> {
     entries
 }
 
-/// Input-method engines (Pinyin, Anthy, Hangul) the image ships, listed with
+/// Input-method engines (Rime, Anthy, Hangul) the image ships, listed with
 /// the layouts: they are chosen, ordered and switched exactly like them.
 fn input_method_entries(installed: impl Fn(InputMethodEngine) -> bool) -> Vec<CatalogEntry> {
     InputMethodEngine::ALL
@@ -283,8 +283,8 @@ mod tests {
             entries,
             [
                 CatalogEntry {
-                    id: "ime/pinyin".into(),
-                    label: "Chinese (Simplified) — Pinyin".into(),
+                    id: "ime/rime".into(),
+                    label: "Chinese (Simplified) — Rime".into(),
                 },
                 CatalogEntry {
                     id: "ime/hangul".into(),

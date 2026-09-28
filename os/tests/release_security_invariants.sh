@@ -15,7 +15,7 @@ bad() { printf 'FAIL  %s\n' "$*" >&2; fail=1; }
 # Every publishing trigger (tags, protected manual main publication, nightly
 # main) must resolve to the one series lock; only validation builds may use a
 # per-ref group.
-grep -Fq "group: \${{ (startsWith(github.ref, 'refs/tags/v') || (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.publish == 'true')))) && 'tilo-os-image-series' || format('tilo-os-image-validate-{0}', github.ref) }}" "$workflow" \
+grep -Fq "group: \${{ (startsWith(github.ref, 'refs/tags/v') || (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.publish == 'true')))) && 'tilo-os-image-series-2' || format('tilo-os-image-validate-{0}', github.ref) }}" "$workflow" \
   && ! grep -Eq 'CONTINUOUS_RELEASE: "1"' "$workflow" \
   && ok 'OS generation publication is globally serialized' \
   || bad 'release jobs can race and reuse one generation'

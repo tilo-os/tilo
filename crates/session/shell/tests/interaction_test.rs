@@ -230,10 +230,6 @@ fn send_peer_key(
     }
 }
 
-/// Generous backstop for waits that end on an observed event. It only bounds
-/// a hung client; a healthy run returns as soon as the event arrives.
-const EVENT_BUDGET: Duration = Duration::from_secs(60);
-
 /// Press Ctrl+S as `peer` until `saved` holds for `document`, and return its
 /// contents then. GNOME Text Editor ignores Save while its document is busy
 /// loading or saving, so repeating the chord is harmless and the file itself
@@ -246,9 +242,7 @@ fn save_until(
     what: &str,
     saved: impl Fn(&fs::Metadata, &str) -> bool,
 ) -> Result<String, String> {
-    let deadline = Instant::now()
-        .checked_add(EVENT_BUDGET)
-        .unwrap_or_else(Instant::now);
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         send_peer_key(seats, input, 7, 29, true);
         send_peer_key(seats, input, 7, 31, true);
@@ -272,7 +266,8 @@ fn save_until(
         if Instant::now() >= deadline {
             let contents = fs::read_to_string(document).unwrap_or_default();
             return Err(format!(
-                "GNOME Text Editor never {what} within {EVENT_BUDGET:?}; document: {contents:?}"
+                "GNOME Text Editor never {what} within {:?}; document: {contents:?}",
+                tilo_test_env::hang_bound()
             ));
         }
     }
@@ -307,7 +302,7 @@ fn gtk_text_editor_keeps_one_caret_for_overlapping_collaborator_keys() {
     let (started_tx, started_rx) = std::sync::mpsc::channel();
     let (input_tx, input_rx) = mpsc::unbounded_channel();
     spawn_wayland_server(tx, started_tx, input_rx);
-    let socket = started_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    let socket = tilo_test_env::recv("a message on started_rx", &started_rx);
     let container = Container::new(document_dir.path().to_str().unwrap());
     let log_dir = tempfile::tempdir().unwrap();
     let app = container
@@ -320,15 +315,15 @@ fn gtk_text_editor_keeps_one_caret_for_overlapping_collaborator_keys() {
         .unwrap();
     let log_path = app.log_path;
     let mut child = ChildGuard(app.child);
-    let (surface, width, height, _app_id) = wait_for_any_surface(&mut rx, EVENT_BUDGET)
-        .unwrap_or_else(|| {
+    let (surface, width, height, _app_id) =
+        wait_for_any_surface(&mut rx, tilo_test_env::hang_bound()).unwrap_or_else(|| {
             let log = fs::read_to_string(&log_path).unwrap_or_default();
             panic!("GNOME Text Editor did not create a Wayland window; log:\n{log}")
         });
     // A toplevel exists before its first buffer; input sent to it then is
     // never delivered. Type only once the editor has presented a frame.
     assert!(
-        wait_for_first_frame(&mut rx, surface, EVENT_BUDGET),
+        wait_for_first_frame(&mut rx, surface, tilo_test_env::hang_bound()),
         "GNOME Text Editor created a window but never presented a frame"
     );
     // The app runs with WAYLAND_DEBUG, so only the log's tail fits a failure.
@@ -463,9 +458,7 @@ fn test_click_interaction_in_sandbox() {
     // 1. Start Server
     spawn_wayland_server(tx, started_tx, input_tx_rx);
 
-    let socket_name = started_rx
-        .recv_timeout(Duration::from_secs(5))
-        .expect("Server failed to start");
+    let socket_name = tilo_test_env::recv("Server failed to start", &started_rx);
     // cargo runs an integration test with the *package* root as its cwd, not
     // the workspace root, so a relative "target/debug/..." resolved to
     // shell/target and the sandbox reported the client missing — as "did not
@@ -494,7 +487,7 @@ fn test_click_interaction_in_sandbox() {
     let mut child = ChildGuard(app.child);
 
     // 3. Wait for Window/Frame
-    let surface_id = wait_for_ready_surface(&mut rx, Duration::from_secs(10))
+    let surface_id = wait_for_ready_surface(&mut rx, tilo_test_env::hang_bound())
         .expect("Test client did not become ready");
 
     // 4. Send Input

@@ -67,8 +67,11 @@ jq -e '.catalog[] | select(.name == "new") | .version == "1.0.1-dev.10+gb"' "$wo
 
 grep -Fxq $'Authorization: Bearer reuse-token\thttps://code.tilo.so/api/packages/tilo/generic/tilo-app-collections/v1/tilo-apps-x86_64.tar.gz' "$CURL_LOG"
 
+# Flip the first hex digit so the wrong digest can never equal the real one
+# (a fixed "00" prefix matched whenever the archive's digest began with 00).
+if [[ ${prior_sha:0:1} == 0 ]]; then wrong_sha=1${prior_sha:1}; else wrong_sha=0${prior_sha:1}; fi
 if tools/reuse_prior_app_collection.sh "$work/release/index.json" "$work/plan.json" \
-    "$work/bad-digest-out" x86_64 "$internal_url" "${prior_sha/??/00}" >/dev/null 2>&1; then
+    "$work/bad-digest-out" x86_64 "$internal_url" "$wrong_sha" >/dev/null 2>&1; then
   printf 'digest mismatch was accepted\n' >&2
   exit 1
 fi

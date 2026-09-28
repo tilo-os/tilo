@@ -715,7 +715,7 @@ pub enum ContactsAction {
 /// Durable, browseable history metadata for an address-book mutation.
 pub fn history_context(action: &ContactsAction) -> tilo_actions::ActionContext {
     let mut context =
-        tilo_actions::ActionContext::for_action("org.tilo.Contacts", "Contacts", action);
+        tilo_actions::ActionContext::for_action("so.tilo.contacts", "Contacts", action);
     let (label, id, name) = match action {
         ContactsAction::CreateContact(contact) => {
             let name = format!("{} {}", contact.first, contact.last)
@@ -1898,7 +1898,9 @@ mod tests {
     fn prompted_encode(spec: &ActionSpec, arg: &str) -> EncodedAction {
         match &spec.input {
             ActionInput::Prompted { build, .. } => build(arg),
-            ActionInput::Immediate(_) => panic!("expected a prompted action: {}", spec.id),
+            ActionInput::Immediate(_) | ActionInput::Deferred { .. } => {
+                panic!("expected a prompted action: {}", spec.id)
+            }
         }
     }
 

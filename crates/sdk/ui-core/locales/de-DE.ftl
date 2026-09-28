@@ -71,3 +71,44 @@ permission-prompt-session = Diese Sitzung
 permission-prompt-always = Immer erlauben
 permission-prompt-deny = Ablehnen
 permission-prompt-requested = { $capability } – angefragt von { $app }
+
+# Relative Zeitangaben in Verlaufs- und Aktivitätszeilen.
+relative-time-just-now = gerade eben
+relative-time-minutes = { $count ->
+        [one] vor { $count } Min.
+       *[other] vor { $count } Min.
+    }
+relative-time-hours = { $count ->
+        [one] vor { $count } Std.
+       *[other] vor { $count } Std.
+    }
+relative-time-days = { $count ->
+        [one] vor { $count } Tag
+       *[other] vor { $count } Tagen
+    }
+
+# Grobe relative Zeitangaben („vor 3 Tagen“) in Listen und Karten.
+relative-ago-just-now = gerade eben
+relative-ago-minutes = vor { $count } Min.
+relative-ago-hours = vor { $count } Std.
+relative-ago-yesterday = gestern
+relative-ago-days = { $count ->
+        [one] vor { $count } Tag
+       *[other] vor { $count } Tagen
+    }
+relative-ago-weeks = { $count ->
+        [one] vor { $count } Woche
+       *[other] vor { $count } Wochen
+    }
+relative-ago-months = { $count ->
+        [one] vor { $count } Monat
+       *[other] vor { $count } Monaten
+    }
+relative-ago-years = { $count ->
+        [one] vor { $count } Jahr
+       *[other] vor { $count } Jahren
+    }
+
+# Ein Software-Teilnehmer in Verlauf, Präsenz und Aktivität.
+participant-agent = { $name } · Agent
+participant-unknown-agent = Unbekannter Agent

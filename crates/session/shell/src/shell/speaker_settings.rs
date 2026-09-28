@@ -90,9 +90,9 @@ fn parse_members(members: &[SpeakerMemberSpec]) -> Result<Vec<MemberSpec>, Strin
         .map(|member| {
             Ok(MemberSpec {
                 device: DeviceId::new(member.device.clone())
-                    .map_err(|_| "that device id is not valid".to_string())?,
+                    .map_err(|_| crate::shell::i18n::t("speaker-error-device-invalid"))?,
                 output: EndpointSelector::from_hex(&member.output)
-                    .ok_or_else(|| "that output is not valid".to_string())?,
+                    .ok_or_else(|| crate::shell::i18n::t("speaker-error-output-invalid"))?,
                 role: role_from_spec(member.role),
             })
         })
@@ -100,7 +100,8 @@ fn parse_members(members: &[SpeakerMemberSpec]) -> Result<Vec<MemberSpec>, Strin
 }
 
 fn parse_group(value: &str) -> Result<SpeakerGroupId, String> {
-    SpeakerGroupId::from_hex(value).ok_or_else(|| "that speaker group is not valid".to_string())
+    SpeakerGroupId::from_hex(value)
+        .ok_or_else(|| crate::shell::i18n::t("speaker-error-group-invalid"))
 }
 
 /// Every device's endpoints as Settings shows them.
@@ -327,9 +328,7 @@ pub fn handle(
             };
         }
         command => crate::shell::device_fabric_runtime::require_speaker_groups()
-            .map_err(|_| {
-                "Turn on Media in Devices & Sync to use speakers across your devices".to_string()
-            })
+            .map_err(|_| crate::shell::i18n::t("speaker-error-media-off"))
             .and_then(|()| run_command(network, command)),
     };
     match result {
@@ -342,7 +341,7 @@ pub fn handle(
 
 fn bounded_reason(mut reason: String) -> String {
     if reason.is_empty() {
-        reason.push_str("the speaker request failed");
+        reason = crate::shell::i18n::t("speaker-error-request-failed");
     }
     while reason.len() > runtime_collab::MAX_SPEAKER_LABEL_BYTES {
         reason.pop();
@@ -378,10 +377,10 @@ fn run_command(
             groups::delete_group(network, id).map(|()| None)
         }
         SpeakerCommand::Identify { device, output } => {
-            let device =
-                DeviceId::new(device).map_err(|_| "that device id is not valid".to_string())?;
+            let device = DeviceId::new(device)
+                .map_err(|_| crate::shell::i18n::t("speaker-error-device-invalid"))?;
             let output = EndpointSelector::from_hex(&output)
-                .ok_or_else(|| "that output is not valid".to_string())?;
+                .ok_or_else(|| crate::shell::i18n::t("speaker-error-output-invalid"))?;
             groups::identify(network, &device, output).map(|()| None)
         }
         SpeakerCommand::StartCalibration {
@@ -402,7 +401,7 @@ fn run_command(
             let id = parse_group(&group)?;
             let trims = with_run(id, |run| {
                 run.proposed_trims()
-                    .ok_or_else(|| "there is no finished calibration to apply".to_string())
+                    .ok_or_else(|| crate::shell::i18n::t("speaker-error-no-calibration"))
             })?;
             groups::set_trims(network, id, &trims)?;
             with_run(id, |run| {
@@ -415,7 +414,7 @@ fn run_command(
             let id = parse_group(&group)?;
             let trims = with_run(id, |run| {
                 run.previous_trims()
-                    .ok_or_else(|| "there is no applied calibration to revert".to_string())
+                    .ok_or_else(|| crate::shell::i18n::t("speaker-error-no-applied-calibration"))
             })?;
             groups::set_trims(network, id, &trims)?;
             if let Ok(mut state) = state().lock() {
@@ -439,11 +438,11 @@ fn with_run<T>(
 ) -> Result<T, String> {
     let mut state = state()
         .lock()
-        .map_err(|_| "calibration is unavailable".to_string())?;
+        .map_err(|_| crate::shell::i18n::t("speaker-error-calibration-unavailable"))?;
     let result = state
         .calibrations
         .get_mut(group)
-        .ok_or_else(|| "that calibration is no longer available".to_string())
+        .ok_or_else(|| crate::shell::i18n::t("speaker-error-calibration-gone"))
         .and_then(apply);
     drop(state);
     result
@@ -461,7 +460,7 @@ fn timed_source(
         Box::new(move |request, start_ns| {
             let network = network
                 .upgrade()
-                .ok_or_else(|| "the device network is unavailable".to_string())?;
+                .ok_or_else(|| crate::shell::i18n::t("speaker-error-network-unavailable"))?;
             network
                 .send_personal_fabric_action(
                     &request.member,
@@ -483,18 +482,18 @@ fn start_calibration(
 ) -> Result<(), String> {
     let id = parse_group(group)?;
     let microphone_device = DeviceId::new(microphone_device.to_string())
-        .map_err(|_| "that device id is not valid".to_string())?;
+        .map_err(|_| crate::shell::i18n::t("speaker-error-device-invalid"))?;
     let microphone = EndpointSelector::from_hex(microphone)
-        .ok_or_else(|| "that microphone is not valid".to_string())?;
+        .ok_or_else(|| crate::shell::i18n::t("speaker-error-microphone-invalid"))?;
     let (local, _) = network
         .local_device_fabric_identity()
-        .ok_or_else(|| "this device has no certified personal identity".to_string())?;
+        .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-no-identity"))?;
     let fabric = network.device_fabric();
     let published = fabric
         .speaker_group(id)
-        .ok_or_else(|| "that speaker group is not available".to_string())?;
+        .ok_or_else(|| crate::shell::i18n::t("speaker-error-group-unavailable"))?;
     if published.leader != local {
-        return Err("calibrate this group on the device that set it up".into());
+        return Err(crate::shell::i18n::t("speaker-error-calibrate-on-leader"));
     }
     let offers_microphone = fabric
         .snapshots()
@@ -507,14 +506,16 @@ fn start_calibration(
                 })
         });
     if !offers_microphone {
-        return Err("that microphone is not available".into());
+        return Err(crate::shell::i18n::t(
+            "speaker-error-microphone-unavailable",
+        ));
     }
     if fabric
         .speaker_member_states(published)
         .iter()
         .any(|state| *state != SpeakerMemberState::Ready)
     {
-        return Err("every speaker must be ready before calibrating".into());
+        return Err(crate::shell::i18n::t("speaker-error-not-all-ready"));
     }
     let labels = published
         .members
@@ -535,7 +536,7 @@ fn start_calibration(
     );
     state()
         .lock()
-        .map_err(|_| "calibration is unavailable".to_string())?
+        .map_err(|_| crate::shell::i18n::t("speaker-error-calibration-unavailable"))?
         .calibrations
         .insert(run);
     Ok(())

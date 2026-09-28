@@ -313,7 +313,7 @@ impl MailState {
             doc,
             MAIL_ACTION_TYPE,
             action,
-            tilo_actions::ActionContext::for_action("org.tilo.Mail", "Mail", action),
+            tilo_actions::ActionContext::for_action("so.tilo.mail", "Mail", action),
         );
     }
 

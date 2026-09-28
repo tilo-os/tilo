@@ -944,7 +944,7 @@ pub(super) mod test_support {
         };
         if let Some((_, entered, release)) = hook {
             let _ = entered.send(());
-            release.recv_timeout(crate::HANG_BOUND).unwrap();
+            tilo_test_env::recv("the save release", &release);
         }
     }
 }
@@ -1154,7 +1154,7 @@ mod tests {
                 .stderr(std::process::Stdio::null())
                 .spawn()
                 .unwrap();
-            let deadline = std::time::Instant::now() + crate::HANG_BOUND;
+            let deadline = tilo_test_env::hang_deadline();
             while !root.join("owner-ready").exists() {
                 if std::time::Instant::now() >= deadline {
                     let _ = child.kill();

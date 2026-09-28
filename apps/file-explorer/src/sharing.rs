@@ -6,23 +6,17 @@
 use std::path::Path;
 
 use collab_types::{
-    Ed25519PublicKey, FilePermission, FileRecordId, NamedGrantMetadataV1, ShareControlOperationV1,
-};
-#[cfg(unix)]
-use collab_types::{
-    SHARE_CONTROL_FRAMING, SHARE_CONTROL_VERSION, ShareControlRequestV1, ShareControlResponseV1,
+    Ed25519PublicKey, FilePermission, FileRecordId, NamedGrantMetadataV1, SHARE_CONTROL_FRAMING,
+    SHARE_CONTROL_VERSION, ShareControlOperationV1, ShareControlRequestV1, ShareControlResponseV1,
     ShareControlResultV1,
 };
+use runtime_portal::local_socket;
 use tilo_clock::unix_now_ms;
-#[cfg(unix)]
 use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
-#[cfg(unix)]
 use wire_frame::FrameError;
 
-use crate::i18n::t;
-#[cfg(unix)]
-use crate::i18n::{arg, t_args};
+use crate::i18n::{arg, t, t_args};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ShareActionResult {
@@ -205,19 +199,19 @@ pub async fn revoke_grant(socket: &Path, grant_id: Uuid) -> Result<ShareActionRe
 
 /// One request/response exchange with the share service. Must be polled
 /// in a tokio runtime context (the app runtime), which drives the socket.
-#[cfg(unix)]
 async fn transact(
     socket: &Path,
     operation: ShareControlOperationV1,
 ) -> Result<ShareActionResult, String> {
-    let mut stream = tokio::net::UnixStream::connect(socket)
-        .await
-        .map_err(|error| {
-            t_args(
-                "files-share-unavailable-error",
-                &[arg("error", error.to_string())],
-            )
-        })?;
+    if !local_socket::SUPPORTED {
+        return Err(t("files-share-not-available"));
+    }
+    let mut stream = local_socket::connect(socket).await.map_err(|error| {
+        t_args(
+            "files-share-unavailable-error",
+            &[arg("error", error.to_string())],
+        )
+    })?;
     let request = ShareControlRequestV1 {
         protocol_version: SHARE_CONTROL_VERSION,
         operation,
@@ -490,16 +484,4 @@ mod tests {
             server.join().unwrap();
         }
     }
-}
-
-#[cfg(not(unix))]
-#[allow(
-    clippy::unused_async,
-    reason = "matches the unix transport's signature"
-)]
-async fn transact(
-    _socket: &Path,
-    _operation: ShareControlOperationV1,
-) -> Result<ShareActionResult, String> {
-    Err(t("files-share-not-available"))
 }

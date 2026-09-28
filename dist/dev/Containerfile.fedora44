@@ -38,3 +38,32 @@ RUN cd /tmp/tilo-pdfium \
  && bash install-pdfium.sh . /usr github-assets.tsv \
  && cd / && rm -rf /tmp/tilo-pdfium
 ENV TILO_PDFIUM_LIB=/usr/lib64/libpdfium.so
+
+# The OS image build (os/build.sh, os/dev/build-dev-image.sh, tilo-vm image
+# build) runs in here too: podman nested in this container, skopeo for its
+# signed inputs and OCI layouts, and what os/dev/disk-image.sh writes a disk
+# with. Its image store belongs on a bind mount (native overlay needs a real
+# filesystem under it), not in this container's own layers.
+# A rootless container may neither create network namespaces for containers of
+# its own (netavark's setns is refused) nor cgroups (/sys/fs/cgroup is read-only
+# in it), so nested containers share its network and run without cgroups; and
+# as it runs unconfined (spc_t), its nested containers do not relabel either: a
+# label they cannot use makes even their own /etc/resolv.conf unreadable.
+RUN dnf install -y --setopt=install_weak_deps=False \
+      podman fuse-overlayfs skopeo qemu-img dosfstools mtools btrfs-progs \
+ && dnf clean all && rm -rf /var/cache/dnf \
+ && mkdir -p /etc/containers/containers.conf.d \
+ && printf '[containers]\nnetns = "host"\ncgroups = "disabled"\nlabel = false\n' > /etc/containers/containers.conf.d/50-nested.conf
+
+# cosign, which the OS build verifies its RPM snapshot and kernel with: the
+# pinned, checksum-verified release CI installs (os/dev/install-cached-cosign.sh).
+COPY github-assets.tsv /tmp/tilo-cosign/
+RUN case "$(uname -m)" in x86_64) arch=amd64 ;; aarch64) arch=arm64 ;; *) exit 1 ;; esac \
+ && name="cosign-v2.5.2-linux-$arch" \
+ && sha=$(awk -F '\t' -v name="$name" '$1 !~ /^#/ && $2 == name {print $1}' /tmp/tilo-cosign/github-assets.tsv) \
+ && url=$(awk -F '\t' -v name="$name" '$1 !~ /^#/ && $2 == name {print $3}' /tmp/tilo-cosign/github-assets.tsv) \
+ && test -n "$sha" && test -n "$url" \
+ && curl --proto '=https' --tlsv1.2 -fsSL --retry 5 -o /usr/local/bin/cosign "$url" \
+ && echo "$sha  /usr/local/bin/cosign" | sha256sum --check --strict \
+ && chmod 0755 /usr/local/bin/cosign \
+ && rm -rf /tmp/tilo-cosign

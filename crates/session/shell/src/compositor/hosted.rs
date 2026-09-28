@@ -48,6 +48,10 @@ pub fn run_with_options(enable_peer_sync: bool) {
     clippy::too_many_lines,
     reason = "hosted session startup deliberately keeps the ordered ownership, networking, portal, identity-broker, and event-loop lifetimes visible in one orchestration path"
 )]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "`peer_sync` and `host` are keep-alives for the event loop that `app.run()` drives"
+)]
 pub fn run_with_full_options(opts: HostedOptions) {
     let wake_scope = ui::wake::WakeScope::new();
     let _wake_entry = wake_scope.enter();
@@ -390,9 +394,11 @@ fn attach_peer_sync_bridge(
         }
         crate::shell::overlay_host::PeerSyncRequest::AcceptInvite(token) => {
             let active = tree_for_bridge.read().desktop.active;
-            net.accept_invite(active, &token)
-                .map(|room| room.to_string())
-                .map(crate::shell::overlay_host::PeerSyncResponse::Message)
+            net.accept_peer_invitation(active, &token)
+        }
+        crate::shell::overlay_host::PeerSyncRequest::PollEnrollment(id) => net.poll_enrollment(id),
+        crate::shell::overlay_host::PeerSyncRequest::CancelEnrollment(id) => {
+            net.cancel_enrollment(id)
         }
         crate::shell::overlay_host::PeerSyncRequest::ListPendingInvitations => {
             let room = tree_for_bridge
@@ -458,6 +464,10 @@ fn set_active_room_presence_scope(app: &mut App, tree_snapshot: &WorkspaceTree) 
 /// Installs the cursor-presence pump: pipes every local `broadcast_presence` Pointer event into
 /// `NetCmd::Publish { msg: PresenceMoved }` and drains received updates into the chrome's
 /// remote-cursors overlay.
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "`recv_net` moves into the frame-tick closure after the inbound handle is taken"
+)]
 fn install_presence_pump(
     app: &mut App,
     net: &Arc<ShellNetwork>,

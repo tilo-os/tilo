@@ -101,6 +101,7 @@ impl App {
         let next = PermissionContext::from_grant(grant);
         if next != self.permission_ctx {
             self.set_permission_ctx(next);
+            self.invalidate_widget_resource_cache();
         }
     }
     pub fn set_permission_ctx(&mut self, ctx: PermissionContext) {
@@ -194,6 +195,7 @@ impl App {
     /// busy transport leaves it for the next wakeup and an over-limit delta
     /// is reported through [`Self::document_sync_status`].
     fn broadcast_doc_delta(&mut self) {
+        self.restore_failed_document_publications();
         // With records in play the live document travels only on a
         // record's route. Until one is checked out the primary route is the
         // room's, which carries the room index: what an app wrote before its
@@ -234,6 +236,7 @@ impl App {
     /// incremental cursor and route separate so an annotation/document delta
     /// can never be merged into the index (or vice versa).
     fn broadcast_room_index_delta(&mut self) {
+        self.restore_failed_document_publications();
         if self.persistence.records.is_none() || !self.collaboration.manager.is_connected() {
             return;
         }
@@ -255,7 +258,11 @@ impl App {
             };
         // Before the first record checkout the primary route is the room
         // route; after it, the room route is joined beside the record's.
-        let result = match self.collaboration.room_route.clone() {
+        let room_route = self
+            .native_room_route
+            .clone()
+            .or_else(|| self.collaboration.room_route.clone());
+        let result = match room_route {
             Some(route) => self.collaboration.manager.try_send_to_route(route, request),
             None => self.collaboration.manager.try_send(request),
         };
@@ -566,20 +573,38 @@ impl App {
     /// bounds its names before exposing them to the app.
     fn apply_room_index_document_envelope(
         &mut self,
+        route: &crate::collaboration::RouteSpec,
         envelope: &collab_types::SignedOp,
         decrypted_payload: Option<&[u8]>,
     ) -> bool {
+        let Some(payload) = crate::app::document_routes::validated_route_payload_with(
+            route,
+            envelope,
+            decrypted_payload,
+        ) else {
+            tracing::warn!("collab: broker delivered a room-index op outside its joined route");
+            return false;
+        };
+        let mutation = match crate::app::document_routes::decode_routed_mutation(
+            route,
+            payload,
+            decrypted_payload,
+        ) {
+            Ok(mutation) => mutation,
+            Err(error) => {
+                tracing::warn!(%error, "collab: broker delivered an invalid room-index mutation");
+                return false;
+            }
+        };
         let Some(room) = self.persistence.room_index.as_mut() else {
             return false;
         };
-        let mutation =
-            collab_types::DocumentMutation::decode(decrypted_payload.unwrap_or(&envelope.payload));
         // A comment-class index change is admitted by brokers on class alone;
         // its shape is checked here, where the index is held.
         if envelope.op_class == collab_types::OpClass::Comment
             && !matches!(
                 &mutation,
-                Ok(collab_types::DocumentMutation::Incremental(data))
+                collab_types::DocumentMutation::Incremental(data)
                     if crate::record::room::comment_references_only(
                         room.document(),
                         data,
@@ -593,15 +618,9 @@ impl App {
             return false;
         }
         let applied = match mutation {
-            Ok(collab_types::DocumentMutation::Snapshot(data)) => {
-                room.merge_snapshot(&data).is_ok()
-            }
-            Ok(collab_types::DocumentMutation::Incremental(data)) => {
+            collab_types::DocumentMutation::Snapshot(data) => room.merge_snapshot(&data).is_ok(),
+            collab_types::DocumentMutation::Incremental(data) => {
                 room.load_incremental(&data).is_ok()
-            }
-            Err(error) => {
-                tracing::warn!(%error, "collab: broker delivered an untyped room-index op");
-                false
             }
         };
         if applied
@@ -622,7 +641,11 @@ impl App {
         &mut self,
         route: &crate::collaboration::RouteSpec,
     ) -> bool {
-        if self.collaboration.room_route.as_ref() != Some(route) {
+        let room_route = self
+            .native_room_route
+            .as_ref()
+            .or(self.collaboration.room_route.as_ref());
+        if room_route != Some(route) {
             return false;
         }
         if let Some(room) = self.persistence.room_index.as_mut() {
@@ -640,6 +663,16 @@ impl App {
     /// Shared by the per-frame tick and the headless test path. Returns
     /// `true` iff at least one event was processed.
     pub fn pump_collab_presence(&mut self) -> bool {
+        self.pump_collab_presence_inner(false).0
+    }
+
+    fn pump_collab_presence_inner(
+        &mut self,
+        model_refresh: bool,
+    ) -> (
+        bool,
+        Option<action_directory_snapshot::ModelDirectoryCandidate>,
+    ) {
         let _entry = self.enter_wake_scope();
         let mut any = false;
         // Replies to broker pull-directory callbacks must run before regular
@@ -648,20 +681,31 @@ impl App {
         // thread.
         self.pump_action_directory_requests();
         self.sync_joined_records();
-        self.refresh_document_routes();
-        self.drain_document_routes();
-        self.publish_owned_documents();
+        // Hosted continuity starts after the sole request drain, before
+        // notifications can cause scheduling-only invalidation. Retain live
+        // stamp/snapshot for invocation checks later in this same batch.
+        let directory = model_refresh
+            .then(|| self.begin_model_directory_refresh())
+            .flatten();
+        self.pump_committed_documents();
+        // One route reconcile serves both the inbound drain and the owned
+        // publication queue.
+        self.pump_document_routes();
         for request in crate::widget::take_collab_requests(self.root_widget.as_mut()) {
             self.collaboration.manager.send(request);
         }
-        let (drained, action_surface_may_have_changed) = self.drain_collab_presence_events();
+        let (drained, declarations_may_have_changed, action_surface_may_have_changed) =
+            self.drain_collab_presence_events();
+        let mut invalidate = declarations_may_have_changed;
         any |= drained;
         if drained {
             self.mark_semantics_dirty();
         }
         self.report_semantic_change();
-        any |= self.observe_collaboration_state();
-        if any {
+        let collaboration_state_changed = self.observe_collaboration_state();
+        any |= collaboration_state_changed;
+        invalidate |= collaboration_state_changed;
+        if invalidate {
             self.invalidate_widget_resource_cache();
         }
         let published_snapshot_was_evicted = self.collaboration.manager.is_connected()
@@ -675,7 +719,7 @@ impl App {
             // no directory requests or inbound events, and skips stable idle.
             self.publish_action_surface();
         }
-        any
+        (any, directory)
     }
 
     /// Tell every widget's [`crate::record::JoinedRecords`] who this device
@@ -820,16 +864,22 @@ impl App {
 
     /// Applies every queued collaboration event. Returns whether any event
     /// arrived and whether one of them may have changed the action surface.
-    fn drain_collab_presence_events(&mut self) -> (bool, bool) {
+    fn drain_collab_presence_events(&mut self) -> (bool, bool, bool) {
         let events = self.collaboration.manager.poll();
         let any = !events.is_empty();
+        let mut declarations_may_have_changed = false;
         let mut action_surface_may_have_changed = false;
         for event in events {
+            declarations_may_have_changed |= Self::collab_event_may_change_declarations(&event);
             action_surface_may_have_changed |= Self::collab_event_may_change_action_surface(&event);
             self.forward_session_notification(&event);
             self.apply_collab_presence_event(event);
         }
-        (any, action_surface_may_have_changed)
+        (
+            any,
+            declarations_may_have_changed,
+            action_surface_may_have_changed,
+        )
     }
     fn apply_collab_presence_event(&mut self, event: CollabEvent) {
         match event {
@@ -871,7 +921,11 @@ impl App {
             event @ (CollabEvent::Document { .. } | CollabEvent::ScrollbackBatch { .. }) => {
                 self.apply_document_collab_event(event);
             }
+            CollabEvent::CommittedDocument { route, read } => {
+                self.queue_committed_document(route, read);
+            }
             CollabEvent::Invocation {
+                invocation,
                 id,
                 resource,
                 action,
@@ -881,6 +935,7 @@ impl App {
             } => {
                 self.invoke_published_action(
                     id,
+                    invocation,
                     resource,
                     action,
                     argument.as_deref(),
@@ -893,6 +948,14 @@ impl App {
             }
             CollabEvent::Inspection { id, request } => self.answer_inspection(id, &request),
             CollabEvent::RemoteAction { message } => self.apply_remote_action_answer(message),
+            CollabEvent::PublishedInvocationResult {
+                request_id, result, ..
+            } => {
+                let result = result.map(|(_id, update)| (update.invocation(), update));
+                self.apply_published_invocation_result(request_id, result);
+            }
+            #[cfg(unix)]
+            CollabEvent::ManagedInvocationObservation { .. } => {}
             CollabEvent::ChannelAccess { route, state } => {
                 if self.collaboration.manager.requested_primary_route() == Some(&route) {
                     self.collaboration.channel_access = Some(state);
@@ -901,7 +964,14 @@ impl App {
             // The generic client responses are consumed by widgets such as
             // Agent through their collaboration event hook; an ordinary
             // application has no local state to apply.
-            CollabEvent::TaskRun(_)
+            CollabEvent::ActionCatalogue { .. }
+            | CollabEvent::ActionDirectoryPage { .. }
+            | CollabEvent::PublishedActionResolution { .. }
+            | CollabEvent::EnrolledTask(_)
+            | CollabEvent::EnrolledTaskReply { .. }
+            | CollabEvent::EnrolledTaskDisconnected { .. }
+            | CollabEvent::NativeMediaCommandResult { .. }
+            | CollabEvent::TaskRun(_)
             | CollabEvent::TaskActionInvocationResult { .. }
             | CollabEvent::TaskRunCancellation { .. }
             | CollabEvent::WorkspaceControl { .. }
@@ -1234,6 +1304,9 @@ impl App {
         let action_surface_may_have_changed = Self::collab_event_may_change_action_surface(&event);
         self.forward_session_notification(&event);
         match event {
+            CollabEvent::CommittedDocument { route, read } => {
+                self.queue_committed_document(route, read)
+            }
             CollabEvent::RemotePresenceUpdate {
                 user_id,
                 key,
@@ -1283,6 +1356,7 @@ impl App {
                 self.adopt_grant(&grant);
             }
             CollabEvent::Invocation {
+                invocation,
                 id,
                 resource,
                 action,
@@ -1291,6 +1365,7 @@ impl App {
                 context,
             } => self.invoke_published_action(
                 id,
+                invocation,
                 resource,
                 action,
                 argument.as_deref(),

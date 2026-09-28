@@ -40,6 +40,7 @@ pub use serde_json;
 pub mod prelude {
     #[cfg(feature = "native")]
     pub use crate::framework::run;
+    #[cfg(not(target_arch = "wasm32"))]
     pub use crate::framework::testing::{HeadlessApp, TestApp};
     pub use crate::framework::{
         ActionControl, Actions, Dispatcher, Each, Live, ResourceApp, ResourceSelection,

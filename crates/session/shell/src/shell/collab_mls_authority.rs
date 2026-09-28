@@ -1079,6 +1079,24 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), MlsAuthorityError> {
     atomic_file::write_with_mode(path, bytes, 0o600).map_err(io_error)
 }
 
+#[allow(
+    unused_imports,
+    reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
+)]
+use crate::shell::state::WorkspaceExt as _;
+
+impl tilo_action_broker::collab_core::SnapshotReceiptVault for SecretServiceMlsVault {
+    fn mint_snapshot_receipt(
+        &self,
+        channel: ChannelId,
+        envelope: &collab_types::SignedOp,
+    ) -> Result<(), String> {
+        SecretServiceMlsVault::mint_snapshot_receipt(self, channel, envelope)
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::shell::state::FreshId as _;

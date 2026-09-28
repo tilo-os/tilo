@@ -22,6 +22,8 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher as _};
 
+pub mod portability;
+
 const STARTER_APP_TEMPLATE: &str = include_str!("../templates/starter.rs");
 const DATA_APP_TEMPLATE: &str = include_str!("../templates/data.rs");
 const LIST_APP_TEMPLATE: &str = include_str!("../templates/list.rs");
@@ -3922,6 +3924,16 @@ impl DoctorReport {
     }
 }
 
+/// Run the `portability` lint on the app containing `start`.
+///
+/// # Errors
+///
+/// Returns an error when the app directory cannot be resolved or its
+/// manifests or reachable sources cannot be read or parsed.
+pub fn lint_portability(start: &Path) -> Result<portability::PortabilityReport> {
+    portability::lint_app(&resolve_app_dir(start)?)
+}
+
 /// Inspect an app's source and package wiring without compiling it.
 ///
 /// `start` may be the app directory or any descendant. All expected app
@@ -3957,7 +3969,10 @@ fn doctor_resolved_app_with_capnp_probe(
 ) -> DoctorReport {
     let mut checks = Vec::new();
     let package_name = check_cargo_manifest(&app_dir, &mut checks);
-    let package_id = check_package_manifest(&app_dir, &mut checks);
+    let manifest = check_package_manifest(&app_dir, &mut checks);
+    let package_id = manifest
+        .as_ref()
+        .map(|manifest| manifest.package.id.clone());
     check_capnp_compiler(&mut checks, probe_capnp);
 
     check_source_file(
@@ -3974,7 +3989,22 @@ fn doctor_resolved_app_with_capnp_probe(
         &["framework::run::<", "LaunchSpec::new"],
         &mut checks,
     );
-    check_resource_action_surface(&app_dir, &mut checks);
+    let draws_nothing = manifest
+        .as_ref()
+        .and_then(|manifest| manifest.entrypoint.as_ref())
+        .is_some_and(|entrypoint| entrypoint.r#type == tilo_app_package::EntrypointType::Cli);
+    if draws_nothing {
+        // A CLI-only app is never handed a surface, so it has no controls to
+        // publish; it may still consume other apps' actions.
+        checks.push(DoctorCheck {
+            status: DoctorStatus::Pass,
+            label: "resource/action surface",
+            detail: "CLI entrypoint draws no controls, so there is no surface to publish"
+                .to_owned(),
+        });
+    } else {
+        check_resource_action_surface(&app_dir, &mut checks);
+    }
     check_ui_graph_artifacts(&app_dir, &mut checks);
     check_locale_artifacts(&app_dir, &mut checks);
     check_headless_scenarios(&app_dir, &mut checks);
@@ -5971,7 +6001,10 @@ fn check_cargo_manifest(app_dir: &Path, checks: &mut Vec<DoctorCheck>) -> Option
     name
 }
 
-fn check_package_manifest(app_dir: &Path, checks: &mut Vec<DoctorCheck>) -> Option<String> {
+fn check_package_manifest(
+    app_dir: &Path,
+    checks: &mut Vec<DoctorCheck>,
+) -> Option<tilo_app_package::Manifest> {
     let path = app_dir.join("tilo-app.toml");
     let source = match std::fs::read_to_string(&path) {
         Ok(source) => source,
@@ -6008,7 +6041,7 @@ fn check_package_manifest(app_dir: &Path, checks: &mut Vec<DoctorCheck>) -> Opti
         label: "Tilo manifest",
         detail: format!("{} is schema-valid", manifest.package.id),
     });
-    Some(manifest.package.id)
+    Some(manifest)
 }
 
 fn check_ui_dependency(app_dir: &Path, manifest: &toml::Table, checks: &mut Vec<DoctorCheck>) {

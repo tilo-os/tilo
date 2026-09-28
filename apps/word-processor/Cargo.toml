@@ -27,17 +27,20 @@ path = "src/main.rs"
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
+xdg-paths = { path = "../../crates/system/xdg-paths" }
 atomic-file = { path = "../../crates/system/atomic-file" }
-ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # Only pulled in under `--features thin`; see the `thin` feature above.
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 tilo-actions = { path = "../../crates/collab/actions" }
 qdoc = { path = "../../crates/doc/qdoc" }
+tilo-resource = { path = "../../crates/sdk/tilo-resource" }
 qdoc-rich-text = { path = "../../crates/doc/qdoc-rich-text" }
 qdoc-codecs = { path = "../../crates/doc/qdoc-codecs", default-features = false, features = ["markdown", "html", "rtf", "epub", "docx", "odt"] }
 spellcheck = { path = "../../crates/text/spellcheck" }
 qdoc-pdf = { path = "../../crates/doc/qdoc-pdf" }
-tilo-content = { path = "../../crates/system/content" }
+# Content addressing everywhere; the on-disk and device stores only natively
+# (the browser build keeps content in memory).
+tilo-content = { path = "../../crates/system/content", default-features = false }
 automerge.workspace = true
 tilo-automerge.workspace = true
 vello.workspace = true
@@ -46,8 +49,6 @@ winit.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 regex.workspace = true
-url.workspace = true
-workspace-hack = { version = "0.1" }
 # Host-native image open through the XDG Desktop Portal (FileChooser). The
 # portal round-trip runs on a worker thread; the chosen path comes back over a
 # channel drained each frame — the UI thread never blocks.
@@ -62,3 +63,14 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["te
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tilo-content = { path = "../../crates/system/content", features = ["dir", "device"] }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["portal"] }
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
+
+# The browser runtime embeds this app in wasm32, where the toolkit is the
+# portable build: no native desktop runner, no broker transport, no portal.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", default-features = false }

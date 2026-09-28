@@ -22,10 +22,11 @@ path = "src/main.rs"
 # (PKG_CONFIG_PATH/LD_LIBRARY_PATH pointing at its prefix). Normal launches
 # use the pinned Chromium/CEF helper. Headless fixtures and unit tests use
 # the deterministic test engine.
-wpe = ["ui/webview-wpe"]
+wpe = ["ui/webview"]
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
+private-fs = { path = "../../crates/system/private-fs" }
 # Session-store ownership and the private cache root's cleanup barrier.
 advisory-lock = { path = "../../crates/system/advisory-lock" }
 tilo-clock = { path = "../../crates/system/tilo-clock" }
@@ -42,7 +43,7 @@ runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 reqwest = { workspace = true, features = ["blocking"] }
 tilo-net = { path = "../../crates/system/tilo-net", features = ["blocking"] }
 xdg-paths = { path = "../../crates/system/xdg-paths" }
-libc.workspace = true
+host-info = { path = "../../crates/system/host-info" }
 sha2.workspace = true
 base64.workspace = true
 url.workspace = true

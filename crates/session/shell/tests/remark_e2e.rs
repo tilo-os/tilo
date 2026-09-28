@@ -8,6 +8,10 @@
 //! it privately. The team's room then holds a remark about that field with
 //! the redacted recording attached, and neither the remark nor the recording
 //! carries the draft's personal recipient or the hidden word.
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 
 use std::os::fd::IntoRawFd as _;
 use std::os::unix::net::UnixStream;
@@ -378,7 +382,13 @@ fn a_remark_about_a_field_with_a_redacted_recording_reaches_the_team_privately()
 
     // Record pressing Send until Mail says it failed.
     world.act("remark.record.start", &json!({}));
-    let recorder = world.fb.chrome().recorder().cloned().expect("a recorder");
+    let recorder = world
+        .fb
+        .host()
+        .session_services()
+        .recorder()
+        .cloned()
+        .expect("a recorder");
     world.until("the recorder to observe Mail", |_| {
         recorder.status_json()["recording"]["events"]
             .as_u64()

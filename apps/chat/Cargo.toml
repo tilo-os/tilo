@@ -15,20 +15,18 @@ path = "src/main.rs"
 
 [features]
 thin = ["dep:runtime-dylib"]
-# The default app includes the real-time media engine. Shots and tests use the
-# simulated engine and do not start an iroh endpoint or ScreenCast portal.
+# The default app includes the legacy diagnostic media engine. Shots and tests
+# use the simulated engine and do not start an iroh endpoint.
 default = ["live-media"]
-# Voice, camera, and screen sharing use iroh QUIC, GStreamer capture/playback,
-# `tilo-callstream`, and the ScreenCast portal. This is a default feature for
-# the shipped app; disable default features only for explicitly media-free
-# builds and hermetic tests.
+# Calls themselves run through the shell's native voice service
+# (`ui::native_media`). This feature only adds the legacy custom-Iroh media
+# transport and the device-free Opus codec diagnostics. Disable default
+# features for explicitly media-free builds and hermetic tests.
 live-media = [
-    "dep:gstreamer",
-    "dep:gstreamer-app",
+    "media/voice",
     "dep:iroh",
     "dep:tokio",
     "dep:wire-frame",
-    "dep:tilo-callstream",
 ]
 
 [dependencies]
@@ -36,7 +34,6 @@ hex.workspace = true
 emoji = { path = "../../crates/text/emoji" }
 tilo-clock = { path = "../../crates/system/tilo-clock" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # The Tilo action model: the serializable, replayable unit of CRDT mutation
 # behind Ctrl+K and cross-peer collaboration. Chat's messages/channels/reactions
 # are exported as `ChatAction`s (see `src/actions.rs`) dispatched through the
@@ -46,11 +43,10 @@ tilo-actions = { path = "../../crates/collab/actions" }
 # `Message::reference` — and the vocabulary an agent's own progress on a
 # summons is recorded in (`Message::work`, `ChatAction::SetAgentWork`).
 tilo-reference = { path = "../../crates/collab/reference" }
-tilo-content = { path = "../../crates/system/content" }
-# The Tilo runtime user-identity loader (TILO_USER_IDENTITY) — the canonical
-# per-peer identity the collab layer signs with. Chat uses its public key +
-# display name so every running instance is a distinct participant.
-runtime-identity = { path = "../../crates/runtime/runtime-identity" }
+qdoc = { path = "../../crates/doc/qdoc" }
+# Content addressing everywhere; the on-disk and device stores only natively
+# (the browser build keeps content in memory).
+tilo-content = { path = "../../crates/system/content", default-features = false }
 automerge.workspace = true
 tilo-automerge.workspace = true
 serde.workspace = true
@@ -67,16 +63,12 @@ xdg-paths = { path = "../../crates/system/xdg-paths" }
 # sender-local path is stored in the chat document.
 image = { workspace = true, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 
-# Live-media dependencies. Versions match the workspace media, transport, and
-# portal stacks to avoid duplicate copies.
-gstreamer = { workspace = true, optional = true }
-gstreamer-app = { workspace = true, optional = true }
+# Live-media dependencies. Versions match the workspace media and transport
+# stacks to avoid duplicate copies.
 iroh = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true, features = ["sync"] }
 # Length-prefixed media frames on the call stream.
 wire-frame = { path = "../../crates/system/wire-frame", optional = true, features = ["tokio"] }
-tilo-callstream = { path = "../../crates/collab/tilo-callstream", optional = true }
-workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
@@ -85,3 +77,19 @@ tilo-test-env = { path = "../../crates/dev/test-env" }
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tilo-content = { path = "../../crates/system/content", features = ["dir", "device"] }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
+media = { path = "../../crates/media/core", default-features = false }
+# The Tilo runtime user-identity loader (TILO_USER_IDENTITY) — the canonical
+# per-peer identity the collab layer signs with. Chat uses its public key +
+# display name so every running instance is a distinct participant.
+runtime-identity = { path = "../../crates/runtime/runtime-identity" }
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
+
+# The browser runtime embeds this app in wasm32, where the toolkit is the
+# portable build: no native desktop runner, no broker transport, no portal.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", default-features = false }

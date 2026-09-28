@@ -399,6 +399,7 @@ impl State {
         let selection_client = target.as_ref().and_then(|(_, surface)| surface.client());
         self.set_selection_focus(selection_client);
         keyboard.set_focus(self, target.clone().map(|(_, s)| s), serial);
+        self.tablet_pads_follow_keyboard(target.as_ref().map(|(_, surface)| surface));
         if let Some((surface_id, _)) = target {
             record_activation_serial(self, serial, surface_id);
         }
@@ -1066,6 +1067,34 @@ pub fn route_tablet_event(
         .into_iter()
         .map(crate::compositor::backend::BackendEvent::Input)
         .collect()
+}
+
+/// Route one tablet pad event. Pads follow keyboard focus: a focused client
+/// that took a tablet seat gets the buttons, rings and strips over
+/// `zwp_tablet_pad_v2`; otherwise — another app, shell chrome, the lock
+/// screen — the returned fallback (what the pad's settings map the control
+/// to) goes through the ordinary input path.
+pub fn route_pad_event(
+    state: &mut State,
+    fb: &FrameBuilder,
+    event: crate::compositor::backend::PadEvent,
+    session_locked: bool,
+) -> Vec<crate::compositor::backend::BackendEvent> {
+    let target = pad_focus_target(state, fb, session_locked);
+    if state.forward_tablet_pad(&event, target) {
+        return Vec::new();
+    }
+    event.fallback
+}
+
+/// The surface a tablet pad's controls go to: the keyboard-focused one,
+/// when it took a tablet seat and neither the lock screen nor shell chrome
+/// is taking input.
+pub fn pad_focus_target(state: &State, fb: &FrameBuilder, session_locked: bool) -> Option<u64> {
+    (!session_locked && !chrome_captures_input(fb))
+        .then(|| state.client_input.keyboard_focus())
+        .flatten()
+        .filter(|surface_id| state.surface_takes_tablet_input(*surface_id))
 }
 
 /// Grant, adjust or withdraw a client's pointer lock/confinement for this
@@ -1897,6 +1926,10 @@ fn raise_group(fb: &mut FrameBuilder, strip: StripId, group: GroupId) -> bool {
 #[allow(
     clippy::float_cmp,
     reason = "deterministic pointer-coordinate fixtures use exactly representable values"
+)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
 )]
 mod tests {
     use super::*;

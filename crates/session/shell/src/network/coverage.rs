@@ -1,7 +1,7 @@
 //! Which retained messages a checkpoint provably holds.
 //!
 //! A durable host trims a document's retained history only by the entries a
-//! newer checkpoint names as covered (see `tilo_relay_client::Coverage`). The
+//! newer checkpoint names as covered (see `tilo_relay::Coverage`). The
 //! shell names only what the saved bytes contain: every retained message it
 //! sends or receives is logged with the changes it carries, and a checkpoint
 //! lists the logged messages whose changes are all in it.
@@ -11,8 +11,8 @@ use std::collections::VecDeque;
 use automerge::ChangeHash;
 
 /// Most messages remembered per document — as many as one checkpoint may
-/// name (`tilo_relay_client::MAX_COVERED_ENTRIES`).
-pub const MAX_LOGGED_ENTRIES: usize = tilo_relay_client::MAX_COVERED_ENTRIES;
+/// name (`tilo_relay::MAX_COVERED_ENTRIES`).
+pub const MAX_LOGGED_ENTRIES: usize = tilo_relay::MAX_COVERED_ENTRIES;
 
 /// Retained messages seen on one document, oldest first.
 #[derive(Debug, Default)]

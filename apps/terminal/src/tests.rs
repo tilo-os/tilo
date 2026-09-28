@@ -9,6 +9,9 @@ use ui::widget::Widget as _;
 use vello::kurbo::Rect;
 use vte::Perform;
 
+/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
 fn shell_command(unix_script: &str, windows_script: &str) -> portable_pty::CommandBuilder {
     #[cfg(unix)]
     {
@@ -92,7 +95,7 @@ fn build_test_widget() -> (TerminalWidget, std::sync::mpsc::Receiver<Vec<u8>>) {
 /// so a test can push bytes down the exact channel the reader thread uses.
 /// This exercises the production `sync` → `pump` drain path (which is what
 /// snaps the scrollback viewport back to the live bottom on fresh output).
-fn build_test_widget_io() -> (
+pub(crate) fn build_test_widget_io() -> (
     TerminalWidget,
     std::sync::mpsc::Receiver<Vec<u8>>,
     std::sync::mpsc::Sender<Vec<u8>>,
@@ -353,7 +356,7 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
 }
 
 /// Drain and concatenate everything the PTY-write channel has buffered.
-fn drain_writes(rx: &std::sync::mpsc::Receiver<Vec<u8>>) -> Vec<u8> {
+pub(crate) fn drain_writes(rx: &std::sync::mpsc::Receiver<Vec<u8>>) -> Vec<u8> {
     let mut out = Vec::new();
     while let Ok(b) = rx.try_recv() {
         out.extend_from_slice(&b);
@@ -810,7 +813,8 @@ fn terminal_draw_and_disconnected_state_follow_theme_and_text_scale() {
         let mut widget = TerminalWidget::spawn_command(shell_command("true", "exit /b 0"))
             .expect("spawn short-lived pty command");
         let mut doc = AutoCommit::new();
-        for _ in 0..200 {
+        let deadline = std::time::Instant::now() + HANG_BOUND;
+        while std::time::Instant::now() < deadline {
             widget.sync(&mut doc, &ROOT);
             if widget.is_disconnected() {
                 break;
@@ -3649,13 +3653,9 @@ fn sgr_and_graphics_escapes_parse_into_cells_and_placements() {
 /// Poll the production `sync` (which drains the PTY reader thread and
 /// replays bytes through vte into the CRDT grid) until the grid contains
 /// `needle` or `tries` elapse. Returns whether it appeared.
-fn pump_until_contains(
-    w: &mut TerminalWidget,
-    doc: &mut AutoCommit,
-    needle: &str,
-    tries: usize,
-) -> bool {
-    for _ in 0..tries {
+fn pump_until_contains(w: &mut TerminalWidget, doc: &mut AutoCommit, needle: &str) -> bool {
+    let deadline = std::time::Instant::now() + HANG_BOUND;
+    while std::time::Instant::now() < deadline {
         w.sync(doc, &ROOT);
         if w.grid_text().contains(needle) {
             return true;
@@ -3678,7 +3678,7 @@ fn spawned_pty_sessions_run_commands_in_a_fresh_grid() {
         let mut w = TerminalWidget::spawn_command(cmd).expect("spawn pty command");
         let mut doc = AutoCommit::new();
         assert!(
-            pump_until_contains(&mut w, &mut doc, "TILO_PTY_OK", 200),
+            pump_until_contains(&mut w, &mut doc, "TILO_PTY_OK"),
             "real PTY command output must reach the grid; grid was:\n{}",
             w.grid_text()
         );
@@ -3704,7 +3704,7 @@ fn spawned_pty_sessions_run_commands_in_a_fresh_grid() {
         #[cfg(windows)]
         w.write_input(b"set TILO_PART=SHELL\r\necho TILO_%TILO_PART%_OK\r\nexit\r\n");
         assert!(
-            pump_until_contains(&mut w, &mut doc, "TILO_SHELL_OK", 300),
+            pump_until_contains(&mut w, &mut doc, "TILO_SHELL_OK"),
             "the real shell must run the typed command and show output; grid was:\n{}",
             w.grid_text()
         );
@@ -3735,7 +3735,8 @@ fn spawned_pty_sessions_run_commands_in_a_fresh_grid() {
         command.arg("-c");
         command.arg("printf new-session-output");
         let mut fresh = TerminalWidget::spawn_command(command).expect("new local terminal");
-        for _ in 0..200 {
+        let deadline = std::time::Instant::now() + HANG_BOUND;
+        while std::time::Instant::now() < deadline {
             fresh.sync(&mut doc, &automerge::ROOT);
             if fresh.grid_text().contains("new-session-output") {
                 break;
@@ -3769,7 +3770,7 @@ fn spawned_pty_sessions_run_commands_in_a_fresh_grid() {
         let mut w = TerminalWidget::spawn_command(cmd).expect("spawn pty command");
         let mut doc = AutoCommit::new();
         assert!(
-            pump_until_contains(&mut w, &mut doc, "TERM=xterm-256color", 200),
+            pump_until_contains(&mut w, &mut doc, "TERM=xterm-256color"),
             "the shell must see TERM=xterm-256color; grid was:\n{}",
             w.grid_text()
         );
@@ -4668,7 +4669,7 @@ fn real_pty_query_replies_and_fish_startup() {
 
         // Now type the sentinel the way a user would, then quit.
         w.write_input(b"echo TILO_FISH_READY\r");
-        let ready = pump_until_contains(&mut w, &mut doc, "TILO_FISH_READY", 200);
+        let ready = pump_until_contains(&mut w, &mut doc, "TILO_FISH_READY");
         w.write_input(b"exit\r");
         w.sync(&mut doc, &ROOT);
 
@@ -4705,7 +4706,7 @@ fn real_pty_query_replies_and_fish_startup() {
         let mut w = TerminalWidget::spawn_command(cmd).expect("spawn pty command");
         let mut doc = AutoCommit::new();
         assert!(
-            pump_until_contains(&mut w, &mut doc, "REPLY_DONE", 200),
+            pump_until_contains(&mut w, &mut doc, "REPLY_DONE"),
             "the child must receive the DA1 reply over the real PTY; grid was:\n{}",
             w.grid_text()
         );
@@ -4935,7 +4936,7 @@ fn windows_native_and_hosted_terminal_paths() {
         );
         let expected = format!("NATIVE_SIZE={columns}x{rows}");
         assert!(
-            pump_until_contains(&mut widget, &mut document, &expected, 500),
+            pump_until_contains(&mut widget, &mut document, &expected),
             "the actual child must observe the resized ConPTY: {}",
             widget.grid_text()
         );

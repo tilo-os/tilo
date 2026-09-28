@@ -81,8 +81,8 @@ async fn drain_until_converged(
     let _ = send_sync_request(&b_client, ws, &mut doc_b);
 
     let mut converged = false;
-    let start = Instant::now();
-    while start.elapsed() < Duration::from_secs(15) {
+    let deadline = tilo_test_env::hang_deadline();
+    while Instant::now() < deadline {
         match tokio::time::timeout(Duration::from_millis(400), b_client.recv()).await {
             Ok(Some(Envelope::Delta { delta, .. })) => {
                 let _ = doc_b.load_incoming(&delta);
@@ -123,9 +123,9 @@ async fn delta_traverses_relay_chain_via_anti_entropy() {
         r2_dev.device_pubkey(),
         r3_dev.device_pubkey(),
     );
-    let r1 = spawn_relay(&user, r1_dev, &[WS], &members).await;
-    let r2 = spawn_relay(&user, r2_dev, &[WS], &members).await;
-    let r3 = spawn_relay(&user, r3_dev, &[WS], &members).await;
+    let r1 = Box::pin(spawn_relay(&user, r1_dev, &[WS], &members)).await;
+    let r2 = Box::pin(spawn_relay(&user, r2_dev, &[WS], &members)).await;
+    let r3 = Box::pin(spawn_relay(&user, r3_dev, &[WS], &members)).await;
 
     // Wire the CHAIN only: R1<->R2 and R2<->R3. R1 and R3 never federate
     // directly, so R2 is the sole bridge.
@@ -158,9 +158,7 @@ async fn delta_traverses_relay_chain_via_anti_entropy() {
     a_client
         .send(Envelope::Subscribe { workspace_id: WS })
         .unwrap();
-    let _ = tokio::time::timeout(Duration::from_secs(3), a_client.recv())
-        .await
-        .expect("A Ready");
+    let _ = tilo_test_env::within("A Ready", a_client.recv()).await;
 
     let mut doc_a = AutoCommit::new();
     doc_a.set_actor(automerge::ActorId::from(b"alice".as_slice()));

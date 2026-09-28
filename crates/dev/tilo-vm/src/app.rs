@@ -20,8 +20,9 @@ use crate::appsets;
 use crate::build;
 use crate::ci;
 use crate::cli::{
-    Builder, Command, CreateArgs, GamepadCommand, InputCommand, PenCommand, ScenarioCommand,
-    SeatCommand, SlotAppsCommand, SlotCommand, TouchCommand, UpgradeArgs, VmCommand,
+    Builder, Command, CreateArgs, GamepadCommand, ImageCommand, InputCommand, PenCommand,
+    ScenarioCommand, SeatCommand, SlotAppsCommand, SlotCommand, TouchCommand, UpgradeArgs,
+    VmCommand,
 };
 use crate::config::{self, DirectKernel, Registry, Source, VmEntry, WORKTREE_FILE};
 use crate::context::Worktree;
@@ -89,6 +90,8 @@ struct Published {
     tag: String,
     disk: disk::Disk,
     dest: PathBuf,
+    direct_boot: Option<disk::DirectBoot>,
+    source_revision: Option<String>,
     auth: disk::AuthHeader,
 }
 
@@ -120,18 +123,23 @@ impl Plan {
                     ));
                 }
             }
-            (None, Some(p)) => lines.push(format!(
-                "  image: published dev disk {} ({} {}, {}{})",
-                p.tag,
-                p.disk.arch,
-                p.disk.format,
-                human_bytes(p.disk.size),
-                if disk::cached(&p.dest, &p.disk) {
-                    ", already downloaded"
-                } else {
-                    ", to download"
+            (None, Some(p)) => {
+                lines.push(format!(
+                    "  image: published dev disk {} ({} {}, {}{})",
+                    p.tag,
+                    p.disk.arch,
+                    p.disk.format,
+                    human_bytes(p.disk.size),
+                    if disk::cached(&p.dest, &p.disk) {
+                        ", already downloaded"
+                    } else {
+                        ", to download"
+                    }
+                ));
+                if p.direct_boot.is_some() {
+                    lines.push("  boot: verified CI direct kernel bundle (WHPX)".into());
                 }
-            )),
+            }
             (None, None) => lines.push("  image: the UTM template".into()),
         }
         if let Some(disk) = &self.disk_path {
@@ -589,6 +597,8 @@ impl App {
             Some(Command::Shot { slot, output, .. }) => self.shot(slot, &output),
             Some(Command::Control { slot, args }) => self.control(slot, &args),
             Some(Command::Scenario(ScenarioCommand::Install(args))) => self.scenario_install(&args),
+            Some(Command::Image(ImageCommand::Build { disk, out })) => self.image_build(disk, &out),
+            Some(Command::Image(ImageCommand::Disk { image })) => self.image_disk(&image),
             Some(Command::Gc {
                 dry_run,
                 keep,
@@ -1263,6 +1273,10 @@ impl App {
     /// Everything `vm create` needs, checked before anything is downloaded
     /// or created: the hypervisor and its tools, a local `--image`, the
     /// published disk for the tag, the VM disk path, and free space.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one preflight sequence for all VM creation inputs"
+    )]
     fn preflight_create(
         &mut self,
         facts: &HostFacts,
@@ -1305,7 +1319,12 @@ impl App {
             args.boot_esp.as_deref(),
         )?;
         let published = if image.is_none() && args.template.is_none() {
-            Some(self.resolve_published(args.tag.as_deref(), arch, format)?)
+            Some(self.resolve_published(
+                args.tag.as_deref(),
+                arch,
+                format,
+                choice.adapter == "whpx" && args.direct_boot_bundle.is_none(),
+            )?)
         } else {
             None
         };
@@ -1380,6 +1399,12 @@ impl App {
                 alternative: "use --hypervisor whpx on Windows ARM64".into(),
             });
         }
+        if args.direct_boot_bundle.is_some() && args.image.is_none() {
+            return Err(CliError::Unsupported {
+                what: "--direct-boot-bundle with a published disk".into(),
+                alternative: "omit --direct-boot-bundle: vm create downloads and verifies the matching CI bundle automatically; use --image for a local disk".into(),
+            });
+        }
         Ok(())
     }
 
@@ -1414,7 +1439,7 @@ impl App {
         }
         let facts = HostFacts::probe(&mut self.runner);
         let plan = self.preflight_create(&facts, &args, &arch)?;
-        let direct_kernel = args
+        let mut direct_kernel = args
             .direct_boot_bundle
             .as_deref()
             .map(|path| read_direct_boot_bundle(Path::new(path)))
@@ -1448,6 +1473,29 @@ impl App {
             self.receipt.phase("download", || {
                 disk::fetch(runner, &published.disk, &published.dest, &published.auth)
             })?;
+            if let Some(bundle) = &published.direct_boot {
+                let path = self.receipt.phase("direct-boot", || {
+                    disk::fetch_direct_boot(
+                        &mut self.runner,
+                        published.dest.parent().unwrap_or_else(|| Path::new(".")),
+                        bundle,
+                        &published.auth,
+                    )
+                })?;
+                direct_kernel = Some(read_published_direct_boot(
+                    &path,
+                    &published.tag,
+                    &bundle.arch,
+                )?);
+                self.receipt.set(
+                    "direct-boot",
+                    json!({
+                        "tag": published.tag,
+                        "source_revision": published.source_revision,
+                        "manifest": path,
+                    }),
+                );
+            }
             self.receipt.set(
                 "disk",
                 json!({ "tag": published.tag, "file": published.disk.file, "sha256": published.disk.sha256 }),
@@ -1564,6 +1612,7 @@ impl App {
         tag: Option<&str>,
         arch: &str,
         format: &str,
+        auto_direct_boot: bool,
     ) -> Result<Published, CliError> {
         let token = disk::find_token();
         let auth = disk::AuthHeader::new(token.as_ref())?;
@@ -1633,10 +1682,17 @@ impl App {
                         local_build: local_build.clone(),
                     })?;
             let dest = disk::cache_path(tag, &chosen.file);
+            let direct_boot = if auto_direct_boot {
+                Some(manifest.direct_boot_for(tag, arch, &chosen)?)
+            } else {
+                None
+            };
             return Ok(Published {
                 tag: tag.clone(),
                 disk: chosen,
                 dest,
+                direct_boot,
+                source_revision: manifest.source_revision,
                 auth,
             });
         }
@@ -1833,6 +1889,11 @@ impl App {
         let adapter = Self::adapter(&vm)?;
         let endpoint = adapter.ssh_endpoint(&vm.vm(), &mut self.runner)?;
         let Some(from) = args.from.as_deref() else {
+            if let Some(layout) = args.image.as_deref().map(Path::new)
+                && imageup::is_layout(layout)
+            {
+                return self.vm_upgrade_layout(&vm, &endpoint, args, layout);
+            }
             return self.vm_upgrade_registry(&vm, &endpoint, args, args.image.as_deref());
         };
         let (image, build, base) = match self.upgrade_source(&vm, &endpoint, args, from)? {
@@ -1855,9 +1916,254 @@ impl App {
         let image_facts = self
             .receipt
             .phase("check", || local_image_facts(runner, &image))?;
-        imageup::check_image(&image, &image_facts)?;
-        let facts = self.vm_facts(&vm, &endpoint, "vm upgrade")?;
-        match imageup::check_base_age(&image, facts.base.as_ref(), image_facts.base.as_ref()) {
+        let layout = imageup::host_layout(&vm.name);
+        let runner = &mut self.runner;
+        let digest = self
+            .receipt
+            .phase("export", || export_layout(runner, &image, &layout))?;
+        self.move_onto_layout(&vm, &endpoint, args, &image, &image_facts, &layout, digest)
+    }
+
+    /// `image build`: the dev image `--from local` builds, written as an OCI
+    /// layout with its facts and digest (and with `disk`, the dev disk) into
+    /// `out`, for `vm upgrade --image` and `vm create --image`. It needs no VM,
+    /// so it runs anywhere the checkout is, including a copy without git.
+    /// The checkout `image` commands build from: the worktree, or (without git)
+    /// the tree around the working directory.
+    fn checkout(&self) -> Result<PathBuf, CliError> {
+        match &self.worktree {
+            Some(worktree) => Ok(worktree.root.clone()),
+            None => std::env::current_dir()
+                .ok()
+                .and_then(|cwd| checkout_root(&cwd))
+                .ok_or(CliError::NotInWorktree),
+        }
+    }
+
+    /// `image disk`: the disk step of the build, for an image `image build`
+    /// wrote (here or on the rcargo builder): the layout into podman's storage,
+    /// then `os/dev/build-image.sh` with `TILO_SKIP_BUILD=1`, as
+    /// `build-dev-image.sh` runs it.
+    fn image_disk(&mut self, layout: &Path) -> Result<Outcome, CliError> {
+        let started = Instant::now();
+        let root = self.checkout()?;
+        let layout = if layout.is_absolute() {
+            layout.to_path_buf()
+        } else {
+            root.join(layout)
+        };
+        if !imageup::is_layout(&layout) {
+            return Err(CliError::ImageRefused {
+                image: layout.display().to_string(),
+                problem: "is not an OCI layout".into(),
+                fix: "build one: tilo-vm image build (tilo-vm image build --help for the rcargo builder)".into(),
+            });
+        }
+        let facts_file = layout.with_extension("facts");
+        let facts_text = std::fs::read_to_string(&facts_file)
+            .map_err(CliError::io(format!("read {}", facts_file.display())))?;
+        let (image, facts) =
+            imageup::parse_layout_facts(&facts_text).map_err(|problem| CliError::ImageRefused {
+                image: layout.display().to_string(),
+                problem,
+                fix: "rebuild it: tilo-vm image build".into(),
+            })?;
+        imageup::check_image(&image, &facts)?;
+        let out = layout
+            .parent()
+            .map_or_else(|| root.clone(), Path::to_path_buf);
+        let scratch = build_scratch(&out);
+        let import = imageup::import_layout_command(&layout, imageup::LOCAL_DEV_IMAGE);
+        let runner = &mut self.runner;
+        let imported = self.receipt.phase("import", || runner.output(&import))?;
+        if !imported.success {
+            return Err(CliError::CommandFailed {
+                command: import.display(),
+                status: imported.status,
+                stderr: imported.stderr.trim().to_owned(),
+            });
+        }
+        let command = image_disk_command(&root.join(imageup::DISK_SCRIPT), &scratch);
+        self.runner.cwd = Some(root);
+        let runner = &mut self.runner;
+        let written = self
+            .receipt
+            .phase("disk", || runner.interactive(&command))?;
+        // Root podman's copy of the image is root's; only sudo removes it.
+        let drop_store = CommandLine::new("sudo", &["-n", "rm", "-rf", "--"])
+            .arg(root_podman_store(&scratch).display().to_string());
+        if !self.runner.output(&drop_store)?.success {
+            self.warnings.push(format!(
+                "could not remove {}; remove it with: {}",
+                root_podman_store(&scratch).display(),
+                drop_store.display()
+            ));
+        }
+        if !written {
+            return Err(CliError::CommandFailed {
+                command: command.display(),
+                status: "disk step failed".into(),
+                stderr: "the output above names the cause".into(),
+            });
+        }
+        let dest = move_built_disk(&scratch, &out)?;
+        Ok(Outcome::new(
+            format!(
+                "wrote {} from {image} in {}s\n  {}",
+                dest.display(),
+                started.elapsed().as_secs(),
+                self.receipt.summary()
+            ),
+            json!({ "disk": dest.display().to_string(), "image": image }),
+        )
+        .next(&[&format!(
+            "tilo-vm vm create <name> --image {}",
+            dest.display()
+        )]))
+    }
+
+    fn image_build(&mut self, disk: bool, out: &Path) -> Result<Outcome, CliError> {
+        let started = Instant::now();
+        let root = self.checkout()?;
+        let script = root.join(imageup::BUILD_SCRIPT);
+        if !script.is_file() {
+            return Err(CliError::Unsupported {
+                what: format!("image build without {}", imageup::BUILD_SCRIPT),
+                alternative: "run it from a Tilo checkout".into(),
+            });
+        }
+        let out = if out.is_absolute() {
+            out.to_path_buf()
+        } else {
+            root.join(out)
+        };
+        let scratch = build_scratch(&out);
+        std::fs::create_dir_all(&out).map_err(CliError::io(format!("create {}", out.display())))?;
+        if self.worktree.is_none() && std::env::var_os("SOURCE_DATE_EPOCH").is_none() {
+            self.warnings.push("no git checkout here and no SOURCE_DATE_EPOCH: the image is dated 1970, so a VM on a newer base refuses it without --allow-older-base; pass the commit time (RCARGO_ENV_SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) through rcargo)".into());
+        }
+        let command = image_build_command(&script, disk, &scratch);
+        eprintln!(
+            "tilo-vm: building {} ({}); cached steps are skipped",
+            imageup::LOCAL_DEV_IMAGE,
+            if disk { "and its disk" } else { "no disk" }
+        );
+        self.runner.cwd = Some(root);
+        let runner = &mut self.runner;
+        let built = self
+            .receipt
+            .phase("image-build", || runner.interactive(&command))?;
+        if !built {
+            return Err(CliError::CommandFailed {
+                command: command.display(),
+                status: "build failed".into(),
+                stderr: "the build output above names the failed step; rerunning resumes there"
+                    .into(),
+            });
+        }
+        let layout = out.join(imageup::BUILT_LAYOUT);
+        let runner = &mut self.runner;
+        let digest = self.receipt.phase("export", || {
+            export_layout(runner, imageup::LOCAL_DEV_IMAGE, &layout)
+        })?;
+        let runner = &mut self.runner;
+        let facts_text = self.receipt.phase("check", || {
+            image_facts_text(runner, imageup::LOCAL_DEV_IMAGE)
+        })?;
+        let (image, facts) =
+            imageup::parse_layout_facts(&facts_text).map_err(|detail| CliError::CommandFailed {
+                command: imageup::inspect_command(imageup::LOCAL_DEV_IMAGE).display(),
+                status: "unreadable output".into(),
+                stderr: detail,
+            })?;
+        imageup::check_image(&image, &facts)?;
+        let facts_file = layout.with_extension("facts");
+        std::fs::write(&facts_file, &facts_text)
+            .map_err(CliError::io(format!("write {}", facts_file.display())))?;
+        let mut next = vec![format!("tilo-vm vm upgrade --image {}", layout.display())];
+        let mut disk_path = None;
+        if disk {
+            let dest = move_built_disk(&scratch, &out)?;
+            next.insert(
+                0,
+                format!("tilo-vm vm create <name> --image {}", dest.display()),
+            );
+            disk_path = Some(dest.display().to_string());
+        }
+        let data = json!({
+            "image": image,
+            "digest": digest,
+            "layout": layout.display().to_string(),
+            "layout_bytes": imageup::layout_bytes(&layout),
+            "disk": disk_path,
+            "seconds": started.elapsed().as_secs(),
+        });
+        self.receipt.set("digest", &digest);
+        let text = format!(
+            "built {image} ({}) in {}s\n  layout: {} ({}){}\n  {}",
+            imageup::short_digest(&digest),
+            started.elapsed().as_secs(),
+            layout.display(),
+            human_bytes(imageup::layout_bytes(&layout)),
+            disk_path
+                .as_deref()
+                .map(|d| format!("\n  disk:   {d}"))
+                .unwrap_or_default(),
+            self.receipt.summary()
+        );
+        let next: Vec<&str> = next.iter().map(String::as_str).collect();
+        Ok(Outcome::new(text, data).next(&next))
+    }
+
+    /// `--image <dir>`: an OCI layout `tilo-vm image build` wrote, here or on
+    /// the rcargo builder, with its facts and digest beside it.
+    fn vm_upgrade_layout(
+        &mut self,
+        vm: &Resolved,
+        endpoint: &SshEndpoint,
+        args: &UpgradeArgs,
+        layout: &Path,
+    ) -> Result<Outcome, CliError> {
+        let read = |path: PathBuf| {
+            std::fs::read_to_string(&path).map_err(|error| CliError::ImageRefused {
+                image: layout.display().to_string(),
+                problem: format!("has no {} ({error})", path.display()),
+                fix: "write the layout with tilo-vm image build (it saves the image's facts and digest beside it)".into(),
+            })
+        };
+        let (image, image_facts) = imageup::parse_layout_facts(&read(
+            layout.with_extension("facts"),
+        )?)
+        .map_err(|problem| CliError::ImageRefused {
+            image: layout.display().to_string(),
+            problem,
+            fix: "rebuild it: tilo-vm image build".into(),
+        })?;
+        let digest = read(layout.with_extension("digest"))?.trim().to_owned();
+        self.receipt.set("image", &image);
+        self.receipt.set("layout", layout.display().to_string());
+        self.move_onto_layout(vm, endpoint, args, &image, &image_facts, layout, digest)
+    }
+
+    /// The image is in `layout` with `digest`: check it, send the VM its new
+    /// blobs, and boot it.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the image, its facts, its layout and its digest are one move, from three sources"
+    )]
+    fn move_onto_layout(
+        &mut self,
+        vm: &Resolved,
+        endpoint: &SshEndpoint,
+        args: &UpgradeArgs,
+        image: &str,
+        image_facts: &imageup::ImageFacts,
+        layout: &Path,
+        digest: String,
+    ) -> Result<Outcome, CliError> {
+        imageup::check_image(image, image_facts)?;
+        let facts = self.vm_facts(vm, endpoint, "vm upgrade")?;
+        match imageup::check_base_age(image, facts.base.as_ref(), image_facts.base.as_ref()) {
             Err(error) if !args.allow_older_base => return Err(error),
             Err(error) => self
                 .warnings
@@ -1875,13 +2181,8 @@ impl App {
                 floor: human_bytes(floor),
             });
         }
-        let layout = imageup::host_layout(&vm.name);
-        let runner = &mut self.runner;
-        let digest = self
-            .receipt
-            .phase("export", || export_layout(runner, &image, &layout))?;
         self.receipt.set("digest", &digest);
-        let layout_bytes = imageup::layout_bytes(&layout);
+        let layout_bytes = imageup::layout_bytes(layout);
         if facts.bootc.staged.is_none()
             && facts
                 .bootc
@@ -1900,7 +2201,7 @@ impl App {
             )
             .next(&["tilo-vm status"]));
         }
-        let transferred = self.send_layout(&vm, &endpoint, &layout)?;
+        let transferred = self.send_layout(vm, endpoint, layout)?;
         self.receipt.set("transferred_bytes", transferred);
         self.receipt.set("image_bytes", layout_bytes);
         if !self.json {
@@ -1918,7 +2219,7 @@ impl App {
             expected: Some(digest),
             no_reboot: args.no_reboot,
         };
-        self.stage_and_boot(&vm, &endpoint, &facts, &stage)
+        self.stage_and_boot(vm, endpoint, &facts, &stage)
     }
 
     /// What `--from` resolves to.
@@ -2185,6 +2486,19 @@ impl App {
             imageup::stage_command(&facts.bootc, stage.transport, &stage.imgref)
         };
         let staged = self.vm_locked(vm, endpoint, &words)?;
+        if !staged.success && imageup::is_already_booted(&staged.stderr) {
+            // The same image under another manifest digest (a disk installs
+            // from a recompressed registry copy of the layout's image).
+            return Ok(Outcome::new(
+                format!(
+                    "VM {} already runs this image (same composefs digest); nothing to do\n  {}",
+                    vm.name,
+                    self.receipt.summary()
+                ),
+                json!({ "vm": vm.name, "image": stage.imgref, "changed": false }),
+            )
+            .next(&["tilo-vm status"]));
+        }
         if !staged.success {
             return Err(CliError::CommandFailed {
                 command: words.join(" "),
@@ -3452,6 +3766,87 @@ fn local_image_facts(
     Ok(facts)
 }
 
+/// The Tilo checkout `dir` is in, found by its dev image build script (for a
+/// copy of the tree without git, such as the one rcargo builds in).
+fn checkout_root(dir: &Path) -> Option<PathBuf> {
+    dir.ancestors()
+        .find(|d| d.join(imageup::BUILD_SCRIPT).is_file())
+        .map(Path::to_path_buf)
+}
+
+/// What `image build` runs: `--from local`'s build, the base rebuilt only
+/// when its inputs changed, with or without the disk step.
+fn image_build_command(script: &Path, disk: bool, scratch: &Path) -> CommandLine {
+    CommandLine::new(&script.display().to_string(), &[])
+        .env("TILO_DEV_DISK", if disk { "1" } else { "0" })
+        .env("TILO_DEV_IMAGE", imageup::LOCAL_DEV_IMAGE)
+        .env("TILO_DEV_BASE_BUILD", "auto")
+        .env("TILO_OUTPUT", scratch.display().to_string())
+}
+
+/// What `image disk` runs: the build's disk step for an image already in
+/// podman's storage.
+fn image_disk_command(script: &Path, scratch: &Path) -> CommandLine {
+    CommandLine::new(&script.display().to_string(), &[])
+        .env("TILO_IMAGE", imageup::LOCAL_DEV_IMAGE)
+        .env("TILO_SKIP_BUILD", "1")
+        .env("TILO_OUTPUT", scratch.display().to_string())
+        // The size os/dev/build-dev-image.sh and the published dev disks use.
+        .env("TILO_DISK_SIZE", "64G")
+        .env(
+            "TILO_ROOT_PODMAN_STORE",
+            root_podman_store(scratch).display().to_string(),
+        )
+}
+
+/// Where the disk step's root podman keeps its copy of the image: in the
+/// scratch directory, removed once the disk is written, not in
+/// /var/lib/containers.
+fn root_podman_store(scratch: &Path) -> PathBuf {
+    scratch.join("root-podman")
+}
+
+/// The disk the build left in `scratch`, moved to `<out>/disk.qcow2`.
+fn move_built_disk(scratch: &Path, out: &Path) -> Result<PathBuf, CliError> {
+    let built = scratch.join("qcow2").join("disk.qcow2");
+    let dest = out.join(imageup::BUILT_DISK);
+    std::fs::rename(&built, &dest).map_err(CliError::io(format!(
+        "move {} to {}",
+        built.display(),
+        dest.display()
+    )))?;
+    Ok(dest)
+}
+
+/// `image build`'s scratch directory: next to its output, never inside it, so
+/// fetching the output does not fetch the build's temporary files.
+fn build_scratch(out: &Path) -> PathBuf {
+    let name = out
+        .file_name()
+        .map_or_else(|| "tilo-vm".into(), |n| n.to_string_lossy().into_owned());
+    out.with_file_name(format!("{name}-build"))
+}
+
+/// [`imageup::layout_facts_text`] for a local image: its inspect output and a
+/// look inside.
+fn image_facts_text(runner: &mut SystemRunner, image: &str) -> Result<String, CliError> {
+    let mut run = |command: CommandLine| -> Result<String, CliError> {
+        let output = runner.output(&command)?;
+        if output.success {
+            Ok(output.stdout)
+        } else {
+            Err(CliError::CommandFailed {
+                command: command.display(),
+                status: output.status,
+                stderr: output.stderr.trim().to_owned(),
+            })
+        }
+    };
+    let inspect = run(imageup::inspect_command(image))?;
+    let probe = run(imageup::probe_command(image))?;
+    Ok(imageup::layout_facts_text(&inspect, &probe))
+}
+
 /// Write `image` into the VM's host-side OCI layout and drop what it no
 /// longer references; returns the manifest digest bootc will report.
 fn export_layout(
@@ -4434,6 +4829,26 @@ fn read_direct_boot_bundle(path: &Path) -> Result<DirectKernel, CliError> {
     Ok(direct)
 }
 
+fn read_published_direct_boot(
+    path: &Path,
+    tag: &str,
+    arch: &str,
+) -> Result<DirectKernel, CliError> {
+    let direct = read_direct_boot_bundle(path)?;
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let expected_kernel = parent.join(format!("tilo-vm-{tag}-{arch}-direct-Image"));
+    let expected_initrd = parent.join(format!("tilo-vm-{tag}-{arch}-direct-initrd"));
+    if direct.kernel != expected_kernel.display().to_string()
+        || direct.initrd != expected_initrd.display().to_string()
+    {
+        return Err(CliError::Config {
+            path: path.display().to_string(),
+            detail: "kernel and initrd do not name the verified disk companions".into(),
+        });
+    }
+    Ok(direct)
+}
+
 fn absolute(path: &Path) -> PathBuf {
     if path.is_absolute() {
         path.to_owned()
@@ -4472,6 +4887,70 @@ fn wait_for_session(remote: &mut Remote, slot: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `image build` runs `--from local`'s build with or without the disk, keeps its scratch next
+    /// to (never inside) the output it leaves to be fetched, and finds a checkout without git.
+    #[test]
+    fn image_build_runs_the_local_build_into_its_own_directory() {
+        let command = image_build_command(
+            Path::new("/w/os/dev/build-dev-image.sh"),
+            true,
+            Path::new("/w/target/tilo-vm-build"),
+        );
+        assert_eq!(command.program, "/w/os/dev/build-dev-image.sh");
+        let env = |key: &str| {
+            command
+                .env
+                .iter()
+                .find(|(k, _)| k == key)
+                .map(|(_, v)| v.as_str())
+        };
+        assert_eq!(env("TILO_DEV_DISK"), Some("1"));
+        assert_eq!(env("TILO_DEV_IMAGE"), Some(imageup::LOCAL_DEV_IMAGE));
+        assert_eq!(env("TILO_DEV_BASE_BUILD"), Some("auto"));
+        assert_eq!(env("TILO_OUTPUT"), Some("/w/target/tilo-vm-build"));
+        let no_disk = image_build_command(Path::new("/s"), false, Path::new("/o"));
+        assert!(no_disk.env.contains(&("TILO_DEV_DISK".into(), "0".into())));
+
+        assert_eq!(
+            build_scratch(Path::new("/w/target/tilo-vm")),
+            Path::new("/w/target/tilo-vm-build")
+        );
+
+        // image disk: the build's own disk step, on the layout imported into podman.
+        let disk = image_disk_command(
+            Path::new("/w/os/dev/build-image.sh"),
+            Path::new("/w/target/tilo-vm-build"),
+        );
+        assert!(disk.env.contains(&("TILO_SKIP_BUILD".into(), "1".into())));
+        assert!(disk.env.contains(&("TILO_DISK_SIZE".into(), "64G".into())));
+        // Root podman's copy stays in the scratch directory, not /var/lib/containers.
+        assert!(disk.env.contains(&(
+            "TILO_ROOT_PODMAN_STORE".into(),
+            "/w/target/tilo-vm-build/root-podman".into()
+        )));
+        assert!(
+            disk.env
+                .contains(&("TILO_IMAGE".into(), imageup::LOCAL_DEV_IMAGE.into()))
+        );
+        assert_eq!(
+            imageup::import_layout_command(
+                Path::new("/w/target/tilo-vm/image"),
+                "localhost/tilo-vm:latest"
+            )
+            .display(),
+            "skopeo copy --quiet oci:/w/target/tilo-vm/image:tilo-vm containers-storage:localhost/tilo-vm:latest"
+        );
+
+        let tree = tempfile::tempdir().unwrap();
+        let script = tree.path().join(imageup::BUILD_SCRIPT);
+        std::fs::create_dir_all(script.parent().unwrap()).unwrap();
+        std::fs::write(&script, "").unwrap();
+        let deep = tree.path().join("crates/dev/tilo-vm");
+        std::fs::create_dir_all(&deep).unwrap();
+        assert_eq!(checkout_root(&deep).as_deref(), Some(tree.path()));
+        assert_eq!(checkout_root(Path::new("/")), None);
+    }
 
     fn result(policy: Policy, actions: Vec<Action>, changed: bool) -> ApplyResult {
         ApplyResult {
@@ -4989,6 +5468,39 @@ mod tests {
             .unwrap();
             assert!(read_direct_boot_bundle(&bundle).is_err());
         }
+    }
+
+    #[test]
+    fn published_boot_json_cannot_redirect_to_an_unverified_kernel() {
+        let dir = tempfile::tempdir().unwrap();
+        let tag = "main-1234567";
+        let arch = "aarch64";
+        let kernel = format!("tilo-vm-{tag}-{arch}-direct-Image");
+        let initrd = format!("tilo-vm-{tag}-{arch}-direct-initrd");
+        std::fs::write(dir.path().join(&kernel), b"kernel").unwrap();
+        std::fs::write(dir.path().join(&initrd), b"initrd").unwrap();
+        std::fs::write(dir.path().join("other-Image"), b"other").unwrap();
+        let path = dir
+            .path()
+            .join(format!("tilo-vm-{tag}-{arch}-direct-boot.json"));
+        let json = |name: &str| {
+            serde_json::json!({
+                "kernel": name,
+                "initrd": initrd,
+                "cmdline": "root=tilo-auto console=ttyS0",
+                "loader_partuuid": "fcdfc623-0563-4f91-9db8-f2b87b98b3ce",
+            })
+        };
+        std::fs::write(&path, json(&kernel).to_string()).unwrap();
+        assert!(read_published_direct_boot(&path, tag, arch).is_ok());
+        std::fs::write(&path, json("other-Image").to_string()).unwrap();
+        assert!(read_published_direct_boot(&path, tag, arch).is_err());
+
+        let mut args = create_args("dev");
+        args.direct_boot_bundle = Some(path.display().to_string());
+        assert!(App::validate_create_options("whpx", &args).is_err());
+        args.image = Some("local.qcow2".into());
+        assert!(App::validate_create_options("whpx", &args).is_ok());
     }
 
     #[test]

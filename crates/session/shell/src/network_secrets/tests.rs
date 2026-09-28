@@ -17,6 +17,9 @@ use crate::shell::portal_dialog::{PortalDialogController, PortalDialogQueue};
 const TEST_GUID: &str = "0123456789abcdef0123456789abcdef";
 const WIFI_PATH: &str = "/org/freedesktop/NetworkManager/Settings/7";
 
+/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Remembered secrets in memory, and every change made to them.
 #[derive(Default)]
 struct MemoryStore {
@@ -190,7 +193,10 @@ impl Link {
 }
 
 async fn sheet_up(controller: &mut PortalDialogController) -> serde_json::Value {
-    for _ in 0..200 {
+    let deadline = std::time::Instant::now()
+        .checked_add(HANG_BOUND)
+        .expect("the hang bound fits in an Instant");
+    while std::time::Instant::now() < deadline {
         controller.pump();
         let state = controller.state_json();
         if !state.is_null() {

@@ -1,0 +1,393 @@
+//! Untrusted input that stock Automerge panics, spins or over-allocates on
+//! costs a worker, never the caller.
+//!
+//! The inputs below are checksum-valid mutations of real documents, change
+//! chunks and bundles that make automerge 0.12.0 / hexane 1.0.0-alpha.5
+//! panic or loop forever. Each must be rejected (or accepted) while this
+//! process lives on and keeps admitting good input.
+
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
+use std::io::Write as _;
+use std::time::{Duration, Instant};
+
+use automerge::transaction::Transactable;
+use automerge::{ActorId, AutoCommit, ObjType, ROOT, ReadDoc};
+use tilo_automerge_isolate::{Applied, Dependencies, Isolate, Limits, Rejected};
+
+tilo_automerge_isolate::test_worker!();
+
+fn isolate() -> Isolate {
+    Isolate::new(Limits {
+        timeout: Duration::from_secs(2),
+        memory_bytes: 512 * 1024 * 1024,
+        ..Limits::default()
+    })
+}
+
+fn seeded_doc() -> AutoCommit {
+    let mut doc = AutoCommit::new().with_actor(ActorId::from(vec![0x51; 16]));
+    doc.put(ROOT, "seed", "resident").unwrap();
+    let list = doc.put_object(ROOT, "list", ObjType::List).unwrap();
+    doc.insert(&list, 0, 1_i64).unwrap();
+    doc.commit();
+    doc
+}
+
+fn remote_change(doc: &mut AutoCommit, key: &str) -> Vec<u8> {
+    let mut remote = doc.fork();
+    remote.put(ROOT, key, "remote").unwrap();
+    remote.commit();
+    remote.save_after(&doc.get_heads())
+}
+
+/// Good input still goes through after `isolate` rejected something.
+fn still_admits(isolate: &Isolate) {
+    let mut doc = seeded_doc();
+    let change = remote_change(&mut doc, "after");
+    assert_eq!(
+        isolate.apply(&mut doc, &change, Dependencies::RequireComplete),
+        Ok(Applied::Changed(true))
+    );
+    assert!(doc.get(ROOT, "after").unwrap().is_some());
+}
+
+const DECODER_CASES: &[(&str, &str)] = &[
+    (
+        "kind 3 byte 144 ^80: truncated boolean run count: hexane BoolDecoder::next spun forever (plain load hang)",
+        "856f4a834eed0e0803df01000110d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d109010203021303230333024502500353026002020002017e010a7e0a03020000027e00017f00020010010403091108130d150921023405420f56115708700871027303940103a50107b3010f00030a0000037f0107007e08000005060000017f0000030200780201000100017b0a7d016b016c0174000a0d0003030105817c0102040702017d03010703017f057f1602007f0202167d00160002167e18147668656c6c6f010206007f0105007f0102007e030708010400037f0162000902027f01020278017905790a750c7a",
+    ),
+    (
+        "kind 0 insert 87 0x80: document value lengths exceed the value column: hexane RawColumnIter::take past end (op_iter.rs)",
+        "856f4a83ff6b7be500f1010110d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1011f0242f07c77fbf3d3aac425927bb392f9d579080452645fdb50bf7e4097564b07010203021303230240034302560210010402061108130d15092102230e3403420d560f805708800109810102830103940103a50107020002017e0a0302007e00017f000207000309000003070102090005050000017f00000302007f0202017c00017b0a7d016b016c017400090c007b0b7e78067b02017b047d0104020308017c0102040703017f0703017f057f1602007f0203167f0002167e18147668656c6c6f010205007f0104007e010002007e0d7f07010400037f0162000801",
+    ),
+    (
+        "kind 0 byte 104 ^80: truncated varint in a change-graph actor column: hexane RleValue::unpack unwrap (lib.rs)",
+        "856f4a833d52effc00f0010110d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1011f0242f07c77fbf3d3aac425927bb392f9d579080452645fdb50bf7e4097564b07010203021303230240034302560210010402061108130d15092102230e3403420d560f5708800109810102830103940103a50107820002017e0a0302007e00017f000207000309000003070102090005050000017f00000302007f0202017c00017b0a7d016b016c017400090c007b0b7e78067b02017b047d0104020308017c0102040703017f0703017f057f1602007f0203167f0002167e18147668656c6c6f010205007f0104007e010002007e0d7f07010400037f0162000801",
+    ),
+    (
+        "kind 0 pair 115,116 +1: truncated null count: hexane RleDecoder::advance_run unwrap (rle/decoder.rs)",
+        "856f4a83a004450d00f0010110d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1011f0242f07c77fbf3d3aac425927bb392f9d579080452645fdb50bf7e4097564b07010203021303230240034302560210010402061108130d15092102230e3403420d560f5708800109810102830103940103a50107020002017e0a0302007e000280000207000309000003070102090005050000017f00000302007f0202017c00017b0a7d016b016c017400090c007b0b7e78067b02017b047d0104020308017c0102040703017f0703017f057f1602007f0203167f0002167e18147668656c6c6f010205007f0104007e010002007e0d7f07010400037f0162000801",
+    ),
+    (
+        "kind 0 byte 123 ^1: op actor index past the actor table: ActorMapper::process_actor OOB (op_set2/change.rs)",
+        "856f4a833d51cb7a00f0010110d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1011f0242f07c77fbf3d3aac425927bb392f9d579080452645fdb50bf7e4097564b07010203021303230240034302560210010402061108130d15092102230e3403420d560f5708800109810102830103940103a50107020002017e0a0302007e00017f000207000309010003070102090005050000017f00000302007f0202017c00017b0a7d016b016c017400090c007b0b7e78067b02017b047d0104020308017c0102040703017f0703017f057f1602007f0203167f0002167e18147668656c6c6f010205007f0104007e010002007e0d7f07010400037f0162000801",
+    ),
+    (
+        "kind 0 pair 181,182 +1: non-numeric increment in a document: Verified change iter_ops unwrap (storage/change.rs)",
+        "856f4a835de5e29a00f0010110d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1011f0242f07c77fbf3d3aac425927bb392f9d579080452645fdb50bf7e4097564b07010203021303230240034302560210010402061108130d15092102230e3403420d560f5708800109810102830103940103a50107020002017e0a0302007e00017f000207000309000003070102090005050000017f00000302007f0202017c00017b0a7d016b016c017400090c007b0b7e78067b02017b047d0104020308017c0103050703017f0703017f057f1602007f0203167f0002167e18147668656c6c6f010205007f0104007e010002007e0d7f07010400037f0162000801",
+    ),
+    (
+        "kind 3 pair 147,148 +1: non-numeric increment in a bundle: Verified change iter_ops unwrap (storage/change.rs)",
+        "856f4a830ec77b6303df01000110d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d109010203021303230333024502500353026002020002017e010a7e0a03020000027e00017f00020010010403091108130d150921023405420f56115708700871027303940103a50107b3010f00030a0000037f0107007e08000005060000017f0000030200780201000100017b0a7d016b016c0174000a0d0003030105017c0103050702017d03010703017f057f1602007f0202167d00160002167e18147668656c6c6f010206007f0105007f0102007e030708010400037f0162000902027f01020278017905790a750c7a",
+    ),
+    (
+        "kind 0 pair 132,133 +1: null run in a non-nullable change-graph column: hexane get_null panic",
+        "856f4a83a9cba9c000ba020210a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a110b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2014707c716356b85249314a37e0cdff282bd05e090ed2b18595c18a1969a410cbf0701050305130623024006430456020e0106020a110613081527210e230f3403420d560f571080010d81010583010502007e010002017e7f027f0802027f010401800002017f02020002010407000607007f01000603017f0403067f0b000b02000001000a7d00070000017f0561667465720201637d056974656d73016d0374626c0301787f03726f7700037f046465657002007f0105007f0102007d010001720d76077c7b037e07007c02047d040a030102017c0502000605017f0002017d850118140300031402167d001602000000000000f83f05040102037270717e000104007f0203007f0103007c010001007c0a7f000103",
+    ),
+    (
+        "kind 0 pair 139,140 +1: dep index past the change list: change_graph.rs ChangeGraphCols::load max_ops[dep] OOB",
+        "856f4a8398a104ba00ba020210a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a110b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2014707c716356b85249314a37e0cdff282bd05e090ed2b18595c18a1969a410cbf0701050305130623024006430456020e0106020a110613081527210e230f3403420d560f571080010d81010583010502007e010002017e7f027f0802027f0104007f0002017f02030102010407000607007f01000603017f0403067f0b000b02000001000a7d00070000017f0561667465720201637d056974656d73016d0374626c0301787f03726f7700037f046465657002007f0105007f0102007d010001720d76077c7b037e07007c02047d040a030102017c0502000605017f0002017d850118140300031402167d001602000000000000f83f05040102037270717e000104007f0203007f0103007c010001007c0a7f000103",
+    ),
+    (
+        "kind 0 byte 140 ^80: dep index 256 past the change list: same, larger index",
+        "856f4a83e18fbf9900ba020210a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a110b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2014707c716356b85249314a37e0cdff282bd05e090ed2b18595c18a1969a410cbf0701050305130623024006430456020e0106020a110613081527210e230f3403420d560f571080010d81010583010502007e010002017e7f027f0802027f0104007f0002017f02028002010407000607007f01000603017f0403067f0b000b02000001000a7d00070000017f0561667465720201637d056974656d73016d0374626c0301787f03726f7700037f046465657002007f0105007f0102007d010001720d76077c7b037e07007c02047d040a030102017c0502000605017f0002017d850118140300031402167d001602000000000000f83f05040102037270717e000104007f0203007f0103007c010001007c0a7f000103",
+    ),
+    (
+        "kind 0 byte 119 ^40: extra-bytes lengths exceed the extra column: change_graph.rs change-meta slice OOB",
+        "856f4a83b42dd7f000f0010110d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1011f0242f07c77fbf3d3aac425927bb392f9d579080452645fdb50bf7e4097564b07010203021303230240034302560210010402061108130d15092102230e3403420d560f5708800109810102830103940103a50107020002017e0a0302007e00017f000247000309000003070102090005050000017f00000302007f0202017c00017b0a7d016b016c017400090c007b0b7e78067b02017b047d0104020308017c0102040703017f0703017f057f1602007f0203167f0002167e18147668656c6c6f010205007f0104007e010002007e0d7f07010400037f0162000801",
+    ),
+];
+
+const SEQUENCE_GAP_CASES: &[(&str, &str)] = &[
+    (
+        "kind 3 pair 40,41 +1: seq gap / unknown actor with seq != 1 in batch apply (batch.rs lookup_actor unwrap, change_graph.rs:571 assert)",
+        "856f4a83e50603e203df01000110d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d109010203021303230333024502500353026002020003027e010a7e0a03020000027e00017f00020010010403091108130d150921023405420f56115708700871027303940103a50107b3010f00030a0000037f0107007e08000005060000017f0000030200780201000100017b0a7d016b016c0174000a0d0003030105017c0102040702017d03010703017f057f1602007f0202167d00160002167e18147668656c6c6f010206007f0105007f0102007e030708010400037f0162000902027f01020278017905790a750c7a",
+    ),
+    (
+        "kind 3 byte 64 ^1: seq gap / unknown actor with seq != 1 in batch apply (batch.rs lookup_actor unwrap, change_graph.rs:571 assert)",
+        "856f4a83960a9a3f03aa02000210a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a110b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b20901050305130523063302450250065304600202007e010002017e7f037c010800047f0802027f01040000047f0002017f020200020104000e0106030d110613091527210e3405420e56105710700e71027305b30111000608007f0100067f0102007e030203007f05000b03000001000a7e0007020000017f0561667465720201637d056974656d73016d0374626c0301787f03726f7700047f046465657002007f0105007f0103007d0100010a0101020102017c0502000605017e030002017d8501181403000314021602007e1602000000000000f83f050401020372707102007f010400020102007f01030004007c037f00057d04027b0204767a07037a0475087a0a02",
+    ),
+    (
+        "kind 3 pair 3,41 +1: seq gap / unknown actor with seq != 1 in batch apply (batch.rs lookup_actor unwrap, change_graph.rs:571 assert)",
+        "856f4a83578227cc03df01000110d2d1d1d1d1d1d1d1d1d1d1d1d1d1d1d109010203021303230333024502500353026002020002027e010a7e0a03020000027e00017f00020010010403091108130d150921023405420f56115708700871027303940103a50107b3010f00030a0000037f0107007e08000005060000017f0000030200780201000100017b0a7d016b016c0174000a0d0003030105017c0102040702017d03010703017f057f1602007f0202167d00160002167e18147668656c6c6f010206007f0105007f0102007e030708010400037f0162000902027f01020278017905790a750c7a",
+    ),
+    (
+        "kind 3 pair 3,64 +1: seq gap / unknown actor with seq != 1 in batch apply (batch.rs lookup_actor unwrap, change_graph.rs:571 assert)",
+        "856f4a83343c8b3403aa02000210a2a1a1a1a1a1a1a1a1a1a1a1a1a1a1a110b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b20901050305130523063302450250065304600202007e010002017e7f037c010800047f0802027f01040000047f0002017f020200020104000e0106030d110613091527210e3405420e56105710700e71027305b30111000608007f0100067f0102007e030203007f05000b03000001000a7e0007020000017f0561667465720201637d056974656d73016d0374626c0301787f03726f7700047f046465657002007f0105007f0103007d0100010a0101020102017c0502000605017e030002017d8501181403000314021602007e1602000000000000f83f050401020372707102007f010400020102007f01030004007c037f00057d04027b0204767a07037a0475087a0a02",
+    ),
+    (
+        "kind 3 byte 64 ^40: seq gap / unknown actor with seq != 1 in batch apply (batch.rs lookup_actor unwrap, change_graph.rs:571 assert)",
+        "856f4a83aa519aed03aa02000210a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a110b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b20901050305130523063302450250065304600202007e010002017e7f427c010800047f0802027f01040000047f0002017f020200020104000e0106030d110613091527210e3405420e56105710700e71027305b30111000608007f0100067f0102007e030203007f05000b03000001000a7e0007020000017f0561667465720201637d056974656d73016d0374626c0301787f03726f7700047f046465657002007f0105007f0103007d0100010a0101020102017c0502000605017e030002017d8501181403000314021602007e1602000000000000f83f050401020372707102007f010400020102007f01030004007c037f00057d04027b0204767a07037a0475087a0a02",
+    ),
+];
+
+fn reject_or_admit_every(cases: &[(&str, &str)]) {
+    let isolate = isolate();
+    for (what, input) in cases {
+        let input = hex::decode(input).unwrap();
+        let mut doc = seeded_doc();
+        let before = doc.save();
+        let outcome = isolate.apply(&mut doc, &input, Dependencies::RetainOrphans);
+        if outcome.is_err() {
+            assert_eq!(
+                doc.save(),
+                before,
+                "{what}: a rejection changed the document"
+            );
+        }
+        let _ = isolate.load(&input);
+        eprintln!("{what}: {outcome:?}");
+    }
+    still_admits(&isolate);
+}
+
+#[test]
+fn decoder_panics_and_hangs_cost_only_the_worker() {
+    reject_or_admit_every(DECODER_CASES);
+}
+
+#[test]
+fn change_graph_sequence_gaps_cost_only_the_worker() {
+    reject_or_admit_every(SEQUENCE_GAP_CASES);
+}
+
+#[test]
+fn a_spinning_decoder_is_stopped_by_the_deadline() {
+    let isolate = isolate();
+    let spinning = hex::decode(DECODER_CASES[0].1).unwrap();
+    let started = Instant::now();
+    assert_eq!(isolate.load(&spinning).err(), Some(Rejected::TimedOut));
+    assert!(started.elapsed() < Duration::from_secs(10));
+    still_admits(&isolate);
+}
+
+/// Frame `body` as a chunk of `kind` with a genuine checksum.
+fn chunk(kind: u8, body: &[u8]) -> Vec<u8> {
+    use sha2::Digest as _;
+    let mut length = Vec::new();
+    let mut n = body.len() as u64;
+    loop {
+        let byte = (n & 0x7f) as u8;
+        n >>= 7;
+        if n == 0 {
+            length.push(byte);
+            break;
+        }
+        length.push(byte | 0x80);
+    }
+    let mut hash = sha2::Sha256::new();
+    hash.update([kind]);
+    hash.update(&length);
+    hash.update(body);
+    let mut out = vec![0x85, 0x6f, 0x4a, 0x83];
+    out.extend(&hash.finalize()[..4]);
+    out.push(kind);
+    out.extend(length);
+    out.extend(body);
+    out
+}
+
+#[test]
+fn a_compression_bomb_is_stopped_by_the_heap_ceiling() {
+    // A compressed change chunk whose body inflates to 1 GiB of zeros.
+    let mut deflate = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::fast());
+    let zeros = vec![0u8; 1024 * 1024];
+    for _ in 0..1024 {
+        deflate.write_all(&zeros).unwrap();
+    }
+    let bomb = chunk(2, &deflate.finish().unwrap());
+    let isolate = Isolate::new(Limits {
+        memory_bytes: 256 * 1024 * 1024,
+        timeout: Duration::from_secs(30),
+        ..Limits::default()
+    });
+    let mut doc = seeded_doc();
+    let outcome = isolate.apply(&mut doc, &bomb, Dependencies::RetainOrphans);
+    assert!(
+        matches!(outcome, Err(Rejected::Crashed | Rejected::Invalid(_))),
+        "{outcome:?}"
+    );
+    still_admits(&isolate);
+}
+
+#[test]
+fn admitted_input_leaves_the_same_document_as_a_direct_apply() {
+    use tilo_automerge::ApplyIncoming as _;
+    let isolate = isolate();
+    let mut doc = seeded_doc();
+    let mut direct = doc.clone();
+    for round in 0..20 {
+        let change = remote_change(&mut doc, &format!("k{round}"));
+        // A local edit in between moves the caller past the worker's copy.
+        if round % 3 == 0 {
+            doc.put(ROOT, "local", round).unwrap();
+            doc.commit();
+            let heads = direct.get_heads();
+            direct.load_incoming(&doc.save_after(&heads)).unwrap();
+        }
+        assert_eq!(
+            isolate.apply(&mut doc, &change, Dependencies::RequireComplete),
+            Ok(Applied::Changed(true))
+        );
+        direct.load_incoming(&change).unwrap();
+        assert_eq!(doc.get_heads(), direct.get_heads());
+    }
+    assert_eq!(doc.save(), direct.save());
+}
+
+#[test]
+fn missing_dependencies_are_refused_without_a_change_or_queued() {
+    let isolate = isolate();
+    let mut doc = seeded_doc();
+    let mut remote = doc.fork();
+    remote.put(ROOT, "first", 1).unwrap();
+    remote.commit();
+    let base = remote.get_heads();
+    remote.put(ROOT, "second", 2).unwrap();
+    remote.commit();
+    let orphan = remote.save_after(&base);
+    let before = doc.save();
+    assert_eq!(
+        isolate.apply(&mut doc, &orphan, Dependencies::RequireComplete),
+        Ok(Applied::MissingDependencies)
+    );
+    assert_eq!(doc.save(), before);
+    assert_eq!(
+        isolate.apply(&mut doc, &orphan, Dependencies::RetainOrphans),
+        Ok(Applied::Changed(false))
+    );
+    assert_eq!(doc.get_missing_deps(&[]), base);
+    still_admits(&isolate);
+}
+
+#[test]
+fn a_malformed_tail_refuses_the_whole_input() {
+    let isolate = isolate();
+    let mut doc = seeded_doc();
+    let mut input = remote_change(&mut doc, "good");
+    let mut bad = remote_change(&mut doc, "bad");
+    let last = bad.len() - 1;
+    bad[last] ^= 0x55;
+    input.extend(bad);
+    let before = doc.save();
+    assert!(matches!(
+        isolate.apply(&mut doc, &input, Dependencies::RetainOrphans),
+        Err(Rejected::Invalid(_))
+    ));
+    assert_eq!(doc.save(), before);
+}
+
+/// A document big enough that the worker's allocator frees and shrinks heap
+/// while rebuilding it, which reaches libc paths small inputs never do.
+#[test]
+fn a_large_document_is_admitted_by_a_confined_worker() {
+    let isolate = isolate();
+    let mut doc = AutoCommit::new();
+    let list = doc.put_object(ROOT, "messages", ObjType::List).unwrap();
+    for i in 0..10_000 {
+        let m = doc.insert_object(&list, i, ObjType::Map).unwrap();
+        doc.put(&m, "text", format!("message {i} with some text"))
+            .unwrap();
+        if i % 100 == 99 {
+            doc.commit();
+        }
+    }
+    doc.commit();
+    for round in 0..3 {
+        let change = remote_change(&mut doc, &format!("k{round}"));
+        assert_eq!(
+            isolate.apply(&mut doc, &change, Dependencies::RequireComplete),
+            Ok(Applied::Changed(true))
+        );
+    }
+    assert!(isolate.load(&doc.save()).is_ok());
+}
+
+/// A whole history of changes into a blank document, larger than the base
+/// deadline alone would allow on a slow machine, is admitted: the deadline
+/// grows with the input.
+#[test]
+fn a_long_history_into_a_blank_document_is_admitted() {
+    let mut source = AutoCommit::new().with_actor(ActorId::from(vec![0x33; 16]));
+    let text = source.put_object(ROOT, "content", ObjType::Text).unwrap();
+    source.commit();
+    for round in 0..400 {
+        let len = source.length(&text);
+        source
+            .splice_text(&text, len, 0, &format!("paragraph {round} ").repeat(12))
+            .unwrap();
+        source.commit();
+    }
+    let history: Vec<u8> = source
+        .get_changes(&[])
+        .iter()
+        .flat_map(|change| change.raw_bytes().to_vec())
+        .collect();
+    let isolate = Isolate::new(Limits::default());
+    let mut doc = AutoCommit::new().with_actor(ActorId::from(vec![0x44; 16]));
+    assert_eq!(
+        isolate.apply(&mut doc, &history, Dependencies::RequireComplete),
+        Ok(Applied::Changed(true))
+    );
+    assert_eq!(doc.get_heads(), source.get_heads());
+    // Applying into a blank document keeps the caller's actor.
+    assert_eq!(doc.get_actor(), &ActorId::from(vec![0x44; 16]));
+}
+
+/// Copies of one document each take a change; the worker serves them all.
+#[test]
+fn copies_of_one_document_are_each_admitted() {
+    let isolate = isolate();
+    let base = seeded_doc();
+    let mut copies: Vec<AutoCommit> = (0..6).map(|_| base.clone()).collect();
+    for (n, doc) in copies.iter_mut().enumerate() {
+        let change = remote_change(doc, &format!("copy{n}"));
+        assert_eq!(
+            isolate.apply(doc, &change, Dependencies::RequireComplete),
+            Ok(Applied::Changed(true))
+        );
+        assert!(doc.get(ROOT, format!("copy{n}")).unwrap().is_some());
+    }
+    still_admits(&isolate);
+}
+
+#[test]
+#[ignore = "timing, run by hand"]
+fn admission_latency() {
+    let isolate = isolate();
+    let mut doc = AutoCommit::new();
+    let list = doc.put_object(ROOT, "messages", ObjType::List).unwrap();
+    for i in 0..10_000 {
+        let m = doc.insert_object(&list, i, ObjType::Map).unwrap();
+        doc.put(
+            &m,
+            "text",
+            format!("message {i} with a realistic amount of text"),
+        )
+        .unwrap();
+        doc.commit();
+    }
+    let mut samples = Vec::new();
+    for round in 0..200 {
+        let change = remote_change(&mut doc, &format!("k{round}"));
+        let started = Instant::now();
+        isolate
+            .apply(&mut doc, &change, Dependencies::RequireComplete)
+            .unwrap();
+        samples.push(started.elapsed());
+    }
+    let first = samples[0];
+    samples.sort();
+    println!(
+        "10k-message document: first admission {first:?} (worker start and full rebuild), then median {:?}, p99 {:?}",
+        samples[samples.len() / 2],
+        samples[samples.len() * 99 / 100]
+    );
+}

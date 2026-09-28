@@ -44,6 +44,14 @@ impl StripView {
         }
     }
 
+    /// Reconcile canonical labels and local selection without restarting the view.
+    pub fn reconcile(&mut self, names: Vec<String>, active: usize) -> bool {
+        let active = active.min(names.len().saturating_sub(1));
+        let changed = self.strip_names != names || self.active_index != active;
+        self.strip_names = names;
+        self.active_index = active;
+        changed
+    }
     pub fn active_index(&self) -> usize {
         self.active_index
     }
@@ -73,6 +81,12 @@ impl StripView {
 }
 
 impl Widget for StripView {
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
     fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
     fn build_layout(
         &mut self,

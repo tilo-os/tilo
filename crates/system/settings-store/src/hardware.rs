@@ -411,6 +411,14 @@ pub struct InputDeviceSnapshot {
     pub kind: InputDeviceKind,
     /// Physical buttons on a tablet pad; zero for every other kind.
     pub pad_buttons: u32,
+    /// A tablet pad's touch rings, in libinput's order: how many modes each
+    /// one's mode group has.
+    pub pad_rings: Vec<u32>,
+    /// A tablet pad's touch strips, like [`Self::pad_rings`].
+    pub pad_strips: Vec<u32>,
+    /// Pad buttons (libinput's numbers, from zero) that switch their mode
+    /// group to its next mode rather than doing anything themselves.
+    pub pad_mode_buttons: Vec<u32>,
 }
 
 /// Read-only state written atomically by the compositor in the private user
@@ -500,6 +508,50 @@ pub enum StylusButtonAction {
     Disabled,
 }
 
+/// What the eraser end of a pen does. `Native` reports it as an eraser:
+/// tablet-aware apps erase with it, everything else sees a left click.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EraserAction {
+    #[default]
+    Native,
+    /// Touching the surface presses this mouse button in every app.
+    Left,
+    Middle,
+    Right,
+    Back,
+    Forward,
+    /// Touching the surface presses the chord bound to this shortcut.
+    Shortcut(ShortcutAction),
+}
+
+/// What turning a pad's touch ring or sliding along its strip does in an app
+/// that does not take tablet input itself. Tablet-aware apps always get the
+/// ring and strip as they are.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PadDialAction {
+    Nothing,
+    /// Scroll whatever is under the pointer.
+    #[default]
+    Scroll,
+    /// Zoom in and out (Ctrl+= and Ctrl+-).
+    Zoom,
+    /// Grow and shrink the brush (`]` and `[`), as drawing apps bind them.
+    BrushSize,
+    /// Step the output volume.
+    Volume,
+    /// Step the display brightness.
+    Brightness,
+}
+
+/// A pad control that turns or slides.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PadDial {
+    Ring(u32),
+    Strip(u32),
+}
+
 /// Pressure curves Settings offers, softest first, as Bézier control points
 /// `[x1, y1, x2, y2]` between `(0, 0)` and `(1, 1)`. The middle one is linear.
 pub const PRESSURE_CURVE_PRESETS: [[f64; 4]; 7] = [
@@ -572,8 +624,62 @@ pub struct TabletConfig {
     pub upper_button: StylusButtonAction,
     /// A third barrel button, on pens that have one.
     pub third_button: StylusButtonAction,
+    /// What the eraser end of the pen does.
+    pub eraser: EraserAction,
     /// Pad button number (libinput's, from zero) to the shortcut it runs.
     pub pad_buttons: BTreeMap<u32, ShortcutAction>,
+    /// The pad button that shows what every control does while held, as
+    /// the mode buttons do. It runs no shortcut of its own.
+    pub pad_map_button: Option<u32>,
+    /// Pad ring number to what it does in each mode of its mode group,
+    /// indexed by mode. Modes past the end scroll.
+    pub pad_rings: BTreeMap<u32, Vec<PadDialAction>>,
+    /// Pad strip number to what it does in each mode, like
+    /// [`Self::pad_rings`].
+    pub pad_strips: BTreeMap<u32, Vec<PadDialAction>>,
+}
+
+impl TabletConfig {
+    fn dials(&self, dial: PadDial) -> (&BTreeMap<u32, Vec<PadDialAction>>, u32) {
+        match dial {
+            PadDial::Ring(index) => (&self.pad_rings, index),
+            PadDial::Strip(index) => (&self.pad_strips, index),
+        }
+    }
+
+    /// What `dial` does in `mode` for an app without tablet support.
+    pub fn dial_action(&self, dial: PadDial, mode: u32) -> PadDialAction {
+        let (dials, index) = self.dials(dial);
+        dials
+            .get(&index)
+            .and_then(|modes| modes.get(usize::try_from(mode).ok()?))
+            .copied()
+            .unwrap_or_default()
+    }
+
+    /// Make `dial` do `action` in `mode`, leaving its other modes as they are.
+    pub fn set_dial_action(&mut self, dial: PadDial, mode: u32, action: PadDialAction) {
+        let (dials, index) = match dial {
+            PadDial::Ring(index) => (&mut self.pad_rings, index),
+            PadDial::Strip(index) => (&mut self.pad_strips, index),
+        };
+        let Ok(mode) = usize::try_from(mode) else {
+            return;
+        };
+        let modes = dials.entry(index).or_default();
+        if modes.len() <= mode {
+            modes.resize(mode.saturating_add(1), PadDialAction::default());
+        }
+        if let Some(slot) = modes.get_mut(mode) {
+            *slot = action;
+        }
+        while modes.last() == Some(&PadDialAction::default()) {
+            modes.pop();
+        }
+        if modes.is_empty() {
+            dials.remove(&index);
+        }
+    }
 }
 
 impl Default for TabletConfig {
@@ -586,7 +692,11 @@ impl Default for TabletConfig {
             lower_button: StylusButtonAction::Default,
             upper_button: StylusButtonAction::Default,
             third_button: StylusButtonAction::Default,
+            eraser: EraserAction::Native,
             pad_buttons: BTreeMap::new(),
+            pad_map_button: None,
+            pad_rings: BTreeMap::new(),
+            pad_strips: BTreeMap::new(),
         }
     }
 }
@@ -1106,8 +1216,8 @@ impl KeyboardInputSource {
 /// the primary (first) keyboard layout of the source list.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum InputMethodEngine {
-    /// Simplified Chinese, Pinyin.
-    Pinyin,
+    /// Simplified Chinese, Rime with its Pinyin schema.
+    Rime,
     /// Japanese, Anthy.
     Anthy,
     /// Korean, Hangul.
@@ -1119,18 +1229,18 @@ pub enum InputMethodEngine {
 pub const INPUT_METHOD_SOURCE_PREFIX: &str = "ime/";
 
 impl InputMethodEngine {
-    pub const ALL: [Self; 3] = [Self::Pinyin, Self::Anthy, Self::Hangul];
+    pub const ALL: [Self; 3] = [Self::Rime, Self::Anthy, Self::Hangul];
 
     /// The engine's name in the input-method framework (and in its source id).
     pub fn name(self) -> &'static str {
         match self {
-            Self::Pinyin => "pinyin",
+            Self::Rime => "rime",
             Self::Anthy => "anthy",
             Self::Hangul => "hangul",
         }
     }
 
-    /// The durable source id, e.g. `ime/pinyin`.
+    /// The durable source id, e.g. `ime/rime`.
     pub fn source_id(self) -> String {
         format!("{INPUT_METHOD_SOURCE_PREFIX}{}", self.name())
     }
@@ -1138,7 +1248,7 @@ impl InputMethodEngine {
     /// Human-readable source name for choosers and the switcher readout.
     pub fn label(self) -> &'static str {
         match self {
-            Self::Pinyin => "Chinese (Simplified) — Pinyin",
+            Self::Rime => "Chinese (Simplified) — Rime",
             Self::Anthy => "Japanese — Anthy",
             Self::Hangul => "Korean — Hangul",
         }
@@ -2899,7 +3009,7 @@ mod tests {
             key: input_device_key(0x056a, 0x0374, "Wacom Intuos S Pen"),
             name: "Wacom Intuos S Pen".into(),
             kind: InputDeviceKind::Tablet,
-            pad_buttons: 0,
+            ..InputDeviceSnapshot::default()
         };
         assert_eq!(pen.key, "056a:0374:Wacom Intuos S Pen");
         let pid = std::process::id();
@@ -2946,6 +3056,7 @@ mod tests {
             ..TabletConfig::default()
         };
         pen.pad_buttons.insert(3, ShortcutAction::WorkspaceOverview);
+        pen.pad_map_button = Some(1);
         let key = input_device_key(0x056a, 0x0374, "Wacom Intuos S Pen");
         let section = serde_json::json!({
             TABLETS_KEY: {
@@ -2963,6 +3074,7 @@ mod tests {
         );
         assert_eq!(value["lower_button"], "right");
         assert_eq!(value["pad_buttons"]["3"], "workspace_overview");
+        assert_eq!(value["pad_map_button"], 1);
 
         let tablets = tablets_from_section(&section);
         assert_eq!(tablets.get(&key), Some(&pen));
@@ -2993,6 +3105,56 @@ mod tests {
         assert!(
             (feel_for_pressure_curve([0.02, 0.73, 0.26, 0.98]) - 0.0).abs() < f64::EPSILON,
             "a hand-edited curve reads as its nearest preset"
+        );
+    }
+
+    #[test]
+    fn pad_dials_keep_a_choice_per_mode_and_the_eraser_its_own() {
+        let mut pad = TabletConfig::default();
+        assert_eq!(
+            pad.dial_action(PadDial::Ring(0), 0),
+            PadDialAction::Scroll,
+            "an untouched ring scrolls"
+        );
+        pad.set_dial_action(PadDial::Ring(0), 2, PadDialAction::BrushSize);
+        pad.set_dial_action(PadDial::Strip(1), 0, PadDialAction::Volume);
+        assert_eq!(
+            pad.dial_action(PadDial::Ring(0), 2),
+            PadDialAction::BrushSize
+        );
+        assert_eq!(pad.dial_action(PadDial::Ring(0), 1), PadDialAction::Scroll);
+        assert_eq!(pad.dial_action(PadDial::Ring(0), 7), PadDialAction::Scroll);
+        assert_eq!(pad.dial_action(PadDial::Ring(1), 2), PadDialAction::Scroll);
+        assert_eq!(pad.dial_action(PadDial::Strip(1), 0), PadDialAction::Volume);
+        assert_eq!(
+            pad.dial_action(PadDial::Strip(0), 0),
+            PadDialAction::Scroll,
+            "rings and strips are numbered apart"
+        );
+
+        let value = serde_json::to_value(&pad).unwrap();
+        assert_eq!(
+            value["pad_rings"]["0"],
+            serde_json::json!(["scroll", "scroll", "brush_size"])
+        );
+        assert_eq!(value["pad_strips"]["1"], serde_json::json!(["volume"]));
+        assert_eq!(value["eraser"], "native");
+        let back: TabletConfig = serde_json::from_value(value).unwrap();
+        assert_eq!(back, pad);
+
+        pad.set_dial_action(PadDial::Ring(0), 2, PadDialAction::Scroll);
+        assert!(
+            pad.pad_rings.is_empty(),
+            "a ring back on its defaults stores nothing"
+        );
+
+        let pen = TabletConfig {
+            eraser: EraserAction::Shortcut(ShortcutAction::Search),
+            ..TabletConfig::default()
+        };
+        assert_eq!(
+            serde_json::to_value(&pen).unwrap()["eraser"],
+            serde_json::json!({"shortcut": "search"})
         );
     }
 
@@ -3029,9 +3191,9 @@ mod tests {
     #[test]
     fn input_method_engines_share_the_source_list_without_taking_xkb_groups() {
         let section = serde_json::json!({
-            "keyboard_layout": "ime/pinyin",
+            "keyboard_layout": "ime/rime",
             "keyboard_layouts": [
-                "us", "ime/pinyin", "de", "ime/pinyin", "ime/mozc", "fr", "es", "gb", "ime/anthy"
+                "us", "ime/rime", "de", "ime/rime", "ime/mozc", "fr", "es", "gb", "ime/anthy"
             ]
         })
         .as_object()
@@ -3040,7 +3202,7 @@ mod tests {
         let cfg = RichInputConfig::from_section(&section);
         assert_eq!(
             cfg.keyboard_layouts,
-            ["us", "ime/pinyin", "de", "fr", "es", "ime/anthy"],
+            ["us", "ime/rime", "de", "fr", "es", "ime/anthy"],
             "engines do not count against the four XKB groups; unknown engines are dropped"
         );
         assert_eq!(
@@ -3051,7 +3213,7 @@ mod tests {
             ["us", "de", "fr", "es"]
         );
         assert_eq!(cfg.active_source_index(), 1);
-        assert_eq!(cfg.active_input_method(), Some(InputMethodEngine::Pinyin));
+        assert_eq!(cfg.active_input_method(), Some(InputMethodEngine::Rime));
         assert_eq!(
             cfg.active_layout_index(),
             0,
@@ -3076,13 +3238,13 @@ mod tests {
         assert_eq!(single.keyboard_layout, "us");
         let mut with_engine = RichInputConfig {
             keyboard_layout: "us".into(),
-            keyboard_layouts: vec!["us".into(), "ime/pinyin".into()],
+            keyboard_layouts: vec!["us".into(), "ime/rime".into()],
             ..Default::default()
         };
         assert_eq!(with_engine.select_next_source(), Some(1));
         assert_eq!(
             with_engine.active_input_method(),
-            Some(InputMethodEngine::Pinyin)
+            Some(InputMethodEngine::Rime)
         );
     }
 
@@ -3146,12 +3308,12 @@ mod tests {
 
     #[test]
     fn engine_ids_never_parse_as_xkb_layouts() {
-        assert!(KeyboardInputSource::parse("ime/pinyin").is_none());
+        assert!(KeyboardInputSource::parse("ime/rime").is_none());
         assert_eq!(
             InputSource::parse("ime/hangul"),
             Some(InputSource::InputMethod(InputMethodEngine::Hangul))
         );
-        assert!(InputSource::parse("ime/../pinyin").is_none());
+        assert!(InputSource::parse("ime/../rime").is_none());
         for engine in InputMethodEngine::ALL {
             assert_eq!(
                 InputMethodEngine::from_source_id(&engine.source_id()),
@@ -3168,7 +3330,7 @@ mod tests {
         };
         cfg.normalise_sources();
         assert!(!cfg.can_add_source("gb"));
-        assert!(cfg.can_add_source("ime/pinyin"));
+        assert!(cfg.can_add_source("ime/rime"));
         assert!(!cfg.can_add_source("de"), "already present");
         assert!(!cfg.can_add_source("ime/nope"));
     }

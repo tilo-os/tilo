@@ -27,8 +27,10 @@
 //! shelling-out [`RealGraphControl`] and [`RealEnumerator`] implementations
 //! invoke the command-line tools.
 
+#[cfg(not(target_arch = "wasm32"))]
 use std::process::Command;
 use std::sync::Arc;
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 
 use serde_json::Value;
@@ -465,7 +467,11 @@ fn push_node(
     let props = o.get("info").and_then(|i| i.get("props"));
     let getp = |k: &str| props.and_then(|p| p.get(k));
     let media_class = getp("media.class").and_then(|v| v.as_str()).unwrap_or("");
-    let serial = getp("object.serial").and_then(as_u32).unwrap_or(id);
+    // Serial is a PipeWire object identity; a reusable node id is not a substitute.
+    // The public graph currently supports u32 serials. Larger values are omitted.
+    let Some(serial) = getp("object.serial").and_then(as_u32) else {
+        return;
+    };
     let name = getp("node.name")
         .and_then(|v| v.as_str())
         .unwrap_or("")
@@ -676,6 +682,7 @@ pub trait GraphControl: Send + Sync {
 
 /// Run `bin` with `args`, mapping a missing binary or non-zero exit to the
 /// daemon's error string — the same best-effort shape `os_actions` uses.
+#[cfg(not(target_arch = "wasm32"))]
 fn run(bin: &str, args: &[String]) -> Result<(), String> {
     let mut command = Command::new(bin);
     command.args(args);
@@ -688,6 +695,12 @@ fn run(bin: &str, args: &[String]) -> Result<(), String> {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+fn run(_: &str, _: &[String]) -> Result<(), String> {
+    Err("PipeWire audio graph control is unsupported on this platform".to_owned())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn sanitize_diagnostic(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes)
         .chars()
@@ -770,6 +783,7 @@ pub trait AudioEnumerator: Send + Sync {
 pub struct RealEnumerator;
 
 impl AudioEnumerator for RealEnumerator {
+    #[cfg(not(target_arch = "wasm32"))]
     fn enumerate(&self) -> AudioGraph {
         let Ok(out) = bounded_command::run(
             "pw-dump",
@@ -784,6 +798,11 @@ impl AudioEnumerator for RealEnumerator {
             return AudioGraph::default();
         }
         parse_pw_dump(&String::from_utf8_lossy(&out.stdout))
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn enumerate(&self) -> AudioGraph {
+        AudioGraph::default()
     }
 }
 
@@ -1000,18 +1019,59 @@ mod tests {
         let g = parse_pw_dump(
             r#"[
             {"id":10,"type":"PipeWire:Interface:Node","info":{"props":{
-              "media.class":"Audio/Source","node.name":"alsa_input.usb-mic"}}},
+              "media.class":"Audio/Source","node.name":"alsa_input.usb-mic","object.serial":110}}},
             {"id":11,"type":"PipeWire:Interface:Node","info":{"props":{
-              "media.class":"Audio/Source","node.name":"tilo_echo_cancel_source",
+              "media.class":"Audio/Source","node.name":"tilo_echo_cancel_source","object.serial":111,
               "node.description":"Echo-cancelled microphone"}}},
             {"id":12,"type":"PipeWire:Interface:Node","info":{"props":{
-              "media.class":"Stream/Input/Audio","node.name":"tilo_echo_cancel_capture"}}},
+              "media.class":"Stream/Input/Audio","node.name":"tilo_echo_cancel_capture","object.serial":112}}},
             {"id":13,"type":"PipeWire:Interface:Node","info":{"props":{
-              "media.class":"Stream/Input/Audio","node.name":"tilo_echo_cancel_reference"}}}
+              "media.class":"Stream/Input/Audio","node.name":"tilo_echo_cancel_reference","object.serial":113}}}
         ]"#,
         );
         let sources: Vec<_> = g.sources.iter().map(|d| d.name.as_str()).collect();
         assert_eq!(sources, ["alsa_input.usb-mic"]);
         assert!(g.record_streams.is_empty(), "{:?}", g.record_streams);
+    }
+
+    #[test]
+    fn exact_audio_source_requires_a_real_bounded_serial() {
+        for class in ["Audio/Source", "Audio/Sink"] {
+            let missing = serde_json::json!([{"id": 42, "type": "PipeWire:Interface:Node",
+                "info": {"props": {"media.class": class}}}]);
+            let graph = parse_pw_dump(&missing.to_string());
+            assert!(graph.sources.is_empty() && graph.sinks.is_empty());
+            for serial in [
+                serde_json::Value::Null,
+                serde_json::json!(4_294_967_296u64),
+                serde_json::json!("4294967296"),
+                serde_json::json!(-1),
+                serde_json::json!(1.5),
+            ] {
+                let input = serde_json::json!([{"id": 42, "type": "PipeWire:Interface:Node",
+                    "info": {"props": {"media.class": class, "object.serial": serial}}}]);
+                let graph = parse_pw_dump(&input.to_string());
+                assert!(
+                    graph.sources.is_empty() && graph.sinks.is_empty(),
+                    "a reusable node ID cannot replace missing/invalid object.serial: {input}"
+                );
+            }
+            for serial in [
+                serde_json::json!(246),
+                serde_json::json!("246"),
+                serde_json::json!(u32::MAX),
+            ] {
+                let input = serde_json::json!([{"id": 42, "type": "PipeWire:Interface:Node",
+                    "info": {"props": {"media.class": class, "object.serial": serial}}}]);
+                let graph = parse_pw_dump(&input.to_string());
+                let device = graph
+                    .sources
+                    .first()
+                    .or_else(|| graph.sinks.first())
+                    .unwrap();
+                assert_eq!(device.id, 42);
+                assert_eq!(device.serial, as_u32(&serial).unwrap());
+            }
+        }
     }
 }

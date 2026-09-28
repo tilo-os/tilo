@@ -1,11 +1,6 @@
-//! `tilo-relay-client` — the device side of the Tilo host + relay.
-//!
-//! - [`client`] — [`RelayClient`], an authenticated session with a relay,
-//!   plus the one-shot content-discovery and home-peer management calls;
-//! - [`coedit`] — [`RelayCoeditSession`], the toolkit co-edit verbs mapped
-//!   onto relay envelopes;
-//! - [`frame`] — the length-prefixed frame codec every relay stream uses.
-//!   The daemon reads and writes its end through the same functions.
+//! `tilo-relay-client` — the length-prefixed frame codec every relay stream
+//! uses ([`frame`]). The daemon and the relay session client in `tilo-relay`
+//! read and write through the same functions.
 //!
 //! The messages themselves are defined in [`tilo_relay_protocol`].
 
@@ -22,13 +17,6 @@
     )
 )]
 
-pub mod client;
-pub mod coedit;
 pub mod frame;
 
-pub use client::{ClientError, RelayClient};
-pub use coedit::{
-    AttributedPresence, CoeditError, CoeditPayload, Coverage, Inbound, MAX_COVERED_ENTRIES,
-    RelayCoeditSession,
-};
-pub use tilo_relay_protocol::transport::{ContentPeerRegistration, Envelope};
+pub use tilo_relay_protocol::transport::Envelope;

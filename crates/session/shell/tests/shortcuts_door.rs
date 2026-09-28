@@ -68,7 +68,6 @@ const FIXTURE: &str = "so.tilo.fixture-drafts";
 const FIXTURE_HANDLE: &str = "drafts";
 const RECORD: &str = "file:drafts.qdoc";
 const INBOX: &str = "fixture.drafts:inbox";
-const DEADLINE: Duration = Duration::from_secs(20);
 /// Devices the owner runs applications on, each connecting as the owner.
 const SHORTCUTS_HANDLE: &str = "shortcuts-app";
 const SILENT_HANDLE: &str = "silent-app";
@@ -378,7 +377,7 @@ impl FixtureApp {
 }
 
 fn answer<T>(pending: Pending<T>) -> T {
-    match pending.wait_timeout(Duration::from_secs(5)) {
+    match pending.wait_timeout(tilo_test_env::hang_bound()) {
         Ok(Some(value)) => value,
         _ => panic!("the broker did not answer"),
     }
@@ -399,6 +398,12 @@ struct Door {
 impl Door {
     fn open() -> Self {
         let dir = tempfile::tempdir().expect("socket directory");
+        // The broker binds only inside an owner-only directory.
+        std::fs::set_permissions(
+            dir.path(),
+            std::os::unix::fs::PermissionsExt::from_mode(0o700),
+        )
+        .expect("owner-only socket directory");
         let socket = dir.path().join("collab.sock");
         let (broker, membership) = spawn_broker(&socket);
         let host = shell::shell::remote_actions::BrokerActionHost::new(
@@ -410,9 +415,7 @@ impl Door {
             host,
             owner: Caller::local_person(owner_principal()),
             app: FixtureApp::connect(&socket),
-            deadline: Instant::now()
-                .checked_add(DEADLINE)
-                .expect("the deadline fits in an Instant"),
+            deadline: tilo_test_env::hang_deadline(),
             dir,
         };
         while !["draft", "publish", "archive"]
@@ -594,9 +597,12 @@ impl Door {
     }
 
     fn finished_runs(&self) -> Vec<shell::shell::automation_host::FinishedShortcutRun> {
-        let broker = self.broker.app_action_broker().expect("the action broker");
         loop {
-            let finished = broker.take_finished_shortcut_runs();
+            let finished = self
+                .broker
+                .app_action_broker()
+                .expect("the action broker")
+                .take_finished_shortcut_runs();
             if !finished.is_empty() {
                 return finished;
             }
@@ -766,12 +772,13 @@ fn a_saved_shortcut_runs_its_steps_through_the_door_and_undoes_as_one() {
     assert_eq!(recorded.steps[0].summary, "Write draft, Publish draft");
 
     // Undoing the run reverts both steps.
-    let doc = &mut door.app.doc;
+    let mut doc = std::mem::take(&mut door.app.doc);
+    drop(door);
     let report = ui::undo_run(
         recorded,
         None,
         &ui::AuthorDirectory::default(),
-        &mut [(FIXTURE.to_string(), RECORD.to_string(), &mut *doc)],
+        &mut [(FIXTURE.to_string(), RECORD.to_string(), &mut doc)],
     );
     assert!(report.is_complete(), "the whole run is undone: {report:?}");
     doc.commit();
@@ -799,7 +806,9 @@ fn a_shortcut_reaching_outside_its_grant_is_refused() {
             .is_empty()
     );
     assert!(!door.offers(SHORTCUTS_APP_ID, &shortcut_resource_id("sneaky"), "run"));
-    assert!(door.app.served.is_empty(), "nothing ran");
+    let served_nothing = door.app.served.is_empty();
+    drop(door);
+    assert!(served_nothing, "nothing ran");
 }
 
 /// "Publish a draft" with a fixed title, so nobody need give it inputs,
@@ -845,11 +854,11 @@ fn tick(triggers: &mut TriggerHost, door: &Door, person: &str) -> Vec<Firing> {
     fired
 }
 
-fn served_actions(door: &Door) -> Vec<&str> {
+fn served_actions(door: &Door) -> Vec<String> {
     door.app
         .served
         .iter()
-        .map(|(action, _)| action.as_str())
+        .map(|(action, _)| action.clone())
         .collect()
 }
 
@@ -947,10 +956,8 @@ fn a_chord_pressed_in_the_shell_runs_the_shortcut_saved_with_it() {
     host.attach_app_action_broker(door.broker.app_action_broker().expect("the action broker"));
     host.tick_shortcut_triggers_now();
     // Building a compositor host is slow on a cold process; the run gets
-    // its own full deadline from here.
-    door.deadline = Instant::now()
-        .checked_add(DEADLINE)
-        .expect("the deadline fits in an Instant");
+    // its own full hang bound from here.
+    door.deadline = tilo_test_env::hang_deadline();
     let listed: Vec<(String, String)> = host
         .action_chords()
         .iter()
@@ -980,6 +987,7 @@ fn a_chord_pressed_in_the_shell_runs_the_shortcut_saved_with_it() {
     }
     assert_eq!(served_actions(&door), ["draft", "publish"]);
     let finished = door.finished_runs();
+    drop(door);
     assert_eq!(finished.len(), 1);
     assert_eq!(finished[0].report.trigger, "keyboard");
     assert_eq!(finished[0].invoker, session_person());
@@ -1007,10 +1015,9 @@ fn a_chord_the_desktop_owns_cannot_start_a_shortcut() {
             connected: Some(true),
         }],
     );
-    assert!(
-        matches!(door.save(&watching), Err(ActionHostError::Refused { .. })),
-        "network triggers cannot be saved yet"
-    );
+    let watching_refused = matches!(door.save(&watching), Err(ActionHostError::Refused { .. }));
+    drop(door);
+    assert!(watching_refused, "network triggers cannot be saved yet");
 }
 
 #[test]
@@ -1070,10 +1077,13 @@ fn an_app_opening_runs_the_shortcut_with_the_app_bound_as_its_input() {
         door.job_to_end(job),
         InvocationUpdate::Succeeded { .. }
     ));
-    assert_eq!(served_actions(&door), ["draft", "publish"]);
+    let served = served_actions(&door);
+    let title = door.app.served[0].1.get("title").cloned();
+    drop(door);
+    assert_eq!(served, ["draft", "publish"]);
     assert_eq!(
-        door.app.served[0].1.get("title"),
-        Some(&json!(FIXTURE)),
+        title,
+        Some(json!(FIXTURE)),
         "the opened app's id reached the step through the shortcut's input"
     );
 }
@@ -1122,6 +1132,7 @@ fn a_schedule_fires_once_per_fire_time_across_a_restart() {
         "the schedule ran exactly once"
     );
     let finished = door.finished_runs();
+    drop(door);
     assert_eq!(finished[0].report.trigger, "schedule");
 }
 
@@ -1167,6 +1178,7 @@ fn fire_times_missed_while_asleep_are_skipped_or_caught_up_once() {
         .into_iter()
         .map(|firing| firing.shortcut)
         .collect();
+    drop(door);
     names.sort();
     assert_eq!(names, ["catches-up", "skips"]);
 }
@@ -1234,7 +1246,9 @@ fn an_unattended_run_takes_a_confirmed_step_only_with_advance_consent() {
         door.job_to_end(job),
         InvocationUpdate::Succeeded { .. }
     ));
-    assert_eq!(served_actions(&door), ["archive"]);
+    let served = served_actions(&door);
+    drop(door);
+    assert_eq!(served, ["archive"]);
 }
 
 #[test]
@@ -1300,8 +1314,10 @@ fn revoking_the_savers_membership_or_deleting_the_shortcut_stops_its_triggers() 
         .expect("the owner deletes it");
     clock.advance(chrono::Duration::hours(1));
     assert!(tick(&mut triggers, &door, BOB).is_empty());
+    let fired_after_delete = door.fire(BOB, "bobs", &schedule, RunId::new());
+    drop(door);
     assert!(matches!(
-        door.fire(BOB, "bobs", &schedule, RunId::new()),
+        fired_after_delete,
         Err(ActionHostError::UnknownAction)
     ));
 }
@@ -1549,10 +1565,16 @@ fn an_app_that_declared_nothing_is_refused_the_catalogue() {
             error: ActionHostError::NotPermitted
         }
     ));
-    assert!(door.app.served.is_empty(), "nothing ran");
+    let served_nothing = door.app.served.is_empty();
+    drop(door);
+    assert!(served_nothing, "nothing ran");
 }
 
 #[test]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the door serves every call to the end of the test"
+)]
 fn the_shortcuts_app_uses_its_library_but_cannot_invoke_another_app_itself() {
     let mut door = door_with_declared_access();
     let socket = door.dir.path().join("collab.sock");
@@ -1640,7 +1662,9 @@ fn an_app_that_may_invoke_still_needs_the_workspace_to_grant_it() {
         door.app.pump();
         std::thread::sleep(Duration::from_millis(5));
     }
-    assert_eq!(door.app.served[0].0, "draft");
+    let served = door.app.served[0].0.clone();
+    drop(door);
+    assert_eq!(served, "draft");
 }
 
 /// The door with declared access and a person who answers grant questions
@@ -2002,8 +2026,12 @@ fn a_confirmation_step_is_approved_in_the_sheet_and_the_run_continues() {
         door.job_to_end(job),
         InvocationUpdate::Succeeded { .. }
     ));
-    assert_eq!(served_actions(&door), ["archive"]);
-    assert!(host.sheet_view().is_none(), "the sheet is gone");
+    let served = served_actions(&door);
+    drop(door);
+    let sheet_gone = host.sheet_view().is_none();
+    drop(host);
+    assert_eq!(served, ["archive"]);
+    assert!(sheet_gone, "the sheet is gone");
 }
 
 #[test]
@@ -2049,6 +2077,7 @@ fn a_question_answered_in_the_sheet_is_bound_and_a_secret_stays_hidden() {
         "a secret answer is masked on screen"
     );
     press_named(&mut host, winit::keyboard::NamedKey::Enter);
+    drop(host);
 
     assert!(matches!(
         door.job_to_end(job),
@@ -2062,7 +2091,9 @@ fn a_question_answered_in_the_sheet_is_bound_and_a_secret_stays_hidden() {
         )],
         "the answer is bound into the next step"
     );
-    let report = serde_json::to_value(&door.finished_runs()[0].report).unwrap();
+    let finished = door.finished_runs();
+    drop(door);
+    let report = serde_json::to_value(&finished[0].report).unwrap();
     let recorded = report.to_string();
     assert!(
         !recorded.contains("s3") && recorded.contains("[redacted]"),
@@ -2090,6 +2121,10 @@ fn cancelling_the_sheet_stops_the_run_with_nothing_applied() {
         other => panic!("a cancelled run stops: {other:?}"),
     }
     door.serve_briefly();
-    assert!(door.app.served.is_empty(), "nothing was applied");
-    assert!(host.sheet_view().is_none());
+    let nothing_applied = door.app.served.is_empty();
+    drop(door);
+    let sheet_gone = host.sheet_view().is_none();
+    drop(host);
+    assert!(nothing_applied, "nothing was applied");
+    assert!(sheet_gone);
 }

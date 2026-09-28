@@ -334,3 +334,39 @@ fn service_requirements_and_portal_policy_parse_strictly() {
         assert!(Manifest::from_toml_str(&bad).is_err());
     }
 }
+
+#[test]
+fn platform_native_declaration_roundtrips_and_defaults_to_portable() {
+    let src = render_with_dummy_key();
+    let portable = Manifest::from_toml_str(&src).expect("decode");
+    assert!(portable.platform.is_portable());
+    assert!(
+        !portable
+            .to_toml_string()
+            .expect("encode")
+            .contains("[platform]")
+    );
+
+    let native = format!("{src}\n[platform]\nnative = \"Hosts a PTY for a login shell.\"\n");
+    let m = Manifest::from_toml_str(&native).expect("decode native");
+    assert_eq!(
+        m.platform.native.as_deref(),
+        Some("Hosts a PTY for a login shell.")
+    );
+    validate_manifest(&m).expect("a one-line reason is valid");
+    let again = Manifest::from_toml_str(&m.to_toml_string().expect("encode")).expect("decode-2");
+    assert_eq!(m, again, "platform declaration round-trips");
+}
+
+#[test]
+fn platform_native_requires_a_one_line_reason() {
+    let src = render_with_dummy_key();
+    for reason in ["\"  \"", "\"\"\"\nfirst\nsecond\"\"\""] {
+        let m = Manifest::from_toml_str(&format!("{src}\n[platform]\nnative = {reason}\n"))
+            .expect("decode");
+        assert!(matches!(
+            validate_manifest(&m),
+            Err(ManifestError::BadPlatformNative)
+        ));
+    }
+}

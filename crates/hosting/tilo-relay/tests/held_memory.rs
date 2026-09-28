@@ -9,6 +9,10 @@
     clippy::arithmetic_side_effects,
     reason = "in a test these are the assertion, not a hazard"
 )]
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "relays, fixtures and guards deliberately stay alive until each test ends"
+)]
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjType, ROOT};

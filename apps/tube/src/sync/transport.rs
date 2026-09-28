@@ -1191,7 +1191,7 @@ mod tests {
                 )
                 .unwrap();
 
-                let deadline = Instant::now() + Duration::from_secs(10);
+                let deadline = tilo_test_env::hang_deadline();
                 session.complete_authorization(deadline).unwrap();
 
                 // Expect the state-exchange request.
@@ -1247,7 +1247,7 @@ mod tests {
             assert_eq!(session.remote_public_key(), responder_pub);
             assert_eq!(session.remote_version(), PROTOCOL_VERSION);
 
-            let deadline = Instant::now() + Duration::from_secs(10);
+            let deadline = tilo_test_env::hang_deadline();
             let name = session.complete_authorization(deadline).unwrap();
             assert_eq!(name, "responder");
 
@@ -1303,7 +1303,7 @@ mod tests {
                         code == Some("SECRET42")
                     })
                     .unwrap();
-                let deadline = Instant::now() + Duration::from_secs(10);
+                let deadline = tilo_test_env::hang_deadline();
                 session.complete_authorization(deadline).unwrap();
             });
 
@@ -1319,7 +1319,7 @@ mod tests {
                 "initiator",
             )
             .unwrap();
-            let deadline = Instant::now() + Duration::from_secs(10);
+            let deadline = tilo_test_env::hang_deadline();
             session.complete_authorization(deadline).unwrap();
             handle.join().unwrap();
         }
@@ -1370,7 +1370,7 @@ mod tests {
                         peer == expect_initiator
                     })
                     .unwrap();
-                let deadline = Instant::now() + Duration::from_secs(10);
+                let deadline = tilo_test_env::hang_deadline();
                 session.complete_authorization(deadline).unwrap();
                 session
                     .send_data(sync_opcode::SYNC_SUBSCRIPTIONS, &json_for_thread)
@@ -1390,7 +1390,7 @@ mod tests {
                 "initiator",
             )
             .unwrap();
-            let deadline = Instant::now() + Duration::from_secs(10);
+            let deadline = tilo_test_env::hang_deadline();
             session.complete_authorization(deadline).unwrap();
 
             let mut got = 0usize;

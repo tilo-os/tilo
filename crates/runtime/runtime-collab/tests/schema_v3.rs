@@ -140,6 +140,7 @@ impl action_stream::Server for FakeActionStream {
 /// nothing, which the wire states as `hasArgument = false`.
 #[derive(Clone)]
 struct SeedInvocation {
+    invocation_uuid: [u8; 16],
     id: u64,
     resource: String,
     action: String,
@@ -164,6 +165,7 @@ impl invocation_stream::Server for FakeInvocationStream {
         let seed = backlog.remove(0);
         let mut r = results.get();
         r.set_id(seed.id);
+        r.set_invocation_uuid(&seed.invocation_uuid);
         r.set_resource(&seed.resource);
         r.set_action(&seed.action);
         r.set_actor(&seed.actor);
@@ -645,6 +647,7 @@ async fn invocations_distinguish_empty_arguments_and_report_every_outcome() {
                 let broker = FakeBroker {
                     invocation_backlog: vec![
                         SeedInvocation {
+                            invocation_uuid: [0xa5; 16],
                             id: 1,
                             resource: "word-processor.document".into(),
                             action: "save".into(),
@@ -652,6 +655,7 @@ async fn invocations_distinguish_empty_arguments_and_report_every_outcome() {
                             actor: "alice".into(),
                         },
                         SeedInvocation {
+                            invocation_uuid: [0x5a; 16],
                             id: 2,
                             resource: "word-processor.document".into(),
                             action: "set-title".into(),
@@ -667,6 +671,10 @@ async fn invocations_distinguish_empty_arguments_and_report_every_outcome() {
 
                 let first = stream.read().await.unwrap();
                 assert_eq!(first.id, 1);
+                assert_eq!(
+                    first.invocation_uuid, [0xa5; 16],
+                    "high UUID bits survive native SDK delivery"
+                );
                 assert_eq!(first.action, "save");
                 assert_eq!(first.actor, "alice");
                 assert_eq!(first.argument, None, "an action that takes nothing");
@@ -675,6 +683,7 @@ async fn invocations_distinguish_empty_arguments_and_report_every_outcome() {
                 // given `""` must not read as one given no argument at all.
                 let second = stream.read().await.unwrap();
                 assert_eq!(second.id, 2);
+                assert_eq!(second.invocation_uuid, [0x5a; 16]);
                 assert_eq!(second.argument, Some(String::new()));
                 assert_eq!(second.actor, "agent-7");
             })

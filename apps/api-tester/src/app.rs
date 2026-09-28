@@ -1147,7 +1147,7 @@ impl ApiTesterApp {
             state,
             API_TESTER_ACTION_TYPE,
             action,
-            tilo_actions::ActionContext::for_action("org.tilo.ApiTester", "API Tester", action),
+            tilo_actions::ActionContext::for_action("so.tilo.api-tester", "API Tester", action),
         );
         self.adopt_workspace(state, path);
         self.dirty = true;
@@ -4694,14 +4694,14 @@ mod tests {
         listener.set_nonblocking(true).unwrap();
         let address = listener.local_addr().unwrap();
         let server = std::thread::spawn(move || {
-            let started = Instant::now();
+            let deadline = tilo_test_env::hang_deadline();
             let mut stream = loop {
                 match listener.accept() {
                     Ok((stream, _)) => break stream,
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                         assert!(
-                            started.elapsed() < Duration::from_secs(10),
-                            "request never arrived"
+                            Instant::now() < deadline,
+                            "the app's HTTP request never reached the probe server"
                         );
                         std::thread::sleep(Duration::from_millis(10));
                     }
@@ -4711,10 +4711,10 @@ mod tests {
             // Windows inherits the listener's nonblocking mode on accept.
             stream.set_nonblocking(false).unwrap();
             stream
-                .set_read_timeout(Some(Duration::from_secs(5)))
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
                 .unwrap();
             stream
-                .set_write_timeout(Some(Duration::from_secs(5)))
+                .set_write_timeout(Some(tilo_test_env::hang_bound()))
                 .unwrap();
             let mut request = Vec::new();
             while !request.ends_with(b"\r\n\r\n") {
@@ -4766,23 +4766,13 @@ mod tests {
         // must describe the request sent, not these later edits.
         app.url_input.set_text("http://127.0.0.1/edited-after-send");
         app.request.method = HttpMethod::Post;
-        let started = Instant::now();
-        loop {
-            if let Some(update) =
-                app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
-            {
-                assert!(matches!(
-                    update,
-                    tilo_actions::InvocationUpdate::Succeeded { .. }
-                ));
-                break;
-            }
-            assert!(
-                started.elapsed() < Duration::from_secs(15),
-                "HTTP worker never completed"
-            );
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        let update = tilo_test_env::wait_for("the HTTP worker to complete the request", || {
+            app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
+        });
+        assert!(matches!(
+            update,
+            tilo_actions::InvocationUpdate::Succeeded { .. }
+        ));
         server.join().unwrap();
         let response = app.response.as_ref().expect("the response is displayed");
         assert_eq!(response.status, 200);

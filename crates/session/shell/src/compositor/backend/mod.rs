@@ -364,6 +364,20 @@ pub enum BackendEvent {
     /// A pen, eraser or other tablet tool, already mapped to global
     /// coordinates on the output the pen is tied to.
     Tablet(TabletInput),
+    /// A tablet pad appeared, with the buttons, rings and strips it has.
+    TabletPadAdded(PadDescription),
+    /// The tablet pad with this device identity went away.
+    TabletPadRemoved(String),
+    /// A pad button, ring, strip or mode switch.
+    TabletPad(PadEvent),
+    /// A pad's mode button, or the button its settings pick for the map,
+    /// went down (`shown`, with the pad's saved settings) or came up.
+    TabletPadMap {
+        pad: String,
+        shown: Option<Box<settings_store::hardware::TabletConfig>>,
+        /// Milliseconds, the input device's clock.
+        time_msec: u32,
+    },
     /// Modifier-state changed. Tracked separately because
     /// `WindowEvent::ModifiersChanged` carries a `Modifiers` struct
     /// the loop needs to retain across subsequent events.
@@ -393,6 +407,25 @@ pub enum BackendEvent {
     /// An accessibility filter rejected input (a bounce-keys press) and the
     /// user asked to see it: flash the shell's visual alert.
     VisualAlert,
+    /// A physical input device appeared, with the capabilities it really
+    /// has. `id` is stable for the device's lifetime and names it again in
+    /// [`Self::InputDeviceRemoved`].
+    InputDeviceAdded {
+        id: String,
+        capabilities: ui::InputAvailability,
+    },
+    /// The device announced under `id` went away.
+    InputDeviceRemoved {
+        id: String,
+    },
+    /// The class of physical input changed: the person typed, moved a
+    /// pointer, touched the screen or used a controller after using
+    /// something else. Reported by the source of the event, so emulated
+    /// pointer input from a tap still counts as touch.
+    InputUsed(ui::InputModality),
+    /// A convertible's tablet-mode switch changed: `true` when the keyboard
+    /// is folded away and the touchscreen is the primary input.
+    TabletMode(bool),
     Redraw,
     Focus(bool),
 }
@@ -477,6 +510,70 @@ pub struct TabletInput {
     pub wheel: (f64, i32),
     /// Milliseconds, the input device's clock.
     pub time_msec: u32,
+}
+
+/// A tablet pad: its identity and the controls it reports.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PadDescription {
+    /// The pad's `settings_store::hardware::input_device_key`, which its
+    /// events and saved settings name it by.
+    pub key: String,
+    pub device: TabletDevice,
+    pub buttons: u32,
+    pub groups: Vec<PadGroup>,
+    /// Where the controls sit on the pad, when libwacom knows the model.
+    pub layout: Option<crate::compositor::pad_layout::PadLayout>,
+}
+
+/// One mode group of a pad: the controls that switch mode together.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PadGroup {
+    pub buttons: Vec<u32>,
+    /// The buttons that switch this group's mode.
+    pub mode_buttons: Vec<u32>,
+    pub rings: Vec<u32>,
+    pub strips: Vec<u32>,
+    pub modes: u32,
+}
+
+/// What happened on a pad.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PadAction {
+    Button {
+        button: u32,
+        pressed: bool,
+    },
+    /// Degrees clockwise from the top; `None` when the finger lifted.
+    Ring {
+        ring: u32,
+        angle: Option<f64>,
+        finger: bool,
+    },
+    /// `0.0` at the top or left to `1.0`; `None` when the finger lifted.
+    Strip {
+        strip: u32,
+        position: Option<f64>,
+        finger: bool,
+    },
+    /// A mode button moved `group` to `mode` (of `modes`).
+    ModeSwitch {
+        group: u32,
+        mode: u32,
+        modes: u32,
+    },
+}
+
+/// One pad event. A tablet-aware app with keyboard focus gets it over
+/// `zwp_tablet_pad_v2`; anywhere else `fallback` stands in for it: what the
+/// pad's settings map the control to, as ordinary input.
+#[derive(Debug)]
+pub struct PadEvent {
+    /// The pad's device identity, as in [`PadDescription::key`].
+    pub pad: String,
+    pub action: PadAction,
+    /// Milliseconds, the input device's clock.
+    pub time_msec: u32,
+    pub fallback: Vec<BackendEvent>,
 }
 
 /// Map a tool's position, normalised to `0.0..=1.0` across the tablet, onto

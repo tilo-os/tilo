@@ -46,10 +46,22 @@ use gstreamer::prelude::*;
 pub const FIXTURE_FPS: f64 = 30.0;
 
 /// Encoded picture dimensions exercised by the hardware/native-frame tests.
+///
+/// Small enough that encoding the whole clip takes a moment, large enough
+/// for every hardware VP9 decoder's minimum, and a multiple of 8 in both
+/// directions so no decoder has to crop a partial block.
 #[cfg(feature = "decode")]
-pub const FIXTURE_WIDTH: u32 = 1_920;
+pub const FIXTURE_WIDTH: u32 = 384;
 #[cfg(feature = "decode")]
-pub const FIXTURE_HEIGHT: u32 = 1_080;
+pub const FIXTURE_HEIGHT: u32 = 216;
+
+/// Pixels the test pattern scrolls per frame.
+///
+/// The accurate-seek test asserts that pictures 2 s apart differ more than
+/// pictures 500 ms apart, so a 2 s scroll (60 frames) has to stay below half
+/// the width: past that the wrapped pattern starts to line up again.
+#[cfg(feature = "decode")]
+const FIXTURE_SCROLL_PX: u32 = 2;
 
 /// One frame interval, milliseconds. A seek that lands within this of its
 /// target landed on the right picture.
@@ -84,7 +96,7 @@ pub const FIXTURE_CAPS: &str = "video/x-vp9";
 #[cfg(feature = "decode")]
 pub const FIXTURE_CODEC: &str = "VP9";
 
-/// The fixture clip: 1080p VP9 in `WebM`, 30 fps, 57.2 s, 1717 frames.
+/// The fixture clip: 384x216 VP9 in `WebM`, 30 fps, 57.2 s, 1717 frames.
 ///
 /// VP9 is royalty-free and its encoder (libvpx) ships with every stack these
 /// tests run on, so generating the subject never depends on a patented
@@ -101,13 +113,17 @@ pub fn fixture_path() -> PathBuf {
     FIXTURE.get_or_init(generate_fixture).clone()
 }
 
-/// Encode the exact seek/decode fixture once into the host's temporary cache.
+/// Encode the exact seek/decode fixture once per test run into a shared cache.
 ///
-/// Cargo launches each integration-test file as a separate process.  A stable
-/// cache path lets all of those binaries share one encoding, while a
-/// process-specific staging file makes publication atomic if they start at the
-/// same time.  The source scrolls a detailed SMPTE image on every frame: it is
-/// cheap to encode but guarantees that two correctly sought pictures differ.
+/// The test runner starts every test as its own process, all at once.  The
+/// cache lives under `$TILO_TEST_CACHE_DIR` (which `tools/test-env.sh` sets
+/// for CI) or else the host's temporary directory, and an exclusive lock on
+/// it makes the first process encode while the others wait and then reuse
+/// its file.  The clip is still staged under a process-specific name and
+/// renamed into place, so a process that dies mid-encode never publishes a
+/// truncated file.  The source scrolls a detailed SMPTE image on every frame:
+/// it is cheap to encode but guarantees that two correctly sought pictures
+/// differ.
 #[cfg(feature = "decode")]
 #[allow(
     clippy::expect_used,
@@ -115,11 +131,25 @@ pub fn fixture_path() -> PathBuf {
     reason = "failure to construct the real encoded test subject must fail the decode test loudly"
 )]
 fn generate_fixture() -> PathBuf {
-    const CACHE_FILE: &str = "vp9-smpte-scroll-1920x1080-30fps-1717frames-gop250-v1.webm";
+    let cache_file = format!(
+        "vp9-smpte-scroll{FIXTURE_SCROLL_PX}-{FIXTURE_WIDTH}x{FIXTURE_HEIGHT}-{FIXTURE_FPS}fps-\
+         {FIXTURE_FRAMES}frames-gop{FIXTURE_GOP_FRAMES}-v2.webm"
+    );
 
-    let cache = std::env::temp_dir().join("tilo-media-test-fixtures");
+    let cache = std::env::var_os("TILO_TEST_CACHE_DIR")
+        .filter(|dir| !dir.is_empty())
+        .map_or_else(std::env::temp_dir, PathBuf::from)
+        .join("tilo-media-test-fixtures");
     std::fs::create_dir_all(&cache).expect("create media fixture cache directory");
-    let published = cache.join(CACHE_FILE);
+    let published = cache.join(&cache_file);
+    if fixture_is_ready(&published) {
+        return published;
+    }
+    // Held until this function returns: the processes that queue behind it
+    // find the published clip on the check below.
+    let _lock =
+        advisory_lock::FileLock::open(&cache.join(".lock"), advisory_lock::LockMode::Exclusive)
+            .expect("lock media fixture cache");
     if fixture_is_ready(&published) {
         return published;
     }
@@ -133,13 +163,13 @@ fn generate_fixture() -> PathBuf {
         );
     }
 
-    let staging = cache.join(format!("{CACHE_FILE}.{}.part", std::process::id()));
+    let staging = cache.join(format!("{cache_file}.{}.part", std::process::id()));
     std::fs::remove_file(&staging).ok();
     let description = format!(
-        "videotestsrc pattern=smpte horizontal-speed=8 num-buffers={FIXTURE_FRAMES} ! \
+        "videotestsrc pattern=smpte horizontal-speed={FIXTURE_SCROLL_PX} num-buffers={FIXTURE_FRAMES} ! \
          video/x-raw,format=I420,width={FIXTURE_WIDTH},height={FIXTURE_HEIGHT},\
          framerate={FIXTURE_FPS}/1 ! \
-         vp9enc deadline=1 cpu-used=8 row-mt=true end-usage=cbr target-bitrate=4000000 \
+         vp9enc deadline=1 cpu-used=8 row-mt=true end-usage=cbr target-bitrate=400000 \
          lag-in-frames=0 keyframe-mode=auto keyframe-max-dist={FIXTURE_GOP_FRAMES} ! \
          webmmux ! filesink name=fixture_sink"
     );
@@ -156,9 +186,7 @@ fn generate_fixture() -> PathBuf {
         .expect("start generated media fixture encoder");
 
     let bus = pipeline.bus().expect("generated fixture pipeline bus");
-    let deadline = std::time::Instant::now()
-        .checked_add(std::time::Duration::from_secs(120))
-        .expect("fixture deadline is representable");
+    let deadline = tilo_test_env::hang_deadline();
     let mut reached_eos = false;
     while std::time::Instant::now() < deadline {
         let Some(message) = bus.timed_pop(gstreamer::ClockTime::from_mseconds(500)) else {
@@ -189,14 +217,12 @@ fn generate_fixture() -> PathBuf {
         staging.display()
     );
 
-    if let Err(error) = std::fs::rename(&staging, &published) {
-        assert!(
-            fixture_is_ready(&published),
+    std::fs::rename(&staging, &published).unwrap_or_else(|error| {
+        panic!(
             "publish generated media fixture {}: {error}",
             published.display()
-        );
-        std::fs::remove_file(&staging).ok();
-    }
+        )
+    });
     published
 }
 
@@ -349,10 +375,10 @@ pub fn decode_frame_at(
     target_ms: u64,
     what: &str,
 ) -> media::Frame {
-    let ok = engine.seek_and_wait(target_ms, std::time::Duration::from_secs(10));
+    let ok = engine.seek_and_wait(target_ms, tilo_test_env::hang_bound());
     assert!(
         ok,
-        "{what}: the pipeline produced no picture for {target_ms}ms within 10s. \
+        "{what}: the pipeline produced no picture for {target_ms}ms. \
          Decoder: {}",
         engine.hw_report().describe()
     );

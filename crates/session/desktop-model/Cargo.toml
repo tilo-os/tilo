@@ -17,12 +17,15 @@ automerge.workspace = true
 blake3.workspace = true
 collab-types = { path = "../../collab/collab-types" }
 desktop-policy = { path = "../../system/desktop-policy", default-features = false }
+hex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tilo-actions = { path = "../../collab/actions" }
 tilo-automation = { path = "../../collab/automation" }
-tilo-automerge = { path = "../../doc/tilo-automerge" }
+# Room records take a peer's changes the one way production does
+# (clippy.toml), in the model and in its tests.
+tilo-automerge.workspace = true
 uuid.workspace = true
 
 [[test]]

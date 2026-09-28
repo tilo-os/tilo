@@ -28,9 +28,7 @@ use shell::portal::{
 use shell::shell::state::{
     Capability, FsMode, GRANT_ALWAYS, GRANT_ONCE, Principal, Subject, Workspace, WorkspaceId,
 };
-use std::time::Duration;
 use tokio::net::UnixStream;
-use tokio::time::timeout;
 use zbus::connection::Builder;
 use zbus::zvariant::{ObjectPath, OwnedValue, Value};
 use zbus::{Connection, Proxy};
@@ -506,8 +504,8 @@ async fn portal_requests_round_trip_and_prompt_outcomes_reach_the_grant_store() 
             let opts: HashMap<&str, OwnedValue> = HashMap::new();
             // 30s timeout so a fast-path regression (e.g. accidentally pumping
             // every request through the queue) fails explicitly instead of hanging CI.
-            let reply = timeout(
-                Duration::from_secs(30),
+            let reply = tilo_test_env::within(
+                "timed out — Always grant did not fast-path",
                 proxy.call_method(
                     "AccessDialog",
                     &(
@@ -522,7 +520,6 @@ async fn portal_requests_round_trip_and_prompt_outcomes_reach_the_grant_store() 
                 ),
             )
             .await
-            .expect("timed out — Always grant did not fast-path")
             .expect("call AccessDialog");
             let (response, _results): (u32, HashMap<String, OwnedValue>) =
                 reply.body().deserialize().expect("deserialize reply");
@@ -870,23 +867,21 @@ async fn screencast_start_provisions_the_selected_streams_and_restores_without_r
         let _ = sc_call(&proxy, "CreateSession", &(&h, &s2, app, &empty)).await;
         let mut opts2: HashMap<&str, OwnedValue> = HashMap::new();
         opts2.insert("restore_data", restore_data);
-        let sel2 = timeout(
-            Duration::from_secs(10),
+        let sel2 = tilo_test_env::within(
+            "restore data must skip the prompt (would hang otherwise)",
             proxy.call_method("SelectSources", &(&h, &s2, app, &opts2)),
         )
         .await
-        .expect("restore data must skip the prompt (would hang otherwise)")
         .expect("SelectSources");
         let (r2, _): (u32, HashMap<String, OwnedValue>) = sel2.body().deserialize().unwrap();
         assert_eq!(r2, 0, "valid restore data authorizes without a prompt");
         assert_eq!(queue.queued_len(), 0, "no prompt should have been queued");
 
-        let start2 = timeout(
-            Duration::from_secs(10),
+        let start2 = tilo_test_env::within(
+            "restored Start must not prompt",
             proxy.call_method("Start", &(&h, &s2, app, "", &empty)),
         )
         .await
-        .expect("restored Start must not prompt")
         .expect("Start");
         let (rs2, results2): (u32, HashMap<String, OwnedValue>) =
             start2.body().deserialize().unwrap();
@@ -1228,6 +1223,11 @@ async fn print_reaches_the_spooler_only_when_allowed_and_to_a_real_destination()
     }
 }
 
+#[allow(
+    unused_imports,
+    reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
+)]
+use shell::shell::state::WorkspaceExt as _;
 /// Legacy toolkits read the OS appearance through `ReadAll`/`Read` and follow
 /// it through `SettingChanged`; all three carry the GNOME interface keys the
 /// settings file resolves to.
@@ -1304,9 +1304,8 @@ async fn settings_serve_the_gnome_interface_keys_and_signal_changes() {
     }
     let mut seen = Vec::new();
     while seen.len() < 2 {
-        let message = timeout(Duration::from_secs(5), changes.next())
+        let message = tilo_test_env::within("SettingChanged arrives", changes.next())
             .await
-            .expect("SettingChanged arrives")
             .expect("signal stream open");
         let (namespace, key, _value): (String, String, OwnedValue) =
             message.body().deserialize().expect("signal body");

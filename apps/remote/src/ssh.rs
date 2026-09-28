@@ -174,12 +174,7 @@ fn ensure_private_directory(path: &Path) -> Result<(), String> {
         Ok(_) => validate_private_directory(path),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             fs::create_dir_all(path).map_err(|error| error.to_string())?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                fs::set_permissions(path, fs::Permissions::from_mode(0o700))
-                    .map_err(|error| error.to_string())?;
-            }
+            private_fs::restrict_directory(path).map_err(|error| error.to_string())?;
             validate_private_directory(path)
         }
         Err(error) => Err(error.to_string()),
@@ -194,20 +189,12 @@ fn validate_private_directory(path: &Path) -> Result<(), String> {
     validate_private_mode(&metadata, "SSH host-key store parent")
 }
 
-#[cfg(unix)]
 fn validate_private_mode(metadata: &fs::Metadata, label: &str) -> Result<(), String> {
-    use std::os::unix::fs::PermissionsExt;
-    let mode = metadata.permissions().mode() & 0o777;
-    if mode & 0o077 != 0 {
+    if !private_fs::is_owner_only(metadata) {
         return Err(format!(
             "{label} must not be accessible to group or other users"
         ));
     }
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn validate_private_mode(_metadata: &fs::Metadata, _label: &str) -> Result<(), String> {
     Ok(())
 }
 
@@ -653,6 +640,9 @@ async fn run_session(
 mod tests {
     use super::*;
 
+    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+    const HANG_BOUND: Duration = Duration::from_secs(30);
+
     #[test]
     fn auth_resolution_reads_env_and_default_keys() {
         eprintln!("phase resolve_auth_password_reads_env");
@@ -911,7 +901,8 @@ VYO75vHKVaGSkOCr8Ui2AAAAF3Fvcy1yZW1vdGUtdGVzdC1ob3N0a2V5AQIDBAUG
 
         // Poll to Connected.
         let mut connected = false;
-        for _ in 0..200 {
+        let deadline = std::time::Instant::now() + HANG_BOUND;
+        while std::time::Instant::now() < deadline {
             match ssh.status() {
                 SessionStatus::Connected => {
                     connected = true;
@@ -925,7 +916,8 @@ VYO75vHKVaGSkOCr8Ui2AAAAF3Fvcy1yZW1vdGUtdGVzdC1ob3N0a2V5AQIDBAUG
 
         // Drain the banner into the grid.
         let mut saw_banner = false;
-        for _ in 0..200 {
+        let deadline = std::time::Instant::now() + HANG_BOUND;
+        while std::time::Instant::now() < deadline {
             ssh.pump();
             if ssh.grid().lines().iter().any(|l| {
                 l.cells
@@ -945,13 +937,14 @@ VYO75vHKVaGSkOCr8Ui2AAAAF3Fvcy1yZW1vdGUtdGVzdC1ob3N0a2V5AQIDBAUG
         let acknowledgement = ssh.send_input_ack(b"Z".to_vec()).unwrap();
         assert_eq!(
             acknowledgement
-                .recv_timeout(Duration::from_secs(2))
+                .recv_timeout(tilo_test_env::hang_bound())
                 .unwrap(),
             Ok(()),
             "resource input is acknowledged only after the SSH channel write"
         );
         let mut saw_echo = false;
-        for _ in 0..200 {
+        let deadline = std::time::Instant::now() + HANG_BOUND;
+        while std::time::Instant::now() < deadline {
             ssh.pump();
             if ssh.grid().lines().iter().any(|l| {
                 l.cells

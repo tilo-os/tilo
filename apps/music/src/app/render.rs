@@ -725,7 +725,6 @@ impl Continuable for MusicApp {
             bytes,
         })
     }
-
     fn restore_continuation_metadata(
         &mut self,
         metadata: &ui::collaboration::ContinuationMetadata,

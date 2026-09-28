@@ -30,9 +30,9 @@ use std::time::Duration;
 use clap::Parser;
 use tilo_agent::{Config, Session};
 
-/// A participant without a window: joins a word-processor document through
-/// the session's collaboration broker and carries out instructions written
-/// to it ("Claude: turn the bullets into a table").
+/// A participant without a window: joins the session's collaboration broker
+/// and handles addressed document instructions or canonical package-primary
+/// Chat summons (`--app so.tilo.chat`, no `--record`).
 #[derive(Parser, Debug)]
 #[command(name = "tilo-agent")]
 struct Cli {
@@ -47,10 +47,13 @@ struct Cli {
     /// The app whose document this is (its manifest package id).
     #[arg(long, default_value = "so.tilo.word-processor")]
     app: String,
-    /// The agent's name: its caret pill, its history author, and the word
-    /// an instruction starts with.
+    /// The display name used by name-addressed instructions. Structured
+    /// mentions and authorship use the stable --agent-id.
     #[arg(long, default_value = "Claude")]
     name: String,
+    /// Stable admitted agent id. Defaults to the name for existing launchers.
+    #[arg(long)]
+    agent_id: Option<String>,
     /// Explicit typed Cap'n Proto broker socket for headless diagnostics.
     /// Normal launched sessions inherit `TILO_SVC_COLLAB_FD` instead.
     #[arg(long)]
@@ -78,8 +81,11 @@ struct Cli {
     /// made again with a short backoff, carved out of this deadline rather
     /// than added to it, so shortening this also shortens how long the agent
     /// will wait out a busy service.
-    #[arg(long, default_value_t = 9000)]
-    model_timeout_ms: u64,
+    ///
+    /// Default 9000 ms; a managed (launcher-started) agent defaults to
+    /// 30000 ms, the whole budget of a multi-turn action decision.
+    #[arg(long)]
+    model_timeout_ms: Option<u64>,
     /// How long to wait for the room to answer with the document before
     /// giving up and naming the address nobody answered on. `0` waits
     /// forever, which is right when the document may not be open yet and
@@ -93,6 +99,10 @@ struct Cli {
     settle_ms: u64,
 }
 
+/// The total model budget of one managed action decision (all its turns).
+/// The launcher passes no `--model-timeout-ms`, so this is the default there.
+const MANAGED_MODEL_TIMEOUT_MS: u64 = 30_000;
+
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
 
@@ -104,17 +114,31 @@ fn main() -> anyhow::Result<()> {
         )
         .with_writer(std::io::stderr)
         .init();
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
+    let managed = std::env::var_os("TILO_MANAGED_AGENT_CONTEXT").is_some();
+    let model_timeout_ms = cli.model_timeout_ms.unwrap_or(if managed {
+        MANAGED_MODEL_TIMEOUT_MS
+    } else {
+        9000
+    });
+    if managed {
+        anyhow::ensure!(
+            cli.task_runs && !cli.no_model && cli.endpoint.is_none() && cli.record.is_none(),
+            "managed agent requires task mode and inherited services"
+        );
+        cli.app = "so.tilo.agent".into();
+    }
     // What this run's invitation actually was: write on the app it was
     // asked to join, and nothing else. Widening this is a deployment
     // decision, not something a headless participant grants itself.
+    let agent_id = cli.agent_id.clone().unwrap_or_else(|| cli.name.clone());
     let permissions = {
         use ui::permissions::{Actor, CapOverride, PermissionContext, Scope, Subject, Verb};
         PermissionContext::from_capabilities(
-            Actor::agent(&cli.name),
+            Actor::agent(&agent_id),
             vec![
                 CapOverride::grant(
-                    Subject::agent(&cli.name),
+                    Subject::agent(&agent_id),
                     Scope::App(cli.app.clone()),
                     Verb::Write,
                 )
@@ -123,6 +147,7 @@ fn main() -> anyhow::Result<()> {
         )
     };
     let cfg = Config {
+        agent_id,
         endpoint: cli.endpoint,
         endpoint_identity: None,
         app_id: cli.app,
@@ -132,7 +157,7 @@ fn main() -> anyhow::Result<()> {
         pace: Duration::from_millis(cli.pace_ms),
         once: cli.once,
         model: !cli.no_model,
-        model_timeout: Duration::from_millis(cli.model_timeout_ms),
+        model_timeout: Duration::from_millis(model_timeout_ms),
         await_document: Duration::from_millis(cli.await_document_ms),
         settle: Duration::from_millis(cli.settle_ms),
         directory: None,

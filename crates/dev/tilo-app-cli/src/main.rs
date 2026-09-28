@@ -35,7 +35,8 @@ enum Command {
     Scenario(ScenarioArgs),
     /// Diagnose app source, manifest, lifecycle, and toolkit wiring.
     Doctor(DoctorArgs),
-    /// Run structural checks, tests, and accessibility-audited scenarios.
+    /// Run lints, structural checks, tests, and accessibility-audited scenarios.
+    #[command(after_long_help = CHECK_EXAMPLES)]
     Check(CheckArgs),
     /// Prove the production root satisfies the live Tilo-native contract.
     Certify(CertifyArgs),
@@ -341,10 +342,42 @@ struct DoctorArgs {
     path: Option<PathBuf>,
 }
 
+const CHECK_EXAMPLES: &str = "\
+Lints:
+  portability  Apps call portable APIs; platform code lives in platform crates
+               (crates/system, crates/sdk). Flags std::os, native binding crates
+               (libc, nix, rustix, windows, zbus, xattr, ...), extern blocks,
+               cfg(target_os/unix/windows), native dependencies, and SDK backend
+               features in shipped code. tests/ and #[cfg(test)] are exempt.
+               An inherently platform-specific app declares it once in
+               tilo-app.toml:
+
+                 [platform]
+                 native = \"Writes OS images to block devices.\"
+
+Examples:
+  tilo-app check                     Everything, for the app in the current directory
+  tilo-app check --lint apps/notes   Only the lints, without building
+  tilo-app check --lint --all        The lints for every Tilo app in the workspace (CI)";
+
+#[derive(clap::Args)]
+struct LintScope {
+    /// Run only the lints (currently `portability`); nothing is built or run.
+    #[arg(long)]
+    lint: bool,
+
+    /// Lint every Tilo app in the workspace containing PATH (or the current directory).
+    #[arg(long, requires = "lint")]
+    all: bool,
+}
+
 #[derive(clap::Args)]
 struct CheckArgs {
     /// App directory or a file/directory inside it. Defaults to the current directory.
     path: Option<PathBuf>,
+
+    #[command(flatten)]
+    lints: LintScope,
 
     /// Write each audited scenario's semantic, target, document, and audit JSON here.
     /// Relative paths are resolved from the app root.
@@ -1069,6 +1102,19 @@ fn run_doctor(args: DoctorArgs) -> Result<()> {
 
 fn run_check(args: CheckArgs) -> Result<()> {
     let path = args.path.map_or_else(std::env::current_dir, Ok)?;
+    if args.lints.all {
+        return lint_workspace(&path);
+    }
+    println!("[check] lint: {}", tilo_app_cli::portability::LINT);
+    let lint = tilo_app_cli::lint_portability(&path)?;
+    print!("{}", lint.render());
+    if !lint.passed() {
+        anyhow::bail!("lint `{}` failed", tilo_app_cli::portability::LINT);
+    }
+    if args.lints.lint {
+        return Ok(());
+    }
+
     println!("[check] app structure");
     let report = tilo_app_cli::doctor_app(&path)?;
     println!("{}", report.summary());
@@ -1108,6 +1154,39 @@ fn run_check(args: CheckArgs) -> Result<()> {
         execute_scenario_plan(&plan)?;
     }
     println!("All app checks passed");
+    Ok(())
+}
+
+fn lint_workspace(start: &Path) -> Result<()> {
+    let apps = tilo_app_cli::portability::workspace_apps(start)?;
+    let mut failed = Vec::new();
+    for app in &apps {
+        let report = tilo_app_cli::portability::lint_app(app)?;
+        if report.passed() {
+            continue;
+        }
+        println!(
+            "[check] lint: {} in {}",
+            tilo_app_cli::portability::LINT,
+            app.display()
+        );
+        println!("{}", report.render());
+        failed.push(app.display().to_string());
+    }
+    if !failed.is_empty() {
+        anyhow::bail!(
+            "lint `{}` failed for {} of {} app(s): {}",
+            tilo_app_cli::portability::LINT,
+            failed.len(),
+            apps.len(),
+            failed.join(", ")
+        );
+    }
+    println!(
+        "lint `{}` passed for {} app(s)",
+        tilo_app_cli::portability::LINT,
+        apps.len()
+    );
     Ok(())
 }
 

@@ -24,11 +24,11 @@ path = "src/lib.rs"
 [dependencies]
 advisory-lock = { path = "../../system/advisory-lock" }
 getrandom.workspace = true
+atomic-file = { path = "../../system/atomic-file" }
 runtime-portal = { path = "../runtime-portal" }
 serde.workspace = true
 tokio = { workspace = true, features = ["io-util", "time"] }
 wire-frame = { path = "../../system/wire-frame", features = ["postcard", "tokio"] }
-workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["io-util", "macros", "rt", "sync", "test-util", "time"] }
@@ -47,6 +47,7 @@ tilo-seal = { path = "../../system/tilo-seal" }
 rand_core.workspace = true
 
 [target.'cfg(unix)'.dev-dependencies]
+atomic-file = { path = "../../system/atomic-file", features = ["test-support"] }
 tempfile.workspace = true
 # Reproduces malformed `secret_bytes` records written by an earlier identity
 # ceremony, so the loader rejects those records.
@@ -56,3 +57,7 @@ tilo-test-env = { path = "../../dev/test-env" }
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

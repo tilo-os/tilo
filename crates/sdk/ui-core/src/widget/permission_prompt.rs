@@ -103,7 +103,6 @@ pub struct PermissionPrompt {
 impl PermissionPrompt {
     /// `is_owner` controls whether the `Always` button is interactive.
     pub fn new(app_id: String, capability_label: String, is_owner: bool) -> Self {
-        crate::i18n::I18nManager::register_widget_messages();
         Self {
             rect: Rect::ZERO,
             app_id,

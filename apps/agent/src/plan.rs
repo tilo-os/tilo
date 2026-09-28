@@ -2,17 +2,17 @@
 //! carrying them out.
 //!
 //! An instruction is a paragraph addressed to the agent by name —
-//! `Claude: turn the bullets into a table`. Two things it may ask for: the
-//! fixed [`CATALOGUE`] of document recipes below, and, through
-//! [`Instruction::Perform`], any operation the room's apps currently
-//! export — not written down anywhere, but surveyed through
-//! [`crate::surface`] and checked against it again at dispatch, never
-//! against a remembered list.
+//! `Claude: turn the bullets into a table`. What it may ask for is exactly
+//! what the room's apps currently publish, through
+//! [`Instruction::Perform`]: surveyed through [`crate::surface`] and checked
+//! against it again at dispatch, never against a remembered list. There are
+//! no agent-only recipes: a table, a caption or a heading is whatever the
+//! applications' own published operations do, the same ones a person reaches
+//! from the palette.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use qdoc::snapshot::{AttrVal, BlockView, DocSnapshot};
-use word_processor::actions::{self as wp, RichTextAction};
 
 use crate::surface::{self, NoMatch, Offer};
 
@@ -34,13 +34,7 @@ pub enum Instruction {
         /// the plan metadata. Never inferred from prose or risk level.
         confirmation: ConfirmationEvidence,
     },
-    /// Turn the run of bullets above the instruction into a table.
-    Table,
-    /// Put a caption under the (first) image.
-    Caption,
-    /// Make the first line a title.
-    Heading,
-    /// Something outside the vocabulary; the agent says so in the document.
+    /// Nothing published answers it; the agent says so.
     Unknown(String),
 }
 
@@ -98,64 +92,13 @@ impl Instruction {
         Some(rest.trim().to_string())
     }
 
-    /// The keyword vocabulary: the decision the agent reaches on its own.
-    ///
-    /// This is what runs when no model is available — no key, switched off,
-    /// or a call that was slow, failed, or answered outside the catalogue.
-    /// It is the floor a run cannot drop below, not the intended path.
-    pub fn from_keywords(rest: &str) -> Instruction {
-        if rest.contains("table") {
-            Instruction::Table
-        } else if rest.contains("caption") {
-            Instruction::Caption
-        } else if rest.contains("heading") || rest.contains("title") {
-            Instruction::Heading
-        } else {
-            Instruction::Unknown(rest.to_string())
-        }
-    }
-
-    /// A catalogue id, validated against [`CATALOGUE`] — the gate every
-    /// answer from a model passes through before anything is dispatched.
-    ///
-    /// [`NOTHING_FITS`] is a legitimate answer, not a failure: it means no
-    /// exported action does what was asked, and the agent says so in the
-    /// document instead of guessing. Anything else outside the catalogue is
-    /// `None`, and the caller falls back rather than acting on it.
-    pub fn from_id(id: &str, rest: &str) -> Option<Instruction> {
-        if id == NOTHING_FITS {
-            return Some(Instruction::Unknown(rest.to_string()));
-        }
-        if !CATALOGUE.iter().any(|c| c.id == id) {
-            return None;
-        }
-        match id {
-            "table" => Some(Instruction::Table),
-            "caption" => Some(Instruction::Caption),
-            "heading" => Some(Instruction::Heading),
-            _ => None,
-        }
-    }
-
-    /// Parse `text` as an instruction to `name` using the keyword
-    /// vocabulary, or `None` when it is not addressed to the agent.
-    pub fn parse(text: &str, name: &str) -> Option<Instruction> {
-        Self::addressed(text, name).map(|rest| Self::from_keywords(&rest))
-    }
-
-    /// The deterministic floor, widened to the room's own surface: the
-    /// fixed [`CATALOGUE`] vocabulary first, and — only when nothing there
-    /// matches — whatever the room's apps currently export, matched by
-    /// [`surface::from_verbs`].
+    /// The deterministic floor over the room's own surface: whatever the
+    /// room's apps currently export, matched by [`surface::from_verbs`].
     ///
     /// The floor never guesses between two operations that fit equally
     /// well; it says so, in [`NoMatch::Ambiguous`], and leaves the choice
     /// to a model or to whoever reads the refusal.
     pub fn from_floor(rest: &str, offers: &[Offer]) -> Instruction {
-        let by_keyword = Self::from_keywords(rest);
-        if !matches!(by_keyword, Instruction::Unknown(_)) {
-            return by_keyword;
-        }
         match surface::from_verbs(rest, offers) {
             Ok((offer, arguments)) => {
                 Instruction::from_answer(&offer.id(), rest, Some(&arguments), offers)
@@ -169,9 +112,8 @@ impl Instruction {
     /// exports **now**, not against what it exported when the id was
     /// offered.
     ///
-    /// [`NOTHING_FITS`] is a legitimate answer, not a failure. An id in
-    /// [`CATALOGUE`] resolves exactly as [`Instruction::from_id`] already
-    /// does. Anything else must name a live [`Offer`]: an operation that
+    /// [`NOTHING_FITS`] is a legitimate answer, not a failure. Anything else
+    /// must name a live [`Offer`]: an operation that
     /// collects a content hash is never asked to quote one — there is
     /// nowhere honest to get one from an answer — and an operation that
     /// collects text is [`Refused::Unusable`] when neither `supplied` nor a
@@ -180,8 +122,7 @@ impl Instruction {
     ///
     /// # Errors
     ///
-    /// [`Refused::NotExported`] when `id` names neither a catalogue entry
-    /// nor a live [`Offer`]. [`Refused::Unusable`] when `id` names an offer
+    /// [`Refused::NotExported`] when `id` names no live [`Offer`]. [`Refused::Unusable`] when `id` names an offer
     /// that collects text but neither `supplied` nor a quoted literal in
     /// `rest` gives it any.
     pub fn from_answer(
@@ -192,9 +133,6 @@ impl Instruction {
     ) -> Result<Instruction, Refused> {
         if id == NOTHING_FITS {
             return Ok(Instruction::Unknown(rest.to_string()));
-        }
-        if let Some(instruction) = Self::from_id(id, rest) {
-            return Ok(instruction);
         }
         let Some(offer) = surface::find(offers, id) else {
             return Err(Refused::NotExported(id.to_string()));
@@ -318,7 +256,7 @@ impl Step {
             Instruction::Perform { id, .. } => {
                 surface::find(offers, id).is_some_and(Offer::wants_content)
             }
-            _ => false,
+            Instruction::Unknown(_) => false,
         };
         Step {
             instruction,
@@ -337,7 +275,7 @@ impl Step {
                 .as_ref()
                 .and_then(surface::opens)
                 .is_some(),
-            _ => false,
+            Instruction::Unknown(_) => false,
         }
     }
 
@@ -542,100 +480,11 @@ pub fn clauses(rest: &str) -> Vec<String> {
 }
 
 // ---------------------------------------------------------------------------
-// The catalogue: what the agent can be asked for, grounded in the actions the
-// word processor exports.
+// Reading the document.
 // ---------------------------------------------------------------------------
 
 /// The answer that means "no exported action does what was asked".
 pub const NOTHING_FITS: &str = "none";
-
-/// One thing the agent can do, and the exported actions it does it with.
-///
-/// `actions` names [`RichTextAction`] variants. Nothing here is taken on
-/// trust: [`dispatched`] builds those very actions with the word processor's
-/// own builders, and
-/// `instructions_come_only_from_exported_catalogue_ids_or_text_addressed_to_the_agent`
-/// checks the names against what the app's encoder puts on the wire. A
-/// renamed or withdrawn action breaks the build or the test, never a run.
-pub struct Capability {
-    /// The id a model answers with, and the only thing it may answer.
-    pub id: &'static str,
-    /// What it does, in the words the model is given.
-    pub summary: &'static str,
-    /// The exported actions carrying it out dispatches.
-    pub actions: &'static [&'static str],
-}
-
-/// Everything the agent can be asked for. The model chooses from this and
-/// nothing else; it never proposes a document mutation of its own.
-pub const CATALOGUE: &[Capability] = &[
-    Capability {
-        id: "table",
-        summary: "Turn the run of bullets immediately above the instruction into a table.",
-        actions: &["InsertFilledTable", "RemoveBlocks"],
-    },
-    Capability {
-        id: "caption",
-        summary: "Add a caption paragraph underneath the first image in the document.",
-        actions: &["InsertParagraph", "RemoveBlocks"],
-    },
-    Capability {
-        id: "heading",
-        summary: "Give a rough draft its structure: make the first line the document's \
-                  title, and promote the section labels under it to headings.",
-        actions: &["SetParagraphStyle", "RemoveBlocks"],
-    },
-];
-
-/// The actions a capability dispatches, built with the word processor's own
-/// builders — the same calls [`crate::session`] makes to carry the work out.
-/// The arguments are placeholders; only the shape of the action matters.
-pub fn dispatched(id: &str) -> Vec<RichTextAction> {
-    let block = || "block".to_string();
-    match id {
-        "table" => vec![
-            wp::insert_filled_table_action("block", vec![vec![String::new()]]),
-            wp::remove_blocks_action(vec![block()]),
-        ],
-        "caption" => vec![
-            wp::insert_paragraph_action("block", ""),
-            wp::remove_blocks_action(vec![block()]),
-        ],
-        "heading" => vec![
-            wp::set_paragraph_style_action(
-                wp::RegionKind::Body,
-                vec![block()],
-                "heading",
-                Some(1),
-                None,
-            ),
-            wp::remove_blocks_action(vec![block()]),
-        ],
-        _ => Vec::new(),
-    }
-}
-
-/// The name the word processor's own encoder gives an action: the key of the
-/// envelope `encode` puts on the wire. Reading it back from the app rather
-/// than writing it down here is what makes the catalogue's claims checkable.
-pub fn exported_name(action: &RichTextAction) -> Option<String> {
-    let encoded = wp::encode(action);
-    match serde_json::from_slice::<serde_json::Value>(&encoded.payload).ok()? {
-        serde_json::Value::Object(map) => map.keys().next().cloned(),
-        // A unit variant encodes as a bare string.
-        serde_json::Value::String(s) => Some(s),
-        _ => None,
-    }
-}
-
-/// Every exported action the catalogue can reach, as the app names it.
-pub fn exported_actions() -> BTreeSet<String> {
-    CATALOGUE
-        .iter()
-        .flat_map(|c| dispatched(c.id))
-        .filter_map(|a| exported_name(&a))
-        .collect()
-}
 
 /// One block, as the agent reads it.
 #[derive(Clone, Debug)]
@@ -673,138 +522,6 @@ pub fn find_addressed(blocks: &[Block], name: &str) -> Option<(usize, String)> {
     })
 }
 
-/// The first paragraph addressed to `name`, decided by the keyword
-/// vocabulary. The model-free path, kept for tests and for the fallback.
-pub fn find_instruction(blocks: &[Block], name: &str) -> Option<(usize, Instruction)> {
-    find_addressed(blocks, name).map(|(i, rest)| (i, Instruction::from_keywords(&rest)))
-}
-
-/// The run of bullets the instruction refers to: the consecutive
-/// `list_item` blocks immediately above index `at`, skipping blank
-/// paragraphs between them and the instruction.
-pub fn bullets_above(blocks: &[Block], at: usize) -> Vec<usize> {
-    let mut i = at;
-    // Skip blank lines between the bullets and the instruction.
-    while i > 0 {
-        match blocks.get(i - 1) {
-            Some(b) if b.kind == "paragraph" && b.text.trim().is_empty() => i -= 1,
-            _ => break,
-        }
-    }
-    let mut run = Vec::new();
-    while i > 0 {
-        match blocks.get(i - 1) {
-            Some(b) if b.kind == "list_item" => {
-                i -= 1;
-                run.push(i);
-            }
-            _ => break,
-        }
-    }
-    run.reverse();
-    run
-}
-
-/// Split one bullet into cells. The first separator found, in this order,
-/// wins for the whole line: ` — `, ` – `, ` - `, `: `, `, `. A line with
-/// none is one cell.
-pub fn split_cells(line: &str) -> Vec<String> {
-    let line = line.trim();
-    for sep in [" — ", " – ", " - ", ": ", ", "] {
-        if line.contains(sep) {
-            return line.split(sep).map(|s| s.trim().to_string()).collect();
-        }
-    }
-    vec![line.to_string()]
-}
-
-/// Rows of cells for a table, padded to a common width.
-pub fn table_cells(lines: &[&str]) -> Vec<Vec<String>> {
-    let mut rows: Vec<Vec<String>> = lines.iter().map(|l| split_cells(l)).collect();
-    let cols = rows.iter().map(Vec::len).max().unwrap_or(0);
-    for r in &mut rows {
-        r.resize(cols, String::new());
-    }
-    rows
-}
-
-/// The first image block, if any.
-pub fn first_image(blocks: &[Block]) -> Option<usize> {
-    blocks.iter().position(|b| b.kind == "image")
-}
-
-/// What a structural pass over a rough draft would change.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Structure {
-    /// The first line of text: the document's title.
-    pub title: Option<String>,
-    /// Later lines that read as section labels rather than prose.
-    pub sections: Vec<String>,
-}
-
-/// Whether `text` reads as a section label rather than a sentence: short,
-/// few words, and not punctuated like prose. Deliberately conservative —
-/// promoting a real sentence to a heading is the ugly failure here, and a
-/// missed section only leaves the draft as it already was.
-fn looks_like_a_label(text: &str) -> bool {
-    let t = text.trim();
-    if t.is_empty() || t.chars().count() > 60 {
-        return false;
-    }
-    if t.split_whitespace().count() > 8 {
-        return false;
-    }
-    !t.ends_with(['.', '?', '!', ','])
-}
-
-/// Read a rough draft's structure: the first line of text is the title, and
-/// each later short unpunctuated line that is *followed by prose* is a
-/// section heading. Requiring the following prose is what keeps a list of
-/// short lines — an address, a set of bullets — from becoming a stack of
-/// headings.
-pub fn structure(blocks: &[Block], instruction: usize) -> Structure {
-    let mut out = Structure::default();
-    let body: Vec<&Block> = blocks
-        .iter()
-        .enumerate()
-        .filter(|&(i, _)| i != instruction)
-        .map(|(_, b)| b)
-        .filter(|b| b.kind != "cell")
-        .filter(|b| !b.text.trim().is_empty())
-        .collect();
-    let Some((&first, rest)) = body.split_first() else {
-        return out;
-    };
-    out.title = Some(first.id.clone());
-
-    for (n, &b) in rest.iter().enumerate() {
-        if b.kind != "paragraph" || !looks_like_a_label(&b.text) {
-            continue;
-        }
-        // The next line of body text has to read as prose, or this is just
-        // a short line among short lines.
-        let Some(&next) = rest.get(n + 1) else {
-            continue;
-        };
-        let follows_prose = next.kind == "paragraph"
-            && !looks_like_a_label(&next.text)
-            && next.text.trim().chars().count() > b.text.trim().chars().count();
-        if follows_prose {
-            out.sections.push(b.id.clone());
-        }
-    }
-    out
-}
-
-/// The first block with visible text that is not the instruction itself.
-pub fn first_text_block(blocks: &[Block], instruction: usize) -> Option<usize> {
-    blocks
-        .iter()
-        .enumerate()
-        .find(|(i, b)| *i != instruction && !b.text.trim().is_empty() && b.kind != "cell")
-        .map(|(i, _)| i)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -817,130 +534,9 @@ mod tests {
             attrs: BTreeMap::new(),
         }
     }
-    fn bullet(id: &str, text: &str) -> Block {
-        Block {
-            id: id.into(),
-            kind: "list_item".into(),
-            text: text.into(),
-            attrs: BTreeMap::new(),
-        }
-    }
 
     #[test]
-    fn a_structural_pass_finds_the_title_and_section_labels_and_nothing_else() {
-        // Case `a_structural_pass_finds_the_title_and_the_section_labels`.
-        {
-            let blocks = vec![
-                para("t", "Quarterly review"),
-                para("s1", "Revenue"),
-                para(
-                    "p1",
-                    "We closed the quarter ahead of plan, with most of the gain late.",
-                ),
-                para("s2", "Risks"),
-                para(
-                    "p2",
-                    "Two suppliers remain single-sourced and that has not moved.",
-                ),
-                para("ins", "Claude: make this a proper document"),
-            ];
-            let found = structure(&blocks, 5);
-            assert_eq!(found.title.as_deref(), Some("t"));
-            assert_eq!(found.sections, vec!["s1".to_string(), "s2".to_string()]);
-        }
-
-        // Case `a_structural_pass_leaves_prose_and_bare_short_lines_alone`.
-        {
-            // A run of short lines with no prose under them is a list, not a
-            // stack of headings — promoting them all is the ugly failure.
-            let blocks = vec![
-                para("t", "Shopping"),
-                para("a", "Apples"),
-                para("b", "Pears"),
-                para("c", "Plums"),
-                para("ins", "Claude: make this a proper document"),
-            ];
-            let found = structure(&blocks, 4);
-            assert_eq!(found.title.as_deref(), Some("t"));
-            assert!(found.sections.is_empty(), "{:?}", found.sections);
-
-            // A sentence is never a label, however it is followed.
-            assert!(!looks_like_a_label("We closed the quarter ahead of plan."));
-            assert!(!looks_like_a_label(
-                "A line long enough to be prose even without a full stop at its end"
-            ));
-            assert!(looks_like_a_label("Revenue"));
-            assert!(looks_like_a_label("Open questions"));
-        }
-
-        // Case `a_structural_pass_on_an_empty_draft_asks_for_nothing`.
-        {
-            let blocks = vec![para("ins", "Claude: make this a proper document")];
-            assert_eq!(structure(&blocks, 0), Structure::default());
-        }
-    }
-
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each case keeps its original fixture and assertions"
-    )]
-    fn instructions_come_only_from_exported_catalogue_ids_or_text_addressed_to_the_agent() {
-        // Case `the_catalogue_only_offers_actions_the_app_exports`.
-        {
-            // The names the model is shown are not a list kept by hand here:
-            // each one must be what the word processor's own encoder calls the
-            // action its own builder produced. Rename or withdraw an action and
-            // this fails rather than the agent offering something imaginary.
-            let exported = exported_actions();
-            assert!(!exported.is_empty(), "the app exports nothing");
-            for cap in CATALOGUE {
-                let built: BTreeSet<String> = dispatched(cap.id)
-                    .iter()
-                    .filter_map(exported_name)
-                    .collect();
-                assert!(
-                    !built.is_empty(),
-                    "{} dispatches nothing the app can encode",
-                    cap.id
-                );
-                let advertised: BTreeSet<String> = cap
-                    .actions
-                    .iter()
-                    .map(std::string::ToString::to_string)
-                    .collect();
-                assert_eq!(
-                    advertised, built,
-                    "{} advertises {:?} but dispatches {:?}",
-                    cap.id, advertised, built
-                );
-                for name in &advertised {
-                    assert!(
-                        exported.contains(name),
-                        "{} offers {name}, which the app does not export",
-                        cap.id
-                    );
-                }
-            }
-        }
-
-        // Case `every_catalogue_id_maps_to_an_instruction_and_nothing_else_does`.
-        {
-            for cap in CATALOGUE {
-                assert!(
-                    Instruction::from_id(cap.id, "asked").is_some(),
-                    "{} is offered but maps to no instruction",
-                    cap.id
-                );
-            }
-            assert_eq!(
-                Instruction::from_id(NOTHING_FITS, "juggle"),
-                Some(Instruction::Unknown("juggle".into()))
-            );
-            assert_eq!(Instruction::from_id("InsertTable", "x"), None);
-            assert_eq!(Instruction::from_id("wander off", "x"), None);
-        }
-
+    fn instructions_come_only_from_text_addressed_to_the_agent_by_name() {
         // Case `who_was_addressed_is_read_from_the_document_not_decided`.
         {
             assert_eq!(
@@ -960,56 +556,23 @@ mod tests {
         // Case `instructions_are_addressed_by_name_case_insensitively`.
         {
             assert_eq!(
-                Instruction::parse("scribe: turn the bullets into a table", "Scribe"),
-                Some(Instruction::Table)
+                Instruction::addressed("scribe: turn the bullets into a table", "Scribe"),
+                Some("turn the bullets into a table".to_string())
             );
             assert_eq!(
-                Instruction::parse("Scribe: caption the image please", "Scribe"),
-                Some(Instruction::Caption)
+                Instruction::addressed("SCRIBE: give this a title", "Scribe"),
+                Some("give this a title".to_string())
             );
-            assert_eq!(
-                Instruction::parse("SCRIBE: give this a title", "Scribe"),
-                Some(Instruction::Heading)
-            );
-            assert_eq!(
-                Instruction::parse("Scribe: juggle", "Scribe"),
-                Some(Instruction::Unknown("juggle".into()))
-            );
-            assert_eq!(Instruction::parse("Dear Scribe: table", "Scribe"), None);
-            assert_eq!(Instruction::parse("Scribe: table", "Ada"), None);
-        }
-    }
-
-    #[test]
-    fn a_table_is_built_from_the_bullets_above_and_its_cells_are_read_in_row_major_order() {
-        // Case `the_bullets_above_the_instruction_are_the_run_it_means`.
-        {
             let blocks = vec![
                 para("h", "Shopping"),
-                bullet("a", "Apples - 3"),
-                bullet("b", "Pears - 5"),
-                para("blank", ""),
                 para("ins", "Scribe: table"),
-                bullet("later", "not this one"),
+                para("later", "Scribe: not this one"),
             ];
-            let (at, ins) = find_instruction(&blocks, "Scribe").unwrap();
-            assert_eq!((at, ins), (4, Instruction::Table));
-            assert_eq!(bullets_above(&blocks, at), vec![1, 2]);
-            assert!(bullets_above(&blocks, 0).is_empty());
-        }
-
-        // Case `cells_split_on_the_first_separator_the_line_uses`.
-        {
-            assert_eq!(split_cells("Apples - 3"), vec!["Apples", "3"]);
             assert_eq!(
-                split_cells("Venue: The Hall, room 2"),
-                vec!["Venue", "The Hall, room 2"]
+                find_addressed(&blocks, "Scribe"),
+                Some((1, "table".to_string()))
             );
-            assert_eq!(split_cells("Just one"), vec!["Just one"]);
-            assert_eq!(
-                table_cells(&["a - 1 - x", "b - 2"]),
-                vec![vec!["a", "1", "x"], vec!["b", "2", ""]]
-            );
+            assert_eq!(find_addressed(&blocks, "Ada"), None);
         }
     }
 
@@ -1109,9 +672,6 @@ mod tests {
     )]
     fn an_instruction_resolves_only_to_a_surveyed_bound_and_confirmed_operation() {
         // Case `a_refusal_names_operations_in_words_and_never_an_address`.
-        // Nothing the agent writes into a document names an address: it is an
-        // internal identifier, and a refusal reciting one reads as a broken
-        // machine to the person the document belongs to.
         {
             let offers = surveyed();
             assert!(!offers.is_empty(), "nothing to refuse against");
@@ -1186,18 +746,16 @@ mod tests {
                 Instruction::Unknown(_)
             ));
 
-            // The fixed vocabulary still wins outright, unaffected by the
-            // surveyed surface.
-            assert_eq!(
-                Instruction::from_floor("turn the bullets into a table", &offers),
-                Instruction::Table
+            // There is no agent-only vocabulary: "table" means whatever the app
+            // publishes for it — its own insert-table — never a compiled-in recipe.
+            let table = Instruction::from_floor("turn the bullets into a table", &offers);
+            assert!(
+                matches!(&table, Instruction::Perform { id, .. } if id.ends_with("#insert-table")),
+                "{table:?}"
             );
         }
 
         // Case `an_answer_is_checked_against_the_survey_and_not_against_a_list`.
-        // The gate answers an address the room really exports, and refuses one
-        // it does not — including an address that was valid against some
-        // other survey.
         {
             let offers = surveyed();
             assert!(
@@ -1205,7 +763,15 @@ mod tests {
                 "the survey found nothing to check against"
             );
 
-            for offer in &offers {
+            // An operation with a required parameter is dispatchable only with
+            // that parameter (checked by the structured-argument tests below);
+            // here every operation that needs nothing must pass with nothing.
+            let nullary: Vec<&Offer> = offers
+                .iter()
+                .filter(|offer| offer.descriptor.params.iter().all(|param| !param.required))
+                .collect();
+            assert!(!nullary.is_empty(), "the survey offers nothing nullary");
+            for offer in nullary {
                 let supplied = match &offer.descriptor.contract.confirmation {
                     tilo_actions::ConfirmationPolicy::None => serde_json::Map::new(),
                     tilo_actions::ConfirmationPolicy::Confirm => serde_json::Map::from_iter([(
@@ -1252,14 +818,12 @@ mod tests {
             );
             assert_eq!(
                 Instruction::from_answer("table", "asked", None, &offers),
-                Ok(Instruction::Table),
-                "a catalogue id still resolves the way it always did"
+                Err(Refused::NotExported("table".into())),
+                "a former agent recipe id is not an operation anybody publishes"
             );
         }
 
         // Case `an_operation_that_collects_content_is_not_asked_for_words`.
-        // An operation that collects a content hash is never refused for
-        // having quoted none: there is nothing anybody could quote.
         {
             let offers = vec![offer(
                 "word-processor",
@@ -1285,9 +849,6 @@ mod tests {
         }
 
         // Case `text_collecting_operations_need_a_literal_or_are_refused`.
-        // An operation that collects text needs words from somewhere honest —
-        // the answer itself, or a literal quoted in the instruction — and is
-        // refused rather than performed with a blank when it gets neither.
         {
             let offers = vec![offer(
                 "files",
@@ -1524,11 +1085,16 @@ mod tests {
 
         // Case `a_plan_reads_a_request_written_as_several_things_as_a_sequence`.
         {
-            let plan = Plan::from_floor("give this a title, then caption the image", &[]);
+            let offers = two_apps();
+            let plan = Plan::from_floor("archive the file, then rotate the picture right", &offers);
             assert!(plan.is_sequence(), "{plan:?}");
             assert_eq!(plan.len(), 2);
-            assert_eq!(plan.steps[0].instruction, Instruction::Heading);
-            assert_eq!(plan.steps[1].instruction, Instruction::Caption);
+            assert!(
+                matches!(&plan.steps[0].instruction, Instruction::Perform { id, .. } if id.ends_with("#archive"))
+            );
+            assert!(
+                matches!(&plan.steps[1].instruction, Instruction::Perform { id, .. } if id.ends_with("#rotate-right"))
+            );
             assert_eq!(plan.unanswered(), None);
         }
 
@@ -1543,9 +1109,12 @@ mod tests {
 
         // Case `a_plan_collapses_a_request_that_only_repeats_one_operation`.
         {
-            let plan = Plan::from_floor("give this a heading and give it a heading again", &[]);
+            let offers = two_apps();
+            let plan = Plan::from_floor("archive the file and archive the file again", &offers);
             assert!(!plan.is_sequence(), "{plan:?}");
-            assert_eq!(plan.steps[0].instruction, Instruction::Heading);
+            assert!(
+                matches!(&plan.steps[0].instruction, Instruction::Perform { id, .. } if id.ends_with("#archive"))
+            );
         }
 
         // Case `a_plan_falls_back_to_the_whole_request_when_nothing_in_it_resolves`.
@@ -1561,6 +1130,20 @@ mod tests {
                 Instruction::Unknown(whole.to_string())
             );
         }
+    }
+
+    /// Two published operations a sequence can name, in the apps' own words.
+    fn two_apps() -> Vec<Offer> {
+        vec![
+            offer("files", "files.entry:/a", "archive", "Archive file", None),
+            offer(
+                "photos",
+                "photos.picture:1",
+                "rotate-right",
+                "Rotate picture right",
+                None,
+            ),
+        ]
     }
 
     #[test]
@@ -1610,7 +1193,7 @@ mod tests {
             assert!(!Step::bound(perform(&none), &offers).carries);
 
             // Never true for anything but Perform, whatever the survey holds.
-            assert!(!Step::bound(Instruction::Table, &offers).carries);
+            assert!(!Step::bound(Instruction::Unknown("x".into()), &offers).carries);
         }
 
         // Case `opens_an_application_is_true_only_for_the_open_address`.
@@ -1639,14 +1222,18 @@ mod tests {
                 })
                 .opens_an_application()
             );
-            assert!(!Step::own(Instruction::Table).opens_an_application());
+            assert!(!Step::own(Instruction::Unknown("x".into())).opens_an_application());
         }
 
         // Case `unanswered_refuses_a_sequence_with_no_open_ahead_of_the_gap`.
         {
             let plan = Plan {
                 steps: vec![
-                    Step::own(Instruction::Table),
+                    Step::own(Instruction::Perform {
+                        id: "files.entry:/a#archive".into(),
+                        arguments: serde_json::Map::new(),
+                        confirmation: ConfirmationEvidence::None,
+                    }),
                     Step::own(Instruction::Unknown("juggle three plates".into())),
                 ],
             };
@@ -1654,8 +1241,6 @@ mod tests {
         }
 
         // Case `an_open_excuses_a_clause_it_makes_answerable_but_only_once_it_comes_first`.
-        // A step naming what only an earlier open would create is not fatal —
-        // but only once that open has actually run first.
         {
             let open = offer(
                 "photos",

@@ -111,13 +111,21 @@ impl HistoryEntry {
     pub fn is_revertible(&self) -> bool {
         self.redaction.is_none()
             && op_class_is_revertible(self.op_class)
-            && !self.context.as_ref().is_some_and(|context| {
-                context
-                    .facets
-                    .iter()
-                    .any(|facet| facet.key == "tilo.receipt" && facet.value == "effect")
-            })
+            && !self.is_effect_receipt()
     }
+
+    /// Whether this row is a durable effect receipt: external work recorded
+    /// in the activity timeline rather than a document mutation.
+    pub fn is_effect_receipt(&self) -> bool {
+        self.context
+            .as_ref()
+            .is_some_and(|context| context.facets.iter().any(is_effect_receipt_facet))
+    }
+}
+
+/// The facet an effect receipt carries.
+fn is_effect_receipt_facet(facet: &ActionFacet) -> bool {
+    facet.key == "tilo.receipt" && facet.value == "effect"
 }
 
 /// Empty fields are "match everything" so a freshly-constructed filter
@@ -363,21 +371,21 @@ pub fn op_class_glyph(op: OpClass) -> &'static str {
 /// frame, so the label freshens naturally as `now` advances — no clock
 /// plumbing needed.
 pub fn format_relative_time(ts: SystemTime, now: SystemTime) -> String {
+    use crate::i18n::widget_format;
     let delta = now.duration_since(ts).unwrap_or_default();
     let secs = delta.as_secs();
     if secs < 60 {
-        return "just now".to_string();
+        return widget_format("relative-time-just-now", &[]);
     }
     let mins = secs / 60;
-    if mins < 60 {
-        return format!("{mins} min ago");
-    }
-    let hours = mins / 60;
-    if hours < 24 {
-        return format!("{hours} h ago");
-    }
-    let days = hours / 24;
-    format!("{days} d ago")
+    let (key, count) = if mins < 60 {
+        ("relative-time-minutes", mins)
+    } else if mins < 60 * 24 {
+        ("relative-time-hours", mins / 60)
+    } else {
+        ("relative-time-days", mins / (60 * 24))
+    };
+    widget_format(key, &[("count", count.into())])
 }
 
 /// Rounds a normalized `[0, 1]` colour channel to a `u8` byte. The `clamp`

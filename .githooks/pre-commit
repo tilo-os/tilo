@@ -11,8 +11,12 @@ python3 "$root/tools/policy/check_app_text_contract.py"
 python3 "$root/tools/policy/check_shell_copy_contract.py"
 python3 "$root/tools/policy/check_ui_host_inputs_contract.py"
 python3 "$root/tools/policy/check_ui_clock_contract.py"
+python3 "$root/tools/policy/check_integration_test_modules.py" || fail=1
 
-staged_rs=$(git diff --cached --name-only --diff-filter=ACM -- '*.rs' | grep -v '^vendor/' || true)
+# Same exclusions as CI (tools/ci/check-changed-rustfmt.sh): vendored crates and
+# checked-in Cap'n Proto bindings keep generator formatting.
+staged_rs=$(git diff --cached --name-only --diff-filter=ACM -- '*.rs' \
+  | grep -vE '^vendor/|/src/generated/[^/]*_capnp\.rs$' || true)
 # Staged names, read once. A check matches against this variable, never
 # against a pipe from git: under pipefail, a `grep -q` that stops reading at
 # its first match leaves git writing into a closed pipe, and on a large diff
@@ -37,39 +41,6 @@ if [ -n "$fmt_rs" ] && command -v rustfmt >/dev/null 2>&1; then
     fail=1
   fi
 fi
-
-# Crates with tests/it.rs need module declarations for their integration tests;
-# undeclared files are not compiled or run.
-while IFS= read -r f; do
-  [ -z "$f" ] && continue
-  case "$f" in */tests/*.rs) ;; *) continue ;; esac
-  base=$(basename "$f" .rs)
-  [ "$base" = "it" ] && continue
-  crate_tests=$(dirname "$f")
-  # only crates that consolidated
-  [ -f "$crate_tests/it.rs" ] || continue
-  # helper modules live in a subdirectory or are named in it.rs already
-  case "$f" in */tests/*/*) continue ;; esac
-  # Some environment-owning integration tests intentionally remain separate
-  # Cargo test binaries. An explicit [[test]] path is just as reachable as a
-  # module in tests/it.rs and must not be reported as silently orphaned.
-  crate_manifest="$(dirname "$crate_tests")/Cargo.toml"
-  if [ -f "$crate_manifest" ] \
-    && grep -qE "^[[:space:]]*path[[:space:]]*=[[:space:]]*\"tests/${base}\\.rs\"[[:space:]]*$" "$crate_manifest"; then
-    continue
-  fi
-  # A test file the crate's own sources include with `#[path]` is compiled
-  # as part of that target, not orphaned.
-  crate_src="$(dirname "$crate_tests")/src"
-  if [ -d "$crate_src" ] \
-    && grep -rqE "^[[:space:]]*#\[path = \"(\.\./)+tests/${base}\.rs\"\]" "$crate_src"; then
-    continue
-  fi
-  if ! grep -q "mod ${base};" "$crate_tests/it.rs"; then
-    note "$f is not declared in $crate_tests/it.rs — it will not be compiled or run"
-    fail=1
-  fi
-done <<< "$staged_rs"
 
 # Source policy (ignore reasons, allow placement, dbg!) is ours to enforce on
 # our Rust; a vendored crate under vendor/ is upstream's code, kept as it

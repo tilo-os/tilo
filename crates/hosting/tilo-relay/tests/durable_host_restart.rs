@@ -78,9 +78,8 @@ async fn publish_and_leave(
     a_client
         .send(Envelope::Subscribe { workspace_id: ws })
         .unwrap();
-    let ready = tokio::time::timeout(Duration::from_secs(2), a_client.recv())
+    let ready = tilo_test_env::within("A Ready timeout", a_client.recv())
         .await
-        .expect("A Ready timeout")
         .expect("A Ready closed");
     assert!(matches!(
         ready,
@@ -104,7 +103,8 @@ async fn publish_and_leave(
         .unwrap();
 
     let mut queued = 0;
-    for _ in 0..40 {
+    // Polls for up to 30 s; only a hang uses the whole budget.
+    for _ in 0..1200 {
         queued = pending_count(pending_dir);
         if queued >= 1 {
             break;
@@ -150,9 +150,8 @@ async fn catch_up_after_restart(
         if got_delta && got_ready {
             break;
         }
-        let env = tokio::time::timeout(Duration::from_secs(3), b_client.recv())
+        let env = tilo_test_env::within("B catch-up timeout", b_client.recv())
             .await
-            .expect("B catch-up timeout")
             .expect("B channel closed");
         match env {
             Envelope::Delta {
@@ -197,7 +196,14 @@ async fn never_simultaneously_online_devices_converge_across_host_restart() {
     // ---- Host boots; A publishes an edit and leaves. B has never
     //      connected. ----
     let host1_dev = user.enrol("home-server", DeviceCapabilities::host());
-    let host1 = spawn_relay_on(&state_root, &user, host1_dev, &[WS], &members).await;
+    let host1 = Box::pin(spawn_relay_on(
+        &state_root,
+        &user,
+        host1_dev,
+        &[WS],
+        &members,
+    ))
+    .await;
     let addr1 = host1.node_addr();
 
     // B never connected, so the edit must be queued to disk for it.
@@ -225,7 +231,14 @@ async fn never_simultaneously_online_devices_converge_across_host_restart() {
     );
 
     let host2_dev = user.enrol("home-server-2", DeviceCapabilities::host());
-    let host2 = spawn_relay_on(&state_root, &user, host2_dev, &[WS], &members).await;
+    let host2 = Box::pin(spawn_relay_on(
+        &state_root,
+        &user,
+        host2_dev,
+        &[WS],
+        &members,
+    ))
+    .await;
     let addr2 = host2.node_addr();
 
     // ---- B connects for the very first time, to the restarted host. ----

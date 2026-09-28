@@ -1006,6 +1006,10 @@ impl LiveAppActionsProvider {
         });
     }
 
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the broker handle is cloned once per callback; each clone moves into its own closure"
+    )]
     fn job_result(&self, id: u64, state: &'static str, cancel: bool, actor: &str) -> SearchResult {
         if cancel {
             let broker = self.broker.clone();
@@ -1741,6 +1745,10 @@ impl SearchProvider for LiveAppActionsProvider {
         clippy::too_many_lines,
         reason = "the query constructs paired palette/headless callbacks from one captured action contract; splitting them would duplicate or desynchronise confirmation, launch, and job lifecycle state"
     )]
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the broker handle is cloned once per callback; each clone moves into its own closure"
+    )]
     fn query(&self, ctx: SearchContext<'_>) -> Vec<SearchResult> {
         if self.projection.get() == QueryProjection::All {
             // Direct compatibility callers do not have a registry refresh
@@ -2416,15 +2424,19 @@ pub(crate) fn fixture_with_directory_page(
     actor: String,
     page: CataloguePage,
 ) -> Rc<dyn SearchProvider> {
-    let provider = LiveAppActionsProvider::new(broker);
+    let provider = Rc::new(LiveAppActionsProvider::new(broker));
     provider
         .directory_pages
         .borrow_mut()
         .insert((peer, actor, String::new(), Vec::new()), page);
-    Rc::new(provider)
+    provider
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -2569,9 +2581,7 @@ mod tests {
     fn broker_for(
         chrome: &crate::shell::chrome_state::Chrome,
     ) -> crate::shell::collab_broker::AppActionBroker {
-        crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_membership(
-            chrome.borrow().tree_handle(),
-        )
+        crate::shell::broker_services::test_broker_with_membership(chrome.borrow().tree_handle())
     }
 
     fn page(rows: Vec<CatalogueRow>, next_cursor: Vec<u8>) -> CataloguePage {

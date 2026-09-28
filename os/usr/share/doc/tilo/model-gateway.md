@@ -5,8 +5,10 @@ socket exists for the launcher at session start, but the process and network
 stack are not loaded until Settings or Agent actually connects. It owns outbound calls to
 the explicitly supported OpenAI-compatible and Anthropic endpoints, and resolves API keys
 from the Tilo encrypted account vault. Sandboxed clients receive only an
-authenticated, launcher-passed `model-gateway` service FD; they never receive
-the key or direct provider network access.
+authenticated, launcher-passed `model-gateway` service FD in
+`TILO_SVC_MODEL-GATEWAY_FD`. The launcher uppercases the service name and
+preserves its hyphen. Clients never receive the key or direct provider network
+access.
 
 The implementation is intentionally a narrow relay, rather than claiming a
 general LiteLLM-compatible provider surface: only the two existing provider

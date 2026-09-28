@@ -12,6 +12,7 @@ use ui::doc::{read_bool, read_str};
 
 use automerge::{AutoCommit, ObjId, transaction::Transactable};
 use taffy::{NodeId, TaffyTree};
+use tilo_relay_protocol::config::CheckpointPrefixRecovery;
 use tilo_relay_protocol::{DeviceRole, RelayConfig, ReplicationIntent};
 use tilo_user_identity::RevocationReason;
 use ui::theme::Theme;
@@ -727,6 +728,10 @@ impl DeviceMeshPane {
                                 pin: self.config.device_role.can_serve(),
                                 replication: ReplicationIntent::OnDemand,
                                 admitted_users: Vec::new(),
+                                // Workspace discovery proves only that the room exists. It
+                                // cannot confer the native shell governor's retained authority.
+                                shell_authority: None,
+                                checkpoint_prefix_recovery: CheckpointPrefixRecovery::default(),
                             });
                     } else if !*enabled {
                         self.config.remove_workspace(*id);
@@ -794,6 +799,8 @@ impl DeviceMeshPane {
                         pin: true,
                         replication: ReplicationIntent::FullWorkspace,
                         admitted_users: Vec::new(),
+                        shell_authority: None,
+                        checkpoint_prefix_recovery: CheckpointPrefixRecovery::default(),
                     })
                     .collect();
             }
@@ -2213,6 +2220,8 @@ mod tests {
                 pin: true,
                 replication: ReplicationIntent::OnDemand,
                 admitted_users: Vec::new(),
+                shell_authority: None,
+                checkpoint_prefix_recovery: CheckpointPrefixRecovery::default(),
             });
             config.save(&path).unwrap();
 
@@ -2359,6 +2368,8 @@ mod tests {
                 pin: false,
                 replication: ReplicationIntent::OnDemand,
                 admitted_users: Vec::new(),
+                shell_authority: None,
+                checkpoint_prefix_recovery: CheckpointPrefixRecovery::default(),
             });
             config.save(&path).unwrap();
 
@@ -2517,12 +2528,12 @@ mod tests {
                 .unwrap()
                 .as_millis();
             std::fs::write(
-            &proof,
-            format!(
-                r#"{{"state":"ready","full_content_replication":true,"updated_at_ms":{now_ms}}}"#
-            ),
-        )
-        .unwrap();
+                &proof,
+                format!(
+                    r#"{{"state":"ready","full_content_replication":true,"updated_at_ms":{now_ms}}}"#
+                ),
+            )
+            .unwrap();
             assert_eq!(
                 RelayRuntimeStatus::read(&config, now),
                 RelayRuntimeStatus::Ready

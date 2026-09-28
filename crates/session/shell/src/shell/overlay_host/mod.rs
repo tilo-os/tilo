@@ -75,6 +75,9 @@ use std::path::PathBuf;
 
 use ui::ColorCompat;
 use ui::presence::{PresenceCtx, PresenceKey};
+use ui::search::system::filters::{
+    FilterText, KindChip, ScopeSegment, SearchFilters, draw_filter_chip, toggle_kind,
+};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{
@@ -90,7 +93,7 @@ use crate::shell::capture_surface::{
     CaptureMirrorImage, CaptureSurfaceRequest, PreparedCaptureSurface, capture_mirror_initial_size,
     capture_mirror_origin, visible_capture_spawn,
 };
-use crate::shell::chrome_state::{Chrome, WsTab};
+use crate::shell::chrome_state::{Chrome, SearchScopeText as _, WsTab};
 use crate::shell::collaborators_overlay::{
     CollaboratorsHit, CollaboratorsModel, CollaboratorsOverlay,
     collaborator_roster_rows_with_local_user,
@@ -116,6 +119,7 @@ use crate::shell::quick_settings::drill_in::{DrillInList, DrillInOutcome};
 use crate::shell::quick_settings::root::{QuickSettingsRoot, RootAction, SliderCommit};
 use crate::shell::quick_settings::vpn::{QuickSettingsVpnPane, VpnPaneOutcome};
 use crate::shell::quick_settings::wifi::QuickSettingsWifiPane;
+use crate::shell::search::ResourceKindText as _;
 use crate::shell::sidebar_wheel_disc::SidebarWheelDisc;
 use crate::shell::state::{Capability, GroupId, StripId, WorkspaceId};
 use crate::shell::workspace_settings::{CapEdit, EXPIRY_CHOICES};
@@ -132,14 +136,26 @@ struct SessionActionResult {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 #[path = "clipboard_manager_tests.rs"]
 mod clipboard_manager_tests;
 
 #[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 #[path = "device_fabric_ui_tests.rs"]
 mod device_fabric_ui_tests;
 
 #[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 #[path = "idle_io_animation_tests.rs"]
 mod idle_io_animation_tests;
 
@@ -440,10 +456,10 @@ pub struct ShellOverlayHost {
     /// What starts saved shortcuts from a chord or on schedule.
     shortcut_triggers: shortcut_triggers::ShortcutTriggerState,
     content: Box<dyn Widget>,
-    /// Exact production root layers, supplied only by `build_workspace_root`. This is a
-    /// capability, not an invalidation hint: section drawing invokes these same widgets in their
-    /// established backdrop → workspace → topbar order.
-    workspace_scene_parts: Option<crate::shell::WorkspaceSceneParts>,
+    /// Recovery reports of embedded components settled when a workspace
+    /// rebuild replaced `content`; handed on by
+    /// [`Widget::take_component_close_reports`] so a rebuild cannot lose them.
+    desktop_close_reports: Vec<ui::application::ComponentCloseReport>,
     /// Trusted first-login chrome. While present it is the entire root
     /// surface: desktop content, launch affordances, and every other overlay
     /// stay unreachable until a real identity has been provisioned and the
@@ -494,37 +510,12 @@ pub struct ShellOverlayHost {
     last_search_revision: String,
     /// Kinds the chip strip has toggled on. Empty means unfiltered.
     active_kind_filter: Vec<crate::shell::search::ResourceKind>,
-    /// Painted chip rects this frame, indexed like
-    /// [`Self::search_registry`]'s `registered_kinds`. Cached from draw
-    /// so `handle_event` hit-tests without recomputing geometry.
-    search_chip_rects: Vec<Rect>,
-    /// Rect of the leading "All" chip, cached from draw for hit-testing.
-    search_all_chip_rect: Rect,
-    /// Chip rows the filter band is reserving. Changing it tells the
-    /// palette to grow so lower rows aren't painted over. See
-    /// [`Self::draw_search_banner`].
-    search_chip_rows: usize,
-    /// Height of the filter band's controls, measured from the label the
-    /// band draws with (see [`Self::filter_control_height`]) and cached
-    /// from draw so the scope-switch geometry helpers, which hit-testing
-    /// calls without a theme, agree with what was painted.
-    search_filter_control_h: f64,
-    /// Width of one scope segment: the widest scope label plus `s3` each
-    /// side, measured at draw and cached for the same reason.
-    search_scope_segment_w: f64,
-    /// The §9.6 pointer floor (`metrics.min_pointer_target`) at the live
-    /// theme, cached at draw like the control height so hit-testing and
-    /// semantic bounds grow a 28 px Selector to a 32 px target without a
-    /// theme in hand (S1-28).
-    search_pointer_floor_h: f64,
-    /// The band rect the chips and switch were laid out in, and whether the
-    /// switch took the first row alone, both frozen at draw. The palette's
-    /// band getters answer from `host_filter_strip_rows` live, so a row
-    /// request made during draw would otherwise change the band — and the
-    /// switch's geometry — before the next paint, and a click would be
-    /// tested against a layout nobody has seen yet.
-    search_band_at_draw: Rect,
-    search_scope_own_row: bool,
+    /// The palette's filter band: chips, scope switch, their pointer
+    /// targets and semantics, laid out and cached at draw.
+    search_filters: SearchFilters,
+    /// What [`Self::search_filters`] was last configured with, so an
+    /// unchanged band is not rebuilt every frame.
+    search_filter_inputs: Option<SearchFilterInputs>,
     /// Records each room holds, shared with the records search provider.
     room_records: std::rc::Rc<std::cell::RefCell<crate::shell::room_records::RoomRecords>>,
     /// Set whenever [`Self::refresh_search_results`] rewrites the
@@ -685,11 +676,6 @@ pub struct ShellOverlayHost {
     /// A workspace-root swap happened during `update`; the following relayout must rebuild its
     /// Taffy nodes before reading geometry from the replacement widgets.
     workspace_content_layout_dirty: bool,
-    /// Per-strip last active-group id that
-    /// [`Self::scroll_active_group_into_view`] scrolled into view, so the
-    /// focus-follow scroll is edge-triggered and doesn't fight a user who
-    /// wheels away.
-    last_scrolled_active_group: HashMap<StripId, GroupId>,
     /// The focused `(strip, group)` last recorded in the display partition,
     /// so a focus change is noted once.
     last_noted_focus: Option<(StripId, GroupId)>,
@@ -737,6 +723,9 @@ pub struct ShellOverlayHost {
     /// Lists the agents that take part from this machine on their rooms'
     /// rosters; present once the collaboration broker is.
     local_participants: Option<crate::shell::peer_presence::LocalParticipantRoster>,
+    /// The recorder, the replay and record custody, once the collaboration
+    /// broker is up; they carry out what chrome queues for them.
+    session_services: crate::shell::session_services::SessionServices,
     /// The displays this shell draws onto, as the compositor reports them;
     /// empty in the hosted compositor, whose one display is its window.
     recording_outputs: Vec<crate::shell::recorder::RecordedOutput>,
@@ -770,11 +759,6 @@ pub struct ShellOverlayHost {
     /// [`GroupRow`] widgets need the new strip contents. `u64::MAX` at
     /// construction so the first poll always rebuilds.
     last_chrome_revision: u64,
-    /// What each live tab was last built to show, keyed by tab id — the
-    /// revision counter says something moved, this says which tabs, so a
-    /// tab whose content changed without its id changing still gets
-    /// rebuilt.
-    tab_tiles: std::collections::HashMap<u64, String>,
     /// Session-local bindings from `(owner, surface)` to the peer-window tab
     /// whose runtime content was replaced by a `PeerView`. These never enter
     /// `ChromeState` or its replicated workspace document.
@@ -888,6 +872,12 @@ pub struct ShellOverlayHost {
     /// The emoji picker. Its picks wait here for the compositor, which
     /// commits them through the seat's input method.
     emoji_picker: crate::shell::emoji_picker::EmojiPicker,
+    /// The focused text field's caret in desktop coordinates, as the
+    /// compositor last reported it; the emoji picker opens against it.
+    text_caret: Option<Rect>,
+    /// A Bluetooth pairing question from the compositor's agent, modal
+    /// above the desktop while it waits for the person.
+    pairing: crate::bluetooth_prompt::PairingOverlay,
     /// Shared toolkit capture selector. The shell only hosts it and drains
     /// semantic intents; compositor readback/encoding stays below this layer.
     capture_studio: ui::widget::CaptureStudio,
@@ -1074,9 +1064,6 @@ fn icon_for_kind(kind: &crate::shell::search::ResourceKind) -> ui::icons::Icon {
     }
 }
 
-/// Gap between a segmented control's outer track and its segments.
-const SEGMENT_INSET_PX: f64 = 2.0;
-
 // -- Lossy numeric casts, named and scoped one lint at a time --------
 //
 // This file's layout math is all in `f64` (to match `kurbo`), but
@@ -1166,289 +1153,6 @@ fn f32_to_u8_saturating(v: f32) -> u8 {
 )]
 fn f64_floor_to_usize_saturating(v: f64) -> usize {
     v.floor() as usize
-}
-
-/// Narrowest a chip is ever squeezed to before its label is just an
-/// ellipsis: the §9.6 pointer floor — a pill narrower than a finger is
-/// not a target whatever it says. (Was a tuned 34 until 2026-09-17.)
-const CHIP_MIN_W_PX: f64 = ui::tokens::Metrics::BASE.min_pointer_target as f64;
-/// Height of a Selector at 100 % text (HIG §9.6, `metrics.selector_height`).
-/// The unscaled token, for the constructor's resting value before any theme
-/// is seen; the live band reads `theme.tokens.metrics.selector_height` in
-/// [`ShellOverlayHost::filter_control_height`] and grows with the measured
-/// label from there.
-const SELECTOR_HEIGHT_PX: f64 = ui::tokens::Metrics::BASE.selector_height as f64;
-
-/// Share of the band's width the scope switch may take while it shares the
-/// first row with the kind chips. Past it — 200 % text on a narrow card —
-/// the switch takes the first row alone rather than eliding its labels
-/// (S1-29); see [`ShellOverlayHost::scope_switch_has_own_row`].
-const SCOPE_TRACK_SHARE: f64 = 0.55;
-
-/// Where each chip of the filter strip goes.
-#[derive(Debug, Clone, PartialEq)]
-struct ChipStrip {
-    /// One rect per chip, in the order handed in. Every chip gets one —
-    /// see [`lay_out_chip_strip`].
-    rects: Vec<Rect>,
-    /// Rows the chips want at their natural width; the host reserves
-    /// this many from the palette.
-    rows_needed: usize,
-}
-
-/// Lays the filter chips out across a band that may be too narrow.
-///
-/// Invariant: every chip gets a rect — an unpainted chip could never be
-/// clicked. Three behaviours in preference order: natural width while it
-/// fits; wrap to a new row (over eliding — `Applications` → `Ap…` stops
-/// saying what it filters); only once rows run out do leftovers share and
-/// narrow the last row, a transient case the next layout fixes.
-///
-/// `first_row_x1` bounds the first row, since the scope switch anchors to
-/// its right; later rows have the whole band. `gap` is the space between
-/// two chips — the caller's live `spacing.s2`, passed in because this is a
-/// pure geometry function without a theme in hand.
-fn lay_out_chip_strip(
-    natural: &[f64],
-    band: Rect,
-    first_row_x1: f64,
-    rows_available: usize,
-    row_h: f64,
-    control_h: f64,
-    gap: f64,
-) -> ChipStrip {
-    if natural.is_empty() || band.width() <= 0.0 {
-        return ChipStrip {
-            rects: Vec::new(),
-            rows_needed: 1,
-        };
-    }
-    let rows_available = rows_available.max(1);
-    let row_x1 = |row: usize| if row == 0 { first_row_x1 } else { band.x1 };
-
-    // Greedy wrap at natural width; `per_row` caps chips per row, used
-    // by the balancing pass below.
-    let wrap = |per_row: usize| -> Vec<Vec<usize>> {
-        let mut plan: Vec<Vec<usize>> = vec![Vec::new()];
-        let mut x = band.x0;
-        for (i, w) in natural.iter().enumerate() {
-            let w = w.max(CHIP_MIN_W_PX);
-            // `plan` always starts with one row and is only ever pushed
-            // to, never cleared, so `len() - 1` cannot underflow — spelled
-            // with saturating_sub so the invariant doesn't need re-proving
-            // at every call site.
-            let row = plan.len().saturating_sub(1);
-            let row_full = plan
-                .get(row)
-                .is_some_and(|r| !r.is_empty() && (x + w > row_x1(row) || r.len() >= per_row));
-            if row_full {
-                plan.push(Vec::new());
-                x = band.x0;
-            }
-            let row = plan.len().saturating_sub(1);
-            if let Some(r) = plan.get_mut(row) {
-                r.push(i);
-            }
-            x += w + gap;
-        }
-        plan
-    };
-    let plan = wrap(usize::MAX);
-    let rows_needed = plan.len();
-
-    // Spread chips evenly over the rows used, rather than filling each
-    // to the brim and leaving a lone chip on the last row. Only adopted
-    // if it still fits in the same row count, so evenness never costs a
-    // chip.
-    let plan = if rows_needed > 1 {
-        let per_row = natural.len().div_ceil(rows_needed);
-        let balanced = wrap(per_row);
-        if balanced.len() == rows_needed {
-            balanced
-        } else {
-            plan
-        }
-    } else {
-        plan
-    };
-
-    let mut rects = vec![Rect::ZERO; natural.len()];
-    let place = |row: usize, ids: &[usize], widths: &[f64], rects: &mut Vec<Rect>| {
-        let cy = band.y0 + usize_to_f64_lossy(row) * row_h + row_h / 2.0;
-        let mut x = band.x0;
-        for (slot, &id) in ids.iter().enumerate() {
-            // `widths` is built alongside `ids` by every caller below, so
-            // it always has one entry per id — `.get()` keeps a shape
-            // mismatch from panicking instead of proving it can't happen.
-            let Some(&w) = widths.get(slot) else {
-                continue;
-            };
-            let Some(rect) = rects.get_mut(id) else {
-                continue;
-            };
-            *rect = Rect::new(x, cy - control_h / 2.0, x + w, cy + control_h / 2.0);
-            x += w + gap;
-        }
-    };
-
-    let kept_rows = rows_needed.min(rows_available);
-    for (row, ids) in plan.iter().take(kept_rows.saturating_sub(1)).enumerate() {
-        let widths: Vec<f64> = ids
-            .iter()
-            .map(|&i| {
-                natural
-                    .get(i)
-                    .copied()
-                    .unwrap_or(CHIP_MIN_W_PX)
-                    .max(CHIP_MIN_W_PX)
-            })
-            .collect();
-        place(row, ids, &widths, &mut rects);
-    }
-    let last = kept_rows.saturating_sub(1);
-    let leftover: Vec<usize> = plan
-        .get(last..)
-        .map(|rows| rows.iter().flatten().copied().collect())
-        .unwrap_or_default();
-    let widths = share_row(
-        &leftover
-            .iter()
-            .map(|&i| natural.get(i).copied().unwrap_or(CHIP_MIN_W_PX))
-            .collect::<Vec<_>>(),
-        row_x1(last) - band.x0,
-        gap,
-    );
-    place(last, &leftover, &widths, &mut rects);
-
-    ChipStrip { rects, rows_needed }
-}
-
-/// Widths for one row of chips that must all fit inside `available`.
-/// Chips narrower than an equal share keep their natural width and hand
-/// the rest to the ones that are over, so squeezing costs the long
-/// labels and leaves short ones alone.
-fn share_row(natural: &[f64], available: f64, gap: f64) -> Vec<f64> {
-    if natural.is_empty() {
-        return Vec::new();
-    }
-    let n = usize_to_f64_lossy(natural.len());
-    let gaps = gap * (n - 1.0);
-    let total: f64 = natural.iter().sum();
-    if total + gaps <= available {
-        return natural.iter().map(|w| w.max(CHIP_MIN_W_PX)).collect();
-    }
-    let base = ((available - gaps) / n).max(CHIP_MIN_W_PX);
-    let spare: f64 = natural
-        .iter()
-        .filter(|w| **w < base)
-        .map(|w| base - w)
-        .sum();
-    let over = natural.iter().filter(|w| **w >= base).count();
-    let share_over = if over > 0 {
-        base + spare / usize_to_f64_lossy(over)
-    } else {
-        base
-    };
-    natural
-        .iter()
-        .map(|w| {
-            if *w < base {
-                w.max(CHIP_MIN_W_PX)
-            } else {
-                share_over.min(*w).max(CHIP_MIN_W_PX)
-            }
-        })
-        .collect()
-}
-
-/// One pill in the search card's filter band, shared by the kind chips
-/// and the "All" reset chip.
-///
-/// One filter chip: a Selector (HIG §9.1) whose body is its selection tier
-/// (§9.3 — idle transparent, hover `lift(0.5)`, chosen `lift(1.0)` with a
-/// hairline and inner glow) and whose label is ink chosen against whatever
-/// that tier painted, so it stays legible on every preset. Until
-/// 2026-09-17 the chosen chip wore `accent[5]` (§9.4 reserves accent for
-/// live state) and the idle one a `lift(0.35)` wash of its own.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "immediate-mode paint helper: scene, transform, renderer, theme and this chip's own content"
-)]
-fn draw_filter_chip(
-    scene: &mut Scene,
-    transform: Affine,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
-    rect: Rect,
-    label: &str,
-    text_size: f32,
-    state: ui::chrome::SelectionState,
-) {
-    let colors = &theme.tokens.colors;
-    let radius = ui::chrome::ChromeRole::Selector.radius(theme, rect.height());
-    let shape = RoundedRect::from_rect(rect, radius);
-    let tier = ui::chrome::selection_tier(theme, state);
-    if tier.fill.components[3] > 0.0 {
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            tier.fill,
-            None,
-            &shape,
-        );
-    }
-    if let Some(border) = tier.border {
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            border,
-            None,
-            &shape,
-        );
-    }
-    if let Some(glow) = tier.inner_glow {
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            glow,
-            None,
-            &RoundedRect::from_rect(rect.inset(1.0), (radius - 1.0).max(0.0)),
-        );
-    }
-    // The chosen chip's label is the control label (`text_primary`); the
-    // others recede to `text_dim`. Either way the ink is measured against
-    // the surface actually under it — the lifted body, or the panel ground
-    // showing through an idle chip.
-    let lifted = state.active || state.pressed || state.hover;
-    let under = if lifted {
-        tier.fill
-    } else {
-        ui::chrome::shell::panel_ground(theme)
-    };
-    let tone = if state.active {
-        colors.text_primary
-    } else {
-        colors.text_dim
-    };
-    let text_color = colors.ink_on(under, tone, ui::tokens::colors::ON_FILL_MIN_CONTRAST);
-    // Control labels are medium weight (HIG §9.6); measured and drawn at
-    // the same weight so the centring holds.
-    let (lw, lh) = text_renderer.measure_weighted(label, text_size, None, TextWeight::Medium);
-    text_renderer.draw_text_weighted(
-        scene,
-        label,
-        text_size,
-        text_color,
-        transform.pre_translate(
-            (
-                rect.x0 + (rect.width() - f64::from(lw)) / 2.0,
-                rect.y0 + (rect.height() - f64::from(lh)) / 2.0,
-            )
-                .into(),
-        ),
-        None,
-        TextWeight::Medium,
-    );
 }
 
 const OVERVIEW_TRANSITION_MS: u64 = 400;
@@ -1772,7 +1476,7 @@ fn prepare_status_evidence(
 /// filter, so a translucent tint here would just lose contrast.
 pub const POPOVER_SURFACE_ALPHA: f32 = ui::chrome::shell::CHROME_SURFACE_ALPHA;
 
-/// Alpha of the `GlobalSearch` palette and Workspace-Settings modal
+/// Alpha of the search palette and Workspace-Settings modal
 /// surfaces. Paints solid rather than the design's translucent tint,
 /// since translucency drops legibility of long rows; the scrim beneath
 /// sells the depth instead.
@@ -1784,16 +1488,19 @@ pub const MODAL_SURFACE_ALPHA: f32 = 1.0;
 /// same. Pinned by `tests::palette_scrim_alpha_matches_concept`.
 pub const MODAL_SCRIM_ALPHA: f32 = 0.45;
 
-/// Alpha of the scrim beneath the `GlobalSearch` palette and Overview
+/// Alpha of the scrim beneath the search palette and Overview
 /// view. Same value and same reasoning as [`MODAL_SCRIM_ALPHA`]. Pinned
 /// by `tests::palette_scrim_alpha_reads_like_the_blurred_concept`.
 pub const PALETTE_SCRIM_ALPHA: f32 = 0.45;
 
-/// A cheap value that changes exactly when a tab's content changes: the
-/// serialised tile, since that's the whole of what
-/// [`crate::shell::to_ui_tile`] reads.
-fn tile_signature(tile: &crate::shell::state::TileContent) -> String {
-    serde_json::to_string(tile).unwrap_or_default()
+/// What the palette's filter band shows: each registered kind with its
+/// label, the chosen kinds, and each scope with its label.
+#[derive(Clone, Debug, PartialEq)]
+struct SearchFilterInputs {
+    kinds: Vec<(crate::shell::search::ResourceKind, String)>,
+    selected: Vec<crate::shell::search::ResourceKind>,
+    scopes: Vec<(crate::shell::chrome_state::SearchScope, String)>,
+    active_scope: crate::shell::chrome_state::SearchScope,
 }
 
 /// `(strip_id, groups)` where each group is `(group_id, tab_ids)` — the
@@ -1988,6 +1695,13 @@ impl ShellOverlayHost {
                 presence,
             );
         }
+        self.pairing.draw(
+            &mut above_quick_settings,
+            transform,
+            text_renderer,
+            theme,
+            presence,
+        );
         self.capture_studio.draw(
             &mut above_quick_settings,
             transform,
@@ -2240,6 +1954,9 @@ impl ShellOverlayHost {
             os_actions::user_switching_supported(),
             host.session_action_policy.surfaces(),
         );
+        host.pairing = crate::bluetooth_prompt::PairingOverlay::new(
+            crate::bluetooth::PairingPromptHandle::global(),
+        );
         host
     }
 
@@ -2340,7 +2057,7 @@ impl ShellOverlayHost {
             desktop_controls: inputs.desktop_controls,
             shortcut_help_drawn_rect: Rect::ZERO,
             content,
-            workspace_scene_parts: None,
+            desktop_close_reports: Vec::new(),
             onboarding: None,
             onboarding_node: None,
             onboarding_released: false,
@@ -2357,14 +2074,8 @@ impl ShellOverlayHost {
             last_search_query: String::new(),
             last_search_revision: String::new(),
             active_kind_filter: Vec::new(),
-            search_chip_rects: Vec::new(),
-            search_all_chip_rect: Rect::ZERO,
-            search_chip_rows: 1,
-            search_filter_control_h: SELECTOR_HEIGHT_PX,
-            search_scope_segment_w: 0.0,
-            search_pointer_floor_h: f64::from(ui::tokens::Metrics::BASE.min_pointer_target),
-            search_band_at_draw: Rect::ZERO,
-            search_scope_own_row: false,
+            search_filters: SearchFilters::default(),
+            search_filter_inputs: None,
             room_records: inputs.room_records,
             palette_layout_dirty: false,
             palette_layout_host_w: f64::NAN,
@@ -2422,7 +2133,6 @@ impl ShellOverlayHost {
             content_built_for_ws: None,
             content_built_empty: None,
             workspace_content_layout_dirty: false,
-            last_scrolled_active_group: HashMap::new(),
             last_noted_focus: None,
             add_workspace_rect: Rect::ZERO,
             sidebar_top_y: SIDEBAR_TOP_OFFSET_PX,
@@ -2438,6 +2148,7 @@ impl ShellOverlayHost {
             wifi_secret_bridge: None,
             follow_bridge: None,
             local_participants: None,
+            session_services: crate::shell::session_services::SessionServices::default(),
             recording_outputs: Vec::new(),
             window_scale: 1.0,
             follow_presence_bridge: None,
@@ -2453,7 +2164,6 @@ impl ShellOverlayHost {
             peer_sync_overlay: PeerSyncOverlay::default(),
             notification_stack: None,
             last_chrome_revision: u64::MAX,
-            tab_tiles: std::collections::HashMap::new(),
             peer_stream_tabs: std::collections::HashMap::new(),
             personal_display: None,
             // User intent is durable, while the root filters it against the
@@ -2489,6 +2199,8 @@ impl ShellOverlayHost {
             window_switcher: crate::shell::window_switcher::WindowSwitcher::default(),
             window_previews: crate::shell::window_previews::WindowPreviews::default(),
             emoji_picker: crate::shell::emoji_picker::EmojiPicker::new(),
+            text_caret: None,
+            pairing: crate::bluetooth_prompt::PairingOverlay::default(),
             followed_peer: None,
             followed_room: None,
             follow_transition: ui::Transition::closed(),
@@ -2578,10 +2290,14 @@ impl ShellOverlayHost {
     /// identity cannot be located, or its backup ceremony cannot be opened.
     pub fn open_portable_identity_backup(&mut self) -> Result<(), String> {
         if self.onboarding.is_some() {
-            return Err("Finish the current identity flow before creating another backup.".into());
+            return Err(crate::shell::i18n::t("identity-backup-busy"));
         }
-        let identity_dir = runtime_identity::identity_dir_from_env()
-            .map_err(|error| format!("Could not locate the active identity: {error}"))?;
+        let identity_dir = runtime_identity::identity_dir_from_env().map_err(|error| {
+            crate::shell::i18n::t_args(
+                "identity-backup-locate-failed",
+                &[("error", error.to_string().into())],
+            )
+        })?;
         self.onboarding =
             Some(crate::onboarding_view::OnboardingView::new_for_portable_backup(identity_dir)?);
         self.onboarding_released = false;
@@ -3235,14 +2951,16 @@ impl ShellOverlayHost {
         self.status_bridge.as_ref()
     }
 
-    /// Open the emoji picker over the display with focus, or close it.
+    /// Open the emoji picker at the focused field's caret (centred on the
+    /// display with focus when the field reports none), or close it.
     pub fn toggle_emoji_picker(&mut self) {
         if self.emoji_picker.is_open() {
             self.emoji_picker.close();
         } else {
-            let viewport = self.emoji_picker_viewport();
+            let caret = self.text_caret;
+            let viewport = self.emoji_picker_viewport_for(caret);
             self.emoji_picker
-                .open(viewport, &crate::shell::i18n::current_locale());
+                .open_at(viewport, caret, &crate::shell::i18n::current_locale());
         }
         if let Some(chrome) = self.chrome.as_ref() {
             chrome.borrow_mut().bump();
@@ -3251,6 +2969,12 @@ impl ShellOverlayHost {
 
     pub fn emoji_picker_open(&self) -> bool {
         self.emoji_picker.is_open()
+    }
+
+    /// Where the focused text field's caret is, in desktop coordinates, or
+    /// `None` when no field takes text or it has not said.
+    pub fn set_text_caret(&mut self, caret: Option<Rect>) {
+        self.text_caret = caret;
     }
 
     /// The emoji picked since the last call, for the compositor to commit
@@ -3275,8 +2999,30 @@ impl ShellOverlayHost {
         &self.emoji_picker
     }
 
-    /// The display with focus on a partitioned desktop, else the desktop.
+    /// The display the open picker is placed on.
     fn emoji_picker_viewport(&self) -> Rect {
+        self.emoji_picker_viewport_for(self.emoji_picker.anchor())
+    }
+
+    /// The display holding `caret`, else the display with focus on a
+    /// partitioned desktop, else the desktop.
+    fn emoji_picker_viewport_for(&self, caret: Option<Rect>) -> Rect {
+        let output_rect = |output: &OutputGeometry| {
+            Rect::new(
+                output.x,
+                output.y,
+                output.x + output.width,
+                output.y + output.height,
+            )
+        };
+        if let Some(display) = caret.and_then(|caret| {
+            self.outputs
+                .iter()
+                .map(output_rect)
+                .find(|display| display.contains(caret.center()))
+        }) {
+            return display;
+        }
         let focused = self
             .is_partitioned()
             .then(|| {
@@ -3287,14 +3033,7 @@ impl ShellOverlayHost {
             .flatten();
         focused
             .and_then(|id| self.outputs.iter().find(|output| output.id == id))
-            .map_or(self.rect, |output| {
-                Rect::new(
-                    output.x,
-                    output.y,
-                    output.x + output.width,
-                    output.y + output.height,
-                )
-            })
+            .map_or(self.rect, output_rect)
     }
 
     /// Open global search, as a lone Super tap does.
@@ -3318,7 +3057,7 @@ impl ShellOverlayHost {
     pub fn chrome_narration_snapshot(&self) -> ui::a11y::AccessNode {
         use ui::a11y::{AccessNode, Politeness, Role};
         let mut root = Widget::accessibility(self)
-            .unwrap_or_else(|| AccessNode::new(Role::Group).with_name("Tilo workspace"));
+            .unwrap_or_else(|| AccessNode::new(Role::Group).with_name(t("a11y-workspace")));
         if let Some(stack) = self.notification_stack.as_ref()
             && let Some(node) = Widget::accessibility(stack)
         {
@@ -3333,11 +3072,43 @@ impl ShellOverlayHost {
         });
         root.children.push(
             AccessNode::new(Role::StaticText)
-                .with_name("Status readout")
+                .with_name(t("a11y-status-readout"))
                 .with_live(Politeness::Polite)
                 .with_value(readout.unwrap_or_default()),
         );
+        let pad_map = self.chrome.as_ref().and_then(|chrome| {
+            chrome
+                .borrow()
+                .pad_map
+                .as_ref()
+                .map(|map| (map.name.clone(), map.narration()))
+        });
+        if let Some((name, narration)) = pad_map {
+            root.children.push(
+                AccessNode::new(Role::StaticText)
+                    .with_name(name)
+                    .with_live(Politeness::Polite)
+                    .with_value(narration),
+            );
+        }
         root
+    }
+
+    /// Paint what a held pad's controls do, if a pad map is up.
+    fn draw_pad_map(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let Some(chrome) = self.chrome.as_ref() else {
+            return;
+        };
+        let chrome = chrome.borrow();
+        if let Some(map) = chrome.pad_map.as_ref() {
+            map.draw(scene, transform, text_renderer, theme, self.rect);
+        }
     }
 
     /// Paint the transient hardware-key readout, if one is up.
@@ -3361,6 +3132,12 @@ impl ShellOverlayHost {
         let Some(osd) = chrome.borrow().osd else {
             return;
         };
+        // The pad map names the mode itself.
+        if chrome.borrow().pad_map.is_some()
+            && matches!(osd.kind, crate::shell::osd::OsdKind::PadMode { .. })
+        {
+            return;
+        }
         let alpha = osd.alpha_at(now);
         if alpha <= 0.0 {
             return;
@@ -3673,7 +3450,9 @@ impl ShellOverlayHost {
         match self.peer_sync_call(PeerSyncRequest::Community(request))? {
             PeerSyncResponse::Answer(answer) => Ok(answer),
             PeerSyncResponse::Message(message) => Ok(serde_json::Value::String(message)),
-            PeerSyncResponse::PendingInvitations(_) => {
+            PeerSyncResponse::PendingInvitations(_)
+            | PeerSyncResponse::EnrollmentPending { .. }
+            | PeerSyncResponse::EnrollmentJoined { .. } => {
                 Err("unexpected response to a community request".into())
             }
         }
@@ -3823,6 +3602,9 @@ impl ShellOverlayHost {
     /// frame from [`Widget::update`]. `/invite` mints a token; `/connect`
     /// opens the token prompt. Both write their outcome into chrome.
     fn pump_peer_sync(&mut self) {
+        if let Some(request) = self.peer_sync_overlay.pending_enrollment_request() {
+            self.run_peer_sync_request(&request, false);
+        }
         let actions = self.chrome.as_ref().map_or_else(Vec::new, |chrome| {
             chrome.borrow_mut().take_peer_sync_requests()
         });
@@ -3909,7 +3691,9 @@ impl ShellOverlayHost {
                             .map(|human| RememberedInvitee {
                                 name: human.display_name,
                                 user_public_key: human.root_public_key,
-                                verification: "Workspace-verified identity".to_string(),
+                                verification: crate::shell::i18n::t(
+                                    "invite-workspace-verified-identity",
+                                ),
                             })
                             .collect()
                     })
@@ -4124,15 +3908,6 @@ impl ShellOverlayHost {
         self
     }
 
-    #[must_use]
-    pub(crate) fn with_workspace_scene_parts(
-        mut self,
-        parts: crate::shell::WorkspaceSceneParts,
-    ) -> Self {
-        self.workspace_scene_parts = Some(parts);
-        self
-    }
-
     /// Record which workspace the injected content was built for, so
     /// `Self::resync_workspace_content` can detect the first switch away.
     #[must_use]
@@ -4162,6 +3937,10 @@ impl ShellOverlayHost {
     /// both [`Widget::update`] and [`Widget::take_structure_dirty`] — the
     /// shots driver's relayout-only path skips `update`.
     fn resync_workspace_content(&mut self) -> bool {
+        // Both update and structure-dirty enter here before canonical
+        // reconciliation. Commit pending widget gestures first, before a
+        // rebuild drops the rows holding them.
+        self.harvest_active_tab_writeback();
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
@@ -4193,15 +3972,55 @@ impl ShellOverlayHost {
             }
             tree.clone()
         };
+        self.rebuild_workspace_content(&chrome, &snapshot)
+    }
+
+    /// Rebuilds the desktop surface for `snapshot` and replaces the row
+    /// pointer map with it. Tabs whose tile is unchanged in the same room
+    /// keep their live hosts, so a strip added or removed beside them costs
+    /// no app state; a different workspace gets fresh content.
+    fn rebuild_workspace_content(
+        &mut self,
+        chrome: &Chrome,
+        snapshot: &crate::shell::state::WorkspaceTree,
+    ) -> bool {
         let records = chrome.borrow().records().clone();
-        let (root, ptrs, scene_parts) =
-            crate::shell::build_workspace_root_with_scene_parts(&snapshot, &records, &chrome);
-        // Replace content and pointer map in one step: dropping the old
-        // root frees every old GroupRow, and the map must never outlive
-        // the rows it points into.
-        self.content = root;
-        self.workspace_scene_parts = Some(scene_parts);
-        self.group_row_ptrs = ptrs;
+        if let Some(surface) = self.desktop_surface_mut() {
+            let surface_chrome = crate::shell::workspace_surface_chrome(snapshot, chrome);
+            let state = chrome.borrow();
+            let failures = state.record_creation_errors(snapshot);
+            surface.rebuild_retaining(
+                &snapshot.desktop,
+                &records,
+                &mut crate::shell::NativeTileResolver {
+                    inputs: &state.hosted_inputs,
+                    failures: &failures,
+                },
+                surface_chrome,
+            );
+            for id in surface.strip_ids() {
+                if let Some(row) = surface.row_mut(id) {
+                    for group in &mut row.groups {
+                        crate::shell::tab_documents::apply_creation_failures(group, &failures);
+                    }
+                }
+            }
+            // The rebuild replaced every row; the old addresses are gone.
+            self.group_row_ptrs = crate::shell::surface_row_ptrs(surface);
+        } else {
+            let (root, ptrs) = crate::shell::build_workspace_root(snapshot, &records, chrome);
+            // Settle outgoing components while the old root still owns them,
+            // so their recovery reports survive the swap.
+            self.desktop_close_reports
+                .extend(self.content.close_components());
+            self.desktop_close_reports
+                .extend(self.content.take_component_close_reports());
+            // Replace content and pointer map in one step: dropping the old
+            // root frees every old GroupRow, and the map must never outlive
+            // the rows it points into.
+            self.content = root;
+            self.group_row_ptrs = ptrs;
+        }
         self.content_built_for_ws = Some(snapshot.desktop.active.raw());
         self.content_built_empty = snapshot.desktop.active_workspace().map(|workspace| {
             workspace
@@ -4210,9 +4029,13 @@ impl ShellOverlayHost {
                 .all(|strip| strip.window_groups.is_empty())
         });
         self.workspace_content_layout_dirty = true;
-        // Per-strip memos of the old workspace die with its rows.
-        self.last_scrolled_active_group.clear();
         true
+    }
+
+    /// The shared desktop surface, when the content is one. Hand-built test
+    /// content is not.
+    fn desktop_surface_mut(&mut self) -> Option<&mut tilo_desktop::composition::DesktopSurface> {
+        self.content.as_any_mut()?.downcast_mut()
     }
 
     /// Does the content tree have a row for every strip of the active
@@ -4238,9 +4061,9 @@ impl ShellOverlayHost {
     /// Shell chrome on screen that holds a secret: the administrator
     /// authentication and network-secrets sheets, the quick-settings pane
     /// while it asks for a Wi-Fi passphrase, the display sheet while it asks
-    /// for an `AirPlay` PIN or password, and the setup steps that restore or
-    /// back up the identity (passphrases and a nearby device's pairing
-    /// code). A capture always draws these as the placeholder — see
+    /// for an `AirPlay` PIN or password, a Bluetooth pairing dialog, and the
+    /// setup steps that restore or back up the identity (passphrases and a
+    /// nearby device's pairing code). A capture always draws these as the placeholder — see
     /// [`crate::shell::capture_protection`].
     pub fn secret_prompt_rects(&self) -> Vec<Rect> {
         let mut rects = Vec::new();
@@ -4272,7 +4095,21 @@ impl ShellOverlayHost {
             rects.push(self.quick_settings_rect().inflate(8.0, 16.0));
         }
         rects.extend(self.projection_overlay.secret_prompt_rect(now));
+        rects.extend(self.pairing.secret_rect());
         rects
+    }
+
+    /// Draw Bluetooth pairing questions from `handle` instead of the
+    /// session's. Tests use a private handle so their prompts never reach
+    /// another host.
+    #[doc(hidden)]
+    pub fn set_pairing_prompt_handle(&mut self, handle: crate::bluetooth::PairingPromptHandle) {
+        self.pairing = crate::bluetooth_prompt::PairingOverlay::new(handle);
+    }
+
+    /// The Bluetooth pairing dialog, when one is open.
+    pub fn pairing_prompt(&self) -> Option<&crate::bluetooth_prompt::PairingPromptView> {
+        self.pairing.view()
     }
 
     /// Serve administrator-authentication and network-secrets sheets (and
@@ -4586,6 +4423,7 @@ impl ShellOverlayHost {
             // makes this walk exclusive, matching the other row accessors.
             let row: &mut GroupRow = unsafe { &mut *row_ptr };
             for group in &mut row.groups {
+                let source_tab = group.active_tab_id();
                 let Some(host) = group.active_host_mut() else {
                     continue;
                 };
@@ -4593,14 +4431,14 @@ impl ShellOverlayHost {
                     continue;
                 };
                 if let Some(intent) = app.take_host_intent() {
-                    intents.push(intent);
+                    intents.push((source_tab, intent));
                 }
             }
         }
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
-        for intent in intents {
+        for (source_tab, intent) in intents {
             match intent {
                 ui::widget::AppHostIntent::ShowWorkspaceActivity {
                     resource_id,
@@ -4620,20 +4458,66 @@ impl ShellOverlayHost {
                         },
                     ));
                 }
+                ui::widget::AppHostIntent::OpenDocument {
+                    path,
+                    capability,
+                    token,
+                    reply,
+                } => {
+                    let Some(reply) = reply.upgrade() else {
+                        continue;
+                    };
+                    let Ok(mut reply) = reply.try_borrow_mut() else {
+                        continue;
+                    };
+                    if !reply.is_pending(token) {
+                        continue;
+                    }
+                    Self::complete_document_open_request(
+                        &chrome,
+                        source_tab,
+                        &path,
+                        &capability,
+                        token,
+                        &mut reply,
+                    );
+                }
             }
         }
     }
 
-    /// Diffs the live `WorkspaceTree` against every `GroupRow`'s children,
-    /// splicing via `insert_group`/`remove_group_by_id` to preserve
-    /// untouched rows' host state (scroll, tab selection). Without this
-    /// poll, rows would keep painting the boot-time snapshot as the
-    /// persisted tree grows. Cheap on the no-op path — one u64 compare
-    /// against `last_chrome_revision`.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "The ordered tree-to-row reconciliation shares raw row pointers and retained tile state; splitting it would obscure its alias and ordering invariants."
-    )]
+    /// Resolve the one capability-bound Files request that drain admitted.
+    /// Keeping the authorization immediately beside the actual opener avoids
+    /// any generic app intent becoming a filesystem-read capability.
+    fn complete_document_open_request(
+        chrome: &crate::shell::chrome_state::Chrome,
+        source_tab: crate::shell::state::TabId,
+        path: &std::path::Path,
+        capability: &ui::widget::DocumentOpenCapability,
+        token: u64,
+        reply: &mut ui::widget::DocumentOpenReply,
+    ) {
+        let authorized_source = {
+            let state = chrome.borrow();
+            let files_app_id = crate::shell::state::AppKind::FileExplorer.app_id();
+            state.active_tab_id() == Some(source_tab)
+                && state.active_app_id().as_deref() == Some(files_app_id.as_str())
+                && state
+                    .hosted_inputs
+                    .accepts_document_open_capability(capability)
+        };
+        if !authorized_source {
+            reply.cancel(token);
+            return;
+        }
+        reply.complete(token, crate::shell::open_document_from_files(chrome, path));
+    }
+
+    /// Reconciles the shared desktop surface with the live tree. Groups and
+    /// tabs are spliced in place, so untouched rows keep their host state
+    /// (scroll, tab selection); a changed strip set rebuilds the surface.
+    /// Cheap on the no-op path — one u64 compare against
+    /// `last_chrome_revision`.
     fn resync_strips_from_tree(&mut self) -> bool {
         let Some(chrome) = self.chrome.clone() else {
             return false;
@@ -4644,174 +4528,32 @@ impl ShellOverlayHost {
         if current_rev == self.last_chrome_revision {
             return false;
         }
-        let mut any_change = false;
-        // Moved out for the walk below: the rows are reached through raw
-        // pointers taken from `&mut self`, so a field borrowed across them
-        // would alias. Put back before returning.
-        let mut tab_tiles = std::mem::take(&mut self.tab_tiles);
-        let st = chrome.borrow();
-        let records = st.records().clone();
-        let tree = st.tree();
-        let creation_failures = st.record_creation_errors(&tree);
-        if let Some(ws) = tree.desktop.active_workspace() {
-            for strip in &ws.strips {
-                let Some(&row_ptr) = self.group_row_ptrs.get(&strip.id) else {
-                    continue;
-                };
-                // SAFETY: same contract as the other `group_row_ptrs`
-                // accessors — pointer captured from a `Box<GroupRow>`
-                // owned by the content tree; host outlives content;
-                // `&mut self` → unaliased mutable access.
-                let row: &mut GroupRow = unsafe { &mut *row_ptr };
-                let live_ids: std::collections::HashSet<u64> =
-                    row.group_ids().into_iter().collect();
-                let tree_ids: std::collections::HashSet<u64> =
-                    strip.window_groups.iter().map(|g| g.id).collect();
-                // The row lays groups out display by display; on one
-                // display that is the strip's own order.
-                let ordered = displays::display_ordered(&tree.desktop.outputs, strip);
-                // Splice in new groups without rebuilding the vector, so
-                // existing rows keep their host state.
-                for (idx, g) in ordered.iter().enumerate() {
-                    if !live_ids.contains(&g.id) {
-                        let mut fresh = crate::shell::to_ui_window_group(g, &records);
-                        // Same spawn fade the row's own splice paths use,
-                        // so an opened window arrives the same way.
-                        crate::shell::tab_documents::apply_creation_failures(
-                            &mut fresh,
-                            &creation_failures,
-                        );
-                        fresh.start_spawn_animation();
-                        row.insert_group(fresh, idx);
-                        any_change = true;
-                    }
-                }
-                // Drop any groups the tree no longer carries.
-                for id in live_ids.difference(&tree_ids) {
-                    if row.remove_group_by_id(*id) {
-                        any_change = true;
-                    }
-                }
-                // A row can already contain every group while its order no
-                // longer matches the document (for example, an Automerge
-                // revision from another device reorders two existing
-                // windows). Splicing alone misses that case and leaves the
-                // screen disagreeing with the durable layout until restart.
-                for (idx, group) in ordered.iter().enumerate() {
-                    if row.reorder_group_by_id(group.id, idx) {
-                        any_change = true;
-                    }
-                }
-                // Reconcile tabs inside groups that already exist — the
-                // group-level splice above only fires for whole new
-                // groups, so a tab adopted into an existing one (an
-                // external toplevel) needs its own path here.
-                for g in &strip.window_groups {
-                    let Some(live) = row.groups.iter_mut().find(|lg| lg.id == g.id) else {
-                        continue;
-                    };
-                    let live_tab_ids: std::collections::HashSet<u64> =
-                        live.tabs().iter().map(|t| t.id).collect();
-                    let tree_tab_ids: std::collections::HashSet<u64> =
-                        g.tabs.iter().map(|t| t.id).collect();
-                    for (idx, tab) in g.tabs.iter().enumerate() {
-                        let signature = tile_signature(&tab.tile);
-                        if live_tab_ids.contains(&tab.id) {
-                            // A window's artwork can arrive after its tab:
-                            // the desktop entry is installed, or the app
-                            // sets its own.
-                            if live.set_tab_icon(tab.id, crate::app_icons::for_tile(&tab.tile)) {
-                                any_change = true;
-                            }
-                            // Install the foreign widget before its first
-                            // buffer: layout must publish its configure size.
-                            // TileHost retains visibility and owns the opening
-                            // card until the new content is ready to present.
-                            let resource_replaced = !creation_failures.contains_key(&tab.id)
-                                && live
-                                    .host_for_tab_mut(tab.id)
-                                    .is_some_and(|host| host.record_creation_refused());
-                            if (tab_tiles.get(&tab.id) != Some(&signature) || resource_replaced)
-                                && let Some(host) = live.host_for_tab_mut(tab.id)
-                            {
-                                host.replace_content(crate::shell::to_ui_tile_for_tab_with_inputs(
-                                    &tab.tile,
-                                    tab.id,
-                                    &chrome.borrow().hosted_inputs,
-                                ));
-                                host.bind_record(
-                                    records.clone(),
-                                    crate::shell::tab_documents::scratch_tab_record(tab.id),
-                                );
-                                tab_tiles.insert(tab.id, signature);
-                                any_change = true;
-                            }
-                            if let Some(host) = live.host_for_tab_mut(tab.id) {
-                                if let Some(reason) = creation_failures.get(&tab.id) {
-                                    host.refuse_record_binding(reason.clone());
-                                } else {
-                                    // Owner replacement invalidates an old pending binding too.
-                                    // This is always Existing-only, never a creation retry.
-                                    host.bind_record(
-                                        records.clone(),
-                                        crate::shell::tab_documents::scratch_tab_record(tab.id),
-                                    );
-                                }
-                            }
-                            continue;
-                        }
-                        let desc = ui::widget::TabDescriptor {
-                            id: tab.id,
-                            title: tab.title.clone(),
-                            app_kind: Some(crate::shell::tile_app_kind(&tab.tile)),
-                            icon: crate::app_icons::for_tile(&tab.tile),
-                        };
-                        // Gets its own document too, same as any tab
-                        // present at boot.
-                        let mut host =
-                            ui::widget::TileHost::new(crate::shell::to_ui_tile(&tab.tile));
-                        host.bind_record(
-                            records.clone(),
-                            crate::shell::tab_documents::scratch_tab_record(tab.id),
-                        );
-                        if let Some(reason) = creation_failures.get(&tab.id) {
-                            host.refuse_record_binding(reason.clone());
-                        }
-                        live.insert_detached_tab(idx.min(live.tab_count()), desc, host);
-                        tab_tiles.insert(tab.id, signature);
-                        any_change = true;
-                    }
-                    for stale in live_tab_ids.difference(&tree_tab_ids) {
-                        if live.detach_tab(*stale).is_some() {
-                            tab_tiles.remove(stale);
-                            any_change = true;
-                        }
-                    }
-                    // As with groups, a replicated tab reorder changes no
-                    // membership and therefore needs an explicit ordering
-                    // pass. `WindowGroup::reorder_tab` moves its matching
-                    // host at the same time, preserving the pill/content
-                    // identity invariant.
-                    for (idx, tab) in g.tabs.iter().enumerate() {
-                        let Some(from) = live
-                            .tabs()
-                            .iter()
-                            .position(|live_tab| live_tab.id == tab.id)
-                        else {
-                            continue;
-                        };
-                        if live.reorder_tab(from, idx) {
-                            any_change = true;
-                        }
-                    }
-                }
+        self.last_chrome_revision = current_rev;
+        let outcome = {
+            let st = chrome.borrow();
+            let records = st.records().clone();
+            let tree = st.tree();
+            let failures = st.record_creation_errors(&tree);
+            let Some(surface) = self.desktop_surface_mut() else {
+                return false;
+            };
+            surface.reconcile(
+                &tree.desktop,
+                &records,
+                &mut crate::shell::NativeTileResolver {
+                    inputs: &st.hosted_inputs,
+                    failures: &failures,
+                },
+            )
+        };
+        match outcome {
+            tilo_desktop::composition::ReconcileOutcome::Unchanged => false,
+            tilo_desktop::composition::ReconcileOutcome::Updated => true,
+            tilo_desktop::composition::ReconcileOutcome::RebuildRequired => {
+                let snapshot = chrome.borrow().tree().clone();
+                self.rebuild_workspace_content(&chrome, &snapshot)
             }
         }
-        drop(tree);
-        drop(st);
-        self.tab_tiles = tab_tiles;
-        self.last_chrome_revision = current_rev;
-        any_change
     }
 
     /// Pushes the compositor's transient fullscreen state onto every
@@ -4934,11 +4676,35 @@ impl ShellOverlayHost {
         }
     }
 
-    /// Drains every group's [`UiWindowGroup::take_pending_maximize_change`]
-    /// one-shot and mirrors it into the persisted
-    /// [`crate::shell::state::WorkspaceTree`] — without this the toggle
-    /// lives only on the widget and resets on the next restart. Idempotent;
-    /// the chrome borrow is only taken when a flip needs writing.
+    /// Run desktop requests through the shared desktop controller with
+    /// this device as the owner. Returns how many were accepted; chrome is
+    /// only borrowed when there is a request.
+    fn dispatch_desktop_intents(
+        chrome: &Chrome,
+        intents: impl IntoIterator<Item = tilo_desktop::intents::DesktopIntent>,
+    ) -> usize {
+        let mut intents = intents.into_iter().peekable();
+        if intents.peek().is_none() {
+            return 0;
+        }
+        let mut st = chrome.borrow_mut();
+        let mut sink = crate::shell::desktop_commands::ShellCommands { chrome: &mut st };
+        intents
+            .filter(|intent| {
+                match tilo_desktop::session_commands::dispatch(&mut sink, intent.clone()) {
+                    Ok(()) => true,
+                    Err(error) => {
+                        tracing::warn!(?intent, %error, "desktop request refused");
+                        false
+                    }
+                }
+            })
+            .count()
+    }
+
+    /// Every group's pending maximize toggle, persisted through the desktop
+    /// controller — without this the toggle lives only on the widget and
+    /// resets on the next restart.
     fn harvest_pending_maximize_changes(&self) {
         if self.group_row_ptrs.is_empty() {
             return;
@@ -4946,55 +4712,24 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
-        // Snapshot first so the mutable widget borrow drops before the
-        // chrome borrow.
-        let mut changes: Vec<(StripId, GroupId, bool)> = Vec::new();
-        for (&strip_id, &ptr) in &self.group_row_ptrs {
+        let mut intents = Vec::new();
+        for &ptr in self.group_row_ptrs.values() {
             // SAFETY: see field doc on `group_row_ptrs` — pointer was
             // captured from a `Box<GroupRow>` owned through the content
             // tree, the host outlives the content, and reconcile sweeps
             // run sequentially so no other path is aliasing this row.
             let row: &mut GroupRow = unsafe { &mut *ptr };
-            for g in &mut row.groups {
-                if let Some(new_value) = g.take_pending_maximize_change() {
-                    changes.push((strip_id, g.id, new_value));
-                }
-            }
+            intents.extend(
+                row.groups
+                    .iter_mut()
+                    .filter_map(tilo_desktop::intents::take_maximize)
+                    .map(tilo_desktop::intents::DesktopIntent::Local),
+            );
         }
-        if changes.is_empty() {
+        if intents.is_empty() {
             return;
         }
-        let mut st = chrome.borrow_mut();
-        for (_strip_id, group_id, new_value) in &changes {
-            // Parks the group id in chrome's user-maximize slot so
-            // `is_fullscreen()` suppresses the top bar + wheel. Cleared
-            // only by the group that owns the slot.
-            if *new_value {
-                st.set_maximized_group(Some(*group_id));
-            } else if st.maximized_group() == Some(*group_id) {
-                st.set_maximized_group(None);
-            }
-        }
-        let mut tree = st.tree_mut();
-        let mut tree_dirty = false;
-        for (_strip_id, group_id, new_value) in changes {
-            // Flat scan is correct since group ids are tree-unique.
-            for ws in &mut tree.desktop.workspaces {
-                for strip in &mut ws.strips {
-                    if let Some(g) = strip.window_groups.iter_mut().find(|g| g.id == group_id)
-                        && g.maximized != new_value
-                    {
-                        g.maximized = new_value;
-                        tree_dirty = true;
-                    }
-                }
-            }
-        }
-        if tree_dirty {
-            tree.flush_to_disk();
-        }
-        drop(tree);
-        drop(st);
+        Self::dispatch_desktop_intents(&chrome, intents);
 
         // The Expand interaction takes effect at this harvest boundary,
         // before the next layout. Mirror retained-row ownership into chrome
@@ -5046,7 +4781,10 @@ impl ShellOverlayHost {
         // Only an explicit pointer/keyboard/accessibility edge reaches this
         // list. A newly rebuilt retained row can temporarily disagree with
         // the model; treating that divergence as a click steals focus back
-        // from an application which just opened.
+        // from an application which just opened. Focus is stamped only for
+        // the active workspace: a newer workspace switch takes precedence
+        // over a gesture made in the outgoing one.
+        let mut selection_changed = false;
         let mut focus_writes: Vec<(WorkspaceId, StripId, GroupId)> = Vec::new();
         // A FileReference card is inert until the person explicitly selects
         // its tab.  Capture that activation while holding the tree, then
@@ -5055,6 +4793,7 @@ impl ShellOverlayHost {
         let mut activated_file_tabs = Vec::new();
         {
             let mut tree = st.tree_mut();
+            let active_workspace = tree.desktop.active;
             for w in &writes {
                 for ws in &mut tree.desktop.workspaces {
                     for strip in &mut ws.strips {
@@ -5073,17 +4812,19 @@ impl ShellOverlayHost {
                                 continue;
                             }
                             group.active_tab = w.tab;
-                            focus_writes.push((ws.id, w.strip, w.group));
-                            activated_file_tabs.push(w.tab);
+                            selection_changed = true;
+                            if ws.id == active_workspace {
+                                focus_writes.push((ws.id, w.strip, w.group));
+                                activated_file_tabs.push(w.tab);
+                            }
                         }
                     }
                 }
             }
         }
-        if !focus_writes.is_empty() {
+        if selection_changed {
             let mut tree = st.tree_mut();
             for (ws_id, strip_id, group_id) in focus_writes {
-                tree.desktop.active = ws_id;
                 tree.desktop.active_strip.insert(ws_id, strip_id);
                 tree.desktop.active_group.insert(strip_id, group_id);
             }
@@ -5168,7 +4909,15 @@ impl ShellOverlayHost {
                 let Some(chrome) = self.chrome.clone() else {
                     return false;
                 };
-                if !Self::commit_tab_close(&chrome, gid, tab_id) {
+                let close = tilo_desktop::intents::SessionIntent::CloseTab {
+                    group: gid,
+                    tab: tab_id,
+                };
+                if Self::dispatch_desktop_intents(
+                    &chrome,
+                    [tilo_desktop::intents::DesktopIntent::Session(close)],
+                ) == 0
+                {
                     return false;
                 }
                 // The durable tree/document mutation must succeed before the
@@ -5185,31 +4934,6 @@ impl ShellOverlayHost {
         false
     }
 
-    /// Commit one close to the replicated tree, atomic local state and the
-    /// exact foreign surface, in that order. Both keyboard/context-menu
-    /// closes and pointer closes converge here; the latter have already
-    /// started their widget animation when this runs.
-    fn commit_tab_close(chrome: &Chrome, gid: GroupId, tab_id: u64) -> bool {
-        let mut st = chrome.borrow_mut();
-        // The tab must be where the caller believes it is — a stale group
-        // id must not close a tab that has since moved elsewhere.
-        let in_group = st
-            .tree()
-            .desktop
-            .workspaces
-            .iter()
-            .flat_map(|workspace| workspace.strips.iter())
-            .flat_map(|strip| strip.window_groups.iter())
-            .any(|group| group.id == gid && group.tabs.iter().any(|tab| tab.id == tab_id));
-        if !in_group {
-            return false;
-        }
-        // One lifecycle for every door — `✕`, chord, tab menu, `tab.close`
-        // action: `window_actions::close_tab` (document, tree, prune, flush,
-        // surface close, bump, in that order).
-        crate::shell::window_actions::close_tab(&mut st, tab_id).is_ok()
-    }
-
     /// Drain close buttons from the rendered rows into the same lifecycle
     /// transaction used by keyboard closes. This is intentionally run in
     /// the input dispatch that produced the request, not on a later frame.
@@ -5221,22 +4945,19 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
-        let mut requests = Vec::new();
+        let mut intents = Vec::new();
         for &ptr in self.group_row_ptrs.values() {
             // SAFETY: see field doc on `group_row_ptrs`.
             let row: &mut GroupRow = unsafe { &mut *ptr };
             for group in &mut row.groups {
-                requests.extend(
-                    group
-                        .take_pending_close_commits()
+                intents.extend(
+                    tilo_desktop::intents::take_closes(group)
                         .into_iter()
-                        .map(|tab| (group.id, tab)),
+                        .map(tilo_desktop::intents::DesktopIntent::Session),
                 );
             }
         }
-        requests.into_iter().fold(false, |changed, (group, tab)| {
-            Self::commit_tab_close(&chrome, group, tab) || changed
-        })
+        Self::dispatch_desktop_intents(&chrome, intents) > 0
     }
 
     fn harvest_pending_width_changes(&self) {
@@ -5246,78 +4967,85 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
-        let mut changes: Vec<(StripId, GroupId, u16)> = Vec::new();
-        for (&strip_id, &ptr) in &self.group_row_ptrs {
+        let mut intents = Vec::new();
+        for &ptr in self.group_row_ptrs.values() {
             // SAFETY: see field doc on `group_row_ptrs`.
             let row: &mut GroupRow = unsafe { &mut *ptr };
-            for g in &mut row.groups {
-                if let Some(new_value) = g.take_pending_width_change() {
-                    changes.push((strip_id, g.id, new_value));
-                }
-            }
+            intents.extend(
+                row.groups
+                    .iter_mut()
+                    .filter_map(tilo_desktop::intents::take_width)
+                    .map(tilo_desktop::intents::DesktopIntent::Local),
+            );
         }
-        if changes.is_empty() {
-            return;
-        }
-        let st = chrome.borrow_mut();
-        let mut tree = st.tree_mut();
-        for (_strip_id, group_id, new_value) in changes {
-            for ws in &mut tree.desktop.workspaces {
-                for strip in &mut ws.strips {
-                    if let Some(g) = strip.window_groups.iter_mut().find(|g| g.id == group_id) {
-                        g.width = crate::shell::state::WindowWidth::Fraction(new_value);
-                    }
-                }
-            }
-        }
-        tree.flush_to_disk();
+        Self::dispatch_desktop_intents(&chrome, intents);
     }
 
-    /// Mirrors a completed whole-group reorder drag into the persisted
-    /// tree via [`WorkspaceTree::reorder_group_within_strip`] (which also
-    /// mirrors into the automerge doc for peer-sync) — without this a
-    /// group-drag resets to the persisted order on restart. Mirrors
-    /// [`Self::harvest_pending_width_changes`] in shape.
+    /// Commits a completed whole-group reorder drag through the desktop
+    /// controller — without this a group drag resets to the persisted order
+    /// on restart.
     fn harvest_pending_group_reorder(&self) {
+        // A partitioned row orders groups display by display, so its index
+        // is not the strip's: record the display the group was dropped on
+        // and its neighbours there instead.
+        struct PartitionedDrop {
+            strip: StripId,
+            group: u64,
+            display: Option<u32>,
+            before: Option<u64>,
+            after: Option<u64>,
+        }
         if self.group_row_ptrs.is_empty() {
             return;
         }
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
-        // (strip, group, row index, the group's display and its neighbours
-        // there when the row is partitioned)
-        let mut changes: Vec<(StripId, u64, usize, displays::ReorderNeighbours)> = Vec::new();
+        let mut intents = Vec::new();
+        let mut partitioned = Vec::new();
         for (&strip_id, &ptr) in &self.group_row_ptrs {
             // SAFETY: see field doc on `group_row_ptrs`.
             let row: &mut GroupRow = unsafe { &mut *ptr };
-            if let Some((group_id, new_index)) = row.take_pending_group_reorder() {
-                // A partitioned row orders groups display by display, so its
-                // index is not the strip's: record the neighbours instead.
-                let neighbours = row.is_partitioned().then(|| {
-                    let ids = row.group_ids();
-                    let at = ids.iter().position(|id| *id == group_id);
-                    let before = at
-                        .and_then(|i| i.checked_sub(1))
-                        .and_then(|i| ids.get(i).copied())
-                        .filter(|id| row.lane_of_group(*id) == row.lane_of_group(group_id));
-                    let after = at
-                        .and_then(|i| ids.get(i.saturating_add(1)).copied())
-                        .filter(|id| row.lane_of_group(*id) == row.lane_of_group(group_id));
-                    (row.output_of_group(group_id), before, after)
+            let Some(intent) = tilo_desktop::intents::take_group_reorder(strip_id, row) else {
+                continue;
+            };
+            let tilo_desktop::intents::SessionIntent::ReorderGroup { group, .. } = intent else {
+                continue;
+            };
+            if row.is_partitioned() {
+                let ids = row.group_ids();
+                let at = ids.iter().position(|id| *id == group);
+                let before = at
+                    .and_then(|i| i.checked_sub(1))
+                    .and_then(|i| ids.get(i).copied())
+                    .filter(|id| row.lane_of_group(*id) == row.lane_of_group(group));
+                let after = at
+                    .and_then(|i| ids.get(i.saturating_add(1)).copied())
+                    .filter(|id| row.lane_of_group(*id) == row.lane_of_group(group));
+                partitioned.push(PartitionedDrop {
+                    strip: strip_id,
+                    group,
+                    display: row.output_of_group(group),
+                    before,
+                    after,
                 });
-                changes.push((strip_id, group_id, new_index, neighbours));
+            } else {
+                intents.push(tilo_desktop::intents::DesktopIntent::Session(intent));
             }
         }
-        if changes.is_empty() {
-            return;
-        }
-        let mut st = chrome.borrow_mut();
-        let mut tree = st.tree_mut();
-        let mut rehomed = false;
-        for (strip_id, group_id, new_index, neighbours) in changes {
-            let new_index = match neighbours {
-                Some((display, before, after)) => {
+        if !partitioned.is_empty() {
+            let mut st = chrome.borrow_mut();
+            let mut rehomed = false;
+            {
+                let mut tree = st.tree_mut();
+                for PartitionedDrop {
+                    strip: strip_id,
+                    group: group_id,
+                    display,
+                    before,
+                    after,
+                } in partitioned
+                {
                     // Dropped onto another display: it belongs there now.
                     if let Some(display) = display
                         && tree.rehome_group(strip_id, group_id, display)
@@ -5345,20 +5073,25 @@ impl ShellOverlayHost {
                     let Some(slot) = slot else {
                         continue;
                     };
-                    slot
+                    let command = tilo_desktop_model::commands::DesktopCommand::ReorderGroup {
+                        strip: strip_id.raw(),
+                        group: group_id,
+                        before: order.get(slot).copied(),
+                    };
+                    if let Err(error) = tree.commit_command(&command) {
+                        tracing::warn!(%error, "group reorder refused");
+                    }
                 }
-                None => new_index,
-            };
-            tree.reorder_group_within_strip(strip_id, group_id, new_index);
+            }
+            if rehomed {
+                st.bump();
+            }
         }
-        drop(tree);
-        if rehomed {
-            st.bump();
-        }
+        Self::dispatch_desktop_intents(&chrome, intents);
     }
 
     /// Same as [`Self::harvest_pending_group_reorder`], for an
-    /// *intra-group* tab reorder via [`WorkspaceTree::reorder_tab_within_group`].
+    /// *intra-group* tab reorder.
     fn harvest_pending_tab_reorder(&self) {
         if self.group_row_ptrs.is_empty() {
             return;
@@ -5366,24 +5099,18 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
-        let mut changes: Vec<(GroupId, usize, usize)> = Vec::new();
+        let mut intents = Vec::new();
         for &ptr in self.group_row_ptrs.values() {
             // SAFETY: see field doc on `group_row_ptrs`.
             let row: &mut GroupRow = unsafe { &mut *ptr };
-            for g in &mut row.groups {
-                if let Some((from, to)) = g.take_pending_tab_reorder() {
-                    changes.push((g.id, from, to));
-                }
-            }
+            intents.extend(
+                row.groups
+                    .iter_mut()
+                    .filter_map(tilo_desktop::intents::take_tab_reorder)
+                    .map(tilo_desktop::intents::DesktopIntent::Session),
+            );
         }
-        if changes.is_empty() {
-            return;
-        }
-        let st = chrome.borrow_mut();
-        let mut tree = st.tree_mut();
-        for (group_id, from, to) in changes {
-            tree.reorder_tab_within_group(group_id, from, to);
-        }
+        Self::dispatch_desktop_intents(&chrome, intents);
     }
 
     /// Mirrors same-strip tab transfers and splits from the live rows into
@@ -5545,114 +5272,18 @@ impl ShellOverlayHost {
         }
     }
 
-    /// Pans the focused group into view, edge-triggered on the persisted
-    /// `active_group` pointer so free wheel-scrolling isn't fought by a
-    /// per-frame snap-back.
+    /// Frames the focused group and lights its focus marker through the
+    /// shared surface, from the tree's active strip and group. Framing is
+    /// edge-triggered, so free wheel-scrolling isn't fought by a per-frame
+    /// snap-back.
     fn scroll_active_group_into_view(&mut self) {
-        if self.group_row_ptrs.is_empty() {
-            return;
-        }
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
-        let active: Vec<(StripId, GroupId)> = {
-            let st = chrome.borrow();
-            let tree = st.tree();
-            self.group_row_ptrs
-                .keys()
-                .filter_map(|&sid| tree.desktop.active_group_for(sid).map(|gid| (sid, gid)))
-                .collect()
-        };
-        for (strip_id, group_id) in active {
-            let changed = self.last_scrolled_active_group.get(&strip_id).copied() != Some(group_id);
-            if !changed {
-                continue;
-            }
-            if let Some(&ptr) = self.group_row_ptrs.get(&strip_id) {
-                // SAFETY: see field doc on `group_row_ptrs`.
-                let row: &mut GroupRow = unsafe { &mut *ptr };
-                // A group focused the same frame it appeared has no rect yet
-                // (no layout pass); leave the memo and retry once it does.
-                if !row.group_is_laid_out(group_id) {
-                    continue;
-                }
-                // Eased, not teleported — matches Niri's focus-column slide.
-                row.scroll_group_into_view_animated(group_id, Instant::now());
-                // Record the edge only after the row could actually inspect
-                // the group's laid-out rectangle.  A freshly adopted app is
-                // spliced before its first layout pass; memoising it earlier
-                // suppresses the next-frame retry and can leave the active
-                // window entirely off-screen in a long restored strip.
-                self.last_scrolled_active_group.insert(strip_id, group_id);
-            }
-        }
-    }
-
-    /// Lights exactly one on-screen window group as keyboard-focused, since
-    /// non-overlapping windows have no z-order to infer it from. Runs every
-    /// frame as a pure function of the tree (not edge-triggered) so focus
-    /// can't stay latched on a group a resync moved or removed.
-    fn mark_focused_group(&self) {
-        if self.group_row_ptrs.is_empty() {
-            return;
-        }
-        let Some(chrome) = self.chrome.clone() else {
-            return;
-        };
-        // Closing groups aren't focus candidates — lighting one mid-fade
-        // would tell the user their keystrokes go somewhere gone.
-        let closing: std::collections::HashSet<GroupId> = self
-            .group_row_ptrs
-            .values()
-            .flat_map(|&ptr| {
-                // SAFETY: see field doc on `group_row_ptrs`.
-                let row: &GroupRow = unsafe { &*ptr };
-                row.groups
-                    .iter()
-                    .filter(|g| g.is_closing())
-                    .map(|g| g.id)
-                    .collect::<Vec<_>>()
-            })
-            .collect();
-        // Mirrors `publish_strip_viewport`'s resolution, including the
-        // fallback to the first strip/leftmost group for an unseeded pointer.
-        let focused: Option<(StripId, GroupId)> = {
-            let st = chrome.borrow();
-            let tree = st.tree();
-            tree.desktop
-                .active_workspace()
-                .and_then(|ws| {
-                    tree.desktop
-                        .active_strip
-                        .get(&ws.id)
-                        .copied()
-                        .filter(|id| ws.strips.iter().any(|s| s.id == *id))
-                        .or_else(|| ws.strips.first().map(|s| s.id))
-                })
-                .and_then(|sid| {
-                    tree.desktop
-                        .resolve_active_group(sid, |gid| closing.contains(&gid))
-                        .map(|gid| (sid, gid))
-                })
-        };
-        // A lone window needs no marker; it's a workspace-wide count so
-        // three strips holding one window each still disambiguate.
-        let disambiguating = self
-            .group_row_ptrs
-            .values()
-            .map(|&ptr| {
-                // SAFETY: see field doc on `group_row_ptrs`.
-                let row: &GroupRow = unsafe { &*ptr };
-                row.groups.len()
-            })
-            .sum::<usize>()
-            > 1;
-        for (&strip_id, &ptr) in &self.group_row_ptrs {
-            // SAFETY: see field doc on `group_row_ptrs`.
-            let row: &mut GroupRow = unsafe { &mut *ptr };
-            for g in &mut row.groups {
-                g.set_focused(disambiguating && focused == Some((strip_id, g.id)));
-            }
+        let st = chrome.borrow();
+        let tree = st.tree();
+        if let Some(surface) = self.desktop_surface_mut() {
+            surface.sync_navigation(&tree.desktop);
         }
     }
 
@@ -5688,13 +5319,13 @@ impl ShellOverlayHost {
             // On a partitioned strip, the focused display's windows only:
             // a new window opens where the person is looking.
             let focused = focused_display.map(|d| row.group_ids_on(d));
-            Some(crate::shell::placement::StripViewport {
+            Some(tilo_desktop_model::commands::StripViewport {
                 strip: sid,
                 groups: row
                     .group_canvas_spans()
                     .into_iter()
                     .filter(|(id, _, _)| focused.as_ref().is_none_or(|on| on.contains(id)))
-                    .map(|(id, x0, x1)| crate::shell::placement::GroupSpan { id, x0, x1 })
+                    .map(|(id, x0, x1)| tilo_desktop_model::commands::GroupSpan { id, x0, x1 })
                     .collect(),
                 visible_x0,
                 visible_x1,
@@ -5993,8 +5624,10 @@ impl ShellOverlayHost {
             if matches!(event.kind, LaunchEventKind::Failed { .. }) && !was_opening {
                 let mut st = chrome_handle.borrow_mut();
                 let buffered = st
-                    .recorder()
-                    .is_some_and(|recorder| recorder.recent_buffer_enabled());
+                    .session_view()
+                    .recorder
+                    .as_ref()
+                    .is_some_and(|recorder| recorder.recent_buffer);
                 st.push_notification_full(crate::shell::remark::crash_notification(
                     &event.display_name,
                     &event.package_id,
@@ -6851,7 +6484,9 @@ impl ShellOverlayHost {
                 break;
             }
         }
-        self.last_scrolled_active_group.remove(&strip_id);
+        if let Some(surface) = self.desktop_surface_mut() {
+            surface.reveal_on_next_layout(strip_id);
+        }
         chrome.borrow_mut().bump();
         true
     }
@@ -6862,10 +6497,10 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
-        let (changed, strip_id) =
+        let (strip_id, group_id, current, destination) =
             {
-                let st = chrome.borrow_mut();
-                let mut tree = st.tree_mut();
+                let st = chrome.borrow();
+                let tree = st.tree();
                 let Some(strip_id) = tree.desktop.active_strip.get(&tree.desktop.active).copied()
                 else {
                     return false;
@@ -6907,13 +6542,23 @@ impl ShellOverlayHost {
                         .map_or(current, |i| current.saturating_add(1).saturating_add(i))
                         .min(last)
                 };
-                (
-                    tree.reorder_group_within_strip(strip_id, group_id, destination),
-                    strip_id,
-                )
+                drop(tree);
+                (strip_id, group_id, current, destination)
             };
+        let reorder = tilo_desktop::intents::SessionIntent::ReorderGroup {
+            strip: strip_id,
+            group: group_id,
+            to: destination,
+        };
+        let changed = destination != current
+            && Self::dispatch_desktop_intents(
+                &chrome,
+                [tilo_desktop::intents::DesktopIntent::Session(reorder)],
+            ) > 0;
         if changed {
-            self.last_scrolled_active_group.remove(&strip_id);
+            if let Some(surface) = self.desktop_surface_mut() {
+                surface.reveal_on_next_layout(strip_id);
+            }
             chrome.borrow_mut().bump();
         }
         changed
@@ -7576,7 +7221,7 @@ impl ShellOverlayHost {
         let mut results: Vec<crate::shell::search::SearchResult> = Vec::new();
         let mut entries: Vec<CommandEntry> = Vec::new();
         for group in &groups {
-            let label = group.kind.label();
+            let label = group.kind.localized_label();
             for r in &group.results {
                 let idx = results.len();
                 let mut e = CommandEntry::new(format!("result:{idx}"), r.title.clone())
@@ -8077,7 +7722,9 @@ impl ShellOverlayHost {
         // target was visible to be clicked, and panning would drag it
         // out from under the cursor. Keyboard/wheel keep the pan, since
         // they can target off-screen windows.
-        self.last_scrolled_active_group.insert(strip_id, group_id);
+        if let Some(surface) = self.desktop_surface_mut() {
+            surface.keep_clicked_group_in_place(strip_id, group_id);
+        }
     }
 
     /// Where the filter band sits among the palette's semantic children:
@@ -8091,180 +7738,90 @@ impl ShellOverlayHost {
         (!palette.children.is_empty()).then_some(palette.children.len())
     }
 
-    /// Stable address stem for a chip or segment: ASCII letters and digits
-    /// lower-cased, every other run of characters collapsed to one dash, so
-    /// `palette:filter:host-apps` and `palette:scope:this-app` read the same
-    /// in a script as on screen and never carry a second `:`. Callers add
-    /// an ordinal when two labels would collide.
-    fn search_filter_slug(label: &str) -> String {
-        let mut slug = String::with_capacity(label.len());
-        for c in label.chars() {
-            if c.is_ascii_alphanumeric() {
-                slug.push(c.to_ascii_lowercase());
-            } else if !slug.ends_with('-') {
-                slug.push('-');
-            }
-        }
-        slug.trim_matches('-').to_string()
-    }
-
-    /// `palette:filter:<slug>` for kind `i`, made unique against the kinds
-    /// before it: two providers may mint custom kinds whose labels differ
-    /// only in case or punctuation, and two nodes sharing one address would
-    /// make both unaddressable ("ambiguous target").
-    fn search_filter_key(kinds: &[crate::shell::search::ResourceKind], i: usize) -> String {
-        let slug = |k: &crate::shell::search::ResourceKind| Self::search_filter_slug(k.id());
-        let Some(kind) = kinds.get(i) else {
-            return format!("palette:filter:{i}");
-        };
-        let mine = slug(kind);
-        let taken = kinds.iter().take(i).any(|k| slug(k) == mine);
-        if mine.is_empty() || taken {
-            format!("palette:filter:{mine}-{i}")
-        } else {
-            format!("palette:filter:{mine}")
-        }
-    }
-
-    /// The filter band as semantics: one toggle per kind chip (plus the
-    /// leading "All" reset) and one radio per scope segment, each carrying
-    /// the rect it was last painted at, so a screen reader, a script and
-    /// the UX bench can name a chip instead of guessing where the strip
-    /// wrapped it to. Names are prefixed ("Filter: Files") so they never
-    /// collide with a window title or a result row that shares the word;
-    /// the `palette:*` keys are the scriptable address. A control with no
-    /// rect yet (before the first paint) is hidden rather than dropped,
-    /// so ordinals stay fixed.
-    fn search_filters_accessibility(&self) -> ui::a11y::AccessNode {
-        use ui::a11y::{AccessNode, AccessState, Role};
-        // `checked` is the toggle/radio state AT reads; `selected` mirrors
-        // it so "which one is chosen" also answers the selection question
-        // a list-style reader (and the bench's `selected` check) asks.
-        let bounded = |node: AccessNode, rect: Rect, checked: bool| {
-            let node = node.with_state(AccessState {
-                checked: Some(checked),
-                selected: checked,
-                hidden: rect.area() <= 0.0,
-                ..AccessState::default()
-            });
-            if rect.area() > 0.0 {
-                node.with_bounds(rect)
-            } else {
-                node
-            }
-        };
-
-        // Bounds are the pointer targets (`selector_hit_rect`: the painted
-        // pill grown to the §9.6 floor), the same rects a press is tested
-        // against — what a reader names is exactly what a finger hits.
-        let kinds = self.search_registry.registered_kinds();
-        let mut chips = Vec::with_capacity(kinds.len().saturating_add(1));
-        chips.push(bounded(
-            AccessNode::new(Role::ToggleButton)
-                .with_name(t("host-a11y-filter-all"))
-                .with_semantic_key("palette:filter:all")
-                .with_action_target("palette:filter:all")
-                .with_key(0),
-            self.search_all_chip_hit_rect(),
-            self.active_kind_filter.is_empty(),
-        ));
-        for (i, kind) in kinds.iter().enumerate() {
-            let key = Self::search_filter_key(&kinds, i);
-            chips.push(bounded(
-                AccessNode::new(Role::ToggleButton)
-                    .with_name(t_args(
-                        "host-a11y-filter-kind",
-                        &[("kind", kind.label().into())],
-                    ))
-                    .with_semantic_key(key.clone())
-                    .with_action_target(key)
-                    .with_key(u64::try_from(i.saturating_add(1)).unwrap_or(u64::MAX)),
-                self.search_chip_hit_rect(i),
-                self.active_kind_filter.contains(kind),
-            ));
-        }
-
+    /// The band's inputs as this host shows them now: the registered kinds
+    /// with their labels, the chosen kinds, and the scopes with theirs.
+    fn search_filter_inputs(&self) -> SearchFilterInputs {
+        let kinds = self
+            .search_registry
+            .registered_kinds()
+            .into_iter()
+            .map(|kind| {
+                let label = kind.localized_label();
+                (kind, label)
+            })
+            .collect();
+        let scopes = self
+            .search_scope_list()
+            .into_iter()
+            .map(|scope| (scope, self.search_scope_pill_label(scope)))
+            .collect();
         let active_scope = self
             .chrome
             .as_ref()
             .map(|c| c.borrow().search_scope)
             .unwrap_or_default();
-        let scopes = self
-            .search_scope_list()
-            .into_iter()
-            .enumerate()
-            .map(|(idx, scope)| {
-                let label = self.search_scope_pill_label(scope);
-                let key = format!("palette:scope:{}", scope.slug());
-                bounded(
-                    AccessNode::new(Role::RadioButton)
-                        .with_name(t_args(
-                            "host-a11y-scope",
-                            &[("scope", label.as_str().into())],
-                        ))
-                        .with_semantic_key(key.clone())
-                        .with_action_target(key)
-                        .with_key(u64::try_from(idx).unwrap_or(u64::MAX)),
-                    self.search_scope_segment_hit_rect(idx),
-                    scope == active_scope,
-                )
+        SearchFilterInputs {
+            kinds,
+            selected: self.active_kind_filter.clone(),
+            scopes,
+            active_scope,
+        }
+    }
+
+    /// Hand `inputs` to `filters` with this host's accessible names.
+    fn configure_search_filters(filters: &mut SearchFilters, inputs: &SearchFilterInputs) {
+        let kinds = inputs
+            .kinds
+            .iter()
+            .map(|(kind, label)| KindChip {
+                kind: kind.clone(),
+                label: label.clone(),
+                name: t_args("host-a11y-filter-kind", &[("kind", label.as_str().into())]),
             })
             .collect();
-
-        AccessNode::new(Role::Group)
-            .with_name(t("host-a11y-search-filters"))
-            .with_semantic_key("palette:filters")
-            .with_children(vec![
-                AccessNode::new(Role::Group)
-                    .with_name(t("host-a11y-result-kinds"))
-                    .with_children(chips),
-                AccessNode::new(Role::Group)
-                    .with_name(t("host-a11y-search-scope"))
-                    .with_children(scopes),
-            ])
+        let scopes = inputs
+            .scopes
+            .iter()
+            .map(|(scope, label)| ScopeSegment {
+                scope: *scope,
+                label: label.clone(),
+                name: t_args("host-a11y-scope", &[("scope", label.as_str().into())]),
+            })
+            .collect();
+        filters.configure(
+            kinds,
+            inputs.selected.clone(),
+            scopes,
+            inputs.active_scope,
+            FilterText {
+                all_label: t("search-filter-all"),
+                all_name: t("host-a11y-filter-all"),
+                filters_name: t("host-a11y-search-filters"),
+                kinds_name: t("host-a11y-result-kinds"),
+                scopes_name: t("host-a11y-search-scope"),
+            },
+        );
     }
 
-    /// Geometry for a path under [`Self::search_filters_accessibility`]:
-    /// `[0, i]` is chip `i` (0 = "All"), `[1, i]` is scope segment `i`.
-    fn search_filter_rect_for_path(&self, path: &[usize]) -> Option<Rect> {
-        let rect = match path {
-            [0, 0] => self.search_all_chip_hit_rect(),
-            [0, i] => self.search_chip_hit_rect(i.checked_sub(1)?),
-            [1, i] => self.search_scope_segment_hit_rect(*i),
-            _ => return None,
-        };
-        (rect.area() > 0.0).then_some(rect)
+    /// Reconfigure the band only when what it shows has changed.
+    fn sync_search_filters(&mut self) {
+        let inputs = self.search_filter_inputs();
+        if self.search_filter_inputs.as_ref() != Some(&inputs) {
+            Self::configure_search_filters(&mut self.search_filters, &inputs);
+            self.search_filter_inputs = Some(inputs);
+        }
     }
 
-    /// Toggle a kind in the chip filter. Multiple kinds may be active
-    /// simultaneously; the empty state means "everything shows".
-    /// Toggle a kind in the chip filter. Multiple content kinds may be
-    /// active simultaneously; the empty state means "everything shows".
-    ///
-    /// Applications and Host Apps are the exception: they are alternative
-    /// launch sources, not additive content facets. In particular a picker
-    /// opened for a new window starts with both sources available. Clicking
-    /// the Host Apps chip must narrow to host rows, rather than merely
-    /// toggling that source out and leaving the Tilo-app rows behind.
-    fn toggle_kind_filter(&mut self, kind: crate::shell::search::ResourceKind) {
-        use crate::shell::search::ResourceKind;
-
-        if matches!(
-            kind,
-            ResourceKind::Application | ResourceKind::HostApplication
-        ) {
-            if self.active_kind_filter.as_slice() == std::slice::from_ref(&kind) {
-                self.active_kind_filter.clear();
-            } else {
-                self.active_kind_filter = vec![kind];
-            }
-            return;
+    /// The filter band as semantics, reflecting the current selection even
+    /// before the next paint re-lays it out.
+    fn search_filters_accessibility(&self) -> ui::a11y::AccessNode {
+        let inputs = self.search_filter_inputs();
+        if self.search_filter_inputs.as_ref() == Some(&inputs) {
+            return self.search_filters.accessibility();
         }
-        if let Some(pos) = self.active_kind_filter.iter().position(|k| k == &kind) {
-            self.active_kind_filter.remove(pos);
-        } else {
-            self.active_kind_filter.push(kind);
-        }
+        let mut filters = self.search_filters.clone();
+        Self::configure_search_filters(&mut filters, &inputs);
+        filters.accessibility()
     }
 
     /// Dispatch the selected palette row through the provider callback
@@ -10047,9 +9604,9 @@ impl ShellOverlayHost {
             let records = st.records().clone();
             let mut tree = st.tree_mut();
             let local = self.room_records.borrow();
-            self.room_activity.refresh(&mut tree);
+            self.room_activity.refresh(&mut *tree);
             self.room_activity
-                .refresh_records_with_local(&mut tree, &records, &*local);
+                .refresh_records_with_local(&mut *tree, &records, &*local);
         }
         self.refresh_history_narrative();
     }
@@ -10112,9 +9669,9 @@ impl ShellOverlayHost {
             let local = self.room_records.borrow();
             self.room_activity
                 .observe_workspace(tree.desktop.active.raw());
-            self.room_activity.refresh(&mut tree);
+            self.room_activity.refresh(&mut *tree);
             self.room_activity
-                .refresh_records_with_local(&mut tree, &records, &*local);
+                .refresh_records_with_local(&mut *tree, &records, &*local);
             tree.desktop.active.raw()
         };
         self.refresh_history_narrative();
@@ -10167,12 +9724,15 @@ impl ShellOverlayHost {
         };
         let local_ids = {
             let state = chrome.borrow();
-            let tree = state.tree();
+            let active_room = state
+                .tree()
+                .desktop
+                .active_workspace()
+                .map(|workspace| workspace.room);
             let mut ids = vec![state.local_user_id.clone()];
-            if let Some(workspace) = tree.desktop.active_workspace() {
-                ids.push(state.local_user_for_room(&workspace.room));
+            if let Some(room) = active_room {
+                ids.push(state.local_user_for_room(&room));
             }
-            drop(tree);
             ids.retain(|id| !id.is_empty());
             ids
         };
@@ -10292,17 +9852,6 @@ impl ShellOverlayHost {
         WorkspaceSettingsOverlay::rect_for(self.rect)
     }
 
-    /// The band the scope + kind controls paint into — the palette's own
-    /// reserved filter band, not a floating surface, which keeps the
-    /// controls aligned with the query field and rows below.
-    fn search_banner_rect(&self) -> Rect {
-        let p = self.palette.get_rect();
-        if p.width() <= 0.0 {
-            return Rect::ZERO;
-        }
-        self.palette.filter_strip_rect()
-    }
-
     /// Full ordered list of scopes shown in the banner. Includes
     /// [`SearchScope::ActiveApp`] only when there's a currently focused
     /// tab — otherwise the pill would render an empty label.
@@ -10362,7 +9911,7 @@ impl ShellOverlayHost {
                     .as_ref()
                     .and_then(|c| c.borrow().active_app_title())
                 else {
-                    return SearchScope::ActiveApp.label();
+                    return SearchScope::ActiveApp.localized_label();
                 };
                 let title = if raw.chars().count() > MAX_APP_PILL_CHARS {
                     let head: String = raw.chars().take(MAX_APP_PILL_CHARS).collect();
@@ -10377,200 +9926,8 @@ impl ShellOverlayHost {
                     t_args("host-search-scope-app", &[("title", title.into())])
                 }
             }
-            other => other.label(),
+            other => other.localized_label(),
         }
-    }
-
-    /// Individual scope-segment rect. `idx` indexes into
-    /// [`Self::search_scope_list`] (`ActiveApp` is 0 when present). One
-    /// segmented control, not loose pills, since the scopes are mutually
-    /// exclusive. Hit-test and draw share this helper.
-    fn search_scope_pill_rect(&self, idx: usize) -> Rect {
-        let b = self.search_banner_rect();
-        if b.width() <= 0.0 {
-            return Rect::ZERO;
-        }
-        let count = self.search_scope_list().len().max(1);
-        let track = self.search_scope_track_rect();
-        let seg_w = (track.width() - 2.0 * SEGMENT_INSET_PX) / usize_to_f64_lossy(count);
-        let x0 = track.x0 + SEGMENT_INSET_PX + usize_to_f64_lossy(idx) * seg_w;
-        Rect::new(
-            x0,
-            track.y0 + SEGMENT_INSET_PX,
-            x0 + seg_w,
-            track.y1 - SEGMENT_INSET_PX,
-        )
-    }
-
-    /// Pointer and semantic target of scope segment `idx`: the segment's
-    /// x-range at the track's full height. The painted pill sits `2 px`
-    /// inside the track (a bezel, see [`SEGMENT_INSET_PX`]); the thing you
-    /// press, and the thing a script names, is the whole slice of the
-    /// control, so it shares the chips' height and edges.
-    fn search_scope_segment_hit_rect(&self, idx: usize) -> Rect {
-        let seg = self.search_scope_pill_rect(idx);
-        if seg.area() <= 0.0 {
-            return Rect::ZERO;
-        }
-        let track = self.search_scope_track_rect();
-        self.selector_hit_rect(Rect::new(seg.x0, track.y0, seg.x1, track.y1))
-    }
-
-    /// The pointer target of a Selector painted at `painted`: the same
-    /// width, grown about its centre to the §9.6 pointer floor
-    /// (`metrics.min_pointer_target`, cached at draw) when the pill is
-    /// shorter. A 28 px chip in a 36 px row therefore accepts a press 2 px
-    /// above and below its paint (S1-28). Hit-testing, semantic bounds and
-    /// the bench all read this rect; paint reads `painted`. The rows are
-    /// `row_h` apart and `row_h - s1 ≥` the floor, so two rows' targets
-    /// never overlap.
-    fn selector_hit_rect(&self, painted: Rect) -> Rect {
-        if painted.area() <= 0.0 {
-            return Rect::ZERO;
-        }
-        // The floor is already clamped to `row_h − s1` at draw
-        // (`search_pointer_floor_h`), so two rows' targets never overlap
-        // however the palette scales its rows; clipping to the band keeps
-        // the first and last rows' targets off the query field and the
-        // results.
-        let h = painted.height().max(self.search_pointer_floor_h);
-        let cy = painted.center().y;
-        let grown = Rect::new(painted.x0, cy - h / 2.0, painted.x1, cy + h / 2.0);
-        // Clipped to the band the pill was laid out in (frozen at draw),
-        // never to a band a pending row request has already moved.
-        let band = self.search_band_for_targets();
-        if band.area() <= 0.0 {
-            return grown;
-        }
-        let clipped = grown.intersect(band);
-        if clipped.area() <= 0.0 {
-            painted
-        } else {
-            clipped
-        }
-    }
-
-    fn search_all_chip_hit_rect(&self) -> Rect {
-        self.selector_hit_rect(self.search_all_chip_rect)
-    }
-
-    /// Pointer target of kind chip `i` (0 = the first registered kind; the
-    /// "All" reset is [`Self::search_all_chip_hit_rect`]).
-    fn search_chip_hit_rect(&self, i: usize) -> Rect {
-        self.selector_hit_rect(self.search_chip_rects.get(i).copied().unwrap_or(Rect::ZERO))
-    }
-
-    /// Width the scope switch needs to show every label whole: one measured
-    /// segment per scope plus the bezel either side.
-    fn search_scope_measured_track_w(&self) -> f64 {
-        let count = self.search_scope_list().len().max(1);
-        self.search_scope_segment_w * usize_to_f64_lossy(count) + 2.0 * SEGMENT_INSET_PX
-    }
-
-    /// Whether the scope switch *wants* the band's first row alone: its
-    /// measured width passes [`SCOPE_TRACK_SHARE`] of the band — 200 % text
-    /// on a narrow card — so the labels stay whole and the kind chips start
-    /// on the next row, rather than "Workspace" eliding to "Works…" beside
-    /// a first row of chips (S1-29). This is what the band asks the palette
-    /// to reserve a row for.
-    fn scope_switch_wants_own_row(&self) -> bool {
-        let b = self.search_banner_rect();
-        b.width() > 0.0 && self.search_scope_measured_track_w() > b.width() * SCOPE_TRACK_SHARE
-    }
-
-    /// Whether the scope switch *takes* the first row alone: it wants to,
-    /// and the palette had already granted the band a second row when the
-    /// band was last drawn. On the frame the want first appears the band is
-    /// still one row tall, so the switch shares that row (capped, as
-    /// before) and the chips stay where they are, off the results; the
-    /// next layout supplies the row. Frozen at draw
-    /// (`search_scope_own_row`), so a click is tested against the switch
-    /// that was painted, not one the pending row request has already moved.
-    fn scope_switch_has_own_row(&self) -> bool {
-        self.search_scope_own_row
-    }
-
-    /// The band the chips and switch were laid out in: the frame's frozen
-    /// rect once anything has been drawn, the palette's live band before.
-    fn search_band_for_targets(&self) -> Rect {
-        if self.search_band_at_draw.area() > 0.0 {
-            self.search_band_at_draw
-        } else {
-            self.search_banner_rect()
-        }
-    }
-
-    /// Outer track of the scope segmented control — the rounded body the
-    /// individual segments sit inside.
-    fn search_scope_track_rect(&self) -> Rect {
-        let b = self.search_band_for_targets();
-        if b.width() <= 0.0 {
-            return Rect::ZERO;
-        }
-        // Segments are as wide as the widest label needs (measured at
-        // draw). While the switch shares the first row it is capped at a
-        // share of the band so the kind chips keep that row; on its own
-        // row it may take the whole band.
-        let measured = self.search_scope_measured_track_w();
-        let w = if self.scope_switch_has_own_row() {
-            measured.min(b.width())
-        } else {
-            measured.min(b.width() * SCOPE_TRACK_SHARE)
-        };
-        let h = self.search_filter_control_h;
-        // Anchored to the *first* row of the band, not to the middle of
-        // it: when the kind chips wrap to a second row the switch must
-        // stay where it was, beside the row it shares, rather than
-        // drifting down into the gap between the two rows of chips.
-        let cy = b.y0 + self.palette.filter_strip_row_height() / 2.0;
-        Rect::new(b.x1 - w, cy - h / 2.0, b.x1, cy + h / 2.0)
-    }
-
-    /// Label size for the filter band's chips and scope segments: the
-    /// chrome control label (HIG §9.6, `scale.sm` medium), renderer-
-    /// relative. The theme's `scale.sm` already carries the person's text
-    /// scale and the legacy `TextRenderer` APIs scale again (the round-one
-    /// systemic finding: 4× glyphs at 200 %), so the renderer's factor is
-    /// divided out here — the same cure `draw_shortcut_help_button` uses —
-    /// and every measure and draw in the band goes through this one size.
-    /// Until 2026-09-17 the band's labels painted at 48 px at 200 % and the
-    /// pills grew to hold them.
-    fn filter_label_size(theme: &Theme, text_renderer: &TextRenderer) -> f32 {
-        theme.tokens.typography.scale.sm / text_renderer.text_scale().max(f32::EPSILON)
-    }
-
-    /// Shared height for every control in the filter band, so the chips
-    /// and the scope switch sit on one centre line. The §9.6 Selector
-    /// height at 100 % text; it grows with the measured label line height
-    /// plus `s2` so a 200 % label sits inside its pill rather than
-    /// spilling over it, and stops `s1` short of the band's row so two
-    /// rows of chips keep a gutter instead of touching.
-    fn filter_control_height(theme: &Theme, text_renderer: &mut TextRenderer, row_h: f64) -> f64 {
-        let size = Self::filter_label_size(theme, text_renderer);
-        let (_, lh) = text_renderer.measure_weighted("Ag", size, None, TextWeight::Medium);
-        let s1 = f64::from(theme.tokens.spacing.s1);
-        (f64::from(lh) + f64::from(theme.tokens.spacing.s2))
-            .max(f64::from(theme.tokens.metrics.selector_height))
-            .min(row_h - s1)
-    }
-
-    /// Width one scope segment needs: the widest scope label at the
-    /// band's label size plus `s3` either side — measured, so "Everywhere"
-    /// and a long app title get room instead of an ellipsis.
-    fn scope_segment_width(&self, theme: &Theme, text_renderer: &mut TextRenderer) -> f64 {
-        let size = Self::filter_label_size(theme, text_renderer);
-        let pad = 2.0 * f64::from(theme.tokens.spacing.s3);
-        self.search_scope_list()
-            .into_iter()
-            .map(|scope| {
-                let label = self.search_scope_pill_label(scope);
-                f64::from(
-                    text_renderer
-                        .measure_weighted(&label, size, None, TextWeight::Medium)
-                        .0,
-                ) + pad
-            })
-            .fold(0.0, f64::max)
     }
 
     /// The overview's model of every room, in tree order.
@@ -11213,7 +10570,7 @@ impl ShellOverlayHost {
                     scale_factor,
                     &modifiers,
                     cursor,
-                    &mut tree,
+                    &mut *tree,
                     Some(&records),
                 )
             };
@@ -13492,7 +12849,11 @@ impl ShellOverlayHost {
         // is the segment's full-height slice of the track — the same rect
         // its semantic node publishes.
         for (idx, scope) in self.search_scope_list().iter().enumerate() {
-            if self.search_scope_segment_hit_rect(idx).contains(p) {
+            if self
+                .search_filters
+                .search_scope_segment_hit_rect(idx)
+                .contains(p)
+            {
                 if let Some(chrome) = self.chrome.clone() {
                     let mut state = chrome.borrow_mut();
                     state.search_scope = *scope;
@@ -13785,13 +13146,35 @@ impl ShellOverlayHost {
         true
     }
 
+    /// The recorder, the replay and record custody this session has.
+    pub fn session_services(&self) -> &crate::shell::session_services::SessionServices {
+        &self.session_services
+    }
+
+    /// Carry out what chrome queued for the session's services this frame.
+    fn pump_session_intents(&self) -> bool {
+        let Some(chrome) = self.chrome.as_ref() else {
+            return false;
+        };
+        self.session_services.serve(&mut chrome.borrow_mut())
+    }
+
+    /// Write back what chrome shows of the session's services.
+    fn publish_session_view(&self) {
+        if let Some(chrome) = self.chrome.as_ref() {
+            self.session_services.publish(&mut chrome.borrow_mut());
+        }
+    }
+
     /// Recorder upkeep: revocations, the recent buffer's room, the roster
     /// row that is the recording indicator, and finishing captures.
     fn pump_recorder(&mut self) -> bool {
-        let Some((recorder, user, tree)) = self.chrome.as_ref().and_then(|chrome| {
+        let Some(recorder) = self.session_services.recorder().cloned() else {
+            return false;
+        };
+        let Some((user, tree)) = self.chrome.as_ref().map(|chrome| {
             let chrome = chrome.borrow();
-            let recorder = chrome.recorder().cloned()?;
-            Some((recorder, chrome.active_local_user(), chrome.tree_handle()))
+            (chrome.active_local_user(), chrome.tree_handle())
         }) else {
             return false;
         };
@@ -13885,8 +13268,9 @@ impl ShellOverlayHost {
             return;
         };
         let tree = chrome.borrow().tree_handle();
-        let recorder = crate::shell::recorder::Recorder::attach(broker, tree);
-        chrome.borrow_mut().set_recorder(recorder);
+        self.session_services
+            .set_recorder(crate::shell::recorder::Recorder::attach(broker, tree));
+        self.publish_session_view();
         self.local_participants = Some(crate::shell::peer_presence::LocalParticipantRoster::new(
             broker.fanout(),
         ));
@@ -13894,14 +13278,14 @@ impl ShellOverlayHost {
 
     /// Serve the shell's own records to the rooms that reference them, and
     /// reach the records other members serve.
-    fn attach_record_custody(&self, broker: &crate::shell::collab_broker::BrokerHandle) {
+    fn attach_record_custody(&mut self, broker: &crate::shell::collab_broker::BrokerHandle) {
         let Some(chrome) = self.chrome.as_ref() else {
             return;
         };
         let tree = chrome.borrow().tree_handle();
         let custody = crate::shell::record_custody::RecordCustody::attach(&broker.fanout(), tree);
         custody.set_channel_keys(broker.channel_encryption());
-        chrome.borrow_mut().set_custody(custody);
+        self.session_services.set_custody(custody);
     }
 
     /// Sign what custody publishes with this device's certified key.
@@ -13909,11 +13293,7 @@ impl ShellOverlayHost {
         &self,
         signer: std::sync::Arc<dyn crate::shell::record_custody::DeviceSigner>,
     ) {
-        if let Some(custody) = self
-            .chrome
-            .as_ref()
-            .and_then(|chrome| chrome.borrow().custody().cloned())
-        {
+        if let Some(custody) = self.session_services.custody() {
             custody.set_signer(signer);
         }
     }
@@ -13921,14 +13301,11 @@ impl ShellOverlayHost {
     /// Custody upkeep: serve referenced records, stop serving withdrawn ones,
     /// and move fetches along.
     fn pump_custody(&self) -> bool {
-        let Some(chrome) = self.chrome.as_ref() else {
+        let (Some(chrome), Some(custody)) = (self.chrome.as_ref(), self.session_services.custody())
+        else {
             return false;
         };
-        let chrome = chrome.borrow();
-        let Some(custody) = chrome.custody().cloned() else {
-            return false;
-        };
-        custody.pump(chrome.records())
+        custody.pump(chrome.borrow().records())
     }
 
     /// Attach the session's replay to `broker`: it plays records the
@@ -13940,15 +13317,15 @@ impl ShellOverlayHost {
         let tree = chrome.borrow().tree_handle();
         let replay = crate::shell::replay::ReplayController::attach(broker, tree);
         replay.set_record_sources(
-            chrome.borrow().recorder().cloned(),
+            self.session_services.recorder().cloned(),
             self.room_records.borrow().local_record_lookup(),
-            chrome.borrow().custody().cloned(),
+            self.session_services.custody().cloned(),
         );
         replay.set_viewer(chrome.borrow().active_local_user());
         broker.install_replay(std::sync::Arc::clone(&replay));
-        chrome
-            .borrow_mut()
+        self.session_services
             .set_replay(std::sync::Arc::clone(&replay));
+        self.publish_session_view();
         // Review checks a recording against its replay out of sight.
         self.set_remark_replay(replay as _);
     }
@@ -13956,12 +13333,13 @@ impl ShellOverlayHost {
     /// Replay upkeep: publish what became due, start the recorded apps in a
     /// replay room, and close what a room the replay left still shows.
     fn pump_replay(&self) -> bool {
-        let Some((replay, tree)) = self.chrome.as_ref().and_then(|chrome| {
-            let chrome = chrome.borrow();
-            Some((chrome.replay().cloned()?, chrome.tree_handle()))
-        }) else {
+        let (Some(replay), Some(chrome)) = (
+            self.session_services.replay().cloned(),
+            self.chrome.as_ref(),
+        ) else {
             return false;
         };
+        let tree = chrome.borrow().tree_handle();
         // A check out of sight advances as frames are made: keep making
         // them while one runs, though nothing on screen changes.
         let mut changed = replay.pump(std::time::Instant::now()) | replay.checking();
@@ -15965,7 +15343,8 @@ impl ShellOverlayHost {
             | WorkspaceSettingsOutcome::ComposerSubmit => {}
             WorkspaceSettingsOutcome::ManagePermissionProfiles => {
                 self.open_palette_with_scope(crate::shell::chrome_state::SearchScope::All);
-                self.palette.set_query("permission role");
+                self.palette
+                    .set_query(&crate::shell::i18n::t("palette-query-permission-roles"));
                 self.last_search_query = "\0workspace-permission-roles\0".to_string();
             }
             WorkspaceSettingsOutcome::MemberRole(user) => {
@@ -16043,7 +15422,8 @@ impl ShellOverlayHost {
                     // parameter flow. It keeps setup usable with keyboard,
                     // pointer, accessibility tools, and automation alike.
                     self.open_palette_with_scope(crate::shell::chrome_state::SearchScope::All);
-                    self.palette.set_query("Invite agent to workspace");
+                    self.palette
+                        .set_query(&crate::shell::i18n::t("search-action-agent-invite"));
                     self.last_search_query = "\0agent-onboarding\0".to_string();
                 }
             }
@@ -16443,7 +15823,7 @@ impl ShellOverlayHost {
             // untick every chip one at a time. Targets are the pointer
             // rects (`selector_hit_rect`), the same ones the semantic
             // nodes publish.
-            let all_hit = self.search_all_chip_hit_rect();
+            let all_hit = self.search_filters.search_all_chip_hit_rect();
             if all_hit.area() > 0.0 && all_hit.contains(p) {
                 if !self.active_kind_filter.is_empty() {
                     self.active_kind_filter.clear();
@@ -16454,10 +15834,10 @@ impl ShellOverlayHost {
                 return true;
             }
             let kinds = self.search_registry.registered_kinds();
-            for idx in 0..self.search_chip_rects.len() {
-                if self.search_chip_hit_rect(idx).contains(p) {
+            for idx in 0..self.search_filters.search_chip_rects.len() {
+                if self.search_filters.search_chip_hit_rect(idx).contains(p) {
                     if let Some(kind) = kinds.get(idx).cloned() {
-                        self.toggle_kind_filter(kind);
+                        toggle_kind(&mut self.active_kind_filter, kind);
                         self.last_search_query.clear(); // force a refresh
                         self.refresh_search_results(state, path);
                     }
@@ -17283,6 +16663,14 @@ fn focus_quick_settings_accessibility(host: &mut ShellOverlayHost, child_path: &
 }
 
 impl Widget for ShellOverlayHost {
+    fn take_component_close_reports(&mut self) -> Vec<ui::application::ComponentCloseReport> {
+        let mut reports = std::mem::take(&mut self.desktop_close_reports);
+        for child in self.children_mut() {
+            reports.extend(child.take_component_close_reports());
+        }
+        reports
+    }
+
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
     }
@@ -17330,6 +16718,9 @@ impl Widget for ShellOverlayHost {
         for (_, mirror) in &mut self.capture_mirrors {
             mirror.sync(s, p);
         }
+        if let Some(pairing) = self.pairing.view_mut() {
+            pairing.sync(s, p);
+        }
     }
 
     #[allow(
@@ -17340,6 +16731,7 @@ impl Widget for ShellOverlayHost {
         if let Some(onboarding) = self.onboarding.as_mut() {
             return onboarding.update(doc, path);
         }
+        let pairing_dirty = self.pairing.pump(doc, path);
         // Runs first so an invite token / prompt is in chrome before draw.
         self.pump_peer_sync();
         self.tick_shortcut_triggers();
@@ -17461,24 +16853,35 @@ impl Widget for ShellOverlayHost {
         self.sync_status_from_bridge();
         self.harvest_active_tab_writeback();
         let presence_dirty = self.pump_presence_requests()
+            | self.pump_session_intents()
             | self.pump_recorder()
             | self.pump_remark()
             | self.pump_custody()
             | self.pump_replay();
+        self.publish_session_view();
         self.pump_screenshot_sends();
         let follow_dirty = self.reconcile_followed_peer();
         self.follow_focus_across_displays();
         // Both edge-triggered on `active_group`, so they run after the
         // writeback above reflects this frame's focus change.
         self.scroll_active_group_into_view();
-        self.mark_focused_group();
         let capture_targets = self.capture_targets();
         self.capture_studio.set_candidates(capture_targets);
         self.dispatch_cross_strip_detaches();
         // Offer every open tab's document to its own writer, debounced and
         // off-thread — without this the store never writes to disk.
         if let Some(chrome) = self.chrome.as_ref() {
-            let records = chrome.borrow().records().clone();
+            let state = chrome.borrow();
+            // Release native document launch data once its tab is gone —
+            // covers removals through workspace/peer reconciliation as well
+            // as the explicit close action.
+            let mut tree = state.tree_mut();
+            if state.hosted_inputs.prune_documents(&mut tree) {
+                tree.flush_to_disk();
+            }
+            drop(tree);
+            let records = state.records().clone();
+            drop(state);
             records.tick();
         }
         // Before the prompt pump, so a request arriving this frame is on
@@ -17505,6 +16908,7 @@ impl Widget for ShellOverlayHost {
             chrome.borrow().tree_mut().commit_room_change();
         }
         content_dirty
+            || pairing_dirty
             || close_dirty
             || palette_dirty
             || sidebar_dirty
@@ -17577,12 +16981,10 @@ impl Widget for ShellOverlayHost {
         if let Some(chrome) = self.chrome.as_ref() {
             chrome.borrow_mut().set_fullscreen_presentation(fullscreen);
         }
-        if let Some(parts) = self.workspace_scene_parts {
-            // SAFETY: `WorkspaceSceneParts::work_area` points into the
-            // workspace root owned by `self.content` and is replaced with
-            // that root whenever the workspace is rebuilt. Layout runs
-            // sequentially under `&mut self`, so no other borrow aliases it.
-            let work_area = unsafe { &mut *parts.work_area };
+        if let Some(work_area) = self
+            .desktop_surface_mut()
+            .and_then(tilo_desktop::composition::DesktopSurface::work_area_mut)
+        {
             if fullscreen {
                 work_area.set_vertical_padding(0.0);
                 work_area.set_extra_top_padding(0.0);
@@ -17731,6 +17133,9 @@ impl Widget for ShellOverlayHost {
             }
             self.onboarding_node = Some(onboarding_node);
             children.push(onboarding_node);
+        }
+        if let Some(pairing_node) = self.pairing.build_layout(taffy, theme, node_map) {
+            children.push(pairing_node);
         }
         // `new_with_children` only errs on a foreign/removed child
         // `NodeId`, and every id in `children` was just created above in
@@ -17911,6 +17316,8 @@ impl Widget for ShellOverlayHost {
                 Point::new(self.rect.x0, self.rect.y0),
             );
         }
+        self.pairing
+            .apply_layout(taffy, Point::new(self.rect.x0, self.rect.y0));
         self.publish_strip_viewport();
     }
 
@@ -18052,6 +17459,26 @@ impl Widget for ShellOverlayHost {
             if *handled || self.capture_studio.modal_capture().is_some() {
                 return;
             }
+        }
+        // A Bluetooth pairing question owns input until it is answered:
+        // nothing behind it may be clicked into agreeing, and no desktop
+        // shortcut runs while it waits.
+        if self.onboarding.is_none()
+            && self.pairing.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                taffy,
+            )
+        {
+            if let Some(chrome) = self.chrome.as_ref() {
+                chrome.borrow_mut().bump();
+            }
+            return;
         }
         // A display tool's change waits for Keep or Revert, possibly with a
         // screen blanked: the answer comes before any other surface.
@@ -19549,7 +18976,7 @@ impl Widget for ShellOverlayHost {
                 // The trailing child is the host's filter band (see
                 // `accessibility`); everything before it is the palette's.
                 [first, rest @ ..] if Some(*first) == self.search_filters_child_index() => {
-                    self.search_filter_rect_for_path(rest)
+                    self.search_filters.rect_for_path(rest)
                 }
                 _ => self.palette.synthetic_accessibility_rect(child_path),
             },
@@ -19754,6 +19181,9 @@ impl Widget for ShellOverlayHost {
                 .iter()
                 .map(|(_, mirror)| mirror as &dyn Widget),
         );
+        if let Some(pairing) = self.pairing.view() {
+            out.push(pairing);
+        }
         out
     }
 
@@ -19779,11 +19209,15 @@ impl Widget for ShellOverlayHost {
                 .iter_mut()
                 .map(|(_, mirror)| mirror as &mut dyn Widget),
         );
+        if let Some(pairing) = self.pairing.view_mut() {
+            out.push(pairing);
+        }
         out
     }
 
     fn take_focus_reset(&mut self) -> bool {
-        std::mem::take(&mut self.onboarding_focus_reset)
+        self.pairing.take_focus_reset()
+            | std::mem::take(&mut self.onboarding_focus_reset)
             | self
                 .onboarding
                 .as_mut()
@@ -19833,7 +19267,8 @@ impl Widget for ShellOverlayHost {
             .is_some_and(|s| s.take_structure_dirty());
         let palette = std::mem::take(&mut self.palette_layout_dirty);
         let capture_mirrors = std::mem::take(&mut self.capture_mirrors_structure_dirty);
-        content | sidebar | palette | capture_mirrors | resynced | workspace_layout
+        let pairing = self.pairing.take_structure_dirty();
+        content | sidebar | palette | capture_mirrors | resynced | workspace_layout | pairing
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -20424,20 +19859,9 @@ impl ShellOverlayHost {
         // Match the compositor's retained section order in the dense oracle:
         // app content cannot cover OS-owned anchored chrome that extends
         // below the reserved top-bar band.
-        if let Some(parts) = self.workspace_scene_parts {
-            // SAFETY: these pointers refer to distinct boxed children owned
-            // by `content`; this is the same sequential traversal used by
-            // `draw_workspace_sections`, only composed in final layer order.
-            unsafe {
-                (&mut *parts.backdrop).draw(scene, transform, text_renderer, theme, presence);
-                (&mut *parts.workspace).draw(scene, transform, text_renderer, theme, presence);
-                (&mut *parts.topbar).draw(scene, transform, text_renderer, theme, presence);
-                (&mut *parts.display_bars).draw(scene, transform, text_renderer, theme, presence);
-            }
-        } else {
-            self.content
-                .draw(scene, transform, text_renderer, theme, presence);
-        }
+        // The shared surface draws backdrop, workspace, then top bar.
+        self.content
+            .draw(scene, transform, text_renderer, theme, presence);
         self.draw_desktop_extras(scene, transform, text_renderer, theme, presence);
     }
 
@@ -20535,33 +19959,30 @@ impl ShellOverlayHost {
         theme: &Theme,
         presence: &PresenceCtx,
     ) -> Option<Rect> {
-        let Some(parts) = self.workspace_scene_parts else {
+        let Some(surface) = self.desktop_surface_mut() else {
             self.content
                 .draw(backdrop_scene, transform, text_renderer, theme, presence);
             return None;
         };
-        // SAFETY: `WorkspaceSceneParts` points into boxes owned by `content` and is replaced
-        // with that root on rebuild. Each part is drawn once in Container → Stack → Column order.
-        unsafe {
-            (&mut *parts.backdrop).draw(backdrop_scene, transform, text_renderer, theme, presence);
-            let topbar = &mut *parts.topbar;
-            let rect = topbar.get_rect();
-            topbar.draw(topbar_scene, transform, text_renderer, theme, presence);
-            let display_bars = &mut *parts.display_bars;
-            display_bars.draw(topbar_scene, transform, text_renderer, theme, presence);
-            (&mut *parts.workspace).draw(
-                workspace_scene,
-                transform,
-                text_renderer,
-                theme,
-                presence,
-            );
-            let bounds = display_bars
-                .bar_rects()
-                .into_iter()
-                .fold(rect, |all, (_, bar)| all.union(bar));
-            Some(Rect::new(bounds.x0, bounds.y0, bounds.x1, bounds.y1 + 28.0))
-        }
+        let bounds = surface.draw_sections(
+            backdrop_scene,
+            topbar_scene,
+            workspace_scene,
+            transform,
+            text_renderer,
+            theme,
+            presence,
+        )?;
+        // The compact bars of the other displays share the top bar's scene.
+        let bars = surface
+            .display_chrome()
+            .and_then(Widget::as_any)
+            .and_then(|layer| layer.downcast_ref::<crate::shell::display_bars::DisplayBars>())
+            .map(crate::shell::display_bars::DisplayBars::bar_rects)
+            .unwrap_or_default();
+        Some(bars.into_iter().fold(bounds, |all, (_, bar)| {
+            all.union(Rect::new(bar.x0, bar.y0, bar.x1, bar.y1 + 28.0))
+        }))
     }
 
     /// The two legacy full-panel modals: the room overview panel and the
@@ -20938,6 +20359,25 @@ impl ShellOverlayHost {
         flags: crate::shell::chrome_state::OverlayFlags,
     ) {
         self.drain_app_host_intents();
+        let view_request = self
+            .chrome
+            .as_ref()
+            .and_then(|chrome| chrome.borrow_mut().take_workspace_view_request());
+        if let Some((previous, request)) = view_request {
+            // Finish against the outgoing admission before awareness refreshes
+            // for the destination. A first open must not acknowledge its feed.
+            if self.room_activity_was_open {
+                self.room_activity.finish_view(previous.raw());
+            }
+            if let tilo_desktop::activity::WorkspaceViewRequest::OpenActivity { view, .. } = request
+            {
+                use crate::shell::room_activity::ActivityView;
+                self.room_activity.set_view(ActivityView::CatchUp);
+                self.room_activity.set_view(view);
+                self.room_activity.invalidate();
+            }
+            self.room_activity_was_open = false;
+        }
         // Older control/shot clients still express this as an overlay edge;
         // consume it by opening the typed tiled window once.
         if flags.room_activity
@@ -21271,6 +20711,16 @@ impl ShellOverlayHost {
         );
     }
 
+    /// The input devices and last-used modality the chrome adapts to.
+    pub fn interaction_environment(&self) -> ui::InteractionEnvironment {
+        self.interaction
+    }
+
+    /// Input language the help overlay is written in.
+    pub fn shortcut_help_modality(&self) -> ui::InputModality {
+        self.interaction.preferred_hint_modality()
+    }
+
     /// The shortcut-guide affordance is persistent chrome, not modal
     /// content. Keep it behind every temporary shell-owned surface: drawing
     /// it later would let its label overlap a popover at small sizes or large
@@ -21464,10 +20914,8 @@ impl ShellOverlayHost {
         self.shortcut_binding_rects.clear();
         self.shortcut_reset_rects.clear();
 
-        if matches!(
-            self.interaction.preferred_hint_modality(),
-            ui::InputModality::Keyboard | ui::InputModality::Pointer
-        ) {
+        let help_modality = self.shortcut_help_modality();
+        if help_modality != ui::InputModality::Touch {
             let feedback = if let Some(action) = self.shortcut_rebind {
                 Some(self.shortcut_rebind_message.clone().map_or_else(
                     || {
@@ -21493,7 +20941,7 @@ impl ShellOverlayHost {
             }
         }
 
-        match self.interaction.preferred_hint_modality() {
+        match help_modality {
             ui::InputModality::Controller => {
                 InputDeviceGlyph::paint_controller(
                     scene,
@@ -22104,6 +21552,9 @@ impl ShellOverlayHost {
             .draw(self.rect, scene, transform, text_renderer, theme, presence);
 
         self.draw_portal_dialog_sheet(scene, transform, text_renderer, theme);
+
+        // A held pad button works over modals too, like the keys below.
+        self.draw_pad_map(scene, transform, text_renderer, theme);
 
         // Above everything, including modals — a physical key works
         // while a modal is up, so its readout must too.
@@ -23557,14 +23008,14 @@ impl ShellOverlayHost {
         self.replay_controls.clear();
         let Some(status) = self.chrome.as_ref().and_then(|chrome| {
             let chrome = chrome.borrow();
-            let replay = chrome.replay()?;
-            let room = replay.room()?;
+            let replay = chrome.session_view().replay.as_ref()?;
+            let room = replay.room?;
             let shown = chrome
                 .tree()
                 .desktop
                 .active_workspace()
                 .is_some_and(|workspace| workspace.room == room);
-            shown.then(|| replay.status_json())
+            shown.then(|| replay.status.clone())
         }) else {
             return;
         };
@@ -24169,10 +23620,8 @@ impl ShellOverlayHost {
             .draw(self.rect, scene, transform, text_renderer, theme);
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "a paint routine that lays its elements out top to bottom from shared running offsets"
-    )]
+    /// Paint the filter band into the palette's reserved strip and ask the
+    /// palette for the rows it needs.
     fn draw_search_banner(
         &mut self,
         scene: &mut Scene,
@@ -24180,276 +23629,25 @@ impl ShellOverlayHost {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let tokens = &theme.tokens;
-        let band = self.search_banner_rect();
-        if band.width() <= 0.0 {
-            self.search_chip_rects.clear();
-            return;
-        }
-
-        let chip_text_size = Self::filter_label_size(theme, text_renderer);
-        let row_h = self.palette.filter_strip_row_height();
-        let control_h = Self::filter_control_height(theme, text_renderer, row_h);
-        // Cached before any geometry helper runs, so the switch painted
-        // below and the hit rects consulted later agree.
-        self.search_filter_control_h = control_h;
-        // The pointer floor a target may grow to: §9.6's 32, but never past
-        // `row_h − s1`, so neighbouring rows' targets keep the gutter the
-        // pills keep (the palette's row is `36·text_scale`; below 100 %
-        // text it is the row, not the floor, that bounds the target).
-        self.search_pointer_floor_h = f64::from(tokens.metrics.min_pointer_target)
-            .min(row_h - f64::from(tokens.spacing.s1))
-            .max(control_h);
-        self.search_scope_segment_w = self.scope_segment_width(theme, text_renderer);
-        // Frozen for this frame: the band everything below is laid out in,
-        // and whether the switch takes its first row alone (it wants to
-        // and the palette has already granted the second row). Hit-tests
-        // read these, not the palette's live getters, so a row request made
-        // a few lines down cannot move the targets before the next paint.
-        self.search_band_at_draw = band;
-        self.search_scope_own_row =
-            self.scope_switch_wants_own_row() && band.height() + 0.5 >= 2.0 * row_h;
-
-        self.draw_search_banner_scope_switch(
+        self.sync_search_filters();
+        let band = if self.palette.get_rect().width() <= 0.0 {
+            Rect::ZERO
+        } else {
+            self.palette.filter_strip_rect()
+        };
+        let previous_rows = self.search_filters.search_chip_rows;
+        let rows_needed = self.search_filters.draw(
             scene,
             transform,
             text_renderer,
             theme,
-            chip_text_size,
+            band,
+            self.palette.filter_strip_row_height(),
+            self.palette.host_filter_strip_rows(),
+            self.last_cursor,
         );
-
-        // Dynamic: one chip per kind any registered provider exposes, so
-        // a new provider gets a chip for free. Empty selection means
-        // "everything shows", stated by the leading "All" chip. Every
-        // chip is painted regardless of width; see [`lay_out_chip_strip`].
-        let kinds = self.search_registry.registered_kinds();
-        let kind_labels: Vec<String> = kinds
-            .iter()
-            .map(super::search::ResourceKind::label)
-            .collect();
-        let all_label = t("search-filter-all");
-        let labels: Vec<&str> = std::iter::once(all_label.as_str())
-            .chain(kind_labels.iter().map(String::as_str))
-            .collect();
-        // Chip padding is `s3` either side — the shared `Chip` primitive's
-        // own padding, so a filter chip and a chip anywhere else in the
-        // shell are one shape — and chips sit `s2` apart. Both are the
-        // live theme's steps, so a custom or scaled theme moves them too.
-        let chip_pad = f64::from(tokens.spacing.s3);
-        let chip_gap = f64::from(tokens.spacing.s2);
-        let natural: Vec<f64> = labels
-            .iter()
-            .map(|l| {
-                f64::from(
-                    text_renderer
-                        .measure_weighted(l, chip_text_size, None, TextWeight::Medium)
-                        .0,
-                ) + 2.0 * chip_pad
-            })
-            .collect();
-        // The scope track's left edge bounds the chip strip's first row —
-        // unless the switch has taken that row for itself (200 % text on a
-        // narrow card), in which case the chips start on the next row with
-        // the whole band and the switch keeps its labels whole (S1-29).
-        let track = self.search_scope_track_rect();
-        // `has` decides this frame's layout, `wants` what the band asks the
-        // palette to reserve: on the frame the want first appears the band
-        // is one row tall, so the switch still shares that row (capped) and
-        // the chips stay in it — never laid into a row that does not exist
-        // yet, over the first result — while the request goes out; the next
-        // layout grants the row and the switch takes it.
-        let own_row = self.scope_switch_has_own_row();
-        let wants_own_row = self.scope_switch_wants_own_row();
-        let reserved_rows = self.palette.host_filter_strip_rows();
-        let (chip_band, first_row_x1, rows_for_chips) = if own_row {
-            (
-                Rect::new(band.x0, band.y0 + row_h, band.x1, band.y1),
-                band.x1,
-                reserved_rows.saturating_sub(1).max(1),
-            )
-        } else {
-            (band, track.x0 - chip_pad, reserved_rows)
-        };
-        let strip = lay_out_chip_strip(
-            &natural,
-            chip_band,
-            first_row_x1,
-            rows_for_chips,
-            row_h,
-            control_h,
-            chip_gap,
-        );
-
-        let mut chip_rects: Vec<Rect> = Vec::with_capacity(kinds.len());
-        for (i, label) in labels.iter().enumerate() {
-            let rect = strip.rects.get(i).copied().unwrap_or(Rect::ZERO);
-            let is_active = match i {
-                0 => self.active_kind_filter.is_empty(),
-                _ => i
-                    .checked_sub(1)
-                    .and_then(|k| kinds.get(k))
-                    .is_some_and(|kind| self.active_kind_filter.contains(kind)),
-            };
-            // Hover is judged on the pointer target, not the pill, so the
-            // 2 px of floor above and below a chip light it too.
-            let hover = self
-                .last_cursor
-                .is_some_and(|p| self.selector_hit_rect(rect).contains(p));
-            // Only a chip that had to be squeezed loses any of its label;
-            // it keeps one side's padding before it elides.
-            let label = text_renderer.elide_to_width_weighted(
-                label,
-                chip_text_size,
-                f64_to_f32_lossy((rect.width() - chip_pad).max(1.0)),
-                TextWeight::Medium,
-            );
-            draw_filter_chip(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                rect,
-                &label,
-                chip_text_size,
-                ui::chrome::SelectionState::new(is_active, hover, false),
-            );
-            match i {
-                0 => self.search_all_chip_rect = rect,
-                _ => chip_rects.push(rect),
-            }
-        }
-        self.search_chip_rects = chip_rects;
-
-        // The next layout grows the band and moves result rows down;
-        // until it runs, the chips stay squeezed into the band there is
-        // but remain clickable. A switch that wants its own row is one
-        // more row — asked for now, taken once granted.
-        let rows_needed = strip.rows_needed.saturating_add(usize::from(wants_own_row));
-        if rows_needed != self.search_chip_rows {
-            self.search_chip_rows = rows_needed;
-            if self.palette.set_host_filter_strip_rows(rows_needed) {
-                self.palette_layout_dirty = true;
-            }
-        }
-    }
-
-    /// The right-anchored scope switch (a pill track) in the search
-    /// banner — separated from the chip strip below it since the two
-    /// are laid out independently.
-    fn draw_search_banner_scope_switch(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        chip_text_size: f32,
-    ) {
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        let ground = ui::chrome::shell::panel_ground(theme);
-
-        let active = self
-            .chrome
-            .as_ref()
-            .map(|c| c.borrow().search_scope)
-            .unwrap_or_default();
-        let track = self.search_scope_track_rect();
-        // The track is the set's outline, not a body: a hairline derived on
-        // the panel ground (HIG §9.5), no fill — the segments carry the
-        // state. Until 2026-09-17 it wore a `lift(0.35)` body with a
-        // hairline measured against `surfaces.raised` and the chosen
-        // segment an `accent[5]` fill (§9.4).
-        let track_shape = RoundedRect::from_rect(
-            track,
-            ui::chrome::ChromeRole::Selector.radius(theme, track.height()),
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            ui::tokens::colors::Colors::hairline_on(ground, ui::chrome::shell::HAIRLINE_ALPHA),
-            None,
-            &track_shape,
-        );
-        let scopes = self.search_scope_list();
-        for (idx, scope) in scopes.iter().enumerate() {
-            let seg = self.search_scope_pill_rect(idx);
-            let is_active = *scope == active;
-            let hover = self
-                .last_cursor
-                .is_some_and(|p| self.search_scope_segment_hit_rect(idx).contains(p));
-            // Each segment is a Selector on the shared tiers (§9.3): the
-            // chosen one lifted with hairline and glow, a hovered one half
-            // lifted, the rest transparent inside the track.
-            let tier = ui::chrome::selection_tier(
-                theme,
-                ui::chrome::SelectionState::new(is_active, hover, false),
-            );
-            let radius = ui::chrome::ChromeRole::Selector.radius(theme, seg.height());
-            let shape = RoundedRect::from_rect(seg, radius);
-            if tier.fill.components[3] > 0.0 {
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
-                    transform,
-                    tier.fill,
-                    None,
-                    &shape,
-                );
-            }
-            if let Some(border) = tier.border {
-                scene.stroke(
-                    &vello::kurbo::Stroke::new(1.0),
-                    transform,
-                    border,
-                    None,
-                    &shape,
-                );
-            }
-            if let Some(glow) = tier.inner_glow {
-                scene.stroke(
-                    &vello::kurbo::Stroke::new(1.0),
-                    transform,
-                    glow,
-                    None,
-                    &RoundedRect::from_rect(seg.inset(1.0), (radius - 1.0).max(0.0)),
-                );
-            }
-            let under = if is_active || hover {
-                tier.fill
-            } else {
-                ground
-            };
-            let tone = if is_active {
-                colors.text_primary
-            } else {
-                colors.text_dim
-            };
-            let ink = colors.ink_on(under, tone, ui::tokens::colors::ON_FILL_MIN_CONTRAST);
-            let text = self.search_scope_pill_label(*scope);
-            // A segment that had to be squeezed under its measured width
-            // keeps `s2` of its padding before it elides.
-            let text = text_renderer.elide_to_width_weighted(
-                &text,
-                chip_text_size,
-                f64_to_f32_lossy(seg.width() - f64::from(tokens.spacing.s2)),
-                TextWeight::Medium,
-            );
-            let (tw, th) =
-                text_renderer.measure_weighted(&text, chip_text_size, None, TextWeight::Medium);
-            text_renderer.draw_text_weighted(
-                scene,
-                &text,
-                chip_text_size,
-                ink,
-                transform.pre_translate(
-                    (
-                        f64::midpoint(seg.x0, seg.x1) - f64::from(tw) / 2.0,
-                        f64::midpoint(seg.y0, seg.y1) - f64::from(th) / 2.0,
-                    )
-                        .into(),
-                ),
-                None,
-                TextWeight::Medium,
-            );
+        if rows_needed != previous_rows && self.palette.set_host_filter_strip_rows(rows_needed) {
+            self.palette_layout_dirty = true;
         }
     }
 
@@ -26961,6 +26159,10 @@ fn quick_settings_settled_bounds(rect: Rect, theme: &Theme, transform: Affine) -
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 #[path = "tab_context_menu_tests.rs"]
 mod tab_context_menu_tests;
 
@@ -26973,6 +26175,10 @@ mod empty_workspace_tests;
     clippy::float_cmp,
     reason = "exact overview layout geometry is the behavior under test"
 )]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 #[path = "overview_panel_tests.rs"]
 mod overview_panel_tests;
 
@@ -26980,6 +26186,10 @@ mod overview_panel_tests;
 #[allow(
     clippy::float_cmp,
     reason = "exact transition endpoints are the behavior under test"
+)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
 )]
 #[path = "overview_transition_tests.rs"]
 mod overview_transition_tests;
@@ -26989,6 +26199,10 @@ mod overview_transition_tests;
 mod wifi_password_tests;
 
 #[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 #[path = "palette_dispatch_tests.rs"]
 mod palette_dispatch_tests;
 
@@ -27001,6 +26215,10 @@ mod two_workspace_host_tests;
     clippy::float_cmp,
     reason = "exact modal curve endpoints are the behavior under test"
 )]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 #[path = "modal_curve_tests.rs"]
 mod modal_curve_tests;
 
@@ -27009,6 +26227,10 @@ mod modal_curve_tests;
     clippy::float_cmp,
     reason = "exact overlay hit-test geometry is the behavior under test"
 )]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 #[path = "overlay_event_absorb_tests.rs"]
 mod overlay_event_absorb_tests;
 
@@ -27016,6 +26238,10 @@ mod overlay_event_absorb_tests;
 #[allow(
     clippy::float_cmp,
     reason = "deterministic host geometry fixtures use exactly representable values"
+)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
 )]
 #[path = "overlay_host_tests.rs"]
 mod tests;
@@ -27036,6 +26262,10 @@ mod peer_cursor_tests;
 /// says which is which. Dormant membership stays in workspace settings:
 /// immediate presence never invents an idle session.
 #[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 #[path = "roster_rows_tests.rs"]
 mod roster_rows;
 

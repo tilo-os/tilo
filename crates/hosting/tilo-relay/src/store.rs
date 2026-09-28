@@ -9,9 +9,12 @@
 //!     └── <workspace_id>/
 //!         ├── snapshot.automerge    # full pinned CRDT snapshot
 //!         ├── log.jsonl             # append-only delta metadata (audit)
+//!         ├── retained/v2/<author>-<channel>/
+//!         │   ├── CURRENT          # atomic generation selector
+//!         │   └── <generation>/    # shared checkpoint + immutable tail
 //!         └── pending/
 //!             └── <device_pubkey_hex>/
-//!                 └── <seq>.delta   # queued deltas for offline peers
+//!                 └── <seq>.delta   # non-retained offline deltas
 //! ```
 //!
 //! `snapshot.automerge` is only written when a workspace is
@@ -23,9 +26,21 @@
 //! [`MAX_PENDING_BYTES_PER_DEVICE`]) and the audit log ([`MAX_LOG_BYTES`])
 //! are bounded here and drop their oldest entries on overflow: a pending
 //! delta is also in the pinned document that anti-entropy serves. A retained
-//! tail is never cut here — dropping any entry would leave later changes
-//! without their dependencies — so the workspace runtime trims its front
-//! only once a checkpoint covers it (see `crate::workspace`).
+//! tail is never cut by size — dropping any entry would leave later changes
+//! without their dependencies — so a lineage retires records only once a
+//! checkpoint of it covers them (see `retained`).
+
+pub(crate) mod bounded;
+pub(crate) mod continuity;
+pub(crate) mod replay;
+pub(crate) mod retained;
+#[cfg(test)]
+pub(crate) mod shell_proof_fixture;
+#[cfg(test)]
+pub(crate) mod shell_proof_tests;
+pub(crate) mod shell_selection;
+#[cfg(test)]
+pub(crate) mod test_barrier;
 
 use std::fs;
 use std::io::{self, Write};
@@ -43,6 +58,8 @@ pub const LOG_FILE: &str = "log.jsonl";
 
 /// Durable device membership for offline store-and-forward.
 pub const MEMBERSHIP_FILE: &str = "membership.json";
+/// Atomic native-governance projection: exact room devices plus handshake roots.
+pub const GOVERNED_ACCESS_FILE: &str = "governed-access-v1.json";
 
 /// Retained bootstrap checkpoints and the incremental tails after them.
 pub const RETAINED_DIR: &str = "retained";
@@ -128,16 +145,24 @@ pub struct LogEntry {
 }
 
 /// On-disk manager for one workspace's state.
+#[derive(Clone)]
 pub struct WorkspaceStore {
     root: PathBuf,
     workspace_id: u64,
     pinned: bool,
+    shell_authority: Option<tilo_peer_state::retained_proof::RetentionAuthority>,
     /// Entry and byte totals of the bounded directories written through this
-    /// store, keyed by directory. Filled from disk on first use and
-    /// invalidated whenever entries may be removed from outside the store
-    /// (a replay acknowledgement), so it never under-counts a queue.
-    usage: std::sync::Mutex<std::collections::HashMap<PathBuf, QueueUsage>>,
+    /// store (and its clones), keyed by directory. Filled from disk on first
+    /// use and re-read from disk before it may report an overflow, since a
+    /// replay acknowledges entries by removing their files outside the
+    /// store; so it never drops a queue over a stale count.
+    usage: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<PathBuf, QueueUsage>>>,
     bounds: QueueBounds,
+    retention: RetentionBounds,
+    /// Devices whose un-sent state was compacted or whose retained history
+    /// reached its bound, waiting to be asked for a checkpoint by the
+    /// connection side. One entry per device, so it stays bounded.
+    checkpoint_wants: std::sync::Arc<std::sync::Mutex<std::collections::BTreeSet<[u8; 32]>>>,
 }
 
 /// Bounds on the per-device pending queues. Production uses
@@ -160,19 +185,32 @@ impl Default for QueueBounds {
     }
 }
 
-/// One retained document as it is on disk.
-pub struct RetainedChannel {
-    /// Digest of the document route.
-    pub channel: [u8; 32],
-    /// The encoded checkpoint envelope, if one was retained.
-    pub checkpoint: Option<Vec<u8>>,
-    /// The encoded tail envelopes with their sequences, oldest first.
-    pub tail: Vec<(u64, Vec<u8>)>,
+/// Bound on one publisher's retained history for one channel. Retained
+/// records are never dropped to meet it — any of them may carry a change a
+/// later one depends on — so reaching it asks the publisher for a checkpoint
+/// that declares what it holds, which then retires those records.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RetentionBounds {
+    /// Records after which the publisher is asked for a checkpoint.
+    pub soft_entries: u64,
+    /// Bytes after which the publisher is asked for a checkpoint.
+    pub soft_bytes: u64,
 }
 
-/// The sequence a retained tail file is named after.
-fn tail_seq(path: &Path) -> Option<u64> {
-    u64::from_str_radix(path.file_stem()?.to_str()?, 16).ok()
+impl RetentionBounds {
+    /// Default records per publisher and channel.
+    pub const DEFAULT_SOFT_ENTRIES: u64 = 16_384;
+    /// Default bytes per publisher and channel.
+    pub const DEFAULT_SOFT_BYTES: u64 = 256 * 1024 * 1024;
+}
+
+impl Default for RetentionBounds {
+    fn default() -> Self {
+        Self {
+            soft_entries: Self::DEFAULT_SOFT_ENTRIES,
+            soft_bytes: Self::DEFAULT_SOFT_BYTES,
+        }
+    }
 }
 
 /// Running totals of one bounded queue directory.
@@ -183,21 +221,98 @@ struct QueueUsage {
 }
 
 impl QueueUsage {
+    /// Totals of a queue's entries. A compacted document entry (see
+    /// [`WorkspaceStore::compact_pending`]) counts as an entry but not as
+    /// bytes.
     fn of(entries: &[(PathBuf, u64)]) -> Self {
         Self {
             entries: entries.len() as u64,
-            bytes: entries.iter().map(|(_, len)| *len).sum(),
+            bytes: entries
+                .iter()
+                .filter(|(path, _)| !is_document_entry(path))
+                .map(|(_, len)| *len)
+                .sum(),
         }
     }
 }
 
-/// Identity of the membership file as last loaded: every rewrite is an
-/// atomic rename, so a new inode (or size, or mtime) means new contents.
+/// Whether a pending entry is a compacted whole document: named by its
+/// sequence alone, where an enqueued delta also carries its digest.
+fn is_document_entry(path: &Path) -> bool {
+    path.file_stem()
+        .and_then(|stem| stem.to_str())
+        .is_some_and(|stem| stem.len() == 16 && stem.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
+/// Identity of the membership files (the device list and the governed-access
+/// projection) as last loaded: every rewrite is an atomic rename, so a new
+/// inode (or size, or mtime) of either means new contents.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MembershipStamp {
+    membership: Option<FileStamp>,
+    governed: Option<FileStamp>,
+}
+
+/// Identity of one file's current contents.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FileStamp {
     inode: u64,
     len: u64,
     modified: Option<std::time::SystemTime>,
+}
+
+impl FileStamp {
+    fn of(path: &Path) -> Result<Option<Self>, StoreError> {
+        match fs::metadata(path) {
+            Ok(metadata) => {
+                #[cfg(unix)]
+                let inode = std::os::unix::fs::MetadataExt::ino(&metadata);
+                #[cfg(not(unix))]
+                let inode = 0;
+                Ok(Some(Self {
+                    inode,
+                    len: metadata.len(),
+                    modified: metadata.modified().ok(),
+                }))
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    }
+}
+
+/// One server-local projection of the native room governor. Both sets share a
+/// single atomic file so a crash cannot pair new roots with old devices (or the
+/// reverse).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct GovernedAccessRecord {
+    pub(crate) member_devices: Vec<[u8; 32]>,
+    pub(crate) member_user_roots: Vec<[u8; 32]>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GovernedAccessFile {
+    version: u8,
+    member_devices: Vec<String>,
+    member_user_roots: Vec<String>,
+}
+
+fn decode_public_keys(kind: &str, values: Vec<String>) -> Result<Vec<[u8; 32]>, StoreError> {
+    values
+        .into_iter()
+        .map(|value| {
+            let bytes = hex::decode(&value).map_err(|error| {
+                StoreError::Json(format!("invalid governed {kind} key {value:?}: {error}"))
+            })?;
+            bytes.try_into().map_err(|bytes: Vec<u8>| {
+                StoreError::Json(format!(
+                    "governed {kind} key must be 32 bytes, got {}",
+                    bytes.len()
+                ))
+            })
+        })
+        .collect()
 }
 
 /// One durable queue entry loaded for delivery but not yet acknowledged.
@@ -221,24 +336,38 @@ impl WorkspaceStore {
     /// can't be created.
     pub fn open(state_root: &Path, workspace_id: u64, pinned: bool) -> Result<Self, StoreError> {
         let root = state_root.join("workspaces").join(workspace_id.to_string());
+        #[cfg(test)]
+        test_barrier::pause(&root, "open");
         fs::create_dir_all(&root)?;
         fs::create_dir_all(root.join("pending"))?;
-        fs::create_dir_all(root.join(RETAINED_DIR).join("checkpoints"))?;
-        fs::create_dir_all(root.join(RETAINED_DIR).join("tails"))?;
+        fs::create_dir_all(root.join(RETAINED_DIR))?;
         fs::create_dir_all(root.join(COMPUTE_DIR))?;
         fs::create_dir_all(root.join(COMPUTE_PENDING_DIR))?;
         Ok(Self {
             root,
             workspace_id,
             pinned,
-            usage: std::sync::Mutex::new(std::collections::HashMap::new()),
+            shell_authority: None,
+            usage: std::sync::Arc::default(),
             bounds: QueueBounds::default(),
+            retention: RetentionBounds::default(),
+            checkpoint_wants: std::sync::Arc::default(),
         })
     }
 
     /// Replace the queue bounds (see [`QueueBounds`]).
     pub fn set_bounds(&mut self, bounds: QueueBounds) {
         self.bounds = bounds;
+    }
+
+    /// Replace the retained-history bounds (see [`RetentionBounds`]).
+    pub fn set_retention_bounds(&mut self, bounds: RetentionBounds) {
+        self.retention = bounds;
+    }
+
+    /// The retained-history bounds (see [`RetentionBounds`]).
+    pub fn retention_bounds(&self) -> RetentionBounds {
+        self.retention
     }
 
     /// Root directory for this workspace's state.
@@ -249,6 +378,66 @@ impl WorkspaceStore {
     /// Workspace id.
     pub fn workspace_id(&self) -> u64 {
         self.workspace_id
+    }
+
+    /// Install a locally supplied shell pin before handing this store to the
+    /// ordered persistence owner. Persisted bytes are a conflict fence, never an
+    /// independent source of trust; `open` remains unbound until this call.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StoreError` if the inputs violate this operation's bounds or invariants.
+    pub fn bind_shell_authority(
+        &mut self,
+        authority: tilo_peer_state::retained_proof::RetentionAuthority,
+    ) -> Result<(), StoreError> {
+        #[derive(Serialize, Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Binding {
+            version: u32,
+            authority: tilo_peer_state::retained_proof::RetentionAuthority,
+        }
+        let invalid = |message| StoreError::Io(io::Error::new(io::ErrorKind::InvalidData, message));
+        if !crate::room_workspace_id_matches(authority.room(), self.workspace_id) {
+            return Err(invalid("shell authority room/workspace mismatch"));
+        }
+        if self
+            .shell_authority
+            .as_ref()
+            .is_some_and(|prior| prior != &authority)
+        {
+            return Err(invalid("conflicting local shell authority"));
+        }
+        let path = self.root.join("shell-authority-v1.json");
+        match fs::read(&path) {
+            Ok(bytes) => {
+                let prior: Binding =
+                    serde_json::from_slice(&bytes).map_err(|e| StoreError::Json(e.to_string()))?;
+                if prior.version != 1 || prior.authority != authority {
+                    return Err(invalid("conflicting persisted shell authority"));
+                }
+                // Re-establish the durability barrier even after an interrupted
+                // previous attempt left the exact file visible.
+                fs::File::open(&path)?.sync_all()?;
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                let bytes = serde_json::to_vec(&Binding {
+                    version: 1,
+                    authority: authority.clone(),
+                })
+                .map_err(|e| StoreError::Json(e.to_string()))?;
+                atomic_file::write(&path, &bytes)?;
+            }
+            Err(error) => return Err(error.into()),
+        }
+        fs::File::open(&self.root)?.sync_all()?;
+        self.shell_authority = Some(authority);
+        Ok(())
+    }
+
+    /// Exact locally supplied authority, absent for generic workspace stores.
+    pub fn shell_authority(&self) -> Option<&tilo_peer_state::retained_proof::RetentionAuthority> {
+        self.shell_authority.as_ref()
     }
 
     /// Whether this workspace is pinned (holds a persistent CRDT
@@ -293,12 +482,18 @@ impl WorkspaceStore {
     /// to decode as JSON, or contains a device key that isn't valid
     /// hex or isn't exactly 32 bytes.
     pub fn load_membership(&self) -> Result<Vec<[u8; 32]>, StoreError> {
+        if let Some(access) = self.load_governed_access()? {
+            return Ok(access.member_devices);
+        }
         let path = self.root.join(MEMBERSHIP_FILE);
         if !path.exists() {
             return Ok(Vec::new());
         }
-        let encoded: Vec<String> = serde_json::from_slice(&fs::read(path)?)
-            .map_err(|error| StoreError::Json(error.to_string()))?;
+        let bytes = fs::read(path)?;
+        #[cfg(test)]
+        test_barrier::pause(&self.root, "membership-read");
+        let encoded: Vec<String> =
+            serde_json::from_slice(&bytes).map_err(|error| StoreError::Json(error.to_string()))?;
         encoded
             .into_iter()
             .map(|value| {
@@ -315,29 +510,20 @@ impl WorkspaceStore {
             .collect()
     }
 
-    /// Identity of the membership file's current contents, `None` when it
-    /// does not exist. Lets a caller that polls membership skip re-reading
-    /// and re-parsing an unchanged file.
+    /// Identity of the current contents of the files
+    /// [`Self::load_membership`] reads, `None` when neither exists. Lets a
+    /// caller that polls membership skip re-reading and re-parsing unchanged
+    /// files; take it before the read it vouches for.
     ///
     /// # Errors
     ///
-    /// Returns an error if the file exists but its metadata can't be read.
+    /// Returns an error if a file exists but its metadata can't be read.
     pub fn membership_stamp(&self) -> Result<Option<MembershipStamp>, StoreError> {
-        match fs::metadata(self.root.join(MEMBERSHIP_FILE)) {
-            Ok(metadata) => {
-                #[cfg(unix)]
-                let inode = std::os::unix::fs::MetadataExt::ino(&metadata);
-                #[cfg(not(unix))]
-                let inode = 0;
-                Ok(Some(MembershipStamp {
-                    inode,
-                    len: metadata.len(),
-                    modified: metadata.modified().ok(),
-                }))
-            }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(error.into()),
-        }
+        let stamp = MembershipStamp {
+            membership: FileStamp::of(&self.root.join(MEMBERSHIP_FILE))?,
+            governed: FileStamp::of(&self.root.join(GOVERNED_ACCESS_FILE))?,
+        };
+        Ok((stamp.membership.is_some() || stamp.governed.is_some()).then_some(stamp))
     }
 
     /// Atomically replace the durable membership set.
@@ -347,10 +533,66 @@ impl WorkspaceStore {
     /// Returns an error if `devices` can't be JSON-encoded or the
     /// atomic write fails.
     pub fn save_membership(&self, devices: &[[u8; 32]]) -> Result<(), StoreError> {
+        if let Some(mut access) = self.load_governed_access()? {
+            access.member_devices = devices.to_vec();
+            return self.save_governed_access(&access);
+        }
         let encoded: Vec<_> = devices.iter().map(hex::encode).collect();
         let bytes = serde_json::to_vec_pretty(&encoded)
             .map_err(|error| StoreError::Json(error.to_string()))?;
+        #[cfg(test)]
+        test_barrier::pause(&self.root, "membership-write");
         atomic_file::write(&self.root.join(MEMBERSHIP_FILE), &bytes)?;
+        Ok(())
+    }
+
+    /// Load the atomic native-governance projection. Absence is an empty
+    /// handshake-root projection; device-only membership remains readable through
+    /// [`Self::load_membership`] but can never admit another user root.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for unreadable, malformed, wrong-version, or invalid
+    /// key data. Callers fail closed rather than partially applying it.
+    pub(crate) fn load_governed_access(&self) -> Result<Option<GovernedAccessRecord>, StoreError> {
+        let path = self.root.join(GOVERNED_ACCESS_FILE);
+        let bytes = match fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        let encoded: GovernedAccessFile =
+            serde_json::from_slice(&bytes).map_err(|error| StoreError::Json(error.to_string()))?;
+        if encoded.version != 1 {
+            return Err(StoreError::Json(format!(
+                "unsupported governed access version {}",
+                encoded.version
+            )));
+        }
+        Ok(Some(GovernedAccessRecord {
+            member_devices: decode_public_keys("device", encoded.member_devices)?,
+            member_user_roots: decode_public_keys("user root", encoded.member_user_roots)?,
+        }))
+    }
+
+    /// Atomically replace exact room devices and global-handshake roots in one
+    /// crash-safe record.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if encoding or atomic replacement fails.
+    pub(crate) fn save_governed_access(
+        &self,
+        access: &GovernedAccessRecord,
+    ) -> Result<(), StoreError> {
+        let encoded = GovernedAccessFile {
+            version: 1,
+            member_devices: access.member_devices.iter().map(hex::encode).collect(),
+            member_user_roots: access.member_user_roots.iter().map(hex::encode).collect(),
+        };
+        let bytes = serde_json::to_vec_pretty(&encoded)
+            .map_err(|error| StoreError::Json(error.to_string()))?;
+        atomic_file::write(&self.root.join(GOVERNED_ACCESS_FILE), &bytes)?;
         Ok(())
     }
 
@@ -533,13 +775,14 @@ impl WorkspaceStore {
     }
 
     /// Enqueue a delta for later delivery to `device_pubkey`. Each
-    /// enqueue produces a new file `<seq>.delta`; the caller supplies a
-    /// strictly increasing `seq` per workspace, so filename order is
-    /// delivery order and no two deltas share a file.
+    /// enqueue produces a new file `<seq>-<digest>.delta`; the caller
+    /// supplies a strictly increasing `seq` per workspace, so filename order
+    /// is delivery order and no two deltas share a file.
     ///
-    /// Returns whether the queue is now over [`MAX_PENDING_ENTRIES_PER_DEVICE`]
-    /// or [`MAX_PENDING_BYTES_PER_DEVICE`]; the caller then compacts it with
-    /// [`Self::compact_pending`]. Nothing is dropped here.
+    /// Nothing is dropped here: once [`Self::pending_over_bounds`] reports
+    /// the queue over [`MAX_PENDING_ENTRIES_PER_DEVICE`] or
+    /// [`MAX_PENDING_BYTES_PER_DEVICE`], the caller compacts it with
+    /// [`Self::compact_pending`].
     ///
     /// # Errors
     ///
@@ -550,36 +793,86 @@ impl WorkspaceStore {
         device_pubkey: &[u8; 32],
         seq: u64,
         bytes: &[u8],
-    ) -> Result<bool, StoreError> {
+    ) -> Result<PathBuf, StoreError> {
+        #[cfg(test)]
+        test_barrier::pause(&self.root, "pending-persist");
         let pending_dir = self.pending_dir_for(device_pubkey);
         fs::create_dir_all(&pending_dir)?;
-        let filename = format!("{seq:016x}.delta");
+        let filename = format!("{seq:016x}-{}.delta", blake3::hash(bytes).to_hex());
         let path = pending_dir.join(filename);
         // A crash mid-write must not leave a truncated delta for the peer to
         // receive. The temp file is process-scoped, so two writers filling the
         // same peer's queue cannot publish each other's half-written bytes —
         // the fixed `.partial` name this used to use could.
         atomic_file::write(&path, bytes)?;
+        // A live fanout may now rely on this exact fallback. Require directory
+        // durability instead of treating the atomic helper's best effort as a
+        // successful publication barrier.
+        for directory in pending_dir.ancestors().take(3) {
+            fs::File::open(directory)?.sync_all()?;
+        }
         let mut usage = self
             .usage
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let totals = if let Some(totals) = usage.get_mut(&pending_dir) {
+        if let Some(totals) = usage.get_mut(&pending_dir) {
             totals.entries = totals.entries.saturating_add(1);
             totals.bytes = totals.bytes.saturating_add(bytes.len() as u64);
-            *totals
         } else {
-            // First write since start (or since an external removal): the
-            // scan already includes the entry just written.
+            // First write since start: the scan already includes the entry
+            // just written.
             let totals = QueueUsage::of(&sorted_deltas(&pending_dir)?);
             usage.insert(pending_dir, totals);
-            totals
-        };
+        }
         drop(usage);
-        Ok(
-            totals.entries > self.bounds.pending_entries
-                || totals.bytes > self.bounds.pending_bytes,
+        Ok(path)
+    }
+
+    /// Record that `device` should be asked for a checkpoint.
+    pub fn want_checkpoint(&self, device: [u8; 32]) {
+        self.checkpoint_wants
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(device);
+    }
+
+    /// Every device recorded by [`Self::want_checkpoint`] since the last
+    /// call, forgetting them.
+    pub fn take_checkpoint_wants(&self) -> Vec<[u8; 32]> {
+        std::mem::take(
+            &mut *self
+                .checkpoint_wants
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
         )
+        .into_iter()
+        .collect()
+    }
+
+    /// Whether `device_pubkey`'s pending queue is over its bounds (see
+    /// [`QueueBounds`]). A running total that says so is confirmed against
+    /// the directory first, since delivered entries leave it outside this
+    /// store.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the queue directory can't be listed.
+    pub fn pending_over_bounds(&self, device_pubkey: &[u8; 32]) -> Result<bool, StoreError> {
+        let dir = self.pending_dir_for(device_pubkey);
+        let over = |totals: QueueUsage| {
+            totals.entries > self.bounds.pending_entries || totals.bytes > self.bounds.pending_bytes
+        };
+        let mut usage = self
+            .usage
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if usage.get(&dir).is_some_and(|totals| !over(*totals)) {
+            return Ok(false);
+        }
+        let totals = QueueUsage::of(&sorted_deltas(&dir)?);
+        usage.insert(dir, totals);
+        drop(usage);
+        Ok(over(totals))
     }
 
     /// Bring an over-bound pending queue back under its bounds.
@@ -588,13 +881,15 @@ impl WorkspaceStore {
     /// whole document — every queued Automerge change is replaced by that one
     /// entry, written as `<seq>.delta`. It holds every change it replaces, so
     /// the device receives no change whose dependencies were dropped. That
-    /// entry does not count against the bounds, or a document larger than
-    /// them would be rewritten on every later enqueue.
+    /// entry counts as one entry but not as bytes: the entry bound holds
+    /// exactly, while a document larger than the byte bound is not rewritten
+    /// on every later enqueue.
     ///
     /// Without one (an unpinned workspace holds no authoritative state to
     /// replace history with) the oldest entries are dropped until the queue
     /// is under three quarters of both bounds; the same happens to queued
-    /// entries that are not Automerge changes.
+    /// entries that are not Automerge changes. Continuity entries, which
+    /// carry their own delivery receipts, are never replaced or dropped.
     ///
     /// # Errors
     ///
@@ -606,8 +901,11 @@ impl WorkspaceStore {
         document: Option<(u64, &[u8])>,
     ) -> Result<(), StoreError> {
         let dir = self.pending_dir_for(device_pubkey);
-        let mut entries = sorted_deltas(&dir)?;
+        let (continuity, mut entries): (Vec<_>, Vec<_>) = sorted_deltas(&dir)?
+            .into_iter()
+            .partition(|(path, _)| is_continuity_entry(path));
         let mut replaced = 0u64;
+        let mut documents = 0u64;
         if let Some((seq, document)) = document {
             let mut kept = Vec::with_capacity(entries.len());
             for (path, len) in entries {
@@ -619,9 +917,16 @@ impl WorkspaceStore {
                 }
             }
             atomic_file::write(&dir.join(format!("{seq:016x}.delta")), document)?;
+            documents = 1;
             entries = kept;
         }
+        let held = QueueUsage::of(&continuity);
         let mut remaining = QueueUsage::of(&entries);
+        remaining.entries = remaining
+            .entries
+            .saturating_add(held.entries)
+            .saturating_add(documents);
+        remaining.bytes = remaining.bytes.saturating_add(held.bytes);
         let max_entries = self.bounds.pending_entries;
         let max_bytes = self.bounds.pending_bytes;
         let target_entries = max_entries.saturating_sub(max_entries / 4);
@@ -650,6 +955,29 @@ impl WorkspaceStore {
         Ok(())
     }
 
+    pub(crate) fn enqueue_continuity_pending(
+        &self,
+        device: &[u8; 32],
+        bytes: &[u8],
+        receipt: &continuity::Receipt,
+    ) -> Result<PathBuf, StoreError> {
+        let directory = self.pending_dir_for(device);
+        fs::create_dir_all(&directory)?;
+        let path = directory.join(format!(
+            "{:016x}-continuity-{}.delta",
+            receipt.sequence,
+            hex::encode(rand::random::<[u8; 16]>())
+        ));
+        continuity::write(self, &path, bytes, receipt)?;
+        atomic_file::write(&path, bytes)?;
+        for directory in directory.ancestors().take(3) {
+            fs::File::open(directory)?.sync_all()?;
+        }
+        Ok(path)
+    }
+
+    /// Eager helper; bounded storage paths must use replay cursors, not this
+    /// loader.
     /// Load the pending queue in delivery order without acknowledging it.
     /// The peer task removes entries only after their replay is written.
     pub(crate) fn load_pending(
@@ -721,118 +1049,40 @@ impl WorkspaceStore {
         Ok(u32::try_from(n).unwrap_or(u32::MAX))
     }
 
-    /// Replace the durable checkpoint for `channel` and discard the tail that
-    /// preceded it. `bytes` is a complete encoded relay envelope.
+    /// Commit a checkpoint for the envelope's authenticated author/channel.
+    /// Raw Automerge causal containment, or what the checkpoint itself names
+    /// as covered ([`crate::coedit::Coverage`]), permits atomic replacement
+    /// of covered history within that lineage; nothing else is inferred, so
+    /// opaque checkpoints naming nothing are shared in receipt order.
+    /// `bytes` is a full relay frame.
     ///
     /// # Errors
-    ///
-    /// Returns an error if the atomic write fails, the old tail
-    /// directory can't be removed, or the fresh tail directory can't
-    /// be created.
+    /// Returns an error on invalid metadata or failed durable storage.
     pub fn retain_checkpoint(&self, channel: &[u8; 32], bytes: &[u8]) -> Result<(), StoreError> {
-        atomic_file::write(
-            &self
-                .root
-                .join(RETAINED_DIR)
-                .join("checkpoints")
-                .join(hex::encode(channel)),
-            bytes,
-        )?;
-        Ok(())
+        #[cfg(test)]
+        test_barrier::pause(&self.root, "state-persist");
+        self.retain_shared(channel, None, bytes).map(|_| ())
     }
 
-    /// Append one encoded relay envelope to the retained tail for `channel`.
-    /// The tail is never trimmed here: only [`Self::trim_tail`] removes
-    /// entries, and only once a checkpoint covers them.
+    /// Durably append a tail to the envelope's authenticated author/channel.
+    /// A tail entry leaves replay only once a checkpoint of the same lineage
+    /// covers it.
     ///
     /// # Errors
-    ///
-    /// Returns an error if the tail directory can't be created or the
-    /// atomic write fails.
+    /// Returns an error on invalid metadata or failed durable storage.
     pub fn retain_delta(
         &self,
         channel: &[u8; 32],
         seq: u64,
         bytes: &[u8],
     ) -> Result<(), StoreError> {
-        let tail = self.tail_dir(channel);
-        fs::create_dir_all(&tail)?;
-        atomic_file::write(&tail.join(format!("{seq:016x}.delta")), bytes)?;
-        Ok(())
+        self.retain_shared(channel, Some(seq), bytes).map(|_| ())
     }
 
-    /// Remove the front of `channel`'s retained tail: every entry whose
-    /// sequence is at most `through`. The caller guarantees the channel's
-    /// checkpoint covers them, so no later entry loses a dependency.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the tail can't be listed or an entry removed.
-    pub fn trim_tail(&self, channel: &[u8; 32], through: u64) -> Result<(), StoreError> {
-        for (path, _) in sorted_deltas(&self.tail_dir(channel))? {
-            if tail_seq(&path).is_none_or(|seq| seq > through) {
-                break;
-            }
-            match fs::remove_file(&path) {
-                Ok(()) => {}
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error.into()),
-            }
-        }
-        Ok(())
-    }
-
-    /// Every retained channel with its checkpoint (if any) and its tail
-    /// entries in order, as `(sequence, bytes)`. Used to rebuild the
-    /// relay's tail accounting after a restart.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if a retained directory or file can't be read.
-    pub fn load_retained_channels(&self) -> Result<Vec<RetainedChannel>, StoreError> {
-        let retained = self.root.join(RETAINED_DIR);
-        let mut channels = std::collections::BTreeSet::new();
-        for dir in [retained.join("checkpoints"), retained.join("tails")] {
-            for entry in fs::read_dir(dir)?.flatten() {
-                if let Some(channel) = hex::decode(entry.file_name().to_string_lossy().as_bytes())
-                    .ok()
-                    .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
-                {
-                    channels.insert(channel);
-                }
-            }
-        }
-        channels
-            .into_iter()
-            .map(|channel| {
-                let checkpoint_path = retained.join("checkpoints").join(hex::encode(channel));
-                let checkpoint = if checkpoint_path.is_file() {
-                    Some(fs::read(checkpoint_path)?)
-                } else {
-                    None
-                };
-                let tail = sorted_deltas(&self.tail_dir(&channel))?
-                    .into_iter()
-                    .filter_map(|(path, _)| Some((tail_seq(&path)?, path)))
-                    .map(|(seq, path)| Ok((seq, fs::read(path)?)))
-                    .collect::<Result<_, StoreError>>()?;
-                Ok(RetainedChannel {
-                    channel,
-                    checkpoint,
-                    tail,
-                })
-            })
-            .collect()
-    }
-
-    fn tail_dir(&self, channel: &[u8; 32]) -> PathBuf {
-        self.root
-            .join(RETAINED_DIR)
-            .join("tails")
-            .join(hex::encode(channel))
-    }
-
-    /// Load every retained checkpoint followed by its post-checkpoint tail.
+    /// Eager compatibility helper for maintenance callers.
+    /// New bounded replay and retention paths never call this method.
+    /// Load retained replay coverage: proven raw baselines before uncovered
+    /// tails, and opaque checkpoint histories in original receipt order.
     /// Documents are independent, so channel ordering is irrelevant; ordering
     /// within a channel is stable.
     ///
@@ -841,54 +1091,22 @@ impl WorkspaceStore {
     /// Returns an error if a channel directory can't be listed, or a
     /// checkpoint / tail file can't be read.
     pub fn load_retained(&self) -> Result<Vec<Vec<u8>>, StoreError> {
-        let retained = self.root.join(RETAINED_DIR);
-        let checkpoint_dir = retained.join("checkpoints");
-        let tails_dir = retained.join("tails");
-        let mut channels = std::collections::BTreeSet::new();
-        for dir in [&checkpoint_dir, &tails_dir] {
-            for entry in fs::read_dir(dir)?.flatten() {
-                channels.insert(entry.file_name());
-            }
-        }
-        let mut out = Vec::new();
-        for channel in channels {
-            let checkpoint = checkpoint_dir.join(&channel);
-            if checkpoint.is_file() {
-                out.push(fs::read(checkpoint)?);
-            }
-            let tail = tails_dir.join(&channel);
-            if tail.is_dir() {
-                let mut entries: Vec<_> = fs::read_dir(tail)?.flatten().collect();
-                entries.sort_by_key(std::fs::DirEntry::file_name);
-                for entry in entries {
-                    if entry.path().is_file() {
-                        out.push(fs::read(entry.path())?);
-                    }
-                }
-            }
-        }
+        let mut out = self.load_shared()?;
+        let mut seen = std::collections::HashSet::new();
+        out.retain(|bytes| seen.insert(bytes.clone()));
         Ok(out)
     }
 
-    /// One channel's retained envelopes in replay order: its checkpoint, then
-    /// its tail.
+    /// One channel's retained envelopes in replay order: every publisher's
+    /// checkpoint, each followed by its tail. Read-only.
     ///
     /// # Errors
     ///
-    /// Returns an error if the checkpoint or a tail file can't be read.
+    /// Returns an error if a retained generation or record can't be read.
     pub fn load_retained_channel(&self, channel: &[u8; 32]) -> Result<Vec<Vec<u8>>, StoreError> {
-        let mut out = Vec::new();
-        let checkpoint = self
-            .root
-            .join(RETAINED_DIR)
-            .join("checkpoints")
-            .join(hex::encode(channel));
-        if checkpoint.is_file() {
-            out.push(fs::read(checkpoint)?);
-        }
-        for (path, _) in sorted_deltas(&self.tail_dir(channel))? {
-            out.push(fs::read(path)?);
-        }
+        let mut out = self.load_shared_channel(channel)?;
+        let mut seen = std::collections::HashSet::new();
+        out.retain(|bytes| seen.insert(bytes.clone()));
         Ok(out)
     }
 
@@ -897,8 +1115,6 @@ impl WorkspaceStore {
     }
 }
 
-/// The `.delta` entries of `dir`, oldest first, with their sizes. A missing
-/// directory is empty.
 fn remove_if_present(path: &Path) -> Result<(), StoreError> {
     match fs::remove_file(path) {
         Ok(()) => Ok(()),
@@ -919,6 +1135,14 @@ fn is_automerge_delta(frame: &[u8]) -> bool {
     )
 }
 
+/// Whether a pending entry is a continuity delivery with its own receipt.
+fn is_continuity_entry(path: &Path) -> bool {
+    path.file_name()
+        .is_some_and(|name| name.to_string_lossy().contains("-continuity-"))
+}
+
+/// The `.delta` entries of `dir`, oldest first, with their sizes. A missing
+/// directory is empty.
 fn sorted_deltas(dir: &Path) -> Result<Vec<(PathBuf, u64)>, StoreError> {
     let read = match fs::read_dir(dir) {
         Ok(read) => read,
@@ -1070,40 +1294,29 @@ mod tests {
         }
     }
 
+    /// A channel replay reads every publisher's retained state for that
+    /// channel, checkpoint first, and nothing of any other channel. (How a
+    /// tail is trimmed is `retained::tests`.)
     #[test]
-    fn a_retained_tail_is_only_ever_trimmed_from_its_front() {
+    fn a_channel_replay_reads_every_publisher_of_only_its_channel() {
         let tmp = tempfile::tempdir().unwrap();
         let store = WorkspaceStore::open(tmp.path(), 7, true).unwrap();
-        let channel = [9u8; 32];
-        store.retain_checkpoint(&channel, b"checkpoint-1").unwrap();
-        for seq in 1..=5u64 {
-            store
-                .retain_delta(&channel, seq, format!("tail-{seq}").as_bytes())
-                .unwrap();
-        }
-        // A new checkpoint alone does not discard the tail.
-        store.retain_checkpoint(&channel, b"checkpoint-2").unwrap();
-        assert_eq!(store.load_retained().unwrap().len(), 6);
-        store.trim_tail(&channel, 3).unwrap();
+        let (own_checkpoint, own_tail) = (retained(1, 9, true, 1), retained(1, 9, false, 2));
+        let other_publisher = retained(2, 9, true, 3);
+        let other_channel = retained(1, 8, true, 4);
+        store.retain_checkpoint(&[9; 32], &own_checkpoint).unwrap();
+        store.retain_delta(&[9; 32], 1, &own_tail).unwrap();
+        store.retain_checkpoint(&[9; 32], &other_publisher).unwrap();
+        store.retain_checkpoint(&[8; 32], &other_channel).unwrap();
         assert_eq!(
-            store.load_retained().unwrap(),
-            vec![
-                b"checkpoint-2".to_vec(),
-                b"tail-4".to_vec(),
-                b"tail-5".to_vec()
-            ]
-        );
-        let channels = store.load_retained_channels().unwrap();
-        assert_eq!(channels.len(), 1);
-        assert_eq!(channels[0].channel, channel);
-        assert_eq!(
-            channels[0].checkpoint.as_deref(),
-            Some(b"checkpoint-2".as_slice())
+            store.load_retained_channel(&[9; 32]).unwrap(),
+            vec![own_checkpoint, own_tail, other_publisher]
         );
         assert_eq!(
-            channels[0].tail,
-            vec![(4, b"tail-4".to_vec()), (5, b"tail-5".to_vec())]
+            store.load_retained_channel(&[8; 32]).unwrap(),
+            vec![other_channel]
         );
+        assert!(store.load_retained_channel(&[7; 32]).unwrap().is_empty());
     }
 
     fn small_bounds() -> QueueBounds {
@@ -1115,7 +1328,8 @@ mod tests {
 
     /// Enqueue as an unpinned workspace does: compact by dropping the oldest.
     fn enqueue_bounded(store: &WorkspaceStore, peer: &[u8; 32], seq: u64, bytes: &[u8]) {
-        if store.enqueue_pending(peer, seq, bytes).unwrap() {
+        store.enqueue_pending(peer, seq, bytes).unwrap();
+        if store.pending_over_bounds(peer).unwrap() {
             store.compact_pending(peer, None).unwrap();
         }
     }
@@ -1278,5 +1492,87 @@ mod tests {
             .permissions()
             .mode();
         assert_eq!(mode & 0o777, 0o600);
+    }
+
+    #[test]
+    fn governed_access_is_one_authoritative_device_and_root_record() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = WorkspaceStore::open(tmp.path(), 7, true).unwrap();
+        store.save_membership(&[[9; 32]]).unwrap();
+        store
+            .save_governed_access(&GovernedAccessRecord {
+                member_devices: vec![[1; 32]],
+                member_user_roots: vec![[2; 32]],
+            })
+            .unwrap();
+
+        assert_eq!(store.load_membership().unwrap(), vec![[1; 32]]);
+        assert_eq!(
+            store.load_governed_access().unwrap().unwrap(),
+            GovernedAccessRecord {
+                member_devices: vec![[1; 32]],
+                member_user_roots: vec![[2; 32]],
+            }
+        );
+        store.save_membership(&[[3; 32]]).unwrap();
+        assert_eq!(
+            store.load_governed_access().unwrap().unwrap(),
+            GovernedAccessRecord {
+                member_devices: vec![[3; 32]],
+                member_user_roots: vec![[2; 32]],
+            },
+            "device-only membership writers must preserve the governed root half"
+        );
+        assert!(store.root().join(GOVERNED_ACCESS_FILE).exists());
+    }
+
+    fn retained(author: u8, channel: u8, checkpoint: bool, value: u8) -> Vec<u8> {
+        let payload = if checkpoint {
+            crate::coedit::CoeditPayload::checkpoint_of([channel; 32], vec![value])
+        } else {
+            crate::coedit::CoeditPayload::retained_of([channel; 32], vec![value])
+        };
+        crate::transport::encode(&crate::transport::Envelope::Delta {
+            workspace_id: 7,
+            author_device_public_key: [author; 32],
+            authored_at_ns: 1,
+            delta: payload.encode().unwrap(),
+            signature: [0; 64],
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn retained_replacement_preserves_other_publishers_channels_and_unproven_history() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let a1 = retained(1, 9, true, 1);
+        let a2 = retained(1, 9, true, 2);
+        let b = retained(2, 9, true, 1);
+        let c = retained(1, 8, true, 1);
+        store.retain_checkpoint(&[9; 32], &a1).unwrap();
+        store
+            .retain_delta(&[9; 32], 10, &retained(1, 9, false, 5))
+            .unwrap();
+        store.retain_checkpoint(&[9; 32], &b).unwrap();
+        store.retain_checkpoint(&[8; 32], &c).unwrap();
+        store.retain_checkpoint(&[9; 32], &a2).unwrap();
+        let actual = store.load_retained().unwrap();
+        assert_eq!(actual.len(), 5);
+        for expected in [a1, a2, b, c, retained(1, 9, false, 5)] {
+            assert!(actual.contains(&expected));
+        }
+    }
+
+    #[test]
+    fn retry_of_current_checkpoint_does_not_erase_later_tail() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let cp = retained(1, 9, true, 1);
+        let tail = retained(1, 9, false, 1);
+        store.retain_checkpoint(&[9; 32], &cp).unwrap();
+        store.retain_delta(&[9; 32], 10, &tail).unwrap();
+        store.retain_checkpoint(&[9; 32], &cp).unwrap();
+        assert_eq!(store.load_retained().unwrap(), vec![cp, tail]);
     }
 }

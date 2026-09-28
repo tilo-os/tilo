@@ -21,7 +21,6 @@
 use std::io::Read as _;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
 
 use account_custody::icloud::WebICloud;
 use account_custody::{Custodian, OAuthCloud, Registration};
@@ -35,8 +34,6 @@ use settings::panes::accounts::{
 };
 use tilo_oauth::fake::FakeAuthorizationServer;
 use ui::widget::Widget as _;
-
-const STEP: Duration = Duration::from_secs(30);
 
 /// Plays the system browser, following redirects back to the loopback
 /// listener.
@@ -231,7 +228,10 @@ fn sign_in(
         pane.set_sign_in_fields_for_test("", "", apple_id, password);
     }
     command(pane, commands, doc, AccountViewCommand::Submit);
-    assert!(pane.finish_sign_in_step_for_test(STEP));
+    assert!(
+        pane.finish_sign_in_step_for_test(tilo_test_env::hang_bound()),
+        "the sign-in step never reported back within the hang bound"
+    );
     if let Some((_, _, code)) = case.icloud {
         assert!(
             pane.sign_in_awaiting_code_for_test(),
@@ -240,7 +240,10 @@ fn sign_in(
         );
         pane.set_sign_in_code_for_test(code);
         command(pane, commands, doc, AccountViewCommand::Submit);
-        assert!(pane.finish_sign_in_step_for_test(STEP));
+        assert!(
+            pane.finish_sign_in_step_for_test(tilo_test_env::hang_bound()),
+            "the sign-in step never reported back within the hang bound"
+        );
     }
     assert!(
         !pane.sign_in_open(),
@@ -465,7 +468,10 @@ fn a_dropbox_code_can_be_pasted_when_every_registered_port_is_taken() {
     let code = tilo_oauth::fake::browse(&url).unwrap();
     pane.set_sign_in_code_for_test(&code);
     command(&mut pane, &commands, &mut doc, AccountViewCommand::Submit);
-    assert!(pane.finish_sign_in_step_for_test(STEP));
+    assert!(
+        pane.finish_sign_in_step_for_test(tilo_test_env::hang_bound()),
+        "the sign-in step never reported back within the hang bound"
+    );
     assert!(
         !pane.sign_in_open(),
         "{:?}",

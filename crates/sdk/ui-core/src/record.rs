@@ -38,6 +38,9 @@
 //! from the first frame.
 
 use std::collections::{BTreeMap, HashMap};
+
+use crate::portable_storage::PortableStorage;
+mod portable;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use tilo_automerge::ApplyIncoming;
@@ -49,6 +52,9 @@ pub use joined::{JoinedRecords, MAX_JOINED_RECORDS};
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
+
+mod native_file;
+pub use native_file::{FileHistoryReader, InitialFileHistory};
 
 /// Key, in a record's own document, of the map holding its identity.
 const META: &str = "tilo:record";
@@ -115,6 +121,15 @@ const MAX_FORMER_IDS: usize = 8;
 pub struct RecordId(String);
 
 impl RecordId {
+    /// Internal custody key for a package's existing room-primary document.
+    /// It never travels as a record id on the collaboration wire.
+    pub fn package_primary() -> Self {
+        Self("@tilo:package-primary".into())
+    }
+    pub fn is_package_primary(&self) -> bool {
+        self.0 == "@tilo:package-primary"
+    }
+
     /// The record a file *is*. Relative paths resolve against the cwd, so
     /// two spellings of one file are one record.
     ///
@@ -502,6 +517,22 @@ pub struct RecordCheckout {
 }
 
 impl RecordCheckout {
+    /// The record a desktop tab of `app_id` shows: the room's package-primary
+    /// record for Chat, the tab's own record for every other app. Keeps the
+    /// tab identity, so a tab dragged elsewhere keeps its document.
+    pub fn for_component_tab(app_id: &str, tab: u64, kind: RecordKind) -> Self {
+        let id = if app_id == "so.tilo.chat" {
+            RecordId::package_primary()
+        } else {
+            RecordId::for_tab(tab)
+        };
+        Self::new(id, kind)
+    }
+
+    pub fn package_primary(kind: RecordKind) -> Self {
+        Self::new(RecordId::package_primary(), kind)
+    }
+
     pub fn new(id: RecordId, kind: RecordKind) -> Self {
         Self {
             id,
@@ -548,41 +579,104 @@ impl RecordCheckout {
     /// Room indexes contain names supplied by collaborators.  Keep the
     /// transport boundary typed and bounded before a host considers one.
     pub fn is_valid(&self) -> bool {
-        let formerly_valid = |checkout: &RecordCheckout| {
-            checkout.formerly.len() <= MAX_FORMER_IDS
-                && checkout.formerly.iter().all(|former| {
-                    RecordId::parse(former.as_str()).is_some() && *former != checkout.id
-                })
-        };
         RecordId::parse(self.id.as_str()).is_some()
             && self.kind.is_valid()
-            && formerly_valid(self)
+            && self.valid_reference_shape()
+    }
+
+    fn is_valid_local_storage_request(&self) -> bool {
+        (self.id.is_package_primary() || RecordId::parse(self.id.as_str()).is_some())
+            && self.kind.is_valid()
+            && self.valid_reference_shape()
+    }
+
+    fn formerly_valid(checkout: &RecordCheckout) -> bool {
+        checkout.formerly.len() <= MAX_FORMER_IDS
+            && checkout
+                .formerly
+                .iter()
+                .all(|former| RecordId::parse(former.as_str()).is_some() && *former != checkout.id)
+    }
+
+    fn valid_reference_shape(&self) -> bool {
+        Self::formerly_valid(self)
             && self.references.iter().all(|(target, relation)| {
                 target.references.is_empty()
                     && RecordId::parse(target.id.as_str()).is_some()
                     && target.kind.is_valid()
-                    && formerly_valid(target)
+                    && Self::formerly_valid(target)
                     && valid_label(relation, MAX_RECORD_RELATION_BYTES)
             })
     }
 }
 
-/// `None` only if `put_object` on the document root itself fails, which
-/// does not happen for a document this call has exclusive access to.
+enum ObjectAt {
+    Missing,
+    Object(ObjId),
+    Invalid,
+}
+
+enum StringAt {
+    Missing,
+    String(String),
+    Invalid,
+}
+
+fn object_at(doc: &AutoCommit, object: &ObjId, key: &str, kind: ObjType) -> ObjectAt {
+    let Ok(mut values) = doc.get_all(object, key) else {
+        return ObjectAt::Invalid;
+    };
+    if values.is_empty() {
+        return ObjectAt::Missing;
+    }
+    if values.len() != 1 {
+        return ObjectAt::Invalid;
+    }
+    match values.pop() {
+        Some((Value::Object(found), id)) if found == kind => ObjectAt::Object(id),
+        _ => ObjectAt::Invalid,
+    }
+}
+
+fn string_at(doc: &AutoCommit, object: &ObjId, key: &str) -> StringAt {
+    let Ok(mut values) = doc.get_all(object, key) else {
+        return StringAt::Invalid;
+    };
+    if values.is_empty() {
+        return StringAt::Missing;
+    }
+    if values.len() != 1 {
+        return StringAt::Invalid;
+    }
+    match values.pop() {
+        Some((Value::Scalar(value), _)) => match value.as_ref() {
+            ScalarValue::Str(value) => StringAt::String(value.to_string()),
+            _ => StringAt::Invalid,
+        },
+        _ => StringAt::Invalid,
+    }
+}
+
+/// Select the document's metadata map, or create it only when it is absent.
 fn meta_obj(doc: &mut AutoCommit) -> Option<ObjId> {
-    match doc.get(&ROOT, META) {
-        Ok(Some((Value::Object(ObjType::Map), id))) => Some(id),
-        _ => doc.put_object(&ROOT, META, ObjType::Map).ok(),
+    match object_at(doc, &ROOT, META, ObjType::Map) {
+        ObjectAt::Missing => doc.put_object(&ROOT, META, ObjType::Map).ok(),
+        ObjectAt::Object(object) => Some(object),
+        ObjectAt::Invalid => None,
+    }
+}
+
+fn meta_ro(doc: &AutoCommit) -> Option<ObjId> {
+    match object_at(doc, &ROOT, META, ObjType::Map) {
+        ObjectAt::Object(object) => Some(object),
+        ObjectAt::Missing | ObjectAt::Invalid => None,
     }
 }
 
 fn str_at(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<String> {
-    match doc.get(obj, key) {
-        Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
-            ScalarValue::Str(s) => Some(s.to_string()),
-            _ => None,
-        },
-        _ => None,
+    match string_at(doc, obj, key) {
+        StringAt::String(value) => Some(value),
+        StringAt::Missing | StringAt::Invalid => None,
     }
 }
 
@@ -605,6 +699,11 @@ pub fn init_scoped(
     home: &str,
     room: Option<&str>,
 ) -> bool {
+    // Primary custody is the checked package/room namespace, never a fake
+    // record stamp. Keep this serialized internal id stable across hosts.
+    if id.is_package_primary() {
+        return primary_document(doc);
+    }
     if RecordId::parse(id.as_str()).is_none() || !kind.is_valid() {
         return false;
     }
@@ -612,32 +711,42 @@ pub fn init_scoped(
         // The document's root object is gone — nothing to stamp.
         return false;
     };
-    if str_at(doc, &m, "id").is_some_and(|existing| existing != id.as_str())
-        || str_at(doc, &m, "kind").is_some_and(|existing| existing != kind.as_str())
-        || room.is_some_and(|scope| str_at(doc, &m, ROOM).is_some_and(|existing| existing != scope))
+    let existing_id = string_at(doc, &m, "id");
+    let existing_kind = string_at(doc, &m, "kind");
+    let existing_home = string_at(doc, &m, "home");
+    let existing_room = string_at(doc, &m, ROOM);
+    let existing_refs = object_at(doc, &m, "refs", ObjType::List);
+    if matches!(&existing_id, StringAt::String(existing) if existing != id.as_str())
+        || matches!(&existing_id, StringAt::Invalid)
+        || matches!(&existing_kind, StringAt::String(existing) if existing != kind.as_str())
+        || matches!(&existing_kind, StringAt::Invalid)
+        || matches!(&existing_home, StringAt::String(existing) if existing.is_empty())
+        || matches!(&existing_home, StringAt::Invalid)
+        || matches!(&existing_room, StringAt::Invalid)
+        || room.is_some_and(
+            |scope| matches!(&existing_room, StringAt::String(existing) if existing != scope),
+        )
+        || matches!(&existing_refs, ObjectAt::Invalid)
     {
         return false;
     }
-    if str_at(doc, &m, "id").is_none() {
+    if matches!(&existing_id, StringAt::Missing) {
         let _ = doc.put(&m, "id", id.as_str());
     }
-    if str_at(doc, &m, "kind").is_none() {
+    if matches!(&existing_kind, StringAt::Missing) {
         let _ = doc.put(&m, "kind", kind.as_str());
     }
     // Home is the room that minted the record; never rewritten on a later
     // open, or the last room to open it would become the owner.
-    if str_at(doc, &m, "home").is_none() {
+    if matches!(&existing_home, StringAt::Missing) {
         let _ = doc.put(&m, "home", home);
     }
     if let Some(room) = room
-        && str_at(doc, &m, ROOM).is_none()
+        && matches!(&existing_room, StringAt::Missing)
     {
         let _ = doc.put(&m, ROOM, room);
     }
-    if !matches!(
-        doc.get(&m, "refs"),
-        Ok(Some((Value::Object(ObjType::List), _)))
-    ) {
+    if matches!(&existing_refs, ObjectAt::Missing) {
         let _ = doc.put_object(&m, "refs", ObjType::List);
     }
     true
@@ -645,18 +754,17 @@ pub fn init_scoped(
 
 /// The identity stamped into `doc`, if it holds a record.
 pub fn identity(doc: &AutoCommit) -> Option<RecordCheckout> {
-    let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&ROOT, META) else {
-        return None;
-    };
+    let m = meta_ro(doc)?;
     let id = RecordId::parse(&str_at(doc, &m, "id")?)?;
-    let kind = RecordKind::new(str_at(doc, &m, "kind").unwrap_or_default());
-    Some(RecordCheckout::new(id, kind))
+    let kind = RecordKind::new(str_at(doc, &m, "kind")?);
+    let checkout = RecordCheckout::new(id, kind);
+    checkout.is_valid().then_some(checkout)
 }
 
 /// Identities this record's document was known by before adoption, oldest
 /// first (see [`RecordCheckout::formerly`]).
 pub fn former_identities(doc: &AutoCommit) -> Vec<RecordId> {
-    let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&ROOT, META) else {
+    let Some(m) = meta_ro(doc) else {
         return Vec::new();
     };
     let Ok(Some((Value::Object(ObjType::List), list))) = doc.get(&m, FORMERLY) else {
@@ -774,9 +882,7 @@ fn adopt_former(
 
 /// The room this record was minted in.
 pub fn home(doc: &AutoCommit) -> Option<String> {
-    let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&ROOT, META) else {
-        return None;
-    };
+    let m = meta_ro(doc)?;
     str_at(doc, &m, "home")
 }
 
@@ -785,9 +891,7 @@ pub fn home(doc: &AutoCommit) -> Option<String> {
 /// with [`init_scoped`], but must never treat an explicit different room as
 /// interchangeable.
 pub fn room_scope(doc: &AutoCommit) -> Option<String> {
-    let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&ROOT, META) else {
-        return None;
-    };
+    let m = meta_ro(doc)?;
     str_at(doc, &m, ROOM)
 }
 
@@ -795,9 +899,10 @@ pub fn room_scope(doc: &AutoCommit) -> Option<String> {
 /// [`meta_obj`].
 fn refs_obj(doc: &mut AutoCommit) -> Option<ObjId> {
     let m = meta_obj(doc)?;
-    match doc.get(&m, "refs") {
-        Ok(Some((Value::Object(ObjType::List), id))) => Some(id),
-        _ => doc.put_object(&m, "refs", ObjType::List).ok(),
+    match object_at(doc, &m, "refs", ObjType::List) {
+        ObjectAt::Missing => doc.put_object(&m, "refs", ObjType::List).ok(),
+        ObjectAt::Object(object) => Some(object),
+        ObjectAt::Invalid => None,
     }
 }
 
@@ -826,10 +931,10 @@ pub fn add_reference(doc: &mut AutoCommit, r: &RecordRef) -> bool {
 
 /// Every record this one references.
 pub fn references(doc: &AutoCommit) -> Vec<RecordRef> {
-    let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&ROOT, META) else {
+    let Some(m) = meta_ro(doc) else {
         return Vec::new();
     };
-    let Ok(Some((Value::Object(ObjType::List), list))) = doc.get(&m, "refs") else {
+    let ObjectAt::Object(list) = object_at(doc, &m, "refs", ObjType::List) else {
         return Vec::new();
     };
     (0..doc.length(&list))
@@ -905,7 +1010,7 @@ pub fn add_blob_reference(doc: &mut AutoCommit, blob: &BlobRef) -> bool {
 
 /// Every blob this record depends on.
 pub fn blob_references(doc: &AutoCommit) -> Vec<BlobRef> {
-    let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&ROOT, META) else {
+    let Some(m) = meta_ro(doc) else {
         return Vec::new();
     };
     let Ok(Some((Value::Object(ObjType::List), list))) = doc.get(&m, "blobs") else {
@@ -949,8 +1054,8 @@ pub fn blob_references(doc: &AutoCommit) -> Vec<BlobRef> {
 pub mod room {
     use super::{
         AutoCommit, INDEX, MAX_COMMENT_INDEX_KEYS_SCANNED, MAX_LISTED_COMMENTS, ObjId, ObjType,
-        ROOT, ReadDoc, RecordCheckout, RecordId, RecordKind, RecordSet, Transactable, Value,
-        str_at,
+        ObjectAt, ROOT, ReadDoc, RecordCheckout, RecordId, RecordKind, RecordSet, StringAt,
+        Transactable, object_at, str_at, string_at,
     };
 
     /// The actor that makes every room's index map. Never a device's: no
@@ -1021,19 +1126,23 @@ pub mod room {
     }
 
     /// The room's index map, made by [`index_genesis`] when the room has
-    /// none yet. `None` only if the document refuses the genesis change.
+    /// none yet. Malformed or conflicted metadata fails closed; only an
+    /// entirely absent index is created. `None` also if the document refuses
+    /// the genesis change.
     fn index_obj(doc: &mut AutoCommit) -> Option<ObjId> {
-        if let Some(id) = index_ro(doc) {
-            return Some(id);
+        match object_at(doc, &ROOT, INDEX, ObjType::Map) {
+            ObjectAt::Object(object) => return Some(object),
+            ObjectAt::Invalid => return None,
+            ObjectAt::Missing => {}
         }
         tilo_automerge::ApplyIncoming::apply_incoming(doc, index_genesis()).ok()?;
         index_ro(doc)
     }
 
     fn index_ro(doc: &AutoCommit) -> Option<ObjId> {
-        match doc.get(&ROOT, INDEX) {
-            Ok(Some((Value::Object(ObjType::Map), id))) => Some(id),
-            _ => None,
+        match object_at(doc, &ROOT, INDEX, ObjType::Map) {
+            ObjectAt::Object(object) => Some(object),
+            ObjectAt::Missing | ObjectAt::Invalid => None,
         }
     }
 
@@ -1048,30 +1157,38 @@ pub mod room {
         let Some(idx) = index_obj(doc) else {
             return false;
         };
-        let existing = match doc.get(&idx, id.as_str()) {
-            Ok(Some((Value::Object(ObjType::Map), obj))) => Some(obj),
-            _ => None,
-        };
-        if let Some(obj) = existing {
-            // Refresh the type only if it actually differs, so
-            // re-opening a record is not itself an edit.
-            if str_at(doc, &obj, "kind").as_deref() != Some(kind.as_str()) {
-                let _ = doc.put(&obj, "kind", kind.as_str());
+        match object_at(doc, &idx, id.as_str(), ObjType::Map) {
+            ObjectAt::Object(object) => {
+                // Refresh the type only if it actually differs, so
+                // re-opening a record is not itself an edit.
+                match string_at(doc, &object, "kind") {
+                    StringAt::String(existing) if existing == kind.as_str() => {}
+                    StringAt::String(_) => {
+                        let _ = doc.put(&object, "kind", kind.as_str());
+                    }
+                    StringAt::Missing | StringAt::Invalid => return false,
+                }
+                false
             }
-            false
-        } else if made_by_genesis(&idx) {
-            tilo_automerge::ApplyIncoming::apply_incoming(
-                doc,
-                entry_genesis(id.as_str(), kind.as_str()),
-            )
-            .is_ok()
-                && doc.get(&idx, id.as_str()).ok().flatten().is_some()
-        } else {
-            let Ok(entry) = doc.put_object(&idx, id.as_str(), ObjType::Map) else {
-                return false;
-            };
-            let _ = doc.put(&entry, "kind", kind.as_str());
-            true
+            ObjectAt::Missing if made_by_genesis(&idx) => {
+                tilo_automerge::ApplyIncoming::apply_incoming(
+                    doc,
+                    entry_genesis(id.as_str(), kind.as_str()),
+                )
+                .is_ok()
+                    && matches!(
+                        object_at(doc, &idx, id.as_str(), ObjType::Map),
+                        ObjectAt::Object(_)
+                    )
+            }
+            ObjectAt::Missing => {
+                let Ok(entry) = doc.put_object(&idx, id.as_str(), ObjType::Map) else {
+                    return false;
+                };
+                let _ = doc.put(&entry, "kind", kind.as_str());
+                true
+            }
+            ObjectAt::Invalid => false,
         }
     }
 
@@ -1081,16 +1198,22 @@ pub mod room {
         let Some(idx) = index_ro(doc) else {
             return false;
         };
-        if matches!(doc.get(&idx, id.as_str()), Ok(Some(_))) {
-            doc.delete(&idx, id.as_str()).is_ok()
-        } else {
-            false
+        match object_at(doc, &idx, id.as_str(), ObjType::Map) {
+            ObjectAt::Object(_) => doc.delete(&idx, id.as_str()).is_ok(),
+            ObjectAt::Missing | ObjectAt::Invalid => false,
         }
     }
 
     /// Whether this room references `id`.
     pub fn holds(doc: &AutoCommit, id: &RecordId) -> bool {
-        index_ro(doc).is_some_and(|idx| matches!(doc.get(&idx, id.as_str()), Ok(Some(_))))
+        index_ro(doc).is_some_and(|idx| {
+            let ObjectAt::Object(entry) = object_at(doc, &idx, id.as_str(), ObjType::Map) else {
+                return false;
+            };
+            str_at(doc, &entry, "kind")
+                .map(RecordKind::new)
+                .is_some_and(|kind| kind.is_valid())
+        })
     }
 
     /// Every well-formed record this room references.  This is retained for
@@ -1104,12 +1227,11 @@ pub mod room {
             .keys(&idx)
             .filter_map(|k| {
                 let id = RecordId::parse(&k)?;
-                let kind = match doc.get(&idx, k.as_str()) {
-                    Ok(Some((Value::Object(ObjType::Map), obj))) => {
-                        RecordKind::new(str_at(doc, &obj, "kind").unwrap_or_default())
-                    }
-                    _ => return None,
+                let ObjectAt::Object(object) = object_at(doc, &idx, k.as_str(), ObjType::Map)
+                else {
+                    return None;
                 };
+                let kind = RecordKind::new(str_at(doc, &object, "kind")?);
                 let checkout = RecordCheckout::new(id, kind);
                 checkout.is_valid().then_some(checkout)
             })
@@ -1132,7 +1254,7 @@ pub mod room {
             .take(super::MAX_ROOM_INDEX_KEYS_SCANNED)
             .filter_map(|key| {
                 let id = RecordId::parse(&key)?;
-                let Ok(Some((Value::Object(ObjType::Map), entry))) = doc.get(&idx, key.as_str())
+                let ObjectAt::Object(entry) = object_at(doc, &idx, key.as_str(), ObjType::Map)
                 else {
                     return None;
                 };
@@ -1184,7 +1306,7 @@ pub mod room {
                 if id.comment_parent().as_ref() != Some(parent) {
                     return None;
                 }
-                let Ok(Some((Value::Object(ObjType::Map), entry))) = doc.get(&idx, key.as_str())
+                let ObjectAt::Object(entry) = object_at(doc, &idx, key.as_str(), ObjType::Map)
                 else {
                     return None;
                 };
@@ -1379,8 +1501,14 @@ pub struct RecordSet {
     /// The host's storage, for a set opened through [`RecordOwners`]. `None`
     /// for the launch-environment route and for [`RecordSet::in_memory`].
     backend: Option<Rc<dyn DurableStore>>,
+    /// A hydrated, host-acknowledged browser cache (Cloud portable sessions).
+    portable: Option<PortableStorage>,
     pending: HashMap<RecordId, Reserved>,
     next_reservation: u64,
+    // Retained from the private native construction scope; weakly borrows the
+    // one actual worker after construction ends. Never a positive authority.
+    native_initial: Option<crate::collaboration::native_initial::InitialReadBridge>,
+    file_mode_selected: bool,
     // Drop after the writers and reservations above. Temporary profiles must
     // outlive asynchronous flushes and recovery handles, not just their host.
     _profile_lifetime: Option<std::rc::Rc<dyn std::any::Any>>,
@@ -1388,7 +1516,11 @@ pub struct RecordSet {
 
 struct Reserved {
     generation: u64,
-    store: Rc<app_state::DocOwner>,
+    /// The durable owner reserved for a store-backed record; `None` for a
+    /// portable reservation, whose cache has no single-writer owner.
+    store: Option<Rc<app_state::DocOwner>>,
+    /// The persistent actor minted for a portable reservation.
+    actor: Option<automerge::ActorId>,
 }
 
 impl RecordSet {
@@ -1428,8 +1560,11 @@ impl RecordSet {
             persistent: true,
             documents: Some(store),
             backend: None,
+            portable: None,
             pending: HashMap::new(),
             next_reservation: 0,
+            native_initial: crate::collaboration::native_initial::capture_bridge(),
+            file_mode_selected: false,
             _profile_lifetime: None,
         }
     }
@@ -1454,8 +1589,11 @@ impl RecordSet {
             persistent: false,
             documents: None,
             backend: None,
+            portable: None,
             pending: HashMap::new(),
             next_reservation: 0,
+            native_initial: None,
+            file_mode_selected: false,
             _profile_lifetime: None,
         }
     }
@@ -1535,6 +1673,77 @@ impl RecordSet {
         self.open.get(id).and_then(|p| p.doc.as_ref())
     }
 
+    /// Native caller has already read this exact route through its admitted SDK
+    /// channel. Install that graph before the legacy empty-document initializer.
+    pub(crate) fn checkout_with_initial(
+        &mut self,
+        state: &mut crate::state::State,
+        room: Option<&mut AutoCommit>,
+        want: &RecordCheckout,
+        mutation: &collab_types::DocumentMutation,
+    ) -> bool {
+        let collab_types::DocumentMutation::Snapshot(bytes) = mutation else {
+            return false;
+        };
+        if !want.is_valid()
+            || self.backend.is_some()
+            || self.portable.is_some()
+            || state.doc.pending_ops() != 0
+        {
+            return false;
+        }
+        let Ok(mut incoming) = AutoCommit::load(bytes) else {
+            return false;
+        };
+        if validate_identity(&incoming, want, &self.home).is_err() {
+            return false;
+        }
+        if self.active.is_none() && !state.doc.base_heads().is_empty() {
+            // Existing, finished local work is merged, never replaced. An open
+            // local transaction was refused above without forcing a commit.
+            if !matches!(state.merge_remote_committed(mutation), Ok(Some(_))) {
+                return false;
+            }
+            return self.checkout(state, room, want);
+        }
+        if let Some(slot) = self.open.get_mut(&want.id) {
+            let Some(doc) = slot.doc.as_mut() else {
+                return false;
+            };
+            if doc.pending_ops() != 0 {
+                return false;
+            }
+            if doc.merge_incoming(&mut incoming).is_err() {
+                return false;
+            }
+        } else {
+            let Ok(autosave) = self.persist_for(want, &mut incoming) else {
+                return false;
+            };
+            if !init_scoped(
+                &mut incoming,
+                &want.id,
+                &want.kind,
+                &self.home,
+                (!self.home.is_empty()).then_some(self.home.as_str()),
+            ) {
+                return false;
+            }
+            let history = crate::state::UndoLog::new(&mut incoming);
+            self.open.insert(
+                want.id.clone(),
+                Parked {
+                    doc: Some(incoming),
+                    kind: want.kind.clone(),
+                    autosave,
+                    history,
+                    action_state: crate::bound_dispatch::RecordActionState::default(),
+                },
+            );
+        }
+        self.checkout(state, room, want)
+    }
+
     /// Switch the live document to `want`: the outgoing document is parked
     /// and flushed, the incoming one loaded (or created) and referenced
     /// into `room`'s index. Returns whether anything changed — checking
@@ -1550,7 +1759,7 @@ impl RecordSet {
             tracing::warn!(record = %want.id, "refusing invalid record checkout");
             return false;
         }
-        if self.backend.is_some() {
+        if self.backend.is_some() || self.portable.is_some() {
             return false;
         }
         if self.active.as_ref() == Some(&want.id) {
@@ -1575,7 +1784,9 @@ impl RecordSet {
         if self.active.is_none() && !state.doc.get_heads().is_empty() {
             let adopted = std::mem::replace(&mut state.doc, AutoCommit::new());
             state.adopt_doc(adopted);
-            let autosave = self.persist_for(want, &mut state.doc);
+            let Ok(autosave) = self.persist_for(want, &mut state.doc) else {
+                return false;
+            };
             let history = crate::state::UndoLog::new(&mut state.doc);
             self.open.insert(
                 want.id.clone(),
@@ -1590,6 +1801,17 @@ impl RecordSet {
             return self.finish_checkout(state, room, want);
         }
 
+        // A malformed incoming legacy document must fail before custody of
+        // the valid active document moves into a parked slot.
+        let prepared = if self.open.contains_key(&want.id) {
+            None
+        } else {
+            let Ok(prepared) = self.load(want) else {
+                return false;
+            };
+            Some(prepared)
+        };
+
         if let Some(prev) = self.active.take() {
             let outgoing = std::mem::replace(&mut state.doc, AutoCommit::new());
             if let Some(slot) = self.open.get_mut(&prev) {
@@ -1602,10 +1824,7 @@ impl RecordSet {
             }
         }
 
-        let incoming = if let Some(slot) = self.open.get_mut(&want.id) {
-            slot.doc.take().unwrap_or_else(AutoCommit::new)
-        } else {
-            let (mut doc, autosave) = self.load(want);
+        let incoming = if let Some((mut doc, autosave)) = prepared {
             let history = crate::state::UndoLog::new(&mut doc);
             self.open.insert(
                 want.id.clone(),
@@ -1618,6 +1837,11 @@ impl RecordSet {
                 },
             );
             doc
+        } else {
+            self.open
+                .get_mut(&want.id)
+                .and_then(|slot| slot.doc.take())
+                .unwrap_or_default()
         };
 
         state.adopt_doc(incoming);
@@ -1666,10 +1890,49 @@ impl RecordSet {
     }
 
     /// Open a record's stored document, and the writer for it.
-    fn load(&self, want: &RecordCheckout) -> (AutoCommit, Option<app_state::DocWriter>) {
-        let mut doc = AutoCommit::new();
-        let autosave = self.persist_for(want, &mut doc);
-        (doc, autosave)
+    fn load(
+        &self,
+        want: &RecordCheckout,
+    ) -> Result<(AutoCommit, Option<crate::persist::DocWriter>), RecordOpenError> {
+        if self.persistent && self.home.is_empty() {
+            return Err(RecordOpenError::IdentityMismatch);
+        }
+        let initial = self
+            .native_initial
+            .as_ref()
+            .map(|bridge| {
+                bridge
+                    .record(&self.package_id, &self.home, &want.id)
+                    .map_err(|error| {
+                        crate::collaboration::native_initial::fail(&error);
+                        RecordOpenError::Initialization(error)
+                    })
+            })
+            .transpose()?;
+        let mut doc = if let Some(read) = &initial {
+            read.with_mutation(|mutation| {
+                let collab_types::DocumentMutation::Snapshot(bytes) = mutation else {
+                    return Err("native initial record snapshot missing".to_string());
+                };
+                let doc = AutoCommit::load(bytes).map_err(|error| error.to_string())?;
+                validate_identity(&doc, want, &self.home).map_err(|error| error.to_string())?;
+                Ok(doc)
+            })
+            .and_then(|result| result)
+            .map_err(RecordOpenError::Initialization)?
+        } else {
+            AutoCommit::new()
+        };
+        let autosave = self.persist_for(want, &mut doc)?;
+        if self.persistent
+            && !init_scoped(&mut doc, &want.id, &want.kind, &self.home, Some(&self.home))
+        {
+            return Err(RecordOpenError::IdentityMismatch);
+        }
+        if let Some(read) = initial {
+            read.applied();
+        }
+        Ok((doc, autosave))
     }
 
     fn documents(&self) -> Result<&Rc<dyn DurableStore>, app_state::StoreError> {
@@ -1726,13 +1989,13 @@ impl RecordSet {
         &self,
         want: &RecordCheckout,
         doc: &mut AutoCommit,
-    ) -> Option<app_state::DocWriter> {
+    ) -> Result<Option<crate::persist::DocWriter>, RecordOpenError> {
         let id = &want.id;
         if !self.persistent {
-            return None;
+            return Ok(None);
         }
         if self.home.is_empty() {
-            return None;
+            return Ok(None);
         }
         let record_key = id.storage_key();
         let mut store = match self.scoped_document(&record_key) {
@@ -1743,9 +2006,9 @@ impl RecordSet {
                     error = %e,
                     "record store unavailable; writes refused"
                 );
-                return Some(crate::persist::DocWriter::disabled(format!(
+                return Ok(Some(crate::persist::DocWriter::disabled(format!(
                     "record {id} store unavailable: {e}"
-                )));
+                ))));
             }
         };
         let stored = match store.load() {
@@ -1756,9 +2019,9 @@ impl RecordSet {
                     error = %e,
                     "stored record could not be read; original bytes retained and writes refused"
                 );
-                return Some(crate::persist::DocWriter::disabled(format!(
+                return Ok(Some(crate::persist::DocWriter::disabled(format!(
                     "stored record {id} could not be read: {e}"
-                )));
+                ))));
             }
         };
         // A former identity's record and the old package-global record file
@@ -1775,32 +2038,55 @@ impl RecordSet {
                 }
                 Err(e) => {
                     tracing::error!(record = %id, error = %e, "former record could not be read; writes refused");
-                    return Some(crate::persist::DocWriter::disabled(format!(
+                    return Ok(Some(crate::persist::DocWriter::disabled(format!(
                         "former record of {id} could not be read: {e}"
-                    )));
+                    ))));
                 }
             },
         };
-        let stored = stored.or_else(|| {
+        let stored = if stored.is_some() {
+            stored
+        } else {
             let legacy = self.package_record(&record_key);
-            let documents = self.documents().ok()?;
-            if documents.read(&legacy).ok()??.bytes.is_empty()
-                || !documents.claim(&legacy, &self.home).ok()?
+            let documents = self.documents()?;
+            if documents
+                .read(&legacy)?
+                .is_none_or(|found| found.bytes.is_empty())
             {
-                return None;
+                None
+            } else {
+                let mut legacy_store =
+                    app_state::DocStore::shared(Rc::clone(documents), legacy.clone())?;
+                let mut legacy_doc = legacy_store.load()?.ok_or_else(|| {
+                    RecordOpenError::Initialization(format!("legacy record {legacy} is empty"))
+                })?;
+                // Identity is checked before the one-room claim: a foreign or
+                // mis-scoped legacy document must never be adopted here.
+                if identity(&legacy_doc)
+                    .is_none_or(|found| found.id != want.id || found.kind != want.kind)
+                    || home(&legacy_doc).as_deref() != Some(self.home.as_str())
+                    || room_scope(&legacy_doc).is_some_and(|scope| scope != self.home)
+                    || !init_scoped(
+                        &mut legacy_doc,
+                        &want.id,
+                        &want.kind,
+                        &self.home,
+                        Some(&self.home),
+                    )
+                    || !documents.claim(&legacy, &self.home)?
+                {
+                    return Err(RecordOpenError::IdentityMismatch);
+                }
+                tracing::info!(
+                    record = %id,
+                    room = %self.home,
+                    from = %legacy,
+                    "adopting a legacy package-global record into a room"
+                );
+                adopted_elsewhere = true;
+                Some(legacy_doc)
             }
-            let mut legacy_store =
-                app_state::DocStore::shared(Rc::clone(documents), legacy.clone()).ok()?;
-            let legacy_doc = legacy_store.load().ok().flatten()?;
-            tracing::info!(
-                record = %id,
-                room = %self.home,
-                from = %legacy,
-                "adopting a legacy package-global record into a room"
-            );
-            adopted_elsewhere = true;
-            Some(legacy_doc)
-        });
+        };
         // Merge transactionally. Automerge may have applied part of a failed
         // merge; never publish or enqueue that partial result to the writer.
         let mut merged = doc.clone();
@@ -1809,9 +2095,18 @@ impl RecordSet {
             && let Err(error) = merged.merge_incoming(stored)
         {
             tracing::error!(record = %id, %error, "record merge refused; original stored bytes retained");
-            return Some(crate::persist::DocWriter::disabled(format!(
+            return Ok(Some(crate::persist::DocWriter::disabled(format!(
                 "stored record {id} could not be merged: {error}"
-            )));
+            ))));
+        }
+        if !init_scoped(
+            &mut merged,
+            &want.id,
+            &want.kind,
+            &self.home,
+            Some(&self.home),
+        ) {
+            return Err(RecordOpenError::IdentityMismatch);
         }
         // The package actor belongs to its index, and a bootstrap fork actor
         // belongs to pre-admission edits. All subsequent canonical record
@@ -1828,7 +2123,7 @@ impl RecordSet {
                 autosave.seed(&mut stored);
             }
         }
-        Some(autosave)
+        Ok(Some(autosave))
     }
 
     // A host showing several records at once: none can be "checked out"
@@ -1844,12 +2139,14 @@ impl RecordSet {
             tracing::warn!(record = %want.id, "refusing invalid record open");
             return false;
         }
-        if self.backend.is_some() {
+        if self.backend.is_some() || self.portable.is_some() {
             return matches!(self.try_open_record(want), Ok(RecordOpenOutcome::Loaded));
         }
         let fresh = !self.open.contains_key(&want.id);
         if fresh {
-            let (mut doc, autosave) = self.load(want);
+            let Ok((mut doc, autosave)) = self.load(want) else {
+                return false;
+            };
             if self.persistent && self.home.is_empty() {
                 tracing::error!(record = %want.id, "refusing to open a persistent record without a room scope");
                 return false;
@@ -1895,6 +2192,15 @@ impl RecordSet {
             .backend
             .as_ref()
             .ok_or(RecordOpenError::IdentityMismatch)?;
+        if want.id.is_package_primary() {
+            // The package-primary document is the room's own document
+            // (`<package>/rooms/<room>`), never a minted record beneath it.
+            app_state::validate_record_identity(&self.package_id, &self.home, "index")?;
+            return Ok((
+                Rc::clone(backend),
+                StorageKey::room_index(&self.package_id, &self.home),
+            ));
+        }
         let record = want.id.storage_key();
         app_state::validate_record_identity(&self.package_id, &self.home, &record)?;
         Ok((
@@ -1915,14 +2221,46 @@ impl RecordSet {
         want: &RecordCheckout,
         recover_partial: bool,
     ) -> Result<RecordOpenOutcome, RecordOpenError> {
+        if !want.is_valid_local_storage_request() {
+            return Err(RecordOpenError::IdentityMismatch);
+        }
+        if self.portable.is_some() {
+            return self.open_portable(want);
+        }
         let (backend, key) = self.canonical_key(want)?;
         if self.pending.contains_key(&want.id) {
             return Err(RecordOpenError::Busy);
         }
         if let Some(slot) = self.open.get(&want.id) {
+            if slot.kind != want.kind {
+                return Err(RecordOpenError::IdentityMismatch);
+            }
             let doc = slot.doc.as_ref().ok_or(RecordOpenError::Busy)?;
             validate_identity(doc, want, &self.home)?;
             return Ok(RecordOpenOutcome::AlreadyOpen);
+        }
+        if let Some(bridge) = &self.native_initial {
+            let read = bridge
+                .record(&self.package_id, &self.home, &want.id)
+                .map_err(RecordOpenError::Initialization)?;
+            let store = app_state::DocStore::exclusive(backend, key)?;
+            let (mut doc, autosave) =
+                crate::persist::finish_canonical_initial(store, read, |doc| {
+                    validate_identity(doc, want, &self.home).map_err(|error| error.to_string())
+                })
+                .map_err(RecordOpenError::Initialization)?;
+            let history = crate::state::UndoLog::new(&mut doc);
+            self.open.insert(
+                want.id.clone(),
+                Parked {
+                    doc: Some(doc),
+                    kind: want.kind.clone(),
+                    autosave: Some(autosave),
+                    history,
+                    action_state: crate::bound_dispatch::RecordActionState::default(),
+                },
+            );
+            return Ok(RecordOpenOutcome::Loaded);
         }
         let owner = app_state::DocOwner::acquire(Rc::clone(&backend), key)?;
         let loaded = if recover_partial {
@@ -2019,6 +2357,10 @@ impl RecordSet {
     /// multi-record twin of [`Self::tick`], for a host with no single live
     /// document to hand in.
     pub fn tick_open(&mut self) {
+        if self.portable.is_some() {
+            let _ = self.flush_portable(None);
+            return;
+        }
         for slot in self.open.values_mut() {
             if let (Some(doc), Some(saver)) = (slot.doc.as_mut(), slot.autosave.as_mut()) {
                 slot.action_state.commit_for_save(doc);
@@ -2030,6 +2372,10 @@ impl RecordSet {
     /// Write out every open record and wait for it to land. The
     /// multi-record twin of [`Self::flush`].
     pub fn flush_open(&mut self) {
+        if self.portable.is_some() {
+            let _ = self.flush_portable(None);
+            return;
+        }
         for slot in self.open.values_mut() {
             if let (Some(doc), Some(saver)) = (slot.doc.as_mut(), slot.autosave.as_mut()) {
                 slot.action_state.commit_for_save(doc);
@@ -2126,6 +2472,9 @@ fn launch_scope(manifest_id: String) -> (String, String) {
 /// Explicit profile-scoped owner registry. Weak entries never keep a closed writer alive.
 pub struct RecordOwners {
     store: Rc<dyn DurableStore>,
+    /// A hydrated host-acknowledged browser cache; record sets use it
+    /// instead of `store` when present.
+    portable: Option<PortableStorage>,
     owners: HashMap<(String, String), std::rc::Weak<std::cell::RefCell<RecordSet>>>,
     profile_lifetime: Option<Rc<dyn std::any::Any>>,
 }
@@ -2160,6 +2509,7 @@ impl RecordOwners {
     pub fn with_store(store: Rc<dyn DurableStore>) -> Self {
         Self {
             store,
+            portable: None,
             owners: HashMap::new(),
             profile_lifetime: None,
         }
@@ -2180,7 +2530,16 @@ impl RecordOwners {
         package_id: &str,
         workspace_id: &str,
     ) -> Result<RecordStore, RecordOpenError> {
-        app_state::validate_record_identity(package_id, workspace_id, "validation")?;
+        if self.portable.is_some() {
+            app_state::validate_record_namespace(package_id, workspace_id)?;
+        } else {
+            app_state::validate_record_identity(package_id, workspace_id, "validation")?;
+        }
+        if let Some(cache) = &self.portable
+            && let Some(owner) = cache.record_owner(package_id, workspace_id)
+        {
+            return Ok(RecordStore(owner));
+        }
         let key = (package_id.to_owned(), workspace_id.to_owned());
         if let Some(owner) = self.owners.get(&key).and_then(std::rc::Weak::upgrade) {
             return Ok(RecordStore(owner));
@@ -2196,11 +2555,21 @@ impl RecordOwners {
             active_read_only: false,
             persistent: true,
             documents: None,
-            backend: Some(Rc::clone(&self.store)),
+            backend: self.portable.is_none().then(|| Rc::clone(&self.store)),
+            portable: self.portable.clone(),
             pending: HashMap::new(),
             next_reservation: 0,
+            native_initial: self
+                .portable
+                .is_none()
+                .then(crate::collaboration::native_initial::capture_bridge)
+                .flatten(),
+            file_mode_selected: false,
             _profile_lifetime: self.profile_lifetime.clone(),
         });
+        if let Some(cache) = &self.portable {
+            cache.register_record_owner(package_id, workspace_id, &store.0);
+        }
         self.owners.insert(key, Rc::downgrade(&store.0));
         Ok(store)
     }
@@ -2242,11 +2611,64 @@ impl From<durable_store::StoreError> for RecordOpenError {
     }
 }
 
+/// The stable namespace string of a portable cache, shared by record sets and
+/// instance views so both bind to the same explicit profile/device identity.
+pub(crate) fn portable_namespace(cache: &PortableStorage) -> String {
+    match cache.namespace() {
+        crate::portable_storage::ProfileNamespace::Portable { profile, device } => {
+            format!("portable:{profile}:{device}")
+        }
+        crate::portable_storage::ProfileNamespace::Native(root) => root.display().to_string(),
+    }
+}
+
+fn primary_document(doc: &AutoCommit) -> bool {
+    match object_at(doc, &ROOT, META, ObjType::Map) {
+        ObjectAt::Missing => true,
+        ObjectAt::Object(object) => {
+            matches!(string_at(doc, &object, "id"), StringAt::Missing)
+                && matches!(string_at(doc, &object, "kind"), StringAt::Missing)
+                && !matches!(string_at(doc, &object, "home"), StringAt::Invalid)
+                && !matches!(string_at(doc, &object, ROOM), StringAt::Invalid)
+                && !matches!(
+                    object_at(doc, &object, "refs", ObjType::List),
+                    ObjectAt::Invalid
+                )
+        }
+        ObjectAt::Invalid => false,
+    }
+}
+
 fn validate_identity(
     doc: &AutoCommit,
     want: &RecordCheckout,
     workspace: &str,
 ) -> Result<(), RecordOpenError> {
+    match object_at(doc, &ROOT, META, ObjType::Map) {
+        ObjectAt::Object(metadata) => {
+            if matches!(
+                object_at(doc, &metadata, "refs", ObjType::List),
+                ObjectAt::Invalid
+            ) {
+                return Err(RecordOpenError::IdentityMismatch);
+            }
+        }
+        ObjectAt::Missing if want.id.is_package_primary() => {}
+        ObjectAt::Missing | ObjectAt::Invalid => {
+            return Err(RecordOpenError::IdentityMismatch);
+        }
+    }
+    if want.id.is_package_primary() {
+        return if primary_document(doc)
+            && !want.kind.as_str().is_empty()
+            && !workspace.is_empty()
+            && room_scope(doc).is_none_or(|room| room == workspace)
+        {
+            Ok(())
+        } else {
+            Err(RecordOpenError::IdentityMismatch)
+        };
+    }
     if identity(doc).is_none_or(|found| found.id != want.id || found.kind != want.kind)
         || want.kind.as_str().is_empty()
         || home(doc).is_none_or(|home| home.is_empty())
@@ -2255,6 +2677,25 @@ fn validate_identity(
         return Err(RecordOpenError::IdentityMismatch);
     }
     Ok(())
+}
+
+#[derive(Clone)]
+pub(crate) struct RecordAdmission {
+    checkout: RecordCheckout,
+    workspace: String,
+}
+
+impl RecordAdmission {
+    pub(crate) fn matches(&self, doc: &AutoCommit, checkout: &RecordCheckout) -> bool {
+        if &self.checkout != checkout {
+            return false;
+        }
+        if checkout.id.is_package_primary() {
+            // Primary documents carry no minted identity; see `admission`.
+            return validate_identity(doc, checkout, &self.workspace).is_ok();
+        }
+        identity(doc).as_ref() == Some(checkout)
+    }
 }
 
 /// Make `doc` the record `checkout` of `workspace` as it is created: its
@@ -2283,7 +2724,7 @@ fn genesis(
         .chain_update(workspace.as_bytes())
         .finalize();
     let actor = automerge::ActorId::from(digest.get(..16).unwrap_or_default());
-    let mut made = AutoCommit::new().with_actor(actor);
+    let mut made = AutoCommit::new().with_actor(actor.clone());
     for key in doc.keys(&ROOT).collect::<Vec<_>>() {
         if let Ok(Some((Value::Scalar(value), _))) = doc.get(&ROOT, key.as_str()) {
             made.put(&ROOT, key.as_str(), value.into_owned())
@@ -2300,6 +2741,11 @@ fn genesis(
         return Err(RecordOpenError::IdentityMismatch);
     }
     initialize(&mut made).map_err(RecordOpenError::Initialization)?;
+    // Every member must derive the same genesis, so the initializer may not
+    // author it under an actor of its own.
+    if made.get_actor() != &actor {
+        return Err(RecordOpenError::IdentityMismatch);
+    }
     made.commit_with(automerge::transaction::CommitOptions::default().with_time(0));
     let changes = made.get_changes(&[]);
     let mut created = AutoCommit::new().with_actor(doc.get_actor().clone());
@@ -2329,6 +2775,9 @@ impl RecordReservation {
         &mut self,
         initialize: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
     ) -> Result<(), RecordOpenError> {
+        if self.store.0.borrow().portable.is_some() {
+            return self.initialize_portable(initialize);
+        }
         self.initialize_with(initialize, app_state::DocWriter::start_new)
     }
 
@@ -2347,7 +2796,15 @@ impl RecordReservation {
                 .get(&self.checkout.id)
                 .filter(|p| p.generation == self.generation)
                 .ok_or(RecordOpenError::Busy)?;
-            (Rc::clone(&pending.store), set.home.clone())
+            (
+                Rc::clone(
+                    pending
+                        .store
+                        .as_ref()
+                        .ok_or(RecordOpenError::IdentityMismatch)?,
+                ),
+                set.home.clone(),
+            )
         };
         let mut doc = owner.new_document()?;
         genesis(&mut doc, &self.checkout, &workspace, initialize)?;
@@ -2398,6 +2855,52 @@ impl Drop for RecordReservation {
 }
 
 impl RecordStore {
+    /// Checked custody-to-wire mapping. Primary stays `record=None` on every host.
+    pub fn route(
+        &self,
+        checkout: &RecordCheckout,
+    ) -> Result<crate::collaboration::RouteSpec, RecordOpenError> {
+        let set = self.0.try_borrow().map_err(|_| RecordOpenError::Busy)?;
+        let doc = set
+            .peek(&checkout.id)
+            .ok_or(RecordOpenError::MissingRecord)?;
+        validate_identity(doc, checkout, &set.home)?;
+        let room =
+            uuid::Uuid::parse_str(&set.home).map_err(|_| RecordOpenError::IdentityMismatch)?;
+        Ok(if checkout.id.is_package_primary() {
+            crate::collaboration::RouteSpec::app(&set.package_id, room)
+        } else {
+            crate::collaboration::RouteSpec::record(&set.package_id, room, checkout.id.as_str())
+        })
+    }
+
+    /// Schedule this already committed History result through its existing writer.
+    /// Do not sweep or close unrelated owners' unfinished edits.
+    pub(crate) fn schedule_committed_history(&self, id: &RecordId) {
+        let Ok(mut set) = self.0.try_borrow_mut() else {
+            return;
+        };
+        if set.portable.is_some() {
+            if set
+                .open
+                .get(id)
+                .and_then(|slot| slot.doc.as_ref())
+                .is_some_and(|doc| doc.pending_ops() == 0)
+            {
+                let _ = set.flush_portable(Some(id));
+            }
+            return;
+        }
+        let Some(slot) = set.open.get_mut(id) else {
+            return;
+        };
+        if let (Some(doc), Some(saver)) = (slot.doc.as_mut(), slot.autosave.as_mut())
+            && doc.pending_ops() == 0
+        {
+            saver.request(doc);
+        }
+    }
+
     /// Cheap content witness for retained projections over open records.
     ///
     /// Base heads cover committed changes and `pending_ops` covers the live
@@ -2424,22 +2927,6 @@ impl RecordStore {
         revision
     }
 
-    /// Schedule this already committed History result through its existing writer.
-    /// Do not sweep or close unrelated owners' unfinished edits.
-    pub(crate) fn schedule_committed_history(&self, id: &RecordId) {
-        let Ok(mut set) = self.0.try_borrow_mut() else {
-            return;
-        };
-        let Some(slot) = set.open.get_mut(id) else {
-            return;
-        };
-        if let (Some(doc), Some(saver)) = (slot.doc.as_mut(), slot.autosave.as_mut())
-            && doc.pending_ops() == 0
-        {
-            saver.request(doc);
-        }
-    }
-
     /// Captured storage identity for History; never samples ambient launch scope.
     pub(crate) fn history_namespace(
         &self,
@@ -2448,9 +2935,14 @@ impl RecordStore {
         let set = self.0.try_borrow().map_err(|_| RecordOpenError::Busy)?;
         let parked = set.open.get(id).ok_or(RecordOpenError::MissingRecord)?;
         let storage = set
-            .backend
+            .portable
             .as_ref()
-            .map(|store| store.namespace().to_owned())
+            .map(portable_namespace)
+            .or_else(|| {
+                set.backend
+                    .as_ref()
+                    .map(|store| store.namespace().to_owned())
+            })
             .or_else(|| {
                 parked
                     .autosave
@@ -2465,7 +2957,10 @@ impl RecordStore {
     pub(crate) fn canonical_namespace(&self) -> Option<(String, String, String)> {
         let set = self.0.borrow();
         Some((
-            set.backend.as_ref()?.namespace().to_owned(),
+            match (&set.portable, &set.backend) {
+                (Some(cache), _) => portable_namespace(cache),
+                (None, backend) => backend.as_ref()?.namespace().to_owned(),
+            },
             set.package_id.clone(),
             set.home.clone(),
         ))
@@ -2517,6 +3012,17 @@ impl RecordStore {
         want: &RecordCheckout,
     ) -> Result<RecordReservation, RecordOpenError> {
         let mut set = self.0.borrow_mut();
+        if !want.is_valid_local_storage_request() {
+            return Err(RecordOpenError::IdentityMismatch);
+        }
+        if set.portable.is_some() {
+            return self.reserve_portable(&mut set, want);
+        }
+        if set.native_initial.is_some() {
+            return Err(RecordOpenError::Initialization(
+                "native new document requires governor creation admission before canonical reservation".into(),
+            ));
+        }
         let (backend, key) = set.canonical_key(want)?;
         if set.pending.contains_key(&want.id) || set.open.contains_key(&want.id) {
             return Err(RecordOpenError::Busy);
@@ -2534,7 +3040,8 @@ impl RecordStore {
             want.id.clone(),
             Reserved {
                 generation,
-                store: Rc::new(owner),
+                store: Some(Rc::new(owner)),
+                actor: None,
             },
         );
         Ok(RecordReservation {
@@ -2568,6 +3075,15 @@ impl RecordStore {
                 .unwrap_or(RecordSaveStatus::MemoryOnly));
         }
         let doc = slot.doc.as_ref().ok_or(RecordOpenError::Busy)?;
+        if let Some(cache) = &set.portable {
+            return Ok(portable::save_status(
+                cache,
+                &set.package_id,
+                &set.home,
+                id,
+                doc,
+            ));
+        }
         if let Some(saver) = &slot.autosave {
             let snapshot = saver.durability_snapshot();
             if let Some(error) = snapshot.error {
@@ -2590,7 +3106,37 @@ impl RecordStore {
         })
     }
 
+    /// Block until the store has committed or refused every write `id`'s
+    /// writer already submitted, without submitting its pending edits: the
+    /// acknowledgement [`Self::save_status`] reports, awaited instead of
+    /// polled.
+    ///
+    /// # Errors
+    /// Reports missing/busy records, an unpersisted record, and the writer's
+    /// outstanding failure.
+    pub fn await_submitted(&self, id: &RecordId) -> Result<(), String> {
+        let set = self
+            .0
+            .try_borrow()
+            .map_err(|_| "record store is busy".to_string())?;
+        let slot = set
+            .open
+            .get(id)
+            .ok_or_else(|| format!("{id}: record is not open"))?;
+        let saver = slot
+            .autosave
+            .as_ref()
+            .ok_or_else(|| format!("{id}: record is not persisted"))?;
+        saver.try_flush().map_err(|error| format!("{id}: {error}"))
+    }
+
     pub fn durability_error(&self, id: &RecordId) -> Option<String> {
+        if self.0.borrow().portable.is_some() {
+            return match self.save_status(id) {
+                Ok(RecordSaveStatus::Failed(error)) => Some(error),
+                _ => None,
+            };
+        }
         self.0
             .borrow()
             .open
@@ -2605,6 +3151,9 @@ impl RecordStore {
             .0
             .try_borrow_mut()
             .map_err(|_| "record store is busy".to_string())?;
+        if set.portable.is_some() {
+            return set.flush_portable(Some(id));
+        }
         let slot = set
             .open
             .get_mut(id)
@@ -2626,7 +3175,11 @@ impl RecordStore {
     /// # Errors
     /// Returns record-specific storage failures; a subsequent explicit retry sends a full checkpoint.
     pub fn try_flush(&self) -> Result<(), String> {
-        self.0.borrow_mut().try_flush_documents(None)
+        let mut set = self.0.borrow_mut();
+        if set.portable.is_some() {
+            return set.flush_portable(None);
+        }
+        set.try_flush_documents(None)
     }
 
     /// Share an existing set.
@@ -2656,12 +3209,13 @@ impl RecordStore {
     /// # Errors
     /// Refuses existing identities, unavailable persistence, and invalid scope.
     pub fn create_record(&self, want: &RecordCheckout) -> Result<(), RecordOpenError> {
-        let canonical = self
-            .0
-            .try_borrow_mut()
-            .map_err(|_| RecordOpenError::Busy)?
-            .backend
-            .is_some();
+        if !want.is_valid_local_storage_request() {
+            return Err(RecordOpenError::IdentityMismatch);
+        }
+        let canonical = {
+            let set = self.0.try_borrow_mut().map_err(|_| RecordOpenError::Busy)?;
+            set.backend.is_some() || set.portable.is_some()
+        };
         if canonical {
             return self
                 .reserve_record(want)
@@ -2737,7 +3291,7 @@ impl RecordStore {
     /// legacy stores retain the existing open/create behavior.
     pub(crate) fn open_record_checked(&self, want: &RecordCheckout) -> Result<(), RecordOpenError> {
         let mut set = self.0.try_borrow_mut().map_err(|_| RecordOpenError::Busy)?;
-        if set.backend.is_some() {
+        if set.backend.is_some() || set.portable.is_some() {
             return set.try_open_record_with_recovery(want, false).map(|_| ());
         }
         set.open_record(want, None);
@@ -2754,8 +3308,26 @@ impl RecordStore {
         want: &RecordCheckout,
     ) -> Result<(), RecordOpenError> {
         let mut set = self.0.try_borrow_mut().map_err(|_| RecordOpenError::Busy)?;
-        if set.backend.is_some() {
+        if set.backend.is_some() || set.portable.is_some() {
             return set.try_open_record_with_recovery(want, false).map(|_| ());
+        }
+        if !set.open.contains_key(&want.id) && set.native_initial.is_some() {
+            let (mut doc, mut autosave) = set.load(want)?;
+            validate_identity(&doc, want, &set.home)?;
+            if let Some(saver) = autosave.as_mut() {
+                saver.request(&mut doc);
+            }
+            let history = crate::state::UndoLog::new(&mut doc);
+            set.open.insert(
+                want.id.clone(),
+                Parked {
+                    doc: Some(doc),
+                    kind: want.kind.clone(),
+                    autosave,
+                    history,
+                    action_state: crate::bound_dispatch::RecordActionState::default(),
+                },
+            );
         }
         if !set.open.contains_key(&want.id) {
             if !set.persistent {
@@ -2856,14 +3428,59 @@ impl RecordStore {
         std::rc::Rc::ptr_eq(&self.0, &other.0)
     }
 
+    pub(crate) fn verified_checkout(
+        &self,
+        id: &RecordId,
+    ) -> Result<RecordCheckout, RecordOpenError> {
+        let set = self.0.try_borrow().map_err(|_| RecordOpenError::Busy)?;
+        let slot = set.open.get(id).ok_or(RecordOpenError::MissingRecord)?;
+        let doc = slot.doc.as_ref().ok_or(RecordOpenError::Busy)?;
+        let checkout = identity(doc).ok_or(RecordOpenError::IdentityMismatch)?;
+        if checkout.id != *id || checkout.kind != slot.kind {
+            return Err(RecordOpenError::IdentityMismatch);
+        }
+        Ok(checkout)
+    }
+
+    pub(crate) fn admission(
+        &self,
+        checkout: &RecordCheckout,
+    ) -> Result<RecordAdmission, RecordOpenError> {
+        let set = self.0.try_borrow().map_err(|_| RecordOpenError::Busy)?;
+        let slot = set
+            .open
+            .get(&checkout.id)
+            .ok_or(RecordOpenError::MissingRecord)?;
+        let doc = slot.doc.as_ref().ok_or(RecordOpenError::Busy)?;
+        if checkout.id.is_package_primary() {
+            // A package-primary document carries no minted `id`/`kind` in its
+            // metadata (see `primary_document`), so `identity` is always
+            // `None` for it; admit it by the same rule that opened it.
+            validate_identity(doc, checkout, &set.home)?;
+        } else if identity(doc).as_ref() != Some(checkout) {
+            return Err(RecordOpenError::IdentityMismatch);
+        }
+        Ok(RecordAdmission {
+            checkout: checkout.clone(),
+            workspace: set.home.clone(),
+        })
+    }
+
     pub(crate) fn with_checked<R>(
         &self,
         id: &RecordId,
         f: impl FnOnce(&mut AutoCommit) -> R,
     ) -> Result<R, RecordOpenError> {
-        let mut set = self.0.try_borrow_mut().map_err(|_| RecordOpenError::Busy)?;
-        let document = set.document_mut(id).ok_or(RecordOpenError::MissingRecord)?;
-        Ok(f(document))
+        // A checked mutable loan is external to any action frame, exactly as
+        // `document_mut`: close the open frame and advance its generation so
+        // an operation resolved before this loan is invalidated.
+        self.with_action_state(id, |document, history, actions| {
+            actions.finish_external(document, history);
+            actions.generation = actions
+                .generation
+                .and_then(|generation| generation.checked_add(1));
+            f(document)
+        })
     }
 
     pub(crate) fn read_checked<R>(
@@ -2893,7 +3510,48 @@ impl RecordStore {
         let mut set = self.0.try_borrow_mut().map_err(|_| RecordOpenError::Busy)?;
         let parked = set.open.get_mut(id).ok_or(RecordOpenError::MissingRecord)?;
         let doc = parked.doc.as_mut().ok_or(RecordOpenError::MissingRecord)?;
-        Ok(callback(doc, &mut parked.history, &mut parked.action_state))
+        Ok(crate::invocation_scope::with_record_loan(
+            self,
+            id,
+            doc,
+            |doc| callback(doc, &mut parked.history, &mut parked.action_state),
+        ))
+    }
+
+    pub(crate) fn invocation_provenance(
+        &self,
+        id: &RecordId,
+    ) -> Result<
+        std::rc::Rc<std::cell::RefCell<crate::invocation_scope::InvocationProvenance>>,
+        RecordOpenError,
+    > {
+        let set = self.0.try_borrow().map_err(|_| RecordOpenError::Busy)?;
+        let parked = set.open.get(id).ok_or(RecordOpenError::MissingRecord)?;
+        Ok(parked.action_state.invocation_provenance.clone())
+    }
+
+    pub(crate) fn require_invocation_provenance(
+        &self,
+        checkout: &RecordCheckout,
+    ) -> Result<(), String> {
+        self.open_existing_record_checked(checkout)
+            .map_err(|error| error.to_string())?;
+        let (_, package, workspace) = self
+            .history_namespace(&checkout.id)
+            .map_err(|error| error.to_string())?;
+        let room = uuid::Uuid::parse_str(&workspace).map_err(|error| error.to_string())?;
+        let route = if checkout.id.is_package_primary() {
+            crate::collaboration::RouteSpec::app(package, room)
+        } else {
+            crate::collaboration::RouteSpec::record(package, room, checkout.id.as_str())
+        };
+        self.with_action_state(&checkout.id, |document, _, state| {
+            state
+                .invocation_provenance
+                .borrow_mut()
+                .require(route, document)
+        })
+        .map_err(|error| error.to_string())?
     }
 
     /// Generation of the record-owned action frame, for retained callers that
@@ -2907,19 +3565,29 @@ impl RecordStore {
         Ok(parked.action_state.generation)
     }
 
+    /// Capture the exact operational identity before admitting remote bytes.
+    pub(crate) fn replica_identity_stamp(
+        &self,
+        checkout: &RecordCheckout,
+    ) -> Result<ReplicaIdentityStamp, String> {
+        let (_, _, workspace) = self
+            .history_namespace(&checkout.id)
+            .map_err(|error| error.to_string())?;
+        self.read_checked(&checkout.id, |doc| {
+            ReplicaIdentityStamp::capture(doc, checkout, &workspace)
+        })
+        .map_err(|error| error.to_string())?
+    }
+
     /// Merge broker-admitted bytes atomically into the canonical owner. Validate
     /// on a private copy before ending local typing or changing the undo baseline.
-    #[allow(dead_code, reason = "used by feature-gated collaboration paths")]
     pub(crate) fn merge_remote_document(
         &self,
         checkout: &RecordCheckout,
         mutation: collab_types::DocumentMutation,
     ) -> Result<(bool, Vec<automerge::ChangeHash>), String> {
-        let (_, _, workspace) = self
-            .canonical_namespace()
-            .ok_or("record has no canonical namespace")?;
+        let identity = self.replica_identity_stamp(checkout)?;
         self.with_action_state(&checkout.id, |doc, history, actions| {
-            let origin = home(doc).ok_or("record origin is missing")?;
             let mut local = doc.clone();
             actions.commit_for_save(&mut local);
             let before = local.get_heads();
@@ -2928,7 +3596,7 @@ impl RecordStore {
                 collab_types::DocumentMutation::Snapshot(bytes) => {
                     let mut incoming =
                         AutoCommit::load(&bytes).map_err(|error| error.to_string())?;
-                    validate_replica_identity(&incoming, checkout, &workspace, &origin)?;
+                    identity.validate(&incoming)?;
                     let heads = incoming.get_heads();
                     candidate
                         .merge_incoming(&mut incoming)
@@ -2958,7 +3626,7 @@ impl RecordStore {
                         .collect()
                 }
             };
-            validate_replica_identity(&candidate, checkout, &workspace, &origin)?;
+            identity.validate(&candidate)?;
             let changed = candidate.get_heads() != before;
             if changed {
                 // Finish the local span against LOCAL heads, never the merged
@@ -2974,13 +3642,48 @@ impl RecordStore {
         .map_err(|error| error.to_string())?
     }
 
+    /// Merge a peer's full document into an open record, exactly as a
+    /// collaborator's state arriving over sync is merged: validated first,
+    /// and without moving the local author's undo history onto the peer's
+    /// edits. Returns whether anything changed.
+    ///
+    /// # Errors
+    /// Returns why the peer's document was refused; the record is unchanged.
+    pub fn merge_peer_document(
+        &self,
+        checkout: &RecordCheckout,
+        document: Vec<u8>,
+    ) -> Result<bool, String> {
+        self.merge_remote_document(checkout, collab_types::DocumentMutation::Snapshot(document))
+            .map(|(changed, _)| changed)
+    }
+
     /// Do something with a record's document. `None` if the record is not open here.
     pub fn with<R>(&self, id: &RecordId, f: impl FnOnce(&mut AutoCommit) -> R) -> Option<R> {
         let mut set = self.0.borrow_mut();
-        set.document_mut(id).map(f)
+        set.document_mut(id)
+            .map(|document| crate::invocation_scope::with_record_loan(self, id, document, f))
     }
 
     /// Read a record's document.
+    /// Merge an already admitted remote mutation into the one record owner.
+    /// Preserves unfinished local work and rebases shared undo only after merge.
+    pub fn can_merge_admitted(&self, checkout: &RecordCheckout) -> Result<bool, String> {
+        crate::bound_dispatch::can_merge_remote_owned_document(self, checkout)
+            .map_err(|error| error.to_string())
+    }
+    pub fn merge_admitted(
+        &self,
+        checkout: &RecordCheckout,
+        mutation: &collab_types::DocumentMutation,
+    ) -> Result<Option<bool>, String> {
+        let changed = crate::bound_dispatch::merge_remote_owned_document(self, checkout, mutation)
+            .map_err(|e| e.to_string())?;
+        if changed == Some(true) {
+            let _ = self.try_flush();
+        }
+        Ok(changed)
+    }
     pub fn read<R>(&self, id: &RecordId, f: impl FnOnce(&AutoCommit) -> R) -> Option<R> {
         self.read_checked(id, f).ok()
     }
@@ -3097,6 +3800,57 @@ fn validate_replica_identity(
         }
     }
     Ok(())
+}
+
+/// Whether the document carries its record metadata map.
+fn record_metadata_present(doc: &AutoCommit) -> Result<bool, String> {
+    match object_at(doc, &ROOT, META, ObjType::Map) {
+        ObjectAt::Missing => Ok(false),
+        ObjectAt::Object(_) => Ok(true),
+        ObjectAt::Invalid => Err("conflicting record metadata".into()),
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ReplicaIdentityStamp {
+    checkout: RecordCheckout,
+    workspace: String,
+    metadata: bool,
+    home: Option<String>,
+    room: Option<String>,
+}
+
+impl ReplicaIdentityStamp {
+    fn capture(
+        doc: &AutoCommit,
+        checkout: &RecordCheckout,
+        workspace: &str,
+    ) -> Result<Self, String> {
+        validate_identity(doc, checkout, workspace).map_err(|error| error.to_string())?;
+        let metadata = record_metadata_present(doc)?;
+        if !checkout.id.is_package_primary() && !metadata {
+            return Err("record metadata is missing".into());
+        }
+        Ok(Self {
+            checkout: checkout.clone(),
+            workspace: workspace.to_string(),
+            metadata,
+            home: home(doc),
+            room: room_scope(doc),
+        })
+    }
+
+    pub(crate) fn validate(&self, doc: &AutoCommit) -> Result<(), String> {
+        validate_identity(doc, &self.checkout, &self.workspace)
+            .map_err(|error| error.to_string())?;
+        if record_metadata_present(doc)? != self.metadata
+            || home(doc) != self.home
+            || room_scope(doc) != self.room
+        {
+            return Err("conflicting record identity".into());
+        }
+        Ok(())
+    }
 }
 
 impl std::fmt::Debug for RecordStore {
@@ -3349,24 +4103,17 @@ mod tests {
                 .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
                 .unwrap();
             assert!(pending.1 > 0);
-            let deadline = crate::time::now() + crate::time::Duration::from_secs(3);
-            loop {
-                let acknowledged = store.0.borrow().open[&checkout.id]
+            store.await_submitted(&checkout.id).unwrap();
+            assert_eq!(
+                store.0.borrow().open[&checkout.id]
                     .autosave
                     .as_ref()
                     .unwrap()
                     .durability_snapshot()
-                    .durable_heads
-                    == Some(older.clone());
-                if acknowledged {
-                    break;
-                }
-                assert!(
-                    crate::time::now() < deadline,
-                    "older writer acknowledgement missing"
-                );
-                std::thread::sleep(crate::time::Duration::from_millis(10));
-            }
+                    .durable_heads,
+                Some(older.clone()),
+                "older writer acknowledgement missing"
+            );
             assert_eq!(
                 store.save_status(&checkout.id).unwrap(),
                 RecordSaveStatus::Saving
@@ -3473,7 +4220,7 @@ mod tests {
             let want = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
             let mut token = store.reserve_record(&want).unwrap();
             let generation = token.generation;
-            let owner = store.0.borrow().pending[&want.id].store.clone();
+            let owner = store.0.borrow().pending[&want.id].store.clone().unwrap();
             let failure = token.initialize_with(
                 |doc| {
                     put_text(doc, "discard", "private");
@@ -3500,7 +4247,7 @@ mod tests {
                 let set = store.0.borrow();
                 let reserved = &set.pending[&want.id];
                 assert_eq!(reserved.generation, generation);
-                assert!(Rc::ptr_eq(&owner, &reserved.store));
+                assert!(Rc::ptr_eq(&owner, reserved.store.as_ref().unwrap()));
             }
             drop(owner);
             assert!(app_state::DocStore::open_canonical_at("so.tilo.test", &directory).is_err());
@@ -4401,5 +5148,197 @@ mod tests {
             assert!(matches!(result, Err(RecordOpenError::Busy)));
             assert!(store.read(&new.id, |_| ()).is_none());
         }
+    }
+
+    #[test]
+    fn package_primary_admission_uses_the_primary_identity_rule() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut owners = RecordOwners::new(temp.path().join("state"));
+        let store = owners.open("so.tilo.primary-test", "primary-room").unwrap();
+        let primary = RecordCheckout::package_primary(RecordKind::new("primary"));
+        store
+            .reserve_record(&primary)
+            .unwrap()
+            .initialize(|_| Ok(()))
+            .unwrap();
+        store.try_open_record(&primary).unwrap();
+        // A primary document has no minted id/kind, so `identity` is None;
+        // admission must still accept the actual opened primary record.
+        let admission = store.admission(&primary).unwrap();
+        assert_eq!(
+            store.with(&primary.id, |doc| admission.matches(doc, &primary)),
+            Some(true)
+        );
+        // A document claiming a minted identity is not the package primary.
+        let minted = RecordCheckout::new(RecordId::minted(), RecordKind::new("primary"));
+        let mut foreign = AutoCommit::new();
+        assert!(init_scoped(
+            &mut foreign,
+            &minted.id,
+            &minted.kind,
+            "primary-room",
+            Some("primary-room")
+        ));
+        assert!(!admission.matches(&foreign, &primary));
+    }
+
+    #[test]
+    fn strict_generic_shape_guard_preserves_valid_package_primary() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = temp.path().join("state");
+        let mut owners = RecordOwners::new(state.clone());
+        let store = owners
+            .open("dev.tilo.primary-test", "primary-room")
+            .unwrap();
+        let primary = RecordCheckout::package_primary(RecordKind::new("primary"));
+        store
+            .reserve_record(&primary)
+            .unwrap()
+            .initialize(|_| Ok(()))
+            .unwrap();
+        store.try_flush().unwrap();
+        assert!(store.try_open_record(&primary).is_ok());
+        let memory = RecordStore::in_memory();
+        memory.create_record(&primary).unwrap();
+
+        let malformed = RecordCheckout::package_primary(RecordKind::new("1invalid"));
+        assert!(matches!(
+            store.reserve_record(&malformed),
+            Err(RecordOpenError::IdentityMismatch)
+        ));
+        let malformed = RecordCheckout::package_primary(RecordKind::new("primary")).referencing(
+            RecordCheckout::new(RecordId::for_tab(1), RecordKind::new("target")),
+            "bad relation",
+        );
+        assert!(matches!(
+            store.reserve_record(&malformed),
+            Err(RecordOpenError::IdentityMismatch)
+        ));
+    }
+
+    #[test]
+    fn committed_initial_checkout_preserves_original_history_before_local_initialization() {
+        let want = RecordCheckout::new(RecordId::minted(), RecordKind::new("document"));
+        let mut actual = AutoCommit::new();
+        assert!(init_scoped(
+            &mut actual,
+            &want.id,
+            &want.kind,
+            "native-room",
+            Some("native-room")
+        ));
+        put_text(&mut actual, "body", "actual committed content");
+        actual.commit();
+        let heads = actual.get_heads();
+        let bytes = actual.save();
+        let mut set = RecordSet::in_memory().with_home("native-room");
+        let mut state = State::new();
+        assert!(set.checkout_with_initial(
+            &mut state,
+            None,
+            &want,
+            &collab_types::DocumentMutation::Snapshot(bytes)
+        ));
+        assert_eq!(
+            state.doc.get_heads(),
+            heads,
+            "no empty/default graph before actual history"
+        );
+        assert_eq!(
+            text(&state.doc, "body").as_deref(),
+            Some("actual committed content")
+        );
+    }
+
+    #[test]
+    fn committed_initial_checkout_does_not_finish_or_discard_local_work() {
+        let want = RecordCheckout::new(RecordId::minted(), RecordKind::new("document"));
+        let mut actual = AutoCommit::new();
+        assert!(init_scoped(
+            &mut actual,
+            &want.id,
+            &want.kind,
+            "native-room",
+            Some("native-room")
+        ));
+        actual.commit();
+        let mut set = RecordSet::in_memory().with_home("native-room");
+        let mut state = State::new();
+        state.doc.put(ROOT, "unfinished", "keep").unwrap();
+        let pending = state.doc.pending_ops();
+        assert!(!set.checkout_with_initial(
+            &mut state,
+            None,
+            &want,
+            &collab_types::DocumentMutation::Snapshot(actual.save())
+        ));
+        assert_eq!(state.doc.pending_ops(), pending);
+        assert!(set.active().is_none());
+    }
+}
+
+#[cfg(test)]
+mod portable_tests {
+    use super::*;
+
+    #[test]
+    fn portable_owner_preserves_reservation_identity_actor_and_durability() {
+        let cache = crate::portable_storage::PortableStorage::new("profile", "device").unwrap();
+        let mut owners = RecordOwners::portable(cache.clone());
+        let store = owners.open("so.tilo.test", "room").unwrap();
+        let again = owners.open("so.tilo.test", "room").unwrap();
+        assert!(store.same_owner(&again));
+        let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
+        let mut reservation = store.reserve_record(&checkout).unwrap();
+        assert!(again.reserve_record(&checkout).is_err());
+        assert!(!store.is_ready(&checkout.id));
+        reservation
+            .initialize(|doc| {
+                doc.put(automerge::ROOT, "title", "Hello").unwrap();
+                Ok(())
+            })
+            .unwrap();
+        let actor = store
+            .read(&checkout.id, |doc| doc.get_actor().clone())
+            .unwrap();
+        assert!(store.try_flush().is_err());
+        for write in cache.pending_writes() {
+            cache.acknowledge(&write, Ok(())).unwrap();
+        }
+        assert!(store.try_flush().is_ok());
+        assert_eq!(
+            store.save_status(&checkout.id).unwrap(),
+            RecordSaveStatus::Saved
+        );
+        drop(reservation);
+        drop(again);
+        drop(store);
+        let reopened = owners.open("so.tilo.test", "room").unwrap();
+        reopened.try_open_record(&checkout).unwrap();
+        assert_eq!(
+            reopened
+                .read(&checkout.id, |doc| doc.get_actor().clone())
+                .unwrap(),
+            actor
+        );
+        let wrong_kind = RecordCheckout::new(checkout.id.clone(), RecordKind::new("other"));
+        assert!(matches!(
+            reopened.try_open_record(&wrong_kind),
+            Err(RecordOpenError::IdentityMismatch)
+        ));
+    }
+    #[test]
+    fn portable_failed_initializer_keeps_reservation_until_drop() {
+        let cache = crate::portable_storage::PortableStorage::new("profile", "device").unwrap();
+        let store = RecordOwners::portable(cache.clone())
+            .open("so.tilo.test", "room")
+            .unwrap();
+        let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
+        let mut reservation = store.reserve_record(&checkout).unwrap();
+        assert!(reservation.initialize(|_| Err("failed".into())).is_err());
+        assert!(store.reserve_record(&checkout).is_err());
+        assert!(cache.pending_writes().is_empty());
+        drop(reservation);
+        assert!(store.reserve_record(&checkout).is_ok());
     }
 }

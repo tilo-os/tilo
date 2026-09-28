@@ -147,7 +147,8 @@ fn ghost_caret_repro() {
     // 3) Add a remote peer caret on block 0 byte 10 in Bob's colour.
     let mut presence_with_peer = PresenceCtx::empty();
     let bob = UserId("bob".to_string());
-    let block_key = ui::widget::block_editor::block_presence_key(0);
+    let first_block = app.main_panel_mut().editor_mut().blocks()[0].id.clone();
+    let block_key = ui::widget::block_editor::block_presence_key(&first_block);
     presence_with_peer.set_caret(&block_key, bob, 10);
     render(
         &mut app,

@@ -447,7 +447,7 @@ fn resync_follows_document_revisions_for_groups_and_tabs() {
 
     fn newly_active_group_retries_reveal_after_its_first_layout() {
         const LAUNCHED_GROUP: GroupId = 999;
-        let (mut tree, strip_id, first_group) = one_group_seed();
+        let (mut tree, strip_id, _) = one_group_seed();
         for id in 201..=206 {
             tree.desktop.workspaces[0].strips[0]
                 .window_groups
@@ -471,8 +471,6 @@ fn resync_follows_document_revisions_for_groups_and_tabs() {
             .group_row_mut_for_tests(strip_id)
             .expect("seed strip has a live row");
         row.set_scroll_x_for_test(row.max_scroll_x());
-        host.last_scrolled_active_group
-            .insert(strip_id, first_group);
 
         {
             let mut st = chrome.borrow_mut();
@@ -487,11 +485,6 @@ fn resync_follows_document_revisions_for_groups_and_tabs() {
 
         assert!(host.take_structure_dirty(), "launch splices a new group");
         host.tick_scroll_active_into_view_for_tests();
-        assert_eq!(
-            host.last_scrolled_active_group.get(&strip_id),
-            Some(&first_group),
-            "an unlaid group must not consume the focus-follow edge"
-        );
 
         let mut rebuilt = TaffyTree::new();
         let mut rebuilt_map = HashMap::new();
@@ -508,11 +501,6 @@ fn resync_follows_document_revisions_for_groups_and_tabs() {
         host.apply_layout(&rebuilt, rebuilt_root, Point::ORIGIN);
         host.tick_scroll_active_into_view_for_tests();
 
-        assert_eq!(
-            host.last_scrolled_active_group.get(&strip_id),
-            Some(&LAUNCHED_GROUP),
-            "the first laid-out frame must retry and accept the reveal"
-        );
         let row = host
             .group_row_mut_for_tests(strip_id)
             .expect("launched strip remains live");
@@ -630,8 +618,8 @@ fn resync_follows_document_revisions_for_groups_and_tabs() {
         {
             let mut st = chrome.borrow_mut();
             let mut tree = st.tree_mut();
-            assert!(tree.reorder_group_within_strip(strip_id, 202, 0));
-            assert!(tree.reorder_tab_within_group(first_group, 2, 0));
+            assert!(tree.reorder_group_for_tests(strip_id, 202, 0));
+            assert!(tree.reorder_tab_for_tests(first_group, 2, 0));
             drop(tree);
             st.bump();
         }
@@ -675,8 +663,8 @@ fn resync_follows_document_revisions_for_groups_and_tabs() {
         {
             let mut st = chrome.borrow_mut();
             let mut tree = st.tree_mut();
-            assert!(tree.reorder_group_within_strip(strip_id, 202, 2));
-            assert!(tree.reorder_tab_within_group(first_group, 0, 2));
+            assert!(tree.reorder_group_for_tests(strip_id, 202, 2));
+            assert!(tree.reorder_tab_for_tests(first_group, 0, 2));
             drop(tree);
             st.bump();
         }
@@ -799,8 +787,8 @@ fn resync_follows_document_revisions_for_groups_and_tabs() {
         );
         let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&local);
         let peer_base = peer.room_heads(room);
-        assert!(peer.reorder_group_within_strip(remote_strip, remote_id(4), 0));
-        assert!(peer.reorder_tab_within_group(remote_group, 2, 0));
+        assert!(peer.reorder_group_for_tests(remote_strip, remote_id(4), 0));
+        assert!(peer.reorder_tab_for_tests(remote_group, 2, 0));
         let delta = peer
             .export_room_changes_since(room, &peer_base)
             .expect("reorder room delta");

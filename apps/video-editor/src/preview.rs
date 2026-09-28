@@ -1197,7 +1197,7 @@ mod tests {
                 "the decode feature must use the real pipeline"
             );
             // Preroll is async: pump until a frame lands or a short deadline.
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            let deadline = tilo_test_env::hang_deadline();
             let mut got = false;
             while std::time::Instant::now() < deadline {
                 if decoder.update(&project, 1.0) {

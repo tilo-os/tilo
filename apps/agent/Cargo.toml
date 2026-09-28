@@ -19,6 +19,8 @@ path = "src/main.rs"
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
+runtime-portal = { path = "../../crates/runtime/runtime-portal" }
+collab-types = { path = "../../crates/collab/collab-types" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 runtime-collab = { path = "../../crates/runtime/runtime-collab" }
 # The blocking agent facade delegates to the toolkit's typed
@@ -61,11 +63,11 @@ workspace-hack = { version = "0.1" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tempfile.workspace = true
 hex.workspace = true
-shell = { path = "../../crates/session/shell", default-features = false }
-collab-types = { path = "../../crates/collab/collab-types" }
+shell = { path = "../../crates/session/shell", default-features = false, features = ["test-support"] }
 tilo-user-identity = { path = "../../crates/collab/tilo-user-identity" }
 runtime-identity = { path = "../../crates/runtime/runtime-identity" }
 ed25519-dalek.workspace = true
+tilo-test-env = { path = "../../crates/dev/test-env" }
 
 [[test]]
 name = "it"

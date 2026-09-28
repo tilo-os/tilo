@@ -75,8 +75,7 @@ optional_crypto_module="$(find /usr/lib /usr/lib64 \
      -o -path '*/gstreamer-1.0/libgstshout2.so' \
      -o -path '*/gstreamer-1.0/libgstwebrtc.so' \
      -o -path '*/gstreamer-1.0/libgstnice.so' \
-     -o -path '*/gstreamer-1.0/libgstsrtp.so' \
-     -o -path '*/qt6/plugins/tls/libqopensslbackend.so' \) \
+     -o -path '*/gstreamer-1.0/libgstsrtp.so' \) \
   \( -type f -o -type l \) -print -quit 2>/dev/null || true)"
 if [ -n "$optional_crypto_module" ]; then
   warn "optional crypto/network media plugin remains: $optional_crypto_module"

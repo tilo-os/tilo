@@ -127,7 +127,7 @@ pub fn request_phone_tethering(
     if !crate::shell::continuity_policy::ContinuityPolicySnapshot::load()
         .permits(crate::shell::continuity_policy::ContinuityCapability::WifiSettings)
     {
-        return Err("Wi-Fi Continuity is disabled on this device".into());
+        return Err(crate::shell::i18n::t("tethering-error-continuity-off"));
     }
     let snapshot = network
         .device_fabric()
@@ -135,11 +135,11 @@ pub fn request_phone_tethering(
         .get(provider)
         .cloned()
         .filter(|snapshot| snapshot.presence.online && snapshot.presence.kind == DeviceKind::Phone)
-        .ok_or_else(|| "choose an online certified phone".to_string())?;
+        .ok_or_else(|| crate::shell::i18n::t("tethering-error-choose-phone"))?;
     let request_id = random_id();
     let mut state = shell_state()
         .lock()
-        .map_err(|_| "tethering coordinator is unavailable".to_string())?;
+        .map_err(|_| crate::shell::i18n::t("tethering-error-unavailable"))?;
     if state
         .statuses
         .values()
@@ -147,7 +147,7 @@ pub fn request_phone_tethering(
         .count()
         >= 16
     {
-        return Err("too many tethering requests are already active".into());
+        return Err(crate::shell::i18n::t("tethering-error-too-many"));
     }
     while state.statuses.len() >= 32 {
         let Some(terminal) = state
@@ -156,7 +156,7 @@ pub fn request_phone_tethering(
             .find(|(_, status)| !status.can_disconnect())
             .map(|(id, _)| *id)
         else {
-            return Err("tethering history is temporarily full".into());
+            return Err(crate::shell::i18n::t("tethering-error-history-full"));
         };
         state.statuses.remove(&terminal);
     }
@@ -188,13 +188,13 @@ pub fn request_phone_tethering(
 pub fn disconnect_phone_tethering(request_id: TetheringId) -> Result<(), String> {
     let mut state = shell_state()
         .lock()
-        .map_err(|_| "tethering coordinator is unavailable".to_string())?;
+        .map_err(|_| crate::shell::i18n::t("tethering-error-unavailable"))?;
     if !state
         .statuses
         .get(&request_id)
         .is_some_and(TetheringStatusView::can_disconnect)
     {
-        return Err("that tethering session is no longer active".into());
+        return Err(crate::shell::i18n::t("tethering-error-session-inactive"));
     }
     state.commands.push_back(Command::Disconnect { request_id });
     drop(state);
@@ -210,9 +210,9 @@ pub fn disconnect_phone_tethering(request_id: TetheringId) -> Result<(), String>
 pub fn authorize_phone_tethering(request_id: TetheringId, approved: bool) -> Result<(), String> {
     let mut state = shell_state()
         .lock()
-        .map_err(|_| "tethering coordinator is unavailable".to_string())?;
+        .map_err(|_| crate::shell::i18n::t("tethering-error-unavailable"))?;
     if !state.consents.contains_key(&request_id) {
-        return Err("that tethering request is no longer pending".into());
+        return Err(crate::shell::i18n::t("tethering-error-request-gone"));
     }
     state.commands.push_back(Command::Decide {
         request_id,
@@ -254,7 +254,7 @@ impl TetheringHost for ProductionHost<'_> {
         let (_, label) = self
             .network
             .local_device_fabric_identity()
-            .ok_or_else(|| "this device has no certified personal identity".to_string())?;
+            .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-no-identity"))?;
         let suffix = label
             .chars()
             .filter(|c| !c.is_control())

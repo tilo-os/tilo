@@ -46,7 +46,7 @@
 
 use serde::Serialize;
 use std::sync::{Mutex, OnceLock, PoisonError};
-use std::time::{Instant, SystemTime};
+use web_time::{Instant, SystemTime};
 
 /// One launch's process/surface timing. Placement remains the compositor's
 /// responsibility; this small crate owns only FIFO timing correlation so

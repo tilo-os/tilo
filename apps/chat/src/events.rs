@@ -6,7 +6,6 @@
 
 use automerge::AutoCommit;
 use taffy::{NodeId, Style, TaffyTree};
-use tilo_clock::try_unix_now;
 use vello::kurbo::Point;
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
@@ -18,7 +17,6 @@ use crate::app::{
     AttachmentImportPending, AttachmentImportResult, AttachmentPickerResult, AttachmentStatus,
     ChatApp, ContextMenu, Focus, Hit, MenuAction, MenuTarget, RowSwipe, SWIPE_COMMIT_DX,
 };
-use crate::call::CallAction;
 use crate::doc::{ChatDoc, NOW};
 use crate::model::{ChannelKind, Id};
 
@@ -42,7 +40,9 @@ fn new_category_id() -> String {
 }
 
 fn now_secs() -> i64 {
-    try_unix_now().map_or(NOW, |secs| secs as i64)
+    ui::clock::SystemTime::now()
+        .duration_since(ui::clock::UNIX_EPOCH)
+        .map_or(NOW, |d| d.as_secs() as i64)
 }
 
 struct EventDispatch<'a> {
@@ -74,17 +74,17 @@ impl<'a> EventDispatch<'a> {
 /// Feed one raw winit event into an embedded [`TextInput`]. The composers live
 /// outside the taffy tree (the app lays them out by hand), so a throwaway leaf
 /// node satisfies the `Widget::handle_event` signature; the input only uses it
-/// to report a focus target, which the composer host ignores.
+/// to report a focus target, which the composer host maps to its retained owner.
 fn drive_text_input(
     ti: &mut impl Widget,
     event: &WindowEvent,
     scale: f64,
     modifiers: Modifiers,
     doc: &mut AutoCommit,
-) {
+) -> bool {
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let Ok(node) = taffy.new_leaf(Style::default()) else {
-        return;
+        return false;
     };
     let mut handled = false;
     let mut focus_target: Option<NodeId> = None;
@@ -99,6 +99,7 @@ fn drive_text_input(
         node,
         &taffy,
     );
+    focus_target.is_some()
 }
 
 /// Drive the retained shared menu from Chat's immediate-mode event host.
@@ -139,10 +140,27 @@ impl ChatApp {
         modifiers: Modifiers,
         doc: &mut AutoCommit,
         handled: &mut bool,
-    ) {
+    ) -> bool {
         if self.route_context_menu_event(event, scale, modifiers, doc) {
             *handled = true;
-            return;
+            return false;
+        }
+        if matches!(
+            event,
+            WindowEvent::MouseWheel { .. }
+                | WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    ..
+                }
+                | WindowEvent::KeyboardInput {
+                    event: KeyEvent {
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                    ..
+                }
+        ) {
+            let _ = self.tooltips.dismiss();
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
@@ -161,7 +179,7 @@ impl ChatApp {
                     // Clamped against the content height when painted.
                     self.emoji_scroll = (self.emoji_scroll - dy).max(0.0);
                     *handled = true;
-                    return;
+                    return false;
                 }
                 self.scroll += dy;
                 // A positive offset moves away from the live edge. Do this at
@@ -178,7 +196,7 @@ impl ChatApp {
                 button: MouseButton::Left,
                 ..
             } => {
-                self.handle_left_press(event, scale, modifiers, doc, handled);
+                return self.handle_left_press(event, scale, modifiers, doc, handled);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
@@ -216,6 +234,7 @@ impl ChatApp {
             }
             _ => {}
         }
+        false
     }
 
     /// Give an open shared context menu first refusal. Its selection index is
@@ -275,7 +294,7 @@ impl ChatApp {
         let tooltip_target = self.hover_tooltip_target(last_mouse);
         if self
             .tooltips
-            .on_pointer(tooltip_target, std::time::Instant::now())
+            .on_pointer(tooltip_target, ui::clock::Instant::now())
         {
             *handled = true;
         }
@@ -311,8 +330,6 @@ impl ChatApp {
                     hit,
                     Hit::CallParticipantsToggle
                         | Hit::CallMute
-                        | Hit::CallDeafen
-                        | Hit::CallAudioOnly
                         | Hit::CallShareScreen
                         | Hit::CallExpand
                         | Hit::CallLeave
@@ -350,7 +367,8 @@ impl ChatApp {
         modifiers: Modifiers,
         doc: &mut AutoCommit,
         handled: &mut bool,
-    ) {
+    ) -> bool {
+        let mut focus_requested = false;
         self.keyboard_target = None;
         match self.hit_at(self.last_mouse) {
             Some(Hit::CallDragHandle) => {
@@ -391,11 +409,16 @@ impl ChatApp {
                 // real press so the widget resolves the position.
                 if text_input_hit {
                     self.forward_press_to_focused_text_input(event, scale, modifiers, doc);
+                    // `on_hit` above activated this actual input. Its local
+                    // caret may already be focused on a cold mount, but the
+                    // retained Chat owner must still claim keyboard/IME focus.
+                    focus_requested = true;
                 }
                 *handled = true;
             }
             None => {}
         }
+        focus_requested
     }
 
     /// A left-button release: ends any overlay drag or composer
@@ -572,7 +595,7 @@ impl ChatApp {
 
     /// Enter in the picker's search field picks the best match.
     fn pick_first_emoji_result(&mut self, doc: &mut AutoCommit) {
-        let first = emoji::Catalogue::english()
+        let first = crate::i18n::emoji_catalogue()
             .search(self.emoji_search.value(), 1)
             .first()
             .map(|e| e.text());
@@ -627,12 +650,28 @@ impl ChatApp {
             return;
         }
         let key = self.draft_key();
+        let base = self.draft_base();
         drive_text_input(self.focused_composer_mut(), event, scale, modifiers, doc);
         if self.focused_composer_mut().take_submit() {
             self.send_focused(doc);
         } else if let Some(text) = self.focused_composer_mut().take_dirty() {
-            ChatDoc::set_draft(doc, &key, &text);
-            self.reload(doc);
+            ChatDoc::set_draft_from(doc, &key, &base, &text);
+            // A draft edit changes only this surface's draft. Refresh exactly
+            // the draft state `reload` would (the next splice base and the
+            // composer, which is a no-op unless a concurrent edit merged in);
+            // the full projection of every channel's messages is rebuilt by
+            // `sync` because the document moved.
+            let draft = ChatDoc::draft_text(doc, &key);
+            match self.focus {
+                Focus::Thread if self.thread_open.is_some() => {
+                    self.composer_thread.set_text(&draft);
+                    self.draft_thread = draft;
+                }
+                _ => {
+                    self.composer_main.set_text(&draft);
+                    self.draft_main = draft;
+                }
+            }
         }
     }
 
@@ -679,20 +718,21 @@ impl ChatApp {
         scale: f64,
         modifiers: Modifiers,
         doc: &mut AutoCommit,
-    ) {
+    ) -> bool {
         if self.emoji_open {
-            drive_text_input(&mut self.emoji_search, event, scale, modifiers, doc);
+            let handled = drive_text_input(&mut self.emoji_search, event, scale, modifiers, doc);
             if self.emoji_search.take_dirty().is_some() {
                 self.emoji_scroll = 0.0;
             }
             // A press elsewhere on the panel leaves typing in the query.
             self.emoji_search.set_focused(true);
+            handled
         } else if self.rename.is_some() {
-            drive_text_input(&mut self.rename_input, event, scale, modifiers, doc);
+            drive_text_input(&mut self.rename_input, event, scale, modifiers, doc)
         } else if self.editing.is_some() {
-            drive_text_input(&mut self.edit_input, event, scale, modifiers, doc);
+            drive_text_input(&mut self.edit_input, event, scale, modifiers, doc)
         } else {
-            drive_text_input(self.focused_composer_mut(), event, scale, modifiers, doc);
+            drive_text_input(self.focused_composer_mut(), event, scale, modifiers, doc)
         }
     }
 
@@ -794,7 +834,9 @@ impl ChatApp {
             Hit::AttachPick(path) => {
                 self.attach_file(doc, std::path::Path::new(&path));
             }
-            Hit::StartCall if self.can_participate() => self.on_hit_start_call(doc),
+            Hit::StartCall if self.call_allows(crate::call::CallAction::Join) => {
+                self.on_hit_start_call(doc);
+            }
             Hit::CloseThread => {
                 self.thread_open = None;
                 self.focus = Focus::Main;
@@ -803,24 +845,23 @@ impl ChatApp {
                 self.call.participants_expanded = !self.call.participants_expanded;
             }
             Hit::CallMute => {
-                if self.call_allows(CallAction::Speak) {
-                    self.call.toggle_mute();
-                    self.sync_local_voice(doc);
+                let channel = self
+                    .native_voice
+                    .channel
+                    .clone()
+                    .unwrap_or_else(|| self.call.channel.clone());
+                if let Err(error) = self.native_voice_command(
+                    &channel,
+                    ui::native_media::Command::SetMuted {
+                        muted: !self.call.muted,
+                    },
+                ) {
+                    self.media_error = Some(error);
                 }
             }
-            Hit::CallDeafen => {
-                if self.call_allows(CallAction::Speak) {
-                    self.call.toggle_deafen();
-                    self.sync_local_voice(doc);
-                }
+            Hit::CallShareScreen => {
+                self.media_error = Some("This call supports microphone audio only".into());
             }
-            Hit::CallAudioOnly => {
-                if self.call_allows(CallAction::Camera) {
-                    self.call.audio_only = !self.call.audio_only;
-                    self.sync_local_voice(doc);
-                }
-            }
-            Hit::CallShareScreen => self.toggle_screen_share(doc),
             Hit::CallExpand => {
                 self.call.expanded = !self.call.expanded;
                 self.request_relayout();
@@ -1033,6 +1074,10 @@ impl ChatApp {
             let channel = if let Some(existing) = existing {
                 existing
             } else {
+                if !self.can_participate() {
+                    self.media_error = Some("A room writer must create a voice channel".into());
+                    return;
+                }
                 let ws = self.active_ws.clone();
                 let id = new_channel_id();
                 self.perform_action(
@@ -1045,6 +1090,7 @@ impl ChatApp {
                         ChannelKind::Voice,
                     ),
                 );
+                self.reload(doc);
                 id
             };
             self.join_voice(&channel, doc);
@@ -1071,208 +1117,27 @@ impl ChatApp {
 
     // --- voice / call wiring ---------------------------------------------
 
-    /// Join a voice channel: connect the local member, publish our dialable
-    /// media ticket into the shared voice membership (the call's signalling
-    /// channel — it rides the same collab transport as the messages), dial the
-    /// peers already there, set call state, and play the join cue. Gated by the
-    /// real permission context.
-    /// Signalling: announce how peers dial our media transport in the current
-    /// call. The ticket itself comes from the transport — external, and
-    /// minted here — but writing it into the shared map is a document
-    /// mutation like any other, so it goes down the one route. A live
-    /// transport still binding has no ticket yet; it is announced once bound.
-    pub(crate) fn announce_call_ticket(&mut self, doc: &mut AutoCommit) {
-        if !self.call.active {
-            return;
-        }
-        if let Some(ticket) = self.media.local_ticket() {
-            self.perform_action(
-                doc,
-                &actions::ChatAction::SetCallTicket {
-                    channel: self.call.channel.clone(),
-                    user: self.me.id.clone(),
-                    ticket,
-                },
-            );
-        }
-    }
-
-    fn join_voice(&mut self, channel: &str, doc: &mut AutoCommit) {
-        if !self.call_allows(CallAction::Join) {
-            return;
-        }
-        let me = self.me.id.clone();
-        // Leaving a prior call first emits a leave cue for that channel.
-        if self.call.active && self.call.channel != channel {
-            let prior = self.call.channel.clone();
-            self.perform_action(
-                doc,
-                &actions::ChatAction::LeaveCall {
-                    channel: prior,
-                    user: me.clone(),
-                },
-            );
-        }
-        self.call.join(channel.to_string());
-        self.media.activate_for_call();
-        self.perform_action(
-            doc,
-            &actions::ChatAction::JoinCall {
-                channel: channel.to_string(),
-                user: me.clone(),
+    /// Pointer and accessibility call controls use the same local service as
+    /// exported Effect resources. They never mutate durable voice membership.
+    fn join_voice(&mut self, channel: &str, _doc: &mut AutoCommit) {
+        if let Err(error) = self.native_voice_command(
+            channel,
+            ui::native_media::Command::Join {
+                channel_id: channel.into(),
             },
-        );
-        self.announce_call_ticket(doc);
-        // Announce which video codecs this peer decodes, so a sender picks
-        // one every member takes (AV1/VP9 when all have them in hardware).
-        if let Some(caps) = self.local_video_caps() {
-            self.perform_action(
-                doc,
-                &actions::ChatAction::SetCallVideoCaps {
-                    channel: channel.to_string(),
-                    user: me,
-                    hardware_decode: caps.hardware_decode,
-                    software_decode: caps.software_decode,
-                },
-            );
-        }
-        self.sync_local_voice(doc);
-        // Media: publish the local audio track over the (simulated or live)
-        // transport so the pipeline is exercised end to end.
-        self.media
-            .transport_mut()
-            .publish(crate::media::TrackKind::Audio);
-        // Receiving half of the signalling handshake: dial every peer already
-        // in the call and subscribe to their audio.
-        self.connect_call_peers(doc);
-        self.sound.join();
-        self.request_relayout();
-    }
-
-    /// Leave the current call: drop the local member, play the leave cue.
-    fn leave_voice(&mut self, doc: &mut AutoCommit) {
-        if !self.call.active {
-            return;
-        }
-        let ch = self.call.channel.clone();
-        let me = self.me.id.clone();
-        self.perform_action(
-            doc,
-            &actions::ChatAction::LeaveCall {
-                channel: ch,
-                user: me,
-            },
-        );
-        self.media
-            .transport_mut()
-            .unpublish(crate::media::TrackKind::Audio);
-        self.call.leave();
-        self.sound.leave();
-        self.request_relayout();
-    }
-
-    /// Toggle this peer's screen share. Starting one asks the host for a source
-    /// (natively the xdg-desktop-portal picker) via [`ChatApp::request_screen`];
-    /// only a granted source flips
-    /// `call.sharing` and mirrors it into the shared voice membership, so remote
-    /// peers reserve the featured tile. Stopping tears the capture down and
-    /// clears the shared flag. A relayout follows because the featured stage
-    /// re-slots the participant tiles (and the host video node).
-    fn toggle_screen_share(&mut self, doc: &mut AutoCommit) {
-        if !self.call.active {
-            return;
-        }
-        // A peer may always stop an already-live share (including after a
-        // permission downgrade), but starting capture/transmission is a new
-        // workspace write and must pass the same call-action gate as joining
-        // or enabling a camera.
-        if !self.call.sharing && !self.call_allows(CallAction::ShareScreen) {
-            return;
-        }
-        if self.call.sharing {
-            self.call.sharing = false;
-            self.release_screen();
-            self.sync_local_sharing(doc);
-            self.request_relayout();
-        } else if self.request_screen(crate::call::ScreenCapturePurpose::Share) {
-            // A host that answers at once (the picker was already settled, or
-            // a recording host) finishes the share this frame; otherwise the
-            // frame that sees the answer does.
-            self.settle_screen_capture();
-            if self.screen_share_needs_sync {
-                self.sync_local_sharing(doc);
-                self.screen_share_needs_sync = false;
-                self.request_relayout();
-            }
+        ) {
+            self.media_error = Some(error);
         }
     }
 
-    /// Mirror this peer's screen-share state into the shared voice membership.
-    pub(crate) fn sync_local_sharing(&mut self, doc: &mut AutoCommit) {
-        if !self.call.active {
-            return;
-        }
-        let ch = self.call.channel.clone();
-        let sharing = self.call.sharing;
-        let me = self.me.id.clone();
-        self.perform_action(
-            doc,
-            &actions::ChatAction::SetScreenShare {
-                channel: ch,
-                user: me,
-                sharing,
-            },
-        );
-    }
-
-    /// Mirror this peer's local mic/deafen/audio-only state into the shared
-    /// voice membership so others see it. Talking is simulated from the
-    /// not-muted state for the local member.
-    fn sync_local_voice(&mut self, doc: &mut AutoCommit) {
-        if !self.call.active {
-            return;
-        }
-        let ch = self.call.channel.clone();
-        let me = self.me.id.clone();
-        self.perform_action(
-            doc,
-            &actions::ChatAction::SetCallState {
-                channel: ch,
-                user: me,
-                talking: !self.call.muted,
-                muted: self.call.muted,
-                deafened: self.call.deafened,
-                audio_only: self.call.audio_only,
-            },
-        );
-    }
-
-    /// Dial every remote peer already in the current call by their published
-    /// ticket and subscribe to their audio — the receiving half of the
-    /// ticket-based signalling. The simulated transport accepts locally; the
-    /// live iroh engine opens a QUIC connection per ticket. Idempotent
-    /// (subscriptions de-duplicate), so it is safe to call every frame while
-    /// membership changes.
-    pub(crate) fn connect_call_peers(&mut self, doc: &AutoCommit) {
-        if !self.call.active {
-            return;
-        }
-        let me = self.me.id.clone();
-        let members = ChatDoc::list_voice_members(doc, &self.call.channel);
-        self.note_call_peer_video(&me, &members);
-        for m in members {
-            if m.user == me {
-                continue;
-            }
-            if let Some(ticket) = &m.ticket {
-                self.media.transport_mut().connect(ticket);
-                self.media
-                    .transport_mut()
-                    .subscribe(crate::media::Subscription {
-                        peer: m.user.clone(),
-                        kind: crate::media::TrackKind::Audio,
-                    });
-            }
+    fn leave_voice(&mut self, _doc: &mut AutoCommit) {
+        let channel = self
+            .native_voice
+            .channel
+            .clone()
+            .unwrap_or_else(|| self.call.channel.clone());
+        if let Err(error) = self.native_voice_command(&channel, ui::native_media::Command::Leave) {
+            self.media_error = Some(error);
         }
     }
 
@@ -1556,6 +1421,15 @@ impl ChatApp {
         true
     }
 
+    /// The draft text the focused composer was last loaded from (by
+    /// `reload`), the base its next edit is spliced against.
+    fn draft_base(&self) -> String {
+        match self.focus {
+            Focus::Thread if self.thread_open.is_some() => self.draft_thread.clone(),
+            _ => self.draft_main.clone(),
+        }
+    }
+
     fn draft_key(&self) -> String {
         match self.focus {
             Focus::Thread => self
@@ -1580,9 +1454,10 @@ impl ChatApp {
             return;
         }
         let key = self.draft_key();
+        let base = self.draft_base();
         self.focused_composer_mut().insert_at_cursor(s);
         if let Some(text) = self.focused_composer_mut().take_dirty() {
-            ChatDoc::set_draft(doc, &key, &text);
+            ChatDoc::set_draft_from(doc, &key, &base, &text);
         }
         self.reload(doc);
     }
@@ -1839,6 +1714,13 @@ impl ChatApp {
         channel: &str,
         path: &std::path::Path,
     ) -> bool {
+        if !self.external_services {
+            self.attachment_status = Some(AttachmentStatus::failure(crate::i18n::t(
+                "chat-attach-unsupported-no-transport",
+            )));
+            return false;
+        }
+
         if !self.can_participate() || self.attachment_pending.is_some() {
             return false;
         }
@@ -2017,6 +1899,38 @@ mod tests {
     use crate::model;
     use tilo_automerge::ApplyIncoming;
 
+    fn service_streams(app: &mut ChatApp, channel: &str, count: usize) {
+        app.native_voice
+            .submit(ui::native_media::Command::Join {
+                channel_id: channel.into(),
+            })
+            .unwrap();
+        let requests = app.native_voice.take_requests(ui::clock::Instant::now());
+        let id = requests
+            .iter()
+            .rev()
+            .find_map(|request| match request {
+                ui::collaboration::CollabRequest::NativeMediaCommand {
+                    request_id,
+                    command,
+                } if matches!(command.command, ui::native_media::Command::Join { .. }) => {
+                    Some(*request_id)
+                }
+                _ => None,
+            })
+            .unwrap();
+        let mut snapshot = ui::native_media::Snapshot::unavailable();
+        snapshot.state = ui::native_media::State::Live;
+        snapshot.issue = None;
+        snapshot.inventory_revision = Some(1);
+        snapshot.publishers = (1..=count)
+            .map(|index| format!("{}/{index:064x}", "11".repeat(32)))
+            .collect();
+        assert!(snapshot.valid());
+        app.native_voice.complete(id, &Ok(snapshot));
+        app.project_native_voice();
+    }
+
     fn app_with_doc() -> (ChatApp, AutoCommit) {
         let mut doc = AutoCommit::new();
         ChatDoc::seed_if_empty(&mut doc);
@@ -2095,10 +2009,6 @@ mod tests {
     )]
     fn channel_context_menu_and_swipe_delete_through_the_palette_action() {
         // Phase: delete_channel_affordance_matches_palette_spec.
-        // Covenant — one source of truth: the on-screen "Delete channel" context-menu
-        // affordance builds the **byte-identical** [`EncodedAction`] the Ctrl+K
-        // palette's delete spec exports for the same channel. Drives the real menu →
-        // `apply_channel_action` path and reads the framework host's `last_dispatched`.
         {
             let (mut app, mut doc) = app_with_doc();
 
@@ -2113,7 +2023,8 @@ mod tests {
             let spec = crit.actions.iter().find(|a| a.id == "delete").unwrap();
             let from_spec = match &spec.input {
                 tilo_actions::ActionInput::Immediate(e) => e.clone(),
-                tilo_actions::ActionInput::Prompted { .. } => {
+                tilo_actions::ActionInput::Prompted { .. }
+                | tilo_actions::ActionInput::Deferred { .. } => {
                     panic!("delete is an immediate action")
                 }
             };
@@ -2141,6 +2052,7 @@ mod tests {
                     .all(|c| c.id != "c_crit")
             );
         }
+
         // Phase: context_menu_delete_removes_a_channel.
         {
             let (mut app, mut doc) = app_with_doc();
@@ -2156,6 +2068,7 @@ mod tests {
                 "channel deleted via menu"
             );
         }
+
         // Phase: context_menu_is_modal_keyboard_operable_and_accessible.
         {
             let (mut app, mut doc) = app_with_doc();
@@ -2203,6 +2116,7 @@ mod tests {
                 "Enter activates the safely focused non-destructive action"
             );
         }
+
         // Phase: swipe_left_action_matches_context_menu_primary.
         {
             // The parity invariant: a left-swipe resolves to the same action as
@@ -2213,6 +2127,7 @@ mod tests {
             );
             assert_eq!(MenuAction::channel_swipe_left(), MenuAction::Delete);
         }
+
         // Phase: swipe_left_on_a_channel_row_deletes_it.
         {
             let (mut app, mut doc) = app_with_doc();
@@ -2259,8 +2174,6 @@ mod tests {
     )]
     fn composer_edits_the_draft_and_sends_through_the_action_route() {
         // Phase: send_affordance_dispatches_a_send_message_action.
-        // The send affordance dispatches a `SendMessage` action carrying the typed
-        // text — the row insert crosses the executor, not a raw `push_message`.
         {
             let (mut app, mut doc) = app_with_doc();
             app.active_channel = "c_general".into();
@@ -2288,6 +2201,7 @@ mod tests {
                 other => panic!("expected SendMessage, got {other:?}"),
             }
         }
+
         // Phase: typing_then_send_appends_a_message.
         {
             let (mut app, mut doc) = app_with_doc();
@@ -2313,6 +2227,7 @@ mod tests {
             assert_eq!(app.composer_main.value(), "", "composer cleared after send");
             assert_eq!(app.draft_main, "", "draft cleared after send");
         }
+
         // Phase: backspace_edits_the_draft.
         {
             let (mut app, mut doc) = app_with_doc();
@@ -2332,9 +2247,8 @@ mod tests {
             );
             assert_eq!(app.draft_main, "ab", "the draft mirrors the edit");
         }
+
         // Phase: ctrl_v_pastes_clipboard_into_the_composer.
-        // Verifies Ctrl+V reaches the focused composer through the normal event
-        // path after checking the headless clipboard backend.
         {
             let (mut app, mut doc) = app_with_doc();
             app.focus = Focus::Main;
@@ -2360,9 +2274,8 @@ mod tests {
                 "the pasted draft is mirrored into the CRDT"
             );
         }
+
         // Phase: drag_select_then_ctrl_c_copies_the_selection.
-        // A drag across the composer selects a range, and Ctrl+C copies that
-        // selection to the clipboard.
         {
             let (mut app, mut doc) = app_with_doc();
             app.focus = Focus::Main;
@@ -2382,6 +2295,7 @@ mod tests {
                 "Ctrl+C copied the selected composer text to the clipboard"
             );
         }
+
         // Phase: composer_emoji_pick_inserts_into_the_draft.
         {
             let (mut app, mut doc) = app_with_doc();
@@ -2399,6 +2313,7 @@ mod tests {
             );
             assert_eq!(app.emoji_recents.items(), ["🎉"], "picks are remembered");
         }
+
         // Phase: reply_in_thread_sets_parent.
         {
             let (mut app, mut doc) = app_with_doc();
@@ -2471,6 +2386,41 @@ mod tests {
     }
 
     #[test]
+    fn semantic_send_reports_acceptance_only_when_it_appends_a_message() {
+        let (mut app, mut doc) = app_with_doc();
+        app.active_channel = "c_general".into();
+        app.focus = Focus::Main;
+        app.thread_open = None;
+        render_frame(&mut app, 1280.0, 720.0);
+        let target = app
+            .semantic_hits()
+            .into_iter()
+            .find_map(|(_, hit, ..)| matches!(hit, Hit::Send).then(|| hit.semantic_id()))
+            .expect("the painted Send button has a semantic target");
+
+        assert!(!ui::Widget::perform_semantic_action(
+            &mut app,
+            &target,
+            &ui::a11y::Action::Activate,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        let before = ChatDoc::top_level_count(&doc, "c_general");
+        ChatDoc::set_draft(&mut doc, "c_general", "accepted semantic send");
+        app.reload(&doc);
+        render_frame(&mut app, 1280.0, 720.0);
+        assert!(ui::Widget::perform_semantic_action(
+            &mut app,
+            &target,
+            &ui::a11y::Action::Activate,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert_eq!(ChatDoc::top_level_count(&doc, "c_general"), before + 1);
+        assert_eq!(ChatDoc::draft_text(&doc, "c_general"), "");
+    }
+
+    #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one labelled phase per original scenario, each with its own fresh fixture"
@@ -2497,6 +2447,7 @@ mod tests {
             // And nothing fake leaked in.
             assert!(app.users.iter().all(|u| u.id == model::ME));
         }
+
         // Phase: live_sync_seeds_empty_starter_never_the_demo.
         {
             use ui::Widget;
@@ -2541,6 +2492,7 @@ mod tests {
             assert_eq!(users.len(), 1, "only the local user — no fabricated people");
             assert_eq!(users[0].id, model::ME);
         }
+
         // Phase: workspace_switch_resets_view_state.
         {
             let (mut app, doc) = app_with_doc();
@@ -2562,6 +2514,7 @@ mod tests {
                 "landed on a channel of the new workspace"
             );
         }
+
         // Phase: inbox_opens_cross_workspace_conversation_without_losing_context.
         {
             let (mut app, mut doc) = app_with_doc();
@@ -2583,6 +2536,7 @@ mod tests {
             assert!(!app.inbox_open);
             assert_eq!(app.active_ws, context);
         }
+
         // Phase: tab_and_enter_activate_the_visible_inbox_control.
         {
             let (mut app, mut doc) = app_with_doc();
@@ -2616,18 +2570,19 @@ mod tests {
             // path so a frame paints a decoded thumbnail (not a placeholder).
             let (app, _doc) = app_with_doc();
             assert!(
-            app.messages.iter().any(|m| matches!(
-                &m.attachment,
-                Some(crate::model::Attachment::Image { blob, .. }) if blob == crate::images::DEMO_CALL_GRID
-            )),
-            "seeded conversation has an image attachment"
-        );
+                app.messages.iter().any(|m| matches!(
+                    &m.attachment,
+                    Some(crate::model::Attachment::Image { blob, .. }) if blob == crate::images::DEMO_CALL_GRID
+                )),
+                "seeded conversation has an image attachment"
+            );
             app.prewarm_images();
             assert!(
                 app.images.get(crate::images::DEMO_CALL_GRID).is_some(),
                 "the shared ImageStore decoded the attachment thumbnail"
             );
         }
+
         // Phase: attach_shares_a_real_file_with_true_dimensions_and_no_caption.
         {
             // The picker imports the selected file into the content store, with
@@ -2665,6 +2620,7 @@ mod tests {
                 other => panic!("expected a real image attachment, got {other:?}"),
             }
         }
+
         // Phase: attach_button_opens_picker_listing_real_workspace_files.
         {
             let (mut app, mut doc) = app_with_doc();
@@ -2687,6 +2643,7 @@ mod tests {
                 "a real workspace image is listed, not a synthesized stand-in"
             );
         }
+
         // Phase: picker_result_settlement_is_generation_checked_and_cancelled_when_dismissed.
         {
             let (mut app, doc) = app_with_doc();
@@ -2729,6 +2686,7 @@ mod tests {
             // tests: a cancellation never authors a document operation.
             assert!(!ChatDoc::list_messages(&doc, "c_crit").is_empty());
         }
+
         // Phase: attaching_a_video_posts_an_inline_video_card.
         {
             let (mut app, mut doc) = app_with_doc();
@@ -2755,6 +2713,7 @@ mod tests {
                 other => panic!("expected a Video attachment, got {other:?}"),
             }
         }
+
         // Phase: attaching_a_generic_file_posts_a_portable_file_card.
         {
             let (mut app, mut doc) = app_with_doc();
@@ -2781,6 +2740,7 @@ mod tests {
                 other => panic!("expected a generic File attachment, got {other:?}"),
             }
         }
+
         // Phase: stale_import_result_does_not_consume_the_accepted_request.
         {
             let (mut app, mut doc) = app_with_doc();
@@ -2810,182 +2770,33 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one labelled phase per original scenario, each with its own fresh fixture"
-    )]
-    fn calls_start_join_leave_and_mute_through_shared_voice_membership() {
-        // Phase: switching_to_voice_channel_starts_a_call.
-        {
-            let (mut app, mut doc) = app_with_doc();
-            app.call.active = false;
-            app.on_hit(Hit::Channel("c_standup".into()), &mut doc);
-            assert!(app.call.active);
-            assert_eq!(app.call.channel, "c_standup");
-            // Joining records the local member in the shared voice membership.
-            assert!(
-                ChatDoc::list_voice_members(&doc, "c_standup")
-                    .iter()
-                    .any(|m| m.user == model::ME)
-            );
-        }
-        // Phase: leaving_a_call_removes_local_member.
-        {
-            let (mut app, mut doc) = app_with_doc();
-            app.on_hit(Hit::Channel("c_standup".into()), &mut doc);
-            assert!(
-                ChatDoc::list_voice_members(&doc, "c_standup")
-                    .iter()
-                    .any(|m| m.user == model::ME)
-            );
-            app.on_hit(Hit::CallLeave, &mut doc);
-            assert!(!app.call.active);
-            assert!(
-                !ChatDoc::list_voice_members(&doc, "c_standup")
-                    .iter()
-                    .any(|m| m.user == model::ME)
-            );
-        }
-        // Phase: start_call_creates_a_voice_channel_when_the_workspace_has_none.
-        {
-            let (mut app, mut doc) = app_with_doc();
-            app.on_hit_workspace("ws_jam".into());
-            app.reload(&doc);
-            assert_eq!(app.active_ws, "ws_jam");
-            assert!(
-                !app.channels
-                    .iter()
-                    .any(|c| c.workspace == "ws_jam" && c.kind == ChannelKind::Voice),
-                "the weekend-jam workspace starts text-only"
-            );
-            app.on_hit(Hit::StartCall, &mut doc);
-            assert!(
-                app.call.active,
-                "the Call button starts a call even with no voice channel"
-            );
-            assert!(
-                app.channels
-                    .iter()
-                    .any(|c| c.workspace == "ws_jam" && c.kind == ChannelKind::Voice),
-                "a voice channel was created to hold the call"
-            );
-            assert!(
-                ChatDoc::list_voice_members(&doc, &app.call.channel)
-                    .iter()
-                    .any(|m| m.user == model::ME)
-            );
-        }
-        // Phase: header_call_button_joins_an_existing_voice_channel.
-        {
-            let (mut app, mut doc) = app_with_doc();
-            assert!(!app.call.active);
-            let voice_before = app
-                .channels
-                .iter()
-                .filter(|c| c.workspace == "ws_acme" && c.kind == ChannelKind::Voice)
-                .count();
-            app.on_hit(Hit::StartCall, &mut doc);
-            assert!(app.call.active);
-            assert_eq!(
-                app.channel(&app.call.channel).unwrap().kind,
-                ChannelKind::Voice,
-                "joined an existing voice channel"
-            );
-            let voice_after = app
-                .channels
-                .iter()
-                .filter(|c| c.workspace == "ws_acme" && c.kind == ChannelKind::Voice)
-                .count();
-            assert_eq!(
-                voice_before, voice_after,
-                "no spurious voice channel created when one exists"
-            );
-        }
-        // Phase: no_mute_or_deafen_controls_outside_a_call.
-        {
-            let (mut app, mut doc) = app_with_doc();
-            assert!(!app.call.active);
-            render_frame(&mut app, 1280.0, 720.0);
-            assert_eq!(
-                count_hits(&app, |h| matches!(h, Hit::CallMute)),
-                0,
-                "no mute control outside a call"
-            );
-            assert_eq!(
-                count_hits(&app, |h| matches!(h, Hit::CallDeafen)),
-                0,
-                "no deafen control outside a call"
-            );
-            // Join a call → the sidebar identity bar now offers real toggles.
-            app.on_hit(Hit::Channel("c_standup".into()), &mut doc);
-            assert!(app.call.active);
-            render_frame(&mut app, 1280.0, 720.0);
-            let side = app.sidebar_rect();
-            assert!(
-                app.hits
-                    .iter()
-                    .any(|(r, h)| matches!(h, Hit::CallMute) && r.x1 <= side.x1 + 1.0),
-                "in a call the sidebar shows a mute toggle"
-            );
-        }
-        // Phase: call_mute_writes_through_to_shared_voice_membership.
-        {
-            let (mut app, mut doc) = app_with_doc();
-            app.on_hit(Hit::Channel("c_standup".into()), &mut doc); // join
-            assert!(app.call.active);
-            let me_muted = |doc: &AutoCommit| {
-                ChatDoc::list_voice_members(doc, "c_standup")
-                    .into_iter()
-                    .find(|m| m.user == model::ME)
-                    .is_some_and(|m| m.muted)
-            };
-            assert!(!me_muted(&doc), "unmuted on join");
-            app.on_hit(Hit::CallMute, &mut doc);
-            assert!(app.call.muted, "local state flipped");
-            assert!(
-                me_muted(&doc),
-                "muting is mirrored into the shared voice membership"
-            );
-        }
-        // Phase: follow_host_control_no_longer_exists.
-        {
-            let (app, _doc) = app_with_doc();
-            let (_, buttons) = app.overlay_controls_layout();
-            assert!(
-                !buttons.iter().any(|(label, ..)| *label == "Follow host"),
-                "the non-functional Follow-host toggle was removed"
-            );
-            // The genuinely-wired controls remain.
-            assert!(buttons.iter().any(|(l, ..)| *l == "Mute"));
-            assert!(buttons.iter().any(|(l, ..)| *l == "Leave"));
-        }
+    fn switching_to_voice_channel_starts_a_muted_service_join_without_membership_write() {
+        let (mut app, mut doc) = app_with_doc();
+        let before = doc.save();
+        app.on_hit(Hit::Channel("c_standup".into()), &mut doc);
+        assert!(app.call.active && app.call.muted && app.call.audio_only);
+        assert_eq!(app.call.channel, "c_standup");
+        assert_eq!(
+            app.native_voice.snapshot.state,
+            ui::native_media::State::Preparing
+        );
+        assert_eq!(doc.save(), before);
+    }
+
+    #[test]
+    fn expanding_a_call_preserves_verified_streams_without_rewriting_legacy_history() {
+        let (mut app, mut doc) = app_with_doc();
+        app.on_hit(Hit::Channel("c_huddle".into()), &mut doc);
+        service_streams(&mut app, "c_huddle", 3);
+        let before = doc.save();
+        app.on_hit(Hit::CallExpand, &mut doc);
+        assert!(app.call.expanded);
+        assert_eq!(app.voice_in("c_huddle").len(), 3);
+        assert_eq!(doc.save(), before);
     }
 
     #[test]
     fn call_overlay_keeps_the_roster_and_fills_its_surface_at_every_size() {
-        // Phase: expanding_a_call_keeps_the_full_remote_roster.
-        {
-            // Reaching the expanded overlay through the real hit path: joining the
-            // demo huddle and hitting Expand must leave every remote in the call,
-            // so the overlay lays out host + three remote tiles (which the grid
-            // packer then keeps inside the window — see render_call's grid test).
-            let (mut app, mut doc) = app_with_doc();
-            app.on_hit(Hit::Channel("c_huddle".into()), &mut doc); // join the huddle
-            assert!(app.call.active && app.call.channel == "c_huddle");
-            app.on_hit(Hit::CallExpand, &mut doc);
-            assert!(
-                app.call.expanded,
-                "the Expand control opens the full-window overlay"
-            );
-            let remotes = ChatDoc::list_voice_members(&doc, "c_huddle")
-                .into_iter()
-                .filter(|m| m.user != model::ME)
-                .count();
-            assert_eq!(
-                remotes, 3,
-                "all three remote participants remain in the call"
-            );
-        }
         // Phase: expanded_overlay_fills_the_surface_at_every_width.
         {
             // The narrow/portrait void regression, exercised through the real app:
@@ -2995,6 +2806,7 @@ mod tests {
             use vello::kurbo::Rect;
             let (mut app, mut doc) = app_with_doc();
             app.on_hit(Hit::Channel("c_huddle".into()), &mut doc);
+            service_streams(&mut app, "c_huddle", 3);
             app.on_hit(Hit::CallExpand, &mut doc);
             assert!(app.call.active && app.call.expanded);
 
@@ -3048,6 +2860,7 @@ mod tests {
                 );
             }
         }
+
         // Phase: call_resize_samples_keep_content_and_native_chrome_in_one_geometry.
         {
             let (mut app, _doc) = app_with_doc();
@@ -3078,6 +2891,19 @@ mod tests {
     }
 
     #[test]
+    fn leaving_a_call_clears_local_service_state_without_rewriting_history() {
+        let (mut app, mut doc) = app_with_doc();
+        app.on_hit(Hit::Channel("c_standup".into()), &mut doc);
+        service_streams(&mut app, "c_standup", 2);
+        let before = doc.save();
+        assert_eq!(app.voice_in("c_standup").len(), 2);
+        app.on_hit(Hit::CallLeave, &mut doc);
+        assert!(!app.call.active && app.call.muted);
+        assert!(app.voice_in("c_standup").is_empty());
+        assert_eq!(doc.save(), before);
+    }
+
+    #[test]
     fn channels_and_categories_are_created_renamed_and_reordered_from_the_sidebar() {
         // Phase: add_channel_creates_and_opens_rename.
         {
@@ -3096,6 +2922,7 @@ mod tests {
                 "new channel opens the inline rename editor"
             );
         }
+
         // Phase: inline_rename_writes_through.
         {
             let (mut app, mut doc) = app_with_doc();
@@ -3106,6 +2933,7 @@ mod tests {
             let c = app.channels.iter().find(|c| c.id == "c_random").unwrap();
             assert_eq!(c.name, "watercooler");
         }
+
         // Phase: inline_rename_selection_and_ime_stay_local_until_enter.
         {
             let (mut app, mut doc) = app_with_doc();
@@ -3136,6 +2964,7 @@ mod tests {
             feed(&mut app, &mut doc, &key_named(NamedKey::Enter));
             assert_eq!(app.channel("c_random").unwrap().name, "東京");
         }
+
         // Phase: category_create_and_collapse_via_the_hit_path.
         {
             let (mut app, mut doc) = app_with_doc();
@@ -3161,6 +2990,7 @@ mod tests {
                 "the caret toggles the category collapsed state"
             );
         }
+
         // Phase: reorder_channel_via_menu_action.
         {
             let (mut app, mut doc) = app_with_doc();
@@ -3197,6 +3027,7 @@ mod tests {
                 "toggling the left flap flips it"
             );
         }
+
         // Phase: flaps_reflow_when_width_changes_on_the_same_instance.
         {
             // Guard against "responsive on first launch, frozen after resize": the
@@ -3224,6 +3055,7 @@ mod tests {
                 "widening reflows back to docked"
             );
         }
+
         // Phase: members_pill_reveals_the_roster_not_a_blank_column.
         {
             let (mut app, mut doc) = app_with_doc();
@@ -3248,6 +3080,7 @@ mod tests {
                 "no thread panel is shown when no thread is open"
             );
         }
+
         // Phase: narrow_thread_is_a_full_detail_view_with_back_navigation.
         {
             let (mut app, _doc) = app_with_doc();
@@ -3273,6 +3106,7 @@ mod tests {
                 "the navigation drawer does not float over pushed thread content"
             );
         }
+
         // Phase: open_thread_affordance_opens_thread_and_right_flap.
         {
             let (mut app, mut doc) = app_with_doc();
@@ -3293,6 +3127,7 @@ mod tests {
             );
             assert_eq!(app.focus, Focus::Main);
         }
+
         // Phase: escape_unwinds_the_layer_stack.
         {
             let (mut app, mut doc) = app_with_doc();
@@ -3330,25 +3165,17 @@ mod tests {
         channel: &str,
         expected_count: usize,
     ) {
-        for _ in 0..100 {
+        tilo_test_env::wait_until("the attachment worker", || {
             app.settle_attachment_import(doc);
-            if ChatDoc::list_messages(doc, channel).len() == expected_count {
-                return;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        panic!("attachment worker did not settle within 500ms");
+            ChatDoc::list_messages(doc, channel).len() == expected_count
+        });
     }
 
     fn settle_picker_until(app: &mut ChatApp) {
-        for _ in 0..100 {
+        tilo_test_env::wait_until("the attachment picker worker", || {
             app.settle_attachment_picker();
-            if app.attachment_picker_pending.is_none() {
-                return;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        panic!("attachment picker worker did not settle within 500ms");
+            app.attachment_picker_pending.is_none()
+        });
     }
 
     #[test]
@@ -3358,10 +3185,6 @@ mod tests {
     )]
     fn own_messages_are_edited_in_place_and_commit_only_on_save() {
         // Phase: edit_via_menu_writes_through_edit_message.
-        // Drive an edit end to end through the real handlers: the message action
-        // menu's Edit loads the body into the inline editor, keystrokes revise it,
-        // and Enter writes it through `ChatDoc::edit_message` — flagging the
-        // message edited and archiving the prior body into its history.
         {
             let (mut app, mut doc) = app_with_doc();
             let original = app.message("m_me1").unwrap().text.clone();
@@ -3408,6 +3231,7 @@ mod tests {
                 "history holds the original body"
             );
         }
+
         // Phase: message_edit_selection_and_ime_commit_only_on_save.
         {
             let (mut app, mut doc) = app_with_doc();
@@ -3448,6 +3272,7 @@ mod tests {
             feed(&mut app, &mut doc, &key_named(NamedKey::Enter));
             assert_eq!(app.message("m_me1").unwrap().text, "東京");
         }
+
         // Phase: clicking_message_editor_places_the_shared_input_caret.
         {
             let (mut app, mut doc) = app_with_doc();
@@ -3482,9 +3307,8 @@ mod tests {
             assert_eq!(app.edit_input.cursor_pos(), cursor + 1);
             assert!(!app.edit_input.value().ends_with('Z'));
         }
+
         // Phase: arrow_up_in_empty_composer_edits_last_own_message.
-        // `ArrowUp` in an empty composer loads your most recent message into the
-        // inline editor (Slack/Discord convention).
         {
             let (mut app, mut doc) = app_with_doc();
             app.focus = Focus::Main;
@@ -3502,9 +3326,8 @@ mod tests {
                 "seeded with its current body"
             );
         }
+
         // Phase: arrow_up_with_a_draft_does_not_start_editing.
-        // `ArrowUp` does nothing once a draft is being composed — it must not
-        // clobber in-progress text with an edit.
         {
             let (mut app, mut doc) = app_with_doc();
             app.focus = Focus::Main;
@@ -3516,8 +3339,8 @@ mod tests {
                 "a non-empty composer suppresses ArrowUp-to-edit"
             );
         }
+
         // Phase: edit_escape_discards_without_writing.
-        // Escape cancels an in-progress edit and writes nothing.
         {
             let (mut app, mut doc) = app_with_doc();
             let original = app.message("m_me1").unwrap().text.clone();
@@ -3529,9 +3352,8 @@ mod tests {
             assert_eq!(m.text, original, "cancel leaves the message untouched");
             assert!(!m.edited, "cancel does not flag the message edited");
         }
+
         // Phase: cannot_edit_another_authors_message.
-        // Only your own messages are editable — loading a foreign message is a
-        // no-op, so there is no way to rewrite someone else's words.
         {
             let (mut app, _doc) = app_with_doc();
             assert_eq!(app.message("m_open").unwrap().author, "u_a71c");
@@ -3541,6 +3363,7 @@ mod tests {
                 "a foreign message never enters the editor"
             );
         }
+
         // Phase: edit_history_popover_opens_and_dismisses.
         {
             let (mut app, mut doc) = app_with_doc();
@@ -3581,6 +3404,7 @@ mod tests {
                 "no frame is fabricated at construction"
             );
         }
+
         // Phase: detached_call_keeps_live_controls_in_the_shell_presentation_pass.
         {
             use ui::Widget;
@@ -3753,6 +3577,7 @@ mod tests {
             );
             assert!(!Widget::wants_pointer_capture(&app));
         }
+
         // Phase: call_controls_track_hover_and_clear_it_on_departure.
         {
             let (mut app, mut doc) = app_with_doc();
@@ -3949,6 +3774,7 @@ mod tests {
             );
             assert_eq!(heading.description.as_deref(), Some(channel.topic.as_str()));
         }
+
         // Phase: narrow_elided_header_and_icon_controls_publish_hover_help.
         {
             let (mut app, _doc) = app_with_doc();
@@ -3981,6 +3807,7 @@ mod tests {
                 "the header title must not leak through a foreground control"
             );
         }
+
         // Phase: semantic_text_inputs_accept_focus_value_and_selection_without_sending.
         {
             let (mut app, mut doc) = app_with_doc();
@@ -4038,6 +3865,7 @@ mod tests {
                 "draft remains unsent until Send"
             );
         }
+
         // Phase: every_visible_scenario_has_unique_semantic_targets.
         {
             for (scenario, width, height) in [
@@ -4068,6 +3896,37 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn composer_accessibility_keeps_a_backward_browser_selection_direction() {
+        let (mut app, mut doc) = app_with_doc();
+        app.composer_main.set_text("Ae\u{301}👋B");
+        render_frame(&mut app, 1280.0, 720.0);
+        assert!(ui::Widget::perform_action(
+            &mut app.composer_main,
+            &ui::a11y::Action::SetSelection {
+                anchor: 4,
+                focus: 2,
+            },
+            &mut doc,
+            &automerge::ROOT,
+        ));
+
+        let root = ui::Widget::accessibility(&app).expect("Chat has a semantic root");
+        let composer = root
+            .children
+            .iter()
+            .find(|node| node.action_target.as_deref() == Some("chat.composer"))
+            .expect("the main composer remains semantic");
+        assert_eq!(
+            composer.text_selection,
+            Some(ui::a11y::AccessibleTextSelection {
+                anchor: 9,
+                focus: 4
+            }),
+            "the semantic bridge must retain the anchor at the right edge while Shift+Left moves focus backward"
+        );
     }
 
     #[test]
@@ -4106,6 +3965,7 @@ mod tests {
             app.on_hit(Hit::EmojiChoice("🔥".into()), &mut doc);
             assert!(!reacted(&app), "picking it again removed the reaction");
         }
+
         // Phase: reaction_chips_have_unique_toggle_semantics_and_use_the_shared_action_route.
         {
             let (mut app, mut doc) = app_with_doc();
@@ -4170,33 +4030,20 @@ mod tests {
     // --- members roster (right flap "members" half was unimplemented) ---
 
     #[test]
-    fn roster_shows_only_this_workspaces_people_and_collaboration_controls() {
-        // Phase: roster_projects_users_and_voice_membership.
-        {
-            let (app, _doc) = app_with_doc();
-            let rows = app.roster_rows();
-            assert_eq!(
-                rows.len(),
-                app.users.len(),
-                "every workspace member is listed"
-            );
-            // In-voice members sort to the top and carry the voice channel name.
-            assert!(
-                rows[0].1.is_some() && rows[1].1.is_some() && rows[2].1.is_some(),
-                "the three huddle members rank first"
-            );
-            let aria = rows.iter().find(|(u, _)| u.id == "u_a71c").unwrap();
-            assert_eq!(
-                aria.1.as_deref(),
-                Some("Design Huddle"),
-                "shows the real voice channel"
-            );
-            let devon = rows.iter().find(|(u, _)| u.id == "u_5e70").unwrap();
-            assert!(
-                devon.1.is_none(),
-                "someone not in a call has no voice label"
-            );
+    fn roster_projects_people_without_guessing_stream_identity_or_legacy_presence() {
+        let (mut app, _) = app_with_doc();
+        let people = app.users.len();
+        service_streams(&mut app, "c_huddle", 3);
+        let rows = app.roster_rows();
+        assert_eq!(rows.len(), people);
+        assert!(rows.iter().all(|(_, channel)| channel.is_none()));
+        for stream in app.voice_in("c_huddle") {
+            assert!(app.user_name(&stream.user).starts_with("Audio stream "));
         }
+    }
+
+    #[test]
+    fn roster_shows_only_this_workspaces_people_and_collaboration_controls() {
         // Phase: workspace_people_do_not_leak_from_the_global_identity_directory.
         {
             let (mut app, mut doc) = app_with_doc();
@@ -4230,6 +4077,7 @@ mod tests {
                 "global directory entries must not surface People/call controls in a private workspace"
             );
         }
+
         // Phase: private_workspace_keeps_collaboration_controls_out_of_the_header.
         {
             let mut doc = AutoCommit::new();
@@ -4250,6 +4098,82 @@ mod tests {
     }
 
     // --- unread badges (were seed-only fake data) -----------------------
+
+    /// Lay the app out once in a real viewport, as every presenting runner
+    /// (native window, browser canvas, offscreen shot) does before drawing.
+    fn present(app: &mut ChatApp) {
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: std::collections::HashMap<NodeId, *mut dyn Widget> =
+            std::collections::HashMap::new();
+        let theme = ui::Theme::default();
+        let node = app.build_layout(&mut taffy, &theme, &mut node_map);
+        taffy
+            .compute_layout(
+                node,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(1200.0),
+                    height: taffy::AvailableSpace::Definite(800.0),
+                },
+            )
+            .unwrap();
+        app.apply_layout(&taffy, node, vello::kurbo::Point::ORIGIN);
+    }
+
+    #[test]
+    fn headless_host_worker_sync_never_authors_read_receipts() {
+        // A hosted/headless worker only pumps the model (update + sync) and
+        // never lays out: read state belongs to the person's device, so the
+        // host identity must not append "Mark channel read" changes.
+        let (mut app, mut doc) = app_with_doc();
+        let channel = app.active_channel.clone();
+        ChatDoc::push_message(
+            &mut doc,
+            &channel,
+            NewMessage {
+                author: "u_a71c".into(),
+                ts: NOW + 1,
+                text: "arrived while nobody was looking".into(),
+                ..Default::default()
+            },
+        );
+        let watermark = ChatDoc::read_watermark(&doc, &channel, &app.me.id);
+        let heads = doc.get_heads();
+        for _ in 0..5 {
+            assert!(!app.update(&mut doc, &automerge::ROOT));
+            app.sync(&mut doc, &automerge::ROOT);
+        }
+        assert_eq!(
+            ChatDoc::read_watermark(&doc, &channel, &app.me.id),
+            watermark,
+            "an unpresented worker must not advance the read watermark"
+        );
+        assert_eq!(
+            doc.get_heads(),
+            heads,
+            "an unpresented worker authored a change"
+        );
+
+        // The same instance once presented to a person marks the channel in
+        // view read on the next model frame, without waiting for input.
+        present(&mut app);
+        assert!(
+            app.needs_animation_frame(),
+            "first presentation requests a model frame"
+        );
+        assert!(
+            app.update(&mut doc, &automerge::ROOT),
+            "first presentation re-runs sync"
+        );
+        app.sync(&mut doc, &automerge::ROOT);
+        assert!(
+            ChatDoc::read_watermark(&doc, &channel, &app.me.id) > watermark,
+            "the presented channel is marked read"
+        );
+        assert!(
+            !app.update(&mut doc, &automerge::ROOT),
+            "the extra frame is one-shot"
+        );
+    }
 
     #[test]
     #[allow(
@@ -4285,6 +4209,7 @@ mod tests {
                 "a read channel stays read after leaving"
             );
         }
+
         // Phase: a_message_in_another_channel_shows_as_unread.
         {
             let (mut app, mut doc) = app_with_doc();
@@ -4315,6 +4240,7 @@ mod tests {
                 "the unseen message is counted unread"
             );
         }
+
         // Phase: mouse_wheel_scrolls_the_timeline.
         {
             let (mut app, mut doc) = app_with_doc();
@@ -4325,6 +4251,7 @@ mod tests {
             feed(&mut app, &mut doc, &wheel(-5.0));
             assert!(app.scroll < up, "scrolling the other way moves it back");
         }
+
         // Phase: reading_history_does_not_mark_new_messages_read_until_returning_to_latest.
         {
             let (mut app, mut doc) = app_with_doc();
@@ -4359,6 +4286,7 @@ mod tests {
                 "the same message is acknowledged once the reader returns to it"
             );
         }
+
         // Phase: history_scroll_exposes_an_accessible_return_to_latest_control.
         {
             let (mut app, mut doc) = app_with_doc();
@@ -4398,6 +4326,7 @@ mod tests {
             assert_eq!(app.scroll, 0.0);
             assert!(app.timeline_at_end);
         }
+
         // Phase: ctrl_end_returns_to_the_live_edge_without_stealing_plain_end.
         {
             let (mut app, mut doc) = app_with_doc();
@@ -4416,14 +4345,134 @@ mod tests {
 
     // --- sidebar mute/deafen (were dead outside a call) -----------------
 
-    // --- screen share (portal seam + presentation stage) ----------------
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one labelled phase per original scenario, each with its own fresh fixture"
+    )]
+    fn calls_start_join_leave_and_mute_through_shared_voice_membership() {
+        // Phase: start_call_creates_a_voice_channel_when_the_workspace_has_none.
+        {
+            let (mut app, mut doc) = app_with_doc();
+            app.on_hit_workspace("ws_jam".into());
+            app.reload(&doc);
+            assert_eq!(app.active_ws, "ws_jam");
+            assert!(
+                !app.channels
+                    .iter()
+                    .any(|c| c.workspace == "ws_jam" && c.kind == ChannelKind::Voice),
+                "the weekend-jam workspace starts text-only"
+            );
+            app.on_hit(Hit::StartCall, &mut doc);
+            assert!(
+                app.call.active,
+                "the Call button starts a call even with no voice channel"
+            );
+            assert!(
+                app.channels
+                    .iter()
+                    .any(|c| c.workspace == "ws_jam" && c.kind == ChannelKind::Voice),
+                "a voice channel was created to hold the call"
+            );
+            assert!(ChatDoc::list_voice_members(&doc, &app.call.channel).is_empty());
+            assert!(app.call.muted);
+            assert_eq!(
+                app.native_voice.snapshot.state,
+                ui::native_media::State::Preparing
+            );
+        }
 
-    fn me_sharing(doc: &AutoCommit, channel: &str) -> bool {
-        ChatDoc::list_voice_members(doc, channel)
-            .into_iter()
-            .find(|m| m.user == model::ME)
-            .is_some_and(|m| m.sharing)
+        // Phase: header_call_button_joins_an_existing_voice_channel.
+        {
+            let (mut app, mut doc) = app_with_doc();
+            assert!(!app.call.active);
+            let voice_before = app
+                .channels
+                .iter()
+                .filter(|c| c.workspace == "ws_acme" && c.kind == ChannelKind::Voice)
+                .count();
+            app.on_hit(Hit::StartCall, &mut doc);
+            assert!(app.call.active);
+            assert_eq!(
+                app.channel(&app.call.channel).unwrap().kind,
+                ChannelKind::Voice,
+                "joined an existing voice channel"
+            );
+            let voice_after = app
+                .channels
+                .iter()
+                .filter(|c| c.workspace == "ws_acme" && c.kind == ChannelKind::Voice)
+                .count();
+            assert_eq!(
+                voice_before, voice_after,
+                "no spurious voice channel created when one exists"
+            );
+        }
+
+        // Phase: no_mute_or_deafen_controls_outside_a_call.
+        {
+            let (mut app, mut doc) = app_with_doc();
+            assert!(!app.call.active);
+            render_frame(&mut app, 1280.0, 720.0);
+            assert_eq!(
+                count_hits(&app, |h| matches!(h, Hit::CallMute)),
+                0,
+                "no mute control outside a call"
+            );
+            // Join a call → the sidebar identity bar now offers real toggles.
+            app.on_hit(Hit::Channel("c_standup".into()), &mut doc);
+            assert!(app.call.active);
+            render_frame(&mut app, 1280.0, 720.0);
+            let side = app.sidebar_rect();
+            assert!(
+                app.hits
+                    .iter()
+                    .any(|(r, h)| matches!(h, Hit::CallMute) && r.x1 <= side.x1 + 1.0),
+                "in a call the sidebar shows a mute toggle"
+            );
+        }
+
+        // Phase: follow_host_control_no_longer_exists.
+        {
+            let (app, _doc) = app_with_doc();
+            let (_, buttons) = app.overlay_controls_layout();
+            assert!(
+                !buttons.iter().any(|(label, ..)| *label == "Follow host"),
+                "the non-functional Follow-host toggle was removed"
+            );
+            // The genuinely-wired controls remain.
+            assert!(buttons.iter().any(|(l, ..)| *l == "Unmute"));
+            assert!(buttons.iter().any(|(l, ..)| *l == "Leave"));
+        }
     }
+
+    #[test]
+    fn microphone_intent_waits_for_local_service_and_never_writes_membership() {
+        let (mut app, mut doc) = app_with_doc();
+        app.on_hit(Hit::Channel("c_standup".into()), &mut doc);
+        service_streams(&mut app, "c_standup", 0);
+        let before = doc.save();
+        assert!(app.call.muted);
+        app.on_hit(Hit::CallMute, &mut doc);
+        assert!(
+            app.call.muted,
+            "a microphone request is not local consent or active capture"
+        );
+        let requests = app.native_voice.take_requests(ui::clock::Instant::now());
+        assert!(requests.iter().any(|request| matches!(
+            request,
+            ui::collaboration::CollabRequest::NativeMediaCommand {
+                command: ui::native_media::Request {
+                    command: ui::native_media::Command::SetMuted { muted: false },
+                    ..
+                },
+                ..
+            }
+        )));
+        assert_eq!(doc.save(), before);
+    }
+
+    // --- screen share (portal seam + presentation stage) ----------------
 
     /// A host grant of a `PipeWire` stream.
     fn granted(node_id: u32) -> ui::capture::ScreenCaptureOutcome {
@@ -4432,173 +4481,84 @@ mod tests {
             size: Some((1280, 720)),
         })
     }
+    #[test]
+    fn voice_profile_rejects_screen_share_even_with_a_portal_source() {
+        let (mut app, mut doc) = app_with_doc();
+        app.on_hit(Hit::Channel("c_huddle".into()), &mut doc);
+        let before = doc.save();
+        // The host is deliberately ready to grant a source, so only the voice
+        // profile can be responsible for refusing capture.
+        let (services, recorder) = ui::host::HostServices::recording();
+        let _host = ui::host::enter(&services);
+        recorder.respond_to_screen_capture(granted(42));
+        app.on_hit(Hit::CallShareScreen, &mut doc);
+        assert!(!app.sharing_screen() && app.call.audio_only && !app.call.deafened);
+        assert!(app.media_error.is_some());
+        assert!(
+            recorder.screen_capture_requests().is_empty(),
+            "a voice-only call never asks the host for a screen source"
+        );
+        assert_eq!(doc.save(), before);
+    }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one labelled phase per original scenario, each with its own fresh fixture"
-    )]
-    fn screen_share_is_portal_gated_mirrored_and_never_a_dead_control() {
-        // Phase: share_screen_gates_on_the_portal_and_mirrors_into_voice_membership.
-        {
-            let (mut app, mut doc) = app_with_doc();
-            app.on_hit(Hit::Channel("c_huddle".into()), &mut doc); // join the huddle
-            assert!(app.call.active);
+    fn unsupported_capture_controls_are_absent_and_leave_remains_available_after_downgrade() {
+        use ui::permissions::{Actor, PermissionContext, Role};
+        let (mut app, mut doc) = app_with_doc();
+        app.on_hit(Hit::Channel("c_huddle".into()), &mut doc);
+        app.on_hit(Hit::CallExpand, &mut doc);
+        app.perms = crate::permissions::ChatPermissions::from_context(
+            PermissionContext::from_capabilities(
+                Actor::person(Some(Role::Viewer), model::ME),
+                vec![],
+            ),
+        );
+        let (_, controls) = app.overlay_controls_layout();
+        assert!(
+            controls
+                .iter()
+                .all(|(_, _, _, _, hit, _)| !matches!(hit, Hit::CallShareScreen))
+        );
+        app.on_hit(Hit::CallShareScreen, &mut doc);
+        assert!(!app.sharing_screen());
+        app.on_hit(Hit::CallLeave, &mut doc);
+        assert!(!app.call.active);
+    }
 
-            // Honest gating: a declined grant starts no share and records nothing.
-            // A recording host answers every request, so no test ever opens the
-            // desktop's real picker.
-            let (services, recorder) = ui::host::HostServices::recording();
-            let _host = ui::host::enter(&services);
-            recorder.respond_to_screen_capture(ui::capture::ScreenCaptureOutcome::Cancelled);
-            app.on_hit(Hit::CallShareScreen, &mut doc);
-            assert_eq!(recorder.screen_capture_requests().len(), 1);
-            assert!(
-                !app.sharing_screen(),
-                "no portal source → no share (honest gating)"
-            );
-            assert!(
-                !me_sharing(&doc, "c_huddle"),
-                "nothing is recorded when the portal declines"
-            );
+    #[test]
+    fn durable_screen_share_history_never_promotes_native_voice_to_video() {
+        let (mut app, mut doc) = app_with_doc();
+        app.on_hit(Hit::Channel("c_huddle".into()), &mut doc);
+        service_streams(&mut app, "c_huddle", 3);
+        app.on_hit(Hit::CallExpand, &mut doc);
+        ChatDoc::voice_set_sharing(&mut doc, "c_huddle", "u_a71c", true);
+        app.reload(&doc);
+        app.rect = vello::kurbo::Rect::new(0.0, 0.0, 1280.0, 800.0);
+        assert!(app.screen_sharer().is_none());
+        assert!(matches!(
+            app.overlay_stage(),
+            crate::render_call::CallStage::Grid(_)
+        ));
+        assert_eq!(app.overlay_tiles().len(), 4);
+        assert!(
+            ChatDoc::list_voice_members(&doc, "c_huddle")
+                .iter()
+                .any(|member| member.user == "u_a71c" && member.sharing)
+        );
+    }
 
-            // A granted source runs the whole share flow, mirrored into the shared
-            // voice membership so peers reserve the tile.
-            recorder.respond_to_screen_capture(granted(42));
-            app.on_hit(Hit::CallShareScreen, &mut doc);
-            assert!(
-                app.sharing_screen(),
-                "a granted portal source starts the share"
-            );
-            assert!(
-                me_sharing(&doc, "c_huddle"),
-                "the share is mirrored into the shared voice membership"
-            );
-
-            // Toggling again stops the share and clears the shared flag.
-            app.on_hit(Hit::CallShareScreen, &mut doc);
-            assert!(!app.sharing_screen(), "toggling again stops the share");
-            assert!(
-                !me_sharing(&doc, "c_huddle"),
-                "stopping clears the shared flag"
-            );
-        }
-        // Phase: screen_share_is_not_exposed_as_a_dead_call_control.
-        {
-            use ui::permissions::{Actor, PermissionContext, Role};
-
-            let (mut app, mut doc) = app_with_doc();
-            app.on_hit(Hit::Channel("c_huddle".into()), &mut doc);
-            app.on_hit(Hit::CallExpand, &mut doc);
-            let (services, recorder) = ui::host::HostServices::recording();
-            let _host = ui::host::enter(&services);
-            recorder.respond_to_screen_capture(granted(99));
-
-            // Model a permission downgrade during an already active call. The
-            // portal is deliberately ready, so only the workspace permission can
-            // be responsible for blocking a new transmission.
-            app.perms = crate::permissions::ChatPermissions::from_context(
-                PermissionContext::from_capabilities(
-                    Actor::person(Some(Role::Viewer), model::ME),
-                    vec![],
-                ),
-            );
-            let (_, controls) = app.overlay_controls_layout();
-            assert!(
-                controls
-                    .iter()
-                    .all(|(_, _, _, _, hit, _)| !matches!(hit, Hit::CallShareScreen)),
-                "the shipped portal has no capture producer, so Chat must not show a dead share button"
-            );
-
-            app.on_hit(Hit::CallShareScreen, &mut doc);
-            assert!(
-                !app.sharing_screen(),
-                "restricted peer cannot start capture"
-            );
-            assert!(
-                recorder.screen_capture_requests().is_empty(),
-                "a restricted peer never asks the host for a source"
-            );
-            assert!(
-                !me_sharing(&doc, "c_huddle"),
-                "blocked capture publishes no sharing state"
-            );
-
-            // The defensive action path still lets an already-running or restored
-            // share stop after a permission downgrade.
-            app.call.sharing = true;
-            app.sync_local_sharing(&mut doc);
-            app.on_hit(Hit::CallShareScreen, &mut doc);
-            assert!(!app.sharing_screen());
-            assert!(
-                !me_sharing(&doc, "c_huddle"),
-                "stopping clears the shared state after a downgrade"
-            );
-        }
-        // Phase: a_remote_screen_share_promotes_the_overlay_to_the_presentation_stage.
-        {
-            use crate::render_call::CallStage;
-            use vello::kurbo::Rect;
-            let (mut app, mut doc) = app_with_doc();
-            app.on_hit(Hit::Channel("c_huddle".into()), &mut doc);
-            app.on_hit(Hit::CallExpand, &mut doc);
-            app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-
-            // No one sharing yet → a uniform participant grid.
-            assert!(app.screen_sharer().is_none());
-            assert!(
-                matches!(app.overlay_stage(), CallStage::Grid(_)),
-                "no share is a plain grid"
-            );
-
-            // A remote announces a screen share over the shared voice membership.
-            ChatDoc::voice_set_sharing(&mut doc, "c_huddle", "u_a71c", true);
-            app.reload(&doc);
-            assert_eq!(
-                app.screen_sharer().as_deref(),
-                Some("u_a71c"),
-                "the sharer is read from the CRDT"
-            );
-
-            match app.overlay_stage() {
-                CallStage::Share { screen, strip } => {
-                    // Host + three remotes ride the filmstrip; the featured screen
-                    // dominates it and everything stays inside the content region.
-                    assert_eq!(strip.len(), 4, "host + three remotes fill the filmstrip");
-                    assert!(
-                        screen.height() > strip[0].height(),
-                        "the featured screen dominates the stage"
-                    );
-                    let region = app.overlay_content_region();
-                    for t in strip.iter().chain(std::iter::once(&screen)) {
-                        assert!(
-                            t.x0 >= region.x0 - 0.5
-                                && t.x1 <= region.x1 + 0.5
-                                && t.y0 >= region.y0 - 0.5
-                                && t.y1 <= region.y1 + 0.5,
-                            "a stage tile escaped the content region"
-                        );
-                    }
-                }
-                CallStage::Grid(_) => {
-                    panic!("a screen share must promote the overlay to the presentation stage")
-                }
-            }
-        }
-        // Phase: expanded_controls_do_not_advertise_screen_capture.
-        {
-            let (mut app, mut doc) = app_with_doc();
-            app.on_hit(Hit::Channel("c_huddle".into()), &mut doc);
-            app.on_hit(Hit::CallExpand, &mut doc);
-            let (_, buttons) = app.overlay_controls_layout();
-            assert!(
-                buttons
-                    .iter()
-                    .all(|(_, _, _, _, h, _)| !matches!(h, Hit::CallShareScreen)),
-                "screen capture stays absent until a real production PipeWire producer exists"
-            );
-        }
+    #[test]
+    fn expanded_controls_do_not_advertise_screen_capture() {
+        let (mut app, mut doc) = app_with_doc();
+        app.on_hit(Hit::Channel("c_huddle".into()), &mut doc);
+        app.on_hit(Hit::CallExpand, &mut doc);
+        let (_, buttons) = app.overlay_controls_layout();
+        assert!(
+            buttons
+                .iter()
+                .all(|(_, _, _, _, h, _)| !matches!(h, Hit::CallShareScreen)),
+            "screen capture stays absent until a real production PipeWire producer exists"
+        );
     }
 
     // --- header Call button (was unreachable without a voice channel) ---
@@ -4669,7 +4629,7 @@ mod tests {
         clippy::too_many_lines,
         reason = "one labelled phase per original scenario, each with its own fresh fixture"
     )]
-    fn two_participants_converge_on_messages_edits_and_call_tickets() {
+    fn two_participants_converge_on_messages_and_edits() {
         // Phase: messages_channels_and_reactions_converge_across_two_participants.
         {
             use crate::model::Presence;
@@ -4782,6 +4742,7 @@ mod tests {
             };
             assert_eq!(ids(&a), ids(&b), "both peers converge on the same timeline");
         }
+
         // Phase: an_edit_and_its_history_converge_across_two_participants.
         {
             use crate::model::Presence;
@@ -4856,52 +4817,6 @@ mod tests {
             assert!(
                 b.editing.is_none(),
                 "a non-author can't open the editor on A's message"
-            );
-        }
-        // Phase: joining_a_call_publishes_a_ticket_and_two_peers_exchange_them.
-        {
-            use crate::model::{CallSession, Presence};
-            let mut doc_a = AutoCommit::new();
-            ChatDoc::seed_starter(&mut doc_a, "u_a11c", "Alice", "AL");
-            let snapshot = doc_a.save();
-            let mut doc_b = AutoCommit::load(&snapshot).unwrap();
-            ChatDoc::ensure_user(&mut doc_b, "u_b0b", "Bob", "BO", 1, Presence::Online);
-            exchange(&mut doc_a, &mut doc_b);
-
-            let mut a = peer("u_a11c", "Alice", "AL", 0);
-            let mut b = peer("u_b0b", "Bob", "BO", 1);
-            a.reload(&doc_a);
-            b.reload(&doc_b);
-
-            // Both join the seed's voice channel (c_lounge). Joining publishes each
-            // peer's dialable media ticket into the shared voice membership — the
-            // signalling channel, riding the same collab transport as the messages.
-            a.on_hit(Hit::Channel("c_lounge".into()), &mut doc_a);
-            b.on_hit(Hit::Channel("c_lounge".into()), &mut doc_b);
-            assert!(a.call.active && a.call.channel == "c_lounge");
-            exchange(&mut doc_a, &mut doc_b);
-
-            // Each peer now sees BOTH members, each carrying a signalling ticket.
-            for doc in [&doc_a, &doc_b] {
-                let members = ChatDoc::list_voice_members(doc, "c_lounge");
-                assert_eq!(members.len(), 2, "both peers are in the call");
-                assert!(
-                    members.iter().all(|m| m.ticket.is_some()),
-                    "every member published a ticket"
-                );
-                assert!(members.iter().any(|m| m.user == "u_a11c"));
-                assert!(members.iter().any(|m| m.user == "u_b0b"));
-            }
-
-            // The receiving half of the handshake dials the peers without panicking,
-            // and the routing is peer-to-peer for a 2-person call.
-            a.reload(&doc_a);
-            a.connect_call_peers(&doc_a);
-            b.connect_call_peers(&doc_b);
-            assert_eq!(
-                a.call_session(),
-                CallSession::Peer,
-                "a 2-person call meshes peer-to-peer"
             );
         }
     }
@@ -4980,5 +4895,38 @@ mod tests {
                 "gated: no reaction added"
             );
         }
+    }
+
+    #[test]
+    fn two_peers_join_through_native_service_without_publishing_legacy_tickets() {
+        let mut doc_a = AutoCommit::new();
+        ChatDoc::seed_starter(&mut doc_a, "u_a11c", "Alice", "AL");
+        let mut doc_b = AutoCommit::load(&doc_a.save()).unwrap();
+        let mut a = peer("u_a11c", "Alice", "AL", 0);
+        let mut b = peer("u_b0b", "Bob", "BO", 1);
+        a.reload(&doc_a);
+        b.reload(&doc_b);
+        let before_a = doc_a.save();
+        let before_b = doc_b.save();
+        a.on_hit(Hit::Channel("c_lounge".into()), &mut doc_a);
+        b.on_hit(Hit::Channel("c_lounge".into()), &mut doc_b);
+        for app in [&mut a, &mut b] {
+            assert!(app.call.muted);
+            assert_eq!(
+                app.native_voice.snapshot.state,
+                ui::native_media::State::Preparing
+            );
+            assert_eq!(
+                app.native_voice
+                    .take_requests(ui::clock::Instant::now())
+                    .len(),
+                1
+            );
+            assert!(app.voice_in("c_lounge").is_empty());
+        }
+        assert_eq!(doc_a.save(), before_a);
+        assert_eq!(doc_b.save(), before_b);
+        assert!(ChatDoc::list_voice_members(&doc_a, "c_lounge").is_empty());
+        assert!(ChatDoc::list_voice_members(&doc_b, "c_lounge").is_empty());
     }
 }

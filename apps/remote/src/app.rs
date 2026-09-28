@@ -1268,7 +1268,7 @@ impl RemoteApp {
             state,
             crate::actions::REMOTE_ACTION_TYPE,
             &action,
-            tilo_actions::ActionContext::for_action("org.tilo.Remote", "Remote", &action),
+            tilo_actions::ActionContext::for_action("so.tilo.remote", "Remote", &action),
         );
     }
 
@@ -1279,7 +1279,7 @@ impl RemoteApp {
             state,
             crate::actions::REMOTE_ACTION_TYPE,
             &action,
-            tilo_actions::ActionContext::for_action("org.tilo.Remote", "Remote", &action),
+            tilo_actions::ActionContext::for_action("so.tilo.remote", "Remote", &action),
         );
         if self.selected == Some(id) {
             self.selected = self.workspace.filtered(&self.search).first().map(|c| c.id);
@@ -1840,7 +1840,7 @@ impl RemoteApp {
             state,
             crate::actions::REMOTE_ACTION_TYPE,
             &action,
-            tilo_actions::ActionContext::for_action("org.tilo.Remote", "Remote", &action),
+            tilo_actions::ActionContext::for_action("so.tilo.remote", "Remote", &action),
         );
         self.selected = Some(id);
         self.screen = Screen::List;

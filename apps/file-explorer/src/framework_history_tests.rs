@@ -24,8 +24,7 @@ impl SubmitReturns {
     /// Drive frames until `count` submits returned.
     fn wait(&self, driver: &mut ui::headless::FrameHarness, count: usize) {
         assert!(
-            driver.wait_until(std::time::Duration::from_secs(120), |_| self.count()
-                >= count),
+            driver.wait_until(tilo_test_env::hang_bound(), |_| self.count() >= count),
             "the backend returned {} of {count} submits",
             self.count()
         );
@@ -111,7 +110,7 @@ impl FileHistoryTransport for Counted {
 const UNAVAILABLE_ACK: &str = "Restore acknowledgement is unavailable";
 fn wait(driver: &mut ui::headless::FrameHarness, text: &str) {
     assert!(
-        driver.wait_until(std::time::Duration::from_secs(5), |driver| driver
+        driver.wait_until(tilo_test_env::hang_bound(), |driver| driver
             .inspection_json()
             .unwrap()
             .contains(text)),
@@ -121,7 +120,7 @@ fn wait(driver: &mut ui::headless::FrameHarness, text: &str) {
 }
 fn confirm(driver: &mut ui::headless::FrameHarness, phase: &str) {
     assert!(
-        driver.wait_until(std::time::Duration::from_secs(5), |driver| driver
+        driver.wait_until(tilo_test_env::hang_bound(), |driver| driver
             .a11y_node_named("Restore version")
             .is_some()),
         "confirmation missing in {phase}: {}",

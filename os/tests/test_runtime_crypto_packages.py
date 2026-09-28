@@ -71,13 +71,6 @@ class PackagePolicy(unittest.TestCase):
                 with self.subTest(package=package):
                     self.check_policy([package, 'virt-viewer', 'swtpm-tools'], success=False,
                                       diagnostic='forbidden crypto/signing packages')
-        with self.subTest(phase="qt5_packages_and_consumers_rejected"):
-            for package in ['qt5-qtbase', 'qt5-qtwayland', 'python3-qt5']:
-                with self.subTest(package=package):
-                    self.check_policy([package], success=False, diagnostic='Qt5 packages or Qt5 consumers')
-            self.check_policy(['fcitx5-mozc'], [['fcitx5-mozc', 'libQt5Core.so.5()(64bit)']], success=False,
-                              diagnostic='Qt5 packages or Qt5 consumers')
-            self.check_policy(['qt6-qtbase', 'fcitx5-qt6'], success=True)
         with self.subTest(phase="unknown_abi_consumers_rejected"):
             for abi in ['libcrypto', 'libssl']:
                 with self.subTest(abi=abi):

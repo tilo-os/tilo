@@ -138,12 +138,15 @@ pub struct OverviewGroup {
 }
 
 impl OverviewGroup {
-    pub fn active_title(&self) -> &str {
+    pub fn active_title(&self) -> String {
         self.tabs
             .iter()
             .find(|tab| tab.is_active)
             .or_else(|| self.tabs.first())
-            .map_or("Empty window", |tab| tab.title.as_str())
+            .map_or_else(
+                || crate::shell::i18n::t("overview-empty-window"),
+                |tab| tab.title.clone(),
+            )
     }
 
     pub fn present_people(&self) -> impl Iterator<Item = &RoomPerson> {
@@ -344,7 +347,7 @@ fn overview_strips(ws: &Workspace, tree: &WorkspaceTree, local: &str) -> Vec<Ove
                             .map(|tab| OverviewTab {
                                 id: tab.id,
                                 title: if tab.title.trim().is_empty() {
-                                    "Untitled".to_string()
+                                    crate::shell::i18n::t("window-switcher-untitled")
                                 } else {
                                     tab.title.clone()
                                 },
@@ -381,24 +384,40 @@ pub fn room_access_label(card: &RoomCard) -> String {
         0 => {
             if card.people.is_empty() {
                 // No owner, no membership capability recorded at all.
-                "No one has access".to_string()
+                crate::shell::i18n::t("overview-access-nobody")
             } else {
-                "Private to you".to_string()
+                crate::shell::i18n::t("overview-access-private")
             }
         }
-        1 => format!(
-            "Shared with {}",
-            others.first().map_or("", |p| p.name.as_str())
+        1 => crate::shell::i18n::t_args(
+            "overview-access-shared-one",
+            &[(
+                "name",
+                others.first().map_or("", |p| p.name.as_str()).into(),
+            )],
         ),
-        2 => format!(
-            "Shared with {} and {}",
-            others.first().map_or("", |p| p.name.as_str()),
-            others.get(1).map_or("", |p| p.name.as_str())
+        2 => crate::shell::i18n::t_args(
+            "overview-access-shared-two",
+            &[
+                (
+                    "first",
+                    others.first().map_or("", |p| p.name.as_str()).into(),
+                ),
+                (
+                    "second",
+                    others.get(1).map_or("", |p| p.name.as_str()).into(),
+                ),
+            ],
         ),
-        n => format!(
-            "Shared with {} and {} others",
-            others.first().map_or("", |p| p.name.as_str()),
-            n.saturating_sub(1)
+        n => crate::shell::i18n::t_args(
+            "overview-access-shared-many",
+            &[
+                (
+                    "name",
+                    others.first().map_or("", |p| p.name.as_str()).into(),
+                ),
+                ("count", n.saturating_sub(1).into()),
+            ],
         ),
     }
 }
@@ -407,8 +426,10 @@ pub fn room_access_label(card: &RoomCard) -> String {
 pub fn room_shares_label(card: &RoomCard) -> Option<String> {
     match card.shares.len() {
         0 => None,
-        1 => Some("1 item shared".to_string()),
-        n => Some(format!("{n} items shared")),
+        n => Some(crate::shell::i18n::t_args(
+            "overview-items-shared",
+            &[("count", n.into())],
+        )),
     }
 }
 
@@ -418,17 +439,29 @@ pub fn room_presence_label(card: &RoomCard) -> Option<String> {
     let others: Vec<&&RoomPerson> = live.iter().filter(|p| !p.is_you).collect();
     match (live.iter().any(|p| p.is_you), others.len()) {
         (false, 0) => None,
-        (true, 0) => Some("You are here".to_string()),
-        (true, 1) => Some(format!(
-            "You and {} are here",
-            others.first().map_or("", |p| p.name.as_str())
+        (true, 0) => Some(crate::shell::i18n::t("overview-presence-you")),
+        (true, 1) => Some(crate::shell::i18n::t_args(
+            "overview-presence-you-and-one",
+            &[(
+                "name",
+                others.first().map_or("", |p| p.name.as_str()).into(),
+            )],
         )),
-        (true, n) => Some(format!("You and {n} others are here")),
-        (false, 1) => Some(format!(
-            "{} is here",
-            others.first().map_or("", |p| p.name.as_str())
+        (true, n) => Some(crate::shell::i18n::t_args(
+            "overview-presence-you-and-many",
+            &[("count", n.into())],
         )),
-        (false, n) => Some(format!("{n} people are here")),
+        (false, 1) => Some(crate::shell::i18n::t_args(
+            "overview-presence-one",
+            &[(
+                "name",
+                others.first().map_or("", |p| p.name.as_str()).into(),
+            )],
+        )),
+        (false, n) => Some(crate::shell::i18n::t_args(
+            "overview-presence-many",
+            &[("count", n.into())],
+        )),
     }
 }
 
@@ -440,11 +473,20 @@ pub fn overview_people_label(card: &RoomCard) -> Option<String> {
     match present.len() {
         0 if card.is_private() => None,
         0 => Some(room_access_label(card)),
-        1 => Some(format!(
-            "{} is here",
-            present.first().map_or("", |person| person.name.as_str())
+        1 => Some(crate::shell::i18n::t_args(
+            "overview-presence-one",
+            &[(
+                "name",
+                present
+                    .first()
+                    .map_or("", |person| person.name.as_str())
+                    .into(),
+            )],
         )),
-        n => Some(format!("{n} collaborators are here")),
+        n => Some(crate::shell::i18n::t_args(
+            "overview-collaborators-here",
+            &[("count", n.into())],
+        )),
     }
 }
 

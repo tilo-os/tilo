@@ -138,13 +138,10 @@ fn typed_app() -> (App, TypedBroker) {
 /// Send the agent's action and pump until `done` reports it landed.
 fn deliver_agents_action(app: &mut App, broker: &TypedBroker, done: impl Fn(&mut App) -> bool) {
     broker.inject_action(AGENT, AGENT_ACTION, b"the agent wrote this");
-    for _ in 0..50 {
+    tilo_test_env::wait_until("the agent's action to land", || {
         app.pump_collab_presence();
-        if done(app) {
-            return;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
+        done(app)
+    });
 }
 
 #[test]

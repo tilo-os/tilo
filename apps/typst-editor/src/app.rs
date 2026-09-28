@@ -2385,7 +2385,7 @@ impl Widget for TypstApp {
                 "typst.document",
                 document,
             )
-            .with_app("org.tilo.Typst", "Typst")
+            .with_app("so.tilo.typst-editor", "Typst")
             .with_facet(ui::tilo_actions::ActionFacet::new("file-type", "Typst"))
         })
     }
@@ -2959,7 +2959,7 @@ mod tests {
             assert_eq!(context.action_label, "Edit source");
             assert_eq!(
                 context.app.as_ref().map(|app| app.id.as_str()),
-                Some("org.tilo.Typst")
+                Some("so.tilo.typst-editor")
             );
             assert_eq!(
                 context

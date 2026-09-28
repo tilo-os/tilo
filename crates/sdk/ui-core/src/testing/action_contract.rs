@@ -336,11 +336,12 @@ fn prompted_argument(spec: &ActionSpec, text: &str) -> Option<(String, ArgValue)
 pub fn spec_encoding(spec: &ActionSpec, arg: Option<&str>) -> EncodedAction {
     let (palette, supplied) = match (&spec.input, arg) {
         (ActionInput::Immediate(encoded), None) => (encoded.clone(), Vec::new()),
+        (ActionInput::Deferred { build, .. }, None) => (build(), Vec::new()),
         (ActionInput::Prompted { build, .. }, Some(arg)) => (
             build(arg),
             prompted_argument(spec, arg).into_iter().collect(),
         ),
-        (ActionInput::Immediate(_), Some(_)) => {
+        (ActionInput::Immediate(_) | ActionInput::Deferred { .. }, Some(_)) => {
             panic!("`{}` is immediate; it takes no argument", spec.id)
         }
         (ActionInput::Prompted { .. }, None) => {

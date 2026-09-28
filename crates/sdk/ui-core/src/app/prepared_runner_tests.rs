@@ -204,22 +204,13 @@ fn prepared_presentation_replaces_effective_factors_across_runners_and_setters()
 
 fn wait_for_saved_record(host: &ProbeHost, binding: &crate::bound_dispatch::CallbackBinding) {
     assert!(host.records.same_owner(&binding.records));
-    // A durable save can stall for many seconds on a loaded disk; the wait
-    // ends as soon as it lands, so this bound only catches a hang.
-    let deadline = crate::time::now()
-        .checked_add(Duration::from_secs(60))
-        .unwrap();
-    loop {
-        let status = host.records.save_status(&binding.checkout.id).unwrap();
-        if status == crate::record::RecordSaveStatus::Saved {
-            break;
-        }
-        assert!(
-            crate::time::now() < deadline,
-            "original writer did not acknowledge: {status:?}"
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    host.records.await_submitted(&binding.checkout.id).unwrap();
+    let status = host.records.save_status(&binding.checkout.id).unwrap();
+    assert_eq!(
+        status,
+        crate::record::RecordSaveStatus::Saved,
+        "original writer did not acknowledge"
+    );
 }
 
 fn assert_saved_body(
@@ -770,17 +761,21 @@ fn palette_frame(app: &mut App) {
     assert_eq!(app.text_renderer.text_scale(), 1.5);
 }
 fn activate_palette_action(app: &mut App, action: &str) {
-    app.refresh_semantic_tree();
-    let target = app
-        .accessibility
-        .semantic_tree
-        .bound_actions_for_test()
-        .into_iter()
-        .find(|(_, target)| {
-            target.address.instance_id == 11 && target.address.address.action == action
-        })
-        .unwrap()
-        .1;
+    // This font/lifecycle fixture chooses the same mounted owner directly;
+    // an open modal deliberately does not publish background actions.
+    let resources = crate::bound_dispatch::discover_bound_resources(
+        app.root_widget.as_ref(),
+        &app.state.doc,
+        None,
+    )
+    .unwrap();
+    let target = crate::bound_dispatch::select_bound_target(
+        &resources,
+        &tilo_actions::ActionAddress::new("probe:shared", action),
+        Some(11),
+    )
+    .unwrap()
+    .unwrap();
     assert!(
         app.actions
             .action_palette

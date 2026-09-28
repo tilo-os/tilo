@@ -24,11 +24,16 @@ advisory-lock = { path = "../../crates/system/advisory-lock" }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 atomic-file = { path = "../../crates/system/atomic-file" }
 app-state = { path = "../../crates/system/app-state" }
-ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 tilo-actions = { path = "../../crates/collab/actions" }
+# Page bodies are rich text, edited in the SDK rich-text editor.
+qdoc = { path = "../../crates/doc/qdoc" }
+qdoc-rich-text = { path = "../../crates/doc/qdoc-rich-text" }
+tilo-rich-text = { path = "../../crates/sdk/tilo-rich-text" }
 # Images live in the device content store; the notebook keeps references.
-tilo-content = { path = "../../crates/system/content" }
+# Content addressing everywhere; the on-disk and device stores only natively
+# (the browser build keeps content in memory).
+tilo-content = { path = "../../crates/system/content", default-features = false }
 automerge.workspace = true
 tilo-automerge.workspace = true
 blake3.workspace = true
@@ -43,10 +48,10 @@ url.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
-workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
+tilo-test-env = { path = "../../crates/dev/test-env" }
 
 [[test]]
 name = "it"
@@ -54,3 +59,14 @@ path = "tests/it.rs"
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tilo-content = { path = "../../crates/system/content", features = ["dir", "device"] }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["portal"] }
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
+
+# The browser runtime embeds this app in wasm32, where the toolkit is the
+# portable build: no native desktop runner, no broker transport, no portal.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", default-features = false }

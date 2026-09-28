@@ -8,7 +8,6 @@ pub const PRIVATE_ROOT_MARKER: &str = ".tilo-private-root-v1";
 pub const PRIVATE_ROOT_MARKER_CONTENT: &str = "tilo-browser-owned-private-root-v1\n";
 pub const PRIVATE_ROOT_LOCK: &str = ".tilo-private-root.lock";
 const PRIVATE_ROOT_OWNER: &str = ".tilo-private-owner-pid";
-#[cfg(unix)]
 const PRIVATE_ROOT_HELPER: &str = ".tilo-private-helper-pid";
 /// Configure the optional browser data root once for this process.
 ///
@@ -65,12 +64,7 @@ pub fn allocate_private_root() -> Result<PathBuf, String> {
             std::env::temp_dir().join(format!("{PRIVATE_ROOT_PREFIX}{}", uuid::Uuid::new_v4()));
         match std::fs::create_dir(&root) {
             Ok(()) => {
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))
-                        .map_err(|error| error.to_string())?;
-                }
+                private_fs::restrict_directory(&root).map_err(|error| error.to_string())?;
                 let initialized = write_private_root_file(
                     &root.join(PRIVATE_ROOT_MARKER),
                     PRIVATE_ROOT_MARKER_CONTENT.as_bytes(),
@@ -114,11 +108,7 @@ pub fn is_owned_private_root(root: &Path) -> bool {
 fn write_private_root_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
+    private_fs::owner_only(&mut options);
     let mut file = options.open(path)?;
     std::io::Write::write_all(&mut file, bytes)
 }
@@ -128,7 +118,6 @@ fn write_private_root_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 /// Cleanup takes the same file lock exclusively before removing the root.
 /// Opening without `create` ensures a writer arriving after cleanup cannot
 /// recreate any part of the path.
-#[cfg(unix)]
 pub(crate) fn private_root_write_guard(
     directory: &Path,
 ) -> Result<Option<advisory_lock::FileLock>, String> {
@@ -154,29 +143,13 @@ pub(crate) fn private_root_write_guard(
     Ok(Some(lock))
 }
 
-#[cfg(not(unix))]
-#[allow(
-    clippy::unnecessary_wraps,
-    reason = "platform implementations share a fallible guard signature"
-)]
-pub(crate) fn private_root_write_guard(
-    _directory: &Path,
-) -> Result<Option<advisory_lock::FileLock>, String> {
-    Ok(None)
-}
-
-#[cfg(unix)]
-fn process_is_alive(pid: i32) -> bool {
-    // SAFETY: signal 0 does not deliver a signal; it asks the kernel whether
-    // the process exists and whether this process may signal it.
-    let result = unsafe { libc::kill(pid, 0) };
-    result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
-}
-
-#[cfg(unix)]
 fn sweep_orphaned_private_roots() {
     use std::sync::atomic::{AtomicBool, Ordering};
     static RUNNING: AtomicBool = AtomicBool::new(false);
+    // Orphans are recognised by their dead owner process.
+    if !host_info::process::CAN_CHECK_LIVENESS {
+        return;
+    }
     if RUNNING.swap(true, Ordering::AcqRel) {
         return;
     }
@@ -194,7 +167,6 @@ fn sweep_orphaned_private_roots() {
     }
 }
 
-#[cfg(unix)]
 fn sweep_orphaned_private_roots_in(parent: &Path) {
     let Ok(entries) = std::fs::read_dir(parent) else {
         return;
@@ -202,7 +174,6 @@ fn sweep_orphaned_private_roots_in(parent: &Path) {
     sweep_orphaned_private_entries(entries.flatten().map(|entry| entry.path()));
 }
 
-#[cfg(unix)]
 fn sweep_orphaned_private_entries(entries: impl Iterator<Item = PathBuf>) {
     let mut attempted_removals = 0;
     for root in entries {
@@ -225,7 +196,7 @@ fn sweep_orphaned_private_entries(entries: impl Iterator<Item = PathBuf>) {
                 && std::fs::read_to_string(&owner)
                     .ok()
                     .and_then(|value| value.parse::<i32>().ok())
-                    .is_some_and(|pid| pid > 1 && !process_is_alive(pid))
+                    .is_some_and(|pid| pid > 1 && !host_info::process::is_alive(pid))
         });
         let helper = root.join(PRIVATE_ROOT_HELPER);
         let helper_is_live_or_untrusted = match std::fs::symlink_metadata(&helper) {
@@ -238,7 +209,7 @@ fn sweep_orphaned_private_entries(entries: impl Iterator<Item = PathBuf>) {
                 std::fs::read_to_string(&helper)
                     .ok()
                     .and_then(|value| value.parse::<i32>().ok())
-                    .is_none_or(|pid| pid <= 1 || process_is_alive(pid))
+                    .is_none_or(|pid| pid <= 1 || host_info::process::is_alive(pid))
             }
             Err(_) | Ok(_) => true,
         };
@@ -251,9 +222,6 @@ fn sweep_orphaned_private_entries(entries: impl Iterator<Item = PathBuf>) {
         }
     }
 }
-
-#[cfg(not(unix))]
-fn sweep_orphaned_private_roots() {}
 
 #[cfg(test)]
 mod tests {

@@ -13,7 +13,6 @@ use uuid::Uuid;
 
 pub mod actions;
 pub mod app;
-#[cfg(windows)]
 mod native_timers;
 pub use app::ClocksApp;
 
@@ -298,22 +297,17 @@ impl Stopwatch {
     }
 }
 
+/// `$XDG_STATE_HOME/tilo/clocks.json`, else the per-user state directory
+/// (`~/.local/state`; Windows: `%LOCALAPPDATA%`). Relative overrides are
+/// ignored.
 fn state_path() -> Option<PathBuf> {
-    state_path_with(|key| std::env::var_os(key))
+    state_path_in(
+        xdg_paths::env_dir("XDG_STATE_HOME").or_else(xdg_paths::state_home_or_local_app_data),
+    )
 }
 
-fn state_path_with(env: impl Fn(&str) -> Option<std::ffi::OsString>) -> Option<PathBuf> {
-    let absolute = |key| env(key).map(PathBuf::from).filter(|p| p.is_absolute());
-    #[cfg(windows)]
-    let native = || {
-        absolute("LOCALAPPDATA")
-            .or_else(|| absolute("USERPROFILE").map(|p| p.join("AppData/Local")))
-    };
-    #[cfg(not(windows))]
-    let native = || absolute("HOME").map(|p| p.join(".local/state"));
-    absolute("XDG_STATE_HOME")
-        .or_else(native)
-        .map(|p| p.join("tilo/clocks.json"))
+fn state_path_in(state_home: Option<PathBuf>) -> Option<PathBuf> {
+    state_home.map(|p| p.join("tilo/clocks.json"))
 }
 
 fn command_timer(timers: &mut [Timer], activity_id: Option<Uuid>) -> Option<&mut Timer> {
@@ -924,10 +918,7 @@ mod tests {
         // Case: an absolute state override is used for the real store.
         {
             let directory = tempfile::tempdir().unwrap();
-            let path = state_path_with(|key| {
-                (key == "XDG_STATE_HOME").then(|| directory.path().as_os_str().to_owned())
-            })
-            .unwrap();
+            let path = state_path_in(Some(directory.path().to_path_buf())).unwrap();
             let state = ClockState::default();
             state.save_at(&path).unwrap();
             assert_eq!(
@@ -958,29 +949,6 @@ mod tests {
                 b"keep me",
                 "case blocker: blocker untouched"
             );
-        }
-
-        // Case (Windows only): the native state path ignores relative overrides.
-        #[cfg(windows)]
-        {
-            let env = |key: &str| match key {
-                "XDG_STATE_HOME" => Some("relative".into()),
-                "LOCALAPPDATA" => Some(r"C:\Users\Reader\AppData\Local".into()),
-                _ => None,
-            };
-            assert_eq!(
-                state_path_with(env),
-                Some(PathBuf::from(
-                    r"C:\Users\Reader\AppData\Local\tilo\clocks.json"
-                )),
-                "case windows-relative-override"
-            );
-            assert_eq!(
-                state_path_with(|key| (key == "USERPROFILE").then(|| r"C:\Users\Reader".into())),
-                state_path_with(env),
-                "case windows-userprofile-fallback"
-            );
-            assert!(state_path_with(|_| None).is_none(), "case windows-no-env");
         }
     }
 

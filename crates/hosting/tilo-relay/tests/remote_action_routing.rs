@@ -2,6 +2,10 @@
 //! device, stamps the authenticated sender, never stores it, and answers
 //! frames addressed to itself only through a supplied app-serving plane.
 
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "relays, fixtures and guards deliberately stay alive until each test ends"
+)]
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -37,9 +41,7 @@ async fn subscribed(
     client
         .send(Envelope::Subscribe { workspace_id: WS })
         .unwrap();
-    let ready = tokio::time::timeout(Duration::from_secs(5), client.recv())
-        .await
-        .expect("ready timeout");
+    let ready = tilo_test_env::within("ready timeout", client.recv()).await;
     assert!(
         matches!(ready, Some(Envelope::Ready { .. })),
         "got {ready:?}"
@@ -64,7 +66,7 @@ fn directed(to: [u8; 32], frame: Vec<u8>) -> Envelope {
 }
 
 async fn next(client: &RelayClient, who: &str) -> Envelope {
-    tokio::time::timeout(Duration::from_secs(5), client.recv())
+    tokio::time::timeout(tilo_test_env::hang_bound(), client.recv())
         .await
         .unwrap_or_else(|_| panic!("{who} timed out"))
         .unwrap_or_else(|| panic!("{who} connection closed"))
@@ -98,7 +100,7 @@ async fn stamped_action_frames_route_to_their_addressee_or_are_answered() {
         let b = user.enrol("desktop", DeviceCapabilities::member());
         let c = user.enrol("phone", DeviceCapabilities::member());
         let members = [a.device_pubkey(), b.device_pubkey(), c.device_pubkey()];
-        let relay = spawn_relay(&user, host, &[WS], &members).await;
+        let relay = Box::pin(spawn_relay(&user, host, &[WS], &members)).await;
         let addr = relay.relay.node_addr();
         let a_client = subscribed(addr.clone(), &user, &a).await;
         let b_client = subscribed(addr.clone(), &user, &b).await;
@@ -133,7 +135,13 @@ async fn stamped_action_frames_route_to_their_addressee_or_are_answered() {
         let host_key = host.device_pubkey();
         let a = user.enrol("laptop", DeviceCapabilities::primary());
         let b = user.enrol("desktop", DeviceCapabilities::member());
-        let relay = spawn_relay(&user, host, &[WS], &[a.device_pubkey(), b.device_pubkey()]).await;
+        let relay = Box::pin(spawn_relay(
+            &user,
+            host,
+            &[WS],
+            &[a.device_pubkey(), b.device_pubkey()],
+        ))
+        .await;
         let addr = relay.relay.node_addr();
         let a_client = subscribed(addr.clone(), &user, &a).await;
 
@@ -197,13 +205,13 @@ async fn stamped_action_frames_route_to_their_addressee_or_are_answered() {
         let host_key = host.device_pubkey();
         let a = user.enrol("laptop", DeviceCapabilities::primary());
         let actions = Arc::new(RecordingHost::default());
-        let relay = spawn_relay_serving_apps(
+        let relay = Box::pin(spawn_relay_serving_apps(
             &user,
             host,
             &[WS],
             &[a.device_pubkey()],
             Arc::new(ActionHostPlane::new(SharedHost(Arc::clone(&actions)))),
-        )
+        ))
         .await;
         assert!(relay.relay.handle().advertised_services().app_serving);
         let a_client = subscribed(relay.relay.node_addr(), &user, &a).await;

@@ -23,6 +23,7 @@ use std::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ObjId};
 
+use crate::shell::collab_broker_capnp::LocalSessionLifecycle;
 use crate::shell::search::action_api::{ActionArgs, ActionVisibility, ResourceRef};
 use crate::shell::search::visibility::CapabilityVisibility;
 
@@ -90,6 +91,7 @@ use crate::compositor::floating_service::{FloatingServiceEvent, FloatingSurfaceS
 use crate::compositor::foreign;
 use crate::compositor::frame::{FrameBuilder, FramePaint};
 use crate::compositor::idle::{IdleConfig, SessionManager, SessionTransition};
+use crate::compositor::input_environment::InputEnvironment;
 use crate::compositor::lock_auth;
 use crate::compositor::lock_controller::{LockController, LockKey, UnlockOutcome};
 use crate::compositor::lock_screen::{self, LockOutput, LockView};
@@ -1820,13 +1822,11 @@ impl ControlState for FrameBuilderControlState<'_> {
     }
 
     fn inspectable_apps(&self) -> Result<serde_json::Value, String> {
-        let broker = self
+        let apps: Vec<serde_json::Value> = self
             .fb
             .host()
             .app_action_broker()
-            .cloned()
-            .ok_or_else(|| "this session has no application broker".to_string())?;
-        let apps: Vec<serde_json::Value> = broker
+            .ok_or_else(|| "this session has no application broker".to_string())?
             .inspectable_apps()
             .into_iter()
             .map(|app| {
@@ -1899,6 +1899,7 @@ impl ControlState for FrameBuilderControlState<'_> {
             query.clone(),
             &InspectCaller { person, audience },
         )?;
+        drop(broker);
         Ok(serde_json::json!({ "inspection": inspection, "peer": app.peer_id }))
     }
 
@@ -2027,6 +2028,9 @@ impl ControlState for FrameBuilderControlState<'_> {
             // What the pointer shows: a drawn shape, the focused client's
             // own surface, or nothing because the client hid it.
             "pointer": self.fb.pointer_image().describe(),
+            // The input hardware and last-used modality the chrome adapts
+            // to, and the language the desktop help overlay is written in.
+            "input": input_environment_json(self.fb.host().interaction_environment(), self.fb.host().shortcut_help_modality()),
             "search_scope": format!("{:?}", chrome.search_scope),
             "displays": self.displays_json(),
             // Applications' status-notifier items and their menus, as the top bar shows them.
@@ -2061,13 +2065,13 @@ impl ControlState for FrameBuilderControlState<'_> {
             },
             // What the recorder holds and what waits for review; `null`
             // when this session has no broker to record through.
-            "feedback": chrome.recorder().map(|recorder| recorder.status_json()),
+            "feedback": chrome.session_view().recorder.as_ref().map(|recorder| recorder.status.clone()),
             // The remark being written, pick mode's scene and selection,
             // review's steps, and how the last one sent ended.
             "remark": crate::shell::remark::status_json(&chrome),
             // The open replay, its transport and step list; `null` when
             // nothing is replayed.
-            "replay": chrome.replay().map(|replay| replay.status_json()),
+            "replay": chrome.session_view().replay.as_ref().map(|replay| replay.status.clone()),
             "ws_settings_tab": format!("{:?}", chrome.ws_settings_tab),
             "revision": chrome.revision,
             // What is actually on screen — without it a harness can only see that *a*
@@ -2204,6 +2208,10 @@ struct TestControlCtx {
     /// precisely the ownership handoff DRM uses before emitting real
     /// `wl_touch` traffic to its Wayland clients.
     direct_touch: DirectTouchOwnership,
+    /// Attached input devices and the last kind of input used, from the
+    /// backend or from injected test-control input alike. The shell chrome's
+    /// shortcut help follows it.
+    input: InputEnvironment,
 }
 
 impl TestControlCtx {
@@ -2215,6 +2223,41 @@ impl TestControlCtx {
             focus: None,
             cursor: PhysicalPosition::new(0.0, 0.0),
             direct_touch: DirectTouchOwnership::default(),
+            input: InputEnvironment::default(),
+        }
+    }
+
+    /// Hand the current input environment to the shell chrome.
+    fn publish_input_environment(&self, fb: &mut FrameBuilder) {
+        fb.host_mut()
+            .apply_input_environment(self.input.environment());
+    }
+
+    /// Fold injected test-control input into the input environment exactly
+    /// as a backend reports physical devices: a named touch device is
+    /// attached by its first contact, and every event class counts as used.
+    fn note_injected_input(&mut self, action: &PlannedAction, fb: &mut FrameBuilder) {
+        let changed = match action {
+            PlannedAction::Touch { device, phase, .. } => {
+                let attached = self.input.device_added(
+                    format!("test-control:{device}"),
+                    ui::InputAvailability::NONE.with(ui::InputDevice::Touch),
+                );
+                let used = matches!(phase, TouchPhaseKind::Down)
+                    && self.input.note_used(ui::InputModality::Touch);
+                attached || used
+            }
+            PlannedAction::KeyboardKey { pressed: true, .. } => {
+                self.input.note_used(ui::InputModality::Keyboard)
+            }
+            PlannedAction::CursorMoved { .. }
+            | PlannedAction::MouseLeftButton { .. }
+            | PlannedAction::MousePointerButton { .. }
+            | PlannedAction::MouseWheel { .. } => self.input.note_used(ui::InputModality::Pointer),
+            _ => false,
+        };
+        if changed {
+            self.publish_input_environment(fb);
         }
     }
 }
@@ -2383,7 +2426,12 @@ fn pump_controller_navigation(
         // the next intent so it lands in the window now in front.
         frame_builder.host_mut().flush_active_tab_writeback();
         client_input::sync_keyboard_focus(state, frame_builder);
-        frame_builder.host_mut().note_controller_input(family);
+        // Controller use is classified here, at its source. The keystrokes
+        // it synthesised above never reach the input environment, so they
+        // do not count as typing on a keyboard.
+        if ctx.input.note_controller(family) {
+            ctx.publish_input_environment(frame_builder);
+        }
     }
     true
 }
@@ -2559,6 +2607,38 @@ fn touch_tap_pointer_events(x: f64, y: f64) -> [WindowEvent; 3] {
             button: MouseButton::Left,
         },
     ]
+}
+
+/// Wire name of an input modality in `state-dump`.
+fn input_modality_name(modality: ui::InputModality) -> &'static str {
+    match modality {
+        ui::InputModality::Pointer => "pointer",
+        ui::InputModality::Touch => "touch",
+        ui::InputModality::Keyboard => "keyboard",
+        ui::InputModality::Controller => "controller",
+    }
+}
+
+/// `state-dump`'s view of the chrome's input environment.
+fn input_environment_json(
+    environment: ui::InteractionEnvironment,
+    help_modality: ui::InputModality,
+) -> serde_json::Value {
+    let available = [
+        (ui::InputDevice::Keyboard, "keyboard"),
+        (ui::InputDevice::Pointer, "pointer"),
+        (ui::InputDevice::Touch, "touch"),
+        (ui::InputDevice::Controller, "controller"),
+    ]
+    .into_iter()
+    .filter(|(device, _)| environment.available.contains(*device))
+    .map(|(_, name)| name)
+    .collect::<Vec<_>>();
+    serde_json::json!({
+        "modality": input_modality_name(environment.modality),
+        "available": available,
+        "help_modality": input_modality_name(help_modality),
+    })
 }
 
 /// Build the shell-side raw touch event for the test-control adapter. The
@@ -2786,6 +2866,7 @@ fn execute_planned_action(
     state: Option<&mut State>,
 ) -> Option<Result<crate::shell::search::InvocationDisposition, InvokeFailure>> {
     let mut state = state;
+    ctx.note_injected_input(action, fb);
     match action {
         PlannedAction::CursorMoved { x, y } => {
             ctx.cursor = PhysicalPosition::new(*x, *y);
@@ -2922,7 +3003,7 @@ fn execute_planned_action(
 /// Drive the replays checked out of sight: size their windows to the
 /// recorded surfaces, and capture them once each has drawn at its offset.
 fn service_offscreen_checks(frame_builder: &FrameBuilder, state: &State) {
-    let Some(replay) = frame_builder.chrome().replay().cloned() else {
+    let Some(replay) = frame_builder.host().session_services().replay().cloned() else {
         return;
     };
     let scale = if state.scale.is_finite() && state.scale > 0.0 {
@@ -2958,7 +3039,8 @@ fn write_replay_frames(
     scale: Option<f64>,
 ) -> Result<(), String> {
     let replay = fb
-        .chrome()
+        .host()
+        .session_services()
         .replay()
         .cloned()
         .ok_or("this session has no replay")?;
@@ -2998,6 +3080,7 @@ fn write_replay_frames(
             "at_us": frame.at.0,
         }));
     }
+    drop(replay);
     let bytes = serde_json::to_vec_pretty(&manifest).map_err(|error| error.to_string())?;
     std::fs::write(dir.join("frames.json"), bytes).map_err(|error| error.to_string())
 }
@@ -3466,8 +3549,20 @@ fn apply_session_transition(
     transition: SessionTransition,
     backend: &mut dyn Backend,
     pipe: Option<&present::PresentPipe>,
+    local_session: Option<&LocalSessionLifecycle>,
     dimmer: &mut ScreenDimmer<impl Backlight>,
 ) {
+    if let Some(local_session) = local_session {
+        match transition {
+            SessionTransition::Locked => local_session.set_locked(true),
+            SessionTransition::Unlocked => local_session.set_locked(false),
+            SessionTransition::Dimmed
+            | SessionTransition::Undimmed
+            | SessionTransition::Blanked
+            | SessionTransition::Woke
+            | SessionTransition::Suspend => {}
+        }
+    }
     match transition {
         SessionTransition::Dimmed => dimmer.dim(),
         SessionTransition::Undimmed => dimmer.restore(),
@@ -3486,6 +3581,32 @@ fn apply_session_transition(
         // Lock/Unlock are reflected via `SessionManager::is_locked`; Suspend is
         // gated by the inhibitor registry + issued through the power service, never here.
         SessionTransition::Locked | SessionTransition::Unlocked | SessionTransition::Suspend => {}
+    }
+}
+
+fn publish_native_session_state(
+    local_session: Option<&LocalSessionLifecycle>,
+    session: &SessionManager,
+    onboarding_active: bool,
+) {
+    if let Some(local_session) = local_session {
+        local_session.publish_native_state(session.is_locked(), onboarding_active);
+    }
+}
+
+fn install_native_session_lifecycle(
+    broker: &crate::shell::collab_broker::BrokerHandle,
+    session: &SessionManager,
+    onboarding_active: bool,
+) -> LocalSessionLifecycle {
+    let local_session = broker.local_session_lifecycle();
+    publish_native_session_state(Some(&local_session), session, onboarding_active);
+    local_session
+}
+
+fn close_native_session_authority(local_session: Option<&LocalSessionLifecycle>) {
+    if let Some(local_session) = local_session {
+        local_session.close();
     }
 }
 
@@ -4311,7 +4432,10 @@ fn spawn_session_collab_broker(
         );
         chrome
             .borrow_mut()
-            .set_collab_unavailable(format!("The service directory could not be created: {e}"));
+            .set_collab_unavailable(crate::shell::i18n::t_args(
+                "collab-unavailable-services-root",
+                &[("error", e.to_string().into())],
+            ));
         return None;
     }
 
@@ -4323,9 +4447,9 @@ fn spawn_session_collab_broker(
              collaboration.",
             capnp_path.display()
         );
-        chrome.borrow_mut().set_collab_unavailable(
-            "Another session on this machine already owns the collaboration socket.",
-        );
+        chrome
+            .borrow_mut()
+            .set_collab_unavailable(crate::shell::i18n::t("collab-unavailable-socket-taken"));
         return None;
     }
 
@@ -4354,7 +4478,10 @@ fn spawn_session_collab_broker(
             );
             chrome
                 .borrow_mut()
-                .set_collab_unavailable(format!("The broker could not start: {e}"));
+                .set_collab_unavailable(crate::shell::i18n::t_args(
+                    "collab-unavailable-broker",
+                    &[("error", e.to_string().into())],
+                ));
             None
         }
     }
@@ -4495,7 +4622,7 @@ fn install_device_fabric_bridge(
                     target,
                 } => {
                     let binding = active_physical_gamepad_binding(&tree_handle.read())
-                        .ok_or_else(|| "focus an app before forwarding a controller".to_string())?;
+                        .ok_or_else(|| crate::shell::i18n::t("fabric-focus-app-for-controller"))?;
                     let _ = crate::shell::physical_gamepad::start_physical_gamepad_forwarding(
                         &fabric_net,
                         source_token,
@@ -4567,8 +4694,10 @@ fn install_device_fabric_bridge(
                     crate::shell::speaker_group_runtime::stop_session(&fabric_net, session_id)?;
                 }
                 DeviceFabricUiAction::RequestRemoteCapture { peer, kind } => {
-                    let binding = active_physical_gamepad_binding(&tree_handle.read())
-                        .ok_or_else(|| "focus an app before using a remote input".to_string())?;
+                    let binding =
+                        active_physical_gamepad_binding(&tree_handle.read()).ok_or_else(|| {
+                            crate::shell::i18n::t("fabric-focus-app-for-remote-input")
+                        })?;
                     let app =
                         crate::shell::realtime_session::VerifiedAppRegistration::new_verified(
                             binding.app_id,
@@ -4822,10 +4951,11 @@ fn install_session_peer_sync(
                         role,
                     )
                     .map(crate::shell::overlay_host::PeerSyncResponse::Message),
-                PeerSyncRequest::AcceptInvite(token) => bridge_net
-                    .accept_invite(active, &token)
-                    .map(|room| room.to_string())
-                    .map(crate::shell::overlay_host::PeerSyncResponse::Message),
+                PeerSyncRequest::AcceptInvite(token) => {
+                    bridge_net.accept_peer_invitation(active, &token)
+                }
+                PeerSyncRequest::PollEnrollment(id) => bridge_net.poll_enrollment(id),
+                PeerSyncRequest::CancelEnrollment(id) => bridge_net.cancel_enrollment(id),
                 PeerSyncRequest::ListPendingInvitations => {
                     let room = tree_handle
                         .read()
@@ -5120,6 +5250,8 @@ impl crate::portal::desktop_services::ScreenshotService for NativeScreenshotServ
 }
 
 struct PortalBackend {
+    media_grants: crate::portal::GrantStoreHandle,
+    media_prompts: crate::portal::PromptQueueHandle,
     #[allow(
         dead_code,
         reason = "Retaining the registration keeps its D-Bus connection, bus name, and object server alive once registered."
@@ -5374,7 +5506,7 @@ fn start_portal_backend(
     };
 
     let ctx = crate::portal::PortalContext {
-        grants,
+        grants: grants.clone(),
         prompts: prompts.clone(),
         caller_map: crate::portal::CallerMap::new(),
         file_picker: crate::portal::FilePickerSpawnerHandle::new(Arc::new(pickers.clone())),
@@ -5432,9 +5564,11 @@ fn start_portal_backend(
         },
     );
 
-    // The queues are drained by the overlay host; a portal whose registration
-    // fails never fills them, so attaching them now costs nothing.
-    frame_builder.host_mut().set_portal_queues(prompts, pickers);
+    // The queues are useless until drained; attaching them to the overlay host
+    // here (not at construction) keeps "portal up" and "prompts reach a screen" one fact.
+    frame_builder
+        .host_mut()
+        .set_portal_queues(prompts.clone(), pickers);
 
     if !documents.reaches_confined_apps() {
         // Say it out loud: a sandboxed app getting ENOENT after picking a file
@@ -5446,6 +5580,8 @@ fn start_portal_backend(
         );
     }
     Some(PortalBackend {
+        media_grants: grants,
+        media_prompts: prompts,
         server,
         remote_input: remote_input_rx,
         input_capture,
@@ -5956,7 +6092,15 @@ pub fn run() {
         .flatten();
     if let Some(broker) = collab_broker.as_ref() {
         attach_collab_broker_bridges(&mut frame_builder, broker, peer_sync.as_ref());
+        if let (Some(portal), Some(service)) =
+            (portal_backend.as_ref(), broker.native_media_service())
+        {
+            service.install_consent(portal.media_grants.clone(), portal.media_prompts.clone());
+        }
     }
+    let mut local_session_lifecycle = collab_broker
+        .as_ref()
+        .map(crate::shell::collab_broker::BrokerHandle::local_session_lifecycle);
     let mut realtime_fabric_bridge = collab_broker
         .as_ref()
         .and_then(crate::shell::collab_broker::BrokerHandle::realtime_fabric_bridge);
@@ -6210,6 +6354,9 @@ pub fn run() {
     // test-control paths. Keeping one focus cursor makes injected and real
     // keyboard traversal exercise the exact same widgets.
     let mut test_control_ctx = TestControlCtx::new();
+    // Nothing is known about the input hardware until the backend announces
+    // devices; the chrome must not keep the toolkit's desktop assumption.
+    test_control_ctx.publish_input_environment(&mut frame_builder);
     frame_builder.reconcile_native_focus(&mut test_control_ctx.focus);
     // Compositor chrome has no application window for `accesskit_winit` to
     // attach to. Publish its existing `ui::Widget` semantics directly over
@@ -6279,6 +6426,12 @@ pub fn run() {
             .with_suspend(power_policy.idle_suspend)
     };
     let mut session = SessionManager::new(idle_config, Instant::now());
+    let mut previous_onboarding_active = frame_builder.host().onboarding_active();
+    publish_native_session_state(
+        local_session_lifecycle.as_ref(),
+        &session,
+        previous_onboarding_active,
+    );
     // Session-lock unlock: input + auth state machine. Verifier is the fixed
     // test password (`TILO_LOCK_TEST_PASSWORD`) or real greetd/PAM; fail-closed otherwise.
     let mut lock = LockController::new(
@@ -6440,6 +6593,23 @@ pub fn run() {
         )
     });
 
+    // Bluetooth pairing agent: BlueZ's default agent for this session, so a
+    // passkey, PIN, confirmation or service authorisation from any pairing
+    // becomes a dialog only the compositor draws, instead of a pairing that
+    // silently fails.
+    let pairing_prompts = crate::bluetooth::PairingPromptHandle::global();
+    pairing_prompts.set_wake(Arc::clone(&session_wake));
+    let bluetooth_agent: Option<
+        crate::session_runtime::Registration<crate::bluetooth::PairingService>,
+    > = notif_runtime.map(|rt| {
+        crate::session_runtime::Registration::start(
+            rt.handle(),
+            "bluetooth pairing agent",
+            crate::bluetooth::PairingService::start(pairing_prompts),
+            |_| tracing::info!("bluetooth: pairing agent registered with BlueZ"),
+        )
+    });
+
     // Power service: async orchestrator suspending via logind, mirroring the
     // inhibitor registry into a logind lock, watching the battery and lid.
     // Spawned on the session runtime; if the system bus/logind/UPower are
@@ -6508,6 +6678,8 @@ pub fn run() {
     // `poll_events` returns — the input arm needs `&mut backend` (for `set_dpms`), unborrowable inside the poll closure.
     let mut pending_events: std::collections::VecDeque<BackendEvent> =
         std::collections::VecDeque::new();
+    // The pad whose map is held open, with its saved settings.
+    let mut pad_map_hold: Option<(String, Box<settings_store::hardware::TabletConfig>)> = None;
 
     // `wl_output` globals: advertising the manager without an output means no
     // client learns a display exists. Synced here at startup and on every hotplug.
@@ -6700,6 +6872,7 @@ pub fn run() {
         // environment before GDM admits the next desktop.
         if os_actions::take_logout_request() {
             tracing::info!(target: "tilo::session", "logout request observed by compositor loop");
+            close_native_session_authority(local_session_lifecycle.as_ref());
             close_requested = true;
             continue;
         }
@@ -6739,10 +6912,18 @@ pub fn run() {
         // A pen goes to a tablet-aware client directly and stands in for the
         // pointer everywhere else, so it expands into ordinary input here,
         // in order, before the batch is dispatched.
-        if pending_events
-            .iter()
-            .any(|event| matches!(event, BackendEvent::Tablet(_)))
-        {
+        // A pad follows keyboard focus the same way, with its settings'
+        // mapping standing in wherever no tablet-aware app is focused.
+        if pending_events.iter().any(|event| {
+            matches!(
+                event,
+                BackendEvent::Tablet(_)
+                    | BackendEvent::TabletPad(_)
+                    | BackendEvent::TabletPadMap { .. }
+                    | BackendEvent::TabletPadAdded(_)
+                    | BackendEvent::TabletPadRemoved(_)
+            )
+        }) {
             for event in std::mem::take(&mut pending_events) {
                 match event {
                     BackendEvent::Tablet(input) => {
@@ -6753,9 +6934,67 @@ pub fn run() {
                             session.is_locked(),
                         ));
                     }
+                    BackendEvent::TabletPad(pad) => {
+                        if let crate::compositor::backend::PadAction::ModeSwitch {
+                            mode,
+                            modes,
+                            ..
+                        } = pad.action
+                        {
+                            frame_builder.with_chrome(|st| {
+                                st.show_osd(crate::shell::osd::Osd::pad_mode(mode, modes));
+                            });
+                        }
+                        pending_events.extend(client_input::route_pad_event(
+                            &mut state,
+                            &frame_builder,
+                            pad,
+                            session.is_locked(),
+                        ));
+                    }
+                    BackendEvent::TabletPadMap {
+                        pad,
+                        shown,
+                        time_msec,
+                    } => match shown {
+                        // Not on the lock screen: the map names what the
+                        // apps behind it do.
+                        Some(config) if !session.is_locked() => {
+                            let target =
+                                client_input::pad_focus_target(&state, &frame_builder, false);
+                            // The app learns the pad is there now, so it can
+                            // label the controls while the map is up.
+                            state.focus_tablet_pad(&pad, target, time_msec);
+                            pad_map_hold = Some((pad, config));
+                        }
+                        Some(_) => {}
+                        None => {
+                            if pad_map_hold.as_ref().is_some_and(|(held, _)| *held == pad) {
+                                pad_map_hold = None;
+                            }
+                        }
+                    },
+                    BackendEvent::TabletPadAdded(description) => {
+                        state.add_tablet_pad(description);
+                    }
+                    BackendEvent::TabletPadRemoved(pad) => state.remove_tablet_pad(&pad),
                     other => pending_events.push_back(other),
                 }
             }
+        }
+        // Rebuilt every tick while held, so labels an app sends after a mode
+        // switch replace the ones it gave for the last mode.
+        if pad_map_hold.is_some() && session.is_locked() {
+            pad_map_hold = None;
+        }
+        let pad_map = pad_map_hold
+            .as_ref()
+            .and_then(|(pad, config)| state.tablet_pad_map(pad, config));
+        if pad_map.is_none() {
+            pad_map_hold = None;
+        }
+        if pad_map.is_some() || frame_builder.chrome().pad_map.is_some() {
+            frame_builder.with_chrome(|st| st.set_pad_map(pad_map));
         }
         let had_backend_events = !pending_events.is_empty();
         let mut session_changed = false;
@@ -6890,6 +7129,7 @@ pub fn run() {
                             t,
                             backend.as_mut(),
                             present_pipe.as_ref(),
+                            local_session_lifecycle.as_ref(),
                             &mut screen_dimmer,
                         );
                     }
@@ -6981,6 +7221,7 @@ pub fn run() {
                                         t,
                                         backend.as_mut(),
                                         present_pipe.as_ref(),
+                                        local_session_lifecycle.as_ref(),
                                         &mut screen_dimmer,
                                     );
                                 }
@@ -7032,6 +7273,7 @@ pub fn run() {
                                 t,
                                 backend.as_mut(),
                                 present_pipe.as_ref(),
+                                local_session_lifecycle.as_ref(),
                                 &mut screen_dimmer,
                             );
                         }
@@ -7236,6 +7478,7 @@ pub fn run() {
                                 t,
                                 backend.as_mut(),
                                 present_pipe.as_ref(),
+                                local_session_lifecycle.as_ref(),
                                 &mut screen_dimmer,
                             );
                         }
@@ -7290,6 +7533,27 @@ pub fn run() {
                         }
                     }
                 }
+                BackendEvent::InputDeviceAdded { id, capabilities } => {
+                    if test_control_ctx.input.device_added(id, capabilities) {
+                        test_control_ctx.publish_input_environment(&mut frame_builder);
+                        session_changed = true;
+                    }
+                }
+                BackendEvent::InputDeviceRemoved { id } => {
+                    if test_control_ctx.input.device_removed(&id) {
+                        test_control_ctx.publish_input_environment(&mut frame_builder);
+                        session_changed = true;
+                    }
+                }
+                BackendEvent::TabletMode(on) => {
+                    test_control_ctx.input.set_tablet_mode(on);
+                }
+                BackendEvent::InputUsed(modality) => {
+                    if test_control_ctx.input.note_used(modality) {
+                        test_control_ctx.publish_input_environment(&mut frame_builder);
+                        session_changed = true;
+                    }
+                }
                 BackendEvent::Focus(focused) => {
                     if !focused {
                         if let Some(network) = peer_sync.as_ref() {
@@ -7303,10 +7567,15 @@ pub fn run() {
                     frame_builder.with_chrome(|st| st.flash_visual_alert(Instant::now()));
                     session_changed = true;
                 }
-                BackendEvent::Redraw | BackendEvent::Tablet(_) => {
+                BackendEvent::Redraw
+                | BackendEvent::Tablet(_)
+                | BackendEvent::TabletPad(_)
+                | BackendEvent::TabletPadMap { .. }
+                | BackendEvent::TabletPadAdded(_)
+                | BackendEvent::TabletPadRemoved(_) => {
                     // Redraw is implicit: the native loop paints every tick.
-                    // Pen events were expanded into client or pointer input
-                    // before the batch.
+                    // Pen and pad events were expanded into client or
+                    // ordinary input before the batch.
                 }
             }
         }
@@ -7352,6 +7621,7 @@ pub fn run() {
                     t,
                     backend.as_mut(),
                     present_pipe.as_ref(),
+                    local_session_lifecycle.as_ref(),
                     &mut screen_dimmer,
                 );
             }
@@ -7466,6 +7736,7 @@ pub fn run() {
             outputs_dirty = true;
             input_methods.reload(&mut state);
         }
+        input_methods.follow_input(&mut state, &test_control_ctx.input);
         input_methods.tick();
         for (output, on) in state.output_management.take_power_requests() {
             backend.set_output_power(output, on);
@@ -7578,6 +7849,7 @@ pub fn run() {
                     t,
                     backend.as_mut(),
                     present_pipe.as_ref(),
+                    local_session_lifecycle.as_ref(),
                     &mut screen_dimmer,
                 );
             }
@@ -7606,6 +7878,7 @@ pub fn run() {
                     t,
                     backend.as_mut(),
                     present_pipe.as_ref(),
+                    local_session_lifecycle.as_ref(),
                     &mut screen_dimmer,
                 );
             }
@@ -7624,6 +7897,7 @@ pub fn run() {
                             t,
                             backend.as_mut(),
                             present_pipe.as_ref(),
+                            local_session_lifecycle.as_ref(),
                             &mut screen_dimmer,
                         );
                     }
@@ -7638,6 +7912,7 @@ pub fn run() {
                             t,
                             backend.as_mut(),
                             present_pipe.as_ref(),
+                            local_session_lifecycle.as_ref(),
                             &mut screen_dimmer,
                         );
                     }
@@ -7661,6 +7936,7 @@ pub fn run() {
                                 t,
                                 backend.as_mut(),
                                 present_pipe.as_ref(),
+                                local_session_lifecycle.as_ref(),
                                 &mut screen_dimmer,
                             );
                         }
@@ -7675,6 +7951,7 @@ pub fn run() {
                             t,
                             backend.as_mut(),
                             present_pipe.as_ref(),
+                            local_session_lifecycle.as_ref(),
                             &mut screen_dimmer,
                         );
                     }
@@ -7745,6 +8022,7 @@ pub fn run() {
                     t,
                     backend.as_mut(),
                     present_pipe.as_ref(),
+                    local_session_lifecycle.as_ref(),
                     &mut screen_dimmer,
                 );
             }
@@ -7762,6 +8040,7 @@ pub fn run() {
                         t,
                         backend.as_mut(),
                         present_pipe.as_ref(),
+                        local_session_lifecycle.as_ref(),
                         &mut screen_dimmer,
                     );
                 }
@@ -8208,34 +8487,38 @@ pub fn run() {
                 nearby_drop_event_count,
                 for event in nearby_drop_events {
                     use crate::shell::device_fabric_runtime::NearbyDropEvent;
+                    use crate::shell::i18n::{t, t_args};
                     let fabric = net.device_fabric();
                     let peer_label = |peer: &crate::shell::personal_continuity::DeviceId| {
                         fabric.snapshots().get(peer).map_or_else(
-                            || "your device".to_string(),
+                            || t("nearby-drop-your-device"),
                             |snapshot| snapshot.presence.label.clone(),
                         )
                     };
+                    let line = |key: &str, file: String, peer: String| {
+                        t_args(key, &[("file", file.into()), ("device", peer.into())])
+                    };
                     let (title, body) = match event {
                         NearbyDropEvent::Sending { file_name, peer } => (
-                            "Sending nearby".to_string(),
-                            format!("{file_name} to {}", peer_label(&peer)),
+                            t("nearby-drop-sending"),
+                            line("nearby-drop-sending-body", file_name, peer_label(&peer)),
                         ),
                         NearbyDropEvent::Sent { file_name, peer } => (
-                            "Sent nearby".to_string(),
-                            format!("{file_name} to {}", peer_label(&peer)),
+                            t("nearby-drop-sent"),
+                            line("nearby-drop-sent-body", file_name, peer_label(&peer)),
                         ),
                         NearbyDropEvent::Failed { file_name, peer } => (
-                            "Nearby drop failed".to_string(),
-                            format!("{file_name} · {}", peer_label(&peer)),
+                            t("nearby-drop-failed"),
+                            line("nearby-drop-failed-body", file_name, peer_label(&peer)),
                         ),
                         NearbyDropEvent::Received { path, peer } => (
-                            "Received nearby".to_string(),
-                            format!(
-                                "{} from {}",
+                            t("nearby-drop-received"),
+                            line(
+                                "nearby-drop-received-body",
                                 path.file_name()
                                     .and_then(|name| name.to_str())
-                                    .unwrap_or("File"),
-                                peer_label(&peer)
+                                    .map_or_else(|| t("doc-open-unnamed-file"), str::to_string),
+                                peer_label(&peer),
                             ),
                         ),
                     };
@@ -8444,9 +8727,16 @@ pub fn run() {
         crate::shell::launcher::record_presented_launches(|surface| {
             crate::compositor::foreign::store().frame_seq(surface)
         });
+        let onboarding_active = frame_builder.host().onboarding_active();
+        if onboarding_active != previous_onboarding_active {
+            if let Some(local_session) = local_session_lifecycle.as_ref() {
+                local_session.set_onboarding_active(onboarding_active);
+            }
+            previous_onboarding_active = onboarding_active;
+        }
         if desktop_continuation
             .as_mut()
-            .is_some_and(|continuation| continuation.pump(frame_builder.host().onboarding_active()))
+            .is_some_and(|continuation| continuation.pump(onboarding_active))
             && let Err(error) = crate::shell::desktop_continuation::launch_request()
                 .and_then(crate::shell::host_apps::queue_launch)
         {
@@ -8454,10 +8744,7 @@ pub fn run() {
         }
         let pump_apps_done = Instant::now();
         pump_checkpoint!("widget-pump");
-        if take_deferred_peer_sync_activation(
-            &mut deferred_peer_sync,
-            frame_builder.host().onboarding_active(),
-        ) {
+        if take_deferred_peer_sync_activation(&mut deferred_peer_sync, onboarding_active) {
             // `pump_apps` just observed the trusted onboarding completion.
             // Apps were withheld until this edge. The network starts off the
             // loop; launches wait until it and the broker over it exist, so
@@ -8492,7 +8779,18 @@ pub fn run() {
             collab_broker =
                 spawn_session_collab_broker(&frame_builder.chrome_handle(), peer_sync.as_ref());
             if let Some(broker) = collab_broker.as_ref() {
+                local_session_lifecycle = Some(install_native_session_lifecycle(
+                    broker,
+                    &session,
+                    onboarding_active,
+                ));
                 attach_collab_broker_bridges(&mut frame_builder, broker, peer_sync.as_ref());
+                if let (Some(portal), Some(service)) =
+                    (portal_backend.as_ref(), broker.native_media_service())
+                {
+                    service
+                        .install_consent(portal.media_grants.clone(), portal.media_prompts.clone());
+                }
                 realtime_fabric_bridge = broker.realtime_fabric_bridge();
                 if let (Some(runtime), Some(bridge)) = (
                     device_fabric_runtime.as_mut(),
@@ -8527,11 +8825,22 @@ pub fn run() {
             // run normally.
             match start_failure {
                 None => crate::shell::launcher::release_held_launches(),
-                Some(error) => crate::shell::launcher::fail_held_launches(&format!(
-                    "the desktop's network could not start ({error})"
-                )),
+                Some(error) => {
+                    crate::shell::launcher::fail_held_launches(&crate::shell::i18n::t_args(
+                        "launch-held-network-failed",
+                        &[("error", error.into())],
+                    ));
+                }
             }
             apps_changed = true;
+        }
+        if desktop_continuation
+            .as_mut()
+            .is_some_and(|continuation| continuation.pump(onboarding_active))
+            && let Err(error) = crate::shell::desktop_continuation::launch_request()
+                .and_then(crate::shell::host_apps::queue_launch)
+        {
+            tracing::warn!(%error, "Could not queue Desktop folder continuation; reopen Add folders to Tilo");
         }
         let pump_finalize_started = Instant::now();
         let revision = frame_builder.chrome_revision();
@@ -8978,10 +9287,16 @@ pub fn run() {
                             match crate::shell::screenshot_send::route(&path, &target, &mut bridge)
                             {
                                 Ok(receipt) => frame_builder.with_chrome(|chrome| {
-                                    chrome.push_notification("Screenshot sent", receipt.message());
+                                    chrome.push_notification(
+                                        crate::shell::i18n::t("capture-screenshot-sent"),
+                                        receipt.message(),
+                                    );
                                 }),
                                 Err(error) => frame_builder.with_chrome(|chrome| {
-                                    chrome.push_error_notification("Screenshot not sent", error);
+                                    chrome.push_error_notification(
+                                        crate::shell::i18n::t("capture-screenshot-not-sent"),
+                                        error,
+                                    );
                                 }),
                             }
                         }
@@ -9027,8 +9342,14 @@ pub fn run() {
                         CaptureOutcome::RecordingAudioLost { path, reason } => {
                             frame_builder.with_chrome(|chrome| {
                                 chrome.push_notification(
-                                    "Recording continues without audio",
-                                    format!("{} · {reason}", path.display()),
+                                    crate::shell::i18n::t("capture-recording-audio-lost"),
+                                    crate::shell::i18n::t_args(
+                                        "capture-recording-audio-lost-body",
+                                        &[
+                                            ("path", path.display().to_string().into()),
+                                            ("reason", reason.into()),
+                                        ],
+                                    ),
                                 );
                             });
                         }
@@ -9056,7 +9377,7 @@ pub fn run() {
                         CaptureOutcome::ReplayAudioLost(reason) => {
                             frame_builder.with_chrome(|chrome| {
                                 chrome.push_warning_notification(
-                                    "Recent capture continues without audio",
+                                    crate::shell::i18n::t("capture-recent-audio-lost"),
                                     reason,
                                 );
                             });
@@ -9084,7 +9405,10 @@ pub fn run() {
                         CaptureOutcome::Failed(error) => {
                             tracing::warn!(%error, "capture failed");
                             frame_builder.with_chrome(|chrome| {
-                                chrome.push_error_notification("Capture failed", error);
+                                chrome.push_error_notification(
+                                    crate::shell::i18n::t("capture-failed"),
+                                    error,
+                                );
                             });
                         }
                     }
@@ -9508,6 +9832,7 @@ pub fn run() {
     drop(tray_handle);
     drop(polkit_agent);
     drop(network_secret_agent);
+    drop(bluetooth_agent);
 }
 
 /// Publish a successful machine-level change to every shell surface that
@@ -9566,7 +9891,8 @@ fn sync_quick_settings_from_osd(
         | crate::shell::osd::OsdKind::MouseKeys { .. }
         | crate::shell::osd::OsdKind::Magnifier { .. }
         | crate::shell::osd::OsdKind::InputSource(_)
-        | crate::shell::osd::OsdKind::KeysCaptured { .. } => {}
+        | crate::shell::osd::OsdKind::KeysCaptured { .. }
+        | crate::shell::osd::OsdKind::PadMode { .. } => {}
     }
 }
 
@@ -9651,12 +9977,20 @@ fn spawn_auto_brightness_worker() {
     clippy::float_cmp,
     reason = "deterministic control-path geometry fixtures use exactly representable values"
 )]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 mod tests {
     //! Unit coverage for the test-control execution path. The integration test
     //! (`tests/control_socket_test.rs`) needs a Wayland display and is
     //! `#[ignore]` by default; these exercise the same `execute_planned_action`
     //! → `FrameBuilder::dispatch_event` wire without a process, so CI without winit still gates here.
     use super::*;
+    use crate::shell::collab_broker_capnp::{
+        native_consent_fixture_root, run_isolated_native_consent_test,
+        wait_for_local_session_worker_teardown,
+    };
 
     #[test]
     fn redraw_edges_and_idle_parking_follow_real_wake_sources() {
@@ -9971,13 +10305,19 @@ mod tests {
                 SessionTransition::Locked,
                 SessionTransition::Unlocked,
             ] {
-                apply_session_transition(t, &mut backend, None, &mut dimmer);
+                apply_session_transition(t, &mut backend, None, None, &mut dimmer);
             }
             // Blanked → set_dpms(false), Woke → set_dpms(true); Locked/Unlocked produce no backend calls.
             assert_eq!(backend.dpms_calls, vec![false, true]);
             // Without a backlight the dim falls back to the paint overlay, lifted by Undimmed.
             assert!(dimmer.overlay_alpha().is_some());
-            apply_session_transition(SessionTransition::Undimmed, &mut backend, None, &mut dimmer);
+            apply_session_transition(
+                SessionTransition::Undimmed,
+                &mut backend,
+                None,
+                None,
+                &mut dimmer,
+            );
             assert_eq!(dimmer.overlay_alpha(), None);
         }
     }
@@ -11624,7 +11964,7 @@ mod tests {
         }
         // Phase `action_enumeration_preserves_directory_resource_hierarchy`.
         {
-            use crate::shell::collab_broker_capnp::{ActionDirectoryRoot, CapnpBrokerState};
+            use crate::shell::collab_broker_capnp::ActionDirectoryRoot;
             use crate::shell::search::providers::live_app_actions::fixture_with_directory_page;
 
             let mut fb = FrameBuilder::new((800, 600));
@@ -11640,7 +11980,9 @@ mod tests {
                 .active_workspace_mut()
                 .unwrap()
                 .owner = Some(actor.clone());
-            let broker = CapnpBrokerState::test_broker_with_membership(fb.chrome().tree_handle());
+            let broker = crate::shell::broker_services::test_broker_with_membership(
+                fb.chrome().tree_handle(),
+            );
             broker.replace_action_directory_roots_for_test(vec![ActionDirectoryRoot {
                 peer_id: 4096,
                 app_id: "dev.tilo.calculator".into(),
@@ -11956,6 +12298,176 @@ mod tests {
     }
 
     // session lock chord / unlock detection
+
+    #[test]
+    fn native_consent_bootstrap_and_onboarding_publish_actual_state() {
+        const TEST: &str = "compositor::native::tests::native_consent_bootstrap_and_onboarding_publish_actual_state";
+        run_isolated_native_consent_test(TEST, || {
+            let mut frame_builder = FrameBuilder::new((800, 600));
+            let broker = spawn_session_collab_broker(&frame_builder.chrome_handle(), None)
+                .expect("spawn native collaboration broker");
+            let session = SessionManager::new(
+                IdleConfig {
+                    blank_timeout: None,
+                    lock_timeout: None,
+                    suspend_timeout: None,
+                },
+                Instant::now(),
+            );
+            let lifecycle = install_native_session_lifecycle(
+                &broker,
+                &session,
+                frame_builder.host().onboarding_active(),
+            );
+            assert_eq!(
+                lifecycle.snapshot().expect("native bootstrap").liveness,
+                crate::shell::collab_broker_capnp::LocalSessionLiveness::Active
+            );
+
+            let fixture = native_consent_fixture_root();
+            frame_builder.enable_onboarding(fixture.join("onboarding"));
+            publish_native_session_state(
+                Some(&lifecycle),
+                &session,
+                frame_builder.host().onboarding_active(),
+            );
+            assert_eq!(
+                lifecycle
+                    .snapshot()
+                    .expect("onboarding revocation")
+                    .liveness,
+                crate::shell::collab_broker_capnp::LocalSessionLiveness::Inactive
+            );
+            drop(broker);
+            wait_for_local_session_worker_teardown(&lifecycle);
+        });
+    }
+
+    #[test]
+    fn native_consent_lock_is_synchronous_and_unlock_uses_fresh_generation() {
+        const TEST: &str = "compositor::native::tests::native_consent_lock_is_synchronous_and_unlock_uses_fresh_generation";
+        run_isolated_native_consent_test(TEST, || {
+            use crate::compositor::backend::{Backend, BackendEvent, Output};
+            use vello::Scene;
+
+            #[derive(Default)]
+            struct SpyBackend {
+                outputs: Vec<Output>,
+            }
+            impl Backend for SpyBackend {
+                fn submit_frame(&mut self, _scene: &Scene, _output: OutputId) {}
+                fn poll_events(&mut self, _cb: &mut dyn FnMut(BackendEvent)) {}
+                fn outputs(&self) -> &[Output] {
+                    &self.outputs
+                }
+            }
+
+            let frame_builder = FrameBuilder::new((800, 600));
+            let broker = spawn_session_collab_broker(&frame_builder.chrome_handle(), None)
+                .expect("spawn native collaboration broker");
+            let session = SessionManager::new(
+                IdleConfig {
+                    blank_timeout: None,
+                    lock_timeout: None,
+                    suspend_timeout: None,
+                },
+                Instant::now(),
+            );
+            let lifecycle = install_native_session_lifecycle(
+                &broker,
+                &session,
+                frame_builder.host().onboarding_active(),
+            );
+            let active = lifecycle.snapshot().expect("active native session");
+            let mut backend = SpyBackend::default();
+
+            apply_session_transition(
+                SessionTransition::Locked,
+                &mut backend,
+                None,
+                Some(&lifecycle),
+                &mut ScreenDimmer::new(SysBacklight::owned(false)),
+            );
+            let locked = lifecycle.snapshot().expect("synchronous lock revoke");
+            assert_eq!(
+                locked.liveness,
+                crate::shell::collab_broker_capnp::LocalSessionLiveness::Inactive
+            );
+            assert!(locked.generation > active.generation);
+
+            apply_session_transition(
+                SessionTransition::Unlocked,
+                &mut backend,
+                None,
+                Some(&lifecycle),
+                &mut ScreenDimmer::new(SysBacklight::owned(false)),
+            );
+            let unlocked = lifecycle.snapshot().expect("fresh unlock");
+            assert_eq!(
+                unlocked.liveness,
+                crate::shell::collab_broker_capnp::LocalSessionLiveness::Active
+            );
+            assert!(unlocked.generation > locked.generation);
+            assert_eq!(unlocked.epoch, active.epoch);
+            drop(broker);
+            wait_for_local_session_worker_teardown(&lifecycle);
+        });
+    }
+
+    #[test]
+    fn native_consent_deferred_install_publishes_before_continuation() {
+        const TEST: &str = "compositor::native::tests::native_consent_deferred_install_publishes_before_continuation";
+        run_isolated_native_consent_test(TEST, || {
+            let mut deferred = true;
+            assert!(take_deferred_peer_sync_activation(&mut deferred, false));
+            let frame_builder = FrameBuilder::new((800, 600));
+            let broker = spawn_session_collab_broker(&frame_builder.chrome_handle(), None)
+                .expect("spawn deferred collaboration broker");
+            let session = SessionManager::new(
+                IdleConfig {
+                    blank_timeout: None,
+                    lock_timeout: None,
+                    suspend_timeout: None,
+                },
+                Instant::now(),
+            );
+            let lifecycle = install_native_session_lifecycle(
+                &broker,
+                &session,
+                frame_builder.host().onboarding_active(),
+            );
+            assert_eq!(
+                lifecycle
+                    .snapshot()
+                    .expect("deferred native state")
+                    .liveness,
+                crate::shell::collab_broker_capnp::LocalSessionLiveness::Active,
+                "the deferred broker must publish current native state before launch preparation"
+            );
+            drop(broker);
+            wait_for_local_session_worker_teardown(&lifecycle);
+        });
+    }
+
+    #[test]
+    fn native_consent_logout_closes_before_loop_exit() {
+        const TEST: &str =
+            "compositor::native::tests::native_consent_logout_closes_before_loop_exit";
+        run_isolated_native_consent_test(TEST, || {
+            let frame_builder = FrameBuilder::new((800, 600));
+            let broker = spawn_session_collab_broker(&frame_builder.chrome_handle(), None)
+                .expect("spawn native collaboration broker");
+            let lifecycle = broker.local_session_lifecycle();
+            lifecycle.publish_native_state(false, false);
+            close_native_session_authority(Some(&lifecycle));
+            assert_eq!(
+                lifecycle.snapshot().expect("logout close").liveness,
+                crate::shell::collab_broker_capnp::LocalSessionLiveness::Closed
+            );
+            drop(broker);
+            wait_for_local_session_worker_teardown(&lifecycle);
+        });
+    }
 
     /// A window that set its own icon reports it as its tab's artwork.
     #[test]
@@ -12475,6 +12987,10 @@ mod vt_chord_tests {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 mod gesture_wireup_tests {
     use super::{apply_shell_gesture, backend_nested_loop_uses_edge_wake, refresh_mhz_of};
     use crate::compositor::backend::drm::gestures::GestureAction;
@@ -12993,3 +13509,9 @@ mod external_floating_security_tests {
         }
     }
 }
+
+#[allow(
+    unused_imports,
+    reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
+)]
+use crate::shell::state::WorkspaceExt as _;

@@ -12,7 +12,8 @@ autoexamples = false
 # build.rs probes optional system libraries through pkg-config.
 # wgpu-hal is referenced through vello's wgpu re-export; the direct optional
 # dependency enables the Tilo presentation-feedback feature in the patched HAL.
-ignored = ["pkg-config", "wgpu-hal"]
+# getrandom02 only selects the browser entropy backend for transitive crypto.
+ignored = ["pkg-config", "wgpu-hal", "getrandom02"]
 
 [features]
 default = ["native", "broker-transport"]
@@ -21,13 +22,17 @@ default = ["native", "broker-transport"]
 # warmup, and the `ui::native` backends. Without it the crate is the portable
 # toolkit — widgets, state, layout, rendering and the headless host — and a
 # host supplies its own `ui::host::HostServices`.
-native = ["tilo-host/native", "dep:accesskit_winit", "dep:tilo-content"]
+native = ["tilo-host/native", "dep:accesskit_winit", "dep:tilo-content", "syntax-definitions"]
+# two-face's grammars for the code editor's highlighting (about 0.9 MB of
+# data). Without it every language highlights as plain text; the browser
+# toolkit core leaves it out.
+syntax-definitions = ["dep:two-face"]
 # The collaboration manager's built-in transport: the Tilo collab broker's
 # Cap'n Proto SDK on a worker thread (`collaboration::broker`). Without it the
 # manager is driven only through `CollaborationManager::with_transport`, and
 # `CollaborationManager::new` starts disabled.
 broker-transport = ["runtime-collab/client", "dep:capnp", "dep:capnp-rpc"]
-test-support = []
+test-support = ["tilo-host/test-support", "dep:tilo-test-env"]
 # Push-mode decode in `VideoPlayer` (`feed_frame` / `feed_encoded`) through
 # `media`'s GStreamer real-time decoder. Apps that stream video enable
 # `media/realtime` themselves; this feature exists so the widget's own tests
@@ -59,9 +64,12 @@ gpu-video = ["dmabuf-import"]
 # `VideoPlayer` widget: media keys + the system top-bar now-playing widget can
 # drive playback and show the current title/artist/art. Off by default so the
 # hermetic build / `--shots` / CI need no D-Bus; an app enables it (e.g. Tube's
-# `media` feature turns on `ui/mpris`). zbus runs on the workspace's tokio
+# `media` feature turns on `ui/media-session`). zbus runs on the workspace's tokio
 # backend; the server lives on its own thread with a private runtime.
 mpris = ["native", "tilo-host/mpris"]
+# Publish an address book's priority contacts to the Tilo shell
+# (`ui::priority_contacts`) over the Unix session bus.
+priority-contacts = ["native", "dep:zbus", "zbus?/blocking-api"]
 # Host-native file open/save through the XDG Desktop Portal (`ui::portal`).
 # Pulls `ashpd` (D-Bus / FileChooser) only when an app needs to open or
 # save files — an app opts in with `ui = { …, features = ["portal"] }`. The pure
@@ -77,7 +85,8 @@ xdg-paths = { path = "../../system/xdg-paths" }
 # notifications, media sessions, location and screen capture, and their
 # native backends. Re-exported under the toolkit's own module paths.
 tilo-host = { path = "../tilo-host" }
-private-fs = { path = "../../system/private-fs" }
+# Test builds bound the pairing broker exchange with the shared hang bound.
+tilo-test-env = { path = "../../dev/test-env", optional = true }
 advisory-lock = { path = "../../system/advisory-lock" }
 tilo-ui-graph = { path = "../../dev/ui-graph" }
 tilo-font-catalog = { path = "../font-catalog" }
@@ -116,11 +125,10 @@ spellcheck = { path = "../../text/spellcheck" }
 # tokenizer over two-face's extended syntax set, the packed set Typst already
 # links for raw blocks, so the runtime carries those bytes once.
 syntect = { version = "5.3", default-features = false, features = ["parsing", "regex-fancy"] }
-two-face = { version = "0.4.5", default-features = false, features = ["syntect-fancy"] }
+two-face = { version = "0.4.5", default-features = false, features = ["syntect-fancy"], optional = true }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 zeroize.workspace = true
-rustls.workspace = true
 # Invite-redemption secrets are sealed at rest through the shared construction.
 tilo-seal = { path = "../../system/tilo-seal" }
 cosmic-text = { workspace = true, features = ["fontconfig", "peniko", "swash", "std"] }
@@ -134,8 +142,9 @@ rustc-hash.workspace = true
 # `create_texture_from_hal`.
 ash = { version = "0.38", optional = true }
 taffy = { workspace = true, features = ["content_size"] }
-tokio = { workspace = true, features = ["full"] }
-tilo-rt.workspace = true
+# The portable toolkit uses only the runtime pieces that exist on every
+# target; native builds add the rest below.
+tokio = { workspace = true, features = ["sync", "rt", "macros", "time"] }
 vello.workspace = true
 libc.workspace = true
 wgpu.workspace = true
@@ -152,12 +161,13 @@ unicode-linebreak = "0.1.5"
 unicode-normalization = "0.1.25"
 # ICU grapheme clusters, plus dictionary/LSTM segmentation for scripts whose
 # word boundaries cannot be inferred from whitespace (Thai, Lao, Khmer,
-# Myanmar, CJK).
+# Myanmar, CJK); natively only, see text_break.rs.
 icu_segmenter = "2.3"
 # TeX/Liang hyphenation patterns with language-specific minima. The same
 # implementation is already used by the workspace's Typst document engine;
 # making it direct lets UI paragraphs opt in without runtime dictionary I/O.
-hypher = "0.1.7"
+# Every language natively; see the wasm32 table for the browser's subset.
+hypher = { version = "0.1.7", default-features = false, features = ["alloc", "english", "german"] }
 serde.workspace = true
 serde_json.workspace = true
 base64.workspace = true
@@ -222,6 +232,7 @@ sha2.workspace = true
 # SIMD compiler fingerprinting and integrity for the private DX12 cache.
 blake3.workspace = true
 unicode-script = "=0.5.8"
+unicode-properties = "=0.1.4"
 # Pairing-channel authentication. HMAC binds the round-1 broadcast to
 # the one-time pairing secret; XChaCha20-Poly1305 separately encrypts
 # and authenticates the exchanged DKG payloads.
@@ -253,11 +264,12 @@ accesskit_winit = { version = "0.34.0", optional = true, default-features = fals
 # `default_speaker()` never panics (falls back to `NullSpeaker` when no speech
 # stack is installed), so depending on this is safe in headless builds.
 tts = { path = "../../system/tts" }
-workspace-hack = { version = "0.1" }
 
 [target.'cfg(unix)'.dependencies]
 # Takes the launcher's content-store capability at launch (`launch.rs`).
 tilo-content = { path = "../../system/content", optional = true }
+# Session-bus client for `priority-contacts`; runs on the workspace's tokio.
+zbus = { workspace = true, optional = true, features = ["p2p", "tokio"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Cryptography", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
@@ -268,6 +280,8 @@ windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Secur
 pkg-config = "0.3"
 
 [dev-dependencies]
+serial_test.workspace = true
+atomic-file = { path = "../../system/atomic-file", features = ["test-support"] }
 regex.workspace = true
 tilo-automerge = { workspace = true, features = ["heap-probe"] }
 # The `diag!` tests reproduce the crash they prevent: they need `dup2` to point
@@ -284,6 +298,8 @@ tempfile.workspace = true
 # as `TILO_SVC_COLLAB_FD`) set it through `ScopedEnv`, which restores the
 # prior value and serialises every such test in the process.
 tilo-test-env = { path = "../../dev/test-env" }
+# The scoped chooser and URI fixtures the invocation-scope tests select.
+tilo-host = { path = "../tilo-host", features = ["test-support"] }
 # The `collaboration` shim tests stand up a fake capnp broker on one end
 # of a `UnixStream::pair()` and drive `CollaborationManager` against it.
 # Same pin runtime-collab tests use.
@@ -310,4 +326,28 @@ workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 wgpu-hal = { version = "29", default-features = false, features = ["metal", "tilo-presentation-feedback"], optional = true }
+
+# Host services that need an OS: private files, TLS and the full tokio
+# runtime. The browser (wasm32) build supplies these through its host instead.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+private-fs = { path = "../../system/private-fs" }
+rustls.workspace = true
+tokio = { workspace = true, features = ["full"] }
+# The app runtime thread `LatestRequest::spawn` / `LatestTask::spawn` run on.
+tilo-rt.workspace = true
+# Hyphenation patterns for every language. The browser toolkit core keeps
+# English and German only (the common table): the rest would add about 1 MB
+# downloaded before anything runs; other languages there are not hyphenated.
+hypher = { version = "0.1.7", features = ["full"] }
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
+
+# Browser entropy, clocks and time zones for the wasm32 build.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+chrono = { workspace = true, features = ["wasmbind"] }
+getrandom = { workspace = true, features = ["wasm_js"] }
+# The RustCrypto stack under channel-crypto and tilo-seal still draws entropy
+# through getrandom 0.2, which needs its JS backend named in the browser.
+getrandom02 = { package = "getrandom", version = "0.2", features = ["js"] }
+uuid = { workspace = true, features = ["js"] }
 

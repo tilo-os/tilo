@@ -22,4 +22,3 @@ tempfile.workspace = true
 workspace = true
 
 [dependencies]
-workspace-hack = { version = "0.1" }

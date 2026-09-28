@@ -393,11 +393,20 @@ fn verify_collaboration_identity_entrypoint(provision_requested: bool) -> std::p
     reason = "startup decisions must remain in one ordered, single-threaded entry point before the compositor and its long-lived services start"
 )]
 pub fn run() -> std::process::ExitCode {
+    // Automerge isolation workers re-enter this binary; serve them before
+    // anything else starts.
+    if let Some(code) = tilo_automerge_isolate::dispatch_early() {
+        return std::process::ExitCode::from(code);
+    }
     // `init()` is a no-op unless the env var is set, so production boots pay
     // zero cost; the scope guard dumps recorded events to disk when `main` returns.
     tilo_startup_metrics::init();
     let _startup_dump = tilo_startup_metrics::ScopedDumper;
     tilo_startup_metrics::mark("main-start");
+
+    // The shell's copy and every toolkit widget it draws, in the desktop's
+    // language.
+    shell::shell::i18n::ensure();
 
     // Inspect process shape while startup is still single-threaded. Host
     // packages pass an explicit installation context; deriving it from a

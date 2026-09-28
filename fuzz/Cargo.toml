@@ -48,3 +48,8 @@ bench = false
 
 [workspace]
 members = ["."]
+
+# The fuzz workspace resolves the same patched crates as the main workspace:
+# Rustls roots through tilo-native-certs (no OpenSSL path probing).
+[patch.crates-io]
+rustls-native-certs = { path = "../crates/system/tilo-native-certs" }

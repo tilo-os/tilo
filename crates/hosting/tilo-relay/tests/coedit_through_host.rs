@@ -53,21 +53,20 @@ fn text_of(doc: &AutoCommit) -> String {
     }
 }
 
-fn pending_count(dir: &std::path::Path) -> usize {
-    std::fs::read_dir(dir).map_or(0, |rd| {
-        rd.flatten()
-            .filter(|e| e.file_name().to_string_lossy().ends_with(".delta"))
-            .count()
-    })
+fn retained_count(state_root: &std::path::Path, workspace: u64) -> usize {
+    tilo_relay::store::WorkspaceStore::open(state_root, workspace, false)
+        .unwrap()
+        .load_retained()
+        .unwrap()
+        .len()
 }
 
 /// Drain `session` until an `Inbound::Delta` arrives, applying each
 /// received delta to `doc`. Returns once a document delta has landed.
 async fn recv_delta_into(session: &RelayCoeditSession, doc: &mut AutoCommit) {
     for _ in 0..8 {
-        let inbound = tokio::time::timeout(Duration::from_secs(3), session.recv())
+        let inbound = tilo_test_env::within("recv timeout", session.recv())
             .await
-            .expect("recv timeout")
             .expect("session closed");
         match inbound {
             Inbound::Delta { data, .. } => {
@@ -101,7 +100,14 @@ async fn coedits_converge_through_the_host_live_and_offline() {
 
         let state = tempfile::tempdir().unwrap();
         let host_dev = user.enrol("home-server", DeviceCapabilities::host());
-        let host = spawn_relay_on(state.path(), &user, host_dev, &[WS], &members).await;
+        let host = Box::pin(spawn_relay_on(
+            state.path(),
+            &user,
+            host_dev,
+            &[WS],
+            &members,
+        ))
+        .await;
         let addr = host.node_addr();
 
         // Both peers connect and join the workspace's co-edit session.
@@ -131,9 +137,8 @@ async fn coedits_converge_through_the_host_live_and_offline() {
 
         // Drain B's Ready(pending=0) so we know its subscription is live
         // before A publishes (live fan-out only reaches online subscribers).
-        match tokio::time::timeout(Duration::from_secs(2), b_session.recv())
+        match tilo_test_env::within("B Ready timeout", b_session.recv())
             .await
-            .expect("B Ready timeout")
             .expect("B closed")
         {
             Inbound::Ready { pending } => assert_eq!(pending, 0),
@@ -144,7 +149,7 @@ async fn coedits_converge_through_the_host_live_and_offline() {
         let mut doc_a = doc_with_text(b"alice", "hello");
         let delta = doc_a.save_incremental();
         a_session
-            .publish_retained_delta([1; 32], *blake3::hash(&delta).as_bytes(), delta)
+            .publish_retained_entry([1; 32], *blake3::hash(&delta).as_bytes(), delta)
             .unwrap();
 
         // B converges by applying the fanned-out delta.
@@ -177,32 +182,45 @@ async fn coedits_converge_through_the_host_live_and_offline() {
         // ---- Host boots; A joins, co-edits, and leaves. B has NEVER
         //      connected. ----
         let host1_dev = user.enrol("home-server", DeviceCapabilities::host());
-        let host1 = spawn_relay_on(&state_root, &user, host1_dev, &[WS], &members).await;
+        let host1 = Box::pin(spawn_relay_on(
+            &state_root,
+            &user,
+            host1_dev,
+            &[WS],
+            &members,
+        ))
+        .await;
         let addr1 = host1.node_addr();
 
-        // B never connected. The co-edit is retained once for the room, never
-        // copied into a per-device queue.
-        let workspace_dir = state_root.join("workspaces").join(WS.to_string());
-        let retained_dir = workspace_dir
-            .join("retained/tails")
-            .join(hex::encode([2u8; 32]));
-        let pending_dir = workspace_dir
-            .join("pending")
-            .join(hex::encode(b.device_pubkey()));
-        let mut doc_a = publish_offline_coedit(addr1, &user, &a, WS, &retained_dir).await;
-        assert_eq!(pending_count(&pending_dir), 0, "no per-device copy for B");
+        // Shared durable coverage serves B even though it has never connected.
+        let mut doc_a = publish_offline_coedit(addr1, &user, &a, WS, &state_root).await;
+        assert_eq!(
+            tilo_relay::store::WorkspaceStore::open(&state_root, WS, false)
+                .unwrap()
+                .count_pending(&b.device_pubkey())
+                .unwrap(),
+            0,
+            "the co-edit is retained once for the room, never copied into B's queue"
+        );
 
         // ---- The host restarts on the same state directory. ----
         drop(host1);
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert_eq!(
-            pending_count(&retained_dir),
+            retained_count(&state_root, WS),
             1,
             "the retained co-edit must survive the host process dying"
         );
 
         let host2_dev = user.enrol("home-server-2", DeviceCapabilities::host());
-        let host2 = spawn_relay_on(&state_root, &user, host2_dev, &[WS], &members).await;
+        let host2 = Box::pin(spawn_relay_on(
+            &state_root,
+            &user,
+            host2_dev,
+            &[WS],
+            &members,
+        ))
+        .await;
         let addr2 = host2.node_addr();
 
         // ---- B connects for the very first time, to the restarted host. ----
@@ -214,10 +232,16 @@ async fn coedits_converge_through_the_host_live_and_offline() {
             doc_b.get_heads(),
             "B converges with A across a host restart, never having been online together"
         );
+        let store = tilo_relay::store::WorkspaceStore::open(&state_root, WS, false).unwrap();
         assert_eq!(
-            pending_count(&retained_dir),
+            store.count_pending(&b.device_pubkey()).unwrap(),
+            0,
+            "retained delivery must not create per-device copies"
+        );
+        assert_eq!(
+            store.load_retained().unwrap().len(),
             1,
-            "retained room state stays for the next member to join"
+            "the same coverage remains available to newly invited devices"
         );
 
         drop(host2);
@@ -232,7 +256,7 @@ async fn publish_offline_coedit(
     user: &TestUser,
     a: &crate::common::TestDevice,
     ws: u64,
-    retained_dir: &std::path::Path,
+    state_root: &std::path::Path,
 ) -> AutoCommit {
     let a_client = RelayClient::connect(
         client_endpoint().await,
@@ -246,9 +270,8 @@ async fn publish_offline_coedit(
     .expect("A connect");
     let a_session = RelayCoeditSession::join(a_client, ws, a.device_pubkey()).unwrap();
     // Drain A's own Ready(0).
-    match tokio::time::timeout(Duration::from_secs(2), a_session.recv())
+    match tilo_test_env::within("A Ready timeout", a_session.recv())
         .await
-        .expect("A Ready timeout")
         .expect("A closed")
     {
         Inbound::Ready { pending } => assert_eq!(pending, 0),
@@ -258,18 +281,22 @@ async fn publish_offline_coedit(
     let mut doc_a = doc_with_text(b"alice", "offline-note");
     let delta = doc_a.save_incremental();
     a_session
-        .publish_retained_delta([2; 32], *blake3::hash(&delta).as_bytes(), delta)
+        .publish_retained_entry([2; 32], *blake3::hash(&delta).as_bytes(), delta)
         .unwrap();
 
     let mut queued = 0;
-    for _ in 0..40 {
-        queued = pending_count(retained_dir);
+    // Polls for up to 30 s; only a hang uses the whole budget.
+    for _ in 0..1200 {
+        queued = retained_count(state_root, ws);
         if queued >= 1 {
             break;
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
-    assert_eq!(queued, 1, "A's co-edit must be persisted for the offline B");
+    assert_eq!(
+        queued, 1,
+        "A's co-edit must be durably retained for the offline B"
+    );
 
     // A disconnects; now neither device is online.
     drop(a_session);
@@ -307,9 +334,8 @@ async fn catch_up_first_connection(
         if got_delta && got_ready {
             break;
         }
-        let inbound = tokio::time::timeout(Duration::from_secs(3), b_session.recv())
+        let inbound = tilo_test_env::within("B catch-up timeout", b_session.recv())
             .await
-            .expect("B catch-up timeout")
             .expect("B closed");
         match inbound {
             Inbound::Delta { data, .. } => {
@@ -353,9 +379,8 @@ async fn join_ready(
     .unwrap();
     let session = RelayCoeditSession::join(client, ws, device.device_pubkey()).unwrap();
     loop {
-        let inbound = tokio::time::timeout(Duration::from_secs(5), session.recv())
+        let inbound = tilo_test_env::within("the device's Ready", session.recv())
             .await
-            .unwrap()
             .unwrap();
         if matches!(inbound, Inbound::Ready { .. }) {
             return session;
@@ -383,7 +408,7 @@ async fn a_channel_replay_returns_exactly_that_channel() {
     let (wanted, other) = ([0x31; 32], [0x32; 32]);
     let entry = |body: &[u8]| *blake3::hash(body).as_bytes();
     a_session
-        .publish_checkpoint(
+        .publish_covering_checkpoint(
             wanted,
             entry(b"base"),
             tilo_relay::Coverage::Entries(Vec::new()),
@@ -392,30 +417,31 @@ async fn a_channel_replay_returns_exactly_that_channel() {
         .unwrap();
     for body in [b"one".as_slice(), b"two"] {
         a_session
-            .publish_retained_delta(wanted, entry(body), body.to_vec())
+            .publish_retained_entry(wanted, entry(body), body.to_vec())
             .unwrap();
     }
     a_session
-        .publish_retained_delta(other, entry(b"elsewhere"), b"elsewhere".to_vec())
+        .publish_retained_entry(other, entry(b"elsewhere"), b"elsewhere".to_vec())
         .unwrap();
 
     let b_session = join_ready(&user, &b, addr, WS).await;
-    let replayed = tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            b_session.request_channel_replay(wanted).unwrap();
-            let deadline = tokio::time::Instant::now() + Duration::from_millis(500);
-            while let Ok(Some(inbound)) = tokio::time::timeout_at(deadline, b_session.recv()).await
-            {
-                if let Inbound::Replayed { channel, deltas } = inbound
-                    && deltas.len() == 3
+    let replayed =
+        tilo_test_env::within("the channel replayed once all three are retained", async {
+            loop {
+                b_session.request_channel_replay(wanted).unwrap();
+                let deadline = tokio::time::Instant::now() + Duration::from_millis(500);
+                while let Ok(Some(inbound)) =
+                    tokio::time::timeout_at(deadline, b_session.recv()).await
                 {
-                    return (channel, deltas);
+                    if let Inbound::Replayed { channel, deltas } = inbound
+                        && deltas.len() == 3
+                    {
+                        return (channel, deltas);
+                    }
                 }
             }
-        }
-    })
-    .await
-    .expect("the channel is replayed once all three are retained");
+        })
+        .await;
     assert_eq!(replayed.0, wanted);
     let bodies: Vec<Vec<u8>> = replayed.1.into_iter().map(|(_, body)| body).collect();
     assert_eq!(

@@ -263,7 +263,7 @@ impl HostApplicationsProvider {
                 Some(t_args(
                     "search-host-app-subtitle",
                     &[
-                        ("source", app.source_label.into()),
+                        ("source", app.source_display().into()),
                         ("id", app.desktop_id.as_str().into()),
                     ],
                 )),
@@ -599,7 +599,7 @@ mod tests {
         let chrome = chrome_rc();
         let doc = AutoCommit::new();
         let target = ResourceRef::new("host-applications", "org.fixture.Calculator");
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             let catalog = ActionCatalog::build(
                 &registry,

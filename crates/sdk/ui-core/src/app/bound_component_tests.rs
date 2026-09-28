@@ -13,6 +13,35 @@ thread_local! { static COMPOUND_MODE: Cell<u8> = const { Cell::new(0) }; }
 thread_local! {
     static PAGED_SEARCH_COUNTS: RefCell<Option<Rc<[Cell<usize>; 2]>>> = const { RefCell::new(None) };
 }
+
+thread_local! {
+    static COLLABORATION_OBSERVATIONS: RefCell<Option<(Rc<Cell<usize>>, Rc<RefCell<Vec<crate::WakeHandle>>>)>> = const { RefCell::new(None) };
+}
+
+fn collaboration_probe_factory(
+    mut context: HostContext,
+    _: LaunchTarget,
+    _: RestoreInput,
+) -> Result<AppComponent, crate::launch::LaunchError> {
+    context
+        .initialize_new_record(|_| Ok(()))
+        .map_err(crate::launch::LaunchError::Record)?;
+    let probe = crate::history_mode::isolation_tests::native_effect_probe_parts(
+        "bound-collaboration",
+        "fixture.bound-collaboration",
+    );
+    COLLABORATION_OBSERVATIONS.with_borrow_mut(|slot| {
+        *slot = Some((
+            Rc::clone(&probe.collab_events),
+            Rc::clone(&probe.collab_wake_handles),
+        ));
+    });
+    Ok(AppComponent::new(
+        context,
+        probe.root,
+        tilo_actions::ActionRegistry::new(),
+    ))
+}
 struct PagedProbe {
     catalog: crate::search::SearchCatalog,
     resolutions: Rc<[Cell<usize>; 2]>,
@@ -377,7 +406,9 @@ impl Widget for Probe {
             doc.get(ROOT, "marker").unwrap().unwrap().0.as_str(),
             Some("child")
         );
-        assert!(!crate::local_state::LocalState::new(0).writer().try_set(1));
+        if !PUBLICATION_NORMAL_POLL.get() {
+            assert!(!crate::local_state::LocalState::new(0).writer().try_set(1));
+        }
         Self::capture("mutable-cancel");
         Some(tilo_actions::InvocationUpdate::Cancelled {
             invocation,
@@ -898,6 +929,7 @@ impl ActionFixture {
     }
     fn broker() -> Self {
         let mut fixture = Self::with_same_record(true);
+        fixture.app.collaboration.manager = CollaborationManager::connected_for_lifecycle_test();
         fixture.app.actions.bound_broker_route_for_test =
             Some(crate::collaboration::PrimaryRouteWitness {
                 route: fixture.bindings[0].broker_route().unwrap(),
@@ -916,6 +948,10 @@ impl ActionFixture {
         }
     }
 }
+
+include!("directory_permission_tests.rs");
+
+include!("owner_publication_tests.rs");
 
 include!("action_directory_snapshot_bound_tests.rs");
 include!("bound_record_sync_tests.rs");
@@ -2025,9 +2061,15 @@ fn bound_broker_routes_keep_the_chosen_contract_and_refuse_bad_witnesses() {
                     .unwrap()
             );
         }
-        fixture
-            .app
-            .invoke_published_action(41, resource, action, None, &actor, None);
+        fixture.app.invoke_published_action(
+            41,
+            tilo_actions::InvocationId(uuid::Uuid::from_u128(41)),
+            resource,
+            action,
+            None,
+            &actor,
+            None,
+        );
         assert!(
             fixture
                 .records
@@ -2222,6 +2264,7 @@ fn assert_bound_broker_route_refused(
     assert_eq!(fixture.app.actions.next_broker_request_id, next_id);
     fixture.app.invoke_published_action(
         50,
+        tilo_actions::InvocationId(uuid::Uuid::from_u128(50)),
         alias.to_owned(),
         "follow-up".into(),
         None,
@@ -2249,4 +2292,64 @@ fn assert_bound_broker_route_refused(
             .confirmed(true),
         )
         .unwrap();
+}
+
+#[test]
+fn collaboration_walk_enters_bound_owner_and_refuses_closing_lifetime() {
+    let host = crate::application_test_support::ProbeHost::new();
+    let definition = crate::application_test_support::definition(collaboration_probe_factory);
+    let target = LaunchTarget::New;
+    let context = host
+        .prepare_with_permissions(
+            &definition,
+            91,
+            &target,
+            crate::application_test_support::runner_permissions(),
+        )
+        .unwrap();
+    let component = definition
+        .instantiate(context, target, RestoreInput::None)
+        .unwrap();
+    let binding = component.callback_binding();
+    let mut app =
+        App::from_component(component, crate::application_test_support::runner_inputs()).unwrap();
+    let (events, wake_handles) =
+        COLLABORATION_OBSERVATIONS.with_borrow(|slot| slot.clone().unwrap());
+
+    crate::widget::handle_collab_event(
+        app.root_widget.as_mut(),
+        &CollabEvent::FollowChanged {
+            peer_id: None,
+            mode: crate::view::FollowMode::Live,
+        },
+    );
+    assert_eq!(events.get(), 1);
+    assert_eq!(wake_handles.borrow().len(), 1);
+    assert!(wake_handles.borrow()[0].is_active());
+
+    assert_eq!(
+        app.root_widget.children().len(),
+        1,
+        "fixture retains its root"
+    );
+    binding.closing.set(true);
+    crate::widget::handle_collab_event(
+        app.root_widget.as_mut(),
+        &CollabEvent::FollowChanged {
+            peer_id: None,
+            mode: crate::view::FollowMode::Live,
+        },
+    );
+    assert_eq!(
+        events.get(),
+        1,
+        "closing owner cannot be reentered by tree traversal"
+    );
+    assert_eq!(wake_handles.borrow().len(), 1);
+    binding.closing.set(false);
+    app.close_components();
+    assert!(
+        !wake_handles.borrow()[0].is_active(),
+        "callback captured the component lifetime, not detached execution"
+    );
 }

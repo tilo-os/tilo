@@ -185,8 +185,9 @@ fn succeeded(value: &serde_json::Value) -> Result<tilo_actions::ActionOutput> {
 }
 
 #[allow(
+    clippy::significant_drop_tightening,
     clippy::too_many_lines,
-    reason = "a scripted proof run whose steps depend on each other in order"
+    reason = "a scripted proof run whose steps depend on each other in order; the shell fixture owns long-lived permits by design and lives for the whole run"
 )]
 pub(super) fn run(root: &Path, photos: PathBuf, writer: PathBuf) -> Result<()> {
     // The isolated fixture grants only Read to a delegated, certified agent.

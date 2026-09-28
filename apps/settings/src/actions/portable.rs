@@ -174,6 +174,9 @@ fn cursor_size_default(d: &SystemPrefs) -> String {
 fn color_filter_default(d: &SystemPrefs) -> String {
     d.accessibility.color_filter.label().into()
 }
+fn on_screen_keyboard_default(d: &SystemPrefs) -> String {
+    d.accessibility.on_screen_keyboard.label().into()
+}
 fn magnifier_default(d: &SystemPrefs) -> String {
     settings_store::magnifier::zoom_label(d.accessibility.magnifier_zoom).into()
 }
@@ -596,8 +599,11 @@ pub const PORTABLE_PREFERENCES: &[PortablePreference] = &[
         section: Category::Accessibility,
         action_id: Some("on-screen-keyboard"),
         key: panes::accessibility::OSK_KEY,
-        presentation: PortablePresentation::BoolSet {
+        presentation: PortablePresentation::Choice {
             label: "Set on-screen keyboard",
+            placeholder: "Automatic, Always, Never",
+            options: crate::prefs::OnScreenKeyboard::OPTIONS,
+            default: on_screen_keyboard_default,
         },
         available: Some(panes::accessibility::osk_service_available),
     },

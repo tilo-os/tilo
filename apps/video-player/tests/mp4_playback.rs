@@ -46,9 +46,7 @@ fn wait_for(
     description: &str,
     ready: impl Fn(&PlayerApp) -> bool,
 ) {
-    let deadline = Instant::now()
-        .checked_add(Duration::from_secs(15))
-        .expect("deadline is representable");
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         app.sync(doc, &automerge::ROOT);
         if ready(app) {

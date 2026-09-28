@@ -20,7 +20,10 @@ tilo-resource = { path = "../../sdk/tilo-resource" }
 tilo-actions = { path = "../../collab/actions" }
 # Hyperlink targets a rich-text action may carry.
 url.workspace = true
-workspace-hack = { version = "0.1" }
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

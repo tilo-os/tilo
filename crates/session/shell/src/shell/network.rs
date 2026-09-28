@@ -4,6 +4,10 @@
 //! Started by default in normal sessions; recovery sessions may disable it.
 
 use crate::shell::state::WorkspaceAuthority as _;
+
+mod native_enrollment;
+mod native_ingress;
+
 use std::collections::VecDeque;
 use std::io::{Read as _, Write as _};
 use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _, PermissionsExt as _};
@@ -707,17 +711,35 @@ pub fn personal_continuity_topic_id(user_public_key: &[u8; 32]) -> u64 {
 /// file, so one device has one identity rather than one per subsystem.
 pub const DEFAULT_KEYPAIR_PATH: &str = crate::network::behaviour::DEVICE_KEY_PATH;
 
+/// Resolve one network configuration value; an empty value counts as absent.
+fn network_env(name: &'static str) -> Option<(&'static str, std::ffi::OsString)> {
+    std::env::var_os(name)
+        .filter(|value| !value.is_empty())
+        .map(|value| (name, value))
+}
+
+fn network_env_string(name: &'static str) -> Option<(&'static str, String)> {
+    let (name, value) = network_env(name)?;
+    if let Ok(value) = value.into_string() {
+        Some((name, value))
+    } else {
+        tracing::warn!(config = name, "network configuration must be valid UTF-8");
+        None
+    }
+}
+
 /// The active collaboration identity tree unless `TILO_PEER_KEY_PATH` names
-/// somewhere else. Full-system sessions resolve to [`DEFAULT_KEYPAIR_PATH`];
+/// somewhere else.
+/// Full-system sessions resolve to [`DEFAULT_KEYPAIR_PATH`];
 /// host-installed sessions select an XDG-owned tree at process startup. The
 /// override is what makes two sessions on one machine two
 /// *peers*: the key is the shell's network identity, so two processes
 /// reading one key file are one peer talking to itself.
 pub fn peer_key_path() -> std::path::PathBuf {
-    match std::env::var("TILO_PEER_KEY_PATH") {
-        Ok(v) if !v.is_empty() => std::path::PathBuf::from(v),
-        _ => crate::firstboot::collaboration_identity_paths().device_privkey,
-    }
+    network_env("TILO_PEER_KEY_PATH").map_or_else(
+        || crate::firstboot::collaboration_identity_paths().device_privkey,
+        |(_, value)| std::path::PathBuf::from(value),
+    )
 }
 
 fn parse_host_addr(value: &str) -> Option<iroh::EndpointAddr> {
@@ -731,19 +753,22 @@ fn parse_host_addr(value: &str) -> Option<iroh::EndpointAddr> {
 
 fn configured_host_addrs() -> Vec<iroh::EndpointAddr> {
     let mut hosts = Vec::new();
-    if let Ok(value) = std::env::var("TILO_COLLAB_HOSTS") {
+    if let Some((name, value)) = network_env_string("TILO_COLLAB_HOSTS") {
         match serde_json::from_str::<Vec<iroh::EndpointAddr>>(&value) {
             Ok(parsed) => hosts.extend(parsed),
             Err(error) => {
-                tracing::warn!(%error, "TILO_COLLAB_HOSTS must be a JSON array of Iroh endpoint addresses");
+                tracing::warn!(config = name, %error, "collaboration hosts must be a JSON array of Iroh endpoint addresses");
             }
         }
     }
-    if let Ok(value) = std::env::var("TILO_COLLAB_HOST") {
+    if let Some((name, value)) = network_env_string("TILO_COLLAB_HOST") {
         if let Some(addr) = parse_host_addr(&value) {
             hosts.push(addr);
         } else {
-            tracing::warn!("TILO_COLLAB_HOST is not a valid Iroh endpoint address or id");
+            tracing::warn!(
+                config = name,
+                "collaboration host is not a valid Iroh endpoint address or id"
+            );
         }
     }
     hosts.sort_by_key(|addr| addr.id.to_string());
@@ -757,20 +782,18 @@ const MAX_HOME_PEER_LABEL_BYTES: usize = 80;
 const MAX_HOME_PEER_WORKSPACES: usize = 4096;
 
 fn home_peer_registry_path() -> PathBuf {
-    std::env::var_os("TILO_HOME_PEERS_PATH")
-        .filter(|path| !path.is_empty())
-        .map_or_else(
-            || {
-                let paths = crate::firstboot::collaboration_identity_paths();
-                paths
-                    .user_pubkey
-                    .parent()
-                    .and_then(std::path::Path::parent)
-                    .map_or_else(|| PathBuf::from("/var/lib/tilo"), PathBuf::from)
-                    .join("home-peers.json")
-            },
-            PathBuf::from,
-        )
+    network_env("TILO_HOME_PEERS_PATH").map_or_else(
+        || {
+            let paths = crate::firstboot::collaboration_identity_paths();
+            paths
+                .user_pubkey
+                .parent()
+                .and_then(std::path::Path::parent)
+                .map_or_else(|| PathBuf::from("/var/lib/tilo"), PathBuf::from)
+                .join("home-peers.json")
+        },
+        |(_, path)| PathBuf::from(path),
+    )
 }
 
 fn decode_lower_hex_32(value: &str) -> Option<[u8; 32]> {
@@ -1175,6 +1198,7 @@ pub struct PendingInviteSummary {
 /// runtime hosting the [`Actor`], the per-workspace
 /// [`WorkspaceTreeReplica`], and the actor↔replica event channel.
 pub struct ShellNetwork {
+    native_enrollment: native_enrollment::State,
     /// Send commands into the actor (e.g. publish a `NeighbourMsg`).
     pub cmd_tx: mpsc::Sender<NetCmd>,
     /// Shared replica owning the tree-side reactions to `NetEvent::Msg`;
@@ -1472,6 +1496,10 @@ pub struct InboundPresence {
     pub ts: u64,
 }
 
+fn lan_discovery_requested() -> bool {
+    network_env("TILO_COLLAB_LAN_DISCOVERY").is_some_and(|(_, value)| value != "0")
+}
+
 /// Start mDNS LAN peer discovery when `TILO_COLLAB_LAN_DISCOVERY` requests
 /// it, registering it with `endpoint`'s address lookup. Returns `None`
 /// when discovery is disabled, disallowed by the env var, or the mDNS
@@ -1480,9 +1508,7 @@ pub struct InboundPresence {
 fn init_lan_discovery(
     endpoint: &iroh::Endpoint,
 ) -> Option<iroh_mdns_address_lookup::MdnsAddressLookup> {
-    let lan_discovery = std::env::var_os("TILO_COLLAB_LAN_DISCOVERY")
-        .is_some_and(|value| value != "0" && !value.is_empty());
-    if !lan_discovery {
+    if !lan_discovery_requested() {
         return None;
     }
     let mdns = match iroh_mdns_address_lookup::MdnsAddressLookup::builder()
@@ -1747,6 +1773,7 @@ impl ShellNetwork {
             room_admissions: Mutex::new(std::collections::HashMap::new()),
             unidentified_host_messages: Mutex::new(UnidentifiedHostMessages::default()),
             retained_coverage: Mutex::new(std::collections::HashMap::new()),
+            native_enrollment: native_enrollment::State::default(),
             inbound_presence: Arc::new(Mutex::new(Vec::new())),
             inbound_documents: Arc::new(Mutex::new(Vec::new())),
             inbound_channel_governance: Arc::new(Mutex::new(Vec::new())),
@@ -2105,6 +2132,23 @@ impl ShellNetwork {
             *invite_id = Some(redemption);
         }
         let ws = self.topic_for_message(&msg);
+        if self.native_topic_required(ws)
+            && matches!(
+                &msg,
+                NeighbourMsg::SyncReq { .. }
+                    | NeighbourMsg::SyncResp { .. }
+                    | NeighbourMsg::IdentityAnnouncement { .. }
+                    | NeighbourMsg::IdentityAnnouncementV2 { .. }
+            )
+        {
+            return false;
+        }
+        if self.native_topic_required(ws)
+            && matches!(&msg, NeighbourMsg::AppDocument { .. })
+            && !self.native_document_committed(&msg)
+        {
+            return false;
+        }
         self.record_retained_room_message(ws, &msg);
         self.join_topic(ws) && self.cmd_tx.try_send(NetCmd::Publish { ws, msg }).is_ok()
     }
@@ -2448,6 +2492,14 @@ impl ShellNetwork {
         envelope: collab_types::SignedOp,
         covers: Vec<[u8; 32]>,
     ) {
+        if let Some(room) = RoomId::parse(&cluster_id)
+            && self.native_topic_required(room_topic_id(room))
+        {
+            let _ = self.cmd_tx.try_send(NetCmd::NativePublish {
+                ws: room_topic_id(room),
+            });
+            return;
+        }
         let record_id = self.register_local_record(&app_id, &cluster_id, record_id);
         let msg = NeighbourMsg::AppDocument {
             peer: self.local_peer_id_hash(),
@@ -2883,7 +2935,7 @@ impl ShellNetwork {
         let me = crate::shell::state::local_user_id_for_room(&room);
         let role = workspace
             .role_of(&me)
-            .map(|role| tilo_desktop_model::workspace::role_label(role).to_string());
+            .map(crate::shell::workspace_settings::role_label);
         let governed = tree
             .room_docs
             .get(&room)
@@ -4444,6 +4496,11 @@ impl ShellNetwork {
     /// is still current. Holding the route registry through command enqueue
     /// gives departure a defined ordering: either enqueue wins, or departure
     /// removes authority first and this call fails without sending.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the route registry guard is held through enqueue on purpose: it orders this \
+                  send against departure, which must remove authority before or after it"
+    )]
     pub(crate) fn send_personal_fabric_action_on_route(
         &self,
         route: &AuthenticatedPersonalRoute,
@@ -4786,35 +4843,30 @@ impl ShellNetwork {
         if !self
             .permits_continuity(crate::shell::continuity_policy::ContinuityCapability::WifiSettings)
         {
-            return Err("Wi-Fi Continuity is disabled on this device".to_string());
+            return Err(crate::shell::i18n::t("tethering-error-continuity-off"));
         }
         if !security.supports_portable_passphrase() {
-            return Err(match security {
-                os_actions::WifiSecurity::Enterprise => {
-                    "enterprise Wi-Fi requires identity, EAP method, and certificate setup on this device"
-                }
+            return Err(crate::shell::i18n::t(match security {
+                os_actions::WifiSecurity::Enterprise => "wifi-share-error-enterprise",
                 os_actions::WifiSecurity::Open | os_actions::WifiSecurity::Owe => {
-                    "this Wi-Fi security mode has no portable passphrase"
+                    "wifi-share-error-no-passphrase"
                 }
-                os_actions::WifiSecurity::Unknown => {
-                    "unrecognized Wi-Fi security cannot be shared safely"
-                }
+                os_actions::WifiSecurity::Unknown => "wifi-share-error-unknown-security",
                 os_actions::WifiSecurity::Wpa2 | os_actions::WifiSecurity::Wpa3 => {
-                    "Wi-Fi security could not be validated for sharing"
+                    "wifi-share-error-unvalidated"
                 }
-            }
-            .to_string());
+            }));
         }
         let local = self
             .personal_continuity_device
             .clone()
-            .ok_or_else(|| "this device has no certified personal identity".to_string())?;
+            .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-no-identity"))?;
         let fabric = self.device_fabric();
         let mut snapshot = fabric
             .snapshots()
             .get(&local)
             .cloned()
-            .ok_or_else(|| "this device has not published fabric presence yet".to_string())?;
+            .ok_or_else(|| crate::shell::i18n::t("wifi-share-error-no-presence"))?;
         let recipients = self.certified_secret_recipients();
         let stamp = crate::shell::device_fabric::FabricStamp {
             counter: fabric.max_counter().saturating_add(1).max(1),
@@ -5165,6 +5217,7 @@ impl ShellNetwork {
     )]
     fn dispatch_net_event(&self, event: NetEvent) {
         match event {
+            NetEvent::NativeInput(input) => self.dispatch_native_input(&input),
             NetEvent::HostReady { ws, peer } => {
                 if let Ok(mut relays) = self.workspace_control_relays.lock() {
                     relays.insert((ws, peer));
@@ -5740,6 +5793,9 @@ impl ShellNetwork {
     /// `ws` — see [`NetEvent::HostReady`]. Unlike `SyncReq`, this does
     /// not need another device online to answer it.
     fn handle_host_ready(&self, ws: u64, peer: iroh::EndpointId) {
+        if self.native_topic_required(ws) {
+            return;
+        }
         if self
             .personal_continuity_user
             .is_some_and(|user| personal_continuity_topic_id(&user) == ws)
@@ -5846,6 +5902,22 @@ impl ShellNetwork {
                 ws,
                 expected,
                 "dropping collaboration message on the wrong room topic"
+            );
+            return;
+        }
+        if self.native_topic_required(ws)
+            && matches!(
+                &msg,
+                NeighbourMsg::SyncReq { .. }
+                    | NeighbourMsg::SyncResp { .. }
+                    | NeighbourMsg::AppDocument { .. }
+                    | NeighbourMsg::IdentityAnnouncement { .. }
+                    | NeighbourMsg::IdentityAnnouncementV2 { .. }
+            )
+        {
+            tracing::warn!(
+                ws,
+                "enrolled room state requires authenticated native relay admission"
             );
             return;
         }
@@ -6956,17 +7028,14 @@ impl ShellNetwork {
             tracing::warn!(room = %room, %error, "dropping a document op its room's class refuses");
             return None;
         }
-        let artifact = collab_types::document_artifact_id(app_id, cluster_id, record_id);
-        if envelope.artifact != artifact
-            || envelope.attestation_id
-                != collab_types::document_attestation_id(app_id, cluster_id, record_id)
-            || collab_types::validate_document_payload_route(
-                app_id, cluster_id, record_id, envelope,
-            )
-            .is_err()
+        if collab_types::validate_whole_document_payload_route(
+            app_id, cluster_id, record_id, envelope,
+        )
+        .is_err()
         {
             return None;
         }
+        let artifact = envelope.artifact;
         let actor = collab_types::Actor::person(Some(role), person)
             .with_principal(collab_types::Principal::App(app_id.to_string()))
             .in_room(cluster_id.to_string());
@@ -7195,6 +7264,7 @@ pub(crate) fn shell_network_for_test(
         room_admissions: Mutex::new(std::collections::HashMap::new()),
         unidentified_host_messages: Mutex::new(UnidentifiedHostMessages::default()),
         retained_coverage: Mutex::new(std::collections::HashMap::new()),
+        native_enrollment: native_enrollment::State::default(),
         inbound_presence: Arc::new(Mutex::new(Vec::new())),
         inbound_documents: Arc::new(Mutex::new(Vec::new())),
         inbound_channel_governance: Arc::new(Mutex::new(Vec::new())),
@@ -7231,9 +7301,58 @@ impl crate::shell::remote_action_link::RemoteActionLink for ShellNetwork {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 mod tests {
     use super::*;
     use crate::shell::state::FreshId as _;
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn network_config_reads_tilo_names() {
+        const NAMES: [&str; 5] = [
+            "TILO_PEER_KEY_PATH",
+            "TILO_COLLAB_HOSTS",
+            "TILO_COLLAB_HOST",
+            "TILO_HOME_PEERS_PATH",
+            "TILO_COLLAB_LAN_DISCOVERY",
+        ];
+        let mut env = tilo_test_env::ScopedEnv::new();
+        for name in NAMES {
+            env.remove(name);
+        }
+
+        let temp = tempfile::tempdir().expect("temp config root");
+        let tilo_key_path = temp.path().join("tilo-peer-key");
+        let tilo_home_path = temp.path().join("tilo-home-peers.json");
+        let tilo_list_host = iroh::SecretKey::from_bytes(&[0x33; 32]).public();
+        let tilo_single_host = iroh::SecretKey::from_bytes(&[0x34; 32]).public();
+        let tilo_hosts = serde_json::to_string(&vec![iroh::EndpointAddr::new(tilo_list_host)])
+            .expect("Tilo host list");
+
+        env.set("TILO_COLLAB_LAN_DISCOVERY", "1");
+        assert!(lan_discovery_requested());
+
+        env.set("TILO_PEER_KEY_PATH", &tilo_key_path)
+            .set("TILO_COLLAB_HOSTS", tilo_hosts)
+            .set("TILO_COLLAB_HOST", tilo_single_host.to_string())
+            .set("TILO_HOME_PEERS_PATH", &tilo_home_path)
+            .set("TILO_COLLAB_LAN_DISCOVERY", "0");
+        assert_eq!(peer_key_path(), tilo_key_path);
+        assert_eq!(home_peer_registry_path(), tilo_home_path);
+        assert!(!lan_discovery_requested());
+        assert_eq!(
+            configured_host_addrs()
+                .into_iter()
+                .map(|host| host.id)
+                .collect::<std::collections::BTreeSet<_>>(),
+            std::collections::BTreeSet::from([tilo_list_host, tilo_single_host]),
+        );
+
+        drop(env);
+    }
 
     fn test_device(byte: u8) -> crate::shell::personal_continuity::DeviceId {
         crate::shell::personal_continuity::DeviceId::new(hex::encode([byte; 32]))
@@ -7782,10 +7901,7 @@ mod tests {
             authenticated_personal_peer_on_topic(&net_b, &root_a, &device_a, epoch, topic);
             authenticated_personal_peer_on_topic(&net_a, &root_b, &device_b, epoch, topic);
 
-            let broker =
-                crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_membership(
-                    tree_b,
-                );
+            let broker = crate::shell::broker_services::test_broker_with_membership(tree_b);
             broker.replace_published_surfaces_for_test(vec![PublishedSurface {
                 peer_id: 9,
                 app_id: "so.tilo.files".into(),
@@ -10427,6 +10543,16 @@ mod tests {
                 ),
                 Some(collab_types::Role::Editor),
             );
+            assert_eq!(
+                net.peer_document_role(
+                    &origin,
+                    &route.cluster_id,
+                    &route.app_id,
+                    "foreign-record",
+                    &envelope,
+                ),
+                None,
+            );
             assert!(net.peer_room_allows(
                 &origin,
                 room_topic_id(room),
@@ -11372,12 +11498,21 @@ mod tests {
 
     /// Build the inbound event a LAN peer's signed document publish arrives as.
     fn app_document_event(
+        app_id: &str,
         cluster_id: &str,
         from_peer_hash: u64,
         peer: iroh::PublicKey,
         device: &ed25519_dalek::SigningKey,
     ) -> NetEvent {
-        app_document_event_for(cluster_id, "note-1", "note-1", from_peer_hash, peer, device)
+        app_document_event_with(
+            app_id,
+            cluster_id,
+            "note-1",
+            "note-1",
+            from_peer_hash,
+            peer,
+            device,
+        )
     }
 
     /// As [`app_document_event`], for a local record id sent under
@@ -11390,7 +11525,27 @@ mod tests {
         peer: iroh::PublicKey,
         device: &ed25519_dalek::SigningKey,
     ) -> NetEvent {
-        let app_id = "so.tilo.notes";
+        app_document_event_with(
+            "so.tilo.notes",
+            cluster_id,
+            record_id,
+            wire_record_id,
+            from_peer_hash,
+            peer,
+            device,
+        )
+    }
+
+    /// As [`app_document_event_for`], under an explicit app domain.
+    fn app_document_event_with(
+        app_id: &str,
+        cluster_id: &str,
+        record_id: &str,
+        wire_record_id: &str,
+        from_peer_hash: u64,
+        peer: iroh::PublicKey,
+        device: &ed25519_dalek::SigningKey,
+    ) -> NetEvent {
         let mut envelope = collab_types::SignedOp::new_unsigned(
             collab_types::DocumentMutation::Incremental(vec![1, 2, 3, 4])
                 .encode()
@@ -11668,6 +11823,7 @@ mod tests {
 
             net.event_tx
                 .try_send(app_document_event(
+                    "so.tilo.notes",
                     &stranger_room.to_string(),
                     0xBBBBu64,
                     device.public(),
@@ -11682,6 +11838,7 @@ mod tests {
 
             net.event_tx
                 .try_send(app_document_event(
+                    "so.tilo.notes",
                     "not-a-room",
                     0xBBBBu64,
                     device.public(),
@@ -11696,6 +11853,7 @@ mod tests {
 
             net.event_tx
                 .try_send(app_document_event(
+                    "so.tilo.notes",
                     &our_room.to_string(),
                     0xBBBBu64,
                     device.public(),
@@ -12559,6 +12717,8 @@ mod tests {
                     pin: false,
                     replication: tilo_relay::ReplicationIntent::FullWorkspace,
                     admitted_users: Vec::new(),
+                    shell_authority: None,
+                    checkpoint_prefix_recovery: tilo_relay::CheckpointPrefixRecovery::default(),
                 }],
                 ..tilo_relay::RelayConfig::default()
             },
@@ -12606,6 +12766,8 @@ mod tests {
                     pin: false,
                     replication: tilo_relay::ReplicationIntent::FullWorkspace,
                     admitted_users: Vec::new(),
+                    shell_authority: None,
+                    checkpoint_prefix_recovery: tilo_relay::CheckpointPrefixRecovery::default(),
                 }],
                 ..tilo_relay::RelayConfig::default()
             },

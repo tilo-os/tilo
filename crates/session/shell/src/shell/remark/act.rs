@@ -11,6 +11,7 @@ use vello::kurbo::{Point, Rect};
 
 use crate::shell::chrome_state::ChromeState;
 use crate::shell::search::action_api::{ActionArgs, ActionError, ActionParam, ParamType};
+use crate::shell::session_services::ServiceIntent;
 
 use super::pick::{NodeKey, Walk};
 use super::review::{ModelUse, SetUpChoice};
@@ -105,14 +106,10 @@ fn focused_app_context(st: &ChromeState) -> Option<Pick> {
 pub fn open(st: &mut ChromeState, _args: &ActionArgs) -> Result<(), ActionError> {
     let context = focused_app_context(st);
     let known = st
-        .recorder()
-        .map(|recorder| {
-            recorder
-                .awaiting_review()
-                .into_iter()
-                .map(|(checkout, _)| checkout.id.as_str().to_string())
-                .collect()
-        })
+        .session_view()
+        .recorder
+        .as_ref()
+        .map(|recorder| recorder.awaiting_review.clone())
         .unwrap_or_default();
     let was_open = st.remark.is_open();
     let default = st.remark_directory().default_destination();
@@ -166,8 +163,10 @@ pub fn open_crash(st: &mut ChromeState, args: &ActionArgs) -> Result<(), ActionE
     );
     // The recent buffer, when on, already holds what led up to the crash.
     if st
-        .recorder()
-        .is_some_and(|recorder| recorder.recent_buffer_enabled())
+        .session_view()
+        .recorder
+        .as_ref()
+        .is_some_and(|recorder| recorder.recent_buffer)
     {
         use_recent(st, &ActionArgs::none())?;
     }
@@ -182,18 +181,14 @@ pub fn open_crash(st: &mut ChromeState, args: &ActionArgs) -> Result<(), ActionE
 /// Never.
 pub fn discard(st: &mut ChromeState, _args: &ActionArgs) -> Result<(), ActionError> {
     if let Flow::Attached { record, .. } = &st.remark.flow
-        && let (Some(recorder), Some(id)) = (st.recorder(), ui::record::RecordId::parse(record))
+        && let Some(record) = ui::record::RecordId::parse(record)
     {
         // Discarded means forgotten: the session never left memory.
-        drop(recorder.take_session(&id));
+        st.push_service_intent(ServiceIntent::ForgetSession { record });
     }
-    if matches!(st.remark.flow, Flow::Recording { .. })
-        && let Some(recorder) = st.recorder().cloned()
-    {
+    if matches!(st.remark.flow, Flow::Recording { .. }) {
         let user = st.active_local_user();
-        if let Ok(checkout) = recorder.stop(&user) {
-            drop(recorder.take_session(&checkout.id));
-        }
+        st.push_service_intent(ServiceIntent::StopAndForget { user });
     }
     st.remark.close();
     st.pick.clear();
@@ -429,26 +424,28 @@ fn recording_rooms(st: &ChromeState) -> Vec<String> {
     rooms
 }
 
-fn recorder(
-    st: &ChromeState,
-) -> Result<std::sync::Arc<crate::shell::recorder::Recorder>, ActionError> {
-    st.recorder()
-        .cloned()
-        .ok_or_else(|| refused("this session has no collaboration broker to record through"))
+fn require_recorder(st: &ChromeState) -> Result<(), ActionError> {
+    if st.session_view().recorder.is_some() {
+        Ok(())
+    } else {
+        Err(refused(crate::shell::session_services::NO_RECORDER))
+    }
 }
 
 /// "Record from now": the Recorder agent joins the rooms of what was
-/// picked and records until stopped.
+/// picked and records until stopped. The recorder starts on the host's
+/// next frame; the remark's flow follows once it has, and a refusal shows
+/// as the remark's notice.
 ///
 /// # Errors
 ///
-/// When a recording is attached or running, or the recorder refuses.
+/// When a recording is attached or running, or there is no recorder.
 pub fn record(st: &mut ChromeState, _args: &ActionArgs) -> Result<(), ActionError> {
     require_open(st)?;
     if !matches!(st.remark.flow, Flow::None) {
         return Err(refused("this remark already has a recording"));
     }
-    let recorder = recorder(st)?;
+    require_recorder(st)?;
     let rooms = recording_rooms(st);
     let user = st.active_local_user();
     // Frames are always captured for the on-device replay check; "Include
@@ -458,56 +455,44 @@ pub fn record(st: &mut ChromeState, _args: &ActionArgs) -> Result<(), ActionErro
     } else {
         session_trace::frames::PixelPurpose::Check
     };
-    recorder
-        .start(&rooms, Vec::new(), Some(pixels), &user)
-        .map_err(|error| refused(error.to_string()))?;
-    st.remark.flow = Flow::Recording { rooms };
-    st.remark.stage = Stage::Recording;
+    st.push_service_intent(ServiceIntent::RecordForRemark {
+        rooms,
+        pixels,
+        user,
+    });
     st.bump();
     Ok(())
 }
 
-/// Stop the recording and attach it.
+/// Stop the recording and attach it, on the host's next frame. A refusal,
+/// such as nothing recording, shows as the remark's notice.
 ///
 /// # Errors
 ///
-/// When nothing is recording.
+/// When the composer is closed or there is no recorder.
 pub fn stop(st: &mut ChromeState, _args: &ActionArgs) -> Result<(), ActionError> {
     require_open(st)?;
-    let recorder = recorder(st)?;
+    require_recorder(st)?;
     let user = st.active_local_user();
-    let checkout = recorder
-        .stop(&user)
-        .map_err(|error| refused(error.to_string()))?;
-    let summary = recorder
-        .awaiting_review()
-        .into_iter()
-        .find(|(pending, _)| pending.id == checkout.id)
-        .map(|(_, summary)| summary)
-        .ok_or_else(|| refused("the recording was sealed but is no longer waiting"))?;
-    st.remark.flow = Flow::Attached {
-        record: checkout.id.as_str().to_string(),
-        summary,
-    };
-    st.remark.stage = Stage::Compose;
+    st.push_service_intent(ServiceIntent::StopForRemark { user });
     st.bump();
     Ok(())
 }
 
-/// "Use the last 2 minutes": seal what the recent buffer kept.
+/// "Use the last 2 minutes": seal what the recent buffer kept, on the
+/// host's next frame. A refusal, such as the buffer being off or empty,
+/// shows as the remark's notice.
 ///
 /// # Errors
 ///
-/// When the buffer is off, or holds nothing.
+/// When a recording is attached or running, or there is no recorder.
 pub fn use_recent(st: &mut ChromeState, _args: &ActionArgs) -> Result<(), ActionError> {
     require_open(st)?;
     if !matches!(st.remark.flow, Flow::None) {
         return Err(refused("this remark already has a recording"));
     }
-    recorder(st)?
-        .capture_recent()
-        .map_err(|error| refused(error.to_string()))?;
-    st.remark.flow = Flow::Capturing;
+    require_recorder(st)?;
+    st.push_service_intent(ServiceIntent::CaptureRecentForRemark);
     st.bump();
     Ok(())
 }
@@ -522,8 +507,8 @@ pub fn remove_recording(st: &mut ChromeState, _args: &ActionArgs) -> Result<(), 
     let Flow::Attached { record, .. } = std::mem::take(&mut st.remark.flow) else {
         return Err(refused("no recording is attached"));
     };
-    if let (Some(recorder), Some(id)) = (st.recorder(), ui::record::RecordId::parse(&record)) {
-        drop(recorder.take_session(&id));
+    if let Some(record) = ui::record::RecordId::parse(&record) {
+        st.push_service_intent(ServiceIntent::ForgetSession { record });
     }
     st.remark.review = None;
     if st.remark.stage == Stage::Review {

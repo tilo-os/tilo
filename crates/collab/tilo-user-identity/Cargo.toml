@@ -5,6 +5,10 @@ edition = "2024"
 publish.workspace = true
 license.workspace = true
 
+[package.metadata.cargo-machete]
+# This feature-only edge selects JS entropy for transitive WASM cryptography.
+ignored = ["getrandom"]
+
 [lib]
 name = "tilo_user_identity"
 path = "src/lib.rs"
@@ -40,7 +44,7 @@ path = "src/bin/tilo-device-key-init.rs"
 [dependencies]
 advisory-lock = { path = "../../system/advisory-lock" }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
-atomic-file = { path = "../../system/atomic-file" }
+
 # Ed25519 signing/verification. Same version + features used across
 # the collab crates (`collab-types`, `threshold-identity`) so the
 # `SigningKey`/`VerifyingKey` types are interchangeable.
@@ -89,10 +93,17 @@ zeroize.workspace = true
 # out loud without garble; the alphabet is declared at compile time.
 data-encoding.workspace = true
 data-encoding-macro.workspace = true
-workspace-hack = { version = "0.1" }
 
 [target.'cfg(windows)'.dependencies]
 private-fs = { path = "../../system/private-fs" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+atomic-file = { path = "../../system/atomic-file" }
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { workspace = true, features = ["wasm_js"] }
 
 [dev-dependencies]
 # Isolated on-disk fixtures for the persistence-round-trip tests

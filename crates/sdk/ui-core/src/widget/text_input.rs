@@ -239,6 +239,7 @@ pub struct TextInput {
     single_attributes: Option<SingleLineAttributes>,
     single_origin: Point,
     shaped_layout_signature: u64,
+    /// Renderer epoch invalidates cached glyph geometry when canonical fonts change.
     shaped_layout_epoch: Option<Arc<()>>,
     /// Complete authored runs supplied by a shared rich-text widget. They
     /// participate in the same shaping as wrapping, carets and hit-testing.
@@ -497,6 +498,19 @@ impl TextInput {
         self.crdt_bound = true;
     }
 
+    /// Detach an explicit nested-Text binding without changing live input state.
+    ///
+    /// A direct binding replaces any earlier local or flat-path mode. Detaching
+    /// therefore leaves the input intentionally unbound until an owner calls
+    /// [`Self::bind_text`] again; it does not revive a discarded fallback.
+    pub fn clear_text_binding(&mut self) {
+        if self.bound_text.take().is_none() {
+            return;
+        }
+        self.crdt_bound = false;
+        self.path_was_present = false;
+    }
+
     /// For `BlockEditor` to match local blocks to doc list elements by object identity.
     pub fn bound_obj(&self) -> Option<&ObjId> {
         self.bound_text.as_ref()
@@ -604,7 +618,7 @@ impl TextInput {
 
     pub fn set_font_size(&mut self, size: f32) {
         if self.font_size_override != Some(size) {
-            self.model_layout_dirty |= self.single_attributes.is_some();
+            self.model_layout_dirty |= self.multiline || self.single_attributes.is_some();
             self.font_size_override = Some(size);
         }
     }
@@ -622,7 +636,7 @@ impl TextInput {
 
     pub fn set_mono(&mut self, mono: bool) {
         if self.mono != mono {
-            self.model_layout_dirty |= self.single_attributes.is_some();
+            self.model_layout_dirty |= self.multiline || self.single_attributes.is_some();
         }
         self.mono = mono;
         if mono {
@@ -746,7 +760,7 @@ impl TextInput {
 
     pub fn set_font_family(&mut self, family: Option<FontChoice>) {
         if self.family != family {
-            self.model_layout_dirty |= self.single_attributes.is_some();
+            self.model_layout_dirty |= self.multiline || self.single_attributes.is_some();
             self.family = family;
         }
     }
@@ -881,6 +895,10 @@ impl TextInput {
             spans.clone_from(authored);
         }
 
+        self.insert_preedit_span(spans)
+    }
+
+    fn insert_preedit_span(&self, spans: Vec<RichSpan>) -> Vec<RichSpan> {
         if self.preedit.is_empty() {
             return spans;
         }
@@ -911,48 +929,6 @@ impl TextInput {
                     // happen since `cursor_pos` is always kept on one, but
                     // fall back to keeping the span intact rather than
                     // panicking on a slice.
-                    display.push(span);
-                    display.push(RichSpan::new(&self.preedit));
-                }
-                inserted = true;
-            } else {
-                display.push(span);
-            }
-            consumed = end;
-        }
-        if !inserted {
-            display.push(RichSpan::new(&self.preedit));
-        }
-        display
-    }
-
-    fn insert_preedit_span(&self, spans: Vec<RichSpan>) -> Vec<RichSpan> {
-        if self.preedit.is_empty() {
-            return spans;
-        }
-        let at = self.cursor_pos.min(self.text.len());
-        let mut display = Vec::with_capacity(spans.len().saturating_add(2));
-        let mut consumed = 0usize;
-        let mut inserted = false;
-        for span in spans {
-            let end = consumed.saturating_add(span.text.len());
-            if !inserted && at <= end {
-                let local = at.saturating_sub(consumed);
-                if let (Some(before_str), Some(after_str)) =
-                    (span.text.get(..local), span.text.get(local..))
-                {
-                    if !before_str.is_empty() {
-                        let mut before = span.clone();
-                        before.text = before_str.to_string();
-                        display.push(before);
-                    }
-                    display.push(RichSpan::new(&self.preedit));
-                    if !after_str.is_empty() {
-                        let mut after = span.clone();
-                        after.text = after_str.to_string();
-                        display.push(after);
-                    }
-                } else {
                     display.push(span);
                     display.push(RichSpan::new(&self.preedit));
                 }
@@ -1037,7 +1013,8 @@ impl TextInput {
     }
 
     /// Explicit host language without discovery or background dictionary warmup.
-    pub(crate) fn local_with_language(language: &str) -> Self {
+    #[doc(hidden)]
+    pub fn local_with_language(language: &str) -> Self {
         Self::with_language(Vec::new(), language.to_owned())
     }
 
@@ -1215,6 +1192,14 @@ impl TextInput {
 
     pub fn selection_range_public(&self) -> Option<(usize, usize)> {
         self.selection_range()
+    }
+
+    /// The live selection endpoints in anchor/focus order for accessibility
+    /// bridges. Unlike [`Self::selection_range_public`], this preserves the
+    /// direction in which the user extended the selection.
+    pub fn selection_anchor_focus_public(&self) -> Option<(usize, usize)> {
+        let anchor = self.selection_anchor?;
+        (anchor != self.cursor_pos).then_some((anchor, self.cursor_pos))
     }
 
     /// `len()` is `text.len() + 1`; empty until the first draw lands.
@@ -1886,7 +1871,8 @@ impl TextInput {
             &spans,
         );
         if self.single_layout.is_none() || self.shaped_layout_signature != signature {
-            let mut layout = RichTextLayout::shape_styled_reusing(
+            let browser_emoji = tr.browser_color_emoji_installed();
+            let mut layout = RichTextLayout::shape_styled_reusing_browser(
                 &mut tr.font_system,
                 &spans,
                 style,
@@ -1895,7 +1881,9 @@ impl TextInput {
                 Vec::new(),
                 Vec::new(),
                 self.single_layout.take(),
+                browser_emoji,
             );
+            tr.note_browser_rich_layout(&layout);
             if !self.preedit.is_empty() {
                 let start = self.cursor_pos.min(self.text.len());
                 layout.add_underline(start..start.saturating_add(self.preedit.len()));
@@ -1969,7 +1957,8 @@ impl TextInput {
         let available = (f64::from(width) - self.ml_left() - ML_PAD_X).max(1.0);
         let style = self.multiline_style(theme.text_scale);
         #[allow(clippy::cast_possible_truncation, reason = "bounded widget width")]
-        self.ensure_shaped_layout(tr, theme, &style, available as f32);
+        let available_width = available as f32;
+        self.ensure_shaped_layout(tr, theme, &style, available_width);
         let minimum = self.effective_font_size() * theme.text_scale * LINE_HEIGHT_RATIO;
         let height = self
             .single_layout
@@ -2678,6 +2667,10 @@ impl TextInput {
         self
     }
 
+    pub(crate) fn set_id(&mut self, id: &str) {
+        self.id = id.to_string();
+    }
+
     /// Bind this input to one root-level document string.
     ///
     /// Prefer [`Self::from_document_string`] when constructing a new field;
@@ -3178,6 +3171,9 @@ impl TextInput {
             self.caret_affinity = TextAffinity::Before;
             insert_char_at = char_idx;
         }
+        // A drag can leave an anchor equal to the old caret. Insertion must
+        // collapse that anchor too, or the newly inserted text becomes selected.
+        self.selection_anchor = None;
         // Latest-wins per position, so a peer typing into another's text splits their run correctly.
         if let (Some(obj_id), Some(author)) = (obj_id, &self.local_author) {
             let nchars = s.chars().count();
@@ -3276,8 +3272,11 @@ impl TextInput {
     fn do_cut(&mut self, state: &mut AutoCommit, obj_id: Option<&ObjId>) {
         if let Some(s) = self.selected_str() {
             let owned = s.to_string();
-            clipboard_copy(&owned);
-            self.delete_selection(state, obj_id);
+            // Delete only once the text is on a clipboard; a failed copy
+            // must not lose the selection.
+            if crate::text_selection::clipboard_copy_accepted(&owned) {
+                self.delete_selection(state, obj_id);
+            }
         }
     }
 
@@ -4119,12 +4118,15 @@ impl Widget for TextInput {
             let signature =
                 self.shaped_signature(&display, &style.family, style.size, Some(available_width));
             if self.single_layout.is_none() || self.shaped_layout_signature != signature {
-                let mut layout = RichTextLayout::shape_plain(
+                let browser_emoji = text_renderer.browser_color_emoji_installed();
+                let mut layout = RichTextLayout::shape_plain_browser(
                     &mut text_renderer.font_system,
                     &display,
                     &style,
                     Some(available_width),
+                    browser_emoji,
                 );
+                text_renderer.note_browser_rich_layout(&layout);
                 if !self.preedit.is_empty() {
                     let start = self.cursor_pos.min(self.text.len());
                     layout.add_underline(start..start.saturating_add(self.preedit.len()));
@@ -4349,6 +4351,15 @@ impl Widget for TextInput {
         "TextInput"
     }
 
+    fn install_control_custody(
+        &mut self,
+        domain: &crate::ControlDomain,
+        attachment: crate::control_custody::CustodyAttachment,
+    ) {
+        if let Some(action) = &mut self.action {
+            let _ = action.install_custody(domain, attachment);
+        }
+    }
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.action.as_mut().and_then(ActionEmitter::take)
     }
@@ -4406,6 +4417,15 @@ impl Widget for TextInput {
     /// so it only needs re-measure before its first layout or right after a
     /// user edit — never blocking the scroll fast path while idle.
     fn layout_needs_measure(&self) -> bool {
+        self.rect == Rect::ZERO || self.dirty || self.model_layout_dirty
+    }
+
+    /// Same inputs as [`Self::layout_needs_measure`]: an input's size follows
+    /// its content only through a user edit (`dirty`, drained by the owner's
+    /// `take_dirty`) or a model change that reshapes multiline or attributed
+    /// text (`model_layout_dirty`, cleared by `measure`). Idle inputs would
+    /// otherwise be re-measured on every retained frame.
+    fn is_layout_dirty(&self) -> bool {
         self.rect == Rect::ZERO || self.dirty || self.model_layout_dirty
     }
 
@@ -4553,7 +4573,13 @@ impl Widget for TextInput {
                 self.selection_anchor = (!self.text.is_empty()).then_some(0);
                 self.cursor_pos = self.text.len();
                 let obj = self.resolve_text_obj(state, root);
-                self.insert_str(&cleaned, state, obj.as_ref());
+                // SetValue replaces the complete value, including an empty
+                // replacement. insert_str intentionally ignores empty typing.
+                if cleaned.is_empty() {
+                    self.delete_selection(state, obj.as_ref());
+                } else {
+                    self.insert_str(&cleaned, state, obj.as_ref());
+                }
                 if obj.is_none() {
                     self.persist_first_path_edit(&previous_text, state, root);
                 }
@@ -4856,8 +4882,9 @@ impl TextInput {
                 Self::attributed_signature(base ^ Self::single_attributes_signature(a), &a.spans)
             });
             if self.single_layout.is_none() || self.shaped_layout_signature != signature {
+                let browser_emoji = text_renderer.browser_color_emoji_installed();
                 let mut layout = if let Some(attributes) = attributes {
-                    RichTextLayout::shape_styled(
+                    RichTextLayout::shape_styled_browser(
                         &mut text_renderer.font_system,
                         &self.insert_preedit_span(attributes.spans.clone()),
                         &style,
@@ -4865,15 +4892,18 @@ impl TextInput {
                         TextAlign::Left,
                         self.display_ranges(&attributes.underlines),
                         self.display_ranges(&attributes.strikes),
+                        browser_emoji,
                     )
                 } else {
-                    RichTextLayout::shape_plain(
+                    RichTextLayout::shape_plain_browser(
                         &mut text_renderer.font_system,
                         display,
                         &style,
                         None,
+                        browser_emoji,
                     )
                 };
+                text_renderer.note_browser_rich_layout(&layout);
                 if !self.preedit.is_empty() {
                     let start = self.cursor_pos.min(self.text.len());
                     layout.add_underline(start..start.saturating_add(self.preedit.len()));

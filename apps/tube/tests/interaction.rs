@@ -658,7 +658,6 @@ fn home_grid_fills_rows_renders_avatars_and_stays_laid_out() {
     // the scene.
     {
         use std::sync::Arc;
-        use std::time::Duration;
 
         // A solid-green PNG the store's decoder accepts.
         fn png_bytes() -> Vec<u8> {
@@ -676,7 +675,7 @@ fn home_grid_fills_rows_renders_avatars_and_stays_laid_out() {
         let store = ui::ImageStore::new(&fetch);
         // Pre-warm so the single sync in the first frame resolves it immediately.
         let _ = store.get(avatar_url);
-        store.block_until_idle(Duration::from_secs(5));
+        store.block_until_idle(tilo_test_env::hang_bound());
 
         // A Home model whose videos carry NO thumbnail URL (so the only image that
         // can paint is the avatar) and whose uploader has a real avatar URL.
@@ -716,7 +715,6 @@ fn home_grid_fills_rows_renders_avatars_and_stays_laid_out() {
     // row.
     {
         use std::sync::Arc;
-        use std::time::Duration;
         use tube::model::{Channel, TubeModel, Video};
 
         fn png_bytes() -> Vec<u8> {
@@ -733,7 +731,7 @@ fn home_grid_fills_rows_renders_avatars_and_stays_laid_out() {
         let fetch: ui::Fetcher = Arc::new(move |_u: &str| Some(bytes.clone()));
         let store = ui::ImageStore::new(&fetch);
         let _ = store.get(avatar_url);
-        store.block_until_idle(Duration::from_secs(5));
+        store.block_until_idle(tilo_test_env::hang_bound());
 
         // 12 videos all uploaded by "Creator X" via its PRIMARY record (id UC_A),
         // which has NO avatar (the yt-dlp record). No thumbnails, so the only image a

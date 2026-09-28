@@ -307,16 +307,31 @@ pub enum InputOperation {
         device: String,
         value: f64,
     },
-    /// `button` is `lower` or `upper`; `action` a stylus button choice id.
+    /// `button` is `lower`, `upper` or `third`; `action` a stylus button
+    /// choice id.
     SetTabletButton {
         device: String,
         button: String,
+        action: String,
+    },
+    /// `action` is an eraser choice id.
+    SetTabletEraser {
+        device: String,
         action: String,
     },
     /// `action` is a pad button choice id.
     SetPadButton {
         device: String,
         button: u32,
+        action: String,
+    },
+    /// What pad `device`'s ring or strip (`dial` is `ring` or `strip`)
+    /// number `index` does in `mode`; `action` is a dial choice id.
+    SetPadDial {
+        device: String,
+        dial: String,
+        index: u32,
+        mode: u32,
         action: String,
     },
 }
@@ -3627,6 +3642,7 @@ fn tablet_resources() -> Vec<Resource> {
         for (id, label, button) in [
             ("lower-button", "Set the lower pen button", "lower"),
             ("upper-button", "Set the upper pen button", "upper"),
+            ("third-button", "Set the third pen button", "third"),
         ] {
             let device = device.clone();
             resource = resource.with_action(local_choice_spec(
@@ -3644,6 +3660,22 @@ fn tablet_resources() -> Vec<Resource> {
                 },
             ));
         }
+        resource = resource.with_action(local_choice_spec(
+            "eraser",
+            "Set what the eraser does",
+            INPUT_OPERATION_TYPE,
+            ids(pane::eraser_choices()),
+            TAGS,
+            {
+                let device = device.clone();
+                move |action| {
+                    op(InputOperation::SetTabletEraser {
+                        device: device.clone(),
+                        action,
+                    })
+                }
+            },
+        ));
         resources.push(resource);
     }
     for pad in devices
@@ -3675,6 +3707,38 @@ fn tablet_resources() -> Vec<Resource> {
                     )
                 },
             ));
+        }
+        for (dial, modes) in pane::pad_dials(pad) {
+            let (kind, index, noun) = match dial {
+                settings_store::hardware::PadDial::Ring(index) => ("ring", index, "ring"),
+                settings_store::hardware::PadDial::Strip(index) => ("strip", index, "strip"),
+            };
+            for mode in 0..modes {
+                let device = pad.key.clone();
+                resource = resource.with_action(local_choice_spec(
+                    pane::dial_action_id(dial, mode),
+                    format!(
+                        "Set what pad {noun} {} does in mode {}",
+                        index + 1,
+                        mode + 1
+                    ),
+                    INPUT_OPERATION_TYPE,
+                    ids(pane::dial_choices()),
+                    TAGS,
+                    move |action| {
+                        encode_local_operation(
+                            INPUT_OPERATION_TYPE,
+                            &InputOperation::SetPadDial {
+                                device: device.clone(),
+                                dial: kind.into(),
+                                index,
+                                mode,
+                                action,
+                            },
+                        )
+                    },
+                ));
+            }
         }
         resources.push(resource);
     }

@@ -97,7 +97,7 @@ pub enum AttrVal {
 }
 
 /// One non-empty selection expressed as stable block ids and character offsets.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SelectionTarget {
     pub start_block: String,
     pub start: usize,
@@ -202,6 +202,16 @@ pub enum RichTextAction {
         blocks: Vec<String>,
         key: String,
         value: AttrVal,
+    },
+    /// Remove one block attribute from each of `blocks`, restoring its
+    /// default: a list item that stops being a task (`checked`), a code line
+    /// that becomes prose (`code`, `lang`, `code_group`), a block back at the
+    /// outline's top (`nesting`).
+    ClearBlockAttr {
+        #[serde(default)]
+        region: RegionKind,
+        blocks: Vec<String>,
+        key: String,
     },
     /// Replace all four page margins as one absolute page-setup operation.
     /// Keeping the rectangle atomic avoids transient invalid page geometry while
@@ -337,13 +347,33 @@ pub enum RichTextAction {
         adopt_first_style: bool,
     },
     /// Insert a fresh paragraph carrying `text` directly after block `after`.
-    /// The action-level way to add a line: Enter is a live-edit path, not an
-    /// action, so a headless participant (an agent, a script) had no way to
-    /// append a paragraph with the same ops the app produces.
+    /// Enter itself is [`Self::SplitBlock`] (published as `new-paragraph`);
+    /// this inserts a whole paragraph after a named block in one envelope.
     InsertParagraph { after: String, text: String },
+    /// Append `text` as a new paragraph at the end of the body. The target is
+    /// resolved from the document at apply time (not captured in the payload),
+    /// so a catalogue captured before other appends still lands at the end.
+    /// An empty trailing `paragraph` (a fresh document's only line) is filled
+    /// instead of leaving a blank line above the new text.
+    AppendParagraph { text: String },
+    /// Append `text` at the end of the last body block, which must be a text
+    /// block (paragraph, heading or list item). Resolved at apply time, so
+    /// repeated invocations append in order.
+    ///
+    /// A caret-free writer (an agent streaming text) uses it; an editor with
+    /// a caret uses `move-caret {to: document-end}` then `type-text`.
+    ContinueParagraph { text: String },
     /// Remove `blocks` (an image, or every cell of a table). Ids are sorted
     /// before removal so replicas emit the identical op sequence.
     RemoveBlocks { blocks: Vec<String> },
+    /// Move body paragraphs `blocks`, in the order given, to directly after
+    /// `after`, or to the start of the body when `after` is `None`: a
+    /// dragged paragraph, or a run of them. Each keeps its id, text and
+    /// style.
+    MoveBlocks {
+        blocks: Vec<String>,
+        after: Option<String>,
+    },
     /// Replace the whole document body with `markdown` (re-import a template /
     /// restore a version): every existing body block is removed, then the
     /// Markdown is imported as fresh blocks.
@@ -393,11 +423,14 @@ impl RichTextAction {
             | Self::SetMark { .. }
             | Self::PasteFragment { .. }
             | Self::InsertParagraph { .. }
+            | Self::AppendParagraph { .. }
+            | Self::ContinueParagraph { .. }
             | Self::RemoveBlocks { .. }
             | Self::ReplaceBody { .. } => ActionDomain::Text,
             Self::SetParagraphStyle { .. }
             | Self::ApplyNamedStyle { .. }
             | Self::SetBlockAttr { .. }
+            | Self::ClearBlockAttr { .. }
             | Self::SetPageMargins { .. }
             | Self::SetStyleProperty { .. }
             | Self::DeleteStyle { .. } => ActionDomain::Formatting,
@@ -411,7 +444,8 @@ impl RichTextAction {
             Self::InsertPageBreak { .. }
             | Self::SplitBlock { .. }
             | Self::InsertField { .. }
-            | Self::GenerateToc { .. } => ActionDomain::Structure,
+            | Self::GenerateToc { .. }
+            | Self::MoveBlocks { .. } => ActionDomain::Structure,
             Self::AcceptChanges { .. }
             | Self::RejectChanges { .. }
             | Self::ResolveComment { .. }
@@ -432,7 +466,9 @@ pub const MAX_TABLE_CELLS: usize = 10_000;
 /// Read only the addressed block while matching qdoc's snapshot membership:
 /// a region block must be a map with a byte-valued order key. Missing or
 /// non-Text text projects to the empty string, just as `materialize_block` does.
-fn splice_target_len(
+/// Characters of region block `id`, `None` when it is not a block of that
+/// region: the validator's one-block membership and length reading.
+pub fn splice_target_len(
     doc: &AutoCommit,
     c: &Containers,
     region: RegionKind,
@@ -570,7 +606,9 @@ impl<'a> ActionValidator<'a> {
             "align" => {
                 matches!(value, AttrVal::Str(v) if matches!(v.as_str(), "left" | "center" | "right" | "justify"))
             }
-            "page_break_before" | "flip_h" | "flip_v" => matches!(value, AttrVal::Bool(_)),
+            "page_break_before" | "flip_h" | "flip_v" | "checked" | "code" | "table_source" => {
+                matches!(value, AttrVal::Bool(_))
+            }
             "indent" | "line_spacing" => {
                 matches!(value, AttrVal::Float(v) if v.is_finite() && *v >= 0.0 && *v <= 10_000.0)
             }
@@ -579,8 +617,21 @@ impl<'a> ActionValidator<'a> {
             }
             "tab_stops" | "style" => matches!(value, AttrVal::Str(v) if v.len() <= 4_096),
             "width" | "height" => matches!(value, AttrVal::Int(v) if *v > 0 && *v <= 100_000),
+            "lang" => {
+                matches!(value, AttrVal::Str(v) if v.len() <= 64 && !v.chars().any(char::is_control))
+            }
+            "code_group" => matches!(value, AttrVal::Str(v) if Self::safe_name(v)),
+            "nesting" => matches!(value, AttrVal::Int(v) if (0..=9).contains(v)),
             _ => false,
         }
+    }
+
+    /// Attributes whose absence is their default, so an edit may remove them.
+    fn clearable_attr(key: &str) -> bool {
+        matches!(
+            key,
+            "checked" | "code" | "lang" | "code_group" | "nesting" | "table_source"
+        )
     }
 
     fn valid_style_property(key: &str, value: &AttrVal) -> bool {
@@ -705,6 +756,12 @@ impl<'a> ActionValidator<'a> {
             RichTextAction::InsertParagraph { after, text } => {
                 self.block_len(RegionKind::Body, after).is_some() && Self::safe_text(text)
             }
+            RichTextAction::AppendParagraph { text } => !text.is_empty() && Self::safe_text(text),
+            RichTextAction::ContinueParagraph { text } => {
+                !text.is_empty()
+                    && Self::safe_text(text)
+                    && body_end(self.doc, self.containers).is_some_and(|end| end.text_block)
+            }
             RichTextAction::RemoveBlocks { blocks } => {
                 self.unique_existing(RegionKind::Body, blocks)
             }
@@ -746,6 +803,11 @@ impl<'a> ActionValidator<'a> {
             key,
             value,
         } => self.unique_existing(*region, blocks) && Self::valid_attr(key, value),
+        RichTextAction::ClearBlockAttr {
+            region,
+            blocks,
+            key,
+        } => self.unique_existing(*region, blocks) && Self::clearable_attr(key),
         RichTextAction::SetPageMargins { top, right, bottom, left } => [top, right, bottom, left]
             .into_iter()
             .all(|value| value.is_finite() && (4.0..=10_000.0).contains(value)),
@@ -941,6 +1003,12 @@ impl<'a> ActionValidator<'a> {
             } => {
                 self.block_len(*region, block).is_some_and(|len| *at <= len)
                     && field == qdoc::schema::FIELD_PAGE_NUMBER
+            }
+            RichTextAction::MoveBlocks { blocks, after } => {
+                self.unique_existing(RegionKind::Body, blocks)
+                    && after.as_ref().is_none_or(|after| {
+                        self.block_len(RegionKind::Body, after).is_some() && !blocks.contains(after)
+                    })
             }
             RichTextAction::GenerateToc { entries } => {
                 !entries.is_empty()
@@ -1631,6 +1699,57 @@ fn apply_insert_paragraph(dm: &mut DocMut, after: &str, text: &str) {
     }
 }
 
+/// The last body block as `append-paragraph`/`continue-paragraph` resolve it
+/// at apply time. Validation, the write and an editor's predicted caret share
+/// this one reading.
+pub struct BodyEnd {
+    pub id: String,
+    pub kind: Option<String>,
+    /// Characters, the unit [`RichTextAction::SpliceText`] `at` uses.
+    pub chars: usize,
+    /// A paragraph, heading or list item: text that can be continued.
+    pub text_block: bool,
+}
+
+/// Read the last body block, `None` for an empty body.
+pub fn body_end(doc: &AutoCommit, c: &Containers) -> Option<BodyEnd> {
+    let id = qdoc::model::blocks_in_order(doc, c).pop()?;
+    Some(body_end_at(doc, c, id))
+}
+
+/// Read `id` as the last body block, for a caller that knows which block is
+/// last (from a kept body order) and so need not list the body.
+pub fn body_end_at(doc: &AutoCommit, c: &Containers, id: String) -> BodyEnd {
+    let kind = qdoc::model::block_kind(doc, c, &id);
+    let chars = qdoc::model::block_text(doc, c, &id)
+        .unwrap_or_default()
+        .chars()
+        .count();
+    let text_block = matches!(kind.as_deref(), Some("paragraph" | "heading" | "list_item"));
+    BodyEnd {
+        id,
+        kind,
+        chars,
+        text_block,
+    }
+}
+
+fn apply_append_paragraph(dm: &mut DocMut, text: &str) {
+    let target = match body_end(dm.doc, dm.c) {
+        Some(end) if end.chars == 0 && end.kind.as_deref() == Some("paragraph") => end.id,
+        Some(end) => dm.insert_block(Some(&end.id), "paragraph"),
+        None => dm.insert_block(None, "paragraph"),
+    };
+    dm.splice_text(&target, 0, 0, text);
+}
+
+fn apply_continue_paragraph(dm: &mut DocMut, text: &str) {
+    // Validated before the mutable view: the last body block is a text block.
+    if let Some(end) = body_end(dm.doc, dm.c).filter(|end| end.text_block) {
+        dm.splice_text(&end.id, end.chars, 0, text);
+    }
+}
+
 fn apply_remove_blocks(dm: &mut DocMut, blocks: &[String]) {
     let mut sorted = blocks.to_vec();
     sorted.sort();
@@ -1794,6 +1913,8 @@ fn apply_text_action(dm: &mut DocMut<'_>, action: &RichTextAction) {
         RichTextAction::InsertParagraph { after, text } => {
             apply_insert_paragraph(dm, after, text);
         }
+        RichTextAction::AppendParagraph { text } => apply_append_paragraph(dm, text),
+        RichTextAction::ContinueParagraph { text } => apply_continue_paragraph(dm, text),
         RichTextAction::RemoveBlocks { blocks } => apply_remove_blocks(dm, blocks),
         RichTextAction::ReplaceBody { markdown } => apply_replace_body(dm, markdown),
         _ => {}
@@ -1831,6 +1952,17 @@ fn apply_formatting_action(dm: &mut DocMut<'_>, action: &RichTextAction) {
             key,
             value,
         } => apply_set_block_attr(dm, region.to_region(), blocks, key, value),
+        RichTextAction::ClearBlockAttr {
+            region,
+            blocks,
+            key,
+        } => {
+            let mut sorted = blocks.clone();
+            sorted.sort();
+            for block in &sorted {
+                dm.remove_attr_in(region.to_region(), block, key);
+            }
+        }
         RichTextAction::SetPageMargins {
             top,
             right,
@@ -1970,6 +2102,13 @@ fn apply_structure_action(dm: &mut DocMut<'_>, action: &RichTextAction) {
             field: _,
         } => dm.insert_page_number_field(region.to_region(), block, *at),
         RichTextAction::GenerateToc { entries } => apply_generate_toc(dm, entries),
+        RichTextAction::MoveBlocks { blocks, after } => {
+            let mut previous = after.clone();
+            for block in blocks {
+                dm.move_block(block, previous.as_deref());
+                previous = Some(block.clone());
+            }
+        }
         _ => {}
     }
 }
@@ -2003,18 +2142,22 @@ fn apply_review_action(dm: &mut DocMut<'_>, action: &RichTextAction) {
     }
 }
 
-impl Action for RichTextAction {
-    /// Apply this action's mutation to `doc`.
+impl RichTextAction {
+    /// Apply this action to the rich text stored under `root`: the whole
+    /// document when `root` is the document's root, or one rich-text field
+    /// of another resource (a message body, a note's page) when it is that
+    /// field's map. The owning resource's own action carries this one and
+    /// names the field, so the edit replays exactly as it was made.
     ///
     /// # Errors
     ///
-    /// Returns [`ActionError::Refused`] for an unavailable Writer document or
-    /// stale/hostile decoded arguments before opening a mutable view.
-    fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
-        // Bind to the canonical schema under ROOT. Refuse an unbound document
-        // explicitly so callers never mistake an unavailable target for a
-        // successful edit.
-        let Ok(c) = qdoc::model::open(doc, &automerge::ROOT) else {
+    /// Returns [`ActionError::Refused`] for rich text that is missing under
+    /// `root` or stale/hostile decoded arguments, before anything is written.
+    pub fn apply_under(&self, doc: &mut Doc, root: &ObjId) -> Result<(), ActionError> {
+        // Bind to the canonical schema under `root`. Refuse an unbound
+        // document explicitly so callers never mistake an unavailable target
+        // for a successful edit.
+        let Ok(c) = qdoc::model::open(doc, root) else {
             return Err(ActionError::Refused(
                 "Writer document is unavailable or has not been initialized".into(),
             ));
@@ -2049,6 +2192,18 @@ impl Action for RichTextAction {
             ActionDomain::Review => apply_review_action(&mut dm, self),
         }
         Ok(())
+    }
+}
+
+impl Action for RichTextAction {
+    /// Apply this action's mutation to the document's rich text.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ActionError::Refused`] for an unavailable Writer document or
+    /// stale/hostile decoded arguments before opening a mutable view.
+    fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
+        self.apply_under(doc, &automerge::ROOT)
     }
 
     fn locus(&self) -> ExecutionLocus {
@@ -2413,8 +2568,27 @@ pub fn insert_paragraph_action(after: &str, text: &str) -> RichTextAction {
     }
 }
 
+/// Append `text` as a new paragraph at the end of the body (resolved at apply).
+pub fn append_paragraph_action(text: &str) -> RichTextAction {
+    RichTextAction::AppendParagraph {
+        text: text.to_string(),
+    }
+}
+
+/// Append `text` to the end of the last body paragraph (resolved at apply).
+pub fn continue_paragraph_action(text: &str) -> RichTextAction {
+    RichTextAction::ContinueParagraph {
+        text: text.to_string(),
+    }
+}
+
 pub fn remove_blocks_action(blocks: Vec<String>) -> RichTextAction {
     RichTextAction::RemoveBlocks { blocks }
+}
+
+/// Move `blocks` to directly after `after` (the start of the body for `None`).
+pub fn move_blocks_action(blocks: Vec<String>, after: Option<String>) -> RichTextAction {
+    RichTextAction::MoveBlocks { blocks, after }
 }
 
 /// Replace the whole document body with `markdown`.

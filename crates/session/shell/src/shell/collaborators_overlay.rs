@@ -22,7 +22,6 @@ const ACTIONS_H: f64 = 40.0;
 /// Minimum pointer target (HIG §9.6): every button in this popover —
 /// Follow/Stop, Invite, Join — is at least this tall.
 const MIN_TARGET: f64 = 32.0;
-const INVITED_TAG: &str = "invited";
 const INVITED_ROW_ALPHA: f32 = 0.55;
 const ROW_H: f64 = 64.0;
 const MY_STATUS_H: f64 = 92.0;
@@ -285,7 +284,7 @@ impl CollaboratorsOverlay {
         );
         text_renderer.draw_text(
             scene,
-            "People",
+            &crate::shell::i18n::t("a11y-shell-people"),
             tokens.typography.scale.lg,
             colors.text_primary,
             transform.pre_translate((rect.x0 + 16.0, rect.y0 + 16.0).into()),
@@ -297,7 +296,8 @@ impl CollaboratorsOverlay {
             .filter(|row| !row.invited)
             .collect::<Vec<_>>();
         let here_count = live_rows.len().saturating_add(1);
-        let here = format!("{here_count} here now");
+        let here =
+            crate::shell::i18n::t_args("people-panel-here-now", &[("count", here_count.into())]);
         let (here_width, _) = text_renderer.measure(&here, tokens.typography.scale.xs, None);
         let here_x = rect.x1 - 14.0 - f64::from(here_width);
         text_renderer.draw_text(
@@ -335,7 +335,7 @@ impl CollaboratorsOverlay {
             );
             text_renderer.draw_text(
                 scene,
-                "Screen visible now",
+                &crate::shell::i18n::t("people-panel-screen-visible"),
                 tokens.typography.scale.xs,
                 colors.accent[5],
                 transform.pre_translate((banner.x0 + 8.0, banner.y0 + 5.0).into()),
@@ -373,7 +373,7 @@ impl CollaboratorsOverlay {
         if model.rows.is_empty() && model.unavailable.is_none() {
             text_renderer.draw_text(
                 scene,
-                "Only you are here",
+                &crate::shell::i18n::t("people-panel-only-you"),
                 tokens.typography.scale.sm,
                 colors.text_dim,
                 transform.pre_translate((rect.x0 + 16.0, rect.y0 + 56.0).into()),
@@ -1051,11 +1051,15 @@ impl CollaboratorsOverlay {
             model
                 .own_status
                 .filter(|status| !status.is_empty())
-                .unwrap_or("Type a status, then press Enter")
+                .map_or_else(
+                    || crate::shell::i18n::t("people-panel-status-typing"),
+                    str::to_string,
+                )
         } else {
-            model
-                .own_status
-                .unwrap_or("Set what you're working toward…")
+            model.own_status.map_or_else(
+                || crate::shell::i18n::t("people-panel-status-empty"),
+                str::to_string,
+            )
         };
         let avatar = Rect::new(
             self.panel.x0 + 12.0,
@@ -1101,7 +1105,8 @@ impl CollaboratorsOverlay {
                 &RoundedRect::from_rect(self.status, f64::from(theme.tokens.radii.sm)),
             );
         }
-        let label = format!("You · {label}");
+        let label =
+            crate::shell::i18n::t_args("people-panel-own-status", &[("status", label.into())]);
         let trailing_room = if model.status_editing { 48.0 } else { 28.0 };
         #[expect(
             clippy::cast_possible_truncation,
@@ -1173,14 +1178,14 @@ impl CollaboratorsOverlay {
                 None,
                 &RoundedRect::from_rect(*rect, f64::from(theme.tokens.radii.sm)),
             );
-            let text = match mode {
-                ui::StatusSharing::Automatic => "✦ Auto",
-                ui::StatusSharing::ManualOnly => "Manual",
-                ui::StatusSharing::Off => "Hidden",
-            };
+            let text = crate::shell::i18n::t(match mode {
+                ui::StatusSharing::Automatic => "people-panel-sharing-auto",
+                ui::StatusSharing::ManualOnly => "people-panel-sharing-manual",
+                ui::StatusSharing::Off => "people-panel-sharing-hidden",
+            });
             text_renderer.draw_text(
                 scene,
-                text,
+                &text,
                 theme.tokens.typography.scale.xs,
                 if active {
                     colors.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST)
@@ -1419,10 +1424,11 @@ impl CollaboratorsOverlay {
             transform.pre_translate((text_x, label_y).into()),
             None,
         );
-        if row.is_agent && !row.label.eq_ignore_ascii_case("agent") {
+        let agent_tag = crate::shell::i18n::t("people-panel-agent-tag");
+        if row.is_agent && !row.label.eq_ignore_ascii_case(&agent_tag) {
             text_renderer.draw_text(
                 scene,
-                "agent",
+                &agent_tag,
                 tokens.typography.scale.xs,
                 colors.text_dim,
                 transform.pre_translate((self.panel.x1 - 136.0, row_y + 9.0).into()),
@@ -1430,11 +1436,16 @@ impl CollaboratorsOverlay {
             );
         }
         let subtitle = if row.invited {
-            Some(INVITED_TAG.to_string())
+            Some(crate::shell::i18n::t("people-panel-invited-tag"))
         } else if followed {
             row.activity.as_ref().map_or_else(
-                || Some("Following".to_string()),
-                |activity| Some(format!("Following · {activity}")),
+                || Some(crate::shell::i18n::t("people-panel-following")),
+                |activity| {
+                    Some(crate::shell::i18n::t_args(
+                        "people-panel-following-activity",
+                        &[("activity", activity.as_str().into())],
+                    ))
+                },
             )
         } else if let Some(activity) = &row.activity {
             Some(activity.clone())
@@ -1498,7 +1509,12 @@ impl CollaboratorsOverlay {
             // `radii.sm` is for details drawn inside a control.
             // The pass paints with the renderer reset to 1× (see `draw`), so
             // the face is handed the theme-scaled label size explicitly.
-            let face = ButtonFace::new(action, if followed { "Stop" } else { "Follow" })
+            let label = crate::shell::i18n::t(if followed {
+                "people-panel-stop-following"
+            } else {
+                "people-panel-follow"
+            });
+            let face = ButtonFace::new(action, &label)
                 .radius(ui::chrome::ChromeRole::Control.radius(theme, action.height()))
                 .text_size(tokens.typography.scale.base)
                 .hovered(frame.cursor.is_some_and(|point| action.contains(point)));
@@ -1522,12 +1538,14 @@ impl CollaboratorsOverlay {
             // The pass paints with the renderer reset to 1× (see `draw`), so
             // each face is handed the theme-scaled label size explicitly.
             let label_size = tokens.typography.scale.base;
+            let invite_label = crate::shell::i18n::t("people-panel-invite");
+            let join_label = crate::shell::i18n::t("people-panel-join");
             Button::paint(
                 scene,
                 transform,
                 text_renderer,
                 theme,
-                &ButtonFace::new(self.invite, "Invite")
+                &ButtonFace::new(self.invite, &invite_label)
                     .primary()
                     .radius(radius)
                     .text_size(label_size)
@@ -1538,7 +1556,7 @@ impl CollaboratorsOverlay {
                 transform,
                 text_renderer,
                 theme,
-                &ButtonFace::new(self.join, "Join")
+                &ButtonFace::new(self.join, &join_label)
                     .radius(radius)
                     .text_size(label_size)
                     .hovered(cursor.is_some_and(|point| self.join.contains(point))),
@@ -1569,10 +1587,11 @@ impl CollaboratorsOverlay {
             colors.lift(0.35),
         );
         let size = tokens.typography.scale.sm;
-        let (_, height) = text_renderer.measure("Workspace activity", size, None);
+        let title = crate::shell::i18n::t("a11y-shell-workspace-activity");
+        let (_, height) = text_renderer.measure(&title, size, None);
         text_renderer.draw_text(
             scene,
-            "Workspace activity",
+            &title,
             size,
             colors.text_primary,
             transform.pre_translate(
@@ -1655,13 +1674,18 @@ pub(crate) fn collaborator_roster_rows_with_local_user(
                 color: Color::from_rgb8(red, green, blue),
                 is_agent,
                 role: agent_role
-                    .map(|role| crate::shell::state::role_label(role).to_string())
-                    .or_else(|| participant.role_id.clone()),
+                    .map(crate::shell::workspace_settings::role_label)
+                    .or_else(|| participant.role_id.as_deref().map(display_role_id)),
                 invited: participant.invited,
                 activity: participant
                     .active_tab
                     .and_then(|tab| active_tab_title(tree, tab))
-                    .map(|title| format!("Viewing {title}")),
+                    .map(|title| {
+                        crate::shell::i18n::t_args(
+                            "people-panel-viewing",
+                            &[("title", title.into())],
+                        )
+                    }),
                 status: None,
                 // A headless agent has no pointer/viewport to follow merely
                 // because its session is connected. Follow becomes available
@@ -1677,6 +1701,15 @@ pub(crate) fn collaborator_roster_rows_with_local_user(
     // above tags it as an agent and exposes the same cursor/follow affordance
     // through truthful semantic activity rather than a fabricated cursor.
     rows
+}
+
+/// A recorded role id as people read it; an id this model does not define
+/// shows as recorded.
+fn display_role_id(id: &str) -> String {
+    crate::shell::state::role_from_id(id).map_or_else(
+        || id.to_string(),
+        crate::shell::workspace_settings::role_label,
+    )
 }
 
 fn roster_initial(name: &str) -> char {
@@ -1761,13 +1794,12 @@ mod tests {
                 );
             }
             for (index, rect) in overlay.row_action_rects().iter().enumerate() {
-                let row_top =
-                    overlay.panel_rect().y0 + 48.0 + MY_STATUS_H + row_count_as_f64(index) * ROW_H;
+                let row = overlay.row_rects[index];
                 assert!(
-                    (rect.center().y - (row_top + ROW_H / 2.0)).abs() < f64::EPSILON,
+                    (rect.center().y - row.center().y).abs() < f64::EPSILON,
                     "row {index}'s button is centred in its row"
                 );
-                assert!(rect.y0 >= row_top && rect.y1 <= row_top + ROW_H);
+                assert!(rect.y0 >= row.y0 && rect.y1 <= row.y1);
             }
             let band_top = overlay.panel_rect().y1 - FOOTER_H - ACTIONS_H;
             assert!(invite.y0 >= band_top && invite.y1 <= band_top + ACTIONS_H);
@@ -1872,7 +1904,7 @@ mod tests {
                 rows[0].is_agent,
                 "a renamed agent must never appear as a person"
             );
-            assert_eq!(rows[0].role.as_deref(), Some("editor"));
+            assert_eq!(rows[0].role.as_deref(), Some("Editor"));
         }
 
         fn the_recorder_is_listed_as_an_observer_agent() {

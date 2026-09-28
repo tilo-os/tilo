@@ -35,6 +35,7 @@ runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 atomic-file = { path = "../../crates/system/atomic-file" }
 xdg-paths = { path = "../../crates/system/xdg-paths" }
+host-info = { path = "../../crates/system/host-info" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # The Tilo action model: document-mutating library edits (playlist create/rename/
 # delete, add/remove/reorder track, like/save/follow) are replayable actions the
@@ -76,9 +77,6 @@ workspace-hack = { version = "0.1" }
 [target.'cfg(all(windows, target_arch = "aarch64"))'.dependencies]
 # QuickJS does not ship Windows ARM64 bindings; generate the actual target ABI.
 rquickjs = { workspace = true, optional = true, features = ["bindgen"] }
-
-[target.'cfg(target_os = "linux")'.dependencies]
-bounded-command = { path = "../../crates/system/bounded-command" }
 
 [dev-dependencies]
 serial_test.workspace = true

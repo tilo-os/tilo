@@ -45,7 +45,7 @@ tilo-net = { path = "../../crates/system/tilo-net", features = ["blocking"] }
 bounded-command = { path = "../../crates/system/bounded-command" }
 atomic-file = { path = "../../crates/system/atomic-file" }
 blake3.workspace = true
-libc.workspace = true
+private-fs = { path = "../../crates/system/private-fs" }
 
 # Live YouTube backend (off by default): rustypipe handles InnerTube requests
 # and botguard tokens without ffmpeg or yt-dlp.

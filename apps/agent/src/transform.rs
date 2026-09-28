@@ -1093,7 +1093,7 @@ mod tests {
         );
         assert!(matches!(wrong, InvocationUpdate::Failed { .. }));
         let mut done = Vec::new();
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = tilo_test_env::hang_deadline();
         while done.is_empty() && Instant::now() < deadline {
             done = service.finished();
             std::thread::yield_now();
@@ -1108,7 +1108,7 @@ mod tests {
             service.cancel(9),
             Some(InvocationUpdate::Cancelled { .. })
         ));
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = tilo_test_env::hang_deadline();
         while service.running() > 0 && Instant::now() < deadline {
             assert!(service.finished().is_empty());
             std::thread::yield_now();

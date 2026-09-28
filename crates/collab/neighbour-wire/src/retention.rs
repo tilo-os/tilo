@@ -11,7 +11,7 @@ use crate::NeighbourMsg;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Retention {
     /// A complete state baseline. What it replaces on the host is stated by
-    /// the publisher (`tilo_relay_client::Coverage`): a merged document names
+    /// the publisher (`tilo_relay::Coverage`): a merged document names
     /// the retained entries it holds; any other baseline supersedes its
     /// channel.
     Checkpoint,

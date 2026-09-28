@@ -222,10 +222,10 @@ impl SpeakerGroupCore {
         now: Instant,
     ) -> Result<Vec<Egress>, String> {
         if self.groups.iter().flatten().count() >= crate::shell::speaker_group::MAX_SPEAKER_GROUPS {
-            return Err("too many speaker groups".into());
+            return Err(crate::shell::i18n::t("speaker-error-too-many-groups"));
         }
         if self.led_group(id).is_some() {
-            return Err("that speaker group already exists".into());
+            return Err(crate::shell::i18n::t("speaker-error-group-exists"));
         }
         let group = build_group(id, name, local, members, &BTreeMap::new())?;
         fabric
@@ -255,7 +255,7 @@ impl SpeakerGroupCore {
         let previous = self
             .led_group(id)
             .cloned()
-            .ok_or_else(|| "that speaker group no longer exists".to_string())?;
+            .ok_or_else(|| crate::shell::i18n::t("speaker-error-group-gone"))?;
         let trims = previous
             .members
             .iter()
@@ -305,19 +305,19 @@ impl SpeakerGroupCore {
             .groups_mut()
             .iter_mut()
             .find(|group| group.id == id)
-            .ok_or_else(|| "that speaker group no longer exists".to_string())?;
+            .ok_or_else(|| crate::shell::i18n::t("speaker-error-group-gone"))?;
         let mut updated = group.clone();
         for (device, output, trim) in trims {
             let member = updated
                 .members
                 .iter_mut()
                 .find(|member| &member.device == device && member.output == *output)
-                .ok_or_else(|| "that speaker is not in the group".to_string())?;
+                .ok_or_else(|| crate::shell::i18n::t("speaker-error-not-in-group"))?;
             member.trim = trim.clone();
         }
         updated
             .validate(&updated.leader.clone())
-            .map_err(|_| "those calibration values are out of range".to_string())?;
+            .map_err(|_| crate::shell::i18n::t("speaker-error-calibration-range"))?;
         *group = updated;
         Ok(())
     }
@@ -332,7 +332,7 @@ impl SpeakerGroupCore {
         let index = groups
             .iter()
             .position(|group| group.id == id)
-            .ok_or_else(|| "that speaker group no longer exists".to_string())?;
+            .ok_or_else(|| crate::shell::i18n::t("speaker-error-group-gone"))?;
         let group = groups.remove(index);
         self.invites.retain(|(group_id, _), _| *group_id != id);
         let mut out = group
@@ -412,16 +412,16 @@ impl SpeakerGroupCore {
         let pending = self
             .consents
             .remove(&group_id)
-            .ok_or_else(|| "that speaker group request expired".to_string())?;
+            .ok_or_else(|| crate::shell::i18n::t("speaker-error-request-expired"))?;
         if approved {
             if !consent_matches(fabric, local, group_id, &pending) {
-                return Err("that speaker group changed; ask again from its device".into());
+                return Err(crate::shell::i18n::t("speaker-error-group-changed"));
             }
             if self.memberships.iter().flatten().count()
                 >= crate::shell::speaker_group::MAX_SPEAKER_MEMBERSHIPS
             {
                 self.consents.insert(group_id, pending);
-                return Err("this device is already in too many speaker groups".into());
+                return Err(crate::shell::i18n::t("speaker-error-too-many-memberships"));
             }
             let memberships = self.memberships_mut();
             memberships.retain(|membership| membership.group != group_id);
@@ -452,7 +452,7 @@ impl SpeakerGroupCore {
         let index = memberships
             .iter()
             .position(|membership| membership.group == group_id)
-            .ok_or_else(|| "this device is not in that speaker group".to_string())?;
+            .ok_or_else(|| crate::shell::i18n::t("speaker-error-not-a-member"))?;
         let membership = memberships.remove(index);
         let mut out = vec![egress(
             &membership.leader,
@@ -478,11 +478,11 @@ impl SpeakerGroupCore {
         now: Instant,
     ) -> Result<Vec<Egress>, String> {
         if self.outbound.len().saturating_add(self.inbound.len()) >= MAX_SPEAKER_SESSIONS {
-            return Err("too many speaker group sessions are active".into());
+            return Err(crate::shell::i18n::t("speaker-error-too-many-sessions"));
         }
         let group = fabric
             .speaker_group(group_id)
-            .ok_or_else(|| "that speaker group is not available".to_string())?;
+            .ok_or_else(|| crate::shell::i18n::t("speaker-error-group-unavailable"))?;
         let states = fabric.speaker_member_states(group);
         let channels = group.channel_roles();
         let members = group
@@ -506,7 +506,7 @@ impl SpeakerGroupCore {
             })
             .collect::<Vec<_>>();
         if members.is_empty() {
-            return Err("no speaker in that group is ready".into());
+            return Err(crate::shell::i18n::t("speaker-error-none-ready"));
         }
         let offers = members
             .iter()
@@ -551,7 +551,7 @@ impl SpeakerGroupCore {
                 },
             )]);
         }
-        Err("that speaker group session is no longer active".into())
+        Err(crate::shell::i18n::t("speaker-error-session-gone"))
     }
 
     /// Consume one authenticated speaker-group action. Returns `None` for
@@ -1239,12 +1239,11 @@ fn build_group(
         },
     };
     if !crate::shell::speaker_group::valid_group_name(&group.name) {
-        return Err("give the speakers a name of up to 64 characters".into());
+        return Err(crate::shell::i18n::t("speaker-error-name"));
     }
-    group.validate(local).map_err(|_| {
-        "each speaker needs its own output and its own role, and a stereo pair needs both sides"
-            .to_string()
-    })?;
+    group
+        .validate(local)
+        .map_err(|_| crate::shell::i18n::t("speaker-error-roles"))?;
     Ok(group)
 }
 
@@ -1503,7 +1502,7 @@ fn random_nonzero_16() -> [u8; 16] {
 }
 
 fn unavailable() -> String {
-    "speaker groups are unavailable".into()
+    crate::shell::i18n::t("speaker-error-unavailable")
 }
 
 fn send_all(network: &crate::shell::network::ShellNetwork, out: Vec<Egress>) -> Result<(), String> {
@@ -1520,7 +1519,7 @@ fn local_device(network: &crate::shell::network::ShellNetwork) -> Result<DeviceI
     network
         .local_device_fabric_identity()
         .map(|(device, _)| device)
-        .ok_or_else(|| "this device has no certified personal identity".to_string())
+        .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-no-identity"))
 }
 
 /// The speaker records for this device's next snapshot. Called by the
@@ -1618,7 +1617,7 @@ pub fn identify(
         snapshot.presence.online && snapshot.speakers.output(output).is_some()
     });
     if !offered {
-        return Err("that speaker is not available right now".into());
+        return Err(crate::shell::i18n::t("speaker-error-speaker-unavailable"));
     }
     network
         .send_personal_fabric_action(device, PersonalFabricAction::SpeakerIdentify { output })
@@ -1627,15 +1626,20 @@ pub fn identify(
 
 fn play_identify_locally(local: &DeviceId, output: EndpointSelector) -> Result<(), String> {
     let sink = resolve_local_output(local, output)
-        .ok_or_else(|| "that output is no longer connected".to_string())?;
+        .ok_or_else(|| crate::shell::i18n::t("speaker-error-output-disconnected"))?;
     if !crate::shell::speaker_settings::admit_identify(Instant::now()) {
-        return Err("a speaker is already playing its sound".into());
+        return Err(crate::shell::i18n::t("speaker-error-already-playing"));
     }
     std::thread::Builder::new()
         .name("speaker-identify".into())
         .spawn(move || play_pcm(&sink.name, &identify_chirp()))
         .map(|_| ())
-        .map_err(|error| format!("could not play the sound: {error}"))
+        .map_err(|error| {
+            crate::shell::i18n::t_args(
+                "speaker-error-play-failed",
+                &[("error", error.to_string().into())],
+            )
+        })
 }
 
 /// Play the calibration sweep on `output` when the leader's clock reads
@@ -1882,7 +1886,7 @@ fn audio_source(source: &GroupAudioSource) -> crate::shell::remote_audio::GroupR
 fn member_output(local: &DeviceId, output: EndpointSelector) -> Result<u32, String> {
     resolve_local_output(local, output)
         .map(|sink| sink.serial)
-        .ok_or_else(|| "that speaker's output is no longer connected".to_string())
+        .ok_or_else(|| crate::shell::i18n::t("speaker-error-speaker-output-gone"))
 }
 
 fn start_route(local: &DeviceId, spec: &RouteSpec) -> Result<(), String> {

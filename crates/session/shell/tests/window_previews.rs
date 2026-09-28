@@ -221,8 +221,11 @@ fn a_client_window_gets_a_downscaled_live_preview_at_most_ten_times_a_second() {
     // Closing the overview drops every preview and the GPU target.
     open_overview(&mut fb, false);
     let _ = renderer.refresh(&mut fb, later + REFRESH_INTERVAL * 2);
-    assert!(fb.host().window_previews().is_empty());
-    assert_eq!(fb.host().window_previews().memory_bytes(), 0);
+    let previews = fb.host().window_previews();
+    let (emptied, memory_bytes) = (previews.is_empty(), previews.memory_bytes());
+    drop(fb);
+    assert!(emptied);
+    assert_eq!(memory_bytes, 0);
     assert!(!renderer.holds_gpu_target());
     store().forget(surface);
 }
@@ -256,6 +259,7 @@ fn a_password_manager_never_gets_a_preview_and_the_switcher_says_so() {
 
     // state-dump reports each card's preview, never its pixels.
     let dump = fb.host().window_switcher_state_json();
+    drop(fb);
     assert_eq!(dump["open"], true);
     let windows = dump["windows"].as_array().expect("windows");
     let preview_of = |tab: u64| {
@@ -299,19 +303,19 @@ fn previews_stay_within_their_memory_bound() {
         );
     }
     let previews = fb.host().window_previews();
+    let (count, memory_bytes) = (previews.len(), previews.memory_bytes());
+    drop(fb);
     let bound =
         MAX_PREVIEWS * usize::try_from(MAX_PREVIEW_WIDTH * MAX_PREVIEW_HEIGHT * 4).unwrap_or(0);
     assert!(
-        previews.len() <= MAX_PREVIEWS,
-        "at most {MAX_PREVIEWS} previews, got {}",
-        previews.len()
+        count <= MAX_PREVIEWS,
+        "at most {MAX_PREVIEWS} previews, got {count}"
     );
     assert!(
-        previews.len() > RENDERS_PER_REFRESH * 2,
-        "rounds take turns until the windows past the first are pictured too, got {}",
-        previews.len()
+        count > RENDERS_PER_REFRESH * 2,
+        "rounds take turns until the windows past the first are pictured too, got {count}"
     );
-    assert!(previews.memory_bytes() <= bound);
+    assert!(memory_bytes <= bound);
     for (surface, _) in &clients {
         store().forget(*surface);
     }

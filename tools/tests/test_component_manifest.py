@@ -156,10 +156,10 @@ class InstallerTests(unittest.TestCase):
             manifest = installer.load_manifest(REPO / "os/components.toml")
             dev = installer.select_components(manifest, [], False, True)
             packages, bins, features = installer.cargo_plan(dev, True)
-            self.assertIn("shell/dev-overrides", features)
+            self.assertIn("dev-overrides", features)
             self.assertEqual(set(bins), {"shell", "tilo-control", "tilo-vmd"})
             _, _, production_features = installer.cargo_plan(dev, False)
-            self.assertNotIn("shell/dev-overrides", production_features)
+            self.assertNotIn("dev-overrides", production_features)
         with self.subTest(phase='mixed dev and production layers are rejected'):
             document = {"component": [{
                 "name": "mixed", "kind": "userspace", "scope": "session", "packages": ["shell"],

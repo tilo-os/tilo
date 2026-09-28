@@ -725,7 +725,7 @@ impl FirewallApp {
             state,
             crate::actions::FIREWALL_ACTION_TYPE,
             action,
-            tilo_actions::ActionContext::for_action("org.tilo.Firewall", "Firewall", action),
+            tilo_actions::ActionContext::for_action("so.tilo.firewall", "Firewall", action),
         );
         // Adopt the mutated config so the in-memory view matches the document.
         if let Some(cfg) = FirewallDoc::load(state) {
@@ -4875,7 +4875,9 @@ mod tests {
                 .and_then(|r| r.actions.iter().find(|act| act.id == "delete"))
                 .map(|act| match &act.input {
                     ActionInput::Immediate(enc) => enc.clone(),
-                    ActionInput::Prompted { .. } => panic!("delete is an immediate action"),
+                    ActionInput::Prompted { .. } | ActionInput::Deferred { .. } => {
+                        panic!("delete is an immediate action")
+                    }
                 })
                 .expect("a delete spec for the rule");
 

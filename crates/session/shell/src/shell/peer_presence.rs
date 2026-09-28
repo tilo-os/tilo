@@ -502,7 +502,7 @@ pub fn local_participant_rows(
                 participant.label.clone(),
             );
             match ws.role_of_agent(&participant.agent) {
-                Some(role) => row.with_role(crate::shell::state::role_label(role)),
+                Some(role) => row.with_role(crate::shell::workspace_settings::role_label(role)),
                 None => row,
             }
         })
@@ -694,7 +694,7 @@ pub fn room_roster(
             let role = ws.role_of(&name);
             let who = crate::shell::state::Collaborator::new(id, name).with_session(handle);
             let who = match role {
-                Some(role) => who.with_role(crate::shell::state::role_label(role)),
+                Some(role) => who.with_role(crate::shell::state::role_id(role)),
                 None => who,
             };
             if arrived.contains(&handle) {
@@ -1345,6 +1345,10 @@ mod tests {
 /// own, since what a session publishes and what it accepts agree only
 /// by construction. This drives the whole path end to end.
 #[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 mod two_sessions {
     use super::*;
     use crate::network::actor::NetCmd;
@@ -1384,6 +1388,9 @@ mod two_sessions {
     /// Cap'n Proto broker under test opens its own socket the same way
     /// production does, just with no peer-sync bridge to Iroh.
     fn broker(dir: &std::path::Path, name: &str) -> crate::shell::collab_broker::BrokerHandle {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+            .expect("secure two-session broker fixture root");
         crate::shell::collab_broker::spawn_native(
             dir.join(name),
             &None,
@@ -1997,3 +2004,9 @@ mod two_sessions {
         arriving_turns_an_invitation_into_a_participant();
     }
 }
+
+#[allow(
+    unused_imports,
+    reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
+)]
+use crate::shell::state::WorkspaceExt as _;

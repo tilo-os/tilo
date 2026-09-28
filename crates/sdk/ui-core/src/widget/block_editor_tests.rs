@@ -772,7 +772,7 @@ fn presence_payload_reports_caret_selection_or_nothing() {
         ed.focus_block(0, CursorPlacement::Byte(3));
         match ed.presence_payload() {
             Some((key, PresencePayload::Caret { pos })) => {
-                assert_eq!(key, block_presence_key(0));
+                assert_eq!(key, block_presence_key(&ed.blocks[0].id));
                 assert_eq!(pos, 3);
             }
             other => panic!("expected caret payload at byte 3, got {other:?}"),
@@ -796,7 +796,7 @@ fn presence_payload_reports_caret_selection_or_nothing() {
         assert_eq!(
             ed.presence_payload(),
             Some((
-                document_selection_presence_key(0, 2),
+                document_selection_presence_key(&ed.blocks[0].id, 2),
                 PresencePayload::Selection { start: 2, end: 3 },
             ))
         );
@@ -818,20 +818,24 @@ fn presence_payload_reports_caret_selection_or_nothing() {
             Block::paragraph("first"),
             Block::paragraph("hello world"),
         ]);
-        assert!(!ed.follow_presence(&block_presence_key(7), &PresencePayload::Caret { pos: 1 }));
-        assert!(ed.follow_presence(&block_presence_key(1), &PresencePayload::Caret { pos: 5 }));
+        let second = block_presence_key(&ed.blocks[1].id.clone());
+        assert!(!ed.follow_presence(
+            &block_presence_key("no-such-block"),
+            &PresencePayload::Caret { pos: 1 }
+        ));
+        assert!(ed.follow_presence(&second.clone(), &PresencePayload::Caret { pos: 5 }));
         assert_eq!(
             ed.presence_payload(),
-            Some((block_presence_key(1), PresencePayload::Caret { pos: 5 }))
+            Some((second.clone(), PresencePayload::Caret { pos: 5 }))
         );
         assert!(ed.follow_presence(
-            &block_presence_key(1),
+            &second.clone(),
             &PresencePayload::Selection { start: 0, end: 5 }
         ));
         assert_eq!(
             ed.presence_payload(),
             Some((
-                block_presence_key(1),
+                second.clone(),
                 PresencePayload::Selection { start: 0, end: 5 }
             ))
         );
@@ -2165,4 +2169,212 @@ fn find_matches_unicode_safely_and_navigates_without_editing() {
 
     find_ranges_are_case_insensitive_and_unicode_byte_safe();
     find_moves_across_blocks_wraps_and_never_edits_content();
+}
+
+fn presence_paths(editor: &mut BlockEditor, presence: &PresenceCtx) -> usize {
+    let theme = Theme::dark();
+    let mut taffy = TaffyTree::<()>::new();
+    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+    let node = editor.build_layout(&mut taffy, &theme, &mut node_map);
+    taffy
+        .compute_layout(
+            node,
+            Size {
+                width: taffy::AvailableSpace::Definite(640.0),
+                height: taffy::AvailableSpace::MaxContent,
+            },
+        )
+        .expect("block editor layout");
+    editor.apply_layout(&taffy, node, Point::ZERO);
+    let mut renderer = TextRenderer::new();
+    let mut scene = Scene::new();
+    editor.draw(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut renderer,
+        &theme,
+        presence,
+    );
+    scene.encoding().path_tags.len()
+}
+
+/// A remote caret names its block by the stable block id: after a block
+/// is inserted above it (locally or by a merge), the caret still lands on
+/// the same block, and an id this editor does not have draws nothing.
+#[test]
+fn remote_caret_follows_its_block_id_across_inserted_blocks() {
+    let mut ed = BlockEditor::new();
+    ed.set_blocks(vec![
+        Block::paragraph("alpha"),
+        Block::paragraph("target text"),
+    ]);
+    let target = ed.blocks[1].id.clone();
+    ed.focus_block(1, CursorPlacement::Byte(4));
+    let Some((published, _)) = ed.presence_payload() else {
+        panic!("focused block publishes a caret");
+    };
+    assert_eq!(published, block_presence_key(&target));
+    // The receiver has an extra block above the target.
+    let mut receiver = BlockEditor::new();
+    let mut blocks = vec![Block::paragraph("inserted above")];
+    for block in &ed.blocks {
+        let mut copy = Block::paragraph(block.line.value());
+        copy.id = block.id.clone();
+        blocks.push(copy);
+    }
+    receiver.set_blocks(blocks);
+    assert_eq!(receiver.blocks[2].id, target);
+    let empty = presence_paths(&mut receiver, &PresenceCtx::empty());
+    let mut presence = PresenceCtx::empty();
+    presence.set_caret(&published, crate::permissions::UserId("peer".into()), 4);
+    assert!(
+        presence_paths(&mut receiver, &presence) > empty,
+        "the caret is drawn"
+    );
+    let mut stranger = PresenceCtx::empty();
+    stranger.set_caret(
+        &block_presence_key("missing"),
+        crate::permissions::UserId("peer".into()),
+        4,
+    );
+    assert_eq!(presence_paths(&mut receiver, &stranger), empty);
+}
+
+#[test]
+fn remote_document_selection_resolves_from_its_start_block_id() {
+    let mut ed = BlockEditor::new();
+    ed.set_blocks(vec![
+        Block::paragraph("zero"),
+        Block::paragraph("one"),
+        Block::paragraph("two"),
+        Block::paragraph("three"),
+    ]);
+    let start = ed.blocks[1].id.clone();
+    let mut presence = PresenceCtx::empty();
+    let user = crate::permissions::UserId("peer".into());
+    presence.set_selection(
+        &document_selection_presence_key(&start, 1),
+        user.clone(),
+        crate::presence::SelectionRange { start: 1, end: 2 },
+    );
+    let resolved = ed.resolve_document_selections(&presence);
+    assert_eq!(resolved.len(), 1);
+    assert_eq!((resolved[0].0, resolved[0].1), (1, 2));
+    // A block inserted above shifts the indices, not the anchor.
+    ed.blocks.insert(0, Block::paragraph("new"));
+    let resolved = ed.resolve_document_selections(&presence);
+    assert_eq!((resolved[0].0, resolved[0].1), (2, 3));
+    // A span past the end is clamped; an unknown start is ignored.
+    presence.set_selection(
+        &document_selection_presence_key(&start, 40),
+        crate::permissions::UserId("p2".into()),
+        crate::presence::SelectionRange { start: 0, end: 1 },
+    );
+    presence.set_selection(
+        &document_selection_presence_key("gone", 1),
+        crate::permissions::UserId("p3".into()),
+        crate::presence::SelectionRange { start: 0, end: 1 },
+    );
+    drop(user);
+    let mut spans = ed
+        .resolve_document_selections(&presence)
+        .into_iter()
+        .map(|row| (row.0, row.1))
+        .collect::<Vec<_>>();
+    spans.sort_unstable();
+    assert_eq!(spans, vec![(2, 3), (2, 4)]);
+}
+
+#[test]
+fn focused_solid_caret_settles_after_paint_and_focus_changes_redraw() {
+    let mut editor = BlockEditor::new();
+    editor.set_blocks(vec![Block::paragraph("stable caret")]);
+    editor.set_focus(true);
+    assert!(editor.needs_redraw());
+    layout_and_draw_editor(&mut editor, &Theme::dark());
+    editor.mark_drawn();
+    assert!(
+        !editor.needs_redraw(),
+        "a painted solid caret needs no idle redraw"
+    );
+    editor.set_focus(false);
+    assert!(editor.needs_redraw(), "blur must repaint the caret");
+    layout_and_draw_editor(&mut editor, &Theme::dark());
+    editor.mark_drawn();
+    assert!(!editor.needs_redraw());
+    editor.set_focus(true);
+    assert!(editor.needs_redraw(), "refocus must repaint the caret");
+}
+
+#[test]
+fn focused_block_ime_repaints_after_an_idle_paint() {
+    let mut editor = BlockEditor::new();
+    editor.set_blocks(vec![Block::paragraph("text")]);
+    editor.set_focus(true);
+    layout_and_draw_editor(&mut editor, &Theme::dark());
+    editor.mark_drawn();
+    let mut handled = false;
+    editor.handle_event(
+        &WindowEvent::Ime(winit::event::Ime::Preedit("candidate".into(), Some((0, 9)))),
+        1.0,
+        &Modifiers::default(),
+        &mut AutoCommit::new(),
+        &automerge::ROOT,
+        &mut handled,
+        &mut None,
+        NodeId::new(0),
+        &TaffyTree::new(),
+    );
+    assert!(handled);
+    assert!(
+        editor.needs_redraw(),
+        "IME changes must repaint without permanent focus demand"
+    );
+    assert_eq!(
+        editor.blocks()[0].text(),
+        "text",
+        "preedit must remain uncommitted"
+    );
+    layout_and_draw_editor(&mut editor, &Theme::dark());
+    editor.mark_drawn();
+    assert!(!editor.needs_redraw());
+}
+
+#[test]
+fn toolbar_commands_format_the_focused_block() {
+    let mut e = BlockEditor::new();
+    e.set_blocks(vec![Block::paragraph("hello world")]);
+    assert!(!e.toggle_mark(Mark::Bold), "nothing is focused");
+    e.focus_block(0, CursorPlacement::End);
+    assert_eq!(e.focused_kind(), Some(&BlockKind::Paragraph));
+
+    // With nothing selected, a mark waits for the text typed next.
+    assert!(e.toggle_mark(Mark::Bold));
+    assert_eq!(e.active_marks(), [Mark::Bold]);
+    assert!(e.toggle_mark(Mark::Bold));
+    assert!(e.active_marks().is_empty());
+
+    // Over a selection, it marks the selection.
+    e.blocks[0].line.inner_mut().set_selection(0, 5);
+    assert!(e.toggle_mark(Mark::Italic));
+    assert_eq!(
+        e.blocks[0].line.marks(),
+        [MarkSpan::new(0..5, Mark::Italic)]
+    );
+    assert_eq!(e.active_marks(), [Mark::Italic]);
+
+    // A link over the selection, then one inserted at the caret.
+    assert!(e.insert_link("https://example.test"));
+    assert!(e.blocks[0].line.marks().contains(&MarkSpan::new(
+        0..5,
+        Mark::ExternalLink("https://example.test".into())
+    )));
+    e.blocks[0].line.set_cursor_pos(11);
+    assert!(!e.insert_link("  "), "a blank target links nothing");
+    assert!(e.insert_link("https://b.test"));
+    assert_eq!(e.blocks[0].line.value(), "hello worldhttps://b.test");
+    assert!(e.blocks[0].line.marks().contains(&MarkSpan::new(
+        11..25,
+        Mark::ExternalLink("https://b.test".into())
+    )));
 }

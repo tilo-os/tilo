@@ -40,6 +40,11 @@ use crate::rhythm::px::{GROUP, PAGE_GUTTER, RELATED, SCROLLBAR_GUTTER, SIBLING};
 
 static NEXT_OPERATION: AtomicU64 = AtomicU64::new(0);
 
+/// How long a screenshot scenario waits for its migration worker. Durable
+/// copies and journal fsyncs can take many seconds on a loaded disk, so this
+/// only catches a worker that never finishes.
+const SHOT_WAIT_BOUND: std::time::Duration = std::time::Duration::from_secs(60);
+
 type CommandSink = Rc<RefCell<Vec<ImportCommand>>>;
 type SaveReply = mpsc::Receiver<Result<Vec<OperationRecord>, String>>;
 
@@ -273,7 +278,7 @@ impl ImportApp {
                     .map_err(|e| e.to_string())?;
                 }
                 app.prepare_and_start_shot(&source, &destination_parent)?;
-                let deadline = std::time::Instant::now() + crate::HANG_BOUND;
+                let deadline = std::time::Instant::now() + SHOT_WAIT_BOUND;
                 app.wait_for_shot_terminal(deadline)?;
                 app.expanded_details.insert(0);
                 app.load_issue_page(0, 0)?;
@@ -289,7 +294,7 @@ impl ImportApp {
                 std::fs::write(source.join("Welcome.txt"), b"verified import")
                     .map_err(|error| error.to_string())?;
                 app.prepare_and_start_shot(&source, &destination_parent)?;
-                app.wait_for_shot_terminal(std::time::Instant::now() + crate::HANG_BOUND)?;
+                app.wait_for_shot_terminal(std::time::Instant::now() + SHOT_WAIT_BOUND)?;
             }
         }
         app.structure_dirty = true;
@@ -309,7 +314,7 @@ impl ImportApp {
             .map_err(|error| error.to_string())?;
         }
         self.prepare_and_start_shot(source, destination_parent)?;
-        let deadline = std::time::Instant::now() + crate::HANG_BOUND;
+        let deadline = std::time::Instant::now() + SHOT_WAIT_BOUND;
         loop {
             self.poll_background();
             if self
@@ -347,7 +352,7 @@ impl ImportApp {
         std::os::unix::fs::symlink(source.join("Welcome.txt"), source.join("Old shortcut"))
             .map_err(|error| error.to_string())?;
         self.prepare_and_start_shot(source, destination_parent)?;
-        self.wait_for_shot_terminal(std::time::Instant::now() + crate::HANG_BOUND)
+        self.wait_for_shot_terminal(std::time::Instant::now() + SHOT_WAIT_BOUND)
     }
 
     fn seed_retry_progress_shot(
@@ -363,7 +368,7 @@ impl ImportApp {
             .map_err(|error| error.to_string())?;
         }
         self.prepare_and_start_shot(source, destination_parent)?;
-        let deadline = std::time::Instant::now() + crate::HANG_BOUND;
+        let deadline = std::time::Instant::now() + SHOT_WAIT_BOUND;
         loop {
             self.poll_background();
             if self
@@ -418,7 +423,7 @@ impl ImportApp {
         std::fs::write(source.join("Budget.txt"), b"source version")
             .map_err(|error| error.to_string())?;
         self.prepare_and_start_shot(source, destination_parent)?;
-        self.wait_for_shot_terminal(std::time::Instant::now() + crate::HANG_BOUND)?;
+        self.wait_for_shot_terminal(std::time::Instant::now() + SHOT_WAIT_BOUND)?;
         let completed = self
             .operations
             .first()
@@ -468,7 +473,7 @@ impl ImportApp {
 
     fn run_shot_worker(operation: &mut OperationRecord, job: MigrationJob) -> Result<(), String> {
         let mut worker = MigrationWorker::start(job)?;
-        let deadline = std::time::Instant::now() + crate::HANG_BOUND;
+        let deadline = std::time::Instant::now() + SHOT_WAIT_BOUND;
         loop {
             if let Some(event) = worker.try_next() {
                 match event {
@@ -3116,7 +3121,7 @@ mod tests {
     }
 
     fn wait_terminal(app: &mut ImportApp) {
-        let deadline = Instant::now() + crate::HANG_BOUND;
+        let deadline = tilo_test_env::hang_deadline();
         while app.worker.is_some() {
             app.poll_background();
             assert!(Instant::now() < deadline, "import worker did not finish");
@@ -3125,7 +3130,7 @@ mod tests {
     }
 
     fn settle_index(app: &mut ImportApp) {
-        let deadline = Instant::now() + crate::HANG_BOUND;
+        let deadline = tilo_test_env::hang_deadline();
         while !app.pending_saves.is_empty() {
             app.poll_background();
             assert!(Instant::now() < deadline);
@@ -3188,7 +3193,7 @@ mod tests {
     }
 
     fn wait_for_public_issue_count(app: &mut ImportApp, count: usize) -> serde_json::Value {
-        let deadline = Instant::now() + crate::HANG_BOUND;
+        let deadline = tilo_test_env::hang_deadline();
         let mut state = AutoCommit::new();
         loop {
             Widget::update(app, &mut state, &automerge::ROOT);
@@ -3466,7 +3471,7 @@ mod tests {
             assert_eq!(pages.operations[0].issue_count(), 40);
             assert_eq!(pages.detail_pages[&0].issues.len(), 32);
             pages.apply_command(ImportCommand::NextIssues(0));
-            let deadline = Instant::now() + crate::HANG_BOUND;
+            let deadline = tilo_test_env::hang_deadline();
             while pages.detail_request.is_some() {
                 pages.poll_background();
                 assert!(Instant::now() < deadline);
@@ -3531,7 +3536,7 @@ mod tests {
                 1,
                 "a second review must not be queued"
             );
-            let deadline = Instant::now() + crate::HANG_BOUND;
+            let deadline = tilo_test_env::hang_deadline();
             loop {
                 app.poll_background();
                 if let Some(update) = Widget::poll_resource_operation(
@@ -3578,7 +3583,7 @@ mod tests {
                 start_action(&mut app, &review, invocation).unwrap(),
                 ui::widget::ResourceOperationStart::Accepted
             );
-            let deadline = Instant::now() + crate::HANG_BOUND;
+            let deadline = tilo_test_env::hang_deadline();
             loop {
                 app.poll_background();
                 if let Some(update) = Widget::poll_resource_operation(
@@ -3615,7 +3620,7 @@ mod tests {
                 start_action(&mut app, &choose, invocation).unwrap(),
                 ui::widget::ResourceOperationStart::Accepted
             );
-            let deadline = Instant::now() + crate::HANG_BOUND;
+            let deadline = tilo_test_env::hang_deadline();
             loop {
                 app.poll_background();
                 if let Some(update) = Widget::poll_resource_operation(
@@ -3657,7 +3662,7 @@ mod tests {
             );
             // The identity gate runs on its own thread before the picker opens, so
             // one poll can observe neither the picker nor its failure yet.
-            let deadline = Instant::now() + crate::HANG_BOUND;
+            let deadline = tilo_test_env::hang_deadline();
             let update = loop {
                 app.poll_background();
                 if let Some(update) = Widget::poll_resource_operation(
@@ -3981,7 +3986,7 @@ mod tests {
             assert_eq!(pending["phase"], "checking_identity");
             assert!(app.gate_request.is_some());
             assert!(app.worker.is_none());
-            let deadline = Instant::now() + crate::HANG_BOUND;
+            let deadline = tilo_test_env::hang_deadline();
             while app.gate_request.is_some() {
                 app.poll_background();
                 assert!(Instant::now() < deadline, "identity check did not finish");
@@ -4036,7 +4041,7 @@ mod tests {
                 .is_none()
             );
 
-            let deadline = Instant::now() + crate::HANG_BOUND;
+            let deadline = tilo_test_env::hang_deadline();
             loop {
                 app.poll_background();
                 if let Some(update) = Widget::poll_resource_operation(
@@ -4076,7 +4081,7 @@ mod tests {
                 start_action(&mut app, &start, invocation).unwrap(),
                 ui::widget::ResourceOperationStart::Accepted
             );
-            let deadline = Instant::now() + crate::HANG_BOUND;
+            let deadline = tilo_test_env::hang_deadline();
             loop {
                 app.poll_background();
                 if let Some(update) = Widget::poll_resource_operation(
@@ -4170,7 +4175,7 @@ mod tests {
 
             invoke_action(&mut app, &action(&operation, "start")).unwrap();
             assert!(app.worker.is_some());
-            let deadline = Instant::now() + crate::HANG_BOUND;
+            let deadline = tilo_test_env::hang_deadline();
             while app.worker.is_some() && app.operations[0].verified_file_count() == 0 {
                 app.poll_background();
                 assert!(Instant::now() < deadline, "copy made no journaled progress");
@@ -4210,7 +4215,7 @@ mod tests {
             app.destination_parent = Some(destination_parent);
             app.prepare_review().unwrap();
             app.start_operation(0).unwrap();
-            let deadline = Instant::now() + crate::HANG_BOUND;
+            let deadline = tilo_test_env::hang_deadline();
             loop {
                 app.poll_background();
                 if app.operations[0].verified_file_count() > 0 {
@@ -4224,7 +4229,7 @@ mod tests {
             assert_eq!(app.operations[0].state(), OperationState::Cancelled);
 
             drop(app);
-            let deadline = Instant::now() + crate::HANG_BOUND;
+            let deadline = tilo_test_env::hang_deadline();
             let store = loop {
                 if let Ok(store) =
                     MigrationStore::open_at(&temp.path().canonicalize().unwrap().join("state"))
@@ -4520,7 +4525,7 @@ mod tests {
                     app.needs_idle_sync(),
                     "background review must keep native polling alive"
                 );
-                let deadline = Instant::now() + crate::HANG_BOUND;
+                let deadline = tilo_test_env::hang_deadline();
                 while app.review_request.is_some() {
                     app.poll_background();
                     assert!(Instant::now() < deadline);
@@ -4589,7 +4594,7 @@ mod tests {
             fs::create_dir(&another).unwrap();
             app.request_continued_review(1, Some(another.clone()))
                 .unwrap();
-            let deadline = Instant::now() + crate::HANG_BOUND;
+            let deadline = tilo_test_env::hang_deadline();
             while app.review_request.is_some() {
                 app.poll_background();
                 assert!(Instant::now() < deadline);
@@ -4666,7 +4671,7 @@ mod tests {
             settle_index(&mut app);
             let root = temp.path().canonicalize().unwrap().join("state");
             drop(app);
-            let deadline = Instant::now() + crate::HANG_BOUND;
+            let deadline = tilo_test_env::hang_deadline();
             let store = loop {
                 if let Ok(store) = MigrationStore::open_at(&root) {
                     break store;
@@ -4743,7 +4748,7 @@ mod tests {
         // drops the release receiver and fails the send below.
         let (entered, release) = super::super::migration_store::test_support::hold_save(&root, 1);
         app.start_operation(0).unwrap();
-        entered.recv_timeout(crate::HANG_BOUND).unwrap();
+        tilo_test_env::recv("the save hook", &entered);
         assert!(!destination_parent.join("source").exists());
         app.poll_background();
         assert!(app.cancel_active());
@@ -4752,7 +4757,7 @@ mod tests {
         release
             .send(())
             .expect("the start checkpoint was still held when the UI calls returned");
-        let deadline = Instant::now() + crate::HANG_BOUND;
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             if let Ok(store) = MigrationStore::open_at(&root) {
                 assert_eq!(store.load().unwrap()[0].state(), OperationState::Cancelled);
@@ -4779,7 +4784,7 @@ mod tests {
         // Native durability includes directory fsyncs; allow slower virtual
         // disks to reach the terminal checkpoint without weakening the state
         // assertion that follows.
-        entered.recv_timeout(crate::HANG_BOUND).unwrap();
+        tilo_test_env::recv("the save hook", &entered);
         app.poll_background();
         assert_eq!(app.operations[0].state(), OperationState::Running);
         // Polling must not wait for the held checkpoint: had it waited, the
@@ -4810,7 +4815,7 @@ mod tests {
             // Native durability includes directory fsyncs; allow slower virtual
             // disks to reach the terminal checkpoint without weakening the state
             // assertion that follows.
-            entered.recv_timeout(crate::HANG_BOUND).unwrap();
+            tilo_test_env::recv("the save hook", &entered);
             fs::rename(root.join("ownership.lock"), root.join("old-lock")).unwrap();
             release.send(()).unwrap();
             wait_terminal(&mut app);

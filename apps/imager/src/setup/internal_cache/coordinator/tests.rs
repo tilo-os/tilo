@@ -288,7 +288,7 @@ fn fixture_worker_hook(
     .unwrap()
 }
 fn wait(worker: &Worker, phase: Phase) -> Status {
-    let deadline = Instant::now() + crate::HANG_BOUND;
+    let deadline = tilo_test_env::hang_deadline();
     let mut m = worker.shared.mailbox.lock().unwrap();
     loop {
         if let Some(s) = &m.status {
@@ -1041,7 +1041,7 @@ fn cancel_and_discard_win_and_disclose_retained_state() {
                 let root = tempfile::tempdir().unwrap();
                 let mut worker = fixture_worker(root.path(), server.transport(), noop);
                 let t = worker.start(server.release(&bytes)).unwrap();
-                let deadline = Instant::now() + crate::HANG_BOUND;
+                let deadline = tilo_test_env::hang_deadline();
                 while requested.load(Ordering::Acquire) < 2 {
                     assert!(Instant::now() < deadline);
                     thread::sleep(Duration::from_millis(1));
@@ -1099,11 +1099,14 @@ fn cancel_and_discard_win_and_disclose_retained_state() {
                 let t = worker.start(server.release(&bytes)).unwrap();
                 wait(&worker, Phase::Ready);
                 worker.consume(&t).unwrap();
+                let deadline = tilo_test_env::hang_deadline();
                 let mut in_consumer = entered.0.lock().unwrap();
                 while !*in_consumer {
+                    let now = Instant::now();
+                    assert!(now < deadline, "the worker never entered the consumer");
                     in_consumer = entered
                         .1
-                        .wait_timeout(in_consumer, Duration::from_secs(3))
+                        .wait_timeout(in_consumer, deadline - now)
                         .unwrap()
                         .0;
                 }
@@ -1202,7 +1205,7 @@ fn disconnects_and_pauses_release_scopes_without_consuming() {
             let r = returned.clone();
             let worker = fixture_worker(root.path(), server.transport(), move |_, cancel, _, _| {
                 e.store(true, Ordering::Release);
-                let limit = Instant::now() + crate::HANG_BOUND;
+                let limit = tilo_test_env::hang_deadline();
                 while !cancel.is_cancelled() {
                     if Instant::now() > limit {
                         return Err("consumer did not receive cancellation".into());
@@ -1215,7 +1218,7 @@ fn disconnects_and_pauses_release_scopes_without_consuming() {
             let token = worker.start(server.release(&bytes)).unwrap();
             wait(&worker, Phase::Ready);
             worker.consume(&token).unwrap();
-            let deadline = Instant::now() + crate::HANG_BOUND;
+            let deadline = tilo_test_env::hang_deadline();
             while !entered.load(Ordering::Acquire) {
                 assert!(Instant::now() < deadline);
                 thread::yield_now();

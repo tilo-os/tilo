@@ -265,39 +265,36 @@ fn sections_and_modals_render_non_blank() {
 
     // --- phase: compact_container_detail_is_a_readable_drill_in_and_escape_returns_to_list ---
     {
-        fn compact_container_detail_is_a_readable_drill_in_and_escape_returns_to_list() {
-            const PHONE_W: u32 = 390;
-            const PHONE_H: u32 = 844;
+        const PHONE_W: u32 = 390;
+        const PHONE_H: u32 = 844;
 
-            let mut d = Driver::offline();
-            d.theme = Theme::dark().with_text_scale(2.0);
-            d.frame_sized(PHONE_W, PHONE_H);
+        let mut d = Driver::offline();
+        d.theme = Theme::dark().with_text_scale(2.0);
+        d.frame_sized(PHONE_W, PHONE_H);
 
-            let selected = ViewDoc::selected(&mut d.doc);
-            assert!(selected.is_some(), "the demo opens a representative detail");
-            // This pixel assertion exercises the full production draw path at the
-            // formerly broken phone + 200%-text combination. The compact rail and
-            // full-width detail both contribute substantial, visible output.
-            let rgba = d.rgba_sized(PHONE_W, PHONE_H);
-            assert!(
-                painted_pixels(&rgba) > (PHONE_W * PHONE_H / 9) as usize,
-                "compact detail must paint a real full-page surface"
-            );
+        let selected = ViewDoc::selected(&d.doc);
+        assert!(selected.is_some(), "the demo opens a representative detail");
+        // This pixel assertion exercises the full production draw path at the
+        // formerly broken phone + 200%-text combination. The compact rail and
+        // full-width detail both contribute substantial, visible output.
+        let rgba = d.rgba_sized(PHONE_W, PHONE_H);
+        assert!(
+            painted_pixels(&rgba) > (PHONE_W * PHONE_H / 9) as usize,
+            "compact detail must paint a real full-page surface"
+        );
 
-            // Escape is the keyboard equivalent of the visible Back button. It must
-            // return to the full-width list rather than leave focus in a hidden pane.
-            d.key(winit::keyboard::NamedKey::Escape);
-            assert!(
-                ViewDoc::selected(&mut d.doc).is_none(),
-                "Escape returns from compact detail to the container list"
-            );
-            d.frame_sized(PHONE_W, PHONE_H);
-            assert!(
-                painted_pixels(&d.rgba_sized(PHONE_W, PHONE_H)) > (PHONE_W * PHONE_H / 10) as usize,
-                "the returned compact list remains visibly populated"
-            );
-        }
-        compact_container_detail_is_a_readable_drill_in_and_escape_returns_to_list();
+        // Escape is the keyboard equivalent of the visible Back button. It must
+        // return to the full-width list rather than leave focus in a hidden pane.
+        d.key(winit::keyboard::NamedKey::Escape);
+        assert!(
+            ViewDoc::selected(&d.doc).is_none(),
+            "Escape returns from compact detail to the container list"
+        );
+        d.frame_sized(PHONE_W, PHONE_H);
+        assert!(
+            painted_pixels(&d.rgba_sized(PHONE_W, PHONE_H)) > (PHONE_W * PHONE_H / 10) as usize,
+            "the returned compact list remains visibly populated"
+        );
     }
 
     // --- phase: images_section_renders_non_blank ---
@@ -306,7 +303,7 @@ fn sections_and_modals_render_non_blank() {
         d.frame(); // initial
         ViewDoc::set_section(&mut d.doc, Section::Images);
         d.frame();
-        assert_eq!(ViewDoc::section(&mut d.doc), Section::Images);
+        assert_eq!(ViewDoc::section(&d.doc), Section::Images);
         let rgba = d.rgba();
         assert!(
             painted_pixels(&rgba) > (VW * VH / 12) as usize,
@@ -372,7 +369,7 @@ fn image_combobox_filters_picks_and_keeps_custom() {
         d.type_char("n");
         d.type_char("g");
         d.type_char("i");
-        let typed = ViewDoc::create_field(&mut d.doc, CreateField::Image);
+        let typed = ViewDoc::create_field(&d.doc, CreateField::Image);
         assert_eq!(
             typed, "ngi",
             "typed chars spliced into the CRDT image field"
@@ -402,7 +399,7 @@ fn image_combobox_filters_picks_and_keeps_custom() {
         let all = sample_engine().image_references();
         let expected = all[1].clone(); // highlight moved to index 1
         d.key(winit::keyboard::NamedKey::Enter);
-        let committed = ViewDoc::create_field(&mut d.doc, CreateField::Image);
+        let committed = ViewDoc::create_field(&d.doc, CreateField::Image);
         assert_eq!(
             committed, expected,
             "Enter commits the highlighted suggestion"
@@ -420,7 +417,7 @@ fn image_combobox_filters_picks_and_keeps_custom() {
         for ch in ["g", "h", "c", "r"] {
             d.type_char(ch);
         }
-        let typed = ViewDoc::create_field(&mut d.doc, CreateField::Image);
+        let typed = ViewDoc::create_field(&d.doc, CreateField::Image);
         assert_eq!(typed, "ghcr", "custom typed value is preserved verbatim");
         let all = sample_engine().image_references();
         assert!(
@@ -451,7 +448,7 @@ fn create_form_input_order_validation_and_command() {
         );
         d.type_char("p");
         assert_eq!(
-            ViewDoc::create_field(&mut d.doc, CreateField::Image),
+            ViewDoc::create_field(&d.doc, CreateField::Image),
             "p",
             "Ctrl+A then typing replaces the selection instead of appending"
         );
@@ -467,13 +464,10 @@ fn create_form_input_order_validation_and_command() {
         d.dispatch(&winit::event::WindowEvent::Ime(winit::event::Ime::Commit(
             "接続".into(),
         )));
-        assert_eq!(
-            ViewDoc::create_field(&mut d.doc, CreateField::Image),
-            "接続"
-        );
+        assert_eq!(ViewDoc::create_field(&d.doc, CreateField::Image), "接続");
         peer.merge_incoming(&mut d.doc).expect("peer merge");
         assert_eq!(
-            ViewDoc::create_field(&mut peer, CreateField::Image),
+            ViewDoc::create_field(&peer, CreateField::Image),
             "接続",
             "the shared input splices the existing collaborative Text object"
         );
@@ -493,7 +487,7 @@ fn create_form_input_order_validation_and_command() {
         );
         d.type_char("8");
         assert_eq!(
-            ViewDoc::create_field(&mut d.doc, CreateField::Ports),
+            ViewDoc::create_field(&d.doc, CreateField::Ports),
             "8",
             "Tab advances from Image to Ports in the existing six-field order"
         );
@@ -540,7 +534,7 @@ fn create_form_input_order_validation_and_command() {
             CreateField::Volumes,
             "data:/var/lib/app, cfg:/etc/app",
         );
-        let args = ViewDoc::create_run_args(&mut doc).expect("image present → args");
+        let args = ViewDoc::create_run_args(&doc).expect("image present → args");
         // Exact shape: run -d --name web -p ... -p ... -e ... -e ... -v ... -v ... <image>
         assert_eq!(&args[0..2], &["run", "-d"]);
         assert!(args.windows(2).any(|w| w[0] == "--name" && w[1] == "web"));
@@ -586,7 +580,7 @@ fn create_form_input_order_validation_and_command() {
             &d.root,
         ));
         assert_eq!(
-            ViewDoc::create_field(&mut d.doc, CreateField::Image),
+            ViewDoc::create_field(&d.doc, CreateField::Image),
             "alpine:3.20"
         );
     }
@@ -645,9 +639,9 @@ fn container_resources_open_terminal_and_log_detail() {
                 .unwrap()
         );
         d.app.sync(&mut d.doc, &d.root);
-        assert_eq!(ViewDoc::section(&mut d.doc), Section::Containers);
-        assert_eq!(ViewDoc::selected(&mut d.doc).as_deref(), Some(id.as_str()));
-        assert_eq!(ViewDoc::tab(&mut d.doc), DetailTab::Logs);
+        assert_eq!(ViewDoc::section(&d.doc), Section::Containers);
+        assert_eq!(ViewDoc::selected(&d.doc).as_deref(), Some(id.as_str()));
+        assert_eq!(ViewDoc::tab(&d.doc), DetailTab::Logs);
     }
 }
 
@@ -663,13 +657,13 @@ fn keyboard_pointer_and_semantic_navigation() {
         let mut d = Driver::offline();
         d.frame();
         d.type_char("3"); // volumes
-        assert_eq!(ViewDoc::section(&mut d.doc), Section::Volumes);
+        assert_eq!(ViewDoc::section(&d.doc), Section::Volumes);
         d.type_char("4"); // distrobox
-        assert_eq!(ViewDoc::section(&mut d.doc), Section::Distrobox);
+        assert_eq!(ViewDoc::section(&d.doc), Section::Distrobox);
         d.type_char("2"); // images
-        assert_eq!(ViewDoc::section(&mut d.doc), Section::Images);
+        assert_eq!(ViewDoc::section(&d.doc), Section::Images);
         d.type_char("1"); // containers
-        assert_eq!(ViewDoc::section(&mut d.doc), Section::Containers);
+        assert_eq!(ViewDoc::section(&d.doc), Section::Containers);
     }
 
     // --- phase: sidebar_collapses_and_expands_via_shortcut ---
@@ -712,12 +706,12 @@ fn keyboard_pointer_and_semantic_navigation() {
         // we observe the click producing a fresh selection.
         ViewDoc::set_selected(&mut d.doc, None);
         d.frame();
-        assert!(ViewDoc::selected(&mut d.doc).is_none(), "selection cleared");
+        assert!(ViewDoc::selected(&d.doc).is_none(), "selection cleared");
         // Click the first list row (below the header, in the list area).
         d.click(300.0, 140.0);
         d.frame();
         assert!(
-            ViewDoc::selected(&mut d.doc).is_some(),
+            ViewDoc::selected(&d.doc).is_some(),
             "clicking a container row selects it and opens the detail pane"
         );
     }
@@ -749,7 +743,7 @@ fn keyboard_pointer_and_semantic_navigation() {
             &d.root,
         ));
         assert_eq!(
-            ViewDoc::selected(&mut d.doc).as_deref(),
+            ViewDoc::selected(&d.doc).as_deref(),
             Some(expected.as_str())
         );
     }

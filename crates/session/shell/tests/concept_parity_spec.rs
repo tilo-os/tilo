@@ -27,6 +27,10 @@
               closure-level readability in taffy measure callbacks; the parameter names \
               are terse by design and the pattern is consistent throughout"
 )]
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 
 use shell::shell::state::FreshId as _;
 use shell::shell::state::WorkspaceAuthority as _;
@@ -985,7 +989,7 @@ fn topbar_system_monitor_labels_and_sparkline_take_their_theme_colours() {
     // Text glyphs emit colour-paint commands per run, so this is detectable.
     {
         let tree = WorkspaceTree::bootstrap_demo();
-        let mut chrome = TopBarChrome::from_tree(&tree);
+        let mut chrome = TopBarChrome::from_tree(&tree.desktop);
         chrome.set_center_widget_for_tests(CenterWidget::SystemMonitor);
 
         let theme = Theme::dark();
@@ -1045,7 +1049,7 @@ fn topbar_system_monitor_labels_and_sparkline_take_their_theme_colours() {
     // asserts the RAM label colour. blue-400 = #60a5fa = (96, 165, 250).
     {
         let tree = WorkspaceTree::bootstrap_demo();
-        let mut chrome = TopBarChrome::from_tree(&tree);
+        let mut chrome = TopBarChrome::from_tree(&tree.desktop);
         chrome.set_center_widget_for_tests(CenterWidget::SystemMonitor);
 
         let theme = Theme::dark();
@@ -1106,7 +1110,7 @@ fn topbar_system_monitor_labels_and_sparkline_take_their_theme_colours() {
     // `accent_primary`. With #10/#11 this pins the per-metric colour cue.
     {
         let tree = WorkspaceTree::bootstrap_demo();
-        let mut chrome = TopBarChrome::from_tree(&tree);
+        let mut chrome = TopBarChrome::from_tree(&tree.desktop);
         chrome.set_center_widget_for_tests(CenterWidget::SystemMonitor);
 
         let theme = Theme::dark();
@@ -1327,7 +1331,7 @@ fn topbar_avatar_cluster_paints_exactly_the_present_collaborators() {
              active workspace, else the paint assertions below prove nothing"
         );
 
-        let mut chrome = TopBarChrome::from_tree(&tree);
+        let mut chrome = TopBarChrome::from_tree(&tree.desktop);
         let theme = Theme::dark();
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
@@ -1413,7 +1417,7 @@ fn topbar_avatar_cluster_paints_exactly_the_present_collaborators() {
             tree.desktop.collaborators.len()
         );
 
-        let mut chrome = TopBarChrome::from_tree(&tree);
+        let mut chrome = TopBarChrome::from_tree(&tree.desktop);
         let theme = Theme::dark();
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
@@ -1481,7 +1485,7 @@ fn topbar_avatar_cluster_paints_exactly_the_present_collaborators() {
     // "something painted".
     {
         let tree = WorkspaceTree::bootstrap_default();
-        let mut chrome = TopBarChrome::from_tree(&tree);
+        let mut chrome = TopBarChrome::from_tree(&tree.desktop);
 
         assert!(
             chrome.collaborator_initials().is_empty(),
@@ -1566,7 +1570,7 @@ fn topbar_avatar_cluster_paints_exactly_the_present_collaborators() {
             .expect("active workspace")
             .room;
 
-        let before = TopBarChrome::from_tree(&tree);
+        let before = TopBarChrome::from_tree(&tree.desktop);
         assert!(
             before.collaborator_initials().is_empty(),
             "the bar must start empty, or the assertions below prove nothing"
@@ -1618,7 +1622,7 @@ fn topbar_avatar_cluster_paints_exactly_the_present_collaborators() {
             );
         }
 
-        let mut chrome = TopBarChrome::from_tree(&tree);
+        let mut chrome = TopBarChrome::from_tree(&tree.desktop);
         let mut initials: Vec<char> = chrome.collaborator_initials().to_vec();
         initials.sort_unstable();
         assert_eq!(
@@ -1681,7 +1685,7 @@ fn topbar_avatar_cluster_paints_exactly_the_present_collaborators() {
         };
         tree.desktop.active = ws_id;
 
-        let mut chrome = TopBarChrome::from_tree(&tree);
+        let mut chrome = TopBarChrome::from_tree(&tree.desktop);
         // Contract: 3 chips (peers beyond the local user, capped at 3) + a "+2"
         // overflow.
         assert_eq!(
@@ -2137,3 +2141,9 @@ fn draw_data_word_table_accounts_for_the_whole_stream() {
          after it is suspect"
     );
 }
+
+#[allow(
+    unused_imports,
+    reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
+)]
+use shell::shell::state::WorkspaceExt as _;

@@ -184,22 +184,17 @@ fn postgres_real_round_trip_and_cancellation() {
         let mut s = Session::new();
         s.add_connection_blocking(postgres_profile("live-pg-cancel"));
         assert!(s.connected, "postgres connect failed: {:?}", s.status);
-        let started = std::time::Instant::now();
         s.run_query("SELECT pg_sleep(30)");
-        let mut requested = false;
-        for _ in 0..200 {
-            if s.cancel_in_flight_query() {
-                requested = true;
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        assert!(
-            requested,
-            "the worker must publish the active PostgreSQL query"
-        );
+        tilo_test_env::wait_until("the worker to publish the active PostgreSQL query", || {
+            s.cancel_in_flight_query()
+        });
+        let cancelled = std::time::Instant::now();
         s.block_until_idle();
-        assert!(started.elapsed() < std::time::Duration::from_secs(10));
+        let stopped = cancelled.elapsed();
+        assert!(
+            stopped < std::time::Duration::from_secs(10),
+            "cancelling took {stopped:?}; the 30 s PostgreSQL sleep was not stopped"
+        );
         assert!(!s.busy());
         assert!(matches!(s.status, db_client::session::RunStatus::Idle));
     }
@@ -266,19 +261,17 @@ fn mysql_real_round_trip_and_cancellation() {
         let mut s = Session::new();
         s.add_connection_blocking(mysql_profile("live-mysql-cancel"));
         assert!(s.connected, "mysql connect failed: {:?}", s.status);
-        let started = std::time::Instant::now();
         s.run_query("SELECT SLEEP(30)");
-        let mut requested = false;
-        for _ in 0..200 {
-            if s.cancel_in_flight_query() {
-                requested = true;
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        assert!(requested, "the worker must publish the active MySQL query");
+        tilo_test_env::wait_until("the worker to publish the active MySQL query", || {
+            s.cancel_in_flight_query()
+        });
+        let cancelled = std::time::Instant::now();
         s.block_until_idle();
-        assert!(started.elapsed() < std::time::Duration::from_secs(10));
+        let stopped = cancelled.elapsed();
+        assert!(
+            stopped < std::time::Duration::from_secs(10),
+            "cancelling took {stopped:?}; the 30 s MySQL sleep was not stopped"
+        );
         assert!(!s.busy());
         assert!(matches!(s.status, db_client::session::RunStatus::Idle));
     }

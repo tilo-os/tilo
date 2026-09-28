@@ -44,7 +44,7 @@ impl BrokerActionHost {
     /// The host as seen from application connection `peer_id`, which the
     /// launcher authenticated as `launch` when it arrived through it.
     #[must_use]
-    pub(crate) fn for_connection(
+    pub fn for_connection(
         broker: AppActionBroker,
         peer_id: u64,
         launch: Option<LaunchScope>,
@@ -110,6 +110,10 @@ impl ActionHost for BrokerActionHost {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 mod tests {
     use super::*;
     use crate::shell::collab_broker::CrdtRoute;
@@ -167,10 +171,7 @@ mod tests {
         let route = CrdtRoute::app("so.tilo.files", workspace.room.to_string());
         let mut tree = WorkspaceTree::default();
         tree.desktop.workspaces.push(workspace);
-        let broker =
-            crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_membership(
-                tree.shared(),
-            );
+        let broker = crate::shell::broker_services::test_broker_with_membership(tree.shared());
         broker.replace_published_surfaces_for_test(vec![PublishedSurface {
             peer_id: 7,
             app_id: "so.tilo.files".into(),
@@ -513,10 +514,7 @@ mod tests {
         let mut tree = WorkspaceTree::default();
         tree.desktop.workspaces.push(workspace);
         let handle = tree.shared();
-        let broker =
-            crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_membership(
-                handle.clone(),
-            );
+        let broker = crate::shell::broker_services::test_broker_with_membership(handle.clone());
         (BrokerActionHost::new(broker), handle, room)
     }
 

@@ -226,7 +226,8 @@ pub fn record_dispatched_action<S: std::hash::BuildHasher>(
     let mut brackets: Vec<Vec<automerge::ChangeHash>> = Vec::new();
     let mut visited = std::collections::HashSet::new();
     for w_ptr in std::iter::once(root).chain(node_map.values().copied()) {
-        if !visited.insert(w_ptr.cast::<()>()) {
+        // SAFETY: see the function's safety note; the pointer is live.
+        if !visited.insert(unsafe { crate::widget::node_sweep_identity(w_ptr) }) {
             continue;
         }
         // SAFETY: see the function's safety note. The reference is created and
@@ -267,10 +268,12 @@ pub(crate) unsafe fn record_dispatched_action_bound(
         }
     }
     let mut visited = std::collections::HashSet::new();
-    visited.insert(root.cast::<()>());
+    // SAFETY: the root and every node pointer are live for this exclusive sweep.
+    visited.insert(unsafe { crate::widget::node_sweep_identity(root) });
     let mut bound_changed = false;
     for (&node, &pointer) in nodes {
-        if !visited.insert(pointer.cast::<()>()) {
+        // SAFETY: as above; no other borrow of this node is live.
+        if !visited.insert(unsafe { crate::widget::node_sweep_identity(pointer) }) {
             continue;
         }
         if let Some(binding) = bindings.binding_for(node) {

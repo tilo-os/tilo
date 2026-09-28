@@ -4,7 +4,6 @@
 # Auf diesem Desktop fortsetzen, was du gerade auf einem anderen Gerät getan hast.
 continuity-continue = { $app } von { $device } fortsetzen
 continuity-continue-subtitle = Den Tab fokussieren, den du gerade auf { $device } verwendet hast
-continuity-dismiss = Ausblenden
 continuity-dismiss-title = „{ $app } von { $device } fortsetzen“ ausblenden
 continuity-dismiss-subtitle = Ausgeblendet, bis du auf { $device } wieder den Tab wechselst
 continuity-other-device = deinem anderen Gerät
@@ -457,84 +456,8 @@ portal-network-cert-system-domain = Das Zertifikat des Netzwerks wird mit den ve
 portal-network-cert-unchecked = Das Zertifikat des Netzwerks wird nicht geprüft. Fahre nur in einem Netzwerk fort, dem du vertraust.
 
 # Obere Leiste
-topbar-workspace-name-tooltip = Arbeitsbereichseinstellungen öffnen
-topbar-workspace-fallback = Arbeitsbereich
-topbar-calendar-none = Kein Kalender verbunden
-topbar-sharing-agent-controls = AGENT STEUERT · { $name }
-topbar-sharing-agent-viewing = AGENT SIEHT ZU · { $name }
-topbar-sharing-person-controls = STEUERT · { $name }
-topbar-sharing-person-viewing = SIEHT ZU · { $name }
-topbar-sharing-session-controls = SITZUNG STEUERT · { $name }
-topbar-sharing-session-viewing = SITZUNG SIEHT ZU · { $name }
-topbar-sharing-count-controlling = { $controllers } { $controllers ->
-        [one] STEUERT
-       *[other] STEUERN
-    } · { $viewers } { $viewers ->
-        [one] SIEHT ZU
-       *[other] SEHEN ZU
-    }
-topbar-sharing-count = { $viewers } { $viewers ->
-        [one] SIEHT ZU
-       *[other] SEHEN ZU
-    }
-topbar-sharing-surface = Oberfläche { $surface }
-topbar-open-overview = Übersicht öffnen
-topbar-previous-workspace = Vorheriger Arbeitsbereich
-topbar-next-workspace = Nächster Arbeitsbereich
-topbar-workspace-settings = Einstellungen für Arbeitsbereich { $workspace }
-topbar-show-clock = Uhr anzeigen
-topbar-show-system-monitor = Systemmonitor anzeigen
-topbar-show-calendar = Kalender anzeigen
-topbar-open-quick-settings = Schnelleinstellungen öffnen
-topbar-show-collaborators = Mitwirkende anzeigen
-topbar-viewer-can-control = kann { $targets } steuern
-topbar-viewer-view-only = sieht nur { $targets }
-topbar-viewer-entry = { $name } ({ $kind ->
-        [agent] Agent
-        [person] Person
-       *[session] unbekannte Sitzung
-    }): { $access }
-topbar-collaborators-visible = Bildschirm sichtbar für { $viewers }. Mitwirkende anzeigen
-topbar-capture-privacy = Datenschutzeinstellungen für aktive Aufnahme
-topbar-control = Steuerelement der oberen Leiste
-topbar-editor-control = Bearbeitungselement der oberen Leiste
-topbar-editor-remove-clock = Uhr aus der oberen Leiste entfernen
-topbar-editor-remove-system-monitor = Systemmonitor aus der oberen Leiste entfernen
-topbar-editor-remove-calendar = Kalender aus der oberen Leiste entfernen
-topbar-editor-add-clock = Uhr zur oberen Leiste hinzufügen
-topbar-editor-add-system-monitor = Systemmonitor zur oberen Leiste hinzufügen
-topbar-editor-add-calendar = Kalender zur oberen Leiste hinzufügen
-topbar-editor-title = Obere Leiste bearbeiten
-topbar-editor-hint = Zum Anordnen ziehen · „Entfernen“ klicken
-topbar-widget-clock = Uhr
-topbar-widget-system-monitor = Systemmonitor
-topbar-widget-calendar = Kalender
-topbar-editor-remove = Entfernen
-topbar-editor-add-clock-chip = + Uhr
-topbar-editor-add-monitor-chip = + Monitor
-topbar-editor-add-calendar-chip = + Kalender
-topbar-invite = Einladen
 topbar-clocks-notification-title = Uhren
 topbar-clocks-notification-body = Die Zeit ist abgelaufen
-topbar-activity-unread = { $headline }  ·  { $count } neu
-topbar-clock-resume = Fortsetzen
-topbar-clock-pause = Pausieren
-topbar-clock-lap = Runde
-topbar-clock-add-minute = +1 Min.
-topbar-clock-close-stopwatch = Schwebende Stoppuhr schließen
-topbar-clock-close-timer = Schwebenden Timer schließen
-topbar-clock-floating-stopwatch = Schwebende Stoppuhr
-topbar-clock-floating-timer = Schwebender Timer
-topbar-clock-floating-description = Zum Verschieben ziehen. Mit der Tastatur Alt gedrückt halten und die Pfeiltasten verwenden; zusätzlich Umschalt für größere Schritte.
-topbar-clock-stopwatch = Stoppuhr
-topbar-clock-timer = Timer
-topbar-clock-paused = Pausiert
-topbar-clock-running = Läuft
-topbar-clock-record-lap = Runde erfassen
-topbar-clock-add-one-minute = Eine Minute hinzufügen
-topbar-workspace-position = Arbeitsbereich { $position } von { $total }
-topbar-desktop-navigation = Desktop-Navigation
-topbar-display-navigation = Bildschirmnavigation
 
 # Arbeitsbereichsaktivität: woran eine mitarbeitende Person gerade arbeitet
 host-activity-working-on = Arbeitet an { $target }
@@ -1276,6 +1199,9 @@ bluetooth-prompt-cancel = Abbrechen
 bluetooth-prompt-accept-match = Sie stimmen überein
 bluetooth-prompt-accept-allow = Erlauben
 bluetooth-prompt-accept-pair = Koppeln
+bluetooth-prompt-code-label = Auf dem Gerät angezeigter Code
+bluetooth-prompt-pin-label = PIN für das Gerät
+bluetooth-prompt-a11y-code = Code { $code }
 
 # Portal-Voreinstellungen: Dateiauswahl-Schaltflächen, Standardaktion von Benachrichtigungen, unbenannte Apps, Aufnahmequellen
 portal-file-save = Speichern
@@ -1338,74 +1264,6 @@ a11y-shell-launchpad-tasks-detail = Arbeit im Kalender planen
 a11y-shell-launchpad-meet-detail = Chat öffnen, dann einen Sprach- oder Videoanruf starten
 a11y-shell-launchpad-invite-detail = Jemanden in diesen Arbeitsbereich holen
 a11y-shell-launchpad-activity-detail = Sehen, was sich geändert hat und warum
-
-# Workspace activity, as assistive technology reads it
-a11y-shell-activity-everyone = Alle
-a11y-shell-activity-more-people = Weitere Personen
-a11y-shell-activity-more-people-description = Weitere Filter für Mitwirkende anzeigen
-a11y-shell-activity-resume = { $target } fortsetzen
-a11y-shell-activity-resume-description = Die zuletzt bearbeitete Ressource öffnen: { $target }
-a11y-shell-activity-boundary-newer = Die letzte Aktion in die neuere Arbeitssitzung verschieben
-a11y-shell-activity-boundary-older = Die erste Aktion in die ältere Arbeitssitzung verschieben
-a11y-shell-activity-boundary-newer-description = Diese Grenze neu ziehen, indem eine Aktion in die neuere Arbeitssitzung wandert
-a11y-shell-activity-boundary-older-description = Diese Grenze neu ziehen, indem eine Aktion in die ältere Arbeitssitzung wandert
-a11y-shell-activity-more-sessions = Weitere Arbeitssitzungen
-a11y-shell-activity-more-sessions-description = Weitere Arbeitssitzungen anzeigen
-a11y-shell-activity-new-task = Neue Aufgabe
-a11y-shell-activity-new-task-description = Eine Aufgabe im Arbeitsbereich erstellen, ohne ein Modell zu benötigen
-a11y-shell-activity-create-task = Aufgabe erstellen
-a11y-shell-activity-cancel-task = Erstellen der Aufgabe abbrechen
-a11y-shell-activity-everything = Alles
-a11y-shell-activity-agent-tasks = Agent-Aufgaben
-a11y-shell-activity-unclassified = Nicht zugeordnet
-a11y-shell-activity-more-lenses = Weitere Ansichten
-a11y-shell-activity-more-lenses-description = Weitere Verlaufsansichten anzeigen
-a11y-shell-activity-history-entries = Verlaufseinträge
-a11y-shell-activity-previous-checkpoint = Vorheriger Zwischenstand
-a11y-shell-activity-next-checkpoint = Nächster Zwischenstand
-a11y-shell-activity-pause-replay = Wiedergabe pausieren
-a11y-shell-activity-play-replay = Wiedergabe abspielen
-a11y-shell-activity-history-scope = Verlaufsumfang
-a11y-shell-activity-history-view = Verlaufsansicht
-a11y-shell-activity-time-range = Zeitraum
-a11y-shell-activity-person-filter = Personenfilter
-a11y-shell-activity-brief-description = { $detail }; zuletzt geändert { $when }; { $count } { $count ->
-        [one] Änderung
-       *[other] Änderungen
-    } von { $authors }
-a11y-shell-activity-task-unassigned = nicht zugewiesen
-a11y-shell-activity-task-assigned-agent = einem Agenten zugewiesen
-a11y-shell-activity-task-no-resource = keine angehängte Ressource
-a11y-shell-activity-task-route = Ausführungsweg der Aufgabe
-a11y-shell-activity-task-composer-action = Aktion zum Erstellen der Aufgabe
-a11y-shell-activity-task-action = Aktion für die ausgewählte Aufgabe
-a11y-shell-activity-history-lens = Verlaufsansicht
-a11y-shell-activity-undo-task-description = Jeden betroffenen Eintrag dieser Agent-Aufgabe rückgängig machen; spätere Änderungen anderer bleiben erhalten
-a11y-shell-activity-history-action = Aktion für den ausgewählten Verlauf
-a11y-shell-activity-explorer-panel = Explorer-Bereich
-a11y-shell-activity-timeline-description = Verlaufseinträge; mit den Pfeiltasten navigieren
-a11y-shell-activity-checkpoints-description = Durch die Zwischenstände des Arbeitsbereichs gehen
-a11y-shell-activity-replay-description = Die Wiedergabe des Arbeitsbereichs abspielen oder pausieren
-a11y-shell-activity-view-catch-up = Eine Zusammenfassung der Ergebnisse, seit dieses Gerät den Arbeitsbereich zuletzt angesehen hat
-a11y-shell-activity-view-tasks = Dauerhafte Aufgaben im Arbeitsbereich mit Ressourcenlinks, Ausführungswegen und Prüfprotokollen
-a11y-shell-activity-view-explore = Der vollständige Verlauf des Arbeitsbereichs mit Filtern und Herkunft
-a11y-shell-activity-view-replay = Eine kausale Wiedergabe der Anordnung und der Aktivität der Beteiligten
-a11y-shell-activity-entry-author = Von { $author }
-a11y-shell-activity-tasks = Aufgaben im Arbeitsbereich
-a11y-shell-activity-selected-detail = Details zum ausgewählten Verlauf
-a11y-shell-activity-selected-detail-description = { $title }; { $count } { $count ->
-        [one] Aktion
-       *[other] Aktionen
-    }; von { $authors }
-a11y-shell-activity-agent-run-description = Anweisung: { $instruction }; zugewiesen von { $issuer }; ausgeführt von { $agent }; Begründung: { $reason }
-a11y-shell-activity-reason-not-recorded = nicht erfasst
-a11y-shell-activity-agent-step = { $app } in { $record }: { $summary }
-a11y-shell-activity-agent-review = Prüfung der Agent-Aufgabe
-a11y-shell-activity-task-description = { $status }; { $route }; { $assignee }; { $count } { $count ->
-        [one] Prüfereignis
-       *[other] Prüfereignisse
-    }
-a11y-shell-activity-task-latest = zuletzt: { $latest }
 
 # Workspace wheel
 a11y-shell-wheel = Arbeitsbereichsrad
@@ -1592,6 +1450,7 @@ remark-sent-room = In { $room } veröffentlicht
 remark-sent-body = Antworten kommen im Chat an.
 remark-open-conversation = Unterhaltung öffnen
 remark-send-failed = Deine Anmerkung konnte nicht gesendet werden
+remark-recording-refused = Aufnahme nicht möglich
 
 ## Absturz
 
@@ -1687,7 +1546,6 @@ search-provider-editor = Editor
 search-provider-session = Sitzung
 search-provider-shortcuts = Kurzbefehle
 search-provider-tray = Statusbereich
-search-provider-desktop-windows = Fenster auf dem Desktop
 search-provider-files = Dateien
 search-provider-host-apps = Host-Apps
 search-provider-app-actions = Ressourcen und Aktionen von Anwendungen
@@ -1698,8 +1556,6 @@ search-badge-session = Sitzung
 search-badge-quick-action = Schnellaktion
 search-badge-shortcut = Kurzbefehl
 search-badge-tray = Statusbereich
-search-badge-tab = Tab
-search-badge-window-group = Fenstergruppe
 
 # Suche: Wiedergabesteuerung eines laufenden Players
 search-media-pause = { $player } pausieren
@@ -1751,16 +1607,6 @@ search-tray-entry-on = { $item }: { $entry } (an)
 search-tray-entry-off = { $item }: { $entry } (aus)
 
 # Suche: Fenster auf dem Desktop
-search-window-move-tab = Tab „{ $tab }“ in den Arbeitsbereich „{ $workspace }“ verschieben
-search-window-move-tab-detail = App { $app } · aus dem Arbeitsbereich „{ $workspace }“ · Gruppe { $group } · Tab { $tab }
-search-window-group-untitled = Fenstergruppe { $group }
-search-window-close-group = Fenstergruppe „{ $group }“ schließen
-search-window-close-group-detail = Arbeitsbereich „{ $workspace }“ · Leiste „{ $strip }“ · Gruppe { $group } · { $count ->
-    [one] 1 Tab
-   *[other] { $count } Tabs
-}
-search-window-close-tab = Tab „{ $tab }“ schließen
-search-window-close-tab-detail = App { $app } · Arbeitsbereich „{ $workspace }“ · Leiste „{ $strip }“ · Gruppe { $group } · Tab { $tab }
 
 # Suche: Shell-Aktionen als Palettenzeilen
 search-action-shortcut-help-toggle = Desktop-Hilfe anzeigen
@@ -1803,6 +1649,8 @@ search-action-display-change-keep = Bildschirmeinstellungen behalten
 search-action-display-change-keep-subtitle = Die gerade angewendete Bildschirmanordnung bestätigen
 search-action-display-change-revert = Bildschirmeinstellungen zurücksetzen
 search-action-display-change-revert-subtitle = Die Bildschirmanordnung von vor der letzten Änderung wiederherstellen
+search-action-bluetooth-pairing-decline = Bluetooth-Kopplung ablehnen
+search-action-bluetooth-pairing-decline-subtitle = Die angezeigte Kopplungsanfrage ablehnen oder die Kopplung beenden, deren Code angezeigt wird
 search-action-capture-open = Bildschirmbereich aufnehmen oder schweben lassen
 search-action-capture-open-subtitle = Bildschirmfoto, Aufnahme oder Bild-im-Bild aus einem oder mehreren Bereichen
 search-action-collaborators-open = Mitwirkende anzeigen
@@ -1957,6 +1805,10 @@ search-action-quick-settings-vpn-set-enabled-subtitle = Eine benannte VPN-Verbin
 # Suche: Suchquellen und Verwaltungszeilen des Arbeitsbereichs
 search-action-search-provider-set = Suchquelle aktivieren oder deaktivieren
 search-action-search-provider-set-subtitle = Festlegen, welche Quellen in Such- und Agentenergebnissen erscheinen
+search-action-workspace-view-subtitle = Lokale Arbeitsbereichsansicht
+search-action-quick-settings-unavailable = Der Dienst für die Schnelleinstellungen ist nicht verfügbar
+# Zusätzliche Suchbegriffe für Arbeitsbereichsansichten; nicht angezeigt.
+search-action-workspace-view-keywords = arbeitsbereich aktivität verlauf
 search-action-provider-enable = Suche in { $source } aktivieren
 search-action-provider-enable-subtitle = Die Quelle `{ $id }` in Suche und Agentenerkennung anzeigen
 search-action-provider-disable = Suche in { $source } deaktivieren
@@ -2686,3 +2538,379 @@ workspace-settings-stat-app-rules = { $count ->
     [one] App-Regel
    *[other] App-Regeln
 }
+
+# Übrige Shell-Hinweise: Dokumente öffnen, Herkunft von Host-Apps, Ruhestatus, Zusammenarbeit
+doc-open-failed = { $name } konnte nicht geöffnet werden
+doc-open-unnamed-file = Datei
+host-app-source-flatpak = Flatpak
+host-app-source-system = System
+new-document-unavailable = Neues Dokument nicht verfügbar: { $error }
+collab-unavailable-title = Zusammenarbeit nicht verfügbar
+collab-unavailable-body = Apps in dieser Sitzung können keine Änderungen teilen. { $reason }
+quiet-status-dnd = Bitte nicht stören
+quiet-status-dnd-presenting = Bitte nicht stören während der Präsentation
+quiet-status-dnd-sharing = Bitte nicht stören während der Bildschirmfreigabe
+quiet-status-focus-until = Fokus bis { $time }
+
+# Gespeicherte Arbeitsbereiche, die beim Start nicht geöffnet werden konnten
+state-notice-newer-title = Deine Arbeitsbereiche wurden nicht geöffnet
+state-notice-unreadable-title = Deine Arbeitsbereiche konnten nicht gelesen werden
+state-notice-newer-body = Von einer neueren Tilo-Version gespeichert. Es wurde nichts geändert.
+state-notice-unreadable-body = Die Datei konnte nicht gelesen werden. Es wurde nichts geändert.
+state-notice-newer-detail = { $path } wurde von einer neueren Tilo-Version geschrieben (Layout { $found }; diese Version versteht { $understood }). Die Datei wurde nicht verändert und nichts wurde darüber geschrieben – diese Sitzung läuft ohne Speichern, das ist also ausgeschlossen. Aktualisiere erneut oder wechsle auf die neuere Version, um wieder an deine Arbeitsbereiche zu kommen.
+state-notice-unreadable-detail = { $path } ist vorhanden, konnte aber nicht gelesen werden ({ $error }). Die Datei wurde nicht verändert, und diese Sitzung läuft ohne Speichern, das ist also ausgeschlossen.
+
+# Personen-Popover
+people-panel-here-now = { $count } gerade hier
+people-panel-screen-visible = Bildschirm gerade sichtbar
+people-panel-only-you = Nur du bist hier
+people-panel-status-typing = Gib einen Status ein und drücke dann die Eingabetaste
+people-panel-status-empty = Lege fest, woran du gerade arbeitest …
+people-panel-own-status = Du · { $status }
+people-panel-sharing-auto = ✦ Automatisch
+people-panel-sharing-manual = Manuell
+people-panel-sharing-hidden = Verborgen
+people-panel-agent-tag = Agent
+people-panel-invited-tag = eingeladen
+people-panel-following = Du folgst
+people-panel-following-activity = Du folgst · { $activity }
+people-panel-viewing = Sieht sich { $title } an
+people-panel-follow = Folgen
+people-panel-stop-following = Beenden
+people-panel-invite = Einladen
+people-panel-join = Beitreten
+
+# Arbeitsbereichsübersicht: wer in einem Raum ist und was er teilt
+overview-empty-window = Leeres Fenster
+overview-access-nobody = Niemand hat Zugriff
+overview-access-private = Nur für dich
+overview-access-shared-one = Geteilt mit { $name }
+overview-access-shared-two = Geteilt mit { $first } und { $second }
+overview-access-shared-many = { $count ->
+    [one] Geteilt mit { $name } und 1 weiteren Person
+   *[other] Geteilt mit { $name } und { $count } weiteren Personen
+}
+overview-items-shared = { $count ->
+    [one] 1 Element geteilt
+   *[other] { $count } Elemente geteilt
+}
+overview-presence-you = Du bist hier
+overview-presence-you-and-one = Du und { $name } seid hier
+overview-presence-you-and-many = Du und { $count } weitere Personen seid hier
+overview-presence-one = { $name } ist hier
+overview-presence-many = { $count } Personen sind hier
+overview-collaborators-here = { $count } Mitwirkende sind hier
+
+# Fenster und Dokumente, die die Shell anzeigt
+shell-window-restoring = Dieses Fenster wird wiederhergestellt …
+shell-document-unavailable = Dokument nicht verfügbar
+shell-named-document-unavailable = { $name } nicht verfügbar
+shell-path-open-failed = { $path } kann nicht geöffnet werden: { $error }
+shell-path-read-failed = { $path } kann nicht gelesen werden: { $error }
+editor-disk-conflict = Die Datei wurde auf dem Datenträger geändert; ungespeicherte Änderungen bleiben für die Konfliktlösung erhalten
+editor-hint-disk-conflict = Datei auf dem Datenträger geändert – ungespeicherte Änderungen bleiben erhalten
+editor-hint-focused = Live geteilter Code  ·  Strg+Z zum Rückgängigmachen
+editor-hint-click = Zum Bearbeiten klicken
+notes-empty-title = Diese Notiz ist leer
+notes-empty-body = Schreib hier, was du willst. Änderungen werden beim Tippen gespeichert.
+notes-empty-action = Losschreiben
+window-move-unknown-tab = Dieses Fenster ist nicht mehr geöffnet.
+window-move-unknown-workspace = Dieser Arbeitsbereich existiert nicht mehr.
+window-move-same-workspace = Das Fenster ist bereits in diesem Arbeitsbereich.
+window-move-pinned = Dieses Fenster gehört zu seinem Arbeitsbereich und kann nicht verschoben werden.
+window-move-document-refused = Das Arbeitsbereichsdokument hat die Änderung nicht angenommen, daher wurde nichts verschoben.
+
+# Startfläche für leere Arbeitsbereiche und die Standardbefehle
+launchpad-keyboard-hint = Pfeiltasten bewegen  ·  Eingabetaste öffnet  ·  Super+N zeigt alle Apps
+launchpad-subtitle = Wähle, wie du beginnen möchtest. Inhalte des Arbeitsbereichs werden synchronisiert; deine Anordnung und Bedienelemente bleiben lokal.
+global-search-create-workspace = Arbeitsbereich erstellen
+global-search-rename-workspace = Arbeitsbereich umbenennen
+global-search-switch-workspace = Arbeitsbereich wechseln …
+global-search-open-settings = Einstellungen öffnen
+global-search-open-file = Datei öffnen
+
+# Kurzbefehl-Schritte, die vor der Ausführung fragen, und Tastaturübernahme
+shortcut-step-confirm-detail = „{ $shortcut }“ möchte „{ $action }“ für { $resource } ausführen.
+shortcut-step-type-phrase = Gib „{ $phrase }“ ein, um zu bestätigen.
+shortcut-step-confirm-title = { $action }?
+shortcut-step-confirm = Bestätigen
+shortcut-step-ask-detail = „{ $shortcut }“ fragt nach { $param }.
+shortcut-step-continue = Weiter
+shortcut-step-yes = Ja
+shortcut-step-no = Nein
+shortcut-trigger-failed = Der Kurzbefehl wurde nicht ausgeführt
+osd-keys-captured = Die App empfängt alle Tasten · { $chord } stellt die Tastenkürzel wieder her
+osd-keys-released = Tastenkürzel wiederhergestellt
+osd-pad-mode = Tablett-Modus { $mode } von { $modes }
+pad-map-hint = Wird angezeigt, solange die Taste gedrückt ist
+pad-map-button = Taste { $number }
+pad-map-ring = Ring { $number }
+pad-map-strip = Streifen { $number }
+pad-map-entry = { $control }: { $action }
+pad-map-mode-switch = Nächster Modus (jetzt { $mode } von { $modes })
+pad-map-shows-map = Zeigt diese Übersicht
+pad-map-app-decides = Legt die App fest
+pad-map-nothing = Tut nichts
+pad-map-dial-scroll = Blättern
+pad-map-dial-zoom = Zoomen
+pad-map-dial-brush-size = Pinselgröße
+pad-map-dial-volume = Lautstärke
+pad-map-dial-brightness = Helligkeit
+workspace-settings-sheet-keyboard-hint = ↑ ↓ zum Auswählen · Eingabetaste zum Bestätigen · Esc zum Abbrechen
+
+# Gerätefremde Ansichten, Dokumente öffnen, Identitätssicherung und Einladungen
+peer-view-surface-title = Entfernte Oberfläche #{ $id }
+peer-view-awaiting = Warte auf die entfernte Oberfläche …
+doc-open-no-handler = Keine App auf diesem Desktop öffnet .{ $ext }-Dateien ({ $name })
+doc-open-no-file-type = { $name } hat keinen Dateityp, mit dem es sich öffnen lässt
+doc-open-no-workspace = Es gibt keinen aktiven Arbeitsbereich, in dem es sich öffnen lässt
+identity-backup-busy = Schließe den aktuellen Identitätsvorgang ab, bevor du eine weitere Sicherung erstellst.
+identity-backup-locate-failed = Die aktive Identität wurde nicht gefunden: { $error }
+invite-workspace-verified-identity = Im Arbeitsbereich bestätigte Identität
+palette-query-permission-roles = Berechtigungsrolle
+
+# Barrierefreiheitsbaum: die Anzeige der Hardwaretasten
+a11y-status-readout = Statusanzeige
+
+# Compositor-Hinweise: Sperrbildschirm-Status, X11-Kompatibilität, Zusammenarbeit, Nearby-Übertragungen, Aufnahmen
+lock-screen-status = Sperrstatus
+xwayland-unavailable-title = X11-Kompatibilität nicht verfügbar
+xwayland-unavailable-body = Ältere X11-Apps können in diesem Arbeitsbereich gerade nicht geöffnet werden. Tilo konnte den Kompatibilitätsdienst nicht am Laufen halten; verwende eine Wayland-App oder starte die Desktop-Sitzung neu.
+collab-unavailable-services-root = Das Dienstverzeichnis konnte nicht erstellt werden: { $error }
+collab-unavailable-socket-taken = Eine andere Sitzung auf diesem Rechner belegt bereits den Socket für die Zusammenarbeit.
+collab-unavailable-broker = Der Broker konnte nicht gestartet werden: { $error }
+fabric-focus-app-for-controller = Wähle zuerst eine App aus, bevor du einen Controller weiterleitest
+fabric-focus-app-for-remote-input = Wähle zuerst eine App aus, bevor du eine entfernte Eingabe verwendest
+launch-held-network-failed = das Netzwerk des Desktops konnte nicht starten ({ $error })
+nearby-drop-your-device = dein Gerät
+nearby-drop-sending = Wird in der Nähe gesendet
+nearby-drop-sending-body = { $file } an { $device }
+nearby-drop-sent = In der Nähe gesendet
+nearby-drop-sent-body = { $file } an { $device }
+nearby-drop-failed = Senden in der Nähe fehlgeschlagen
+nearby-drop-failed-body = { $file } · { $device }
+nearby-drop-received = In der Nähe empfangen
+nearby-drop-received-body = { $file } von { $device }
+capture-screenshot-sent = Bildschirmfoto gesendet
+capture-screenshot-not-sent = Bildschirmfoto nicht gesendet
+capture-recording-audio-lost = Die Aufnahme läuft ohne Ton weiter
+capture-recording-audio-lost-body = { $path } · { $reason }
+capture-recent-audio-lost = Die Aufnahme der letzten Momente läuft ohne Ton weiter
+capture-failed = Aufnahme fehlgeschlagen
+idle-inhibit-unnamed-app = Eine App
+
+# Ein Bildschirmfoto an ein Gerät oder in die Dateien des Arbeitsbereichs senden
+screenshot-send-offered = An { $device } angeboten; nimm es dort an, um es zu speichern
+screenshot-send-saved = In den Dateien des Arbeitsbereichs als { $name } gespeichert
+screenshot-send-gone = Das Bildschirmfoto { $path } ist nicht mehr vorhanden
+screenshot-send-device-offline = Dieses Gerät ist nicht mehr online
+screenshot-send-create-failed = { $path } kann nicht erstellt werden: { $error }
+screenshot-send-no-file-name = { $path } hat keinen Dateinamen
+screenshot-send-read-failed = { $path } kann nicht gelesen werden: { $error }
+screenshot-send-save-failed = Speichern in den Dateien des Arbeitsbereichs nicht möglich: { $error }
+screenshot-send-too-many = Im Ordner „Screenshots“ des Arbeitsbereichs gibt es zu viele Dateien mit diesem Namen
+screenshot-send-sync-off = Die Gerätesynchronisierung läuft nicht
+screenshot-send-no-folder = { $path } liegt in keinem Ordner
+
+# Ein Fenster, dessen Bilder nicht angezeigt werden können
+foreign-window-unshowable = Dieses Fenster kann nicht angezeigt werden.
+foreign-window-not-responding = Diese App reagiert nicht.
+
+# Warum eine Anfrage an eine Lautsprechergruppe fehlschlug, wie die Einstellungen es anzeigen
+speaker-error-too-many-groups = zu viele Lautsprechergruppen
+speaker-error-group-exists = diese Lautsprechergruppe gibt es bereits
+speaker-error-group-gone = diese Lautsprechergruppe gibt es nicht mehr
+speaker-error-not-in-group = dieser Lautsprecher gehört nicht zur Gruppe
+speaker-error-calibration-range = diese Kalibrierungswerte liegen außerhalb des zulässigen Bereichs
+speaker-error-request-expired = diese Anfrage für die Lautsprechergruppe ist abgelaufen
+speaker-error-group-changed = diese Lautsprechergruppe hat sich geändert; frag erneut von ihrem Gerät aus
+speaker-error-too-many-memberships = dieses Gerät ist bereits in zu vielen Lautsprechergruppen
+speaker-error-not-a-member = dieses Gerät gehört nicht zu dieser Lautsprechergruppe
+speaker-error-too-many-sessions = es sind zu viele Sitzungen von Lautsprechergruppen aktiv
+speaker-error-group-unavailable = diese Lautsprechergruppe ist nicht verfügbar
+speaker-error-none-ready = kein Lautsprecher in dieser Gruppe ist bereit
+speaker-error-session-gone = diese Sitzung der Lautsprechergruppe ist nicht mehr aktiv
+speaker-error-name = gib den Lautsprechern einen Namen mit höchstens 64 Zeichen
+speaker-error-roles = jeder Lautsprecher braucht einen eigenen Ausgang und eine eigene Rolle, und ein Stereopaar braucht beide Seiten
+speaker-error-unavailable = Lautsprechergruppen sind nicht verfügbar
+device-fabric-error-no-identity = dieses Gerät hat keine zertifizierte persönliche Identität
+speaker-error-speaker-unavailable = dieser Lautsprecher ist gerade nicht verfügbar
+speaker-error-output-disconnected = dieser Ausgang ist nicht mehr verbunden
+speaker-error-already-playing = ein Lautsprecher spielt bereits seinen Ton ab
+speaker-error-speaker-output-gone = der Ausgang dieses Lautsprechers ist nicht mehr verbunden
+speaker-error-play-failed = der Ton konnte nicht abgespielt werden: { $error }
+speaker-error-device-invalid = diese Geräte-ID ist ungültig
+speaker-error-output-invalid = dieser Ausgang ist ungültig
+speaker-error-group-invalid = diese Lautsprechergruppe ist ungültig
+speaker-error-media-off = Schalte „Medien“ unter „Geräte & Synchronisierung“ ein, um Lautsprecher auf deinen Geräten gemeinsam zu nutzen
+speaker-error-no-calibration = es gibt keine abgeschlossene Kalibrierung zum Anwenden
+speaker-error-no-applied-calibration = es gibt keine angewendete Kalibrierung zum Zurücksetzen
+speaker-error-calibration-unavailable = die Kalibrierung ist nicht verfügbar
+speaker-error-calibration-gone = diese Kalibrierung ist nicht mehr verfügbar
+speaker-error-network-unavailable = das Gerätenetz ist nicht verfügbar
+speaker-error-microphone-invalid = dieses Mikrofon ist ungültig
+speaker-error-calibrate-on-leader = kalibriere diese Gruppe auf dem Gerät, das sie eingerichtet hat
+speaker-error-microphone-unavailable = dieses Mikrofon ist nicht verfügbar
+speaker-error-not-all-ready = alle Lautsprecher müssen vor dem Kalibrieren bereit sein
+speaker-error-request-failed = die Lautsprecheranfrage ist fehlgeschlagen
+speaker-error-app-stopped = diese Anwendung spielt nichts mehr ab
+speaker-error-audio-unavailable = der Ton für Lautsprechergruppen ist nicht verfügbar
+speaker-error-other-session = auf diesem Gerät spielt bereits eine andere Lautsprechergruppe
+
+# Lautsprecher für die Kalibrierung messen
+speaker-calibration-reason-remote-microphone = kalibriere mit einem Mikrofon auf dem Gerät, das die Lautsprecher eingerichtet hat
+speaker-calibration-reason-microphone-gone = dieses Mikrofon ist nicht mehr verbunden
+speaker-calibration-reason-output-gone = der Ausgang dieses Lautsprechers ist nicht mehr verbunden
+speaker-calibration-reason-play-failed = das Messsignal konnte nicht abgespielt werden: { $error }
+speaker-calibration-reason-listen-failed = die Aufnahme konnte nicht gestartet werden: { $error }
+speaker-calibration-failed = { $speaker } konnte nicht gemessen werden: { $reason }
+speaker-calibration-cancelled = Die Kalibrierung wurde abgebrochen
+
+# Drahtlose Bildschirmprojektion
+projection-service-unavailable-detail = Der Projektionsdienst ist nicht verfügbar ({ $error }). Prüfe den Tilo-Projektordienst.
+projection-service-exited = Der Projektionsdienst wurde beendet: { $status }
+projection-service-invalid-discovery = Der Projektionsdienst hat ungültige Suchergebnisse geliefert: { $error }
+projection-mode-unsupported = { $device } unterstützt den Modus „{ $mode }“ nicht
+projection-service-unavailable = Der Projektionsdienst ist nicht verfügbar
+projection-service-stopped = Der Projektionsdienst wurde beendet
+
+# Warum eine Aktion auf deinen Geräten fehlschlug, wie die Benachrichtigung es sagt
+device-fabric-error-nearby-busy = Nearby Send ist ausgelastet; versuch es erneut, wenn eine andere Übertragung fertig ist
+device-fabric-error-bt-identity-invalid = die Kennung dieses Bluetooth-Zubehörs ist ungültig
+device-fabric-error-bt-not-connected = nur ein gekoppeltes Zubehör, das gerade mit diesem Gerät verbunden ist, kann übergeben werden
+device-fabric-error-bt-name-invalid = der Name des lokalen Bluetooth-Zubehörs ist ungültig
+device-fabric-error-bt-already-here = das Bluetooth-Zubehör ist bereits auf diesem Gerät
+device-fabric-error-target-not-enrolled = das Ziel ist kein registriertes Gerät
+device-fabric-error-target-offline = das Zielgerät ist offline
+device-fabric-error-bt-coordinator = die Bluetooth-Übergabe ist nicht verfügbar
+device-fabric-error-bt-too-many = es laufen bereits zu viele Bluetooth-Übergaben
+device-fabric-error-bt-approval-gone = diese Freigabe für die Bluetooth-Übergabe steht nicht mehr aus
+device-fabric-error-bt-inactive = diese Bluetooth-Übergabe ist nicht mehr aktiv
+device-fabric-error-bt-no-retry = diese Bluetooth-Übergabe kann nicht wiederholt werden
+device-fabric-error-media-session-gone = diese Mediensitzung ist nicht mehr verfügbar
+device-fabric-error-no-route = zum Ziel gibt es gerade keine authentifizierte persönliche Verbindung
+device-fabric-error-handoff-gone = diese Medienübergabe ist nicht mehr verfügbar
+device-fabric-error-handoff-not-pending = diese Medienübergabe steht nicht mehr aus
+device-fabric-error-handoff-no-retry = nur eine fehlgeschlagene oder abgebrochene Medienübergabe kann wiederholt werden
+device-fabric-error-name-not-portable = der Dateiname ist nicht übertragbar
+device-fabric-error-drop-one-item = Nearby Send braucht genau eine normale Datei oder einen Ordner
+device-fabric-error-drop-empty = Nearby Send kann keine leere Datei senden
+device-fabric-error-file-changed = die Datei hat sich beim Lesen geändert
+device-fabric-error-transfer-inactive = die Übertragung ist nicht aktiv
+device-fabric-error-destination-unapproved = Nearby Send braucht ein freigegebenes Ziel
+device-fabric-error-consent-expired = die Zustimmung zur Übertragung ist abgelaufen
+device-fabric-error-destination-expired = das Ziel für Nearby Send ist abgelaufen
+device-fabric-error-transfer-unrecoverable = die Übertragung lässt sich nicht mehr fortsetzen
+device-fabric-error-transfer-no-retry = die Übertragung kann nicht mehr wiederholt werden
+device-fabric-nearby-device = Gerät in der Nähe
+device-fabric-error-output-gone = dieser Audioausgang ist nicht mehr verbunden
+device-fabric-error-input-gone = dieser Eingang ist nicht mehr verbunden
+device-fabric-error-spatial-unavailable = die räumliche Kalibrierung ist nicht verfügbar
+device-fabric-error-proposal-stale = dieser Kalibrierungsvorschlag ist nicht mehr aktuell
+device-fabric-error-no-applied-calibration = es gibt keine angewendete Kalibrierung zum Zurücksetzen
+device-fabric-error-no-placement = für dieses Gerät ist keine Bildschirmanordnung veröffentlicht
+device-fabric-error-target-not-display = das Ziel ist kein erreichbarer, steuerbarer Bildschirm
+device-fabric-error-target-no-display = das Ziel hat keinen veröffentlichten Bildschirm
+device-fabric-error-side-taken = auf dieser Seite ist bereits ein anderer registrierter Bildschirm
+device-fabric-error-controller-not-enrolled = das steuernde Gerät ist nicht registriert
+device-fabric-error-controller-no-input = das steuernde Gerät hat keinen erreichbaren Zeiger und keine Tastatur
+device-fabric-error-no-lease = dieses Gerät hat gerade keine Steuerungsfreigabe
+device-fabric-error-control-not-granted = dieses Gerät hat keine Steuerung freigegeben
+device-fabric-error-lease-input = die aktive Freigabe erlaubt dieses Eingabegerät nicht
+device-fabric-error-display-local = dieser Bildschirm ist bereits lokal
+device-fabric-error-display-coordinator = die Bildschirmübergabe ist nicht verfügbar
+device-fabric-error-display-busy = dieses Gerät hat bereits eine aktive Bildschirmübertragung
+device-fabric-error-no-video = das zertifizierte Ziel kann kein Video empfangen
+device-fabric-error-mirror-coordinator = die Bildschirmspiegelung ist nicht verfügbar
+device-fabric-error-mirror-too-many = es sind zu viele Bildschirmspiegelungen aktiv
+device-fabric-error-mirror-consent-gone = diese Freigabe für die Bildschirmspiegelung steht nicht mehr aus
+device-fabric-error-display-receiving = dieser Bildschirm empfängt bereits eine andere Übertragung
+device-fabric-error-mirror-inactive = diese Bildschirmspiegelung ist nicht mehr aktiv
+device-fabric-error-gamepad-capacity = es können keine weiteren Controller weitergeleitet werden
+device-fabric-error-gamepad-decided = diese Controller-Freigabe ist unbekannt oder bereits entschieden
+device-fabric-error-gamepad-no-lease = das Ziel hat den Controller nicht freigegeben
+device-fabric-error-inspect-failed = die Quelle kann nicht geprüft werden: { $error }
+device-fabric-error-transfer-start = die Übertragung konnte nicht starten: { $error }
+device-fabric-error-open-failed = die Datei kann nicht geöffnet werden: { $error }
+device-fabric-error-read-failed = die Datei kann nicht gelesen werden: { $error }
+continuity-disabled-clipboard = die Zwischenablage-Übergabe ist auf diesem Gerät ausgeschaltet
+continuity-disabled-notifications = die Benachrichtigungs-Übergabe ist auf diesem Gerät ausgeschaltet
+continuity-disabled-wifi-settings = die WLAN- und Einstellungs-Übergabe ist auf diesem Gerät ausgeschaltet
+continuity-disabled-media = die Medien-Übergabe ist auf diesem Gerät ausgeschaltet
+continuity-disabled-display-input = die Bildschirm- und Eingabe-Übergabe ist auf diesem Gerät ausgeschaltet
+continuity-disabled-file-transfer = die Dateiübertragung ist auf diesem Gerät ausgeschaltet
+continuity-disabled-realtime = die Übergabe von Echtzeitsitzungen ist auf diesem Gerät ausgeschaltet
+continuity-disabled-gamepad = die Controller-Weiterleitung ist auf diesem Gerät ausgeschaltet
+continuity-disabled-app-continuations = die App-Übergabe ist auf diesem Gerät ausgeschaltet
+remote-audio-all-system-audio = Gesamter Systemton
+remote-audio-error-target-not-output = das Ziel ist kein erreichbarer Audioausgang
+remote-audio-error-unavailable = die Audioübertragung ist nicht verfügbar
+remote-audio-error-too-many = es sind zu viele Audioübertragungen aktiv
+remote-audio-error-source-expired = diese Auswahl der Audioquelle ist abgelaufen
+remote-audio-error-request-expired = diese Anfrage für die Audioübertragung ist abgelaufen
+remote-audio-error-route-inactive = diese Audioübertragung ist nicht mehr aktiv
+remote-audio-speaker-group = Lautsprechergruppe
+remote-audio-error-no-output = es ist kein lokaler Audioausgang verfügbar
+remote-audio-error-stream-ended = der Audiostream dieser Anwendung wurde beendet
+remote-capture-error-unavailable = die entfernte Eingabe ist nicht verfügbar
+remote-capture-error-busy = die entfernte Eingabe ist ausgelastet
+remote-capture-error-capacity = es können keine weiteren Anfragen für entfernte Eingaben gestellt werden
+remote-capture-error-receiver-busy = der Empfänger der entfernten Eingabe ist ausgelastet
+remote-capture-error-cannot-receive = dieses Gerät kann die angefragte entfernte Eingabe nicht empfangen
+remote-capture-error-unknown-request = unbekannte Anfrage für eine entfernte Eingabe
+remote-capture-error-unknown-session = unbekannte Sitzung einer entfernten Eingabe
+tethering-error-continuity-off = die WLAN-Übergabe ist auf diesem Gerät ausgeschaltet
+tethering-error-choose-phone = wähle ein erreichbares, zertifiziertes Telefon
+tethering-error-unavailable = Tethering ist nicht verfügbar
+tethering-error-too-many = es sind bereits zu viele Tethering-Anfragen aktiv
+tethering-error-history-full = der Tethering-Verlauf ist vorübergehend voll
+tethering-error-session-inactive = diese Tethering-Sitzung ist nicht mehr aktiv
+tethering-error-request-gone = diese Tethering-Anfrage steht nicht mehr aus
+gamepad-error-unavailable = die Controller-Weiterleitung ist nicht verfügbar
+gamepad-error-no-identity = die zertifizierte Identität dieses Geräts ist nicht verfügbar
+gamepad-error-target-unknown = das Ziel gehört nicht zu deinen zertifizierten Geräten
+gamepad-error-target-offline = das Zielgerät ist kein erreichbares anderes Gerät
+gamepad-error-disconnected = dieser Controller ist nicht mehr verbunden
+gamepad-error-already-forwarded = dieser Controller wird bereits weitergeleitet
+gamepad-error-busy = der Controller war beim Starten belegt; versuch es erneut
+gamepad-error-unknown = diese Controller-Weiterleitung ist unbekannt
+gamepad-error-open-failed = der Controller konnte nicht geöffnet werden: { $error }
+gamepad-error-prime-failed = der Controller konnte nicht vorbereitet werden: { $error }
+
+# Warum ein WLAN nicht mit deinen Geräten geteilt werden konnte
+wifi-share-error-enterprise = Unternehmens-WLAN braucht auf diesem Gerät eine Identität, eine EAP-Methode und ein Zertifikat
+wifi-share-error-no-passphrase = diese WLAN-Sicherheit hat kein übertragbares Passwort
+wifi-share-error-unknown-security = eine unbekannte WLAN-Sicherheit kann nicht sicher geteilt werden
+wifi-share-error-unvalidated = die WLAN-Sicherheit konnte für das Teilen nicht geprüft werden
+wifi-share-error-no-presence = dieses Gerät ist für deine anderen Geräte noch nicht sichtbar
+
+# Warum die Installation einer App aus dem Katalog fehlschlug
+catalogue-error-missing = dieses System hat keinen App-Katalog („app“ fehlt)
+catalogue-error-spawn = das Laden konnte nicht gestartet werden
+catalogue-error-run = der App-Katalog konnte nicht ausgeführt werden: { $error }
+catalogue-error-exited = der App-Katalog wurde beendet: { $status }
+
+# Warum das Senden an ein Gerät in der Nähe fehlschlug
+nearby-error-destination-not-folder = das Ziel für Nearby Send ist kein Ordner
+nearby-error-too-large = die Übertragung überschreitet die Größenbegrenzung
+nearby-error-destination-name = für das Ziel von Nearby Send ist kein Name verfügbar
+nearby-error-outside-grant = die Quelle für Nearby Send liegt außerhalb der Freigabe von Dateien
+nearby-error-one-item = Nearby Send braucht genau eine normale Datei oder einen Ordner
+nearby-error-queue-full = die Warteschlange für Übertragungen ist voll
+nearby-error-quota-full = der Speicherplatz für Übertragungen ist voll
+nearby-error-too-many = zu viele Übertragungen
+nearby-error-not-regular = die Quelle ist keine normale Datei
+nearby-error-folder-too-many = der Ordner enthält zu viele Einträge
+nearby-error-folder-special = der Ordner enthält eine Verknüpfung oder Sonderdatei
+nearby-error-folder-too-large = der Ordner überschreitet die Größenbegrenzung
+nearby-error-source-changed = die Quelle hat sich während der Vorbereitung geändert
+nearby-error-name-not-portable = der Name der Quelle ist nicht übertragbar
+
+# Ein Dokument, das ein Tab nicht wiederherstellen konnte
+hosted-document-unavailable = { $path } ist nicht verfügbar: { $error }
+
+# Eine Kamera, ein Mikrofon oder ein Scanner, geteilt von einem deiner anderen Geräte
+remote-capture-source-label = { $app } auf zertifiziertem Gerät
+
+# Druckaufträge: der Titel in der Druckwarteschlange, wenn die App keinen angegeben hat
+print-untitled-document = Dokument

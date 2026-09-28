@@ -1,20 +1,17 @@
 //! Session-owned desktop event-sound delivery.
 //!
 //! The compositor submits a cue to a bounded worker; it never forks or waits
-//! on the render thread. libcanberra is preferred because it implements the
-//! freedesktop sound-theme lookup and routes through the current `PipeWire`/
-//! Pulse session. Resolving the theme file here and playing it with `pw-play`
-//! is the fallback. Missing audio support is reported as a capability, never
-//! faked.
+//! on the render thread. The freedesktop sound-theme lookup happens here and
+//! `pw-play` plays the resolved file on the current `PipeWire` session route.
+//! Missing audio support is reported as a capability, never faked.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread::JoinHandle;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SoundBackend {
-    Libcanberra,
     PipeWire,
     #[cfg(windows)]
     WindowsSystem,
@@ -36,9 +33,7 @@ pub struct SoundCue {
 
 #[cfg(unix)]
 pub fn sound_backend() -> SoundBackend {
-    if command_exists("canberra-gtk-play") {
-        SoundBackend::Libcanberra
-    } else if command_exists("pw-play") && !installed_themes().is_empty() {
+    if command_exists("pw-play") && !installed_themes().is_empty() {
         SoundBackend::PipeWire
     } else {
         SoundBackend::Unavailable
@@ -90,7 +85,7 @@ fn sound_roots() -> Vec<PathBuf> {
 /// An installed sound theme.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SoundTheme {
-    /// Directory name; what the settings store and libcanberra use.
+    /// Directory name; what the settings store uses.
     pub id: String,
     /// `Name=` from `index.theme`.
     pub name: String,
@@ -230,28 +225,6 @@ fn resolve_sound_file_in(roots: &[PathBuf], theme: &str, ids: &[&str]) -> Option
     None
 }
 
-/// libcanberra takes volume in dB relative to the stream.
-fn volume_db(volume: f32) -> f32 {
-    let volume = volume.clamp(0.001, 1.0);
-    (20.0 * volume.log10()).max(-60.0)
-}
-
-fn canberra_args(cue: &SoundCue, resolved_id: Option<&str>) -> Vec<String> {
-    let id = resolved_id
-        .or_else(|| cue.ids.first().copied())
-        .unwrap_or_default();
-    vec![
-        format!("--id={id}"),
-        format!("--description={}", cue.description),
-        format!("--volume={:.1}", volume_db(cue.volume)),
-        format!("--property=canberra.xdg-theme.name={}", cue.theme),
-    ]
-}
-
-fn resolved_id(path: &Path) -> Option<&str> {
-    path.file_stem().and_then(|stem| stem.to_str())
-}
-
 fn play_one(backend: SoundBackend, cue: &SoundCue) {
     if cue.volume <= 0.0 {
         return;
@@ -270,12 +243,6 @@ fn play_one(backend: SoundBackend, cue: &SoundCue) {
             }
             return;
         }
-        SoundBackend::Libcanberra => {
-            let file = resolve_sound_file(&cue.theme, cue.ids);
-            let mut c = Command::new("canberra-gtk-play");
-            c.args(canberra_args(cue, file.as_deref().and_then(resolved_id)));
-            c
-        }
         SoundBackend::PipeWire => {
             let Some(path) = resolve_sound_file(&cue.theme, cue.ids) else {
                 return;
@@ -290,7 +257,11 @@ fn play_one(backend: SoundBackend, cue: &SoundCue) {
     // One cue at a time. The bounded sender coalesces bursts while the worker
     // waits, preventing event storms from becoming a process storm. A broken
     // audio route cannot strand the worker or leave descendants.
+    #[cfg(not(target_arch = "wasm32"))]
     let _ = bounded_command::run_prepared(command, None, 1024, std::time::Duration::from_secs(5));
+    // The browser has no processes; its backend is always `Unavailable`.
+    #[cfg(target_arch = "wasm32")]
+    drop(command);
 }
 
 #[derive(Debug)]
@@ -364,6 +335,7 @@ impl Default for EventSoundPlayer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     fn cue() -> SoundCue {
         SoundCue {
@@ -445,22 +417,5 @@ mod tests {
             "a hostile theme name only reaches the freedesktop fallback"
         );
         assert_eq!(resolve_sound_file_in(&roots, "ocean", &["../../x"]), None);
-    }
-
-    #[test]
-    fn canberra_gets_the_resolved_id_theme_and_volume_in_db() {
-        let args = canberra_args(&cue(), Some("message"));
-        assert_eq!(
-            args,
-            [
-                "--id=message",
-                "--description=New message",
-                "--volume=-6.0",
-                "--property=canberra.xdg-theme.name=ocean",
-            ]
-        );
-        assert!(canberra_args(&cue(), None)[0].ends_with("message-new-instant"));
-        assert!((volume_db(1.0)).abs() < 0.01);
-        assert!((volume_db(0.0) + 60.0).abs() < 0.01);
     }
 }

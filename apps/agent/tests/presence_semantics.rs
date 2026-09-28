@@ -7,7 +7,7 @@
     reason = "integration-test setup and assertions"
 )]
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use ui::collaboration::{CollabEvent, CollabRequest, PresencePayload};
 use ui::presence::PresenceKey;
@@ -30,9 +30,7 @@ fn send_until_presence(
     request: &CollabRequest,
     expected: &(PresenceKey, PresencePayload),
 ) -> (PresenceKey, PresencePayload) {
-    let deadline = Instant::now()
-        .checked_add(Duration::from_secs(3))
-        .expect("short test deadline fits in Instant");
+    let deadline = tilo_test_env::hang_deadline();
     while Instant::now() < deadline {
         sender.send(request).expect("publish typed presence");
         if let Some(CollabEvent::RemotePresenceUpdate { key, payload, .. }) = receiver

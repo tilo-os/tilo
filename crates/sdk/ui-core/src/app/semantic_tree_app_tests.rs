@@ -1,3 +1,11 @@
+include!("published_invocation_tests.rs");
+
+include!("hosted_model_tests.rs");
+
+include!("hosted_pump_dirty_tests.rs");
+
+include!("deferred_remote_tests.rs");
+
 use super::*;
 use crate::a11y_tree::{SemanticActionKind, SemanticId};
 use crate::state::State;
@@ -5,6 +13,7 @@ use crate::widget::{Button, Widget};
 use automerge::transaction::Transactable;
 use automerge::{ROOT, ReadDoc, ScalarValue, Value};
 use serde::{Deserialize, Serialize};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use tilo_actions::{
     Action as QAction, ActionError, ActionSpec, Doc, EncodedAction, ExecutionLocus, OperationKind,
@@ -153,6 +162,8 @@ struct CounterCard {
     post_bump_reset: bool,
     async_bump: bool,
     pending_bump: Option<tilo_actions::InvocationId>,
+    scoped_jobs: Vec<crate::invocation_scope::ResourceInvocationScope>,
+    scoped_results: Vec<tilo_actions::InvocationUpdate>,
     resource_result: Option<tilo_actions::InvocationUpdate>,
 }
 
@@ -242,6 +253,8 @@ impl CounterCard {
             post_bump_reset: false,
             async_bump: false,
             pending_bump: None,
+            scoped_jobs: vec![],
+            scoped_results: vec![],
             resource_result: None,
         }
     }
@@ -268,6 +281,8 @@ impl CounterCard {
             post_bump_reset: false,
             async_bump: false,
             pending_bump: None,
+            scoped_jobs: vec![],
+            scoped_results: vec![],
             resource_result: None,
         }
     }
@@ -310,6 +325,27 @@ impl CounterCard {
 impl Widget for CounterCard {
     fn sync(&mut self, s: &mut automerge::AutoCommit, p: &automerge::ObjId) {
         self.button.sync(s, p);
+        for scope in std::mem::take(&mut self.scoped_jobs) {
+            let invocation = scope.invocation();
+            let result = scope.with_document_mutation(s, |doc| {
+                CounterAction::Bump.apply(doc).map_err(|e| e.to_string())
+            });
+            self.scoped_results.push(match result {
+                Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
+                    invocation,
+                    output: tilo_actions::ActionOutput::default(),
+                },
+                Err(message) => tilo_actions::InvocationUpdate::Failed {
+                    invocation,
+                    error: tilo_actions::ActionFailure {
+                        code: "expired".into(),
+                        message,
+                        details: None,
+                        retryable: false,
+                    },
+                },
+            });
+        }
         if let Some(invocation) = self.pending_bump.take() {
             CounterAction::Bump.apply(s).unwrap();
             self.resource_result = Some(tilo_actions::InvocationUpdate::Succeeded {
@@ -444,6 +480,24 @@ impl Widget for CounterCard {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[COUNTER_TYPE, ASYNC_COUNTER_TYPE]
     }
+
+    fn start_resource_operation_scoped(
+        &mut self,
+        scope: &crate::invocation_scope::ResourceInvocationScope,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &mut automerge::AutoCommit,
+        path: &automerge::ObjId,
+    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        scope.check()?;
+        if self.async_bump && type_id == ASYNC_COUNTER_TYPE {
+            self.scoped_jobs.push(scope.clone());
+            return Ok(Some(crate::widget::ResourceOperationStart::Accepted));
+        }
+        self.invoke_resource_operation_v2(kind, type_id, payload, doc, path)
+            .map(|output| output.map(crate::widget::ResourceOperationStart::Completed))
+    }
     fn start_resource_operation(
         &mut self,
         invocation: tilo_actions::InvocationId,
@@ -467,6 +521,13 @@ impl Widget for CounterCard {
         _doc: &automerge::AutoCommit,
         _path: &automerge::ObjId,
     ) -> Option<tilo_actions::InvocationUpdate> {
+        if let Some(index) = self
+            .scoped_results
+            .iter()
+            .position(|update| update.invocation() == invocation)
+        {
+            return Some(self.scoped_results.remove(index));
+        }
         if self
             .resource_result
             .as_ref()
@@ -969,6 +1030,7 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
         let publication_attempts = app.actions.action_surface_publication_attempts;
 
         app.apply_collab_event_for_test(CollabEvent::Invocation {
+            invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(42)),
             id: 42,
             resource: "test.counter".into(),
             action: "bump".into(),
@@ -1001,8 +1063,11 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
             .register::<CounterAction>(COUNTER_TYPE);
         app.init_layout();
 
-        let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(43));
+        let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(
+            0xa5a5_a5a5_a5a5_a5a5_0000_0000_0000_002b,
+        ));
         app.apply_collab_event_for_test(CollabEvent::Invocation {
+            invocation,
             id: 43,
             resource: "test.counter".into(),
             action: "async-bump".into(),
@@ -1743,6 +1808,75 @@ fn retained_and_virtual_trees_dispatch_through_semantic_routes() {
                 .all(|action| action.id != "activate")
         }));
         assert_eq!(presses.get(), 0);
+    }
+}
+
+#[test]
+fn broker_invocation_uuid_collision_preserves_original_operation_route() {
+    for conflicting_action in ["bump", "async-bump"] {
+        let mut app = App::new_with_controlled_inputs(
+            State::new(),
+            Box::new(CounterCard::with_async_post_bump_reset()),
+        );
+        app.action_registry_mut()
+            .register::<CounterAction>(COUNTER_TYPE);
+        app.init_layout();
+        let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(
+            0xa5a5_a5a5_a5a5_a5a5_0000_0000_0000_002b,
+        ));
+        app.invoke_published_action(
+            43,
+            invocation,
+            "test.counter".into(),
+            "async-bump".into(),
+            None,
+            "device:first",
+            None,
+        );
+        // A conflicting caller must never replace the active operation's
+        // cancellation/completion route or run a second effect.
+        app.invoke_published_action(
+            44,
+            invocation,
+            "test.counter".into(),
+            conflicting_action.into(),
+            None,
+            "device:second",
+            None,
+        );
+        assert_eq!(
+            counter(&app),
+            0,
+            "conflicting invocation was rejected before its effect"
+        );
+        assert_eq!(
+            app.actions
+                .directed_invocations
+                .get(&invocation)
+                .unwrap()
+                .wire_id,
+            43
+        );
+        app.request_invocation_cancellation(44);
+        assert!(
+            !app.actions
+                .directed_invocations
+                .get(&invocation)
+                .unwrap()
+                .cancellation_requested
+        );
+        app.request_invocation_cancellation(43);
+        assert!(
+            app.actions
+                .directed_invocations
+                .get(&invocation)
+                .unwrap()
+                .cancellation_requested
+        );
+        app.refresh_focus_order();
+        assert_eq!(counter(&app), 1, "only the first operation ran");
+        assert!(app.poll_directed_invocations());
+        assert!(app.actions.directed_invocations.is_empty());
     }
 }
 

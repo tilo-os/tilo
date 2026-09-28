@@ -354,6 +354,41 @@ class SelectorTests(unittest.TestCase):
             # The structural estimate keeps its meaning.
             self.assertEqual(sum(shard["estimated_cost"] for shard in shards),
                              sum(ci_select.package_cost(pkg) for pkg in packages.values()))
+        with self.subTest(phase='fsync-heavy suites keep to separate test shards'):
+            self.setUp()
+            names = ("fs", "tilo-cloud-host", "tilo-action-broker", "light")
+            packages = {name: {"name": name, "targets": [], "dependencies": []} for name in names}
+            # By time alone fs and the Cloud host would share the lighter shard.
+            seconds = {"tilo-action-broker": 900, "fs": 100, "tilo-cloud-host": 100, "light": 1}
+            shards = ci_select.balance(set(packages), packages, 2, seconds,
+                                       ci_select.TEST_SHARD_APART)
+            placed = [set(shard["packages"].split()[1::2]) for shard in shards]
+            self.assertIn({"tilo-cloud-host", "tilo-action-broker"}, placed)
+            self.assertTrue(any("fs" in names for names in placed))
+            # One shard still takes everything.
+            (only,) = ci_select.balance(set(packages), packages, 1, seconds,
+                                        ci_select.TEST_SHARD_APART)
+            self.assertEqual(only["package_count"], 4)
+        with self.subTest(phase='unrecorded packages carry the default test time'):
+            self.setUp()
+            packages = {name: {"name": name, "targets": [], "dependencies": []}
+                        for name in ("recorded", "new-a", "new-b", "new-c")}
+            default = ci_select.UNRECORDED_TEST_SECONDS
+            self.assertGreater(default, 0)
+            # Counted as free, the three new suites would all join the shard
+            # beside the recorded one; with the default they spread.
+            recorded = {"recorded": default + 5}
+            shards = ci_select.balance(set(packages), packages, 2, recorded)
+            placed = [set(shard["packages"].split()[1::2]) for shard in shards]
+            self.assertFalse(any({"new-a", "new-b", "new-c"} <= names for names in placed))
+            self.assertEqual(sorted(shard["recorded_test_seconds"] for shard in shards),
+                             [0, default + 5])
+            self.assertEqual(ci_select.expected_test_seconds("new-a", recorded), default)
+            # Without any recorded timings, balancing stays structural.
+            self.assertEqual(ci_select.expected_test_seconds("new-a", {}), 0)
+            names = {f"new-{index}" for index in range(ci_select.TEST_SHARD_SECONDS // default + 1)}
+            self.assertEqual(ci_select.useful_test_shard_count(names, {"recorded": 1}), 2)
+            self.assertEqual(ci_select.useful_test_shard_count(names, {}), 1)
         with self.subTest(phase='recorded test time splits test jobs, not type-check shards'):
             self.setUp()
             changes = ["base/src/lib.rs"]

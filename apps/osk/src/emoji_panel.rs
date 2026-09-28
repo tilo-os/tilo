@@ -615,7 +615,7 @@ impl EmojiPanel {
                     draw_emoji(scene, transform, text_renderer, theme, *rect, text, pressed);
                 }
                 scene.pop_layer();
-                crate::widget::draw_cell(
+                crate::presentation::draw_cell(
                     scene,
                     transform,
                     text_renderer,
@@ -623,14 +623,14 @@ impl EmojiPanel {
                     self.letters_rect,
                     None,
                     &i18n::t("osk-emoji-letters"),
-                    crate::widget::CellState {
+                    crate::presentation::CellState {
                         pressed: self.pressed == Some(PanelHit::Letters),
                         accent: true,
                         ..Default::default()
                     },
                     0.30,
                 );
-                crate::widget::draw_cell(
+                crate::presentation::draw_cell(
                     scene,
                     transform,
                     text_renderer,
@@ -638,7 +638,7 @@ impl EmojiPanel {
                     self.delete_rect,
                     Some(ui::icons::Icon::Delete),
                     "",
-                    crate::widget::CellState {
+                    crate::presentation::CellState {
                         pressed: self.pressed == Some(PanelHit::Delete),
                         accent: true,
                         ..Default::default()
@@ -656,7 +656,7 @@ impl EmojiPanel {
                 );
                 self.search
                     .draw(scene, transform, text_renderer, theme, presence);
-                crate::widget::draw_cell(
+                crate::presentation::draw_cell(
                     scene,
                     transform,
                     text_renderer,
@@ -664,7 +664,7 @@ impl EmojiPanel {
                     self.end_search_rect,
                     Some(ui::icons::Icon::ArrowLeft),
                     "",
-                    crate::widget::CellState {
+                    crate::presentation::CellState {
                         pressed: self.pressed == Some(PanelHit::EndSearch),
                         ..Default::default()
                     },

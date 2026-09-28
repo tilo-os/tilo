@@ -4,9 +4,8 @@
 //! collaboration state. An owner key inside a shared document is only a UI
 //! filter, never a confidentiality or replication boundary.
 
-use std::fs::{self, OpenOptions};
+use std::fs;
 use std::io::Read;
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use automerge::transaction::Transactable;
@@ -205,8 +204,7 @@ impl OwnerHistoryStore {
     /// never reroutes the operation through shared collaboration state.
     pub fn dispatch(&mut self, host: &mut ui::ActionHost, action: &OwnerHistoryAction) -> bool {
         let before = self.doc.save();
-        let context =
-            ActionContext::for_action("org.tilo.Tube", "Tube owner-local history", action);
+        let context = ActionContext::for_action("so.tilo.tube", "Tube owner-local history", action);
         if let Err(error) = host.try_dispatch_with_context(
             &mut self.doc,
             OWNER_HISTORY_ACTION_TYPE,
@@ -245,7 +243,7 @@ impl OwnerHistoryStore {
             .parent()
             .ok_or_else(|| std::io::Error::other("history path has no parent"))?;
         fs::create_dir_all(parent)?;
-        fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
+        private_fs::restrict_directory(parent)?;
         let bytes = self.doc.save();
         if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_HISTORY_BYTES {
             return Err(std::io::Error::other(
@@ -402,57 +400,12 @@ fn owner_file_id(owner_id: &str) -> String {
     blake3::hash(owner_id.as_bytes()).to_hex().to_string()
 }
 
-fn current_uid() -> u32 {
-    // SAFETY: `geteuid` has no preconditions and only reads the calling
-    // process's credential, which is exactly the ownership boundary checked
-    // before tightening an existing history file.
-    unsafe { libc::geteuid() }
-}
-
 fn read_private_document(path: &Path) -> std::io::Result<AutoCommit> {
-    // Never follow a history-file symlink. Check the opened descriptor too,
-    // so a rename between metadata and open cannot turn into a privileged read.
-    let metadata = fs::symlink_metadata(path)?;
-    if !metadata.file_type().is_file() {
-        return Err(std::io::Error::other(
-            "history target is not a regular file",
-        ));
-    }
-    if metadata.uid() != current_uid() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            "history file is not owned by the current user",
-        ));
-    }
-    if metadata.len() > MAX_HISTORY_BYTES {
-        return Err(std::io::Error::other("history file exceeds size limit"));
-    }
-    let file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(path)?;
-    let opened = file.metadata()?;
-    if !opened.file_type().is_file()
-        || opened.len() > MAX_HISTORY_BYTES
-        || opened.uid() != current_uid()
-        || opened.dev() != metadata.dev()
-        || opened.ino() != metadata.ino()
-    {
-        return Err(std::io::Error::other(
-            "history target changed while opening",
-        ));
-    }
-    if opened.permissions().mode() & 0o777 != 0o600 {
-        file.set_permissions(fs::Permissions::from_mode(0o600))?;
-        if file.metadata()?.permissions().mode() & 0o777 != 0o600 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                "could not enforce owner-only history file permissions",
-            ));
-        }
-    }
-    let mut bytes =
-        Vec::with_capacity(usize::try_from(opened.len()).map_err(std::io::Error::other)?);
+    // Never follow a history-file symlink, and check the opened descriptor
+    // too, so a rename between inspection and open cannot turn into a
+    // privileged read.
+    let (file, len) = private_fs::open_owned_for_read(path, MAX_HISTORY_BYTES)?;
+    let mut bytes = Vec::with_capacity(usize::try_from(len).map_err(std::io::Error::other)?);
     file.take(MAX_HISTORY_BYTES + 1).read_to_end(&mut bytes)?;
     if u64::try_from(bytes.len()).map_err(std::io::Error::other)? > MAX_HISTORY_BYTES {
         return Err(std::io::Error::other("history read exceeds size limit"));
@@ -463,6 +416,7 @@ fn read_private_document(path: &Path) -> std::io::Result<AutoCommit> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
     use tempfile::TempDir;
 
     #[test]

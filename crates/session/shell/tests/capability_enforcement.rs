@@ -937,3 +937,9 @@ fn scoped_capabilities_carry_exactly_their_own_authority() {
 // renderer: a per-file share is never room membership.
 
 // File permissions inherit down the tree, Linux-style.
+
+#[allow(
+    unused_imports,
+    reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
+)]
+use shell::shell::state::WorkspaceExt as _;

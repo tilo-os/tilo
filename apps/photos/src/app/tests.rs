@@ -2078,7 +2078,7 @@ fn thumbnail_queue_is_bounded_wakes_its_host_and_rejects_stale_results() {
             let key = request.key();
             app.thumbnail_service.request(request);
             let event = receiver
-                .recv_timeout(std::time::Duration::from_secs(5))
+                .recv_timeout(tilo_test_env::hang_bound())
                 .expect("thumbnail completion must wake the idle host without user input");
             assert!(scope.accepts(&event));
             let settled = app.thumbnail_service.peek(&key).unwrap();

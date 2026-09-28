@@ -1562,7 +1562,7 @@ mod tests {
                 decoder.is_real_decode(),
                 "the decode feature must stand up a real pipeline, not the synthesized fallback",
             );
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+            let deadline = tilo_test_env::hang_deadline();
             let mut ready = false;
             while std::time::Instant::now() < deadline {
                 if decoder.update(&p, playhead) {
@@ -1873,8 +1873,8 @@ mod tests {
             // and a cold pipeline plus an accurate seek can outrun the 2s the
             // engine defaults to. The assertions below are unchanged — only how
             // long the decoder is given to answer.
-            let mut src = MediaFrameSource::new(&p, Fetch::Exact)
-                .with_timeout(std::time::Duration::from_secs(20));
+            let mut src =
+                MediaFrameSource::new(&p, Fetch::Exact).with_timeout(tilo_test_env::hang_bound());
             assert_eq!(src.decodable(), 1, "the hydrated local file is decodable");
 
             let mut c = compositor();
@@ -2000,8 +2000,8 @@ mod tests {
                 }];
             }
 
-            let mut src = MediaFrameSource::new(&p, Fetch::Exact)
-                .with_timeout(std::time::Duration::from_secs(20));
+            let mut src =
+                MediaFrameSource::new(&p, Fetch::Exact).with_timeout(tilo_test_env::hang_bound());
             let mut c = compositor();
             let both = c.frame(&p, 1.0, 96, 54, &mut src);
 

@@ -94,8 +94,26 @@ fn validate_resource<S: BuildHasher>(
         }
         let encoded = match &action.input {
             ActionInput::Immediate(encoded) => Some(encoded),
-            ActionInput::Prompted { .. } => None,
+            ActionInput::Prompted { .. } | ActionInput::Deferred { .. } => None,
         };
+        if let Err(error) = action.validate_deferred_shape() {
+            violations.push(issue(&address, &error.to_string()));
+        }
+        if let ActionInput::Deferred { type_id, .. } = &action.input {
+            if action.kind == crate::OperationKind::Document && !registry.contains(type_id) {
+                violations.push(issue(&address, "document action type is not registered"));
+            }
+            if action
+                .operation_type
+                .as_ref()
+                .is_some_and(|declared| declared != type_id)
+            {
+                violations.push(issue(
+                    &address,
+                    "deferred operation type does not match its declaration",
+                ));
+            }
+        }
         if action.kind == crate::OperationKind::Document && action.operation_type.is_some() {
             violations.push(issue(
                 &address,

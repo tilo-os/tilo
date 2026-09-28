@@ -4418,7 +4418,7 @@ impl ImagerApp {
             state,
             crate::actions::IMAGER_ACTION_TYPE,
             &action,
-            tilo_actions::ActionContext::for_action("org.tilo.Imager", "Imager", &action),
+            tilo_actions::ActionContext::for_action("so.tilo.imager", "Imager", &action),
         );
         self.source = Some(src.clone());
         self.set_status(
@@ -5550,7 +5550,7 @@ impl Widget for ImagerApp {
                         crate::actions::IMAGER_ACTION_TYPE,
                         &field_action,
                         tilo_actions::ActionContext::for_action(
-                            "org.tilo.Imager",
+                            "so.tilo.imager",
                             "Imager",
                             &field_action,
                         ),

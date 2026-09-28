@@ -749,6 +749,11 @@ fn members_tab_role_and_removal_controls_are_explicit_and_owner_only() {
 
 // Grant draft plumbing
 
+#[allow(
+    unused_imports,
+    reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
+)]
+use shell::shell::state::WorkspaceExt as _;
 #[test]
 fn an_app_allowed_another_apps_action_is_listed_under_app_actions_and_revocable() {
     let mut tree = WorkspaceTree::default();

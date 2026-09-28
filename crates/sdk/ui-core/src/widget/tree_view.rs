@@ -903,6 +903,11 @@ pub struct TreeView<T, M = TreeNode<T>> {
     trailing_edge: bool,
     /// A row to reveal once a filling tree first has a viewport.
     pending_reveal: Option<NodeId>,
+    /// Set by changes the view signature cannot see (model content, layout,
+    /// input the tree acted on); cleared once the tree is drawn.
+    paint_dirty: bool,
+    /// [`Self::paint_signature`] as of the last completed draw.
+    drawn_signature: Option<u64>,
 }
 
 /// Matches `theme.tokens.spacing.s4` (16.0); also the per-depth indent unit.
@@ -1085,6 +1090,8 @@ impl<T, M: TreeModel> TreeView<T, M> {
             indent_guides: false,
             trailing_edge: false,
             pending_reveal: None,
+            paint_dirty: true,
+            drawn_signature: None,
         };
         view.refresh_anchor();
         view.refresh_transition_snapshot();
@@ -1172,7 +1179,10 @@ impl<T, M: TreeModel> TreeView<T, M> {
 
     /// Replace the heading (see [`Self::with_heading`]).
     pub fn set_heading(&mut self, heading: Option<String>) {
-        self.heading = heading;
+        if self.heading != heading {
+            self.heading = heading;
+            self.paint_dirty = true;
+        }
     }
 
     /// Paint the tree on a surface other than `surfaces.base` (a raised
@@ -1558,6 +1568,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
         let reconcile = Self::changes_require_reconcile(changes);
         let anchor = reconcile.then(|| self.capture_view_anchor()).flatten();
         let result = update(&mut self.model);
+        self.paint_dirty = true;
         self.invalidate_changed_delegates(changes);
         self.resolve_changed_slots(changes);
         if reconcile {
@@ -1570,6 +1581,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
     /// geometry; structural and slot-state changes rebuild once and preserve
     /// the current viewport anchor by stable row identity.
     pub fn notify_model_changes(&mut self, changes: &[TreeModelChange]) {
+        self.paint_dirty = true;
         self.invalidate_changed_slots(changes);
         self.invalidate_changed_delegates(changes);
         self.resolve_changed_slots(changes);
@@ -1760,6 +1772,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
     }
 
     fn reconcile_visible(&mut self, anchor: Option<&SparseAnchor<TreeRowKey>>) {
+        self.paint_dirty = true;
         let old_snapshot = self.transition_snapshot.clone();
         let next = SparseTreeIndex::build(&self.model, &self.expanded, self.index.root_hidden);
         self.viewport.reconcile(
@@ -2757,6 +2770,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
         }
         self.mark_delegate_window_dirty();
         self.refresh_anchor();
+        self.paint_dirty = true;
     }
 
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
@@ -2808,6 +2822,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
         for row in &mut self.mounted_rows {
             changed |= row.widget.update(state, path);
         }
+        self.paint_dirty |= changed;
         changed
     }
 
@@ -2817,6 +2832,9 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
         theme: &Theme,
         node_map: &mut HashMap<taffy::NodeId, *mut dyn Widget>,
     ) -> taffy::NodeId {
+        // A layout pass may carry a new theme or text scale; the next draw
+        // repaints every row with it.
+        self.paint_dirty = true;
         self.transition_duration = theme.tokens.motion.durations.base();
         self.reduce_motion = theme.reduce_motion;
         if self.reduce_motion {
@@ -2875,6 +2893,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: taffy::NodeId, origin: Point) {
+        self.paint_dirty = true;
         let layout = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
             origin.x + f64::from(layout.location.x),
@@ -3362,229 +3381,26 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
         self.paint_context_menu(scene, transform, text_renderer, theme, presence);
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "keeps delegate, reorder, disclosure, selection, scroll, and keyboard precedence explicit"
-    )]
     fn handle_event_ctx(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
-        let scale_factor = ctx.scale_factor;
-        let modifiers = ctx.modifiers;
-        let state = &mut *ctx.state;
-        let path = ctx.path;
-        let handled = &mut *ctx.handled;
-        let focus_target = &mut *ctx.focus_target;
-        let node_id = ctx.node_id;
-        let taffy = ctx.taffy;
-        if let WindowEvent::CursorMoved { position, .. } = event {
-            let point = Point::new(position.x / scale_factor, position.y / scale_factor);
-            self.last_cursor = Some(point);
-            self.hovered = self.row_key_at(point);
-        }
-        if let WindowEvent::CursorLeft { .. } = event {
-            self.hovered = None;
-        }
-        if self.route_context_menu(
+        self.route_event(event, ctx);
+        // Pointer motion repaints only through what the view signature sees
+        // (hover, affordance hover, drags), so a resting pointer stays inert.
+        // Other input the tree acted on, or could have, repaints it.
+        let motion = matches!(
             event,
-            scale_factor,
-            *modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
-        ) {
-            return;
-        }
-        if self.route_rename(
-            event,
-            scale_factor,
-            *modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
-        ) {
-            return;
-        }
-        if !self.reorder.is_tracking() && !self.drag_scroll.is_tracking() {
-            self.route_to_delegates(
-                event,
-                scale_factor,
-                *modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                taffy,
-            );
-        }
-        if *handled {
-            return;
-        }
-        match event {
-            WindowEvent::CursorMoved { .. } if self.reorder.is_tracking() => {
-                if let Some(cursor) = self.last_cursor {
-                    let now = crate::time::now();
-                    self.update_reorder_pointer(cursor, now);
-                    self.last_tick = Some(now);
-                    *handled = self.reorder.is_active();
-                }
-            }
-            WindowEvent::CursorMoved { .. } if self.drag_scroll.is_tracking() => {
-                if let Some(cursor) = self.last_cursor {
-                    let now = crate::time::now();
-                    if let Some(update) = self.drag_scroll.update(cursor.y, now) {
-                        self.momentum.stop();
-                        self.set_scroll_offset(update.target_offset);
-                        self.last_tick = Some(now);
-                        *handled = true;
-                    }
-                }
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } => {
-                self.momentum.stop();
-                if let Some(cursor) = self.last_cursor
-                    && self.rect.contains(cursor)
-                    && self.press_affordance(cursor)
-                {
-                    *focus_target = Some(node_id);
-                    *handled = true;
-                    return;
-                }
-                let reorderable = self.reorder_validator.is_some() && self.reorder_commit.is_some();
-                let source = reorderable
-                    .then(|| self.reorder_source_at_cursor())
-                    .flatten();
-                let toggle = modifiers.state().control_key() || modifiers.state().super_key();
-                let extend = modifiers.state().shift_key();
-                if reorderable && self.disclosure_at_cursor() {
-                    // Rows of a reorderable tree act on press, so its
-                    // disclosure does too.
-                    *handled = self.on_left_press(node_id, focus_target, toggle, extend);
-                } else if let (Some(source), Some(cursor)) = (source, self.last_cursor) {
-                    self.on_left_press(node_id, focus_target, toggle, extend);
-                    // A double click that opened the rename field is not
-                    // the start of a drag.
-                    if self.rename.is_none() {
-                        self.reorder.begin(source, cursor);
-                        self.last_tick = Some(crate::time::now());
-                    }
-                    *handled = true;
-                } else if let Some(cursor) = self.last_cursor
-                    && self.rect.contains(cursor)
-                {
-                    self.drag_scroll
-                        .begin(cursor.y, self.scroll_offset(), crate::time::now());
-                    *focus_target = Some(node_id);
-                    *handled = true;
-                }
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Right,
-                ..
-            } if self.context_menu_items.is_some() => {
-                if let Some(cursor) = self.last_cursor
-                    && self.rect.contains(cursor)
-                {
-                    self.reorder.cancel();
-                    self.drag_scroll.cancel();
-                    match self.row_key_at(cursor) {
-                        Some(TreeRowKey::Node(id)) => {
-                            self.open_row_menu(id, cursor);
-                        }
-                        _ => {
-                            self.open_context_menu(None, cursor);
-                        }
-                    }
-                    *focus_target = Some(node_id);
-                    *handled = true;
-                }
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Released,
-                button: MouseButton::Left,
-                ..
-            } if self.reorder.is_tracking() => {
-                if let Some(dropped) = self.reorder.finish() {
-                    self.commit_reorder(dropped);
-                }
-                *handled = true;
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Released,
-                button: MouseButton::Left,
-                ..
-            } if self.drag_scroll.is_tracking() => {
-                if let Some(drag) = self.drag_scroll.finish(crate::time::now()) {
-                    if drag.dragged {
-                        if self.reduce_motion {
-                            self.momentum.stop();
-                        } else {
-                            self.momentum.fling(drag.velocity);
-                            self.last_tick = Some(crate::time::now());
-                        }
-                    } else {
-                        let toggle =
-                            modifiers.state().control_key() || modifiers.state().super_key();
-                        let extend = modifiers.state().shift_key();
-                        self.on_left_press(node_id, focus_target, toggle, extend);
-                    }
-                    *handled = true;
-                }
-            }
-            WindowEvent::MouseWheel { delta, phase, .. }
-                if self
+            WindowEvent::CursorMoved { .. }
+                | WindowEvent::CursorLeft { .. }
+                | WindowEvent::CursorEntered { .. }
+        );
+        if !motion
+            && (*ctx.handled
+                || ctx.focus_target.is_some()
+                || self.is_focused
+                || self
                     .last_cursor
-                    .is_some_and(|point| self.rect.contains(point)) =>
-            {
-                self.drag_scroll.cancel();
-                *handled = self.on_wheel(delta, *phase);
-            }
-            WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        logical_key,
-                        state: ElementState::Pressed,
-                        ..
-                    },
-                ..
-            } if self.is_focused => {
-                self.momentum.stop();
-                let mods = modifiers.state();
-                let menu_key = matches!(logical_key, Key::Named(NamedKey::ContextMenu))
-                    || (mods.shift_key() && matches!(logical_key, Key::Named(NamedKey::F10)));
-                if *logical_key == Key::Named(NamedKey::Escape)
-                    && (self.reorder.cancel() || self.drag_scroll.cancel())
-                {
-                    *handled = true;
-                } else if menu_key && self.context_menu_items.is_some() {
-                    *handled = self.open_menu_from_keyboard();
-                } else if *logical_key == Key::Named(NamedKey::F2) && self.on_rename.is_some() {
-                    *handled = self.command_node().is_some_and(|id| self.begin_rename(id));
-                } else if *logical_key == Key::Named(NamedKey::Delete) && self.on_delete.is_some() {
-                    if let (Some(id), Some(callback)) = (self.command_node(), &mut self.on_delete) {
-                        callback(id);
-                        *handled = true;
-                    }
-                } else if let Some(movement) = self.key_move(logical_key, mods) {
-                    *handled = self
-                        .command_node()
-                        .is_some_and(|id| self.move_node(id, movement));
-                } else {
-                    let toggle = modifiers.state().control_key() || modifiers.state().super_key();
-                    let extend = modifiers.state().shift_key();
-                    *handled = self.on_key_with_modifiers(logical_key, toggle, extend);
-                }
-            }
-            _ => {}
+                    .is_some_and(|point| self.rect.contains(point)))
+        {
+            self.paint_dirty = true;
         }
     }
 
@@ -3629,6 +3445,37 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
                 .mounted_rows
                 .iter()
                 .any(|row| row.widget.wants_pointer_capture())
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.paint_dirty
+            || self.drawn_signature != Some(self.paint_signature())
+            || self.momentum.is_active()
+            || self.reorder.is_active()
+            || self.transitions.is_active(crate::time::now())
+            || self.menu.is_open() && self.menu.needs_redraw()
+            || self
+                .rename
+                .as_ref()
+                .is_some_and(|field| field.input.needs_redraw())
+            || self
+                .mounted_rows
+                .iter()
+                .any(|row| row.widget.needs_redraw())
+    }
+
+    fn mark_drawn(&mut self) {
+        self.paint_dirty = false;
+        self.drawn_signature = Some(self.paint_signature());
+        if let Some(field) = self.rename.as_mut() {
+            field.input.mark_drawn();
+        }
+        if self.menu.is_open() {
+            self.menu.mark_drawn();
+        }
+        for row in &mut self.mounted_rows {
+            row.widget.mark_drawn();
+        }
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -3887,6 +3734,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
     ) -> bool {
         use crate::a11y::Action;
 
+        self.paint_dirty = true;
         if let Some(performed) = self.perform_affordance_action(target, action, state, path) {
             return performed;
         }
@@ -3963,6 +3811,298 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
         } else {
             false
         }
+    }
+}
+
+impl<T: 'static, M: TreeModel + 'static> TreeView<T, M> {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "keeps delegate, reorder, disclosure, selection, scroll, and keyboard precedence explicit"
+    )]
+    fn route_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
+        let scale_factor = ctx.scale_factor;
+        let modifiers = ctx.modifiers;
+        let state = &mut *ctx.state;
+        let path = ctx.path;
+        let handled = &mut *ctx.handled;
+        let focus_target = &mut *ctx.focus_target;
+        let node_id = ctx.node_id;
+        let taffy = ctx.taffy;
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            let point = Point::new(position.x / scale_factor, position.y / scale_factor);
+            self.last_cursor = Some(point);
+            self.hovered = self.row_key_at(point);
+        }
+        if let WindowEvent::CursorLeft { .. } = event {
+            self.hovered = None;
+        }
+        if self.route_context_menu(
+            event,
+            scale_factor,
+            *modifiers,
+            state,
+            path,
+            handled,
+            focus_target,
+            node_id,
+            taffy,
+        ) {
+            return;
+        }
+        if self.route_rename(
+            event,
+            scale_factor,
+            *modifiers,
+            state,
+            path,
+            handled,
+            focus_target,
+            node_id,
+            taffy,
+        ) {
+            return;
+        }
+        if !self.reorder.is_tracking() && !self.drag_scroll.is_tracking() {
+            self.route_to_delegates(
+                event,
+                scale_factor,
+                *modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                taffy,
+            );
+        }
+        if *handled {
+            return;
+        }
+        match event {
+            WindowEvent::CursorMoved { .. } if self.reorder.is_tracking() => {
+                if let Some(cursor) = self.last_cursor {
+                    let now = crate::time::now();
+                    self.update_reorder_pointer(cursor, now);
+                    self.last_tick = Some(now);
+                    *handled = self.reorder.is_active();
+                }
+            }
+            WindowEvent::CursorMoved { .. } if self.drag_scroll.is_tracking() => {
+                if let Some(cursor) = self.last_cursor {
+                    let now = crate::time::now();
+                    if let Some(update) = self.drag_scroll.update(cursor.y, now) {
+                        self.momentum.stop();
+                        self.set_scroll_offset(update.target_offset);
+                        self.last_tick = Some(now);
+                        *handled = true;
+                    }
+                }
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                self.momentum.stop();
+                if let Some(cursor) = self.last_cursor
+                    && self.rect.contains(cursor)
+                    && self.press_affordance(cursor)
+                {
+                    *focus_target = Some(node_id);
+                    *handled = true;
+                    return;
+                }
+                let reorderable = self.reorder_validator.is_some() && self.reorder_commit.is_some();
+                let source = reorderable
+                    .then(|| self.reorder_source_at_cursor())
+                    .flatten();
+                let toggle = modifiers.state().control_key() || modifiers.state().super_key();
+                let extend = modifiers.state().shift_key();
+                if reorderable && self.disclosure_at_cursor() {
+                    // Rows of a reorderable tree act on press, so its
+                    // disclosure does too.
+                    *handled = self.on_left_press(node_id, focus_target, toggle, extend);
+                } else if let (Some(source), Some(cursor)) = (source, self.last_cursor) {
+                    self.on_left_press(node_id, focus_target, toggle, extend);
+                    // A double click that opened the rename field is not
+                    // the start of a drag.
+                    if self.rename.is_none() {
+                        self.reorder.begin(source, cursor);
+                        self.last_tick = Some(crate::time::now());
+                    }
+                    *handled = true;
+                } else if let Some(cursor) = self.last_cursor
+                    && self.rect.contains(cursor)
+                {
+                    self.drag_scroll
+                        .begin(cursor.y, self.scroll_offset(), crate::time::now());
+                    *focus_target = Some(node_id);
+                    *handled = true;
+                }
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Right,
+                ..
+            } if self.context_menu_items.is_some() => {
+                if let Some(cursor) = self.last_cursor
+                    && self.rect.contains(cursor)
+                {
+                    self.reorder.cancel();
+                    self.drag_scroll.cancel();
+                    match self.row_key_at(cursor) {
+                        Some(TreeRowKey::Node(id)) => {
+                            self.open_row_menu(id, cursor);
+                        }
+                        _ => {
+                            self.open_context_menu(None, cursor);
+                        }
+                    }
+                    *focus_target = Some(node_id);
+                    *handled = true;
+                }
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } if self.reorder.is_tracking() => {
+                if let Some(dropped) = self.reorder.finish() {
+                    self.commit_reorder(dropped);
+                }
+                *handled = true;
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } if self.drag_scroll.is_tracking() => {
+                if let Some(drag) = self.drag_scroll.finish(crate::time::now()) {
+                    if drag.dragged {
+                        if self.reduce_motion {
+                            self.momentum.stop();
+                        } else {
+                            self.momentum.fling(drag.velocity);
+                            self.last_tick = Some(crate::time::now());
+                        }
+                    } else {
+                        let toggle =
+                            modifiers.state().control_key() || modifiers.state().super_key();
+                        let extend = modifiers.state().shift_key();
+                        self.on_left_press(node_id, focus_target, toggle, extend);
+                    }
+                    *handled = true;
+                }
+            }
+            WindowEvent::MouseWheel { delta, phase, .. }
+                if self
+                    .last_cursor
+                    .is_some_and(|point| self.rect.contains(point)) =>
+            {
+                self.drag_scroll.cancel();
+                *handled = self.on_wheel(delta, *phase);
+            }
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key,
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } if self.is_focused => {
+                self.momentum.stop();
+                let mods = modifiers.state();
+                let menu_key = matches!(logical_key, Key::Named(NamedKey::ContextMenu))
+                    || (mods.shift_key() && matches!(logical_key, Key::Named(NamedKey::F10)));
+                if *logical_key == Key::Named(NamedKey::Escape)
+                    && (self.reorder.cancel() || self.drag_scroll.cancel())
+                {
+                    *handled = true;
+                } else if menu_key && self.context_menu_items.is_some() {
+                    *handled = self.open_menu_from_keyboard();
+                } else if *logical_key == Key::Named(NamedKey::F2) && self.on_rename.is_some() {
+                    *handled = self.command_node().is_some_and(|id| self.begin_rename(id));
+                } else if *logical_key == Key::Named(NamedKey::Delete) && self.on_delete.is_some() {
+                    if let (Some(id), Some(callback)) = (self.command_node(), &mut self.on_delete) {
+                        callback(id);
+                        *handled = true;
+                    }
+                } else if let Some(movement) = self.key_move(logical_key, mods) {
+                    *handled = self
+                        .command_node()
+                        .is_some_and(|id| self.move_node(id, movement));
+                } else {
+                    let toggle = modifiers.state().control_key() || modifiers.state().super_key();
+                    let extend = modifiers.state().shift_key();
+                    *handled = self.on_key_with_modifiers(logical_key, toggle, extend);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// A digest of the view state the paint pass reads outside the model:
+    /// geometry, scroll, expansion, selection, focus, hover and the pointer
+    /// affordances. Model content changes set `paint_dirty` instead.
+    fn paint_signature(&self) -> u64 {
+        use std::hash::{BuildHasher, Hash, Hasher};
+
+        // Unordered sets fold with a commutative sum so iteration order does
+        // not change the digest.
+        let hasher =
+            std::hash::BuildHasherDefault::<std::collections::hash_map::DefaultHasher>::default();
+        let unordered = |keys: &mut dyn Iterator<Item = NodeId>| {
+            keys.fold(0_u64, |sum, key| sum.wrapping_add(hasher.hash_one(key)))
+        };
+        let mut state = hasher.build_hasher();
+        for edge in [self.rect.x0, self.rect.y0, self.rect.x1, self.rect.y1] {
+            edge.to_bits().hash(&mut state);
+        }
+        self.viewport.offset().to_bits().hash(&mut state);
+        self.viewport.viewport().to_bits().hash(&mut state);
+        self.viewport.content_extent().to_bits().hash(&mut state);
+        self.index.len().hash(&mut state);
+        unordered(&mut self.expanded.iter().copied()).hash(&mut state);
+        unordered(&mut self.selection.stored_keys().copied()).hash(&mut state);
+        self.selection.is_select_all().hash(&mut state);
+        self.selection.primary().hash(&mut state);
+        self.selection.anchor().hash(&mut state);
+        self.focused.hash(&mut state);
+        self.current.hash(&mut state);
+        self.hovered.hash(&mut state);
+        self.is_focused.hash(&mut state);
+        self.heading.hash(&mut state);
+        self.rename.as_ref().map(|field| field.id).hash(&mut state);
+        self.menu.is_open().hash(&mut state);
+        self.menu_target.hash(&mut state);
+        self.reorder.is_tracking().hash(&mut state);
+        self.reorder.is_active().hash(&mut state);
+        self.drag_scroll.is_tracking().hash(&mut state);
+        self.momentum.is_active().hash(&mut state);
+        self.transitions
+            .is_active(crate::time::now())
+            .hash(&mut state);
+        // Pointer-driven chrome: the heading action and the hovered row's
+        // actions lift under the pointer.
+        let cursor = self.last_cursor;
+        let over = |rect: Rect| cursor.is_some_and(|point| rect.contains(point));
+        self.heading_action_rect()
+            .is_some_and(over)
+            .hash(&mut state);
+        match self.hovered {
+            Some(TreeRowKey::Node(id)) if self.row_actions_visible(TreeRowKey::Node(id)) => self
+                .row_rect(id)
+                .and_then(|row| self.row_action_rects(row).into_iter().position(over)),
+            _ => None,
+        }
+        .hash(&mut state);
+        // While a drag, menu or rename follows the pointer, every move shows.
+        if self.reorder.is_tracking() || self.menu.is_open() || self.rename.is_some() {
+            cursor
+                .map(|point| (point.x.to_bits(), point.y.to_bits()))
+                .hash(&mut state);
+        }
+        state.finish()
     }
 }
 

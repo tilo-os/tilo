@@ -569,7 +569,9 @@ mod tests {
     fn prompted_encode(spec: &ActionSpec, arg: &str) -> EncodedAction {
         match &spec.input {
             ActionInput::Prompted { build, .. } => build(arg),
-            ActionInput::Immediate(_) => panic!("expected a prompted action: {}", spec.id),
+            ActionInput::Immediate(_) | ActionInput::Deferred { .. } => {
+                panic!("expected a prompted action: {}", spec.id)
+            }
         }
     }
 

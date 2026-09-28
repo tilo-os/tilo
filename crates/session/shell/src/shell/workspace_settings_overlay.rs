@@ -1086,10 +1086,10 @@ impl WorkspaceSettingsOverlay {
                 );
             }
         }
-        let hint = "↑ ↓ to choose · Enter to confirm · Esc to cancel";
+        let hint = t("workspace-settings-sheet-keyboard-hint");
         text_renderer.draw_text(
             scene,
-            hint,
+            &hint,
             tokens.typography.scale.xs,
             colors.text_dim,
             transform.pre_translate((card.x0 + 20.0, card.y1 - 22.0).into()),
@@ -2740,3 +2740,9 @@ mod general_scroll_tests {
         assert_eq!(overlay.name_rect(), name);
     }
 }
+
+#[allow(
+    unused_imports,
+    reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
+)]
+use crate::shell::state::WorkspaceExt as _;

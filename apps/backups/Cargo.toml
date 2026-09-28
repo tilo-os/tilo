@@ -17,6 +17,7 @@ path = "src/main.rs"
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
+host-fs = { path = "../../crates/system/host-fs" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # The Tilo action model: every document-mutating operation is a serializable,

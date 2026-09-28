@@ -33,6 +33,8 @@ use ui::collaboration::{
 
 const TEST_ROOM: uuid::Uuid = uuid::Uuid::from_u128(0x6f2a_5fce_f612_46ac_9228_f6a3_ace4_9a11);
 const ROOT_KEY: [u8; 32] = [91; 32];
+/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
+const HANG_BOUND: Duration = Duration::from_secs(30);
 
 pub const fn room() -> uuid::Uuid {
     TEST_ROOM
@@ -230,9 +232,7 @@ pub fn publish_actions(peer: &mut TypedPeer, app_id: &str, resources: &[Resource
 
     // Publishing is one-way; ask the action host until it offers what
     // was published before a test launches an agent that plans against it.
-    let deadline = std::time::Instant::now()
-        .checked_add(Duration::from_secs(5))
-        .expect("five-second catalogue deadline fits in Instant");
+    let deadline = tilo_test_env::hang_deadline();
     let mut deferred = Vec::new();
     let mut correlation = 0_u64;
     while std::time::Instant::now() < deadline {
@@ -392,6 +392,16 @@ pub fn spawn(path: &Path) -> shell::shell::collab_broker::BrokerHandle {
             ("so.tilo.word-processor", "delete"),
             ("so.tilo.word-processor", "insert-table"),
             ("so.tilo.word-processor", "place-image"),
+            ("dev.tilo.word-processor", "align-center"),
+            ("dev.tilo.word-processor", "delete"),
+            ("dev.tilo.word-processor", "insert-table"),
+            ("dev.tilo.word-processor", "place-image"),
+            ("dev.tilo.photos", "rotate-right"),
+            ("dev.tilo.photos", "export-edited-content"),
+            ("so.tilo.word-processor", "align-center"),
+            ("so.tilo.word-processor", "delete"),
+            ("so.tilo.word-processor", "insert-table"),
+            ("so.tilo.word-processor", "place-image"),
             ("so.tilo.photos", "rotate-right"),
             ("so.tilo.photos", "export-edited-content"),
         ],
@@ -407,10 +417,17 @@ pub fn spawn(path: &Path) -> shell::shell::collab_broker::BrokerHandle {
 ///
 /// Panics if the deterministic test room cannot be configured or its native
 /// collaboration broker cannot bind `path`.
+#[allow(
+    clippy::too_many_lines,
+    reason = "builds the whole agent test room in one place"
+)]
 pub fn spawn_with_agent_actions(
     path: &Path,
     actions: &[(&str, &str)],
 ) -> shell::shell::collab_broker::BrokerHandle {
+    let parent = path.parent().expect("typed broker socket has a parent");
+    shell::shell::collab_broker_capnp::tests::secure_socket_parent(parent)
+        .expect("secure typed broker fixture root");
     let root = SigningKey::from_bytes(&ROOT_KEY);
     let collab_types::Principal::Person(principal) = collab_types::Principal::person_from_key(
         collab_types::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes()),
@@ -458,13 +475,9 @@ pub fn spawn_with_agent_actions(
             )
             .expect("the harness owner grants a reviewed test action");
     }
-    // App fixtures use the same agent-only endpoint as Scribe. Admission and
-    // app authority remain separate, so each host receives only its own app.
-    for (host, app) in [
-        ("quinten", "so.tilo.word-processor"),
-        ("photos", "so.tilo.photos"),
-        ("files", "so.tilo.file-explorer"),
-    ] {
+    // App fixtures use the same agent-only endpoint as Scribe. Device
+    // enrollment, room membership, and exact app authority remain separate.
+    for host in ["quinten", "photos", "files"] {
         workspace
             .grant_as(
                 &principal,
@@ -475,6 +488,17 @@ pub fn spawn_with_agent_actions(
                 ),
             )
             .expect("the harness owner admits an app fixture");
+    }
+    // Integration fixtures exercise the canonical routes and the dev.tilo test
+    // routes. Grant each observed route explicitly: the production capability
+    // check deliberately does not alias app authority.
+    for (host, app) in [
+        ("quinten", "dev.tilo.word-processor"),
+        ("quinten", "so.tilo.word-processor"),
+        ("photos", "dev.tilo.photos"),
+        ("photos", "so.tilo.photos"),
+        ("files", "so.tilo.file-explorer"),
+    ] {
         workspace
             .grant_as(
                 &principal,

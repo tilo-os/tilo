@@ -316,7 +316,10 @@ impl RemoteCaptureTargetBridge {
             .map_err(|_| RemoteCaptureAdapterError::BrokerUnavailable)?
             .register_source(
                 source_id,
-                format!("{} on certified device", request.app_label),
+                crate::shell::i18n::t_args(
+                    "remote-capture-source-label",
+                    &[("app", request.app_label.as_str().into())],
+                ),
                 capture_kind(request.profile.kind())?,
                 handle,
             )

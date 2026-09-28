@@ -213,7 +213,7 @@ pub(super) fn verify_transport() {
         });
     });
     let agent = ready_rx
-        .recv_timeout(Duration::from_secs(15))
+        .recv_timeout(tilo_test_env::hang_bound())
         .expect("SSH fixture startup");
     let mut command = Command::new(std::env::current_exe().unwrap());
     command

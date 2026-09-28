@@ -203,6 +203,7 @@ chat-attach-picker-exhausted = Attachment picker unavailable: request counter ex
 chat-attach-picker-cancelled = Attachment picker cancelled
 chat-attach-picker-failed = Attachment picker failed: { $reason }
 chat-attach-import-exhausted = Attachment import unavailable: request counter exhausted
+chat-attach-unsupported-no-transport = Attachment import unsupported: no host asset transport
 chat-attach-import-stale = Attachment import discarded: stale result
 chat-attach-import-failed = Attachment import failed: { $reason }
 chat-attach-import-permission = Attachment import cancelled: permission changed
@@ -226,7 +227,20 @@ chat-call-you = You
 chat-call-you-host = You (host)
 chat-call-session-peer = peer-to-peer
 chat-call-session-host = host relay
-chat-call-panel-strip = { $caret } { $count } in call · { $session }
+# A call tile showing a verified remote audio stream.
+chat-call-audio-stream = Audio stream
+# A remote audio stream nobody has named, told apart by the end of its id.
+chat-call-audio-stream-name = Audio stream { $tail }
+# The call panel's strip: the verified audio streams, not a roster of people.
+chat-call-panel-streams = { $caret } { $count ->
+    [one] 1 audio stream
+   *[other] { $count } audio streams
+} · { $state ->
+    [live] Connected
+    [reconnecting] Reconnecting
+    [joining] Joining
+   *[unavailable] Unavailable
+}
 chat-call-headcount = { $count } in the call
 chat-call-headcount-sharing = { $me ->
     [yes] { $count } in the call · You are sharing a screen
@@ -245,14 +259,6 @@ chat-call-action-leave = Leave call
 chat-call-action-speak = Use microphone
 chat-call-action-camera = Use camera
 chat-call-action-share = Share screen
-
-# Live media stopping on its own.
-chat-media-microphone = Microphone
-chat-media-camera = Camera
-chat-media-screen = Screen sharing
-chat-media-frame-too-large = { $track } stopped: encoded frame ({ $bytes } bytes) exceeds Chat's { $limit } byte media limit
-chat-media-screen-stopped = Screen sharing stopped: { $error }
-chat-media-sequence-exhausted = Media stopped: stream sequence limit reached. Leave and rejoin to restart it.
 
 # The emoji picker and a message's edit history.
 chat-history-title = Edit history
@@ -293,7 +299,6 @@ chat-a11y-composer = Message composer
 chat-a11y-thread-composer = Thread reply composer
 chat-a11y-send = Send message
 chat-a11y-jump-latest = Jump to latest message
-chat-a11y-insert-emoji = Insert emoji
 chat-a11y-attach = Attach a workspace file
 chat-a11y-attach-pick = Attach { $name }
 chat-a11y-start-call = Start or open call
@@ -301,18 +306,10 @@ chat-a11y-show-navigation = Show conversation navigation
 chat-a11y-show-detail = Show people or thread
 chat-a11y-open-thread = Open message thread
 chat-a11y-close-thread = Close thread
-chat-a11y-reaction = { $mine ->
-    [yes] Remove { $emoji } reaction
-   *[no] Add { $emoji } reaction
-}
-chat-a11y-add-reaction = Add reaction
-chat-a11y-choose-emoji = Choose { $emoji }
 chat-a11y-edit-history = Show edit history
 chat-a11y-edit-save = Save message edit
 chat-a11y-edit-cancel = Cancel message edit
 chat-a11y-call-mute = Mute microphone
-chat-a11y-call-deafen = Deafen call audio
-chat-a11y-call-camera = Turn camera off
 chat-a11y-call-share = Share screen
 chat-a11y-call-participants = Show call participants
 chat-a11y-call-expand = Expand or restore call
@@ -382,28 +379,23 @@ chat-action-add-the-feedback-channel = Add the feedback channel
 chat-action-archive-channel = Archive channel
 chat-action-attach-file = Attach file
 chat-action-attachment = Attachment
-chat-action-audio-only = Audio only
 chat-action-category-name = category name…
 chat-action-channel-name = channel name…
 chat-action-collapse-category = Collapse category
-chat-action-deafen = Deafen
 chat-action-delete-category = Delete category
 chat-action-delete-channel = Delete channel
 chat-action-delete-message = Delete message
 chat-action-edit-message = Edit message
 chat-action-emoji = Emoji
-chat-action-enable-camera = Enable camera
 chat-action-expand-category = Expand category
 chat-action-file-path = File path
 chat-action-invite-this-person-into-the-current-workspace = Invite this person into the current workspace
 chat-action-invite-to-workspace = Invite to workspace
-chat-action-join-call = Join call
 chat-action-leave-call = Leave call
 chat-action-make-a-feedback-channel = Make a feedback channel
 chat-action-make-an-ordinary-channel = Make an ordinary channel
 chat-action-mark-as-read = Mark as read
 chat-action-message = Message
-chat-action-mute = Mute
 chat-action-name = Name
 chat-action-new-category = New Category
 chat-action-new-channel = New channel
@@ -437,12 +429,27 @@ chat-action-show-author = Show author
 chat-action-sort-and-filter-reports = Sort and filter reports
 chat-action-stop-sharing-record-with-this-room = Stop sharing record with this room
 chat-action-the-times-contradict-the-prose = the times contradict the prose
-chat-action-type-a-message = type a message…
+chat-action-type-a-message = type a message… (@Name mentions a member)
 chat-action-type-a-reply = type a reply…
 chat-action-unarchive-channel = Unarchive channel
-chat-action-undeafen = Undeafen
-chat-action-unmute = Unmute
 chat-action-unpin-message = Unpin message
 chat-action-vote-for-this-report = Vote for this report
 chat-action-withdraw-from-this-room = Withdraw from this room
 chat-action-workspace = Workspace
+chat-action-call-resource = Call: { $channel }
+chat-action-call-status = Call status
+chat-action-input = Input
+chat-action-input-from-call-status = Input from call status
+chat-action-join-muted = Join muted
+chat-action-mute-microphone = Mute microphone
+chat-action-request-microphone = Request microphone
+chat-action-select-microphone = Select microphone
+
+# The emoji picker and reaction chips.
+chat-emoji-insert = Insert emoji
+chat-emoji-group = Emoji group
+# A picker cell; the name is the emoji's name in the desktop's language.
+chat-emoji-choose = Choose { $name }
+# A reaction chip under a message, which adds or removes the user's own.
+chat-reaction-add = Add { $emoji } reaction
+chat-reaction-remove = Remove { $emoji } reaction

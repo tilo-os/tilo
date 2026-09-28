@@ -166,12 +166,6 @@ mod tests {
     #[test]
     fn document_holds_view_state_while_lifecycle_verbs_stay_external() {
         // --- phase: document_holds_only_view_state_and_native_text ---
-        // Every key Containers writes to its document is view state — navigation /
-        // selection scalars plus the native-`Text` search + create draft. Driving
-        // the real selection path (open the app palette, Enter a row) writes
-        // `view.selected`, and the document holds only the one `view` map: no saved
-        // run-configs, favourites, pins, groupings or sessions — nothing structural
-        // for an action to mutate.
         {
             const ALLOWED: [&str; 5] = ["section", "selected", "tab", "search", "create"];
 
@@ -184,7 +178,7 @@ mod tests {
             send(&mut app, &mut doc, &named_event(NamedKey::Enter));
             app.dispatch_palette_invocation_for_test(&mut doc);
             assert_eq!(
-                ViewDoc::selected(&mut doc).as_deref(),
+                ViewDoc::selected(&doc).as_deref(),
                 Some(expected.as_str()),
                 "activating a palette row selects that container (navigation)",
             );
@@ -236,12 +230,6 @@ mod tests {
         }
 
         // --- phase: create_draft_is_native_text_and_replicates_byte_identically ---
-        // The create-container draft is native collaborative `Text`, so it already
-        // carries the guarantee an action would otherwise provide: a keystroke driven
-        // through the production `Widget::handle_event` splices into the draft's
-        // `Text`, and an independent replica that merges the change converges
-        // byte-identically (same head hashes, not merely the same text). Nothing to
-        // encode as an action.
         {
             let mut app = ContainersApp::new(false);
             let mut doc = AutoCommit::new();
@@ -250,8 +238,8 @@ mod tests {
             app.create_open = true;
             app.create_focus = CreateField::Name;
 
-            // A base both replicas share, with the create draft materialised.
-            let before = ViewDoc::create_field(&mut doc, CreateField::Name);
+            // A base both replicas share before any create draft exists.
+            let before = ViewDoc::create_field(&doc, CreateField::Name);
             assert_eq!(before, "", "draft starts empty");
             doc.commit();
             let base = doc.save();
@@ -266,7 +254,7 @@ mod tests {
             send(&mut app, &mut doc, &char_event("w"));
             doc.commit();
             assert_eq!(
-                ViewDoc::create_field(&mut doc, CreateField::Name),
+                ViewDoc::create_field(&doc, CreateField::Name),
                 "w",
                 "the keystroke spliced into the create-draft Text on the native path",
             );
@@ -278,17 +266,13 @@ mod tests {
                 "byte-identical convergence after merge"
             );
             assert_eq!(
-                ViewDoc::create_field(&mut peer, CreateField::Name),
+                ViewDoc::create_field(&peer, CreateField::Name),
                 "w",
                 "the peer sees the same create draft",
             );
         }
 
         // --- phase: lifecycle_verbs_are_external_not_document_mutations ---
-        // A container lifecycle verb is **external**: it mutates podman's world (here,
-        // the offline engine projection), never the CRDT. Driving the real
-        // `apply_action` path stops the container in the in-memory engine while
-        // writing nothing to the document — proving lifecycle ops are not actions.
         {
             let mut app = ContainersApp::new(false);
             let mut doc = AutoCommit::new();
@@ -322,8 +306,6 @@ mod tests {
         }
 
         // --- phase: exports_unavailable_effect_resources_without_document_actions ---
-        // Offline/demo resources remain discoverable but their effects state why
-        // they cannot run; external effects never create a document undo boundary.
         {
             let mut app = ContainersApp::new(false);
             let mut doc = AutoCommit::new();

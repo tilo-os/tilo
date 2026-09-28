@@ -35,6 +35,7 @@
 )]
 
 pub mod actions;
+pub mod framework_history;
 mod graphics;
 
 pub use graphics::TerminalImagePlacement;
@@ -55,6 +56,24 @@ mod inner {
 
 mod app_widget_impl;
 
+/// A short scripted session, typed into a freshly spawned login shell, that
+/// prints a few recognisable lines in that shell's own syntax. Hosts use it to
+/// stage screenshots of a live terminal.
+#[must_use]
+pub fn demo_session_input() -> &'static str {
+    #[cfg(windows)]
+    {
+        "echo Tilo embedded terminal (live PTY)\recho shell: %COMSPEC%\recho demo output:\recho primes below 20: 2 3 5 7 11 13 17 19\recho done\r"
+    }
+    #[cfg(not(windows))]
+    {
+        "echo 'Tilo embedded terminal (live PTY)'; echo \"shell: $SHELL\"; \
+         echo 'demo output:'; echo '  primes below 20: 2 3 5 7 11 13 17 19'; echo done\n"
+    }
+}
+
+#[cfg(test)]
+mod framework_history_tests;
 #[cfg(test)]
 pub(crate) mod tests;
 

@@ -54,6 +54,12 @@ pub fn flag(value: bool) -> ArgValue {
     ArgValue::Text(if value { "yes" } else { "no" }.to_owned())
 }
 
+/// The emoji catalogue in the desktop's language: names, group labels and
+/// search follow it, with English kept for anything it does not translate.
+pub fn emoji_catalogue() -> &'static emoji::Catalogue {
+    emoji::Catalogue::for_locale(&ui::i18n::I18nManager::current_locale())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -70,6 +76,11 @@ mod tests {
         "chat-call-audio-only",
         "chat-call-collapse",
         "chat-call-leave",
+        "chat-emoji-insert",
+        "chat-emoji-choose",
+        "chat-emoji-group",
+        "chat-reaction-add",
+        "chat-reaction-remove",
         "chat-you",
         "chat-someone",
         "chat-workspace-fallback",
@@ -141,6 +152,7 @@ mod tests {
         "chat-attach-picker-cancelled",
         "chat-attach-picker-failed",
         "chat-attach-import-exhausted",
+        "chat-attach-unsupported-no-transport",
         "chat-attach-import-stale",
         "chat-attach-import-failed",
         "chat-attach-import-permission",
@@ -162,7 +174,9 @@ mod tests {
         "chat-call-you-host",
         "chat-call-session-peer",
         "chat-call-session-host",
-        "chat-call-panel-strip",
+        "chat-call-panel-streams",
+        "chat-call-audio-stream",
+        "chat-call-audio-stream-name",
         "chat-call-headcount",
         "chat-call-headcount-sharing",
         "chat-call-sharing-you",
@@ -175,12 +189,6 @@ mod tests {
         "chat-call-action-speak",
         "chat-call-action-camera",
         "chat-call-action-share",
-        "chat-media-microphone",
-        "chat-media-camera",
-        "chat-media-screen",
-        "chat-media-frame-too-large",
-        "chat-media-screen-stopped",
-        "chat-media-sequence-exhausted",
         "chat-emoji-add-reaction",
         "chat-emoji-title",
         "chat-history-title",
@@ -199,7 +207,6 @@ mod tests {
         "chat-a11y-thread-composer",
         "chat-a11y-send",
         "chat-a11y-jump-latest",
-        "chat-a11y-insert-emoji",
         "chat-a11y-attach",
         "chat-a11y-attach-pick",
         "chat-a11y-start-call",
@@ -213,15 +220,10 @@ mod tests {
         "chat-a11y-messages",
         "chat-a11y-message",
         "chat-a11y-unknown-person",
-        "chat-a11y-reaction",
-        "chat-a11y-add-reaction",
-        "chat-a11y-choose-emoji",
         "chat-a11y-edit-history",
         "chat-a11y-edit-save",
         "chat-a11y-edit-cancel",
         "chat-a11y-call-mute",
-        "chat-a11y-call-deafen",
-        "chat-a11y-call-camera",
         "chat-a11y-call-share",
         "chat-a11y-call-participants",
         "chat-a11y-call-expand",

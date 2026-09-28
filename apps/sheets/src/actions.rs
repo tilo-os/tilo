@@ -401,7 +401,7 @@ pub enum SheetsAction {
 
 /// Durable, browseable history metadata for a workbook mutation.
 pub fn history_context(action: &SheetsAction) -> tilo_actions::ActionContext {
-    let mut context = tilo_actions::ActionContext::for_action("org.tilo.Sheets", "Sheets", action);
+    let mut context = tilo_actions::ActionContext::for_action("so.tilo.sheets", "Sheets", action);
     let (label, id, kind, resource_label) = history_resource(action);
     context.action_label = label.to_string();
     context.resource = Some(tilo_actions::ActionResource {

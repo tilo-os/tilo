@@ -4,7 +4,7 @@
 //!
 //! - `TopBar` renders with a live clock; wheel over the center area cycles to
 //!   the CPU/RAM sparkline and the calendar (200 ms cooldown).
-//! - Cmd+K opens `GlobalSearch`; typing filters; Enter invokes; Escape closes.
+//! - Cmd+K opens the search palette; typing filters; Enter invokes; Escape closes.
 //! - Cmd+Tab toggles the `OverviewView`; clicking a card activates the workspace.
 //! - The `RightTray` gear icon opens `QuickSettings`; sliders are interactive;
 //!   WiFi/BT drill-in and back work.
@@ -25,6 +25,7 @@ pub mod app_action_consent;
 pub mod automation_folders;
 pub mod automation_host;
 pub mod automation_triggers;
+pub(crate) mod broker_services;
 pub mod capture_protection;
 pub(crate) mod capture_surface;
 pub mod catalogue;
@@ -49,6 +50,7 @@ pub mod continuity_suggestion;
 pub mod crdt_text;
 pub mod cursor_interp;
 pub mod desktop_backdrop;
+pub(crate) mod desktop_commands;
 #[cfg(target_os = "linux")]
 pub(crate) mod desktop_continuation;
 pub mod device_fabric;
@@ -67,7 +69,7 @@ pub mod fixture_inputs;
 pub mod floating;
 pub mod foreign;
 pub mod frame;
-pub mod global_search;
+pub mod fs_authority;
 pub mod hdr_display;
 pub mod hdr_tonemap;
 pub mod history_narrative;
@@ -82,6 +84,8 @@ pub mod launcher;
 pub mod magnifier;
 pub mod media_keys;
 pub mod mpris;
+pub(crate) mod native_media;
+pub(crate) mod native_workspace_owner;
 pub mod nearby_transfer;
 pub mod network;
 pub mod notes_app;
@@ -92,7 +96,9 @@ pub mod osd;
 pub mod output_scene;
 pub mod overlay_host;
 pub mod overview;
+pub mod pad_map;
 pub mod participant_keys;
+pub mod peer_actions;
 pub mod peer_join_toast;
 pub mod peer_presence;
 pub mod peer_sync_overlay;
@@ -130,6 +136,7 @@ pub mod search;
 pub mod service_members;
 pub mod session_audio_policy;
 pub mod session_policy;
+pub mod session_services;
 pub mod shell_narrator;
 pub mod sidebar_wheel_disc;
 pub mod spatial_calibration;
@@ -152,7 +159,6 @@ pub mod test_support;
 pub mod text_entry;
 pub mod tile;
 pub mod tool_intents;
-pub mod topbar;
 pub mod topbar_chrome;
 pub mod uri_open;
 pub mod window_actions;
@@ -170,13 +176,11 @@ use ui::widget::context_menu::MenuItem;
 #[cfg(any(test, debug_assertions))]
 use ui::widget::toast::ToastStack;
 use ui::widget::{
-    AppKind as UiKind, AppWidget, Column, Container, GroupRow, Stack, StripView, TabDescriptor,
-    TileContent as UiTile, Widget, WindowGroup as UiGroup, WorkspaceView,
-    context_menu::ContextMenu,
+    AppKind as UiKind, AppWidget, GroupRow, TabDescriptor, TileContent as UiTile, Widget,
+    WindowGroup as UiGroup, context_menu::ContextMenu,
 };
 
 use crate::shell::editor_app::EditorApp;
-use crate::shell::global_search::GlobalSearch;
 use browser::BrowserWidget;
 
 use crate::shell::notes_app::NotesApp;
@@ -185,19 +189,6 @@ use crate::shell::tile::{
     WindowGroup as RuntimeGroup, Workspace as RuntimeWorkspace, WorkspaceTree as RuntimeTree,
 };
 
-/// Stable addresses of the three production workspace layers. The enclosing widget tree owns
-/// these boxes; `ShellOverlayHost` uses them only for its sequential retained-scene draw pass.
-/// Hand-built roots deliberately do not provide this capability and stay conservatively dense.
-#[derive(Clone, Copy)]
-pub(crate) struct WorkspaceSceneParts {
-    pub backdrop: *mut dyn Widget,
-    pub topbar: *mut topbar_chrome::TopBarChrome,
-    pub workspace: *mut dyn Widget,
-    pub work_area: *mut Column,
-    /// Compact top bars of the displays other than the primary.
-    pub display_bars: *mut display_bars::DisplayBars,
-}
-use crate::shell::topbar::TopBar;
 use crate::shell::workspace_settings::WorkspaceSettings;
 pub use collaboration_launchpad::{
     EMPTY_WORKSPACE_ACTIVITY, EMPTY_WORKSPACE_CHAT, EMPTY_WORKSPACE_INVITE, EMPTY_WORKSPACE_MEET,
@@ -224,9 +215,6 @@ pub struct Shell {
     tree: RuntimeTree,
     state: ui::state::State,
 
-    topbar: TopBar,
-    /// Hidden unless `search_visible`.
-    search: GlobalSearch,
     ws_settings: WorkspaceSettings,
     #[cfg(any(test, debug_assertions))]
     toasts: ToastStack,
@@ -293,8 +281,6 @@ impl Shell {
         let mut shell = Self {
             tree,
             state: ui::state::State::new(),
-            topbar: TopBar::new(),
-            search: GlobalSearch::new(),
             ws_settings: WorkspaceSettings::new(active_ws_id),
             #[cfg(any(test, debug_assertions))]
             toasts: ToastStack::new(),
@@ -309,7 +295,6 @@ impl Shell {
             #[cfg(any(test, debug_assertions))]
             first_file_explorer_ptr,
         };
-        shell.search.seed_default_commands();
         // Prime every app against the shared doc so `update` has CRDT
         // sub-trees to work with from the first call.
         shell.sync_all_apps();
@@ -408,10 +393,6 @@ impl Shell {
     // Trivial visibility getters so tests can assert every chrome piece
     // was constructed without exposing the fields themselves.
 
-    pub fn topbar(&self) -> &TopBar {
-        &self.topbar
-    }
-
     pub fn overview_visible(&self) -> bool {
         self.overview_visible
     }
@@ -465,15 +446,6 @@ impl Shell {
 
     pub fn close_ws_settings(&mut self) {
         self.ws_settings_visible = false;
-    }
-
-    /// Single funnel for topbar output. Tray-gear is a toggle; the
-    /// workspace-name click is a plain open (the modal has its own close).
-    pub fn handle_topbar_output(&mut self, out: topbar::TopBarOutput) {
-        match out {
-            topbar::TopBarOutput::OpenWorkspaceSettings => self.open_ws_settings(),
-            topbar::TopBarOutput::OpenQuickSettings => self.toggle_quick_settings(),
-        }
     }
 
     /// Canonical entry point for shell-level global hotkeys — both the
@@ -646,11 +618,10 @@ impl Shell {
         workspace.strips.len().saturating_sub(1)
     }
 
-    /// Same route as a real tray-gear click: `TopBarOutput::OpenQuickSettings`.
+    /// Same route as a real tray-gear click: a toggle of quick settings.
     #[cfg(any(test, debug_assertions))]
     pub fn simulate_tray_gear_click(&mut self) {
-        let out = self.topbar.click_tray_settings();
-        self.handle_topbar_output(out);
+        self.toggle_quick_settings();
     }
 
     /// Renames via [`WorkspaceSettings::rename`], matching the production
@@ -1070,6 +1041,10 @@ pub fn try_to_ui_tile(
     try_to_ui_tile_for_tab(t, services, inputs, None)
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one match over every tile kind, each building its hosted tile with localized fallbacks"
+)]
 fn try_to_ui_tile_for_tab(
     t: &ShellTile,
     services: terminal::HostedProcessServices,
@@ -1104,7 +1079,7 @@ fn try_to_ui_tile_for_tab(
         ShellTile::LocalApp { label, note, .. } => UiTile::Notice {
             title: label.clone(),
             detail: if note.is_empty() {
-                "Restoring this window…".into()
+                crate::shell::i18n::t("shell-window-restoring")
             } else {
                 note.clone()
             },
@@ -1172,8 +1147,13 @@ fn try_to_ui_tile_for_tab(
                         path, reason, ..
                     }) => UiTile::Notice {
                         title: path.file_name().map_or_else(
-                            || "Document unavailable".to_string(),
-                            |name| format!("{} unavailable", name.to_string_lossy()),
+                            || crate::shell::i18n::t("shell-document-unavailable"),
+                            |name| {
+                                crate::shell::i18n::t_args(
+                                    "shell-named-document-unavailable",
+                                    &[("name", name.to_string_lossy().into_owned().into())],
+                                )
+                            },
                         ),
                         detail: reason,
                     },
@@ -1280,50 +1260,154 @@ pub fn install_document_opener(chrome: &chrome_state::Chrome) {
     }));
     let chrome = chrome.clone();
     file_explorer::files_app::set_document_opener(move |path| {
-        let native_app = { chrome.borrow().hosted_inputs.native_app_for_path(path) };
-        if let Some(app) = native_app {
-            let path = path
-                .canonicalize()
-                .map_err(|error| format!("cannot open {}: {error}", path.display()))?;
-            let text = std::fs::read_to_string(&path)
-                .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
-            let title = path.file_name().map_or_else(
-                || path.display().to_string(),
-                |name| name.to_string_lossy().into_owned(),
-            );
-            window_actions::open_hosted_after_setup(
-                &mut chrome.borrow_mut(),
-                app.kind,
-                title,
-                window_actions::Destination::Here,
-                |state, tab| {
-                    {
-                        let mut tree = state.tree_mut();
-                        tree.native_document_tabs.insert(
-                            tab,
-                            state::NativeDocumentReference {
-                                provider_id: app.package_id.to_string(),
-                                path: path.clone(),
-                            },
-                        );
-                        tree.flush_to_disk();
-                    }
-                    state.hosted_inputs.bind_document(
+        open_legacy_document_from_files(&chrome, path)
+    });
+}
+
+/// Preserve the standalone synchronous opener for legacy embeddings. It runs
+/// inside the Files event path, where an admission preflight would re-enter
+/// the tile's record loan. Hosted native Files use the deferred owner route
+/// below instead.
+fn open_legacy_document_from_files(
+    chrome: &chrome_state::Chrome,
+    path: &std::path::Path,
+) -> Result<(), String> {
+    let native_app = { chrome.borrow().hosted_inputs.native_app_for_path(path) };
+    if let Some(app) = native_app {
+        let path = path.canonicalize().map_err(|error| {
+            crate::shell::i18n::t_args(
+                "shell-path-open-failed",
+                &[
+                    ("path", path.display().to_string().into()),
+                    ("error", error.to_string().into()),
+                ],
+            )
+        })?;
+        let text = std::fs::read_to_string(&path).map_err(|error| {
+            crate::shell::i18n::t_args(
+                "shell-path-read-failed",
+                &[
+                    ("path", path.display().to_string().into()),
+                    ("error", error.to_string().into()),
+                ],
+            )
+        })?;
+        let title = path.file_name().map_or_else(
+            || path.display().to_string(),
+            |name| name.to_string_lossy().into_owned(),
+        );
+        window_actions::open_hosted_after_setup(
+            &mut chrome.borrow_mut(),
+            app.kind,
+            title,
+            window_actions::Destination::Here,
+            |state, tab| {
+                {
+                    let mut tree = state.tree_mut();
+                    tree.native_document_tabs.insert(
                         tab,
-                        hosted_inputs::HostedDocument {
-                            provider_id: app.package_id,
-                            path,
-                            text,
+                        state::NativeDocumentReference {
+                            provider_id: app.package_id.to_string(),
+                            path: path.clone(),
                         },
                     );
-                },
-            );
-            return Ok(());
+                    tree.flush_to_disk();
+                }
+                state.hosted_inputs.bind_document(
+                    tab,
+                    hosted_inputs::HostedDocument {
+                        provider_id: app.package_id,
+                        path,
+                        text,
+                    },
+                );
+            },
+        );
+        return Ok(());
+    }
+    doc_open::open_in_workspace(path, chrome)
+        .map(|_| ())
+        .map_err(|error| error.user_message())
+}
+
+/// Admit an exact native document record before publishing its tab/input pair.
+/// This is called only by the owning Files open route after its record loan has
+/// ended, so `TileHost` can retain its existing-only record-follow contract.
+pub(crate) fn open_document_from_files(
+    chrome: &chrome_state::Chrome,
+    path: &std::path::Path,
+) -> Result<(), String> {
+    let native_app = { chrome.borrow().hosted_inputs.native_app_for_path(path) };
+    if let Some(app) = native_app {
+        let path = path
+            .canonicalize()
+            .map_err(|error| format!("cannot open {}: {error}", path.display()))?;
+        let text = std::fs::read_to_string(&path)
+            .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+        let checkout = ui::record::RecordCheckout::new(
+            ui::record::RecordId::for_file(&path),
+            ui::record::RecordKind::new("text-document"),
+        );
+        let records = { chrome.borrow().records().clone() };
+        match records.try_open_record(&checkout) {
+            Ok(_) => {}
+            Err(ui::record::RecordOpenError::MissingRecord) => {
+                records.create_record(&checkout).map_err(|error| {
+                    format!(
+                        "cannot open {}: document storage unavailable: {error}",
+                        path.display()
+                    )
+                })?;
+                records.try_open_record(&checkout).map_err(|error| {
+                    format!(
+                        "cannot open {}: document storage unavailable: {error}",
+                        path.display()
+                    )
+                })?;
+            }
+            Err(error) => {
+                return Err(format!(
+                    "cannot open {}: document storage unavailable: {error}",
+                    path.display()
+                ));
+            }
         }
-        doc_open::open_in_workspace(path, &chrome)
-            .map(|_| ())
-            .map_err(|e| e.user_message())
-    });
+        let title = path.file_name().map_or_else(
+            || path.display().to_string(),
+            |name| name.to_string_lossy().into_owned(),
+        );
+        window_actions::open_hosted_after_setup(
+            &mut chrome.borrow_mut(),
+            app.kind,
+            title,
+            window_actions::Destination::Here,
+            |state, tab| {
+                {
+                    let mut tree = state.tree_mut();
+                    tree.native_document_tabs.insert(
+                        tab,
+                        state::NativeDocumentReference {
+                            provider_id: app.package_id.to_string(),
+                            path: path.clone(),
+                        },
+                    );
+                    tree.flush_to_disk();
+                }
+                state.hosted_inputs.bind_document(
+                    tab,
+                    hosted_inputs::HostedDocument {
+                        provider_id: app.package_id,
+                        path,
+                        text,
+                    },
+                );
+            },
+        );
+        return Ok(());
+    }
+    doc_open::open_in_workspace(path, chrome)
+        .map(|_| ())
+        .map_err(|error| error.user_message())
 }
 
 /// Files' "Open With": candidates, launches and defaults all come from
@@ -1414,10 +1498,83 @@ pub fn session_record_store() -> ui::record::RecordStore {
         })
 }
 
-/// Backdrop, topbar, and one [`GroupRow`] per strip of the tree's active
-/// workspace, plus the per-strip pointer map the host's reconcilers harvest
-/// through. Extracted so the host can rebuild the content when the active
-/// workspace changes — the strip widgets are a projection of ONE workspace.
+/// Host services for the shared desktop surface: native tile content, the
+/// session's record-creation refusals, and foreign-surface readiness.
+pub(crate) struct NativeTileResolver<'a> {
+    pub inputs: &'a hosted_inputs::HostedTileInputs,
+    pub failures: &'a std::collections::BTreeMap<u64, String>,
+}
+
+impl tilo_desktop::resolver::TileResolver for NativeTileResolver<'_> {
+    fn resolve(
+        &mut self,
+        request: tilo_desktop::resolver::TileRequest<'_>,
+    ) -> tilo_desktop::resolver::TileResolution {
+        tilo_desktop::resolver::TileResolution::Content(to_ui_tile_for_tab_with_inputs(
+            &request.tab.tile,
+            request.tab.id,
+            self.inputs,
+        ))
+    }
+    fn creation_refusal(&self, tab: &state::Tab) -> Option<String> {
+        self.failures.get(&tab.id).cloned()
+    }
+    fn tab_icon(&self, tab: &state::Tab) -> Option<ui::icons::AppImage> {
+        crate::app_icons::for_tile(&tab.tile)
+    }
+}
+
+/// The native chrome the shared desktop surface is built with: the session's
+/// top bar and wallpaper, the collaboration launchpad for an empty
+/// workspace, and a leading inset for the sidebar wheel.
+pub(crate) fn workspace_surface_chrome(
+    tree: &WorkspaceTree,
+    chrome: &chrome_state::Chrome,
+) -> tilo_desktop::composition::SurfaceChrome {
+    let local = chrome
+        .borrow()
+        .explicit_local_user()
+        .map_or_else(crate::shell::state::local_user_id, str::to_owned);
+    let topbar = topbar_chrome::TopBarChrome::from_tree_with_local_user(&tree.desktop, local)
+        .with_chrome(topbar_chrome::native_source(chrome.clone()));
+    // Full-screen layer under the translucent top bar, so the bar picks up
+    // the gradient tint behind it.
+    let backdrop: Box<dyn Widget> = tree.desktop.active_workspace().map_or_else(
+        || Box::new(desktop_backdrop::DesktopBackdrop::new()) as Box<dyn Widget>,
+        |workspace| {
+            let workspace_id = workspace.id.0.to_string();
+            // Scratch scenes and captures host their own files and carry no
+            // wallpaper source.
+            let backdrop = if chrome.borrow().hosted_inputs.file_services().is_some() {
+                desktop_backdrop::DesktopBackdrop::for_workspace(workspace_id)
+            } else {
+                desktop_backdrop::native_backdrop(workspace_id)
+            };
+            Box::new(backdrop) as Box<dyn Widget>
+        },
+    );
+    tilo_desktop::composition::SurfaceChrome {
+        navigation: tilo_desktop::composition::NavigationChrome::InSurface,
+        // Window surfaces meet the strip boundary: moving apps inward to keep
+        // a clipped shadow would leave a visible shell-owned gutter.
+        work_area: tilo_desktop::composition::WorkArea::Flush { top: 12.0 },
+        topbar: Box::new(topbar),
+        backdrop,
+        empty_workspace: Some(Box::new(
+            collaboration_launchpad::CollaborationLaunchpad::new(),
+        )),
+        // Compact top bars of the displays other than the primary.
+        display_chrome: Some(Box::new(display_bars::DisplayBars::new(chrome.clone()))),
+        // Reserves canvas-x [0, SIDEBAR_RESERVE_PX] for the wheel disc, which
+        // lives in the overlay layer, so wheel and strip pan together.
+        leading_inset: f64::from(sidebar_wheel_disc::SIDEBAR_RESERVE_PX),
+        notify: None,
+    }
+}
+
+/// The shared desktop surface for the tree's active workspace, plus the
+/// per-strip row pointers the host's reconcilers harvest through. The host
+/// rebuilds both together when the active workspace changes.
 pub fn build_workspace_root(
     tree: &WorkspaceTree,
     records: &ui::record::RecordStore,
@@ -1426,189 +1583,41 @@ pub fn build_workspace_root(
     Box<dyn Widget>,
     std::collections::HashMap<state::StripId, *mut GroupRow>,
 ) {
-    let (root, rows, _) = build_workspace_root_with_scene_parts(tree, records, chrome);
-    (root, rows)
+    let surface_chrome = workspace_surface_chrome(tree, chrome);
+    let state = chrome.borrow();
+    let failures = state.record_creation_errors(tree);
+    let mut resolver = NativeTileResolver {
+        inputs: &state.hosted_inputs,
+        failures: &failures,
+    };
+    let mut surface = Box::new(tilo_desktop::composition::DesktopSurface::build(
+        &tree.desktop,
+        records,
+        &mut resolver,
+        surface_chrome,
+    ));
+    for id in surface.strip_ids() {
+        if let Some(row) = surface.row_mut(id) {
+            for group in &mut row.groups {
+                tab_documents::apply_creation_failures(group, &failures);
+            }
+        }
+    }
+    let rows = surface_row_ptrs(&mut surface);
+    (surface, rows)
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "the workspace root is assembled in one place so its scene-part pointers stay tied to the widgets they address"
-)]
-pub(crate) fn build_workspace_root_with_scene_parts(
-    tree: &WorkspaceTree,
-    records: &ui::record::RecordStore,
-    chrome: &chrome_state::Chrome,
-) -> (
-    Box<dyn Widget>,
-    std::collections::HashMap<state::StripId, *mut GroupRow>,
-    WorkspaceSceneParts,
-) {
-    let strips_for_view: Vec<String> = tree
-        .desktop
-        .active_workspace()
-        .map(|w| w.strips.iter().map(|s| s.name.clone()).collect())
-        .unwrap_or_default();
-    let strip_view: Box<dyn Widget> = Box::new(StripView::new(strips_for_view, 0));
-    let workspace_view: Box<dyn Widget> = Box::new(WorkspaceView::new(
-        tree.desktop
-            .workspaces
-            .iter()
-            .filter(|w| w.is_shown())
-            .count(),
-        tree.desktop
-            .workspaces
-            .iter()
-            .filter(|w| w.is_shown())
-            .position(|w| w.id == tree.desktop.active)
-            .unwrap_or(0),
-    ));
-
-    let topbar = match chrome.borrow().explicit_local_user() {
-        Some(local) => {
-            topbar_chrome::TopBarChrome::from_tree_with_local_user(tree, local.to_owned())
-        }
-        None => topbar_chrome::TopBarChrome::from_tree(tree),
-    };
-    let mut topbar = Box::new(topbar.with_chrome(chrome.clone()));
-    let topbar_ptr = &raw mut *topbar;
-
-    let workspace_has_maximized_group = tree.desktop.active_workspace().is_some_and(|workspace| {
-        workspace
-            .strips
-            .iter()
-            .flat_map(|strip| &strip.window_groups)
-            .any(|group| group.maximized)
-    });
-
-    let content_col = Column::new()
-        // Fills the viewport height remaining after the persistent top bar.
-        // sibling in `foreground_col`; without it the column's
-        // `percent(1.0)` height overflowed the viewport by the bar height and apps
-        // painted right up to the absolute bottom.
-        .with_fill_remaining_height()
-        // Window surfaces meet the strip boundary. Shadows may be clipped at
-        // the viewport edge; moving the actual app inward to preserve a
-        // decorative effect creates a visible shell-owned gutter.
-        .with_vertical_padding(0.0)
-        // No horizontal padding: `GroupRow::leading_inset` reserves
-        // canvas-x [0, SIDEBAR_WIDTH] for the wheel disc, and wheel/strip
-        // pan as one unit — a gutter here would split that canvas in two.
-        .with_horizontal_padding(0.0, 0.0);
-    // WorkspaceView and StripView are zero-height input/animation drivers.
-    // In a maximized layout their ordinary inter-child gaps and the tiled
-    // safety gutter would become an empty band below the top bar.
-    let mut content_col = if workspace_has_maximized_group {
-        content_col.with_gap(0.0)
-    } else {
-        // `foreground_col` has no gap so a maximized work area can
-        // directly abut the top bar. Preserve the tiled layout's 12px top
-        // rhythm here instead.
-        content_col.with_extra_top_padding(12.0)
-    }
-    .push(workspace_view)
-    .push(strip_view);
-
-    let workspace_is_empty = tree.desktop.active_workspace().is_some_and(|workspace| {
-        workspace
-            .strips
-            .iter()
-            .all(|strip| strip.window_groups.is_empty())
-    });
-    if workspace_is_empty {
-        content_col = content_col.push(Box::new(
-            collaboration_launchpad::CollaborationLaunchpad::new(),
-        ));
-    }
-
-    // Per-strip raw pointers to the live `GroupRow` widgets, captured so
-    // the host's per-frame `reconcile_active_group_off_closing` hook can
-    // harvest `WindowGroup::is_closing()` ids without re-walking a
-    // `&dyn Widget` tree. SAFETY contract on `ShellOverlayHost::group_row_ptrs`.
-    let mut group_row_ptrs: std::collections::HashMap<state::StripId, *mut GroupRow> =
-        std::collections::HashMap::new();
-
-    if let Some(ws) = tree.desktop.active_workspace() {
-        for strip in &ws.strips {
-            // GroupRow routes cross-group tab drag-drops; each WindowGroup
-            // still handles its own close/reorder/maximize.
-            let groups: Vec<UiGroup> = strip
-                .window_groups
-                .iter()
-                .map(|g| {
-                    let state = chrome.borrow();
-                    let mut group =
-                        to_ui_window_group_with_inputs(g, records, &state.hosted_inputs);
-                    tab_documents::apply_creation_failures(
-                        &mut group,
-                        &state.record_creation_errors(tree),
-                    );
-                    group
-                })
-                .collect();
-            let mut strip_row: Box<GroupRow> = Box::new(
-                GroupRow::new(groups)
-                    // Reserves canvas-x [0, SIDEBAR_WIDTH] for the wheel
-                    // disc (which lives in the overlay layer) so wheel and
-                    // strip share the same canvas and pan together.
-                    .with_leading_inset(f64::from(sidebar_wheel_disc::SIDEBAR_RESERVE_PX)),
-            );
-            // Captured before unsizing into `Box<dyn Widget>`; the
-            // coercion preserves the address, valid for the host's lifetime.
-            let row_ptr: *mut GroupRow = &raw mut *strip_row;
-            group_row_ptrs.insert(strip.id, row_ptr);
-            content_col = content_col.push(strip_row as Box<dyn Widget>);
-        }
-    }
-
-    // Full-screen siblings-underneath layer so the translucent topbar
-    // (alpha 204) picks up the gradient tint behind it — a Vello stand-in
-    // for backdrop-blur.
-    let mut backdrop: Box<dyn Widget> = tree.desktop.active_workspace().map_or_else(
-        || Box::new(desktop_backdrop::DesktopBackdrop::new()) as Box<dyn Widget>,
-        |workspace| {
-            let workspace_id = workspace.id.0.to_string();
-            let backdrop = if chrome.borrow().hosted_inputs.file_services().is_some() {
-                desktop_backdrop::DesktopBackdrop::for_workspace_without_wallpaper(workspace_id)
-            } else {
-                desktop_backdrop::DesktopBackdrop::for_workspace(workspace_id)
-            };
-            Box::new(backdrop) as Box<dyn Widget>
-        },
-    );
-    let backdrop_ptr = &raw mut *backdrop;
-    let mut workspace = Box::new(content_col);
-    let work_area_ptr = &raw mut *workspace;
-    let workspace_ptr: *mut dyn Widget = &raw mut *workspace;
-    let workspace: Box<dyn Widget> = workspace;
-    let foreground_col = Column::new()
-        .with_no_padding()
-        .with_gap(0.0)
-        .push(topbar)
-        .push(workspace);
-    let mut display_bars = Box::new(display_bars::DisplayBars::new(chrome.clone()));
-    let display_bars_ptr = &raw mut *display_bars;
-    let stack = Stack::new()
-        .push(backdrop)
-        .push(Box::new(foreground_col))
-        .push(display_bars);
-
-    let root: Box<dyn Widget> = Box::new(
-        Container::new()
-            .with_no_padding()
-            .with_child(Box::new(stack))
-            .filling(),
-    );
-    (
-        root,
-        group_row_ptrs,
-        WorkspaceSceneParts {
-            backdrop: backdrop_ptr,
-            topbar: topbar_ptr,
-            workspace: workspace_ptr,
-            work_area: work_area_ptr,
-            display_bars: display_bars_ptr,
-        },
-    )
+/// Stable addresses of the surface's strip rows. Each row is boxed inside
+/// the surface, so its address holds until the surface is rebuilt; the host
+/// replaces this map whenever that happens.
+pub(crate) fn surface_row_ptrs(
+    surface: &mut tilo_desktop::composition::DesktopSurface,
+) -> std::collections::HashMap<state::StripId, *mut GroupRow> {
+    surface
+        .strip_ids()
+        .into_iter()
+        .filter_map(|id| surface.row_mut(id).map(|row| (id, std::ptr::from_mut(row))))
+        .collect()
 }
 
 /// As [`build_tilo_overlay_host_with_handle`], but with the store the
@@ -1689,8 +1698,7 @@ fn build_overlay_host_from_chrome(
     fixture: bool,
 ) -> (overlay_host::ShellOverlayHost, chrome_state::Chrome) {
     let records = chrome.borrow().records().clone();
-    let (root, group_row_ptrs, scene_parts) =
-        build_workspace_root_with_scene_parts(tree, &records, &chrome);
+    let (root, group_row_ptrs) = build_workspace_root(tree, &records, &chrome);
     // Each workspace is a spoke; dragging rotates them, releasing snaps to
     // the nearest one.
     let spokes: Vec<sidebar_wheel_disc::SpokeLabel> = tree
@@ -1730,7 +1738,6 @@ fn build_overlay_host_from_chrome(
     .with_sidebar(sidebar)
     .with_sidebar_top(sidebar_top)
     .with_group_row_ptrs(group_row_ptrs)
-    .with_workspace_scene_parts(scene_parts)
     .with_content_workspace(tree.desktop.active.raw())
     .with_peer_sync_enabled(enable_peer_sync);
     (host, chrome)
@@ -1815,5 +1822,193 @@ mod hosted_app_tests {
 
         every_hosted_app_round_trips_from_its_tab_title_into_a_live_app();
         an_unhosted_title_is_carried_through_unchanged();
+    }
+}
+
+#[cfg(test)]
+mod legacy_files_opener_regressions {
+    use super::*;
+
+    struct ClearDocumentOpener;
+
+    impl Drop for ClearDocumentOpener {
+        fn drop(&mut self) {
+            file_explorer::files_app::clear_document_opener();
+        }
+    }
+
+    struct MultiClickInterval(std::time::Duration);
+
+    impl MultiClickInterval {
+        fn extend_for_fixture() -> Self {
+            let previous = ui::gesture::multi_click_interval();
+            ui::gesture::set_multi_click_interval(std::time::Duration::from_secs(60));
+            Self(previous)
+        }
+    }
+
+    impl Drop for MultiClickInterval {
+        fn drop(&mut self) {
+            ui::gesture::set_multi_click_interval(self.0);
+        }
+    }
+
+    fn legacy_chrome(
+        root: &std::path::Path,
+        records: ui::record::RecordStore,
+    ) -> chrome_state::Chrome {
+        let tree = std::sync::Arc::new(parking_lot::RwLock::new(
+            state::WorkspaceTree::bootstrap_demo(),
+        ));
+        let chrome = chrome_state::ChromeState::new_with_handle(tree);
+        chrome.borrow_mut().hosted_inputs =
+            hosted_inputs::HostedTileInputs::for_host_directory(root).expect("owned Files root");
+        chrome.borrow_mut().set_records(records);
+        install_document_opener(&chrome);
+        chrome
+    }
+
+    fn find_semantic_bounds(
+        node: &ui::headless::InspectionNode,
+        name: &str,
+    ) -> Option<vello::kurbo::Rect> {
+        fn in_access(node: &ui::a11y::AccessNode, name: &str) -> Option<vello::kurbo::Rect> {
+            if node.name.as_deref() == Some(name) {
+                return node.bounds.map(ui::AccessBounds::to_rect);
+            }
+            node.children
+                .iter()
+                .find_map(|child| in_access(child, name))
+        }
+
+        node.semantics
+            .as_ref()
+            .and_then(|access| in_access(access, name))
+            .or_else(|| {
+                node.children
+                    .iter()
+                    .find_map(|child| find_semantic_bounds(child, name))
+            })
+    }
+
+    fn semantic_selected(node: &ui::headless::InspectionNode, name: &str) -> Option<bool> {
+        fn in_access(node: &ui::a11y::AccessNode, name: &str) -> Option<bool> {
+            if node.name.as_deref() == Some(name) {
+                return Some(node.state.selected);
+            }
+            node.children
+                .iter()
+                .find_map(|child| in_access(child, name))
+        }
+
+        node.semantics
+            .as_ref()
+            .and_then(|access| in_access(access, name))
+            .or_else(|| {
+                node.children
+                    .iter()
+                    .find_map(|child| semantic_selected(child, name))
+            })
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn legacy_files_tile_activation_does_not_reenter_the_mounted_record_loan() {
+        let directory = tempfile::tempdir().expect("temporary Files root");
+        let document = directory.path().join("legacy.txt");
+        std::fs::write(&document, "legacy contents\n").expect("fixture document");
+        let document = document.canonicalize().expect("canonical fixture document");
+        let records = ui::record::RecordStore::in_memory();
+        let chrome = legacy_chrome(directory.path(), records.clone());
+        let _clear = ClearDocumentOpener;
+        let _multi_click_interval = MultiClickInterval::extend_for_fixture();
+
+        let mut tile = ui::widget::TileHost::new(ui::widget::TileContent::App(Box::new(
+            file_explorer::FileExplorerWidget::with_startup_inputs(file_explorer::StartupInputs {
+                initial_dir: directory.path().to_path_buf(),
+                workspace_roots: Vec::new(),
+                record_roots: Vec::new(),
+                remote_accounts: Vec::new(),
+                trusted_humans: file_explorer::identity_directory::TrustedHumanDirectory::default(),
+            }),
+        )));
+        let files_checkout = ui::record::RecordCheckout::new(
+            ui::record::RecordId::for_tab(700),
+            ui::record::RecordKind::new("files-view-state"),
+        );
+        tile.bind_or_create_record(records, files_checkout);
+        let mut driver =
+            ui::headless::FrameHarness::new(ui::State::new(), Box::new(tile), (1000, 700));
+        let row = find_semantic_bounds(&driver.inspection().root, "legacy.txt")
+            .expect("legacy File row reaches the TileHost semantic tree");
+        assert!(row.area() > 0.0, "legacy File row has physical bounds");
+        let center = row.center();
+
+        driver.click_at(center.x, center.y);
+        assert_eq!(
+            semantic_selected(&driver.inspection().root, "legacy.txt"),
+            Some(true),
+            "the first physical click must select the mounted Files row before activation"
+        );
+        assert!(
+            chrome
+                .borrow()
+                .hosted_inputs
+                .native_app_for_path(&document)
+                .is_some(),
+            "the configured shell owner must recognize the selected native document"
+        );
+        driver.click_at(center.x, center.y);
+
+        assert!(
+            chrome
+                .borrow()
+                .tree()
+                .native_document_tabs
+                .values()
+                .any(|reference| reference.path == document),
+            "the legacy double-click opener must finish while TileHost retains the Files record loan"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn deferred_native_file_admission_preserves_existing_file_record_heads() {
+        use automerge::transaction::Transactable;
+
+        let directory = tempfile::tempdir().expect("temporary Files root");
+        let document = directory.path().join("existing.txt");
+        std::fs::write(&document, "existing contents\n").expect("fixture document");
+        let document = document.canonicalize().expect("canonical fixture document");
+        let mut owners = ui::record::RecordOwners::new(directory.path().join("profile"));
+        let records = owners
+            .open(SHELL_RECORDS_PACKAGE, "deferred-file-admission")
+            .expect("canonical profile record store");
+        let checkout = ui::record::RecordCheckout::new(
+            ui::record::RecordId::for_file(&document),
+            ui::record::RecordKind::new("text-document"),
+        );
+        records
+            .create_record(&checkout)
+            .expect("existing document record");
+        let before = records
+            .with(&checkout.id, |doc| {
+                doc.put(automerge::ROOT, "body", "preserved existing body")
+                    .expect("seed existing document");
+                doc.get_heads()
+            })
+            .expect("existing document writable");
+        let chrome = legacy_chrome(directory.path(), records.clone());
+        let _clear = ClearDocumentOpener;
+
+        open_document_from_files(&chrome, &document).expect("deferred native admission");
+
+        assert_eq!(
+            records
+                .with(&checkout.id, automerge::AutoCommit::get_heads)
+                .expect("existing document remains available"),
+            before,
+            "deferred admission must not replace or mutate an already-open canonical file record"
+        );
     }
 }

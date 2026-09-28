@@ -1529,9 +1529,37 @@ impl SettingsApp {
                 match button.as_str() {
                     "lower" => config.lower_button = action,
                     "upper" => config.upper_button = action,
+                    "third" => config.third_button = action,
                     _ => return Err("unknown pen button".into()),
                 }
                 "pen button updated"
+            }
+            crate::actions::InputOperation::SetTabletEraser { device, action } => {
+                let action = crate::panes::mouse_keyboard::eraser_for_id(&action)
+                    .ok_or_else(|| "unsupported eraser action".to_string())?;
+                tablet_entry(&mut prefs, &device)?.eraser = action;
+                "eraser updated"
+            }
+            crate::actions::InputOperation::SetPadDial {
+                device,
+                dial,
+                index,
+                mode,
+                action,
+            } => {
+                use crate::panes::mouse_keyboard::{MAX_PAD_DIALS, MAX_PAD_MODES, dial_for_id};
+                if index >= MAX_PAD_DIALS || mode >= MAX_PAD_MODES {
+                    return Err("unknown pad control".into());
+                }
+                let dial = match dial.as_str() {
+                    "ring" => settings_store::hardware::PadDial::Ring(index),
+                    "strip" => settings_store::hardware::PadDial::Strip(index),
+                    _ => return Err("unknown pad control".into()),
+                };
+                let action = dial_for_id(&action)
+                    .ok_or_else(|| "unsupported pad control action".to_string())?;
+                tablet_entry(&mut prefs, &device)?.set_dial_action(dial, mode, action);
+                "pad control updated"
             }
             crate::actions::InputOperation::SetPadButton {
                 device,
@@ -1541,17 +1569,13 @@ impl SettingsApp {
                 if button >= crate::panes::mouse_keyboard::MAX_PAD_BUTTONS {
                     return Err("unknown pad button".into());
                 }
-                let shortcut = crate::panes::mouse_keyboard::pad_button_for_id(&action)
+                let choice = crate::panes::mouse_keyboard::pad_button_for_id(&action)
                     .ok_or_else(|| "unsupported pad button action".to_string())?;
-                let config = tablet_entry(&mut prefs, &device)?;
-                match shortcut {
-                    Some(shortcut) => {
-                        config.pad_buttons.insert(button, shortcut);
-                    }
-                    None => {
-                        config.pad_buttons.remove(&button);
-                    }
-                }
+                crate::panes::mouse_keyboard::set_pad_button(
+                    tablet_entry(&mut prefs, &device)?,
+                    button,
+                    choice,
+                );
                 "pad button updated"
             }
         };
@@ -2474,9 +2498,15 @@ mod tests {
         clippy::float_cmp,
         reason = "the saved curve is the exact preset constant"
     )]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "every tablet and pad operation, applied then refused, against one saved document"
+    )]
     fn tablet_operations_persist_per_device_and_refuse_unknown_choices() {
         use crate::actions::InputOperation;
-        use settings_store::hardware::{ShortcutAction, StylusButtonAction};
+        use settings_store::hardware::{
+            EraserAction, PadDial, PadDialAction, ShortcutAction, StylusButtonAction,
+        };
         let _config = crate::prefs::test_env::ConfigGuard::new();
         let pen = "056a:0374:Wacom Intuos S Pen".to_string();
         let pad = "056a:0374:Wacom Intuos S Pad".to_string();
@@ -2507,10 +2537,33 @@ mod tests {
                 button: "lower".into(),
                 action: "right".into(),
             },
+            InputOperation::SetTabletButton {
+                device: pen.clone(),
+                button: "third".into(),
+                action: "back".into(),
+            },
+            InputOperation::SetTabletEraser {
+                device: pen.clone(),
+                action: "middle".into(),
+            },
             InputOperation::SetPadButton {
                 device: pad.clone(),
                 button: 1,
                 action: "shortcut:workspace_overview".into(),
+            },
+            InputOperation::SetPadDial {
+                device: pad.clone(),
+                dial: "ring".into(),
+                index: 0,
+                mode: 1,
+                action: "brush-size".into(),
+            },
+            InputOperation::SetPadDial {
+                device: pad.clone(),
+                dial: "strip".into(),
+                index: 1,
+                mode: 0,
+                action: "volume".into(),
             },
         ] {
             SettingsApp::apply_input_operation(operation).expect("a valid tablet choice applies");
@@ -2528,9 +2581,24 @@ mod tests {
             StylusButtonAction::Shortcut(ShortcutAction::Search)
         );
         assert_eq!(pen_config.lower_button, StylusButtonAction::Right);
+        assert_eq!(pen_config.third_button, StylusButtonAction::Back);
+        assert_eq!(pen_config.eraser, EraserAction::Middle);
         assert_eq!(
             saved[&pad].pad_buttons.get(&1),
             Some(&ShortcutAction::WorkspaceOverview)
+        );
+        assert_eq!(
+            saved[&pad].dial_action(PadDial::Ring(0), 1),
+            PadDialAction::BrushSize
+        );
+        assert_eq!(
+            saved[&pad].dial_action(PadDial::Ring(0), 0),
+            PadDialAction::Scroll,
+            "the ring's other mode keeps scrolling"
+        );
+        assert_eq!(
+            saved[&pad].dial_action(PadDial::Strip(1), 0),
+            PadDialAction::Volume
         );
         // The compositor reads the same document.
         let compositor =
@@ -2547,6 +2615,17 @@ mod tests {
             crate::prefs::SystemPrefs::load().input.tablets[&pad]
                 .pad_buttons
                 .is_empty()
+        );
+        SettingsApp::apply_input_operation(InputOperation::SetPadButton {
+            device: pad.clone(),
+            button: 1,
+            action: "show-map".into(),
+        })
+        .unwrap();
+        assert_eq!(
+            crate::prefs::SystemPrefs::load().input.tablets[&pad].pad_map_button,
+            Some(1),
+            "the compositor shows the pad map while button 2 is held"
         );
 
         for refused in [
@@ -2565,9 +2644,34 @@ mod tests {
                 action: "shortcut:make_coffee".into(),
             },
             InputOperation::SetPadButton {
-                device: pad,
+                device: pad.clone(),
                 button: 99,
                 action: "none".into(),
+            },
+            InputOperation::SetTabletEraser {
+                device: pen.clone(),
+                action: "explode".into(),
+            },
+            InputOperation::SetPadDial {
+                device: pad.clone(),
+                dial: "wheel".into(),
+                index: 0,
+                mode: 0,
+                action: "scroll".into(),
+            },
+            InputOperation::SetPadDial {
+                device: pad.clone(),
+                dial: "ring".into(),
+                index: 0,
+                mode: 99,
+                action: "scroll".into(),
+            },
+            InputOperation::SetPadDial {
+                device: pad,
+                dial: "ring".into(),
+                index: 0,
+                mode: 0,
+                action: "shortcut:search".into(),
             },
             InputOperation::SetTabletKeepAspect {
                 device: String::new(),

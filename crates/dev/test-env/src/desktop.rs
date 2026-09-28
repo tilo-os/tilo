@@ -54,7 +54,9 @@ pub fn desktop_isolation() -> Result<(), String> {
         ("DBUS_SYSTEM_BUS_ADDRESS", "/run/dbus/"),
     ] {
         match var(name) {
-            None => problems.push(format!("{name} is unset, so clients fall back to the default bus")),
+            None => problems.push(format!(
+                "{name} is unset, so clients fall back to the default bus"
+            )),
             Some(address) if address.contains(login) => {
                 problems.push(format!("{name}={address} is a login session's bus"));
             }

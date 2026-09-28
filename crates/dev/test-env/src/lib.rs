@@ -24,6 +24,9 @@
 //! - [`require_capability!`] skips a test that needs a GPU, audio, codecs,
 //!   FUSE or fanotify where the host lacks it, and fails it instead on a CI
 //!   lane that sets `TILO_REQUIRE_<CAP>=1`.
+//! - [`hang`] waits for workers, daemons, sockets and events against one
+//!   workspace-wide bound that only catches a hang: [`wait_until`],
+//!   [`wait_for`], [`recv`] and [`within`].
 //! - [`require_isolated_desktop`] refuses to go on when a test binary was
 //!   started outside the test environment, where it could reach the caller's
 //!   session bus, portals, media players or display.
@@ -32,11 +35,14 @@
 //! environment from a thread of its own is still racing any other test that
 //! mutates the variable without this crate.
 
+pub mod allocation;
 mod capability;
 mod desktop;
+pub mod hang;
 
 pub use capability::{Capability, Probe, capability_unavailable};
 pub use desktop::{TEST_ENVIRONMENT, desktop_isolation, require_isolated_desktop};
+pub use hang::{Within, hang_bound, hang_deadline, recv, wait_for, wait_until, within};
 
 use std::ffi::{OsStr, OsString};
 use std::marker::PhantomData;

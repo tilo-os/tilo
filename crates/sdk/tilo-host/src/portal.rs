@@ -44,6 +44,25 @@
     reason = "native host runner: portal and file dialogs block on their own thread"
 )]
 
+mod uri;
+pub use uri::open_uri_scoped;
+#[cfg(any(test, feature = "test-support"))]
+pub use uri::{ScopedUriFixture, scoped_uri_fixture};
+
+/// Custody of a delayed host effect. A scoped chooser or URI request carries
+/// the caller that asked for it, and the worker rechecks that caller
+/// immediately before the host effect runs; an expired caller never reaches
+/// the effect.
+pub trait EffectGate: Send + 'static {
+    /// Run `effect` only while the original caller is still admitted.
+    ///
+    /// # Errors
+    ///
+    /// The caller's refusal when it is no longer admitted, or `effect`'s own
+    /// error.
+    fn with_effect<R>(&self, effect: impl FnOnce() -> Result<R, String>) -> Result<R, String>;
+}
+
 use std::fs::File;
 #[cfg(any(feature = "portal", test))]
 use std::fs::OpenOptions;
@@ -502,6 +521,22 @@ impl PickRequest {
         crate::host::current().files.pick(self)
     }
 
+    /// Retain the original admitted caller through the actual chooser. The
+    /// caller is rechecked on a worker immediately before the host picker
+    /// runs; an expired caller never reaches the chooser effect.
+    pub fn send_scoped(self, scope: impl EffectGate) -> PortalChannel {
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(backend) = scoped_picker_fixture_backend() {
+            return scoped_pick_worker(scope, move || backend(self));
+        }
+        let files = crate::host::current().files;
+        scoped_pick_worker(scope, move || {
+            files.pick(self).recv().unwrap_or_else(|_| {
+                PortalOutcome::Failed("the file chooser closed without answering".into())
+            })
+        })
+    }
+
     /// Open one selected regular file on the portal worker and deliver its
     /// descriptor to the UI. This is intentionally a separate outcome path so
     /// normal path-based open/save callers retain their existing API.
@@ -516,6 +551,28 @@ impl PickRequest {
     pub fn send_multiple(self) -> MultiChannel {
         crate::host::current().files.pick_multiple(self)
     }
+}
+
+/// Run one scoped chooser request on a background worker, checking the
+/// original caller's effect scope there immediately before `pick`.
+fn scoped_pick_worker(
+    scope: impl EffectGate,
+    pick: impl FnOnce() -> PortalOutcome + Send + 'static,
+) -> PortalChannel {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let failed = sender.clone();
+    let spawned = crate::background::Background::current().spawn("ui-portal-scoped", move || {
+        let outcome = scope
+            .with_effect(|| Ok(pick()))
+            .unwrap_or_else(PortalOutcome::Failed);
+        let _ = sender.send(outcome);
+    });
+    if spawned.is_err() {
+        let _ = failed.send(PortalOutcome::Failed(
+            "this host runs no background work for a scoped chooser".into(),
+        ));
+    }
+    receiver
 }
 
 /// Spawn the portal worker. The UI may have moved on (window closed) by the
@@ -552,6 +609,7 @@ pub(crate) fn spawn_worker(name: &str, work: impl FnOnce() + Send + 'static) {
 /// then reach outside the directory the user actually browsed. So we also
 /// require that the decoded path has exactly as many components as the URI had
 /// segments, and that none of them is `..` or `.`.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn to_local_path(uri: &url::Url) -> Option<PathBuf> {
     use std::path::Component;
 
@@ -595,6 +653,12 @@ pub fn to_local_path(uri: &url::Url) -> Option<PathBuf> {
     }
 
     Some(path)
+}
+
+/// The browser has no local file system for a URI to name.
+#[cfg(target_arch = "wasm32")]
+pub fn to_local_path(_uri: &url::Url) -> Option<PathBuf> {
+    None
 }
 
 /// Map the portal's returned URIs for a **single-file** interaction: the first
@@ -1155,4 +1219,63 @@ mod tests {
         let rx = picker.open_file(PickRequest::open("Open", "Open"));
         assert!(matches!(rx.recv(), Ok(OpenFileOutcome::Failed(_))));
     }
+}
+// A fixture is selected only by the current test UI thread. The selected Arc is
+// retained by this exact dispatched request, never looked up on the worker.
+#[cfg(any(test, feature = "test-support"))]
+type ScopedPickerBackend = std::sync::Arc<dyn Fn(PickRequest) -> PortalOutcome + Send + Sync>;
+#[cfg(any(test, feature = "test-support"))]
+thread_local! {
+    static SCOPED_PICKER_FIXTURE: std::cell::RefCell<Option<ScopedPickerBackend>> = const { std::cell::RefCell::new(None) };
+}
+#[cfg(any(test, feature = "test-support"))]
+pub struct ScopedPickerFixture {
+    _owner_thread: std::marker::PhantomData<std::rc::Rc<()>>,
+}
+/// Select a test backend for scoped chooser requests on this exact UI thread.
+/// Dispatch retains the backend even after the guard leaves scope; all real
+/// effect checks still run immediately before invoking it on the worker.
+///
+/// # Errors
+///
+/// When this UI thread already owns a picker fixture.
+#[cfg(any(test, feature = "test-support"))]
+pub fn scoped_picker_fixture(backend: ScopedPickerBackend) -> Result<ScopedPickerFixture, String> {
+    SCOPED_PICKER_FIXTURE.with(|current| {
+        let mut current = current.borrow_mut();
+        if current.is_some() {
+            return Err("this UI thread already owns a picker fixture".into());
+        }
+        *current = Some(backend);
+        Ok(ScopedPickerFixture {
+            _owner_thread: std::marker::PhantomData,
+        })
+    })
+}
+#[cfg(any(test, feature = "test-support"))]
+fn scoped_picker_fixture_backend() -> Option<ScopedPickerBackend> {
+    SCOPED_PICKER_FIXTURE.with(|current| current.borrow().clone())
+}
+#[cfg(any(test, feature = "test-support"))]
+impl Drop for ScopedPickerFixture {
+    fn drop(&mut self) {
+        SCOPED_PICKER_FIXTURE.with(|current| *current.borrow_mut() = None);
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn writer_scoped_picker_fixture_is_thread_local_and_released_by_guard() {
+    use std::sync::Arc;
+    assert!(scoped_picker_fixture_backend().is_none());
+    let guard = scoped_picker_fixture(Arc::new(|_| PortalOutcome::Cancelled)).unwrap();
+    assert!(scoped_picker_fixture_backend().is_some());
+    assert!(scoped_picker_fixture(Arc::new(|_| PortalOutcome::Cancelled)).is_err());
+    assert!(
+        std::thread::spawn(|| scoped_picker_fixture_backend().is_none())
+            .join()
+            .unwrap()
+    );
+    drop(guard);
+    assert!(scoped_picker_fixture_backend().is_none());
 }

@@ -62,6 +62,16 @@ class NextestPolicyTests(unittest.TestCase):
                 f"{profile_name} leaves native-4K tests competing with the parallel suite",
             )
 
+    def test_ci_prints_slow_tests_within_a_generous_hang_bound(self) -> None:
+        ci = tomllib.loads(NEXTEST.read_text(encoding="utf-8"))["profile"]["ci"]
+        timeout = ci["slow-timeout"]
+        period = int(timeout["period"].removesuffix("s"))
+        # SLOW lines appear within half a minute of a test starting ...
+        self.assertLessEqual(period, 30)
+        self.assertIn(ci["status-level"], ("slow", "leak", "pass", "skip", "all"))
+        # ... while the kill stays a hang bound far above the longest test.
+        self.assertGreaterEqual(period * timeout["terminate-after"], 480)
+
     def test_every_golden_selection_names_the_same_tests(self) -> None:
         # PR shards exclude the goldens, nightly verifies them on an idle
         # renderer and the refresh workflow renders candidates for them.

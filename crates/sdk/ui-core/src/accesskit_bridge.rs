@@ -369,19 +369,23 @@ pub fn resolve_node_id<S: BuildHasher>(
     node_map: &HashMap<TaffyNodeId, *mut dyn Widget, S>,
     id: AkNodeId,
 ) -> Option<A11yTarget> {
-    resolve_node_id_impl::<S, false>(root, node_map, id, None)
+    resolve_node_id_impl::<S, false>(&[root], node_map, id, None)
 }
 /// Host traversal retaining the originating component through every callback.
+///
+/// `roots` are the whole presentation the id was exported from: ids are
+/// scoped across every root of one walk, so resolving against one root of a
+/// multi-root presentation would derive different ids.
 pub(crate) fn resolve_node_id_bound<S: BuildHasher>(
-    root: &dyn Widget,
+    roots: &[&dyn Widget],
     node_map: &HashMap<TaffyNodeId, *mut dyn Widget, S>,
     id: AkNodeId,
     custody: &Custody,
 ) -> Option<A11yTarget> {
-    resolve_node_id_impl::<S, true>(root, node_map, id, Some(custody))
+    resolve_node_id_impl::<S, true>(roots, node_map, id, Some(custody))
 }
 fn resolve_node_id_impl<S: BuildHasher, const BOUND: bool>(
-    root: &dyn Widget,
+    roots: &[&dyn Widget],
     node_map: &HashMap<TaffyNodeId, *mut dyn Widget, S>,
     id: AkNodeId,
     custody: Option<&Custody>,
@@ -391,8 +395,7 @@ fn resolve_node_id_impl<S: BuildHasher, const BOUND: bool>(
     }
     // One walk derives every id, for export and for resolution alike, so the
     // two can never drift apart.
-    let (_, mut targets) =
-        build_with_targets::<S, BOUND>(&[root], node_map, None, 1.0, &[], custody);
+    let (_, mut targets) = build_with_targets::<S, BOUND>(roots, node_map, None, 1.0, &[], custody);
     targets.remove(&id)
 }
 
@@ -753,7 +756,8 @@ fn append_resource_nodes(
             action_node.set_label(action.label.clone());
             let operation = action.kind.as_str();
             match &action.input {
-                tilo_actions::ActionInput::Immediate(_) => {
+                tilo_actions::ActionInput::Immediate(_)
+                | tilo_actions::ActionInput::Deferred { .. } => {
                     action_node.add_action(AkAction::Click);
                     if let Some(description) = &action.description {
                         action_node.set_description(format!("{description} ({operation})"));

@@ -296,19 +296,37 @@ impl Resolution<'_, '_> {
     }
 }
 
+/// The toolkit's own widget labels, in every language it ships, joined to a
+/// host's manager on first use.
+static WIDGET_CATALOG: EmbeddedCatalog = EmbeddedCatalog::new(
+    "en-US",
+    &[
+        ("en-US", include_str!("../locales/en-US.ftl")),
+        ("de-DE", include_str!("../locales/de-DE.ftl")),
+    ],
+    "close-title",
+)
+.with_system_locale();
+
+/// Resolve a toolkit message in the host's locale.
+///
+/// A thread with a manager gets the toolkit's translations added to it once;
+/// a thread without one resolves the source copy, as every toolkit string
+/// does, and no manager is installed behind the host's back.
+pub(crate) fn widget_format(key: &str, args: &[(&str, ArgValue)]) -> String {
+    if manager_id().is_some() {
+        WIDGET_CATALOG.ensure();
+    }
+    I18nManager::format(key, args)
+}
+
 impl I18nManager {
-    /// Register shared widget labels without replacing an application's
-    /// catalogs or its selected language. Standalone widgets get the same
-    /// source-locale fallback as application-hosted widgets.
+    /// Register shared widget labels in every bundled language without
+    /// replacing an application's catalogs or its selected language. A host
+    /// (the shell, an app) calls this once per thread so every toolkit widget
+    /// it draws follows the desktop's language; calling it again is free.
     pub fn register_widget_messages() {
-        const ENGLISH: &str = include_str!("../locales/en-US.ftl");
-        const GERMAN: &str = include_str!("../locales/de-DE.ftl");
-        if Self::revision() == 0 {
-            let _ = Self::install_system("en-US", &[("en-US", ENGLISH), ("de-DE", GERMAN)]);
-        } else {
-            Self::add_resource("en-US", ENGLISH.to_owned());
-            Self::add_resource("de-DE", GERMAN.to_owned());
-        }
+        WIDGET_CATALOG.ensure();
     }
 
     pub fn init(locale: &str) {
@@ -1142,6 +1160,84 @@ mod tests {
             I18nManager::install("en-US", "de", &[("en-US", EN), ("de", DE)]).unwrap();
             assert_eq!(PINNED.t("pinned-probe"), "Pinned");
             assert_eq!(I18nManager::current_locale(), "en-US");
+        }
+    }
+
+    #[test]
+    fn relative_times_follow_the_host_locale_and_its_plural_rules() {
+        use crate::format::relative;
+        use crate::history_source::participant_display_label;
+        use crate::time::{Duration, SystemTime};
+        use crate::widget::format_relative_time;
+        let base = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        let ago = |secs| format_relative_time(base, base + Duration::from_secs(secs));
+
+        // With no manager the toolkit's source copy is used and none is installed.
+        {
+            let _restore = RestoreLookupState::capture();
+            assert_eq!(ago(10), "just now");
+            assert_eq!(ago(120), "2 min ago");
+            assert_eq!(manager_id(), None);
+        }
+
+        // A German host gets German copy, with the count choosing the form.
+        {
+            let _restore = RestoreLookupState::capture();
+            install_plain("en-US", "de-DE", &[("en-US", EN), ("de-DE", DE)]);
+            assert_eq!(ago(10), "gerade eben");
+            assert_eq!(ago(120), "vor 2 Min.");
+            assert_eq!(ago(2 * 3600 + 5), "vor 2 Std.");
+            assert_eq!(ago(86_400), "vor 1 Tag");
+            assert_eq!(ago(259_200), "vor 3 Tagen");
+
+            assert_eq!(relative(0), "gerade eben");
+            assert_eq!(relative(90_000), "gestern");
+            assert_eq!(relative(3 * 86_400), "vor 3 Tagen");
+            assert_eq!(relative(8 * 86_400), "vor 1 Woche");
+            assert_eq!(relative(90 * 86_400), "vor 3 Monaten");
+            assert_eq!(relative(400 * 86_400), "vor 1 Jahr");
+
+            assert_eq!(
+                participant_display_label("agent:"),
+                "Unbekannter Agent · Agent"
+            );
+            assert_eq!(participant_display_label("Quinten"), "Quinten");
+        }
+    }
+
+    /// A toolkit key only English defines would show English on a German
+    /// desktop; every relative-time message is translated with the same
+    /// variables.
+    #[test]
+    fn relative_time_messages_are_translated() {
+        const EN_FTL: &str = include_str!("../locales/en-US.ftl");
+        const DE_FTL: &str = include_str!("../locales/de-DE.ftl");
+        let en = make_bundle(&parse_locale_or_default("en-US"), EN_FTL).unwrap();
+        let de = make_bundle(&parse_locale_or_default("de-DE"), DE_FTL).unwrap();
+        for key in [
+            "relative-time-just-now",
+            "relative-time-minutes",
+            "relative-time-hours",
+            "relative-time-days",
+            "relative-ago-just-now",
+            "relative-ago-minutes",
+            "relative-ago-hours",
+            "relative-ago-yesterday",
+            "relative-ago-days",
+            "relative-ago-weeks",
+            "relative-ago-months",
+            "relative-ago-years",
+            "participant-agent",
+            "participant-unknown-agent",
+        ] {
+            let mut args = FluentArgs::new();
+            args.set("count", FluentValue::from(2));
+            args.set("name", FluentValue::from("scribe"));
+            for (locale, bundle) in [("en-US", &en), ("de-DE", &de)] {
+                let (value, clean) = format_from_bundle(bundle, key, Some(&args))
+                    .unwrap_or_else(|| panic!("{locale}.ftl lacks {key}"));
+                assert!(clean, "{locale}.ftl formats {key} with errors: {value}");
+            }
         }
     }
 }

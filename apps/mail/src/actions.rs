@@ -15,7 +15,8 @@
 //! **Document-mutating → an action:** mark read/unread, star, move to a folder
 //! (archive / delete-to-trash / junk / move-to-inbox are all a move), add/remove a
 //! label, create/rename/delete a local folder, permanently purge a trashed
-//! message, and save/discard the draft.
+//! message, save/discard the draft, and every edit of the draft's body (rich
+//! text, edited in the SDK rich-text editor).
 //!
 //! **External, non-deterministic → never an action:** IMAP fetch/sync, SMTP send,
 //! and account auth all write mailbox state as *external ingestion* driven by the
@@ -23,9 +24,9 @@
 //! stay outside the action model. Sending a mail is an external effect; **saving**
 //! a draft is an action.
 //!
-//! **Presentation / view state → never an action:** the compose WYSIWYG buffer
-//! until it is saved or sent, the selection, the search query, which folder/pane is
-//! open, and the read-pane scroll. Nothing to replicate.
+//! **Presentation / view state → never an action:** the compose header fields
+//! until they are saved or sent, the selection, the search query, which
+//! folder/pane is open, and the read-pane scroll. Nothing to replicate.
 //!
 //! ## Determinism contract
 //!
@@ -40,6 +41,7 @@
 //! a peer.
 
 use automerge::AutoCommit;
+use qdoc_rich_text::RichTextAction;
 use serde::{Deserialize, Serialize};
 
 use tilo_actions::{
@@ -312,7 +314,7 @@ pub fn valid_calendar_invitation(value: &str) -> bool {
 /// Determinism contract: ids and target values are carried in the payload;
 /// [`Action::apply`] never touches the RNG or the wall-clock and applies its ids
 /// in the payload's given order. A malformed payload is a **no-op**.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum MailAction {
     /// Set the read/unread flag on a batch of messages.
     SetRead { ids: Vec<String>, read: bool },
@@ -341,6 +343,47 @@ pub enum MailAction {
     SaveDraft(DraftData),
     /// Discard the in-progress draft, clearing it from the document.
     DiscardDraft,
+    /// Start the in-progress draft's body afresh: a blank message, a reply's
+    /// quote, a reopened draft.
+    StartDraftBody(DraftBodySeed),
+    /// One edit of the in-progress draft's body.
+    EditDraftBody(RichTextAction),
+}
+
+/// What a draft body starts from: the HTML part when there is one, else the
+/// plain text, a paragraph per line (a `> ` line quoted).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct DraftBodySeed {
+    pub text: String,
+    pub html: Option<String>,
+}
+
+impl DraftBodySeed {
+    /// A body of plain text.
+    pub fn text(text: &str) -> Self {
+        Self {
+            text: text.to_owned(),
+            html: None,
+        }
+    }
+
+    /// The body a saved draft was written with.
+    pub fn of_draft(draft: &Draft) -> Self {
+        Self {
+            text: draft.body.clone(),
+            html: draft.html_body.clone(),
+        }
+    }
+
+    fn bounded(&self) -> Self {
+        Self {
+            text: bounded_text(&self.text, MAX_DRAFT_BODY_CHARS, true),
+            html: self
+                .html
+                .as_deref()
+                .map(|html| bounded_text(html, MAX_DRAFT_BODY_CHARS, true)),
+        }
+    }
 }
 
 impl Action for MailAction {
@@ -437,6 +480,12 @@ impl Action for MailAction {
             }
             MailAction::DiscardDraft => {
                 MailDoc::clear_draft(doc);
+            }
+            MailAction::StartDraftBody(seed) => MailDoc::start_draft_body(doc, &seed.bounded()),
+            MailAction::EditDraftBody(edit) => {
+                let body = MailDoc::draft_body(doc)
+                    .ok_or_else(|| ActionError::Refused("the draft has no body".into()))?;
+                edit.apply_under(doc, &body)?;
             }
         }
         Ok(())
@@ -1361,7 +1410,7 @@ mod tests {
     fn prompted_encode(spec: &ActionSpec, arg: &str) -> EncodedAction {
         match &spec.input {
             ActionInput::Prompted { build, .. } => build(arg),
-            ActionInput::Immediate(_) => {
+            ActionInput::Immediate(_) | ActionInput::Deferred { .. } => {
                 panic!("expected a prompted action: {}", spec.id)
             }
         }
@@ -2024,6 +2073,70 @@ mod tests {
             assert_eq!(MailDoc::get_read(&read_replica, "m"), Some(true));
             assert_eq!(MailDoc::get_starred(&read_replica, "m"), Some(true));
         }
+    }
+
+    #[test]
+    fn the_draft_body_is_rich_text_started_and_edited_by_actions() {
+        use qdoc_rich_text::action::RegionKind;
+        let text = |doc: &mut AutoCommit| {
+            let body = MailDoc::draft_body(doc).expect("a body");
+            tilo_rich_text::blocks_under(doc, &body)
+                .unwrap()
+                .into_iter()
+                .map(|block| (block.kind, block.text))
+                .collect::<Vec<_>>()
+        };
+        let mut doc = AutoCommit::new();
+        assert!(MailDoc::draft_body(&doc).is_none());
+        let refused =
+            MailAction::EditDraftBody(RichTextAction::AppendParagraph { text: "x".into() });
+        assert!(refused.apply(&mut doc).is_err(), "no body to edit yet");
+
+        // A reply quote: a paragraph per line, `> ` lines quoted.
+        MailAction::StartDraftBody(DraftBodySeed::text("Thanks!\n> original"))
+            .apply(&mut doc)
+            .unwrap();
+        assert_eq!(
+            text(&mut doc),
+            [
+                (ui::widget::BlockKind::Paragraph, "Thanks!".to_owned()),
+                (ui::widget::BlockKind::Quote, "original".to_owned()),
+            ]
+        );
+        let body = MailDoc::draft_body(&doc).unwrap();
+        let first = tilo_rich_text::blocks_under(&doc, &body).unwrap()[0]
+            .id
+            .clone();
+        MailAction::EditDraftBody(RichTextAction::SpliceText {
+            region: RegionKind::Body,
+            block: first,
+            at: 6,
+            del: 1,
+            ins: ", Ada.".into(),
+        })
+        .apply(&mut doc)
+        .unwrap();
+        assert_eq!(text(&mut doc)[0].1, "Thanks, Ada.");
+
+        // A reopened draft starts from its HTML part.
+        MailAction::StartDraftBody(DraftBodySeed {
+            text: "Plan".into(),
+            html: Some("<h2>Plan</h2><p><b>ship</b> it</p>".into()),
+        })
+        .apply(&mut doc)
+        .unwrap();
+        assert_eq!(
+            text(&mut doc),
+            [
+                (ui::widget::BlockKind::Heading(2), "Plan".to_owned()),
+                (ui::widget::BlockKind::Paragraph, "ship it".to_owned()),
+            ]
+        );
+        MailAction::DiscardDraft.apply(&mut doc).unwrap();
+        assert!(
+            MailDoc::draft_body(&doc).is_none(),
+            "discard clears the body"
+        );
     }
 
     #[test]

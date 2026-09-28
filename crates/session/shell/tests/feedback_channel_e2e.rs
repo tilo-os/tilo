@@ -7,6 +7,10 @@
 //! each written to a comment record the Commenter's device owns, found by
 //! the Editor through the room's index and followed — and the Editor sets
 //! the report's status, which a Commenter may not.
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 
 use std::os::fd::IntoRawFd as _;
 use std::os::unix::net::UnixStream;
@@ -271,6 +275,12 @@ fn conversation_has(app: &mut ui::App, test: impl Fn(&automerge::AutoCommit) -> 
 )]
 fn a_commenter_reports_votes_and_replies_and_an_editor_follows_and_triages() {
     let dir = tempfile::tempdir().expect("scratch");
+    // The broker binds only inside an owner-only directory.
+    std::fs::set_permissions(
+        dir.path(),
+        std::os::unix::fs::PermissionsExt::from_mode(0o700),
+    )
+    .expect("owner-only socket directory");
     let socket = dir.path().join("collab.sock");
     let team = Person::new(81, 82, "team");
     let reporter = Person::new(91, 92, "reporter");

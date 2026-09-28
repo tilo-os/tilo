@@ -10,7 +10,7 @@ pub use geom::{EdgeMist, MistEdge, edge_mist_for};
 pub use interaction::{
     ACTIVE_INTERACTION_EXPIRY, InteractionCardPlacement, TERMINAL_INTERACTION_DWELL,
 };
-pub use key::{PathSegment, PointerSpace, PresenceKey, SelectionRange};
+pub use key::{DIGEST_KEY_FIELD, PathSegment, PointerSpace, PresenceKey, SelectionRange};
 /// Shared with the other widgets that frame a label in fixed-pixel insets
 /// (the capture studio's docked recorder), so one rule decides how much
 /// larger than the default a label paints.
@@ -857,7 +857,7 @@ impl PresenceCtx {
     pub fn set_display_name(&mut self, user: UserId, name: impl Into<String>) {
         let name = name.into();
         let shown = if self.is_agent(&user) {
-            format!("{name} · Agent")
+            crate::history_source::agent_display_label(&name)
         } else {
             name.clone()
         };
@@ -908,7 +908,7 @@ impl PresenceCtx {
             .cloned()
             .unwrap_or_else(|| user.0.clone());
         if self.is_agent(user) {
-            format!("{name} · Agent")
+            crate::history_source::agent_display_label(&name)
         } else {
             name
         }

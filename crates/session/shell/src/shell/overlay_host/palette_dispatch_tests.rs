@@ -18,6 +18,12 @@ fn host_with_chrome() -> (ShellOverlayHost, crate::shell::chrome_state::Chrome) 
 #[test]
 fn a_shell_wired_to_a_broker_records_through_its_own_frame_pass() {
     let dir = tempfile::tempdir().expect("socket dir");
+    // The broker binds only inside an owner-only directory.
+    std::fs::set_permissions(
+        dir.path(),
+        std::os::unix::fs::PermissionsExt::from_mode(0o700),
+    )
+    .expect("owner-only socket directory");
     let tree = WorkspaceTree::bootstrap_demo().shared();
     let (mut host, chrome) = crate::shell::build_tilo_overlay_host_with_records(
         tree.clone(),
@@ -42,13 +48,18 @@ fn a_shell_wired_to_a_broker_records_through_its_own_frame_pass() {
         Vec::new(),
     )
     .expect("broker");
-    assert!(chrome.borrow().recorder().is_none());
+    assert!(host.session_services().recorder().is_none());
+    assert!(chrome.borrow().session_view().recorder.is_none());
     host.attach_collab_broker(&broker);
-    let recorder = chrome
-        .borrow()
+    let recorder = host
+        .session_services()
         .recorder()
         .cloned()
         .expect("recorder attached");
+    assert!(
+        chrome.borrow().session_view().recorder.is_some(),
+        "chrome sees the recorder it can record through"
+    );
     let listed = |tree: &crate::shell::state::WorkspaceTreeHandle| {
         tree.read()
             .desktop
@@ -78,6 +89,82 @@ fn a_shell_wired_to_a_broker_records_through_its_own_frame_pass() {
     recorder.stop(&user).expect("recording stops");
     host.update(&mut doc, &automerge::ROOT);
     assert!(!listed(&tree), "the frame pass takes it off again");
+    drop(broker);
+}
+
+/// A recording action only queues its request: the recorder answers it on
+/// the host's next frame, and a refusal reaches the invocation that asked.
+#[test]
+fn a_recorder_refusal_reaches_the_invocation_after_the_frame() {
+    use crate::shell::search::action_api::{ActionArgs, ActionError};
+    use crate::shell::search::{
+        InvocationDisposition, ResourceKind, SearchContext, SearchProvider,
+    };
+
+    let dir = tempfile::tempdir().expect("socket dir");
+    // The broker binds only inside an owner-only directory.
+    std::fs::set_permissions(
+        dir.path(),
+        std::os::unix::fs::PermissionsExt::from_mode(0o700),
+    )
+    .expect("owner-only socket directory");
+    let tree = WorkspaceTree::bootstrap_demo().shared();
+    let (mut host, chrome) = crate::shell::build_tilo_overlay_host_with_records(
+        tree.clone(),
+        false,
+        ui::record::RecordStore::in_memory(),
+    );
+    let user = chrome.borrow().active_local_user();
+    tree.write()
+        .desktop
+        .active_workspace_mut()
+        .expect("active workspace")
+        .set_owner(user);
+    let broker = crate::shell::collab_broker::spawn_native_harness(
+        dir.path().join("collab.sock"),
+        tree,
+        Vec::new(),
+    )
+    .expect("broker");
+    host.attach_collab_broker(&broker);
+    let mut document = AutoCommit::new();
+    let action = {
+        let state = chrome.borrow();
+        crate::shell::search::providers::ActionsProvider::new()
+            .query(SearchContext {
+                needle: "feedback.record.stop",
+                wanted: &[ResourceKind::Action],
+                chrome: &state,
+                doc: &document,
+                doc_root: &automerge::ROOT,
+            })
+            .into_iter()
+            .find(|result| result.id == "feedback.record.stop")
+            .expect("the stop action")
+    };
+    let begin = action
+        .on_begin_invoke
+        .expect("a recording action finishes once the recorder answered");
+    let ticket = match begin(
+        &mut document,
+        &automerge::ROOT,
+        &chrome,
+        &ActionArgs::none(),
+    )
+    .expect("stopping is asked for")
+    {
+        InvocationDisposition::Pending(ticket) => ticket,
+        InvocationDisposition::Accepted(_) => {
+            panic!("stopping finished before the recorder saw it")
+        }
+    };
+    assert!(
+        ticket().expect("first poll").is_none(),
+        "nothing answers before the frame"
+    );
+    host.update(&mut document, &automerge::ROOT);
+    let refusal = ticket().expect_err("nothing was recording");
+    assert!(matches!(refusal, ActionError::Refused(_)), "{refusal:?}");
     drop(broker);
 }
 
@@ -1703,7 +1790,9 @@ fn invite_tokens_travel_through_the_clipboard_exactly() {
                 "tilo-identity:{}",
                 "42".repeat(32)
             ))),
-            PeerSyncRequest::AcceptInvite(_) => Err("not here".to_string()),
+            PeerSyncRequest::AcceptInvite(_)
+            | PeerSyncRequest::PollEnrollment(_)
+            | PeerSyncRequest::CancelEnrollment(_) => Err("not here".to_string()),
             PeerSyncRequest::ListPendingInvitations => {
                 Ok(PeerSyncResponse::PendingInvitations(Vec::new()))
             }

@@ -29,6 +29,9 @@ impl RemoteApplyError {
     }
 }
 
+/// Apply a mutation the host has already committed. Bytes from peers reach an
+/// app only after the host admitted them through `tilo_automerge_isolate`, so
+/// this applies in the app's own process.
 pub(crate) fn merge_committed(
     doc: &mut AutoCommit,
     mutation: &DocumentMutation,
@@ -44,10 +47,10 @@ pub(crate) fn merge_committed(
         DocumentMutation::Snapshot(bytes) => AutoCommit::load(bytes)
             .map_err(|error| RemoteApplyError::InvalidMutation(error.to_string()))?,
         DocumentMutation::Incremental(bytes) => {
-            // Automerge's incremental loader intentionally accepts a valid
-            // prefix on partial parse errors. Strict standalone loading checks
-            // the entire stream first. MissingDeps is emitted only after a
-            // complete parse and is expected for deltas needing receiver history.
+            // Automerge's incremental loader accepts a valid prefix on partial
+            // parse errors, so the whole stream is first loaded strictly on its
+            // own. MissingDeps comes only after a complete parse and is
+            // expected for deltas that need the receiver's history.
             match AutoCommit::load(bytes) {
                 Ok(_) | Err(automerge::AutomergeError::MissingDeps) => {}
                 Err(error) => return Err(RemoteApplyError::InvalidMutation(error.to_string())),

@@ -1437,6 +1437,11 @@ and `verify`, and fails until both commands leave nothing to change. Neither
 moves a locked version; `Cargo.lock` only gains or loses `workspace-hack`
 edges. Never edit between the `HAKARI SECTION` markers by hand.
 
+The hack's feature set is native and does not build for wasm32. A member the
+browser runtime also builds for `wasm32-unknown-unknown` names it under
+`[target.'cfg(not(target_arch = "wasm32"))'.dependencies]` instead; the policy
+suite names a member that `manage-deps` gave the unconditional line.
+
 ## Pre-commit hook
 
 Enable the repo's git hooks once per clone:
@@ -1445,10 +1450,12 @@ Enable the repo's git hooks once per clone:
 git config core.hooksPath .githooks
 ```
 
-`pre-commit` runs `scripts/check-workspace-complete.sh`, which parses the root
-manifest and rejects missing, duplicate, excluded, or stale workspace members.
-Nested fixture workspaces and explicit `[workspace].exclude` entries are ignored.
-Compilation and tests run in CI (`.forgejo/workflows/check.yml`).
+`pre-commit` checks the staged change the way CI's quality job would: rustfmt
+on the staged Rust files, workspace membership
+(`scripts/check-workspace-complete.sh`), the app text and shell copy contracts,
+lint `#[allow]` policy, `#[ignore]` reasons, integration-test module
+declarations, conflict markers, `dbg!` and secrets. Compilation and tests run in
+CI (`.forgejo/workflows/check.yml`).
 
 The hook runs rustfmt on the staged `.rs` files, except `vendor/` and any
 generated source: a file with an `@generated` marker in its first five lines

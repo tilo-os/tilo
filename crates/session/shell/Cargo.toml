@@ -9,6 +9,9 @@ license.workspace = true
 
 [features]
 netns-e2e = []
+# Integration-only native broker fixtures. This forwards the shared broker's
+# equally gated fixture entry point; ordinary shell spawning never selects it.
+test-support = ["tilo-action-broker/test-support"]
 # When set, the hosted-mode compositor (`shell --backend winit`) binds
 # the TILO_TEST_CONTROL Unix socket the same way the headless backend
 # does. A background thread reads JSON commands and injects equivalent
@@ -39,6 +42,16 @@ dev-overrides = []
 [dependencies]
 advisory-lock = { path = "../../system/advisory-lock" }
 tilo-clock = { path = "../../system/tilo-clock" }
+tilo-action-broker = { path = "../../collab/tilo-action-broker" }
+tilo-desktop = { path = "../desktop" }
+tilo-peer-state = { path = "../../collab/tilo-peer-state" }
+tilo-automerge-isolate.workspace = true
+tilo-moq = { path = "../../hosting/tilo-moq", features = ["relay"] }
+# Native media HTTP client. TLS comes from the workspace's rustls-no-provider
+# configuration (reqwest 0.13 has no `rustls-tls-native-roots`).
+reqwest.workspace = true
+# Its sanctioned builder installs the crypto provider reqwest needs.
+tilo-net = { path = "../../system/tilo-net", features = ["http"] }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 atomic-file = { path = "../../system/atomic-file", features = ["json"] }
 bounded-command = { path = "../../system/bounded-command" }
@@ -60,6 +73,10 @@ tilo-startup-metrics = { path = "../../system/tilo-startup-metrics" }
 desktop-policy = { path = "../../system/desktop-policy" }
 # Canonical desktop model: workspaces, strips, groups, tabs, permissions.
 tilo-desktop-model = { path = "../desktop-model" }
+# Durable lockdown policy behind the Lockdown portal and native media gates.
+tilo-lockdown-policy = { path = "../tilo-lockdown-policy" }
+# Native media control: owner-signed HTTP session, grant and relay steps.
+tilo-native-media-control = { path = "../tilo-native-media-control" }
 tokio = { workspace = true, features = ["full"] }
 tilo-rt.workspace = true
 
@@ -126,7 +143,7 @@ os-actions = { path = "../../system/os-actions" }
 # video stack for shared surfaces, projection and recording: `realtime` is
 # the GStreamer encoder/decoder, which picks hardware first, then
 # royalty-free software, then Cisco's openh264 binary loaded by the system.
-media = { path = "../../media/core", features = ["realtime", "pipewire"] }
+media = { path = "../../media/core", features = ["realtime", "voice", "pipewire"] }
 # Recording muxes the encoder's access units through `appsrc`; the same pin
 # as `media`, so one copy resolves.
 gstreamer-app = { workspace = true, features = ["v1_24"] }
@@ -236,8 +253,10 @@ tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
 # The authenticated relay client and co-edit session (`RelayClient`,
 # `RelayCoeditSession`) that carry workspace deltas through a home or
-# provider host.
-tilo-relay-client = { path = "../../hosting/tilo-relay-client" }
+# provider host, plus the Cloud native-owner path (workspace join, delivery
+# v3, peer actions, sync refresh).
+tilo-relay = { path = "../../hosting/tilo-relay" }
+tilo-delivery-protocol = { path = "../../hosting/tilo-delivery-protocol" }
 # `network::identity` verifies raw Ed25519 signatures directly
 # against a peer's device pubkey (as recovered from their
 # DeviceCert). Same version + features shape as the dev-deps entry
@@ -245,6 +264,7 @@ tilo-relay-client = { path = "../../hosting/tilo-relay-client" }
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
 capnp.workspace = true
 capnp-rpc.workspace = true
+# The polkit agent cancels an authentication conversation.
 tokio-util.workspace = true
 # capnp-rpc speaks futures-io; `io` supplies its buffered reader/writer.
 futures-util = { workspace = true, features = ["io"] }
@@ -272,15 +292,22 @@ notes = { path = "../../../apps/notes" }
 # The runtime bundle the real Notes binary pins, for the headless replay
 # end-to-end.
 runtime-bundle = { path = "../../packaging/runtime-bundle" }
+# The integration tests drive the native broker harness. The dev image uses
+# the unqualified `dev-overrides` feature to target this package; a qualified
+# `shell/dev-overrides` would instead target this self dev-dependency.
+shell = { path = ".", features = ["test-support"] }
+tilo-copy-lint = { path = "../../dev/copy-lint" }
 # Pairing-broker tests talk to a local broker on a loaded runner; the
 # toolkit's test support bounds that exchange only against a hang.
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["test-support"] }
+media = { path = "../../media/core", features = ["test-support"] }
 # Parses the locale catalogues the way the runtime does, so a German entry
 # that would silently fall back to English fails a test.
 fluent.workspace = true
-# Network actor tests run an in-process relay to talk to.
-tilo-relay = { path = "../../hosting/tilo-relay" }
 runtime-portal = { path = "../../runtime/runtime-portal" }
+atomic-file = { path = "../../system/atomic-file", features = ["test-support"] }
+tilo-workspace-host = { path = "../../hosting/tilo-workspace-host", default-features = false, features = ["test-support"] }
+tilo-action-broker = { path = "../../collab/tilo-action-broker", features = ["test-support"] }
 tilo-startup-metrics = { path = "../../system/tilo-startup-metrics", features = ["test-support"] }
 collab-fixtures = { path = "../../collab/collab-fixtures" }
 # A real app over the production broker in the feedback-channel end-to-end.

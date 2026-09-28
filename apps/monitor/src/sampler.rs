@@ -239,14 +239,17 @@ impl Sampler {
                 status: p.status().to_string(),
                 cmd,
                 run_secs: p.run_time(),
-                open_files: count_open_files(pid_u32),
+                open_files: host_info::process::open_file_count(pid_u32),
                 // Kernel worker threads have no resident memory.
                 kernel: mem == 0,
             });
         }
         model.processes = procs;
         model.process_status =
-            process_snapshot_status(model.processes.len(), process_source_probe());
+            // `sysinfo`'s refresh is infallible, so an empty listing is paired
+            // with a probe of the process table: readable plus no rows is a
+            // genuine empty snapshot, an access failure is surfaced.
+            process_snapshot_status(model.processes.len(), host_info::process::probe_process_table());
 
         self.last = Some(now);
     }
@@ -286,21 +289,6 @@ impl Sampler {
     }
 }
 
-/// `sysinfo` exposes its process refresh as an infallible API. On Linux we
-/// therefore pair its empty result with a direct `/proc` probe: a readable
-/// `/proc` plus no rows is a genuine empty snapshot, while an access failure
-/// is surfaced explicitly to the app. This is intentionally independent of
-/// per-process `/proc/<pid>/fd` access, which is optional enrichment only.
-#[cfg(target_os = "linux")]
-fn process_source_probe() -> std::io::Result<()> {
-    std::fs::read_dir("/proc").map(|_| ())
-}
-
-#[cfg(not(target_os = "linux"))]
-fn process_source_probe() -> std::io::Result<()> {
-    Ok(())
-}
-
 fn process_snapshot_status(
     process_count: usize,
     source_probe: std::io::Result<()>,
@@ -321,21 +309,6 @@ impl Default for Sampler {
     fn default() -> Self {
         Self::new()
     }
-}
-
-/// Count a process's open file descriptors by listing `/proc/<pid>/fd`.
-/// `None` when the platform doesn't expose it or the directory can't be read
-/// (permission denied, the process just exited) — never a fabricated zero.
-#[cfg(target_os = "linux")]
-fn count_open_files(pid: u32) -> Option<usize> {
-    std::fs::read_dir(format!("/proc/{pid}/fd"))
-        .ok()
-        .map(|it| it.flatten().count())
-}
-
-#[cfg(not(target_os = "linux"))]
-fn count_open_files(_pid: u32) -> Option<usize> {
-    None
 }
 
 #[cfg(test)]

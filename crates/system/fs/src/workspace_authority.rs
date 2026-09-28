@@ -1126,9 +1126,8 @@ mod tests {
                 .unwrap();
             assert_eq!(restored.workspace, remote_workspace);
             assert_ne!(restored.node.id, nas.id, "the owner and NAS are distinct");
-            tokio::time::timeout(std::time::Duration::from_secs(1), rebind_rx.recv())
+            tilo_test_env::within("the daemon restart request", rebind_rx.recv())
                 .await
-                .unwrap()
                 .expect("different workspace ticket asks the daemon to restart into it");
             task.abort();
             endpoint.close().await;

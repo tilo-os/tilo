@@ -15,11 +15,12 @@
 use crate::shell::chrome_state::ChromeState;
 use crate::shell::state::{AppKind, GroupId, TabId, TileContent};
 use crate::shell::tab_binding::{self, Placement};
+use tilo_desktop_model::commands::OpenIntent;
 
 /// Where a newly-created window should go.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Destination {
-    /// Follow [`crate::shell::placement::placement_for_new_window`] — to
+    /// Follow [`crate::shell::placement::placement_for`] — to
     /// the right of the active window, or into its group when that group
     /// is already tabbed.
     Beside,
@@ -60,7 +61,7 @@ fn placement_for(st: &ChromeState, dest: Destination) -> Placement {
         Destination::Beside => rule_placement(st),
         Destination::Search => {
             let tree = st.tree();
-            crate::shell::placement::placement_for_search_result(&tree, st.strip_viewport())
+            crate::shell::placement::placement_for(&tree, OpenIntent::Search, st.strip_viewport())
         }
     }
 }
@@ -69,7 +70,7 @@ fn placement_for(st: &ChromeState, dest: Destination) -> Placement {
 /// currently looking at.
 fn rule_placement(st: &ChromeState) -> Placement {
     let tree = st.tree();
-    crate::shell::placement::placement_for_new_window(&tree, st.strip_viewport())
+    crate::shell::placement::placement_for(&tree, OpenIntent::Launch, st.strip_viewport())
 }
 
 /// Hosted in-process, so this is a tree splice rather than a launch — a
@@ -311,7 +312,6 @@ pub(crate) fn close_tab_unrecorded(
     if !removed {
         return Err(TabActionError::UnknownTab);
     }
-    #[cfg(target_os = "macos")]
     st.hosted_inputs.prune_documents(&mut st.tree_mut());
     // Close is durable before the client is asked to exit.
     st.tree().flush_to_disk();
@@ -351,16 +351,14 @@ pub enum MoveTabError {
 }
 
 impl MoveTabError {
-    pub fn user_message(self) -> &'static str {
-        match self {
-            MoveTabError::UnknownTab => "That window is no longer open.",
-            MoveTabError::UnknownWorkspace => "That workspace is gone.",
-            MoveTabError::SameWorkspace => "The window is already in that workspace.",
-            MoveTabError::Pinned => "This window belongs to its workspace and cannot move.",
-            MoveTabError::DocumentRefused => {
-                "The workspace document did not accept the change, so nothing was moved."
-            }
-        }
+    pub fn user_message(self) -> String {
+        crate::shell::i18n::t(match self {
+            MoveTabError::UnknownTab => "window-move-unknown-tab",
+            MoveTabError::UnknownWorkspace => "window-move-unknown-workspace",
+            MoveTabError::SameWorkspace => "window-move-same-workspace",
+            MoveTabError::Pinned => "window-move-pinned",
+            MoveTabError::DocumentRefused => "window-move-document-refused",
+        })
     }
 }
 
@@ -645,6 +643,8 @@ mod tests {
                 .id;
 
             tree.set_active(target);
+            // A restart ends the process that held the state file's single writer.
+            drop(tree);
 
             let restarted = crate::shell::persist::load_tree_from(&state_path)
                 .expect("workspace selection must leave a loadable state file");
@@ -656,6 +656,7 @@ mod tests {
             let mut moved_up = restarted;
             moved_up.persist_path = Some(state_path.clone());
             assert!(moved_up.switch_up());
+            drop(moved_up);
             let restarted = crate::shell::persist::load_tree_from(&state_path)
                 .expect("moving to the previous workspace must persist immediately");
             assert_eq!(restarted.desktop.active, first);
@@ -663,6 +664,7 @@ mod tests {
             let mut moved_down = restarted;
             moved_down.persist_path = Some(state_path.clone());
             assert!(moved_down.switch_down());
+            drop(moved_down);
             let restarted = crate::shell::persist::load_tree_from(&state_path)
                 .expect("moving to the next workspace must persist immediately");
             assert_eq!(restarted.desktop.active, target);

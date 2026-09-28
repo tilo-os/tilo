@@ -97,7 +97,7 @@ fn spawn_with_control() -> (Child, PathBuf, tempfile::TempDir) {
         }
     });
 
-    if let Ok(()) = rx.recv_timeout(Duration::from_secs(15)) {
+    if let Ok(()) = rx.recv_timeout(tilo_test_env::hang_bound()) {
         (child, socket_path, control_dir)
     } else {
         let _ = child.kill();
@@ -109,14 +109,13 @@ fn spawn_with_control() -> (Child, PathBuf, tempfile::TempDir) {
     }
 }
 
-/// 5s read timeout — adequate for every dispatcher command that doesn't
-/// talk to the GPU.
+/// Round-trips one dispatcher command; the reply bound only catches a hang.
 fn round_trip(stream: &mut UnixStream, cmd_json: &str) -> serde_json::Value {
-    round_trip_with_timeout(stream, cmd_json, Duration::from_secs(5))
+    round_trip_with_timeout(stream, cmd_json, tilo_test_env::hang_bound())
 }
 
-/// `snapshot` is the lone slow case: spinning up an `OffscreenRenderer`
-/// can exceed the default 5s on cold caches.
+/// `snapshot` passes its own bound: spinning up an `OffscreenRenderer` is
+/// slow on cold caches.
 fn round_trip_with_timeout(
     stream: &mut UnixStream,
     cmd_json: &str,
@@ -395,7 +394,7 @@ fn control_socket_drags_types_snapshots_and_dumps_state() {
         // adapter, allocates a render texture, and copies pixels back from the
         // GPU, 10+ seconds on cold caches. Bump the read timeout well above the
         // default 5s.
-        let response = round_trip_with_timeout(&mut stream, &cmd, Duration::from_secs(30));
+        let response = round_trip_with_timeout(&mut stream, &cmd, tilo_test_env::hang_bound());
         assert!(
             response.get("ok").is_some(),
             "snapshot should respond with `ok`; got {response:?}"

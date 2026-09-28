@@ -1324,13 +1324,13 @@ impl MailApp {
         self.dirty = true;
     }
 
-    fn send_compose(&mut self, _doc: &mut AutoCommit) {
+    fn send_compose(&mut self, doc: &mut AutoCommit) {
         self.persist_compose_format_if_changed();
         if self.pending_send.is_some() {
             self.shared.borrow_mut().status = Some("Message is still sending…".into());
             return;
         }
-        let draft = self.compose.to_draft();
+        let draft = self.compose.to_draft(doc);
         let acct = self.shared.borrow().accounts.active_config();
         if acct.email.trim().is_empty() {
             self.shared.borrow_mut().status =
@@ -1383,7 +1383,7 @@ impl MailApp {
     }
 
     fn save_compose_draft(&mut self, doc: &mut AutoCommit) {
-        let draft = self.compose.to_draft();
+        let draft = self.compose.to_draft(doc);
         // Persist the draft as an action (survives a crash / syncs to peers /
         // one undo boundary) …
         self.shared.borrow_mut().save_draft(doc, &draft);
@@ -4927,6 +4927,7 @@ impl Widget for MailApp {
         // before the chosen file is actually written.
         self.drain_attachment_save();
         self.drain_compose_attachment();
+        self.compose.sync(state, path);
         // Fade out a transient status toast once its lifetime elapses.
         self.expire_toast_at(std::time::Instant::now());
 
@@ -5151,7 +5152,16 @@ impl Widget for MailApp {
     /// `record_committed_action` path a Ctrl+K dispatch takes). Rising-edge:
     /// cleared on read.
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.shared.borrow_mut().take_committed_action()
+        // A body edit dispatches through the composer; everything else through
+        // Mail's own host. One event does one or the other.
+        let body = self.compose.take_committed_action();
+        let mail = self.shared.borrow_mut().take_committed_action();
+        body.or(mail)
+    }
+
+    /// Typing a word in the draft body is one undo step.
+    fn keeps_undo_step_open(&self) -> bool {
+        self.compose.keeps_undo_step_open()
     }
 
     /// Fold the mailbox into the unified Ctrl+K palette: a snapshot
@@ -7289,7 +7299,10 @@ mod tests {
                 .unwrap()
             );
             assert!(app.compose.open, "message Reply opens the normal composer");
-            assert_eq!(app.compose.to_draft().to, message.from.rfc5322());
+            assert_eq!(
+                app.compose.to_draft(&mut doc.clone()).to,
+                message.from.rfc5322()
+            );
             assert_eq!(
                 doc.get_heads(),
                 heads_before,
@@ -7345,7 +7358,7 @@ mod tests {
                 .apply_message_action(&mut doc, id, CtxAction::ReplyAll);
             app.process_intents();
             assert!(app.compose.open, "reply-all opens the composer");
-            let d = app.compose.to_draft();
+            let d = app.compose.to_draft(&mut doc);
             let sender = app
                 .shared
                 .borrow()
@@ -7409,8 +7422,8 @@ mod tests {
             };
             app.open_draft(id);
             assert!(app.compose.open, "the draft reopens in the composer");
-            assert_eq!(app.compose.to_draft().subject, "WIP proposal");
-            assert_eq!(app.compose.to_draft().attachments, vec![attachment]);
+            assert_eq!(app.compose.to_draft(&mut doc).subject, "WIP proposal");
+            assert_eq!(app.compose.to_draft(&mut doc).attachments, vec![attachment]);
             assert_eq!(app.editing_draft, Some(id));
         }
 

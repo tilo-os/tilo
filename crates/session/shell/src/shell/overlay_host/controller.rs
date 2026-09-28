@@ -34,10 +34,9 @@ pub enum ControllerDelivery {
 }
 
 impl ShellOverlayHost {
-    /// Record that a controller was just used, so hints and the guide
-    /// switch to its legends.
-    pub fn note_controller_input(&mut self, family: ui::ControllerFamily) {
-        let environment = self.interaction.with_controller(family);
+    /// Adopt the compositor's input environment, repainting when it changed
+    /// so hints and the guide switch to the devices in use.
+    pub fn apply_input_environment(&mut self, environment: ui::InteractionEnvironment) {
         if environment != self.interaction {
             ui::widget::Widget::set_interaction_environment(self, environment);
             if let Some(chrome) = self.chrome.as_ref() {

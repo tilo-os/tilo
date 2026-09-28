@@ -38,6 +38,7 @@ OMITTED_MODULES = {'network', 'network-legacy', 'network-manager', 'nfs', 'iscsi
     'clevis-pin-sss', 'clevis-pin-tang', 'clevis-pin-tpm2', 'crypt-ssh'}
 BOARD_OMITTED_DRIVERS = {'lenovo-83ed': {'nouveau', 'amdgpu', 'xe'}}
 MODULES = Path('usr/lib/tilo/initramfs-modules.txt')
+OMITTED_DRIVERS = Path('usr/lib/tilo/initramfs-omitted-drivers.txt')
 RUNTIME_FIELDS = ('Cmd', 'Entrypoint', 'Env', 'User', 'WorkingDir', 'StopSignal',
                   'Volumes', 'ExposedPorts', 'Healthcheck', 'Shell', 'OnBuild')
 DIAGNOSTIC_LIMIT = 2048
@@ -152,7 +153,9 @@ def mounted(container):
 
 
 def omitted_drivers(profile):
-    return sorted({'xfs'} | BOARD_OMITTED_DRIVERS.get(profile, set()))
+    # Match the production image dracut policy and the initramfs completion
+    # verifier: Ext4/XFS stay on the rootfs for rescue, never in the initramfs.
+    return sorted({'ext4', 'xfs'} | BOARD_OMITTED_DRIVERS.get(profile, set()))
 
 
 def create_arguments(image_id, kver, epoch, hooks, profile=None):
@@ -171,7 +174,6 @@ def create_arguments(image_id, kver, epoch, hooks, profile=None):
         '--kver', kver, '--add', ' '.join(sorted(REQUIRED_MODULES)),
         '--omit', ' '.join(sorted(OMITTED_MODULES)),
         '--omit-drivers', ' '.join(omitted_drivers(profile)),
-        '--add-drivers', 'ext4',
         '--compress', 'zstd',
         f'/usr/lib/modules/{kver}/initramfs.img']
 
@@ -212,7 +214,7 @@ def payload_paths(root, kver):
               Path('etc/containers/policy.json'),
               Path('etc/containers/registries.d/tilo-development.yaml'),
               Path('etc/containers/registries.conf.d/99-tilo-development.conf'),
-              completion.VERIFIED, MODULES, Path('usr/lib/modules') / kver / 'initramfs.img']
+              completion.VERIFIED, MODULES, OMITTED_DRIVERS, Path('usr/lib/modules') / kver / 'initramfs.img']
     if hardware.read_profile(root) is not None:
         paths.append(hardware.PROFILE_PATH)
     return paths
@@ -264,7 +266,7 @@ def transform(args):
                 log = command(['start', '--attach', container])
                 state = json.loads(command(['container', 'inspect', container]))[0]['State']
                 if state.get('Status') != 'exited' or type(state.get('ExitCode')) is not int or state['ExitCode'] != 0:
-                    raise ValueError('dracut did not exit successfully')
+                    raise ValueError('dracut did not exit successfully: ' + sanitized_diagnostic(log))
                 modules = module_evidence(log)
                 context = work / 'context'
                 context.mkdir()
@@ -283,8 +285,7 @@ def transform(args):
                         staged_path.replace(module_path)
                     finally:
                         staged_path.unlink(missing_ok=True)
-                    omitted_path = hardware.trusted_path(
-                        root, Path('usr/lib/tilo/initramfs-omitted-drivers.txt'), regular=True)
+                    omitted_path = hardware.trusted_path(root, OMITTED_DRIVERS, regular=True)
                     with tempfile.NamedTemporaryFile(dir=omitted_path.parent, delete=False) as staged:
                         staged.write(('\n'.join(omitted_drivers(
                             imported.receipt.get('hardware_profile'))) + '\n').encode())

@@ -20,8 +20,6 @@ fn select(driver: &mut ui::headless::Driver, hash: automerge::ChangeHash) {
 )]
 #[test]
 fn notebook_history_previews_restores_and_refuses_a_second_writer() {
-    // Removing component registration, projecting the outer launcher State, or
-    // restoring only page titles must fail this real saved-notebook exercise.
     eprintln!("phase notebook_shared_history_previews_restores_and_undoes_saved_content");
     {
         let f = LegacyFixture::rich();
@@ -55,15 +53,8 @@ fn notebook_history_previews_restores_and_refuses_a_second_writer() {
                     page.parent = None;
                     page.order = 2;
                     NotesDoc::upsert_page_meta(doc, &page);
-                    let blocks = NotesDoc::page_blocks_list(doc, f.child).unwrap();
-                    let text = NotesDoc::block_text_obj(doc, &blocks, 0).unwrap();
-                    doc.splice_text(
-                        &text,
-                        0,
-                        isize::try_from(doc.text(&text).unwrap().chars().count()).unwrap(),
-                        "changed marked block",
-                    )
-                    .unwrap();
+                    let block = NotesDoc::page_block_snapshots(doc, f.child)[0].0.clone();
+                    replace_block_text(doc, f.child, &block, "changed marked block");
                     NotesDoc::upsert_tag(
                         doc,
                         &notes::model::TagMeta {
@@ -413,42 +404,6 @@ fn production_preparation_imports_once_and_reopens_the_same_graph() {
         );
         assert!(source.join(".notes-canonical-v1").is_file());
     }
-
-    eprintln!("phase actual_binary_launch_spec_prepares_the_notebook_and_shared_history");
-    {
-        let temp = tempfile::tempdir().unwrap();
-        let notebook = temp.path().join("notebook");
-        let state = temp.path().join("application-state");
-        let dump = temp.path().join("inspection.json");
-        let spec = serde_json::json!({"actions":[{"click_named":"history-open"}],"inspect":dump});
-        let output = std::process::Command::new(env!("CARGO_BIN_EXE_notes"))
-            .env("XDG_DATA_HOME", &state)
-            .env("TILO_NOTES_ROOT", &notebook)
-            .env("TILO_PACKAGE_ID", canonical::PACKAGE)
-            .env("TILO_WORKSPACE_ID", "00000000-0000-0000-0000-000000000023")
-            .args(["--headless-drive", &spec.to_string()])
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "stdout={} stderr={}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let inspection = std::fs::read_to_string(&dump).unwrap();
-        assert!(inspection.contains("activity_timeline"), "{inspection}");
-        // The notebook is a canonical record in application state. A workspace
-        // launch never adopts, creates or retires a personal Markdown notebook.
-        assert!(
-            walkdir(&state).next().is_some(),
-            "the launch persisted its notebook record under {}",
-            state.display()
-        );
-        assert!(
-            !notebook.exists(),
-            "a workspace launch leaves the personal notebook alone"
-        );
-    }
 }
 
 #[test]
@@ -518,21 +473,38 @@ fn notebook_restore_rechecks_stale_frontier_and_current_authority() {
     }
 }
 
-/// Every regular file below `root`.
-fn walkdir(root: &std::path::Path) -> impl Iterator<Item = std::path::PathBuf> {
-    let mut pending = vec![root.to_path_buf()];
-    let mut files = Vec::new();
-    while let Some(dir) = pending.pop() {
-        for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                pending.push(path);
-            } else {
-                files.push(path);
-            }
-        }
-    }
-    files.into_iter()
+#[test]
+fn actual_binary_normal_launch_prepares_default_canonical_notebook_and_history() {
+    let temp = tempfile::tempdir().unwrap();
+    let profile = temp.path().join("application-state");
+    let workspace = "00000000-0000-0000-0000-000000000023";
+    let dump = temp.path().join("inspection.json");
+    let spec = serde_json::json!({"actions":[{"click_named":"history-open"}],"inspect":dump});
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_notes"))
+        .env("XDG_DATA_HOME", &profile)
+        .env("TILO_PACKAGE_ID", canonical::PACKAGE)
+        .env("TILO_WORKSPACE_ID", workspace)
+        .env("TILO_PARTICIPATION", "author")
+        .args(["--headless-drive", &spec.to_string()])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let inspection = std::fs::read_to_string(&dump).unwrap();
+    assert!(inspection.contains("activity_timeline"), "{inspection}");
+    let checkout = notes::hosting::default_notebook();
+    let directory = app_state::DocStore::room_record_dir_at(
+        &profile,
+        canonical::PACKAGE,
+        workspace,
+        &checkout.id.storage_key(),
+    )
+    .unwrap();
+    assert!(directory.join(app_state::DOCUMENT_FILE).is_file());
 }
 
 #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
@@ -823,6 +795,7 @@ fn assert_outgoing_notebook_recovery(transition: OutgoingTransition, reject_inco
         "Recovered after outgoing rebind"
     );
 }
+
 #[test]
 fn outgoing_replacements_retain_the_failed_owner_without_preclose() {
     eprintln!("phase outgoing_notebook_replacement_retains_failed_owner_without_preclose");

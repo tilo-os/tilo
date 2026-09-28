@@ -29,6 +29,11 @@ jobs:
       # crate; read them from the shared download cache, not crates.io.
       CARGO_HOME: /cargo-home
     steps:
+      - name: Disable automatic Git maintenance in the disposable job container
+        # Git 2.54 maintenance can rewrite shallow history between fetches.
+        # Checkout copies this global config before its first fetch.
+        run: git config --global maintenance.auto false
+
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -48,6 +53,9 @@ jobs:
           cargo deny --version
           cargo machete --version
           cargo hakari --version
+          # ci-fast ships gcc as /usr/bin/cc (os/Containerfile.ci-fast); the
+          # Tilo app lints below compile tilo-app-cli and need that linker.
+          command -v cc
 
       - name: Check formatting of changed Rust files
         shell: bash
@@ -64,6 +72,12 @@ jobs:
 
       - name: Repository policy suite
         run: bash tools/policy/run.sh
+
+      # The lint app developers run locally: an app that adds platform code
+      # without moving it into a platform crate or declaring itself native
+      # fails here. ci-fast already provides /usr/bin/cc (pinned digest).
+      - name: Tilo app lints
+        run: cargo run --locked --quiet -p tilo-app-cli --bin tilo-app -- check --lint --all
 
       - name: cargo deny
         run: cargo deny --workspace check --hide-inclusion-graph

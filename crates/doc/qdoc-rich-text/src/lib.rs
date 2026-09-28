@@ -152,6 +152,9 @@ impl BodyOrder {
 #[derive(Clone, Debug)]
 pub struct RichTextState {
     containers: Containers,
+    /// Where the rich text sits in its document: empty at the root, the
+    /// path to the field's map when it is a field of another resource.
+    root_path: tilo_resource::Path,
     body: Rc<BodyOrder>,
     /// Every heading, image and table cell, read whole: the outline and the
     /// document's objects are listed without reading its prose.
@@ -324,8 +327,18 @@ impl RichTextState {
     }
 }
 
-fn containers_of(doc: &Doc) -> Result<Containers, ModelError> {
-    model::open(doc, &automerge::ROOT).map_err(|error| ModelError::invalid(error.to_string()))
+fn containers_of(doc: &Doc, root: &ObjId) -> Result<Containers, ModelError> {
+    model::open(doc, root).map_err(|error| ModelError::invalid(error.to_string()))
+}
+
+/// The path from the document's root to `obj`, root first.
+fn path_to(doc: &Doc, obj: &ObjId) -> tilo_resource::Path {
+    let mut path: tilo_resource::Path = doc
+        .parents(obj)
+        .map(|parents| parents.map(|parent| (parent.obj, parent.prop)).collect())
+        .unwrap_or_default();
+    path.reverse();
+    path
 }
 
 fn block_obj(doc: &Doc, blocks: &ObjId, id: &str) -> Option<ObjId> {
@@ -336,15 +349,19 @@ fn block_obj(doc: &Doc, blocks: &ObjId, id: &str) -> Option<ObjId> {
 }
 
 /// The objects of body paragraph `id` and the path to each.
-fn paragraph_objects(doc: &Doc, c: &Containers, id: &str) -> Vec<(ObjId, tilo_resource::Path)> {
+fn paragraph_objects(
+    doc: &Doc,
+    c: &Containers,
+    root_path: &[(ObjId, automerge::Prop)],
+    id: &str,
+) -> Vec<(ObjId, tilo_resource::Path)> {
     use automerge::Prop;
     let Some(block) = block_obj(doc, &c.blocks, id) else {
         return Vec::new();
     };
-    let to_block = vec![
-        (c.root.clone(), Prop::Map(KEY_BLOCKS.into())),
-        (c.blocks.clone(), Prop::Map(id.into())),
-    ];
+    let mut to_block = root_path.to_vec();
+    to_block.push((c.root.clone(), Prop::Map(KEY_BLOCKS.into())));
+    to_block.push((c.blocks.clone(), Prop::Map(id.into())));
     let mut objects = vec![(block.clone(), to_block.clone())];
     for key in [BLOCK_TEXT, BLOCK_ATTRS] {
         if let Ok(Some((Value::Object(_), child))) = doc.get(&block, key) {
@@ -360,7 +377,7 @@ impl RichTextState {
     /// Index where paragraph `id`'s objects sit, dropping what it had.
     fn index_paragraph(&mut self, doc: &Doc, id: &str) {
         self.forget_paragraph(id);
-        let objects = paragraph_objects(doc, &self.containers, id);
+        let objects = paragraph_objects(doc, &self.containers, &self.root_path, id);
         self.objects.extend(objects);
     }
 
@@ -381,7 +398,148 @@ impl Resource for RichText {
     type Action = RichTextAction;
 
     fn read(doc: &Doc) -> Result<RichTextState, ModelError> {
-        let c = containers_of(doc)?;
+        Self::read_under(doc, &automerge::ROOT)
+    }
+
+    /// A change to a paragraph on screen is placed from the index kept of
+    /// its objects.
+    fn locate(state: &RichTextState, obj: &ObjId) -> Option<tilo_resource::Path> {
+        state.objects.get(obj).cloned()
+    }
+
+    /// A new document: the shared schema and one empty paragraph to type in.
+    fn initialize(doc: &mut Doc) -> Result<(), ModelError> {
+        Self::initialize_under(doc, &automerge::ROOT)
+    }
+
+    fn refresh(state: &mut RichTextState, doc: &Doc, delta: &Delta) -> Result<(), ModelError> {
+        Self::refresh_under(state, doc, delta)
+    }
+
+    fn load(state: &mut RichTextState, doc: &Doc, demand: &Demand) -> Result<(), ModelError> {
+        let mut wanted: HashSet<String> = demand
+            .positions(state.body.len())
+            .filter_map(|position| state.body.id_at(position).map(str::to_owned))
+            .collect();
+        wanted.extend(
+            demand
+                .keys
+                .iter()
+                .filter(|id| state.body.contains(id))
+                .cloned(),
+        );
+        let evicted: Vec<String> = state
+            .loaded
+            .keys()
+            .filter(|id| !wanted.contains(*id))
+            .cloned()
+            .collect();
+        for id in &evicted {
+            state.loaded.remove(id);
+            state.forget_paragraph(id);
+        }
+        let missing: Vec<String> = wanted
+            .into_iter()
+            .filter(|id| !state.loaded.contains_key(id))
+            .collect();
+        if !missing.is_empty() {
+            for view in model::materialize_blocks(doc, &state.containers, &missing) {
+                let id = view.id.clone();
+                state.loaded.insert(id.clone(), Rc::new(view));
+                state.index_paragraph(doc, &id);
+            }
+        }
+        Ok(())
+    }
+
+    /// Typing a word is one undo step: an insertion right after the previous
+    /// one in the same paragraph continues it, until a space or a line of
+    /// punctuation ends the word. Deleting runs the same way.
+    fn coalesces(previous: &RichTextAction, next: &RichTextAction) -> bool {
+        let (
+            RichTextAction::SpliceText {
+                region: before_region,
+                block: before_block,
+                at: before_at,
+                del: before_del,
+                ins: before_ins,
+            },
+            RichTextAction::SpliceText {
+                region,
+                block,
+                at,
+                del,
+                ins,
+            },
+        ) = (previous, next)
+        else {
+            return false;
+        };
+        if before_region != region || before_block != block {
+            return false;
+        }
+        match (*before_del, *del, before_ins.is_empty(), ins.is_empty()) {
+            // Typing on: this insertion starts where the last one ended, and
+            // the last one did not end the word.
+            (0, 0, false, false) => {
+                *at == before_at.saturating_add(before_ins.chars().count())
+                    && !before_ins.ends_with(|c: char| c.is_whitespace())
+            }
+            // Deleting on, backwards (Backspace) or forwards (Delete).
+            (1.., 1.., true, true) => at.saturating_add(*del) == *before_at || at == before_at,
+            _ => false,
+        }
+    }
+
+    /// Recording who wrote text is part of the edit that wrote it.
+    fn annotates(action: &RichTextAction) -> bool {
+        matches!(action, RichTextAction::SetMark { name, .. } if name == qdoc::schema::MARK_AUTHOR)
+    }
+
+    fn register(registry: &mut tilo_actions::ActionRegistry) {
+        registry.register::<RichTextAction>(RICH_TEXT_ACTION_TYPE);
+    }
+
+    /// Every edit, derived from [`RichTextAction`] itself, so agents read the
+    /// vocabulary from the `apply` descriptor.
+    fn action_schema() -> Option<serde_json::Value> {
+        Some(<RichTextAction as tilo_resource::JsonSchema>::json_schema())
+    }
+
+    /// The outline and what is on screen. A search over every paragraph of a
+    /// long document reads the document; the editor offers that as its own
+    /// Find.
+    fn search(state: &RichTextState) -> Vec<SearchEntry> {
+        let headings = state.headings().into_iter().map(|heading| SearchEntry {
+            anchor: Some(heading.id),
+            title: heading.text.clone(),
+            text: heading.text,
+        });
+        let mut on_screen: Vec<(usize, &Rc<BlockView>)> = state
+            .loaded
+            .values()
+            .filter(|view| view.kind != "heading" && !view.text.is_empty())
+            .filter_map(|view| Some((state.body.position(&view.id)?, view)))
+            .collect();
+        on_screen.sort_by_key(|(position, _)| *position);
+        headings
+            .chain(on_screen.into_iter().map(|(_, view)| SearchEntry {
+                anchor: Some(view.id.clone()),
+                title: view.text.chars().take(60).collect(),
+                text: view.text.clone(),
+            }))
+            .collect()
+    }
+}
+
+impl RichText {
+    /// [`Resource::read`] of rich text stored under `root`: the document's
+    /// root, or the map of a rich-text field inside another resource.
+    ///
+    /// # Errors
+    /// Returns [`ModelError`] when `root` holds no rich text.
+    pub fn read_under(doc: &Doc, root: &ObjId) -> Result<RichTextState, ModelError> {
+        let c = containers_of(doc, root)?;
         let spine = model::body_spine(doc, &c);
         let featured_ids: Vec<String> = spine
             .iter()
@@ -403,19 +561,18 @@ impl Resource for RichText {
             comments: Rc::new(model::materialize_comments(doc, &c)),
             changes: Rc::new(model::materialize_changes(doc, &c)),
             content: Rc::new(model::referenced_content(doc, &c)),
+            root_path: path_to(doc, &c.root),
             containers: c,
         })
     }
 
-    /// A change to a paragraph on screen is placed from the index kept of
-    /// its objects.
-    fn locate(state: &RichTextState, obj: &ObjId) -> Option<tilo_resource::Path> {
-        state.objects.get(obj).cloned()
-    }
-
-    /// A new document: the shared schema and one empty paragraph to type in.
-    fn initialize(doc: &mut Doc) -> Result<(), ModelError> {
-        let c = model::init(doc, &automerge::ROOT);
+    /// Start rich text under `root`: the shared schema and one empty
+    /// paragraph to type in.
+    ///
+    /// # Errors
+    /// Returns the document's write error.
+    pub fn initialize_under(doc: &mut Doc, root: &ObjId) -> Result<(), ModelError> {
+        let c = model::init(doc, root);
         if model::blocks_in_order(doc, &c).is_empty() {
             let mut ids = model::IdGen::new(doc.get_actor().to_hex_string());
             let mut dm = model::DocMut {
@@ -428,19 +585,42 @@ impl Resource for RichText {
         Ok(())
     }
 
-    fn refresh(state: &mut RichTextState, doc: &Doc, delta: &Delta) -> Result<(), ModelError> {
+    /// The body's text under `root`, a line per paragraph: what search
+    /// indexes and a plain-text export writes.
+    ///
+    /// # Errors
+    /// Returns [`ModelError`] when `root` holds no rich text.
+    pub fn plain_text_under(doc: &Doc, root: &ObjId) -> Result<String, ModelError> {
+        let c = containers_of(doc, root)?;
+        Ok(model::materialize_region(doc, &c, Region::Body)
+            .into_iter()
+            .map(|block| block.text)
+            .collect::<Vec<_>>()
+            .join("\n"))
+    }
+
+    /// [`Resource::refresh`] for rich text under any root: the state knows
+    /// where it was read from.
+    ///
+    /// # Errors
+    /// Returns [`ModelError`] when the rich text is no longer there.
+    pub fn refresh_under(
+        state: &mut RichTextState,
+        doc: &Doc,
+        delta: &Delta,
+    ) -> Result<(), ModelError> {
         if delta.is_empty() {
             return Ok(());
         }
         let root = delta.under(&state.containers.root);
         if delta.is_everything() || root.is_all() || root.key(KEY_BLOCKS) == Touch::Written {
-            *state = Self::read(doc)?;
+            *state = Self::read_under(doc, &state.containers.root)?;
             return Ok(());
         }
         // A lazily created container (the first header, note or comment)
         // is a new object: find it before reading it.
         if root.written().next().is_some() {
-            state.containers = containers_of(doc)?;
+            state.containers = containers_of(doc, &state.containers.root)?;
         }
         let c = state.containers.clone();
         if root.key(KEY_HEADER) != Touch::Untouched {
@@ -519,116 +699,6 @@ impl Resource for RichText {
             }
         }
         Ok(())
-    }
-
-    fn load(state: &mut RichTextState, doc: &Doc, demand: &Demand) -> Result<(), ModelError> {
-        let mut wanted: HashSet<String> = demand
-            .positions(state.body.len())
-            .filter_map(|position| state.body.id_at(position).map(str::to_owned))
-            .collect();
-        wanted.extend(
-            demand
-                .keys
-                .iter()
-                .filter(|id| state.body.contains(id))
-                .cloned(),
-        );
-        let evicted: Vec<String> = state
-            .loaded
-            .keys()
-            .filter(|id| !wanted.contains(*id))
-            .cloned()
-            .collect();
-        for id in &evicted {
-            state.loaded.remove(id);
-            state.forget_paragraph(id);
-        }
-        let missing: Vec<String> = wanted
-            .into_iter()
-            .filter(|id| !state.loaded.contains_key(id))
-            .collect();
-        if !missing.is_empty() {
-            for view in model::materialize_blocks(doc, &state.containers, &missing) {
-                let id = view.id.clone();
-                state.loaded.insert(id.clone(), Rc::new(view));
-                state.index_paragraph(doc, &id);
-            }
-        }
-        Ok(())
-    }
-
-    /// Typing a word is one undo step: an insertion right after the previous
-    /// one in the same paragraph continues it, until a space or a line of
-    /// punctuation ends the word. Deleting runs the same way.
-    fn coalesces(previous: &RichTextAction, next: &RichTextAction) -> bool {
-        let (
-            RichTextAction::SpliceText {
-                region: before_region,
-                block: before_block,
-                at: before_at,
-                del: before_del,
-                ins: before_ins,
-            },
-            RichTextAction::SpliceText {
-                region,
-                block,
-                at,
-                del,
-                ins,
-            },
-        ) = (previous, next)
-        else {
-            return false;
-        };
-        if before_region != region || before_block != block {
-            return false;
-        }
-        match (*before_del, *del, before_ins.is_empty(), ins.is_empty()) {
-            // Typing on: this insertion starts where the last one ended, and
-            // the last one did not end the word.
-            (0, 0, false, false) => {
-                *at == before_at.saturating_add(before_ins.chars().count())
-                    && !before_ins.ends_with(|c: char| c.is_whitespace())
-            }
-            // Deleting on, backwards (Backspace) or forwards (Delete).
-            (1.., 1.., true, true) => at.saturating_add(*del) == *before_at || at == before_at,
-            _ => false,
-        }
-    }
-
-    fn register(registry: &mut tilo_actions::ActionRegistry) {
-        registry.register::<RichTextAction>(RICH_TEXT_ACTION_TYPE);
-    }
-
-    /// Every edit, derived from [`RichTextAction`] itself, so agents read the
-    /// vocabulary from the `apply` descriptor.
-    fn action_schema() -> Option<serde_json::Value> {
-        Some(<RichTextAction as tilo_resource::JsonSchema>::json_schema())
-    }
-
-    /// The outline and what is on screen. A search over every paragraph of a
-    /// long document reads the document; the editor offers that as its own
-    /// Find.
-    fn search(state: &RichTextState) -> Vec<SearchEntry> {
-        let headings = state.headings().into_iter().map(|heading| SearchEntry {
-            anchor: Some(heading.id),
-            title: heading.text.clone(),
-            text: heading.text,
-        });
-        let mut on_screen: Vec<(usize, &Rc<BlockView>)> = state
-            .loaded
-            .values()
-            .filter(|view| view.kind != "heading" && !view.text.is_empty())
-            .filter_map(|view| Some((state.body.position(&view.id)?, view)))
-            .collect();
-        on_screen.sort_by_key(|(position, _)| *position);
-        headings
-            .chain(on_screen.into_iter().map(|(_, view)| SearchEntry {
-                anchor: Some(view.id.clone()),
-                title: view.text.chars().take(60).collect(),
-                text: view.text.clone(),
-            }))
-            .collect()
     }
 }
 

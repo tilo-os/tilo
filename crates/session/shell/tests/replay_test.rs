@@ -7,6 +7,10 @@
 //! `FollowMode::Replay`. The follower must reach the recorded end state
 //! (document and View, the open menu included), and a scrub back to a
 //! middle step must reload it there.
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 
 use std::os::fd::IntoRawFd;
 use std::os::unix::net::UnixStream;
@@ -252,6 +256,12 @@ const EDITOR: (f64, f64) = (820.0, 360.0);
 #[test]
 fn a_replayed_session_brings_a_following_app_to_the_recorded_document_and_view() {
     let dir = tempfile::tempdir().unwrap();
+    // The broker binds only inside an owner-only directory.
+    std::fs::set_permissions(
+        dir.path(),
+        std::os::unix::fs::PermissionsExt::from_mode(0o700),
+    )
+    .expect("owner-only socket directory");
     let socket = dir.path().join("collab.sock");
     let tree = room_tree();
     let device = SigningKey::from_bytes(&DEVICE_KEY)
@@ -425,6 +435,12 @@ fn a_replayed_session_brings_a_following_app_to_the_recorded_document_and_view()
 #[test]
 fn a_replay_room_never_reaches_peers_or_disk() {
     let dir = tempfile::tempdir().unwrap();
+    // The broker binds only inside an owner-only directory.
+    std::fs::set_permissions(
+        dir.path(),
+        std::os::unix::fs::PermissionsExt::from_mode(0o700),
+    )
+    .expect("owner-only socket directory");
     let socket = dir.path().join("collab.sock");
     let tree = room_tree();
     let broker =
@@ -647,6 +663,12 @@ fn a_recording_checked_against_its_own_replay_is_logic() {
     use shell::compositor::foreign::store;
 
     let dir = tempfile::tempdir().unwrap();
+    // The broker binds only inside an owner-only directory.
+    std::fs::set_permissions(
+        dir.path(),
+        std::os::unix::fs::PermissionsExt::from_mode(0o700),
+    )
+    .expect("owner-only socket directory");
     let tree = room_tree();
     let broker = shell::shell::collab_broker::spawn_native_harness(
         dir.path().join("collab.sock"),
@@ -803,6 +825,12 @@ fn a_short_scrub_back_resumes_from_a_checkpoint() {
     use shell::shell::replay::peer::CHECKPOINT_EVERY;
 
     let dir = tempfile::tempdir().unwrap();
+    // The broker binds only inside an owner-only directory.
+    std::fs::set_permissions(
+        dir.path(),
+        std::os::unix::fs::PermissionsExt::from_mode(0o700),
+    )
+    .expect("owner-only socket directory");
     let tree = room_tree();
     let broker = shell::shell::collab_broker::spawn_native_harness(
         dir.path().join("collab.sock"),

@@ -364,6 +364,8 @@ impl Widget for NotesApp {
 
         if self.body.text.is_empty() && !self.focused {
             self.complete_content_height = self.rect.height();
+            let body = crate::shell::i18n::t("notes-empty-body");
+            let action = crate::shell::i18n::t("notes-empty-action");
             self.empty_action_rect = EmptyState::paint(
                 scene,
                 transform,
@@ -371,9 +373,9 @@ impl Widget for NotesApp {
                 &card_theme,
                 self.rect,
                 Some(Icon::PenTool),
-                "This note is empty",
-                Some("Jot anything here. Changes are saved as you type."),
-                Some("Start writing"),
+                &crate::shell::i18n::t("notes-empty-title"),
+                Some(body.as_str()),
+                Some(action.as_str()),
                 self.last_mouse,
             )
             .unwrap_or(Rect::ZERO);

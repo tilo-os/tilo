@@ -5,6 +5,8 @@
 
 #[path = "action_groups.rs"]
 pub mod action_groups;
+#[path = "control_custody_raw_holder.rs"]
+pub mod control_custody_raw_holder;
 #[path = "framework.rs"]
 pub mod framework;
 #[path = "incremental.rs"]

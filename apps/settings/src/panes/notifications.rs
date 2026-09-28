@@ -288,7 +288,7 @@ impl NotificationsPane {
             state,
             SETTINGS_ACTION_TYPE,
             action,
-            tilo_actions::ActionContext::for_action("org.tilo.Settings", "Settings", action),
+            tilo_actions::ActionContext::for_action("so.tilo.settings", "Settings", action),
         );
     }
 
@@ -436,14 +436,11 @@ impl NotificationsPane {
                 value_row(
                     "Notification sounds",
                     match media::event_sound::sound_backend() {
-                        media::event_sound::SoundBackend::Libcanberra => {
-                            "Available through the session sound theme"
-                        }
                         media::event_sound::SoundBackend::PipeWire => {
                             "Available through the PipeWire session route"
                         }
                         media::event_sound::SoundBackend::Unavailable => {
-                            "Unavailable: install libcanberra or PipeWire sound tools"
+                            "Unavailable: install the PipeWire sound tools"
                         }
                     },
                 ),
@@ -1011,10 +1008,10 @@ mod tests {
             )
             .unwrap();
             std::fs::write(
-            apps_dir.join("org.example.Chat.desktop"),
-            "[Desktop Entry]\nType=Application\nName=Chat\nExec=/bin/true\nX-Flatpak=org.example.Chat\n",
-        )
-        .unwrap();
+                apps_dir.join("org.example.Chat.desktop"),
+                "[Desktop Entry]\nType=Application\nName=Chat\nExec=/bin/true\nX-Flatpak=org.example.Chat\n",
+            )
+            .unwrap();
             let entries = desktop_entry::scan_dirs(
                 &[apps_dir],
                 &[desktop_entry::scan::CURRENT_DESKTOP.to_string()],
@@ -1157,9 +1154,6 @@ mod tests {
     )]
     fn notification_toggles_dispatch_palette_actions_with_one_undo() {
         // Case `on_screen_toggle_dispatches_same_action_as_palette`.
-        // Single source of truth: an on-screen toggle flip dispatches the exact
-        // same [`EncodedAction`] the Ctrl+K palette's flip spec builds — proven at
-        // the same pre-flip document state so both target the same value.
         {
             let config = crate::prefs::test_env::ConfigGuard::new();
             let mut pane = NotificationsPane::with_prefs(NotificationPrefs::default()); // DND off
@@ -1182,7 +1176,8 @@ mod tests {
             let dnd_spec = notif.actions.iter().find(|a| a.id == "dnd").unwrap();
             let from_spec = match &dnd_spec.input {
                 tilo_actions::ActionInput::Immediate(enc) => enc.clone(),
-                tilo_actions::ActionInput::Prompted { .. } => {
+                tilo_actions::ActionInput::Prompted { .. }
+                | tilo_actions::ActionInput::Deferred { .. } => {
                     panic!("the DND flip is an immediate action")
                 }
             };
@@ -1217,10 +1212,6 @@ mod tests {
         }
 
         // Case `on_screen_toggle_records_one_undo_boundary_and_reverts`.
-        // The full undo covenant on the on-screen path: a toggle flip dispatched
-        // through the executor records exactly one undo boundary, and Ctrl+Z reverts
-        // precisely that setting — after which the pane mirrors the reverted value
-        // back into the toggle.
         {
             let _cfg = crate::prefs::test_env::ConfigGuard::new();
             let mut pane = NotificationsPane::with_prefs(NotificationPrefs::default());

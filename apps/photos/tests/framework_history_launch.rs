@@ -144,11 +144,11 @@ fn bounded_output(command: &mut std::process::Command) -> std::process::Output {
         if child.try_wait().unwrap().is_some() {
             return child.wait_with_output().unwrap();
         }
-        if start.elapsed() > std::time::Duration::from_secs(45) {
+        if start.elapsed() > tilo_test_env::hang_bound() {
             let _ = child.kill();
             let output = child.wait_with_output().unwrap();
             panic!(
-                "headless test child timed out: {} {}",
+                "headless test child never exited within the hang bound: {} {}",
                 String::from_utf8_lossy(&output.stdout),
                 String::from_utf8_lossy(&output.stderr)
             );

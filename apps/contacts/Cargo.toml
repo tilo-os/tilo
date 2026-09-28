@@ -23,7 +23,7 @@ runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 atomic-file = { path = "../../crates/system/atomic-file" }
 xdg-paths = { path = "../../crates/system/xdg-paths" }
-ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["priority-contacts"] }
 # The Tilo action model: every document-mutating operation is a serializable,
 # replayable action dispatched through one executor, so undo, multi-peer replay
 # and the Ctrl+K command palette all work from a single implementation. The
@@ -56,10 +56,6 @@ workspace-hack = { version = "0.1" }
 # call runs off the UI thread on its own small Tokio runtime and the chosen
 # paths come back over a shared `ui::portal` channel. All three are already
 # resolved in the shared workspace lockfile, so this adds no registry fetch.
-
-[target.'cfg(unix)'.dependencies]
-# Launcher-authenticated priority projection to the Tilo shell notification service.
-zbus = { workspace = true, features = ["tokio", "blocking-api"] }
 
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }

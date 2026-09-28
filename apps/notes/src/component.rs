@@ -27,7 +27,16 @@ fn create_component(
     if let RestoreInput::Local(saved) = restore
         && let Some(local) = &saved.application
     {
-        crate::local_view::NotesLocalViewV1::decode(local).map_err(LaunchError::Restore)?;
+        // The framework has validated the envelope against its exact durable
+        // route. Preflight the payload using the same finite definition lookup
+        // as the later widget restore, without rewriting the saved binding.
+        if local.app_id != definition().app_id {
+            return Err(LaunchError::Restore(ui::view::ThawError::BindingMismatch));
+        }
+        let mut definition_local = local.clone();
+        definition_local.app_id = definition().app_id.into();
+        crate::local_view::NotesLocalViewV1::decode(&definition_local)
+            .map_err(LaunchError::Restore)?;
     }
     if matches!(target, LaunchTarget::New) {
         context

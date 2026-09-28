@@ -3544,6 +3544,12 @@ fn popup_rect_from_parent(parent: Rect, geometry: Rectangle<i32, Logical>) -> Re
 }
 
 impl State {
+    /// Where surface `id` is on the desktop: its tab or floating placement,
+    /// or a popup's place beside the window that opened it.
+    pub(crate) fn surface_desktop_rect(&self, id: SurfaceId) -> Option<Rect> {
+        self.popup_parent_rect(id, 0)
+    }
+
     fn popup_parent_rect(&self, id: SurfaceId, depth: usize) -> Option<Rect> {
         if depth > 16 {
             // A client cannot legitimately form a cycle, but never let a

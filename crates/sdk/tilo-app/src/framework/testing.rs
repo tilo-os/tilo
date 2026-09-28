@@ -257,6 +257,30 @@ impl<A: ResourceApp> HeadlessApp<A> {
             .expect("record is open")
     }
 
+    /// A copy of the stored document written by another participant: a
+    /// collaborator's replica, for a test to edit and [`Self::merge_peer`]
+    /// back.
+    pub fn peer_document(&self) -> tilo_resource::Doc {
+        self.read_document(|doc| doc.clone().fork())
+    }
+
+    /// Exchange edits with a collaborator's replica, as sync does both ways:
+    /// the peer's edits arrive in the running app (and its views), and the
+    /// app's edits arrive in `peer`.
+    ///
+    /// # Errors
+    /// Returns why either side refused the other's document.
+    pub fn merge_peer(&mut self, peer: &mut tilo_resource::Doc) -> Result<(), String> {
+        use tilo_automerge::ApplyIncoming;
+        let mut ours = self.read_document(Clone::clone);
+        peer.merge_incoming(&mut ours)
+            .map_err(|error| error.to_string())?;
+        self.records
+            .merge_peer_document(&self.checkout, peer.save())?;
+        self.harness().relayout();
+        Ok(())
+    }
+
     /// The record's version history.
     pub fn versions(&self) -> Vec<tilo_resource::history::Version> {
         self.records

@@ -196,17 +196,15 @@ async fn named_pipe_join_send_subscribe_read() {
         .create(&name)
         .expect("test-owned named pipe");
     let client = ClientOptions::new().open(&name).expect("connect test pipe");
-    tokio::time::timeout(std::time::Duration::from_secs(5), server.connect())
+    tilo_test_env::within("the named pipe connection", server.connect())
         .await
-        .expect("named pipe connection deadline")
         .expect("named pipe connected");
     let connection = CapnpClient::from_connected_io(client, rpc_twoparty_capnp::Side::Client);
-    tokio::time::timeout(
-        std::time::Duration::from_secs(5),
+    tilo_test_env::within(
+        "the named pipe round trip",
         assert_round_trip(server, connection),
     )
-    .await
-    .expect("named pipe RPC deadline");
+    .await;
 }
 
 #[cfg(unix)]

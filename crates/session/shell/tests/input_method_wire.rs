@@ -298,7 +298,7 @@ impl Harness {
     /// Pump until `done` holds, failing with `what` after a generous bound:
     /// buffer and role requests can take more than one exchange to land.
     fn pump_until(&mut self, what: &str, done: impl Fn(&Self) -> bool) {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = tilo_test_env::hang_deadline();
         while !done(self) {
             assert!(
                 std::time::Instant::now() < deadline,

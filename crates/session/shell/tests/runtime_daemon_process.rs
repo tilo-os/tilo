@@ -34,7 +34,7 @@ impl DaemonProfile {
         use std::os::unix::fs::PermissionsExt;
         let root = tempfile::Builder::new()
             .prefix("tilo-d-")
-            .tempdir_in("/tmp")
+            .tempdir_in(std::fs::canonicalize("/tmp").unwrap())
             .unwrap();
         std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         Self { root }
@@ -70,7 +70,7 @@ impl Drop for DaemonProfile {
 fn status(profile: &Path) -> Value {
     let mut stream = UnixStream::connect(profile.join("native.sock")).unwrap();
     stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
+        .set_read_timeout(Some(tilo_test_env::hang_bound()))
         .unwrap();
     stream.write_all(b"{\"native\":\"status\"}\n").unwrap();
     let mut line = String::new();
@@ -90,7 +90,7 @@ fn connected_manager() -> ui::collaboration::CollaborationManager {
     let mut manager = ui::collaboration::CollaborationManager::new();
     let started = Instant::now();
     while manager.state() == ui::collaboration::CollaborationState::Connecting
-        && started.elapsed() < Duration::from_secs(10)
+        && started.elapsed() < tilo_test_env::hang_bound()
     {
         let _ = manager.poll();
         std::thread::sleep(Duration::from_millis(10));
@@ -187,7 +187,11 @@ fn live_profile_lock_fails_without_unlinking_owners_socket() {
     let start = Instant::now();
     let competing = host(profile.path()).arg("--daemon").output().unwrap();
     assert!(!competing.status.success());
-    assert!(start.elapsed() < Duration::from_secs(5));
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "a competing daemon took {elapsed:?} to give up on the held profile lock; it must fail at once"
+    );
     assert_eq!(status(profile.path())["pid"], before["pid"]);
 }
 #[test]
@@ -253,19 +257,22 @@ fn independent_sdk_apps_late_join_and_survive_another_app_exit() {
     while UnixStream::connect(profile.path().join("native.sock")).is_err() {
         assert!(
             apps.0[0].try_wait().unwrap().is_none() && Instant::now() < deadline,
-            "first SDK process did not start daemon: {}",
+            "first SDK process did not start daemon; child log: {}",
             std::fs::read_to_string(profile.path().join("dev.tilo.independent-first.log"))
-                .unwrap_or_default()
+                .unwrap_or_else(|error| format!("child log unavailable: {error}"))
+                .chars()
+                .take(8192)
+                .collect::<String>()
         );
         std::thread::sleep(Duration::from_millis(25));
     }
     let mut stream = UnixStream::connect(profile.path().join("native.sock")).unwrap();
     stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
+        .set_read_timeout(Some(tilo_test_env::hang_bound()))
         .unwrap();
     let mut reader = BufReader::new(stream.try_clone().unwrap());
     let mut roots = |count| {
-        let deadline = Instant::now().checked_add(Duration::from_secs(10)).unwrap();
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             writeln!(stream, "{}", json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"tilo_list_apps","arguments":{}}})).unwrap();
             let mut line = String::new();
@@ -384,7 +391,7 @@ fn ordinary_sdk_parent_child_get_distinct_connections_in_one_runtime() {
         );
         if let Ok(mut stream) = UnixStream::connect(profile.path().join("native.sock")) {
             stream
-                .set_read_timeout(Some(Duration::from_secs(2)))
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
                 .unwrap();
             writeln!(stream, "{}", json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"tilo_list_apps","arguments":{}}})).unwrap();
             let mut line = String::new();

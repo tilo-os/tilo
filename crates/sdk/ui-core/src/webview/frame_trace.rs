@@ -1,11 +1,7 @@
 //! Opt-in receipt-to-scene identity; not evidence of input causality.
-use std::{
-    cell::RefCell,
-    sync::{
-        OnceLock,
-        atomic::{AtomicU64, Ordering},
-    },
-};
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::{cell::RefCell, sync::OnceLock};
 
 #[derive(Default)]
 struct SceneFrames {
@@ -38,6 +34,7 @@ fn enabled() -> bool {
 }
 /// Unique within this Rust process, including across native helpers and tabs.
 /// Receipt is after transport/decode; it is not the CEF paint timestamp.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn received(tab: u32, rgba: &[u8], width: u32, height: u32) -> Option<u64> {
     static NEXT: AtomicU64 = AtomicU64::new(1);
     static SCROLL_MARKER: OnceLock<bool> = OnceLock::new();
@@ -65,6 +62,11 @@ pub(crate) fn received(tab: u32, rgba: &[u8], width: u32, height: u32) -> Option
         }),
     );
     Some(id)
+}
+/// The browser build has no native scenario log to receive frames into.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn received(_: u32, _: &[u8], _: u32, _: u32) -> Option<u64> {
+    None
 }
 /// Discard observations from any offscreen draw before this window scene.
 #[cfg(feature = "native")]
