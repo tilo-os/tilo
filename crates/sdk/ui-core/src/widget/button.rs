@@ -1572,28 +1572,32 @@ impl Widget for Button {
             .unwrap_or_default()
     }
 
-    fn invoke_resource_operation_v2(
+    fn start_operation(
         &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
+        op: &super::ResourceOperation<'_>,
+        _doc: &mut AutoCommit,
         _path: &ObjId,
-    ) -> Result<Option<tilo_actions::ActionOutput>, String> {
-        if kind == tilo_actions::OperationKind::Document
-            || type_id != "tilo.ui.control.invoke"
+    ) -> Result<Option<super::ResourceOperationStart>, String> {
+        let Some(request) = op.unscoped() else {
+            return Ok(None);
+        };
+        if request.kind == tilo_actions::OperationKind::Document
+            || request.type_id != "tilo.ui.control.invoke"
             || self.native_handler.is_none()
         {
             return Ok(None);
         }
-        let control: String = serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+        let control: String =
+            serde_json::from_slice(request.payload).map_err(|error| error.to_string())?;
         if control != self.id {
             return Ok(None);
         }
         if let Some(handler) = &mut self.native_handler {
             handler();
         }
-        Ok(Some(tilo_actions::ActionOutput::default()))
+        Ok(Some(super::ResourceOperationStart::Completed(
+            tilo_actions::ActionOutput::default(),
+        )))
     }
 
     fn refresh_control_action_availability(

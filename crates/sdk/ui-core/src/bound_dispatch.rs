@@ -1720,26 +1720,22 @@ pub(crate) fn execute_resource_operation_scoped(
         }
         crate::widget::ResourceOperationStart::Completed(tilo_actions::ActionOutput::default())
     } else {
-        let result = if let Some(scope) = scope {
-            widget.start_resource_operation_scoped(
+        let op = match scope {
+            Some(scope) => crate::widget::ResourceOperation::scoped(
                 scope,
                 spec.kind,
                 &encoded.type_id,
                 &encoded.payload,
-                doc,
-                path,
-            )
-        } else {
-            widget.start_resource_operation_with_document(
+            ),
+            None => crate::widget::ResourceOperation::local(
                 invocation,
                 spec.kind,
                 &encoded.type_id,
                 &encoded.payload,
-                doc,
-                path,
-            )
+            ),
         };
-        result
+        widget
+            .start_operation(&op, doc, path)
             .map_err(tilo_actions::DoorError::Failed)?
             .ok_or_else(|| tilo_actions::DoorError::Unknown(address.clone()))?
     };

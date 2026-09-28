@@ -16,7 +16,7 @@ use crate::tilo_actions::{
     OperationKind, ParamType, Resource, ResultSpec,
 };
 use crate::vello::Scene;
-use crate::widget::{ResourceOperationStart, TaffyTreeExt, Widget};
+use crate::widget::{ResourceOperation, ResourceOperationStart, TaffyTreeExt, Widget};
 
 /// Shared effect-operation type used by the one-resource app host.
 pub const OPERATION_TYPE: &str = "tilo.app.operation";
@@ -552,43 +552,29 @@ impl Widget for ResourceActionHost {
         vec![self.resource.clone()]
     }
 
-    fn invoke_resource_operation_v2(
+    fn start_operation(
         &mut self,
-        kind: OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<Option<ActionOutput>, String> {
-        if kind == OperationKind::Document || type_id != OPERATION_TYPE {
-            return Ok(None);
-        }
-        match &mut self.runner {
-            Runner::Immediate(run) => run(payload).map(Some),
-            Runner::Background(_) => Ok(None),
-        }
-    }
-
-    fn start_resource_operation(
-        &mut self,
-        invocation: InvocationId,
-        kind: OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
+        op: &ResourceOperation<'_>,
+        doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ResourceOperationStart>, String> {
-        if kind == OperationKind::Document || type_id != OPERATION_TYPE {
-            return self
-                .root
-                .start_resource_operation(invocation, kind, type_id, payload, doc, path);
+        if let Some(started) = crate::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
         }
+        let Some(request) = op
+            .unscoped()
+            .filter(|request| request.kind != OperationKind::Document)
+            .filter(|request| request.type_id == OPERATION_TYPE)
+        else {
+            return Ok(None);
+        };
         match &mut self.runner {
-            Runner::Immediate(run) => run(payload)
+            Runner::Immediate(run) => run(request.payload)
                 .map(ResourceOperationStart::Completed)
                 .map(Some),
             Runner::Background(run) => {
-                self.pending.insert(invocation, run(payload)?);
+                self.pending
+                    .insert(request.invocation, run(request.payload)?);
                 Ok(Some(ResourceOperationStart::Accepted))
             }
         }
