@@ -27,6 +27,7 @@ agent-provider-config = { path = "../provider-config" }
 # The gateway itself. Off the desktop the library is only the client, which
 # reports the gateway unavailable (there is no launcher descriptor to use).
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
+tilo-clock = { path = "../../platform/tilo-clock" }
 accounts = { path = "../../system/accounts" }
 reqwest = { workspace = true, features = ["json"] }
 tilo-net = { path = "../../platform/tilo-net", features = ["http"] }
