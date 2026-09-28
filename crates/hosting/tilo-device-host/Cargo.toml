@@ -27,7 +27,7 @@ workspace-hack = { version = "0.1" }
 [dev-dependencies]
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["test-support"] }
 rcgen.workspace = true
-qdoc = { path = "../../doc/qdoc" }
+tilo-doc = { path = "../../doc/tilo-doc" }
 tilo-browser-runtime = { path = "../../browser/tilo-browser-runtime" }
 tilo-desktop-model = { path = "../../session/desktop-model" }
 # Proposed documents are real notebooks, as the owner checks them.

@@ -16,7 +16,7 @@
 
 use std::path::{Path, PathBuf};
 
-use qdoc::AttrVal;
+use tilo_doc::AttrVal;
 use ui::Widget;
 use word_processor::{WordProcessorWidget, WpFormat, open_document, save_document};
 
@@ -82,8 +82,8 @@ fn docx_files_are_recognised_and_rich_documents_round_trip() {
         let (state2, _wp2, fmt) =
             open_document(&path, tilo_content::ContentStore::memory()).unwrap();
         assert_eq!(fmt, WpFormat::Docx);
-        let c = qdoc::model::open(&state2.doc, &state2.root).unwrap();
-        let snap = qdoc::model::materialize(&state2.doc, &c);
+        let c = tilo_doc::model::open(&state2.doc, &state2.root).unwrap();
+        let snap = tilo_doc::model::materialize(&state2.doc, &c);
 
         // Heading survived with its level.
         let heading = snap

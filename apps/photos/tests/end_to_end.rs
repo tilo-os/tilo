@@ -31,7 +31,6 @@ use photos::doc::PhotosDoc;
 use photos::model::{Album, Edits, Rect01};
 use photos::pixels::{self, Rgba};
 use photos::{PhotosApp, shots_pattern};
-use tilo_actions::ResourceProvider;
 
 /// A laid-out app, ready to assert on. It is mounted in the production frame
 /// host on its first frame; until then the app and its document are driven
@@ -333,7 +332,7 @@ fn photographs_fit_the_canvas_and_non_images_open_nothing() {
     {
         let mut hz = Harness::new(900.0, 600.0);
         let scene = hz.frame();
-        let resources = PhotosResources.resources(&hz.state().doc);
+        let resources = PhotosResources.publish_resources(&hz.state.doc);
         assert_eq!(resources.len(), 1);
         assert_eq!(resources[0].id.0, "photos.library");
         assert!(
@@ -706,8 +705,8 @@ fn resource_surface_acts_on_the_open_photograph_without_a_display() {
         hz.frame();
 
         // Enumerating is a pure read.
-        let before = hz.state().doc.save();
-        let resources = PhotosResources.resources(&hz.state().doc);
+        let before = hz.state.doc.save();
+        let resources = PhotosResources.publish_resources(&hz.state.doc);
         let flat = flatten(&resources);
         assert_eq!(
             hz.state().doc.save(),
@@ -778,8 +777,8 @@ fn resource_surface_acts_on_the_open_photograph_without_a_display() {
 
         // Address the photograph by the id derived from its content — no
         // enumeration, no coordinate, nothing that needs a screen.
-        let resources = PhotosResources.resources(&hz.state().doc);
-        let open = photos::doc::PhotosDoc::image(&hz.state().doc).expect("the harness opened one");
+        let resources = PhotosResources.publish_resources(&hz.state.doc);
+        let open = photos::doc::PhotosDoc::image(&hz.state.doc).expect("the harness opened one");
         assert_eq!(
             resources[0].id.0,
             photos::actions::resource_id(&open),

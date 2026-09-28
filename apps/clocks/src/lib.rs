@@ -14,6 +14,7 @@ use uuid::Uuid;
 pub mod actions;
 pub mod app;
 mod native_timers;
+pub mod resource;
 pub use app::ClocksApp;
 
 #[must_use]
@@ -1123,3 +1124,4 @@ mod tests {
         }
     }
 }
+pub use resource::{Clocks, ClocksShell};

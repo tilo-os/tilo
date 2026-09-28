@@ -61,6 +61,9 @@ const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1200, 720);
 extern crate runtime_dylib;
 
 pub fn main() {
+    // The live handler spawns the login shell and wakes the window when the
+    // PTY writes. The ResourceApp shell has no such waker, so output would
+    // sit until some other event.
     ui::launch::run_or_exit(&launch_spec());
 }
 

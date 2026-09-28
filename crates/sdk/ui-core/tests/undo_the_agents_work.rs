@@ -48,12 +48,12 @@ fn actor_hex(handle: &str) -> String {
 
 struct Report {
     doc: AutoCommit,
-    c: qdoc::Containers,
+    c: tilo_doc::Containers,
     /// One id generator per participant, held for the participant's whole
     /// session — as the app holds one. A fresh generator per edit would restart
     /// the counter and mint block ids that collide with that participant's own
     /// earlier blocks, silently overwriting them.
-    ids: std::collections::HashMap<String, qdoc::IdGen>,
+    ids: std::collections::HashMap<String, tilo_doc::IdGen>,
 }
 
 impl Report {
@@ -61,7 +61,7 @@ impl Report {
     fn started_by_a_person() -> (Self, String) {
         let mut doc = AutoCommit::new();
         doc.set_actor(ActorId::from(PERSON.as_bytes()));
-        let c = qdoc::model::init(&mut doc, &ROOT);
+        let c = tilo_doc::model::init(&mut doc, &ROOT);
         tilo_resource::history::commit_stamped_at(&mut doc, 1_780_000_000);
 
         let mut report = Self {
@@ -78,15 +78,20 @@ impl Report {
     }
 
     /// Edit as `handle`, committing once — one change, one author, like the app.
-    fn edit_as<R>(&mut self, handle: &str, at: i64, f: impl FnOnce(&mut qdoc::DocMut) -> R) -> R {
+    fn edit_as<R>(
+        &mut self,
+        handle: &str,
+        at: i64,
+        f: impl FnOnce(&mut tilo_doc::DocMut) -> R,
+    ) -> R {
         self.doc.set_actor(ActorId::from(handle.as_bytes()));
         let actor = self.doc.get_actor().to_hex_string();
         let ids = self
             .ids
             .entry(actor.clone())
-            .or_insert_with(|| qdoc::IdGen::new(actor));
+            .or_insert_with(|| tilo_doc::IdGen::new(actor));
         let out = {
-            let mut dm = qdoc::DocMut {
+            let mut dm = tilo_doc::DocMut {
                 doc: &mut self.doc,
                 c: &self.c,
                 ids,
@@ -98,7 +103,7 @@ impl Report {
     }
 
     fn text(&self) -> Vec<String> {
-        qdoc::model::materialize(&self.doc, &self.c)
+        tilo_doc::model::materialize(&self.doc, &self.c)
             .blocks
             .into_iter()
             .map(|b| b.text)
@@ -204,8 +209,8 @@ fn agent_work_is_undone_through_the_document_not_the_peer_stack() {
         assert!(out.is_complete(), "nothing was held back: {:?}", out.kept);
         assert!(out.wrote, "the undo actually wrote something");
 
-        let c = qdoc::model::open(&alice.doc, &ROOT).expect("schema");
-        let body: Vec<String> = qdoc::model::materialize(&alice.doc, &c)
+        let c = tilo_doc::model::open(&alice.doc, &ROOT).expect("schema");
+        let body: Vec<String> = tilo_doc::model::materialize(&alice.doc, &c)
             .blocks
             .into_iter()
             .map(|b| b.text)
@@ -272,8 +277,8 @@ fn agent_work_is_undone_through_the_document_not_the_peer_stack() {
 
         bob.merge(&mut report.doc).expect("peers merge");
 
-        let cb = qdoc::model::open(&bob, &ROOT).expect("schema");
-        let bob_text: Vec<String> = qdoc::model::materialize(&bob, &cb)
+        let cb = tilo_doc::model::open(&bob, &ROOT).expect("schema");
+        let bob_text: Vec<String> = tilo_doc::model::materialize(&bob, &cb)
             .blocks
             .into_iter()
             .map(|b| b.text)
@@ -754,7 +759,7 @@ fn run_records_replicate_without_polluting_history() {
         let versions = tilo_resource::history::versions(&mut report.doc);
         let genesis = versions
             .iter()
-            .find(|v| qdoc::model::is_schema_genesis(v))
+            .find(|v| tilo_doc::model::is_schema_genesis(v))
             .expect("the document carries the shared schema genesis")
             .clone();
 

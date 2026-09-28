@@ -513,7 +513,7 @@ pub struct FeedsApp {
     /// [`FeedsAction`] through here so it brackets exactly one undo boundary,
     /// encodes under [`FEEDS_ACTION_TYPE`](crate::actions::FEEDS_ACTION_TYPE),
     /// and replays byte-identically on peers — the same path Ctrl+K takes.
-    actions: ui::ActionHost,
+    actions: crate::resource::ActionSink,
     /// The document heads the mirrored [`Store`] was last reconciled against.
     /// When the document moves out-of-band (a Ctrl+K palette action mutates it
     /// directly, not through this widget's methods) and the fetch backlog is
@@ -611,7 +611,7 @@ impl FeedsApp {
             last_frame: Instant::now(),
             worker: None,
             synced: false,
-            actions: ui::ActionHost::new(),
+            actions: crate::resource::ActionSink::default(),
             store_heads: Vec::new(),
             demo,
             text_scale: 1.0,
@@ -1833,18 +1833,31 @@ impl FeedsApp {
             return;
         }
         let n = self.pending_doc_writes.len().min(FLUSH_BUDGET);
-        for w in self.pending_doc_writes.drain(..n) {
-            match w {
-                DocWrite::Article(a) => FeedsDoc::upsert_article(doc, &a),
-                DocWrite::Feed(f) => FeedsDoc::upsert_feed(doc, &f),
+        let mut articles = Vec::new();
+        let mut feeds = Vec::new();
+        for write in self.pending_doc_writes.drain(..n) {
+            match write {
+                DocWrite::Article(article) => articles.push(article),
+                DocWrite::Feed(feed) => feeds.push(feed),
             }
         }
-        // Commit this batch so the pending-op buffer doesn't accumulate across
-        // frames. An `AutoCommit` that never commits makes each successive `put`
-        // re-scan the growing uncommitted transaction — O(n²) over a big
-        // refresh, which is what turned a large batch into a multi-second stall.
-        // Committing per flush keeps each write O(1)-ish.
-        doc.commit();
+        // One document action for this frame's budget. The dispatcher commits
+        // it, so a large refresh still persists in bounded steps.
+        self.perform_action(doc, &FeedsAction::UpsertFetched { articles, feeds });
+    }
+
+    /// Show the library the framework resource already holds.
+    pub(crate) fn adopt_resource_state(&mut self, state: &Store) {
+        self.store.clone_from(state);
+        self.ensure_selection();
+    }
+
+    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Feeds>,
+    ) {
+        self.actions.attach(dispatcher);
     }
 
     // --- geometry --------------------------------------------------------
@@ -4535,6 +4548,13 @@ impl Widget for FeedsApp {
             // (and possibly collaborator-updated) preferences.
             if FeedsDoc::has_settings(state) {
                 self.settings = FeedsDoc::read_settings(state);
+            } else if self.actions.is_hosted() {
+                self.perform_action(
+                    state,
+                    &FeedsAction::SetReadSettings {
+                        settings: self.settings,
+                    },
+                );
             } else {
                 FeedsDoc::write_settings(state, &self.settings);
             }
@@ -4577,14 +4597,14 @@ impl Widget for FeedsApp {
     }
 
     /// Publish the reader + its folders and subscriptions so the host's Ctrl+K
-    /// action palette scopes to them. Delegates to the `ResourceProvider`
-    /// (`tilo_actions::ResourceProvider`) impl in [`crate::actions`].
+    /// action palette scopes to them. Delegates to the ``
+    /// (``) impl in [`crate::actions`].
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+        Self::publish_resources(self, doc)
     }
 
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
+        Self::publish_resource(self, doc, id)
     }
 
     fn start_operation(

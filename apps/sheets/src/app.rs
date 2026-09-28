@@ -955,6 +955,13 @@ pub struct SheetsApp {
     /// through here so undo, byte-identical peer replay, and the OS Ctrl+K
     /// palette all work from one implementation. See [`crate::actions`].
     actions: ui::ActionHost,
+    /// Hosted by [`crate::resource::SheetsShell`]: edits go through the
+    /// framework dispatcher (permissions, attributed undo). Standalone /
+    /// shots keep [`Self::actions`].
+    framework: Option<ui::framework::Dispatcher<crate::resource::SheetsWorkbook>>,
+    /// The last action submitted through the framework dispatcher.
+    #[cfg(test)]
+    hosted_last: Option<tilo_actions::EncodedAction>,
 }
 
 /// A rectangle captured by copy/cut, retaining each cell's raw input and
@@ -1073,6 +1080,32 @@ impl SheetsApp {
             clipboard: None,
             palette: CommandPalette::commands(),
             actions: ui::ActionHost::new(),
+            framework: None,
+            #[cfg(test)]
+            hosted_last: None,
+        }
+    }
+
+    /// Take part in the framework: submit workbook edits through its dispatcher.
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::SheetsWorkbook>,
+    ) {
+        self.framework = Some(dispatcher);
+    }
+
+    /// Show the sheet names the framework resource holds.
+    /// An empty projection does not wipe tabs that have not been published yet.
+    pub(crate) fn adopt_resource_state(&mut self, state: &crate::resource::SheetsState) {
+        if state.sheets.is_empty() && !self.sheet_names.is_empty() {
+            return;
+        }
+        if !state.sheets.is_empty() {
+            self.sheet_names = state
+                .sheets
+                .iter()
+                .map(|sheet| sheet.name.clone())
+                .collect();
         }
     }
 
@@ -1100,12 +1133,16 @@ impl SheetsApp {
         doc: &mut AutoCommit,
         action: &SheetsAction,
     ) -> Result<(), tilo_actions::ActionError> {
-        self.actions.try_dispatch_with_context(
-            doc,
-            actions::SHEETS_ACTION_TYPE,
-            action,
-            actions::history_context_for_doc(doc, action),
-        )
+        let context = actions::history_context_for_doc(doc, action);
+        if let Some(dispatcher) = &self.framework {
+            #[cfg(test)]
+            {
+                self.hosted_last = Some(actions::encode(action));
+            }
+            return dispatcher.apply_now_with(doc, action, context);
+        }
+        self.actions
+            .try_dispatch_with_context(doc, actions::SHEETS_ACTION_TYPE, action, context)
     }
 
     /// The presentation context the Ctrl+K resource tree is built from: the open
@@ -1366,7 +1403,11 @@ impl SheetsApp {
     /// action.
     #[cfg(test)]
     fn last_dispatched(&self) -> Option<&tilo_actions::EncodedAction> {
-        self.actions.last_dispatched()
+        if self.framework.is_some() {
+            self.hosted_last.as_ref()
+        } else {
+            self.actions.last_dispatched()
+        }
     }
 
     /// Configure the app for the headless `--shots`/test path: seed the sample
@@ -1670,7 +1711,7 @@ impl SheetsApp {
                     self.grid.select_only(addr);
                 }
             } else {
-                SheetsDoc::add_sheet(doc, "Sheet1");
+                self.perform_action(doc, &actions::add_sheet_action("Sheet1"));
                 self.active_sheet = 0;
                 self.grid.select_only((0, 0));
             }
@@ -3450,7 +3491,7 @@ impl SheetsApp {
         let intent = self
             .take_control_invocation()
             .expect("palette emitted a resource action");
-        let resources = <Self as tilo_actions::ResourceProvider>::resources(self, doc);
+        let resources = Self::publish_resources(self, doc);
         let spec = tilo_actions::door::resolve(&resources, &intent.address)
             .expect("palette address resolves");
         assert_eq!(spec.kind, tilo_actions::OperationKind::View);
@@ -5917,10 +5958,10 @@ impl Widget for SheetsApp {
 
     /// Publish the open workbook + its sheets so the host's Ctrl+K action
     /// palette scopes to them. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
+    /// [``]() impl in
     /// [`crate::actions`].
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+        Self::publish_resources(self, doc)
     }
 
     fn action_directory_resource_page(
@@ -5944,7 +5985,7 @@ impl Widget for SheetsApp {
     }
 
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
+        Self::publish_resource(self, doc, id)
     }
 
     /// Hand the host the heads captured before an on-screen affordance dispatched

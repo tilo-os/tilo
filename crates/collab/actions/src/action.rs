@@ -145,6 +145,38 @@ pub trait Action: std::fmt::Debug {
     fn risk(&self) -> crate::contract::RiskLevel {
         crate::contract::RiskLevel::Low
     }
+
+    /// The document action that undoes this one when `apply` records an
+    /// outside consequence in the document (an outbox entry, a filesystem op
+    /// queue). Computed against the document *before* this action runs, so a
+    /// delete can still read the row it removes.
+    ///
+    /// When this returns `Some`, undo applies that action through
+    /// [`Action::apply`] instead of writing Automerge inverse patches — so the
+    /// compensating queue entry is recorded the same way peers will replay it.
+    /// Pure CRDT actions with no outside consequence leave this as `None`;
+    /// inverse patches remain correct for them. Effects never participate:
+    /// they have no heads and are not undoable.
+    fn inverse_before(&self, doc: &Doc) -> Option<Self>
+    where
+        Self: Sized,
+    {
+        let _ = doc;
+        None
+    }
+
+    /// [`inverse_before`](Self::inverse_before) as an encoded action, so the
+    /// door can undo through `apply` after the concrete type has been erased.
+    ///
+    /// The palette, an agent and a script apply a decoded `dyn Action`. That
+    /// value cannot return `Self`. An action whose `apply` writes an outside
+    /// queue implements this and encodes the compensating action under the
+    /// same registry type id. The default is `None`: undo stays Automerge
+    /// inverse patches.
+    fn inverse_encoded(&self, doc: &Doc) -> Option<EncodedAction> {
+        let _ = doc;
+        None
+    }
 }
 
 /// A serialized action ready to cross a process/network boundary: the

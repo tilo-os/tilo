@@ -1924,7 +1924,17 @@ mod tests {
 
             // The palette's delete spec for c_crit (built before the mutation).
             let resources = crate::actions::provide_resources(&app.chat_resource_ctx(), &doc);
-            let ws = &resources[0];
+            let ws = resources
+                .iter()
+                .find(|resource| resource.id.as_str() == "chat.workspace:ws_acme")
+                .or_else(|| {
+                    resources.iter().find_map(|root| {
+                        root.children
+                            .iter()
+                            .find(|resource| resource.id.as_str() == "chat.workspace:ws_acme")
+                    })
+                })
+                .expect("Acme workspace root");
             let crit = ws
                 .children
                 .iter()

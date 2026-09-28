@@ -47,6 +47,7 @@ pub mod component;
 mod continuation;
 pub mod framework_history;
 pub mod production;
+pub mod resource;
 pub use component::definition;
 pub mod doc;
 mod first_format;
@@ -70,6 +71,7 @@ pub use app::NotesApp;
 pub use app::WELCOME_BODY;
 pub use main_panel::MainPanel;
 pub use model::{PageId, PageMeta, Workspace, WorkspaceData};
+pub use resource::{Notebook, NotesShell};
 pub use shortcuts_overlay::ShortcutsOverlay;
 pub use status_bar::{StatusBarState, StatusModel};
 

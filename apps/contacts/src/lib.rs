@@ -38,6 +38,7 @@ pub mod doc;
 mod export_dialog;
 pub mod model;
 mod priority_contacts;
+pub mod resource;
 pub mod responsive;
 pub mod search_provider;
 pub mod vcard;
@@ -55,3 +56,4 @@ pub fn app_root() -> Box<dyn Widget> {
 mod framework_history_tests;
 
 pub mod framework_history;
+pub use resource::{Contacts, ContactsShell};

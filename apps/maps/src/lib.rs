@@ -58,6 +58,7 @@ pub mod model;
 pub mod net;
 mod offline_panel;
 pub mod rank;
+pub mod resource;
 pub mod sample;
 mod search_box;
 pub mod tiles;
@@ -80,3 +81,4 @@ pub fn app_root() -> Box<dyn Widget> {
 pub fn app_root_offline() -> Box<dyn Widget> {
     Box::new(MapsApp::offline())
 }
+pub use resource::{Maps, MapsShell};

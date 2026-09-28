@@ -74,6 +74,8 @@ pub struct SettingsApp {
     /// happened and the host must re-run `build_layout`. Drained by
     /// `take_structure_dirty`.
     structure_dirty: bool,
+    /// Framework dispatcher, cloned onto a preference pane when that pane is built.
+    framework: Option<ui::framework::Dispatcher<crate::resource::Settings>>,
     /// Which narrow screen a `--shots` / headless capture pins the shell to —
     /// the live `ui::App` event loop that would otherwise drive the navigation
     /// is absent. `None` (the runtime default) collapses to the CONTENT screen,
@@ -160,6 +162,7 @@ impl SettingsApp {
         Self {
             selected: Category::DEFAULT,
             structure_dirty: false,
+            framework: None,
             narrow_shot_screen: None,
             width_hint: None,
             search_query: String::new(),
@@ -438,6 +441,17 @@ impl SettingsApp {
         }
     }
 
+    /// Remember the dispatcher so preference panes built later submit through it.
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Settings>,
+    ) {
+        self.framework = Some(dispatcher);
+    }
+
+    /// Preference panes read the document in their own sync, which is this projection.
+    pub(crate) fn adopt_resource_state(&mut self, _state: &crate::resource::SettingsState) {}
+
     /// Dispatch to the per-category pane body.
     #[expect(
         clippy::too_many_lines,
@@ -492,7 +506,13 @@ impl SettingsApp {
                 panes::mouse_keyboard::MouseKeyboardPane::new()
                     .with_operation_status(&self.local_operation_status),
             ),
-            Category::KeyboardShortcuts => panes::keyboard_shortcuts::build(),
+            Category::KeyboardShortcuts => {
+                let mut pane = panes::keyboard_shortcuts::ShortcutPane::default();
+                if let Some(dispatcher) = &self.framework {
+                    pane.bind_dispatcher(dispatcher.clone());
+                }
+                Box::new(pane)
+            }
             Category::TimeDate => panes::time_date::build(),
             Category::Users => Box::new(
                 panes::users::UsersPane::new()
@@ -509,10 +529,28 @@ impl SettingsApp {
                     .with_command_state(&self.local_pane_command)
                     .with_operation_status(&self.local_operation_status),
             ),
-            Category::Appearance => panes::appearance::build(),
+            Category::Appearance => {
+                let mut pane = panes::appearance::AppearancePane::new();
+                if let Some(dispatcher) = &self.framework {
+                    pane.bind_dispatcher(dispatcher.clone());
+                }
+                Box::new(pane)
+            }
             Category::Accessibility => panes::accessibility::build(),
-            Category::Notifications => panes::notifications::build(),
-            Category::DefaultApps => panes::personal_apps::build(),
+            Category::Notifications => {
+                let mut pane = panes::notifications::NotificationsPane::new();
+                if let Some(dispatcher) = &self.framework {
+                    pane.bind_dispatcher(dispatcher.clone());
+                }
+                Box::new(pane)
+            }
+            Category::DefaultApps => {
+                let mut pane = panes::personal_apps::PersonalAppsPane::new();
+                if let Some(dispatcher) = &self.framework {
+                    pane.bind_dispatcher(dispatcher.clone());
+                }
+                Box::new(pane)
+            }
             Category::Storage => Box::new(
                 panes::storage::StoragePane::new()
                     .with_command_state(&self.local_pane_command)
@@ -542,7 +580,16 @@ impl SettingsApp {
                     .with_command_state(&self.local_pane_command)
                     .with_operation_status(&self.local_operation_status),
             ),
-            Category::RegionFormats => panes::region::build_for_width(self.content_width_hint()),
+            Category::RegionFormats => {
+                let mut pane = panes::region::RegionPane::new();
+                if let Some(dispatcher) = &self.framework {
+                    pane.bind_dispatcher(dispatcher.clone());
+                }
+                Box::new(match self.content_width_hint() {
+                    Some(width) => pane.with_width_hint(width),
+                    None => pane,
+                })
+            }
             Category::Permissions => panes::permissions::build(),
             Category::Updates => Box::new(
                 panes::updates::UpdatesPane::new()
@@ -2004,11 +2051,11 @@ impl Widget for SettingsApp {
     }
 
     /// Publish the settings resource tree to the shell's one Ctrl+K palette,
-    /// delegating to the [`ResourceProvider`](tilo_actions::ResourceProvider) impl
+    /// delegating to the [``]() impl
     /// in [`crate::actions`]. Level-triggered: recomputed each frame from the
     /// shared document.
     fn resources(&self, doc: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+        Self::publish_resources(self, doc)
     }
 
     /// Resolve canonical Settings resources at activation time as well as
@@ -2017,7 +2064,7 @@ impl Widget for SettingsApp {
     /// re-checks an address against the current resource surface before the
     /// action door opens it.
     fn resource(&self, doc: &automerge::AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
+        Self::publish_resource(self, doc, id)
     }
 
     fn start_operation(

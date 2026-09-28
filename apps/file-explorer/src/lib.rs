@@ -50,6 +50,7 @@ pub mod places_sidebar;
 pub mod received_shares;
 pub mod recent;
 pub mod remote_accounts;
+pub mod resource;
 pub mod search_provider;
 pub mod sharing;
 pub mod shortcut_menu;
@@ -64,3 +65,4 @@ pub use files_app::{FileExplorerWidget, StartupInputs};
 
 #[cfg(all(test, windows))]
 mod unavailable_projection_tests;
+pub use resource::{FileExplorer, FileExplorerShell, launch_spec as framework_launch_spec};

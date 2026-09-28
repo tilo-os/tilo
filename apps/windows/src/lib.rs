@@ -33,6 +33,7 @@ pub mod app;
 pub mod appliance_owner;
 pub mod model;
 pub mod provider;
+pub mod resource;
 pub mod strings;
 
 pub use app::WindowsApp;
@@ -49,3 +50,4 @@ pub fn app_root_offline() -> Box<dyn ui::widget::Widget> {
 pub fn app_root_scenario(scenario: &str) -> Box<dyn ui::widget::Widget> {
     Box::new(WindowsApp::new_offline_scenario(scenario))
 }
+pub use resource::{Windows, WindowsShell};

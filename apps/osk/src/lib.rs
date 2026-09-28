@@ -94,6 +94,7 @@ pub mod inject;
 pub mod layout;
 pub mod output;
 pub mod predict;
+pub mod resource;
 pub mod suggest;
 pub mod swipe;
 pub mod toolbar;
@@ -123,3 +124,4 @@ pub mod framework_history;
 mod presentation;
 
 pub mod actions;
+pub use resource::{Osk, OskShell};

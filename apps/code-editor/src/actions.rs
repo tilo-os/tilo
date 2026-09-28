@@ -38,8 +38,8 @@ use std::collections::{HashMap, HashSet};
 
 use tilo_actions::{
     Action, ActionAddress, ActionArgs, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
-    EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource,
-    ResourceProvider, ResultSpec, RetryPolicy,
+    EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource, ResultSpec,
+    RetryPolicy,
 };
 
 use crate::command_palette::Command;
@@ -1634,7 +1634,31 @@ pub fn project_root(ctx: &CodeEditorResourceCtx) -> Resource {
 }
 
 pub fn provide_resources(ctx: &CodeEditorResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
-    let mut project = project_root(ctx);
+    let state =
+        <crate::resource::CodeEditor as ui::tilo_resource::Resource>::read(doc).unwrap_or_default();
+    let label = if ctx.project_name.trim().is_empty() {
+        "Code Editor"
+    } else {
+        ctx.project_name.as_str()
+    };
+    let project_id = project_resource_id(&ctx.project_id);
+    let published =
+        ui::tilo_resource::publish::<crate::resource::CodeEditor>(&project_id, label, &state);
+    let protocol = project_root(ctx);
+    let mut project = published;
+    for action in protocol.actions {
+        if project
+            .actions
+            .iter()
+            .any(|existing| existing.id == action.id)
+        {
+            continue;
+        }
+        project = project.with_action(action);
+    }
+    for view in protocol.views {
+        project = project.with_view(view);
+    }
     let root_folder = root_folder_id(ctx).map(str::to_owned);
     let snapshot = bounded_resource_snapshot(ctx);
 
@@ -1722,12 +1746,13 @@ pub fn resolve_resource(
         .map(result_resource)
 }
 
-impl ResourceProvider for crate::app::CodeApp {
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+// Inherent resource publication (was ResourceProvider)
+impl crate::app::CodeApp {
+    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         provide_resources(&self.code_resource_ctx(), doc)
     }
 
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+    pub fn publish_resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
         resolve_resource(&self.code_resource_ctx(), doc, id)
     }
 }

@@ -706,7 +706,7 @@ pub struct ChatApp {
     // through this one field. It brackets the undo boundary, encodes under
     // `CHAT_ACTION_TYPE`, and applies through the executor so a peer replays the
     // byte-identical change. See [`crate::actions`].
-    pub(crate) actions: ui::ActionHost,
+    pub(crate) actions: crate::resource::ActionSink,
 
     // Persistence (None for ephemeral / `--shots` instances).
 
@@ -959,7 +959,7 @@ impl ChatApp {
             // `--shots`/tests from binding a real iroh endpoint per instance.
             media: MediaEngine::simulated(),
             perms: ChatPermissions::permissive(),
-            actions: ui::ActionHost::new(),
+            actions: crate::resource::ActionSink::default(),
             images: ui::ImageStore::new(&crate::images::fetcher(content.clone())),
             content,
             rect: Rect::ZERO,
@@ -1037,6 +1037,24 @@ impl ChatApp {
     #[cfg(test)]
     pub(crate) fn last_dispatched(&self) -> Option<&tilo_actions::EncodedAction> {
         self.actions.last_dispatched()
+    }
+
+    /// Show the rooms and channels the framework resource already holds.
+    /// An empty projection does not wipe a workspace that has not been published yet.
+    pub(crate) fn adopt_resource_state(&mut self, state: &crate::resource::ChatState) {
+        if state.workspaces.is_empty() && state.channels.is_empty() {
+            return;
+        }
+        self.workspaces.clone_from(&state.workspaces);
+        self.channels.clone_from(&state.channels);
+    }
+
+    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Chat>,
+    ) {
+        self.actions.attach(dispatcher);
     }
 
     /// The context Ctrl+K needs to build Chat's resource tree: the active
@@ -3211,29 +3229,36 @@ impl Widget for ChatApp {
         self.apply_realtime_stop(doc);
         self.establish_realtime_target();
         if !self.canonical && self.is_live {
-            // Live instance. `app-state` has already restored the previous
-            // session's document by now, so an unseeded document really is a
-            // first run: scaffold a real, empty starter workspace for this
-            // user — never the demo.
-            // Keyed off `is_live` (not on whether anything persisted) so a
-            // live run with no data dir still gets the honest empty starter
-            // rather than the demo.
-            if !ChatDoc::is_seeded(doc) {
-                ChatDoc::seed_starter(doc, &self.me.id, &self.me.name, &self.me.initials);
-            }
-            // Announce this peer into the shared roster so every other
-            // participant sees its real name/colour — whether we seeded the
-            // workspace or adopted a peer's shared document. Guarded so it
-            // writes once and doesn't churn the doc (which would spam empty
-            // collab deltas) on subsequent frames.
-            if ChatDoc::ensure_user(
+            let status = model::Presence::Online;
+            if self.actions.is_hosted() {
+                if !ChatDoc::user_is_current(
+                    doc,
+                    &self.me.id,
+                    &self.me.name,
+                    &self.me.initials,
+                    self.me.color_idx,
+                    status,
+                ) {
+                    self.perform_action(
+                        doc,
+                        &actions::ChatAction::EnsureUser {
+                            id: self.me.id.clone(),
+                            name: self.me.name.clone(),
+                            initials: self.me.initials.clone(),
+                            color_idx: self.me.color_idx,
+                            status: status.as_str().to_string(),
+                        },
+                    );
+                }
+            } else if ChatDoc::ensure_user(
                 doc,
                 &self.me.id,
                 &self.me.name,
                 &self.me.initials,
                 self.me.color_idx,
-                model::Presence::Online,
-            ) {}
+                status,
+            ) {
+            }
         } else if !self.canonical && self.shot_starter {
             // `--shots` capture of the honest first-run empty workspace.
             ChatDoc::seed_starter(doc, &self.me.id, &self.me.name, &self.me.initials);
@@ -3242,7 +3267,11 @@ impl Widget for ChatApp {
             ChatDoc::seed_if_empty(doc);
         }
         if !self.canonical && !self.legacy_migration_attempted {
-            ChatDoc::migrate_legacy_attachment_paths(doc);
+            if self.actions.is_hosted() {
+                self.perform_action(doc, &actions::ChatAction::MigrateLegacyAttachments);
+            } else {
+                ChatDoc::migrate_legacy_attachment_paths(doc);
+            }
             self.legacy_migration_attempted = true;
         }
         self.settle_attachment_picker();
@@ -3609,15 +3638,15 @@ impl Widget for ChatApp {
 
     /// The resource tree Chat currently has open — the active workspace, its
     /// channels, and the open channel's messages — each exporting the actions
-    /// Ctrl+K offers. Delegates to the [`ResourceProvider`](tilo_actions::ResourceProvider)
+    /// Ctrl+K offers. Delegates to the [``]()
     /// impl in [`crate::actions`], the same builder the affordance covenant tests
     /// drive. Recomputed each frame; empty until a workspace is selected.
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+        Self::publish_resources(self, doc)
     }
 
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
+        Self::publish_resource(self, doc, id)
     }
 
     /// The tree a delivered invocation resolves against for an agent task

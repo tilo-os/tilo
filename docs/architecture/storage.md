@@ -8,7 +8,7 @@ in [§22](#22-open-questions-for-the-owner) instead of guessing.
 This document replaces the storage parts of several documents that grew up
 separately: the collaborative file daemon (`crates/system/fs`), app state
 (`crates/system/app-state`, `crates/sdk/ui-core/src/{persist,record}.rs`),
-document blobs (`crates/doc/qdoc/src/blobstore.rs`) and the package store
+document blobs (`crates/doc/tilo-doc/src/blobstore.rs`) and the package store
 (`crates/packaging/app-host`). They become one system with one content store,
 one record model, one history and one permission model.
 
@@ -118,7 +118,7 @@ The pieces are strong. What is missing is one model and the performance path.
 | Content sync | A new QUIC connection and a whole-blob GET per 8 KiB chunk, sequential; push is disabled (`sync.rs:862`). About two RTTs per chunk, regardless of bandwidth: ~4 MB/s on LAN, ~50 KB/s over an 80 ms relay. | R3 |
 | Serving | Authorising one chunk scans every readable manifest while holding the namespace lock, in one serial task (`sync.rs:737-840`). | R3 |
 | App data | 44 of 54 apps keep all state in one Automerge document per `(package, room)`. Snapshots and deltas are capped at 3 MiB (`crates/collab/collab-types/src/op.rs:30-35`), and an oversized delta is dropped after the frontier has advanced (`crates/sdk/ui-core/src/collaboration.rs:3653-3661`). Room discovery is capped at 64 records (`ui-core/src/record.rs:38`). | R5, R8 |
-| Blobs | Two stores. qdoc's `BlobStore` is process-local, capped at 32 MiB per blob / 256 MiB / 8,192 entries (`crates/doc/qdoc/src/blobstore.rs:33-40`), and `BlobTransport` has no production implementation (`blobstore.rs:650-664`). The fs daemon has the other store. | R5, R6, R8 |
+| Blobs | Two stores. qdoc's `BlobStore` is process-local, capped at 32 MiB per blob / 256 MiB / 8,192 entries (`crates/doc/tilo-doc/src/blobstore.rs:33-40`), and `BlobTransport` has no production implementation (`blobstore.rs:650-664`). The fs daemon has the other store. | R5, R6, R8 |
 | Packages | A third store. `app-host` ingests every blob into its own `FsBlobStore` and eagerly unpacks a second copy (`crates/packaging/app-host/src/install.rs:1-20`, `store.rs:1-12`). `app-fs` (lazy FUSE) has no dependents. | R6, R7 |
 | History | Automerge change graphs for app state, signed versions plus a global JSON file for files, and an audit log on the relay. | R6 |
 
@@ -1871,7 +1871,7 @@ device is clean and does not rewrite the index (tested,
 | `fs` `recipient_mount.rs` (after Tier 1) | recipients materialise natively |
 | `crates/packaging/app-fs` | no dependents. Placeholders or composefs cover lazy start |
 | `crates/runtime/runtime-fs/schema/fs.capnp` `WorkspaceFs` read/write RPC | no server. Replaced by the Record Store capability with fd passing |
-| `qdoc::blobstore::BlobTransport`, the process-global store, `set_store` calls | one content store |
+| `tilo_doc::blobstore::BlobTransport`, the process-global store, `set_store` calls | one content store |
 | package-global `state.automerge` as a content store (44 apps), `LegacyLaunchInputs`, `RecordId::for_file`/`for_tab` as identities, the 3 MiB single-message snapshot path, 29 hand-written tombstone maps, inline assets in notes | wrong grain or duplicated |
 | `tilo-relay` `snapshot.automerge` / `pending/*.delta` opaque co-edit store (`tilo-relay/src/store.rs:1-20`) for app documents | hosts store record operations and segments like any replica. Live presence stays |
 | the hard caps at `record_repository.rs:24-31`, `namespace.rs:35`, `full_replica.rs:23-27`, `store.rs:56-70`, `blobstore.rs:33-40`, `record.rs:38` | replaced by compaction, streaming and quotas |

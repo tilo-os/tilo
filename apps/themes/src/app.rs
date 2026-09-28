@@ -159,10 +159,8 @@ pub struct ThemesApp {
     last_export: Option<String>,
     structure_dirty: bool,
 
-    /// Framework-owned action dispatch: brackets the undo boundary, encodes and
-    /// dispatches each Themes action, and remembers the last one for parity with
-    /// the Ctrl+K [`ActionSpec`].
-    actions: ui::ActionHost,
+    /// Framework dispatcher when hosted; the local action host otherwise.
+    actions: crate::resource::ActionSink,
 
     /// Theme id accepted through the canonical external-operation route. It is
     /// drained by `sync`, where mutable document access is available, so the
@@ -292,7 +290,7 @@ impl ThemesApp {
             status: String::new(),
             last_export: None,
             structure_dirty: false,
-            actions: ui::ActionHost::new(),
+            actions: crate::resource::ActionSink::default(),
             pending_apply: None,
             completed_apply: None,
             pending_new: false,
@@ -642,8 +640,30 @@ impl ThemesApp {
         // shared store, else default to the seeded selection.
         if ui::doc::read_str(state, path, doc::KEY_ACTIVE).is_none() {
             let active = store::load_active_id().unwrap_or_else(|| sel.clone());
-            doc::put_str(state, path, doc::KEY_ACTIVE, &active);
+            if self.actions.is_hosted() {
+                self.perform_action(state, &crate::actions::set_active_theme_action(&active));
+            } else {
+                doc::put_str(state, path, doc::KEY_ACTIVE, &active);
+            }
         }
+    }
+
+    /// Show the catalog and active theme the framework resource already holds.
+    pub(crate) fn adopt_resource_state(&mut self, state: &crate::resource::ThemesState) {
+        self.catalog.clone_from(&state.catalog);
+        if self.selected.is_empty()
+            && let Some(active) = &state.active
+        {
+            self.selected.clone_from(active);
+        }
+    }
+
+    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Themes>,
+    ) {
+        self.actions.attach(dispatcher);
     }
 
     /// Steps 3-5 of [`Widget::sync`]: load the persisted catalog, resolve the
@@ -1410,10 +1430,10 @@ impl Widget for ThemesApp {
 
     /// Publish the open theme library + its themes so the host's Ctrl+K action
     /// palette scopes to them. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
+    /// [``]() impl in
     /// [`crate::actions`].
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+        Self::publish_resources(self, doc)
     }
 
     fn start_operation(
@@ -2615,7 +2635,7 @@ mod tests {
         // `perform_action`) is the byte-identical [`EncodedAction`] the theme's
         // Ctrl+K "Delete theme" [`ActionSpec`] exports.
         {
-            use tilo_actions::{ActionInput, ResourceProvider};
+            use tilo_actions::ActionInput;
             let (mut app, mut st, _env) = seeded_demo();
             assert_eq!(selected(&app), "sunset");
 
@@ -2631,7 +2651,7 @@ mod tests {
             // removed it from `st`), so both encode the same target.
             let mut probe = AutoCommit::new();
             doc::save_catalog(&mut probe, &automerge::ROOT, &demo_catalog());
-            let resources = ResourceProvider::resources(&app, &probe);
+            let resources = app.publish_resources(&probe);
             let sunset = resources[0]
                 .children
                 .iter()

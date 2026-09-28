@@ -26,12 +26,12 @@ use crate::num;
 use tilo_actions::{
     Action, ActionArgs, ActionContract, ActionParam, ActionRegistry, ActionSpec,
     ContextRequirement, EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType,
-    Resource, ResourceProvider, ResultSpec,
+    Resource, ResultSpec,
 };
 
 /// Registry `type_id` for every word-processor action.
-pub use qdoc_rich_text::RICH_TEXT_ACTION_TYPE as WORD_PROCESSOR_ACTION_TYPE;
-pub use qdoc_rich_text::action::*;
+pub use tilo_document::RICH_TEXT_ACTION_TYPE as WORD_PROCESSOR_ACTION_TYPE;
+pub use tilo_document::action::*;
 pub const WORD_PROCESSOR_OPERATION_TYPE: &str = "word-processor.operation";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -230,7 +230,7 @@ fn short(text: &str, fallback: &str) -> String {
 /// text cache. The caller materializes once, then each bounded result borrows
 /// from that snapshot.
 fn range_label(
-    blocks: &[qdoc::snapshot::BlockView],
+    blocks: &[tilo_doc::snapshot::BlockView],
     block: &str,
     start: usize,
     end: usize,
@@ -299,7 +299,8 @@ fn add_file_operations(root: &mut Resource, file: Option<&continuation::FileCont
     }
 }
 
-fn add_view_operations(root: &mut Resource) {
+pub(crate) fn view_operations(include_history: bool) -> Vec<ActionSpec> {
+    let mut specs = Vec::new();
     for (id, label, value) in [
         ("find", "Find in document", WordProcessorOperation::Find),
         ("zoom-in", "Zoom in", WordProcessorOperation::ZoomIn),
@@ -336,10 +337,18 @@ fn add_view_operations(root: &mut Resource) {
             WordProcessorOperation::ToggleHistory,
         ),
     ] {
+        if !include_history && id == "history" {
+            continue;
+        }
         if let Some(spec) = operation(id, label, OperationKind::View, &value) {
-            root.actions.push(spec);
+            specs.push(spec);
         }
     }
+    specs
+}
+
+fn add_view_operations(root: &mut Resource) {
+    root.actions.extend(view_operations(true));
 }
 
 fn add_caret_actions(root: &mut Resource, ctx: &WpResourceCtx) {
@@ -514,7 +523,7 @@ fn add_body_append_actions(
     root: &mut Resource,
     ctx: &WpResourceCtx,
     doc: &AutoCommit,
-    body: Option<&qdoc_rich_text::BodyOrder>,
+    body: Option<&tilo_document::BodyOrder>,
 ) {
     let appended =
         editing::AppendTarget::new(&participant::ParticipantView::from_ctx(ctx), doc, body);
@@ -629,7 +638,7 @@ fn add_comment_resource_action(root: &mut Resource, ctx: &WpResourceCtx) {
 fn add_search_resources(
     root: &mut Resource,
     ctx: &WpResourceCtx,
-    snapshot: &qdoc::snapshot::DocSnapshot,
+    snapshot: &tilo_doc::snapshot::DocSnapshot,
 ) {
     if ctx.search_hits.is_empty() {
         return;
@@ -737,7 +746,7 @@ fn add_document_edit_actions(root: &mut Resource, ctx: &WpResourceCtx) {
     }
 }
 
-fn comment_resource(comment: &qdoc::snapshot::CommentView) -> Resource {
+fn comment_resource(comment: &tilo_doc::snapshot::CommentView) -> Resource {
     let text = comment
         .blocks
         .iter()
@@ -828,7 +837,7 @@ fn comment_resource(comment: &qdoc::snapshot::CommentView) -> Resource {
     resource
 }
 
-fn add_review_resources(root: &mut Resource, snapshot: &qdoc::snapshot::DocSnapshot) {
+fn add_review_resources(root: &mut Resource, snapshot: &tilo_doc::snapshot::DocSnapshot) {
     if snapshot.comments.is_empty() && snapshot.changes.is_empty() {
         return;
     }
@@ -858,8 +867,8 @@ fn add_review_resources(root: &mut Resource, snapshot: &qdoc::snapshot::DocSnaps
         .extend(snapshot.comments.iter().map(comment_resource));
     for change in &snapshot.changes {
         let kind = match change.kind {
-            qdoc::snapshot::ChangeKind::Ins => "Insertion",
-            qdoc::snapshot::ChangeKind::Del => "Deletion",
+            tilo_doc::snapshot::ChangeKind::Ins => "Insertion",
+            tilo_doc::snapshot::ChangeKind::Del => "Deletion",
         };
         review.children.push(
             Resource::new(
@@ -924,7 +933,7 @@ fn add_revision_resources(root: &mut Resource, doc: &AutoCommit) {
     root.children.push(history);
 }
 
-fn add_metadata_resources(root: &mut Resource, snapshot: &qdoc::snapshot::DocSnapshot) {
+fn add_metadata_resources(root: &mut Resource, snapshot: &tilo_doc::snapshot::DocSnapshot) {
     if !snapshot.notes.is_empty() {
         let mut notes = Resource::new("word-processor.notes", "word_processor.notes", "Notes");
         for note in &snapshot.notes {
@@ -959,7 +968,7 @@ fn add_metadata_resources(root: &mut Resource, snapshot: &qdoc::snapshot::DocSna
     }
 }
 
-fn add_style_resources(root: &mut Resource, snapshot: &qdoc::snapshot::DocSnapshot) {
+fn add_style_resources(root: &mut Resource, snapshot: &tilo_doc::snapshot::DocSnapshot) {
     if snapshot.styles.is_empty() {
         return;
     }
@@ -970,8 +979,8 @@ fn add_style_resources(root: &mut Resource, snapshot: &qdoc::snapshot::DocSnapsh
     );
     for (style, properties) in &snapshot.styles {
         let bold = matches!(
-            properties.get(qdoc::schema::STYLE_BOLD),
-            Some(qdoc::AttrVal::Bool(true))
+            properties.get(tilo_doc::schema::STYLE_BOLD),
+            Some(tilo_doc::AttrVal::Bool(true))
         );
         let mut child = Resource::new(
             format!("word-processor.style:{style}"),
@@ -981,14 +990,14 @@ fn add_style_resources(root: &mut Resource, snapshot: &qdoc::snapshot::DocSnapsh
         .with_action(immediate_spec(
             "toggle-bold",
             if bold { "Remove bold" } else { "Make bold" },
-            &set_style_property_action(style, qdoc::schema::STYLE_BOLD, AttrVal::Bool(!bold)),
+            &set_style_property_action(style, tilo_doc::schema::STYLE_BOLD, AttrVal::Bool(!bold)),
         ));
         if !crate::styles::StyleSheet::is_builtin(style) {
             let instances = snapshot
                 .blocks
                 .iter()
                 .filter(|block| {
-                    matches!(block.attrs.get("style"), Some(qdoc::AttrVal::Str(id)) if id == style)
+                    matches!(block.attrs.get("style"), Some(tilo_doc::AttrVal::Str(id)) if id == style)
                 })
                 .map(|block| block.id.clone())
                 .collect();
@@ -1003,9 +1012,9 @@ fn add_style_resources(root: &mut Resource, snapshot: &qdoc::snapshot::DocSnapsh
     root.children.push(styles);
 }
 
-fn image_resource(block: &qdoc::snapshot::BlockView) -> Resource {
+fn image_resource(block: &tilo_doc::snapshot::BlockView) -> Resource {
     let edge = |key: &str| match block.attrs.get(key) {
-        Some(qdoc::AttrVal::Int(value)) => (*value).clamp(0, 9_500),
+        Some(tilo_doc::AttrVal::Int(value)) => (*value).clamp(0, 9_500),
         _ => 0,
     };
     let left = edge("crop_left");
@@ -1052,9 +1061,9 @@ fn image_resource(block: &qdoc::snapshot::BlockView) -> Resource {
     resource
 }
 
-fn table_resource(table_id: &str, table_blocks: &[&qdoc::snapshot::BlockView]) -> Resource {
-    let coordinate = |block: &qdoc::snapshot::BlockView, key: &str| match block.attrs.get(key) {
-        Some(qdoc::AttrVal::Int(value)) if *value >= 0 => num::usize_of_i64(*value),
+fn table_resource(table_id: &str, table_blocks: &[&tilo_doc::snapshot::BlockView]) -> Resource {
+    let coordinate = |block: &tilo_doc::snapshot::BlockView, key: &str| match block.attrs.get(key) {
+        Some(tilo_doc::AttrVal::Int(value)) if *value >= 0 => num::usize_of_i64(*value),
         _ => 0,
     };
     let rows = table_blocks
@@ -1128,7 +1137,7 @@ fn table_resource(table_id: &str, table_blocks: &[&qdoc::snapshot::BlockView]) -
     resource
 }
 
-fn add_structural_resources(root: &mut Resource, snapshot: &qdoc::snapshot::DocSnapshot) {
+fn add_structural_resources(root: &mut Resource, snapshot: &tilo_doc::snapshot::DocSnapshot) {
     root.children.extend(
         snapshot
             .blocks
@@ -1138,7 +1147,7 @@ fn add_structural_resources(root: &mut Resource, snapshot: &qdoc::snapshot::DocS
     );
     let mut table_ids = Vec::new();
     for block in snapshot.blocks.iter().filter(|block| block.kind == "cell") {
-        if let Some(qdoc::AttrVal::Str(table_id)) = block.attrs.get("table")
+        if let Some(tilo_doc::AttrVal::Str(table_id)) = block.attrs.get("table")
             && !table_ids.contains(table_id)
         {
             table_ids.push(table_id.clone());
@@ -1150,7 +1159,7 @@ fn add_structural_resources(root: &mut Resource, snapshot: &qdoc::snapshot::DocS
             .iter()
             .filter(|block| {
                 block.kind == "cell"
-                    && matches!(block.attrs.get("table"), Some(qdoc::AttrVal::Str(id)) if id == table_id)
+                    && matches!(block.attrs.get("table"), Some(tilo_doc::AttrVal::Str(id)) if id == table_id)
             })
             .collect::<Vec<_>>();
         root.children.push(table_resource(table_id, &blocks));
@@ -1201,10 +1210,10 @@ pub const SCHEMA_SEARCH_HIT_RESOURCE: &str = "word-processor.search-hit";
 /// - Document-derived resources (images, tables, sections, review,
 ///   revisions, styles) are included: they do not depend on any view.
 pub fn catalogue_schema(doc: &AutoCommit) -> Vec<Resource> {
-    let block = qdoc::model::open(doc, &automerge::ROOT)
+    let block = tilo_doc::model::open(doc, &automerge::ROOT)
         .ok()
         .and_then(|containers| {
-            qdoc::model::blocks_in_order(doc, &containers)
+            tilo_doc::model::blocks_in_order(doc, &containers)
                 .first()
                 .cloned()
         })
@@ -1345,10 +1354,10 @@ pub(crate) fn provide_resources_with_file(
     doc: &AutoCommit,
     file: Option<&continuation::FileContext>,
 ) -> Vec<Resource> {
-    let Ok(containers) = qdoc::model::open(doc, &automerge::ROOT) else {
+    let Ok(containers) = tilo_doc::model::open(doc, &automerge::ROOT) else {
         return vec![resource_root(ctx, doc, file, None)];
     };
-    let snapshot = qdoc::model::materialize(doc, &containers);
+    let snapshot = tilo_doc::model::materialize(doc, &containers);
     provide_resources_from(ctx, doc, file, None, &snapshot, true)
 }
 
@@ -1358,7 +1367,7 @@ fn resource_root(
     ctx: &WpResourceCtx,
     doc: &AutoCommit,
     file: Option<&continuation::FileContext>,
-    body: Option<&qdoc_rich_text::BodyOrder>,
+    body: Option<&tilo_document::BodyOrder>,
 ) -> Resource {
     let mut root = document_resource();
     add_file_operations(&mut root, file);
@@ -1378,8 +1387,8 @@ fn provide_resources_from(
     ctx: &WpResourceCtx,
     doc: &AutoCommit,
     file: Option<&continuation::FileContext>,
-    body: Option<&qdoc_rich_text::BodyOrder>,
-    listed: &qdoc::snapshot::DocSnapshot,
+    body: Option<&tilo_document::BodyOrder>,
+    listed: &tilo_doc::snapshot::DocSnapshot,
     revisions: bool,
 ) -> Vec<Resource> {
     let mut root = resource_root(ctx, doc, file, body);
@@ -1412,7 +1421,7 @@ pub(crate) fn provide_resources_listed(
     ctx: &WpResourceCtx,
     doc: &AutoCommit,
     file: Option<&continuation::FileContext>,
-    state: &qdoc_rich_text::RichTextState,
+    state: &tilo_document::RichTextState,
     revisions: bool,
 ) -> Vec<Resource> {
     let c = state.containers();
@@ -1420,7 +1429,7 @@ pub(crate) fn provide_resources_listed(
     // Nearest the caret: a book-length document lists the sections, images
     // and tables around where its user is, not all of them.
     let caret = body.position(&ctx.caret_block).unwrap_or(0);
-    let mut blocks: Vec<(usize, qdoc::snapshot::BlockView)> = Vec::new();
+    let mut blocks: Vec<(usize, tilo_doc::snapshot::BlockView)> = Vec::new();
     for (kind, limit) in [
         ("heading", MAX_RESOURCE_OBJECTS),
         ("image", MAX_RESOURCE_OBJECTS),
@@ -1443,19 +1452,19 @@ pub(crate) fn provide_resources_listed(
         .into_iter()
         .collect();
     blocks.extend(
-        qdoc::model::materialize_blocks(doc, c, &hits)
+        tilo_doc::model::materialize_blocks(doc, c, &hits)
             .into_iter()
             .filter_map(|view| Some((body.position(&view.id)?, view))),
     );
     blocks.sort_by_key(|(position, _)| *position);
-    let listed = qdoc::snapshot::DocSnapshot {
+    let listed = tilo_doc::snapshot::DocSnapshot {
         blocks: blocks.into_iter().map(|(_, view)| view).collect(),
-        styles: qdoc::model::all_styles(doc, c),
-        properties: qdoc::model::doc_props(doc, c),
+        styles: tilo_doc::model::all_styles(doc, c),
+        properties: tilo_doc::model::doc_props(doc, c),
         notes: state.notes().as_ref().clone(),
         comments: state.comments().as_ref().clone(),
         changes: state.changes().as_ref().clone(),
-        ..qdoc::snapshot::DocSnapshot::default()
+        ..tilo_doc::snapshot::DocSnapshot::default()
     };
     provide_resources_from(ctx, doc, file, Some(&**body), &listed, revisions)
 }
@@ -1486,8 +1495,9 @@ pub(crate) fn file_choice_resource(generation: u64) -> Result<Resource, String> 
     Ok(resource)
 }
 
-impl ResourceProvider for crate::widget::WordProcessorWidget {
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+// Inherent resource publication (was ResourceProvider)
+impl crate::widget::WordProcessorWidget {
+    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         if let Some(resource) = self.file_choice_resource() {
             return vec![resource];
         }
@@ -1501,7 +1511,7 @@ impl ResourceProvider for crate::widget::WordProcessorWidget {
             .unwrap_or_else(|| provide_resources_with_file(&ctx, doc, Some(&file)))
     }
 
-    fn catalogue_schema(&self, doc: &AutoCommit) -> Vec<Resource> {
+    pub fn publish_catalogue_schema(&self, doc: &AutoCommit) -> Vec<Resource> {
         catalogue_schema(doc)
     }
 }
@@ -1510,10 +1520,10 @@ impl ResourceProvider for crate::widget::WordProcessorWidget {
 mod tests {
     use super::*;
     use automerge::transaction::Transactable;
-    use qdoc::DocMut;
     use tilo_actions::ActionError;
     use tilo_actions::LocalTransport;
     use tilo_automerge::ApplyIncoming;
+    use tilo_doc::DocMut;
 
     /// A four-byte stand-in image, described as an [`ImageInput`].
     fn test_image(width: Option<i64>, height: Option<i64>) -> ImageInput {
@@ -1570,9 +1580,9 @@ mod tests {
                 &mut state.doc,
                 &insert_image_action(&para, 0, test_image(Some(20), Some(10))),
             );
-            let after_img = qdoc::model::blocks_in_order(
+            let after_img = tilo_doc::model::blocks_in_order(
                 &state.doc,
-                &qdoc::model::open(&state.doc, &automerge::ROOT).unwrap(),
+                &tilo_doc::model::open(&state.doc, &automerge::ROOT).unwrap(),
             );
             let last = after_img.last().cloned().unwrap();
             dispatch(&mut state.doc, &insert_table_action(&last, 2, 2));
@@ -1757,9 +1767,9 @@ mod tests {
         let mut state = ui::State::new();
         let mut ed = crate::EditorDoc::bind(&mut state.doc, &state.root);
         {
-            use qdoc_codecs::FormatProvider;
+            use tilo_doc_codecs::FormatProvider;
             let mut dm = ed.edit(&mut state.doc);
-            qdoc_codecs::MarkdownCodec
+            tilo_doc_codecs::MarkdownCodec
                 .import(
                     markdown.as_bytes(),
                     &mut dm,
@@ -1767,18 +1777,18 @@ mod tests {
                 )
                 .unwrap();
         }
-        let ids = qdoc::model::blocks_in_order(&state.doc, &ed.containers);
+        let ids = tilo_doc::model::blocks_in_order(&state.doc, &ed.containers);
         (state, ids)
     }
 
-    fn body_blocks(doc: &AutoCommit) -> Vec<qdoc::snapshot::BlockView> {
-        let c = qdoc::model::open(doc, &automerge::ROOT).unwrap();
-        qdoc::model::materialize(doc, &c).blocks
+    fn body_blocks(doc: &AutoCommit) -> Vec<tilo_doc::snapshot::BlockView> {
+        let c = tilo_doc::model::open(doc, &automerge::ROOT).unwrap();
+        tilo_doc::model::materialize(doc, &c).blocks
     }
 
     fn text_of(doc: &AutoCommit, block: &str) -> String {
-        let c = qdoc::model::open(doc, &automerge::ROOT).unwrap();
-        qdoc::model::block_text(doc, &c, block).unwrap_or_default()
+        let c = tilo_doc::model::open(doc, &automerge::ROOT).unwrap();
+        tilo_doc::model::block_text(doc, &c, block).unwrap_or_default()
     }
 
     /// Dispatch an action through the Tilo executor with a discarding transport
@@ -1801,9 +1811,9 @@ mod tests {
         // Phase: splice_validation_matches_snapshot_without_scanning_regions.
         {
             use automerge::{ObjType, ScalarValue};
-            use qdoc::schema::{BLOCK_ORDER, BLOCK_TEXT, KEY_FOOTER, KEY_HEADER};
+            use tilo_doc::schema::{BLOCK_ORDER, BLOCK_TEXT, KEY_FOOTER, KEY_HEADER};
             let (mut state, ids) = seeded("Aé🦀e\u{301}\n");
-            let c = qdoc::model::open(&state.doc, &state.root).unwrap();
+            let c = tilo_doc::model::open(&state.doc, &state.root).unwrap();
             for region in [RegionKind::Header, RegionKind::Footer] {
                 let action = RichTextAction::SpliceText {
                     region,
@@ -1871,7 +1881,7 @@ mod tests {
                     .unwrap();
                 state.doc.delete(container, "deleted").unwrap();
             }
-            let snap = qdoc::model::materialize(&state.doc, &c);
+            let snap = tilo_doc::model::materialize(&state.doc, &c);
             for region in [RegionKind::Body, RegionKind::Header, RegionKind::Footer] {
                 let blocks = match region {
                     RegionKind::Body => &snap.blocks,
@@ -1902,14 +1912,14 @@ mod tests {
                                 let len = b.text.chars().count();
                                 at <= len && del <= len.saturating_sub(at)
                             });
-                            let before = qdoc::model::ordered_keys_scan_count();
+                            let before = tilo_doc::model::ordered_keys_scan_count();
                             assert_eq!(
                                 action_is_valid(&action, &state.doc, &c),
                                 expected,
                                 "{action:?}"
                             );
                             assert_eq!(
-                                qdoc::model::ordered_keys_scan_count(),
+                                tilo_doc::model::ordered_keys_scan_count(),
                                 before,
                                 "single-block validation must not scan regions"
                             );
@@ -1992,10 +2002,10 @@ mod tests {
     /// through the markdown import and the document model's review writes.
     fn wp_seed() -> AutoCommit {
         let (mut state, ids) = seeded("# Title\n\nHello world\n\nonetwo\n");
-        let c = qdoc::model::open(&state.doc, &automerge::ROOT).unwrap();
-        let mut id_gen = qdoc::IdGen::new(state.doc.get_actor().to_hex_string());
+        let c = tilo_doc::model::open(&state.doc, &automerge::ROOT).unwrap();
+        let mut id_gen = tilo_doc::IdGen::new(state.doc.get_actor().to_hex_string());
         {
-            let mut dm = qdoc::DocMut {
+            let mut dm = tilo_doc::DocMut {
                 doc: &mut state.doc,
                 c: &c,
                 ids: &mut id_gen,
@@ -2009,8 +2019,8 @@ mod tests {
 
     /// The `n`th body block's stable id.
     fn nth_block(doc: &AutoCommit, n: usize) -> String {
-        let c = qdoc::model::open(doc, &automerge::ROOT).unwrap();
-        qdoc::model::blocks_in_order(doc, &c)
+        let c = tilo_doc::model::open(doc, &automerge::ROOT).unwrap();
+        tilo_doc::model::blocks_in_order(doc, &c)
             .into_iter()
             .nth(n)
             .expect("seeded block")
@@ -2350,7 +2360,7 @@ mod tests {
 
             assert!(body_blocks(&state.doc).iter().any(|block| {
                 block.kind == "image"
-                    && block.attrs.get("blob") == Some(&qdoc::AttrVal::Str(hash.clone()))
+                    && block.attrs.get("blob") == Some(&tilo_doc::AttrVal::Str(hash.clone()))
             }));
         }
 
@@ -2391,11 +2401,11 @@ mod tests {
                 .expect("image remains");
             assert_eq!(
                 image_view.attrs.get("crop_left"),
-                Some(&qdoc::AttrVal::Int(500))
+                Some(&tilo_doc::AttrVal::Int(500))
             );
             assert_eq!(
                 image_view.attrs.get("offset_x"),
-                Some(&qdoc::AttrVal::Int(24))
+                Some(&tilo_doc::AttrVal::Int(24))
             );
 
             let before = a.save();
@@ -2411,10 +2421,10 @@ mod tests {
         {
             let (mut a, ids) = seeded("Review this sentence\n");
             let block = ids[0].clone();
-            let c = qdoc::model::open(&a.doc, &automerge::ROOT).unwrap();
-            let mut id_gen = qdoc::IdGen::new(a.doc.get_actor().to_hex_string());
+            let c = tilo_doc::model::open(&a.doc, &automerge::ROOT).unwrap();
+            let mut id_gen = tilo_doc::IdGen::new(a.doc.get_actor().to_hex_string());
             let (comment, change) = {
-                let mut dm = qdoc::DocMut {
+                let mut dm = tilo_doc::DocMut {
                     doc: &mut a.doc,
                     c: &c,
                     ids: &mut id_gen,
@@ -2474,9 +2484,9 @@ mod tests {
             let envelope = tilo_actions::apply_local(&mut a.doc, &action, accept).unwrap();
             tilo_actions::replay(&mut b.doc, &envelope, &registry()).unwrap();
             assert_eq!(a.doc.get_heads(), b.doc.get_heads());
-            let snap = qdoc::model::materialize(
+            let snap = tilo_doc::model::materialize(
                 &a.doc,
-                &qdoc::model::open(&a.doc, &automerge::ROOT).unwrap(),
+                &tilo_doc::model::open(&a.doc, &automerge::ROOT).unwrap(),
             );
             assert!(snap.changes.is_empty(), "accepted change left review state");
             assert_eq!(snap.comments.len(), 1, "unrelated comment remains");
@@ -2486,9 +2496,9 @@ mod tests {
         {
             let (mut a, ids) = seeded("Review this paragraph\n");
             let block = ids[0].clone();
-            let containers = qdoc::model::open(&a.doc, &automerge::ROOT).unwrap();
+            let containers = tilo_doc::model::open(&a.doc, &automerge::ROOT).unwrap();
             let comment = {
-                let mut ids = qdoc::model::seeded_id_gen(&a.doc, &containers);
+                let mut ids = tilo_doc::model::seeded_id_gen(&a.doc, &containers);
                 let mut dm = DocMut {
                     doc: &mut a.doc,
                     c: &containers,
@@ -2508,8 +2518,8 @@ mod tests {
                 b.doc.get_heads(),
                 "reply replays exactly"
             );
-            let c = qdoc::model::open(&a.doc, &automerge::ROOT).unwrap();
-            let comments = qdoc::model::materialize_comments(&a.doc, &c);
+            let c = tilo_doc::model::open(&a.doc, &automerge::ROOT).unwrap();
+            let comments = tilo_doc::model::materialize_comments(&a.doc, &c);
             assert_eq!(comments[0].replies.len(), 1);
             assert_eq!(comments[0].replies[0].author, "Jonas");
             assert_eq!(comments[0].replies[0].blocks[0].text, "Will do.");
@@ -2523,8 +2533,8 @@ mod tests {
                 b.doc.get_heads(),
                 "resolution replays exactly"
             );
-            let c = qdoc::model::open(&a.doc, &automerge::ROOT).unwrap();
-            assert!(qdoc::model::materialize_comments(&a.doc, &c).is_empty());
+            let c = tilo_doc::model::open(&a.doc, &automerge::ROOT).unwrap();
+            assert!(tilo_doc::model::materialize_comments(&a.doc, &c).is_empty());
         }
 
         // Phase: resolved_comment_tombstone_wins_over_divergent_reply.
@@ -2533,8 +2543,8 @@ mod tests {
             let block = ids[0].clone();
             let add = add_comment_action(&block, 0, 6, "Maya", "2026-09-07", "Please clarify");
             dispatch(&mut a.doc, &add);
-            let c = qdoc::model::open(&a.doc, &automerge::ROOT).unwrap();
-            let comment = qdoc::model::comment_ids(&a.doc, &c)
+            let c = tilo_doc::model::open(&a.doc, &automerge::ROOT).unwrap();
+            let comment = tilo_doc::model::comment_ids(&a.doc, &c)
                 .into_iter()
                 .next()
                 .unwrap();
@@ -2550,10 +2560,10 @@ mod tests {
             tilo_actions::apply_local(&mut b.doc, &reply, encode(&reply)).unwrap();
             a.doc.merge_incoming(&mut b.doc).unwrap();
 
-            let c = qdoc::model::open(&a.doc, &automerge::ROOT).unwrap();
-            assert!(qdoc::model::comment_is_tombstoned(&a.doc, &c, &comment));
+            let c = tilo_doc::model::open(&a.doc, &automerge::ROOT).unwrap();
+            assert!(tilo_doc::model::comment_is_tombstoned(&a.doc, &c, &comment));
             assert!(
-                qdoc::model::materialize_comments(&a.doc, &c).is_empty(),
+                tilo_doc::model::materialize_comments(&a.doc, &c).is_empty(),
                 "a reply from a divergent replica cannot resurrect a resolved thread"
             );
         }
@@ -2578,8 +2588,8 @@ mod tests {
             let envelope = tilo_actions::apply_local(&mut a.doc, &action, encoded).unwrap();
             tilo_actions::replay(&mut b.doc, &envelope, &registry()).unwrap();
             assert_eq!(a.doc.get_heads(), b.doc.get_heads());
-            let c = qdoc::model::open(&a.doc, &automerge::ROOT).unwrap();
-            let blocks = qdoc::model::materialize(&a.doc, &c).blocks;
+            let c = tilo_doc::model::open(&a.doc, &automerge::ROOT).unwrap();
+            let blocks = tilo_doc::model::materialize(&a.doc, &c).blocks;
             assert_eq!(blocks.len(), 1);
             assert_eq!(blocks[0].text, "alXma");
         }
@@ -2622,7 +2632,7 @@ mod tests {
             let (mut base, ids) = seeded("Styled paragraph\n");
             let create = set_style_property_action(
                 "custom1",
-                qdoc::schema::STYLE_NAME,
+                tilo_doc::schema::STYLE_NAME,
                 AttrVal::Str("Callout".into()),
             );
             dispatch(&mut base.doc, &create);
@@ -2640,25 +2650,28 @@ mod tests {
             let mut b = ui::State::load(&bytes).unwrap();
             b.doc.set_actor(automerge::ActorId::random());
 
-            let bold =
-                set_style_property_action("custom1", qdoc::schema::STYLE_BOLD, AttrVal::Bool(true));
+            let bold = set_style_property_action(
+                "custom1",
+                tilo_doc::schema::STYLE_BOLD,
+                AttrVal::Bool(true),
+            );
             let size = set_style_property_action(
                 "custom1",
-                qdoc::schema::STYLE_SIZE,
+                tilo_doc::schema::STYLE_SIZE,
                 AttrVal::Float(28.0),
             );
             tilo_actions::apply_local(&mut a.doc, &bold, encode(&bold)).unwrap();
             tilo_actions::apply_local(&mut b.doc, &size, encode(&size)).unwrap();
             a.doc.merge_incoming(&mut b.doc).unwrap();
-            let c = qdoc::model::open(&a.doc, &automerge::ROOT).unwrap();
-            let properties = qdoc::model::style_props(&a.doc, &c, "custom1");
+            let c = tilo_doc::model::open(&a.doc, &automerge::ROOT).unwrap();
+            let properties = tilo_doc::model::style_props(&a.doc, &c, "custom1");
             assert_eq!(
-                properties.get(qdoc::schema::STYLE_BOLD),
-                Some(&qdoc::AttrVal::Bool(true))
+                properties.get(tilo_doc::schema::STYLE_BOLD),
+                Some(&tilo_doc::AttrVal::Bool(true))
             );
             assert_eq!(
-                properties.get(qdoc::schema::STYLE_SIZE),
-                Some(&qdoc::AttrVal::Float(28.0))
+                properties.get(tilo_doc::schema::STYLE_SIZE),
+                Some(&tilo_doc::AttrVal::Float(28.0))
             );
 
             let bytes = a.save();
@@ -2668,19 +2681,19 @@ mod tests {
             let remove = delete_style_action("custom1", vec![ids[0].clone()]);
             let rename = set_style_property_action(
                 "custom1",
-                qdoc::schema::STYLE_NAME,
+                tilo_doc::schema::STYLE_NAME,
                 AttrVal::Str("Late rename".into()),
             );
             tilo_actions::apply_local(&mut deleted.doc, &remove, encode(&remove)).unwrap();
             tilo_actions::apply_local(&mut divergent.doc, &rename, encode(&rename)).unwrap();
             deleted.doc.merge_incoming(&mut divergent.doc).unwrap();
-            let c = qdoc::model::open(&deleted.doc, &automerge::ROOT).unwrap();
-            assert!(qdoc::model::style_is_tombstoned(
+            let c = tilo_doc::model::open(&deleted.doc, &automerge::ROOT).unwrap();
+            assert!(tilo_doc::model::style_is_tombstoned(
                 &deleted.doc,
                 &c,
                 "custom1"
             ));
-            assert!(!qdoc::model::style_ids(&deleted.doc, &c).contains(&"custom1".to_string()));
+            assert!(!tilo_doc::model::style_ids(&deleted.doc, &c).contains(&"custom1".to_string()));
         }
 
         // Phase: toc_field_rich_paste_and_table_edits_encode_and_replay_identically.
@@ -2693,11 +2706,11 @@ mod tests {
             let fragment = crate::word_processor::ClipBlock {
                 kind: "heading".into(),
                 text: "Pasted title".into(),
-                marks: vec![qdoc::document::MarkSpan {
+                marks: vec![tilo_doc::document::MarkSpan {
                     name: "strong".into(),
                     start: 0,
                     end: 6,
-                    value: qdoc::document::MarkValue::Bool(true),
+                    value: tilo_doc::document::MarkValue::Bool(true),
                 }],
                 level: Some(2),
                 ordered: None,
@@ -2735,7 +2748,7 @@ mod tests {
             let table = body_blocks(&origin.doc)
                 .iter()
                 .find_map(|block| match block.attrs.get("table") {
-                    Some(qdoc::AttrVal::Str(id)) => Some(id.clone()),
+                    Some(tilo_doc::AttrVal::Str(id)) => Some(id.clone()),
                     _ => None,
                 })
                 .unwrap();
@@ -2763,7 +2776,7 @@ mod tests {
             let blocks = body_blocks(&base.doc);
             let cell = blocks.iter().find(|block| block.kind == "cell").unwrap();
             let table = match cell.attrs.get("table") {
-                Some(qdoc::AttrVal::Str(id)) => id.clone(),
+                Some(tilo_doc::AttrVal::Str(id)) => id.clone(),
                 other => panic!("cell has stable table id: {other:?}"),
             };
             let bytes = base.save();
@@ -2785,7 +2798,7 @@ mod tests {
             assert_eq!(body_blocks(&merged_a), body_blocks(&merged_b));
             assert!(body_blocks(&merged_a)
                 .iter()
-                .all(|block| !matches!(block.attrs.get("table"), Some(qdoc::AttrVal::Str(id)) if id == &table)));
+                .all(|block| !matches!(block.attrs.get("table"), Some(tilo_doc::AttrVal::Str(id)) if id == &table)));
         }
     }
 
@@ -2809,9 +2822,13 @@ mod tests {
                 vec![],
             ),
         ] {
-            let scans = qdoc::model::ordered_keys_scan_count();
+            let scans = tilo_doc::model::ordered_keys_scan_count();
             dispatch(&mut state.doc, &action);
-            assert_eq!(qdoc::model::ordered_keys_scan_count(), scans, "{action:?}");
+            assert_eq!(
+                tilo_doc::model::ordered_keys_scan_count(),
+                scans,
+                "{action:?}"
+            );
         }
         assert_eq!(text_of(&state.doc, &ids[0]), "axlpha");
         assert_eq!(text_of(&state.doc, &ids[1]), "Bta");

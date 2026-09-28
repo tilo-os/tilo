@@ -394,7 +394,7 @@ pub struct ApiTesterApp {
     /// environment or variable, select the active environment) is encoded and
     /// applied through this host, which brackets the undo boundary and remembers
     /// the last action — the same path a Ctrl+K palette dispatch takes.
-    actions: ui::ActionHost,
+    actions: crate::resource::ActionSink,
     search_provider: crate::search_provider::ApiSearchProvider,
     search_error: Option<ui::search::SearchCatalogError>,
 
@@ -657,7 +657,7 @@ impl ApiTesterApp {
             nav_rows_replaced: false,
             nav_meta: Vec::new(),
             sink: widgets.sink,
-            actions: ui::ActionHost::new(),
+            actions: crate::resource::ActionSink::default(),
             search_provider: crate::search_provider::ApiSearchProvider::new(),
             search_error: None,
             tx,
@@ -1137,6 +1137,57 @@ impl ApiTesterApp {
         self.dirty = true;
         self.rebuild_nav();
         self.refresh_search();
+    }
+
+    /// Show collection and environment names the framework resource holds.
+    /// An empty projection does not wipe a workspace that has not been published yet.
+    /// Requests stay on the document; `sync` reads those full records.
+    pub(crate) fn adopt_resource_state(&mut self, state: &crate::resource::WorkspaceState) {
+        if state.collections.is_empty()
+            && state.environments.is_empty()
+            && (!self.collections.is_empty() || !self.environments.is_empty())
+        {
+            return;
+        }
+        for (id, name) in &state.collections {
+            let Ok(id) = id.parse::<crate::model::Id>() else {
+                continue;
+            };
+            if let Some(collection) = self
+                .collections
+                .iter_mut()
+                .find(|collection| collection.id == id)
+            {
+                collection.name = name.clone();
+            }
+        }
+        let mut renamed_env = false;
+        for (id, name) in &state.environments {
+            let Ok(id) = id.parse::<crate::model::Id>() else {
+                continue;
+            };
+            if let Some(environment) = self
+                .environments
+                .iter_mut()
+                .find(|environment| environment.id == id)
+            {
+                if environment.name != *name {
+                    environment.name = name.clone();
+                    renamed_env = true;
+                }
+            }
+        }
+        if renamed_env {
+            self.rebuild_env_dropdown();
+        }
+    }
+
+    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::ApiTester>,
+    ) {
+        self.actions.attach(dispatcher);
     }
 
     /// Dispatch one canonical action against the document's current projection.
@@ -3881,10 +3932,10 @@ impl Widget for ApiTesterApp {
     /// Publish the resource tree the shell's one Ctrl+K palette walks — the
     /// collections, saved requests, environments, and variables currently in the
     /// shared document. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
+    /// [``]() impl in
     /// [`crate::actions`].
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+        Self::publish_resources(self, doc)
     }
 
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
@@ -4676,7 +4727,7 @@ mod tests {
         assert!(layout.resp_view.y0 < layout.resp_status.y1);
     }
 
-    /// The `ResourceProvider` surface: Send performs a real HTTP round trip and
+    /// The `` surface: Send performs a real HTTP round trip and
     /// reports worker completion exactly once, and a late record resolves by
     /// one indexed lookup.
     #[test]
@@ -5353,14 +5404,14 @@ mod tests {
 
         let doc = AutoCommit::new();
         let id = format!("api_tester.request:{request}");
-        let resource = <ApiTesterApp as tilo_actions::ResourceProvider>::resource(&a, &doc, &id)
-            .expect("late exact address resolves");
+        let resource =
+            ApiTesterApp::publish_resource(&a, &doc, &id).expect("late exact address resolves");
         assert_eq!(resource.id.0, id);
         assert!(resource.actions.iter().any(|action| action.id == "send"));
         assert_eq!(
             a.search_provider.last_exact_inspected(),
             1,
-            "the ResourceProvider performs one indexed address lookup"
+            "the performs one indexed address lookup"
         );
     }
 }

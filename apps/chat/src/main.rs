@@ -1,7 +1,7 @@
 //! Chat — thin binary entry point. All logic lives in the library.
 //!
 //! Modes:
-//!   * default        — run the live winit event loop via `ui::App`.
+//!   * default        — the chat window, importing an older workspace file once.
 //!   * `--shots PATH` — render one offscreen frame to a PNG and exit
 //!     (headless screenshot; identical passes to the live app).
 //!
@@ -63,6 +63,8 @@ fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
 extern crate runtime_dylib;
 
 pub fn main() {
+    // This spec imports an older workspace file once. The ResourceApp shell
+    // opens an empty record and would leave that history behind.
     ui::launch::run_or_exit(
         &LaunchSpec::new("so.tilo.chat", chat::app_root)
             .shot_handler(shot_handler)

@@ -33,8 +33,7 @@ use uuid::Uuid;
 use tilo_actions::{
     Action, ActionAddress, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec,
     Availability, ConfirmationPolicy, Doc, EncodedAction, ExecutionLocus, OperationKind, ParamType,
-    PermissionRequirement, Resource, ResourcePresentation, ResourceProvider, RetryPolicy,
-    RiskLevel,
+    PermissionRequirement, Resource, ResourcePresentation, RetryPolicy, RiskLevel,
 };
 
 use crate::doc::AuthDoc;
@@ -589,8 +588,9 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
     vec![root]
 }
 
-impl ResourceProvider for crate::app::AuthenticatorApp {
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+// Inherent resource publication (was ResourceProvider)
+impl crate::app::AuthenticatorApp {
+    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         let accounts = AuthDoc::list_accounts(doc);
         let mut root = provide_contextual_resources(&accounts)
             .pop()

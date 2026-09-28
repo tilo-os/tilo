@@ -36,11 +36,20 @@ fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
 
-pub fn main() {
-    ui::launch::run_or_exit(&launch_spec());
+fn wants_standalone() -> bool {
+    std::env::args().any(|arg| {
+        [
+            "--shots",
+            "--responsive-matrix",
+            "--native-audit",
+            "--headless",
+        ]
+        .iter()
+        .any(|mode| arg == *mode || arg.starts_with(&format!("{mode}=")))
+    })
 }
 
-fn launch_spec() -> LaunchSpec {
+fn shot_spec() -> LaunchSpec {
     LaunchSpec::new("so.tilo.diffmerge", diffmerge::app_root)
         .history(&diffmerge::framework_history::HISTORY)
         .shot_root(shot_root)
@@ -48,7 +57,17 @@ fn launch_spec() -> LaunchSpec {
         .configure_app(|app| diffmerge::actions::register(app.action_registry_mut()))
 }
 
+pub fn main() {
+    if wants_standalone() {
+        ui::launch::run_or_exit(&shot_spec());
+        return;
+    }
+    ui::launch::run_or_exit(&diffmerge::launch_spec());
+}
+
 #[test]
 fn production_launch_registers_history() {
-    launch_spec().validate_history_declaration().unwrap();
+    diffmerge::launch_spec()
+        .validate_history_declaration()
+        .unwrap();
 }

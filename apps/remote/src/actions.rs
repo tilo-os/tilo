@@ -39,8 +39,7 @@ use automerge::AutoCommit;
 use tilo_actions::{
     Action, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec,
     ConfirmationPolicy, Doc, EncodedAction, ExecutionLocus, ExecutionMode, OperationKind,
-    ParamType, PermissionRequirement, Resource, ResourceProvider, ResultSpec, RetryPolicy,
-    RiskLevel,
+    ParamType, PermissionRequirement, Resource, ResultSpec, RetryPolicy, RiskLevel,
 };
 
 use crate::doc::RemoteDoc;
@@ -542,8 +541,9 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
     vec![workspace]
 }
 
-impl ResourceProvider for crate::app::RemoteApp {
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+// Inherent resource publication (was ResourceProvider)
+impl crate::app::RemoteApp {
+    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         provide_resources(doc)
     }
 }

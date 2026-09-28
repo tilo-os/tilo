@@ -440,6 +440,9 @@ pub struct FileExplorerWidget {
     /// Set when applying a command changed structure; consumed by
     /// `take_structure_dirty` so the App rebuilds the composition.
     structure_dirty: bool,
+    /// Framework-hosted surfaces leave the palette tree to
+    /// `tilo_resource::publish`; standalone keeps the contextual builder.
+    framework_hosted: bool,
     /// Right-click menu, owned here (not in the rebuilt composition) so it
     /// stays open across frames. `menu_commands[i]` is the command to run
     /// for menu item `i` (None for separators).
@@ -602,6 +605,12 @@ impl FileExplorerWidget {
         widget.accounts_root = accounts::config_root();
         widget.refresh_external_search_catalogs();
         widget
+    }
+
+    /// Mark this explorer as a framework-hosted surface so
+    /// [`Widget::resources`] defers to `tilo_resource::publish`.
+    pub(crate) fn set_framework_hosted(&mut self, hosted: bool) {
+        self.framework_hosted = hosted;
     }
 
     /// Surface a bounded result from startup portals such as received-file
@@ -835,6 +844,7 @@ impl FileExplorerWidget {
             composed_once: false,
             cmds,
             structure_dirty: false,
+            framework_hosted: false,
             context_menu: ContextMenu::new(),
             menu_commands: Vec::new(),
             submenu: ContextMenu::new(),
@@ -4687,7 +4697,7 @@ impl CommandRunner for SystemRunner {
 pub fn is_document(path: &std::path::Path) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
-        .is_some_and(qdoc_codecs::is_supported_ext)
+        .is_some_and(tilo_doc_codecs::is_supported_ext)
 }
 
 /// Presentation-side lower bound for the daemon's fail-closed merge codecs.
@@ -4696,7 +4706,9 @@ pub fn is_document(path: &std::path::Path) -> bool {
 fn merge_supported_path(path: &std::path::Path) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| matches!(extension.to_ascii_lowercase().as_str(), "txt" | "qdoc"))
+        .is_some_and(|extension| {
+            matches!(extension.to_ascii_lowercase().as_str(), "txt" | "tilo-doc")
+        })
 }
 
 /// How the explorer hands a document to the application that owns it.
@@ -7451,6 +7463,9 @@ impl Widget for FileExplorerWidget {
         reason = "the resource catalogue mirrors the folder/entry protocol in one auditable tree; splitting it would separate action contracts from their resources"
     )]
     fn resources(&self, doc: &automerge::AutoCommit) -> Vec<Resource> {
+        if self.framework_hosted {
+            return Vec::new();
+        }
         let mut folder = self.action_directory_folder_root();
         // The recovery affordance is a real action resource, not a painted
         // click region. Publish it only while its error surface is visible,

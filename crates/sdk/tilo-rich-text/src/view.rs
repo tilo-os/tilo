@@ -4,7 +4,7 @@
 //! only, so what someone wrote looks the same once it is sent. It is laid
 //! out by the widget that draws it, at the width that widget gives it.
 
-use qdoc::snapshot::BlockView;
+use tilo_doc::snapshot::BlockView;
 use ui::kurbo::{Affine, Rect};
 use ui::presence::PresenceCtx;
 use ui::vello::Scene;

@@ -47,6 +47,7 @@ pub mod compile;
 pub mod diagnostics;
 pub mod editor;
 pub mod preview;
+pub mod resource;
 pub mod samples;
 pub mod worker;
 
@@ -78,3 +79,4 @@ pub fn demo_root_scenario(scenario: &str) -> Box<dyn Widget> {
 mod framework_history_tests;
 
 pub mod framework_history;
+pub use resource::{TypstEditor, TypstEditorShell, launch_spec as framework_launch_spec};
