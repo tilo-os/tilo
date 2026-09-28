@@ -2564,19 +2564,15 @@ impl App {
                 purpose: "send the image's new layers to the VM".into(),
             });
         }
-        let rsync = imageup::rsync_command(layout, endpoint, vm.entry.key.as_deref());
+        let rsync = imageup::rsync_command(layout, endpoint, vm.entry.key.as_deref())?;
         let runner = &mut self.runner;
         let sent = self.receipt.phase("transfer", || runner.output(&rsync))?;
         if sent.success {
             return Ok(imageup::rsync_sent_bytes(&sent.stdout));
         }
-        // The remote side runs under flock; rsync reports a held lock only as
-        // a closed connection, so say what it most likely was.
         let mut stderr = sent.stderr.trim().to_owned();
         if stderr.contains("connection unexpectedly closed") {
-            stderr.push_str(
-                " (another vm upgrade of this VM may hold /var/lib/tilo-vm/locks/image.lock)",
-            );
+            stderr.push_str(" (the SSH transport or remote rsync command closed before transferring data; check the output above)");
         }
         Err(CliError::CommandFailed {
             command: rsync.display(),
@@ -3359,7 +3355,8 @@ impl App {
         }
         let endpoint = Self::adapter(vm)?.ssh_endpoint(&vm.vm(), &mut self.runner)?;
         let id = vmbuild::worktree_id(&worktree, crate::context::hostname().as_deref());
-        let rsync = vmbuild::rsync_command(&worktree.root, &endpoint, vm.entry.key.as_deref(), &id);
+        let rsync =
+            vmbuild::rsync_command(&worktree.root, &endpoint, vm.entry.key.as_deref(), &id)?;
         eprintln!(
             "tilo-vm: syncing {} to {}:{}/{id}",
             worktree.root.display(),
@@ -3372,7 +3369,9 @@ impl App {
             return Err(CliError::CommandFailed {
                 command: rsync.display(),
                 status: "sync failed".into(),
-                stderr: "rsync's output above says why (exit 1 from flock: another build of this worktree is running)".into(),
+                stderr:
+                    "rsync's output above names the failed SSH transport, remote command or lock"
+                        .into(),
             });
         }
         self.receipt.set("worktree_id", &id);

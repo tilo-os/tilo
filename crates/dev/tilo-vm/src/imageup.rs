@@ -19,7 +19,6 @@ use serde_json::Value;
 
 use crate::error::CliError;
 use crate::hypervisor::{CommandLine, SshEndpoint};
-use crate::remote;
 use crate::vmbuild::sh_quote;
 
 /// What `--from local` builds and moves the VM onto.
@@ -567,28 +566,32 @@ pub fn export_command(image: &str, layout: &Path, digest_file: &Path) -> Command
 
 /// Mirror the layout into [`VM_LAYOUT`]: only new blobs cross, and blobs no
 /// longer referenced go, so the VM keeps one image's worth.
-pub fn rsync_command(layout: &Path, endpoint: &SshEndpoint, key: Option<&str>) -> CommandLine {
-    let ssh = remote::ssh_command(endpoint, key, &[], false);
-    let mut words = vec![sh_quote(&ssh.program)];
-    let options = ssh.args.len().saturating_sub(1);
-    words.extend(ssh.args.iter().take(options).map(|a| sh_quote(a)));
+///
+/// # Errors
+/// Returns an error when the rsync SSH transport is unavailable.
+pub fn rsync_command(
+    layout: &Path,
+    endpoint: &SshEndpoint,
+    key: Option<&str>,
+) -> Result<CommandLine, CliError> {
+    let rsh = crate::vmbuild::rsync_rsh(endpoint, key)?;
     let mut source = crate::vmbuild::rsync_source(layout);
     if !source.ends_with('/') {
         source.push('/');
     }
-    CommandLine::new(
+    Ok(CommandLine::new(
         &crate::host::rsync_program().unwrap_or_else(|| "rsync".into()),
         &["--archive", "--delete", "--whole-file", "--stats"],
     )
     .arg("--rsh")
-    .arg(words.join(" "))
+    .arg(rsh)
     .arg("--rsync-path")
     .arg(format!(
         "mkdir -p {LOCKS} {VM_LAYOUT} && flock --nonblock --conflict-exit-code 75 {LOCKS}/image.lock rsync"
     ))
     .arg(source)
     .arg(format!("{}@{}:{VM_LAYOUT}/", endpoint.user, endpoint.host))
-    .env("LC_ALL", "C")
+    .env("LC_ALL", "C"))
 }
 
 /// Bytes rsync sent, from its `--stats`.
@@ -1081,7 +1084,7 @@ mod tests {
                 host: "127.0.0.1".into(),
                 port: 2223,
             };
-            let rsync = rsync_command(Path::new("/c/dev"), &endpoint, Some("/k/id"));
+            let rsync = rsync_command(Path::new("/c/dev"), &endpoint, Some("/k/id")).unwrap();
             let text = rsync.display();
             assert!(text.contains("--delete"), "{text}");
             assert!(
@@ -1108,7 +1111,8 @@ mod tests {
                 host: "127.0.0.1".into(),
                 port: 2223,
             };
-            let line = rsync_command(Path::new(r"C:\tilo-build\image-layout"), &endpoint, None);
+            let line =
+                rsync_command(Path::new(r"C:\tilo-build\image-layout"), &endpoint, None).unwrap();
             assert_eq!(
                 line.args[line.args.len() - 2],
                 "/c/tilo-build/image-layout/"

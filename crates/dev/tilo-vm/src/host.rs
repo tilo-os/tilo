@@ -204,6 +204,14 @@ pub fn rsync_program() -> Option<String> {
     }
 }
 
+/// MSYS2 rsync needs the OpenSSH executable from the same POSIX runtime.
+/// Native Windows OpenSSH cannot carry its stdin/stdout protocol reliably.
+pub fn rsync_ssh_program() -> Option<PathBuf> {
+    let rsync = rsync_program()?;
+    let sibling = PathBuf::from(rsync).with_file_name("ssh.exe");
+    sibling.is_file().then_some(sibling)
+}
+
 impl HostFacts {
     /// Look at this host.
     pub fn probe(runner: &mut dyn Runner) -> Self {
