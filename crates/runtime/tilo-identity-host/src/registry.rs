@@ -295,13 +295,17 @@ impl IdentityRegistryStore {
         atomic_file::write_with_mode(&self.registry_path, &bytes, 0o600)
     }
 
-    /// Register the old single-record layout on first load. Idempotent.
+    /// Load the registry after registering every identity record in the
+    /// directory and adopting the runtime's active record as the default.
+    /// Provisioning, onboarding and the Users pane write records and the
+    /// active marker through `runtime_identity`, not through this registry.
+    /// Idempotent.
     ///
     /// # Errors
     ///
     /// Returns an error if loading the registry, listing identities, loading a record,
     /// setting permissions, or saving the registry fails.
-    pub fn migrate_legacy_primary(&self) -> io::Result<IdentityRegistry> {
+    pub fn load_reconciled(&self) -> io::Result<IdentityRegistry> {
         let mut registry = self.load()?;
         fs::create_dir_all(&self.identity_dir)?;
         set_private_dir_mode(&self.identity_dir)?;
@@ -346,7 +350,7 @@ impl IdentityRegistryStore {
     ///
     /// Returns an error if migration, importing the record, or saving the registry fails.
     pub fn import(&self, source: &Path) -> io::Result<IdentityProfile> {
-        let mut registry = self.migrate_legacy_primary()?;
+        let mut registry = self.load_reconciled()?;
         let profile = registry.import_record(source, &self.identity_dir)?.clone();
         self.save(&registry)?;
         Ok(profile)
@@ -365,7 +369,7 @@ impl IdentityRegistryStore {
     pub fn import_portable(&self, source: &Path, passphrase: &[u8]) -> io::Result<IdentityProfile> {
         let info = runtime_identity::verify_portable_backup(source, passphrase)?;
         let id = hex::encode(info.group_public_key);
-        let mut registry = self.migrate_legacy_primary()?;
+        let mut registry = self.load_reconciled()?;
         if let Some(existing) = registry.identities.get(&id) {
             return Ok(existing.clone());
         }
@@ -391,7 +395,7 @@ impl IdentityRegistryStore {
     ///
     /// Returns an error if migration, binding the workspace, or saving the registry fails.
     pub fn bind_workspace(&self, room: &str, identity_id: &str) -> io::Result<()> {
-        let mut registry = self.migrate_legacy_primary()?;
+        let mut registry = self.load_reconciled()?;
         registry.bind_workspace(room, identity_id)?;
         self.save(&registry)
     }
@@ -405,7 +409,7 @@ impl IdentityRegistryStore {
 /// Returns an error if loading the registry or migration fails.
 pub fn selected_identity_path(room: &str) -> io::Result<Option<PathBuf>> {
     let store = IdentityRegistryStore::from_env()?;
-    let registry = store.migrate_legacy_primary()?;
+    let registry = store.load_reconciled()?;
     Ok(registry
         .selected_for_workspace(room)
         .map(|profile| profile.record_path.clone()))
@@ -418,7 +422,7 @@ pub fn selected_identity_path(room: &str) -> io::Result<Option<PathBuf>> {
 /// Returns an error if loading the registry or migration fails.
 pub fn selected_principal_id(room: &str) -> io::Result<Option<String>> {
     let store = IdentityRegistryStore::from_env()?;
-    let registry = store.migrate_legacy_primary()?;
+    let registry = store.load_reconciled()?;
     Ok(registry
         .selected_for_workspace(room)
         .map(IdentityProfile::principal_id))
@@ -431,7 +435,7 @@ pub fn selected_principal_id(room: &str) -> io::Result<Option<String>> {
 /// Returns an error if loading the registry or migration fails.
 pub fn selected_identity_profile(room: &str) -> io::Result<Option<IdentityProfile>> {
     let store = IdentityRegistryStore::from_env()?;
-    let registry = store.migrate_legacy_primary()?;
+    let registry = store.load_reconciled()?;
     Ok(registry.selected_for_workspace(room).cloned())
 }
 
@@ -444,7 +448,7 @@ pub fn selected_identity_profile(room: &str) -> io::Result<Option<IdentityProfil
 /// Returns an error if loading the registry, migration, or saving fails.
 pub fn cycle_workspace_identity(room: &str) -> io::Result<Option<IdentityProfile>> {
     let store = IdentityRegistryStore::from_env()?;
-    let mut registry = store.migrate_legacy_primary()?;
+    let mut registry = store.load_reconciled()?;
     if registry.identities.is_empty() {
         return Ok(None);
     }
@@ -545,7 +549,7 @@ mod tests {
             let dir = temp_dir("legacy");
             write_record(&dir.join(LEGACY_PRIMARY_FILE), &record("Alice", 7));
             let store = IdentityRegistryStore::at(&dir);
-            let registry = store.migrate_legacy_primary().expect("migrate");
+            let registry = store.load_reconciled().expect("migrate");
             let selected = registry.selected_for_workspace("room-a").expect("default");
             assert_eq!(selected.display_name, "Alice");
             assert_eq!(selected.record_path, dir.join(LEGACY_PRIMARY_FILE));

@@ -47,7 +47,6 @@
 
 pub mod actions;
 pub mod app;
-pub mod doc;
 pub mod framework_history;
 #[cfg(test)]
 mod framework_history_tests;
