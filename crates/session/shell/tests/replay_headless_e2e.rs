@@ -303,20 +303,6 @@ fn find_named(tree: &Value, role: &str, label: &str) -> Option<Value> {
     }
 }
 
-/// The bounds of the first node of `role` in a semantic tree.
-fn find_role(tree: &Value, role: &str) -> Option<Value> {
-    match tree {
-        Value::Object(map) => {
-            if map.get("role") == Some(&json!(role)) {
-                return map.get("bounds").cloned();
-            }
-            map.values().find_map(|child| find_role(child, role))
-        }
-        Value::Array(items) => items.iter().find_map(|child| find_role(child, role)),
-        _ => None,
-    }
-}
-
 impl Session {
     /// Launch Notes as a person does, from the applications the palette
     /// offers, and wait until it has painted and answers inspection.
@@ -376,7 +362,7 @@ impl Session {
         let body = loop {
             let tree = self.inspect(surface).unwrap_or_default();
             if find_named(&tree, "button", "New note").is_none()
-                && let Some(body) = find_role(&tree, "text_input")
+                && let Some(body) = find_named(&tree, "multiline_text_input", "Block text")
             {
                 break body;
             }
