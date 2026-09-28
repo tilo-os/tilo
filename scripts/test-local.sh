@@ -17,7 +17,7 @@
 #
 # Compilation runs first, in your own environment, so a compiler cache, a
 # build container or a remote builder keeps working
-# (CARGO=rcargo scripts/test-local.sh -p fs). The test run then reuses those
+# (CARGO=my-cargo scripts/test-local.sh -p fs). The test run then reuses those
 # binaries through nextest's build metadata and never invokes Cargo.
 set -euo pipefail
 
