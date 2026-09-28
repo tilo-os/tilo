@@ -13,9 +13,13 @@ pub use client::{DEFAULT_REGISTRY, REGISTRY_ENV, RegistryClient};
 pub use entry::{EntryMetadata, Platform, build_entry, check_package};
 pub use publish::{Published, publish};
 
-use anyhow::Result;
+use anyhow::{Result, anyhow, bail};
 use ed25519_dalek::SigningKey;
-use registry_types::application::{NamespaceClaim, PublisherApplication};
+use registry_types::application::{
+    NamespaceClaim, PublisherApplication, dns_txt_name, forge_proof_url, well_known_url,
+};
+use registry_types::namespace::Forge;
+use serde_json::Value;
 
 /// Sign an application for `claims` and send it. Answers its status.
 ///
@@ -41,4 +45,63 @@ pub fn apply(
     };
     application.sign(key);
     client.apply(&application)
+}
+
+/// The claim `FORGE:ACCOUNT` names, such as `github:ada`.
+///
+/// # Errors
+///
+/// When the text names no known forge or no valid account.
+pub fn forge_claim(text: &str) -> Result<NamespaceClaim> {
+    let (forge, account) = text
+        .rsplit_once(':')
+        .ok_or_else(|| anyhow!("{text:?}: expected FORGE:ACCOUNT, such as github:ada"))?;
+    let parsed = Forge::parse(forge).ok_or_else(|| anyhow!("{text:?}: unknown forge"))?;
+    if parsed.namespace(account).is_none() {
+        bail!("{text:?}: {account:?} is not an account name");
+    }
+    Ok(NamespaceClaim::Forge {
+        forge: forge.to_owned(),
+        account: account.to_owned(),
+    })
+}
+
+/// Every place the registry looks for the proof of `claim`.
+#[must_use]
+pub fn proof_places(claim: &NamespaceClaim) -> Vec<String> {
+    match claim {
+        NamespaceClaim::Domain { domain } => vec![
+            format!("DNS TXT {}", dns_txt_name(domain)),
+            format!("or {}", well_known_url(domain)),
+        ],
+        NamespaceClaim::Forge { forge, account } => Forge::parse(forge)
+            .map(|forge| vec![forge_proof_url(&forge, account)])
+            .unwrap_or_default(),
+    }
+}
+
+/// One line for an application status: its state, namespaces and any reason.
+#[must_use]
+pub fn status_summary(status: &Value) -> String {
+    let namespaces = status
+        .get("namespaces")
+        .and_then(Value::as_array)
+        .map(|namespaces| {
+            namespaces
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_default();
+    let state = status
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let reason = status
+        .get("reason")
+        .and_then(Value::as_str)
+        .map(|reason| format!(": {reason}"))
+        .unwrap_or_default();
+    format!("{state} ({namespaces}){reason}")
 }

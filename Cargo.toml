@@ -87,6 +87,7 @@ members = [
     "apps/pdf-viewer",
     "apps/photos",
     "apps/print-centre",
+    "apps/publisher",
     "apps/remote",
     "apps/scratchpad",
     "apps/speed-test",

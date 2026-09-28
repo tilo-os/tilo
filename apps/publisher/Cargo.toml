@@ -1,0 +1,31 @@
+[package]
+name = "publisher"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license.workspace = true
+
+[lib]
+name = "publisher"
+path = "src/lib.rs"
+
+[[bin]]
+name = "publisher"
+path = "src/main.rs"
+
+[features]
+thin = ["dep:runtime-dylib"]
+
+[dependencies]
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
+runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+registry-client = { path = "../../crates/packaging/registry-client" }
+registry-types = { path = "../../crates/packaging/registry-types" }
+hex.workspace = true
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tilo-test-env = { path = "../../crates/dev/test-env" }
+
+[lints]
+workspace = true
