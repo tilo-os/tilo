@@ -298,17 +298,23 @@ fn directory_snapshot_pages_and_resolves_without_redeclaring_resources() {
         publish_declared_directory(&mut app);
         let first = app.action_directory_page(directory_query("", "declared:0", 128, 65536, 512));
         assert!(first.rows.len() > 1 && first.rows.len() <= 128);
-        let mut query = directory_query(&first.revision, "declared:0", 128, 65536, 512);
-        query.cursor = first.next_cursor;
-        let tail = app.action_directory_page(query);
-        let addresses = first
+        let mut addresses = first
             .rows
             .iter()
-            .chain(&tail.rows)
             .map(|row| row.action.clone().unwrap())
             .collect::<std::collections::HashSet<_>>();
+        let mut cursor = first.next_cursor;
+        let mut exhausted = first.exhausted;
+        while !exhausted {
+            let mut query = directory_query(&first.revision, "declared:0", 128, 65536, 512);
+            query.cursor = cursor;
+            let page = app.action_directory_page(query);
+            assert!(!page.rows.is_empty());
+            addresses.extend(page.rows.iter().map(|row| row.action.clone().unwrap()));
+            cursor = page.next_cursor;
+            exhausted = page.exhausted;
+        }
         assert_eq!(addresses.len(), 141);
-        assert!(tail.exhausted);
         assert_eq!(calls.get(), 1);
         let (mut effect_app, _) = declared_directory(1);
         effect_app
