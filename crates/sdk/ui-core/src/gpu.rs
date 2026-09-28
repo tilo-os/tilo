@@ -113,6 +113,21 @@ fn create_targets(width: u32, height: u32, device: &Device) -> (Texture, Texture
     (target_texture, target_view)
 }
 
+/// wgpu's defaults, except the two a renderer's scratch buffers are bound
+/// against, which come from the adapter.
+///
+/// The default `max_storage_buffer_binding_size` is 128 MiB whatever the
+/// hardware can do, and vello binds each bump buffer whole. A 5120x2880
+/// output legitimately needs more than that; asking for what the adapter
+/// supports (4 GiB on RADV) costs nothing until a buffer is allocated.
+fn required_limits(adapter: &Limits) -> Limits {
+    Limits {
+        max_storage_buffer_binding_size: adapter.max_storage_buffer_binding_size,
+        max_buffer_size: adapter.max_buffer_size,
+        ..Limits::default()
+    }
+}
+
 impl RenderContext {
     pub fn new() -> Self {
         let backend_options = wgpu::BackendOptions::from_env_or_default();
@@ -245,7 +260,7 @@ impl RenderContext {
             .request_device(&wgpu::DeviceDescriptor {
                 label: None,
                 required_features: (features & maybe_features) | timestamp_features,
-                required_limits: Limits::default(),
+                required_limits: required_limits(&adapter.limits()),
                 // See the module header for the default's cost. `MemoryUsage`
                 // (8 MB first block, 64 MB largest) is still not enough,
                 // because the block size doubles with every block a process
