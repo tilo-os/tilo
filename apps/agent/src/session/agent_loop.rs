@@ -2492,6 +2492,8 @@ mod tests {
             chat_run: None,
             chat_pending: false,
             chat_catalogue_received: false,
+            chat_history_loaded: true,
+            routed_backlog: BTreeMap::new(),
             last_chat_action: None,
             chat_sources: HashMap::new(),
             live: crate::live::LivePublisher::default(),

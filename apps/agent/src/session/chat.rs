@@ -12,6 +12,7 @@ use crate::apply::Editor;
 use crate::model::Route;
 use crate::plan::Instruction;
 use crate::surface::{self, AppContract};
+use crate::wire::Link;
 use ::chat::doc::ChatDoc;
 use ::chat::model::{
     AgentReasoning, AgentRoute, AgentStep, AgentStepOutcome, AgentWork, AgentWorkState,
@@ -42,6 +43,31 @@ fn chat_reply_id(agent_id: &str, summons_id: &str) -> String {
     format!("agent-reply-{}", digest.0.simple())
 }
 
+/// Ops per page when a joining agent reads the Chat route's held history.
+const CHAT_HISTORY_PAGE: u16 = 256;
+
+/// Most routed changes held for one document whose copy does not exist yet.
+const MAX_ROUTED_BACKLOG: usize = 8192;
+
+fn chat_artifact(cfg: &super::Config) -> collab_types::ArtifactId {
+    collab_types::document_artifact_id(&cfg.app_id, &cfg.cluster.to_string(), "")
+}
+
+/// Ask for the page of the Chat route's held history older than `before_seq`.
+/// The answer's `exhausted` is the one point at which the agent knows it
+/// holds everything the broker accepted for the route.
+pub(super) fn fetch_chat_history(
+    link: &mut Link,
+    cfg: &super::Config,
+    before_seq: u64,
+) -> Result<()> {
+    link.send(&CollabRequest::FetchScrollback {
+        artifact: chat_artifact(cfg),
+        before_seq,
+        max: CHAT_HISTORY_PAGE,
+    })
+}
+
 fn matching_document_route(
     contract: &'static AppContract,
     cluster_id: &str,
@@ -52,6 +78,79 @@ fn matching_document_route(
 }
 
 impl Session {
+    /// Merge one page of the Chat route's held history through the same
+    /// path as live traffic, and ask for the next until the broker has none
+    /// older. Returns whether the Chat copy moved or became complete.
+    pub(super) fn absorb_chat_history(
+        &mut self,
+        artifact: collab_types::ArtifactId,
+        ops: impl IntoIterator<Item = Box<collab_types::SignedOp>>,
+        decrypted_payloads: Vec<Option<Vec<u8>>>,
+        oldest_seq: Option<u64>,
+        exhausted: bool,
+    ) -> Result<bool> {
+        if self.chat_history_loaded || artifact != chat_artifact(&self.cfg) {
+            return Ok(false);
+        }
+        let mut changed = false;
+        let mut payloads = decrypted_payloads.into_iter();
+        for envelope in ops {
+            let from_user_id = hex::encode(envelope.author.as_bytes());
+            let event = CollabEvent::Document {
+                envelope,
+                from_user_id,
+                decrypted_payload: payloads.next().flatten(),
+            };
+            changed |= self.absorb_document_event(&event)?;
+        }
+        match oldest_seq {
+            Some(before_seq) if !exhausted => {
+                fetch_chat_history(&mut self.link, &self.cfg, before_seq)?;
+                Ok(changed)
+            }
+            _ => {
+                self.chat_history_loaded = true;
+                tracing::debug!("holding the Chat route's complete history");
+                Ok(true)
+            }
+        }
+    }
+
+    /// Hold a routed change whose document has no copy here yet.
+    fn hold_routed(&mut self, namespace: &'static str, data: Vec<u8>) -> bool {
+        let backlog = self.routed_backlog.entry(namespace).or_default();
+        if backlog.len() >= MAX_ROUTED_BACKLOG {
+            tracing::warn!(
+                app = namespace,
+                "too many changes arrived before this app's document; dropping one"
+            );
+        } else {
+            backlog.push(data);
+        }
+        false
+    }
+
+    /// Create the copy of a routed document from its first snapshot, then
+    /// apply what arrived for it before.
+    fn adopt_routed(
+        &mut self,
+        contract: &'static AppContract,
+        route_app_id: &str,
+        data: &[u8],
+    ) -> Result<bool> {
+        let mut peer =
+            Editor::peer_from_snapshot_on_route(contract, route_app_id, data, &self.cfg.agent_id)?;
+        for change in self
+            .routed_backlog
+            .remove(contract.namespace)
+            .unwrap_or_default()
+        {
+            peer.merge_routed_incremental(&change);
+        }
+        self.peers.insert(contract.namespace, peer);
+        Ok(true)
+    }
+
     /// The artifact id is part of the authenticated envelope, unlike a
     /// schema discovered by inspecting untrusted document contents.
     pub(super) fn absorb_document_event(&mut self, event: &CollabEvent) -> Result<bool> {
@@ -134,25 +233,17 @@ impl Session {
                             Ok(false)
                         }
                     } else if (contract.recognises)(&automerge::AutoCommit::load(&data)?) {
-                        self.peers.insert(
-                            "chat",
-                            Editor::peer_from_snapshot_on_route(
-                                contract,
-                                route_app_id,
-                                &data,
-                                &self.cfg.agent_id,
-                            )?,
-                        );
-                        Ok(true)
+                        self.adopt_routed(contract, route_app_id, &data)
                     } else {
                         Ok(false)
                     }
                 }
                 DocumentMutation::Incremental(data) => match self.peers.get_mut("chat") {
                     Some(peer) if peer.route_app_id() == route_app_id => {
-                        peer.merge_incremental(&data)
+                        Ok(peer.merge_routed_incremental(&data))
                     }
-                    Some(_) | None => Ok(false),
+                    Some(_) => Ok(false),
+                    None => Ok(self.hold_routed(contract.namespace, data)),
                 },
             }?;
             if changed && let Some(peer) = self.peers.get("chat") {
@@ -186,16 +277,7 @@ impl Session {
                             Ok(false)
                         }
                     } else if (contract.recognises)(&automerge::AutoCommit::load(&data)?) {
-                        self.peers.insert(
-                            contract.namespace,
-                            Editor::peer_from_snapshot_on_route(
-                                contract,
-                                route_app_id,
-                                &data,
-                                &self.cfg.agent_id,
-                            )?,
-                        );
-                        Ok(true)
+                        self.adopt_routed(contract, route_app_id, &data)
                     } else {
                         Ok(false)
                     }
@@ -203,9 +285,10 @@ impl Session {
                 DocumentMutation::Incremental(data) => match self.peers.get_mut(contract.namespace)
                 {
                     Some(peer) if peer.route_app_id() == route_app_id => {
-                        peer.merge_incremental(&data)
+                        Ok(peer.merge_routed_incremental(&data))
                     }
-                    Some(_) | None => Ok(false),
+                    Some(_) => Ok(false),
+                    None => Ok(self.hold_routed(contract.namespace, data)),
                 },
             };
         }
@@ -361,12 +444,18 @@ impl Session {
     pub(super) fn act_chat(&mut self) -> Result<bool> {
         // The document and catalogue use independent transport streams.
         // Decide only after the broker's first permission-filtered survey.
-        if !self.chat_catalogue_received {
+        if !self.chat_catalogue_received || !self.chat_history_loaded {
             return Ok(false);
         }
-        let Some(editor) = self.peers.get("chat") else {
+        // Never decide on a copy still missing changes others depend on:
+        // it reads as the Chat before the gap.
+        let Some(editor) = self.peers.get_mut("chat") else {
             return Ok(false);
         };
+        if editor.missing_ancestors() > 0 {
+            return Ok(false);
+        }
+        let editor = &*editor;
         let messages: Vec<_> = ChatDoc::list_channels(&editor.doc)
             .iter()
             .flat_map(|channel| ChatDoc::list_messages(&editor.doc, &channel.id))
