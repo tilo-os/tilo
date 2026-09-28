@@ -383,7 +383,7 @@ impl DeviceFleetStore {
         crate::registry::IdentityProfile,
     )> {
         let store = crate::registry::IdentityRegistryStore::at(&self.identity_dir);
-        let registry = store.migrate_legacy_primary()?;
+        let registry = store.load_reconciled()?;
         let profile = registry
             .identities
             .get(identity_id)

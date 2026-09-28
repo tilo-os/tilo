@@ -924,7 +924,7 @@ impl Action {
                 let store = crate::identity_registry::IdentityRegistryStore::from_env()
                     .map_err(|error| ActionError::Refused(error.to_string()))?;
                 let registry = store
-                    .migrate_legacy_primary()
+                    .load_reconciled()
                     .map_err(|error| ActionError::Refused(error.to_string()))?;
                 let profile = registry.identities.get(identity_id).ok_or_else(|| {
                     ActionError::Refused("that identity is not connected to this device".into())

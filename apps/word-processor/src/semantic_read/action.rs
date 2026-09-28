@@ -139,7 +139,7 @@ pub fn result_schema() -> &'static serde_json::Value {
         serde_json::json!({"type":"object","required":["version","record","basis","content","nextCursor"],"additionalProperties":false,"properties":{
             "version":{"type":"integer","enum":[1]},
             "record":{"type":"object","required":["roomId","appId","recordId"],"additionalProperties":false,"properties":{
-                "roomId":{"type":"string","format":"uuid"},"appId":{"type":"string","minLength":1,"maxLength":256},"recordId":{"type":"string","maxLength":512}
+                "roomId":{"type":["string","null"],"format":"uuid"},"appId":{"type":"string","minLength":1,"maxLength":256},"recordId":{"type":"string","maxLength":512}
             }},
             "basis":{"type":"object","required":["heads"],"additionalProperties":false,"properties":{
                 "heads":{"type":"array","maxItems":64,"uniqueItems":true,"items":{"type":"string","pattern":"^[0-9a-f]{64}$"}}

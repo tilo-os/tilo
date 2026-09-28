@@ -193,9 +193,9 @@ pub fn read_scans(doc: &AutoCommit, root: &ObjId) -> Vec<ScanEntry> {
     let Some(list) = list_at(doc, root, "scans") else {
         return Vec::new();
     };
-    // A legacy or hostile document must not turn opening the Scanner into an
+    // A hostile document must not turn opening the Scanner into an
     // unbounded UI-thread traversal. The durable writer below keeps normal
-    // documents at this cap; excess legacy rows are deliberately ignored.
+    // documents at this cap; excess rows are deliberately ignored.
     let n = doc.length(&list).min(MAX_SCANS);
     let mut out = Vec::with_capacity(n);
     for i in 0..n {
@@ -219,7 +219,7 @@ pub fn read_scans(doc: &AutoCommit, root: &ObjId) -> Vec<ScanEntry> {
 ///
 /// # Errors
 ///
-/// Returns an explicit refusal for invalid payloads, hostile legacy lists, or
+/// Returns an explicit refusal for invalid payloads, oversized lists, or
 /// an Automerge write that could not be completed.
 pub fn record_scan(doc: &mut AutoCommit, root: &ObjId, raw: &str, ts: i64) -> Result<(), String> {
     if raw.is_empty() || raw.len() > 16 * 1024 {
@@ -418,37 +418,6 @@ mod tests {
                 record_scan(&mut doc, &root, &format!("code-{i}"), i as i64).unwrap();
             }
             assert!(read_scans(&doc, &root).len() <= MAX_SCANS);
-        }
-        // Phase `legacy_capture_list_cannot_affect_constant_time_recent_handoff`.
-        {
-            let mut doc = AutoCommit::new();
-            let root = ROOT;
-            let list = doc
-                .put_object(&root, "captures", ObjType::List)
-                .expect("capture list");
-            // A representative legacy collection is enough here because neither
-            // recent-handoff operation reads or enumerates this object. The
-            // search/materialization adversarial test separately supplies 100,001
-            // inputs and proves the externally reachable path stays bounded.
-            for index in 0..1_024 {
-                doc.insert(&list, index, "legacy row")
-                    .expect("legacy list row");
-            }
-            let capture = SharedCapture {
-                id: "IMG_new.jpg".into(),
-                media_id: format!("{}{}", crate::media::MEDIA_PREFIX, "a".repeat(64)),
-                kind: CaptureKind::Photo,
-                ts: 1,
-                w: 64,
-                h: 48,
-                dur_ms: 0,
-                label: "New capture".into(),
-                facing: Facing::Back,
-            };
-
-            register_recent_capture(&mut doc, &root, &capture).unwrap();
-            assert_eq!(read_recent_capture(&doc, &root), Some(capture));
-            assert_eq!(doc.length(&list), 1_024);
         }
     }
 }

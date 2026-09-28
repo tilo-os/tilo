@@ -55,14 +55,16 @@ containerfile="$repo/os/Containerfile"
 # joycond's binary, unit and modules-load snippet (through desktop-binaries)
 # and its Joy-Con-scoped udev rule are deliberate additions. So is
 # /usr/lib/tilo/web-engine-entitled.conf, the image-owned list of packages
-# the launcher lets build a web engine's own renderer sandbox.
+# the launcher lets build a web engine's own renderer sandbox. The
+# tilo-identity.service user unit (a one-shot chain-v1 repair) is gone; the
+# compositor verifies and repairs identity at startup.
 # Sorting
 # intentionally ignores instruction order:
 # destinations are unique, and the source-stage/source/destination triple defines
 # each COPY's installed bytes and path. Modes remain source modes except at the
 # explicitly equivalent COPY --chmod=0755 sites checked below. COPY preserves
 # ownership, mtimes and symlinks through scratch stages; no RUN mutates them.
-expected_contract=611c169dee65937945d96c8f1959b9753fc81e5ef823575ae40918b9738f208a
+expected_contract=fc0608fb4f10611c554dbfb993c306c81ae8237aec09fcc8cb27e87f4b189a8e
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
