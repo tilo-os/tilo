@@ -632,6 +632,11 @@ impl Theme {
     /// machine with no preference and one whose settings file is corrupt
     /// both want a desktop that starts.
     pub fn configured() -> Self {
+        if let Some(source) = settings_store::installed_source() {
+            let text = serde_json::Value::Object(source.load()).to_string();
+            let reduce_motion_override = crate::host::environment().accessibility.reduce_motion;
+            return Self::configured_from_text(&text, reduce_motion_override);
+        }
         Self::configured_from(settings_store::settings_path().as_deref())
     }
 

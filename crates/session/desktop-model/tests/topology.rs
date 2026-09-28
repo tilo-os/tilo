@@ -9,8 +9,8 @@
 )]
 
 use tilo_desktop_model::{
-    DesktopTree, DropTarget, IdMinter, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth,
-    Workspace, WorkspaceId,
+    DesktopTree, DropTarget, GroupShape, IdMinter, Strip, StripId, Tab, TileContent, WindowGroup,
+    WindowWidth, Workspace, WorkspaceId,
 };
 
 fn tab(id: u64) -> Tab {
@@ -147,4 +147,96 @@ fn tab_drops_and_splits_reshape_groups_or_change_nothing() {
             "a group's only tab has nothing to split from"
         );
     }
+}
+
+#[test]
+fn a_live_strip_shape_rearranges_tabs_without_touching_their_content() {
+    let mut tree = tree();
+    tree.workspaces[0].strips[0].window_groups[1].maximized = true;
+    let shape = [
+        GroupShape {
+            id: 11,
+            tab_ids: vec![110, 101],
+            active_tab: 101,
+            width: WindowWidth::Fraction(700),
+        },
+        GroupShape {
+            id: 12,
+            tab_ids: vec![100],
+            active_tab: 100,
+            width: WindowWidth::Normal,
+        },
+    ];
+    let groups = tree.reconcile_strip_topology(StripId(1), &shape).unwrap();
+    assert_eq!(groups.len(), 2);
+    assert_eq!(
+        layout(&tree, 1),
+        vec![(11, vec![110, 101]), (12, vec![100])]
+    );
+    let first = &tree.workspaces[0].strips[0].window_groups[0];
+    assert!(first.maximized, "maximized stays with its group id");
+    assert_eq!(first.width, WindowWidth::Fraction(700));
+    assert!(
+        matches!(&first.tabs[1].tile, TileContent::LocalApp { app_id, .. } if app_id == "org.example.App")
+    );
+    assert_eq!(tree.active_group_for(StripId(1)), Some(11));
+    assert!(
+        tree.reconcile_strip_topology(StripId(1), &shape).is_none(),
+        "an unchanged shape reports nothing"
+    );
+}
+
+#[test]
+fn removing_a_groups_last_tab_removes_the_group_and_moves_the_active_pointer() {
+    let mut tree = tree();
+    tree.set_active_group(StripId(1), 10);
+    let removed = tree.remove_tab(101).unwrap();
+    assert!(!removed.group_removed);
+    assert_eq!(
+        tree.workspaces[0].strips[0].window_groups[0].active_tab,
+        100
+    );
+    let removed = tree.remove_tab(100).unwrap();
+    assert!(removed.group_removed);
+    assert_eq!(
+        (removed.strip, removed.group, removed.tab.id),
+        (StripId(1), 10, 100)
+    );
+    assert_eq!(layout(&tree, 1), vec![(11, vec![110])]);
+    assert_eq!(tree.active_group_for(StripId(1)), Some(11));
+    assert!(tree.remove_tab(100).is_none());
+}
+
+#[test]
+fn a_live_strip_shape_that_loses_or_invents_a_tab_is_refused() {
+    let mut tree = tree();
+    let lost = [GroupShape {
+        id: 10,
+        tab_ids: vec![100, 101],
+        active_tab: 100,
+        width: WindowWidth::Normal,
+    }];
+    assert!(tree.reconcile_strip_topology(StripId(1), &lost).is_none());
+    let invented = [
+        GroupShape {
+            id: 10,
+            tab_ids: vec![100, 101, 999],
+            active_tab: 100,
+            width: WindowWidth::Normal,
+        },
+        GroupShape {
+            id: 11,
+            tab_ids: vec![110],
+            active_tab: 110,
+            width: WindowWidth::Normal,
+        },
+    ];
+    assert!(
+        tree.reconcile_strip_topology(StripId(1), &invented)
+            .is_none()
+    );
+    assert_eq!(
+        layout(&tree, 1),
+        vec![(10, vec![100, 101]), (11, vec![110])]
+    );
 }

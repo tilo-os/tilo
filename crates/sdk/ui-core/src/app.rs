@@ -557,7 +557,7 @@ pub struct App {
     pub appearance_reconcile: bool,
     /// Shared settings-file watcher for OS-wide theme changes made by Theme
     /// Studio. Throttled so the render loop does not stat the file per frame.
-    theme_store_stamp: Option<crate::time::SystemTime>,
+    theme_store_stamp: Option<settings_store::SettingsStamp>,
     last_theme_store_check: Instant,
     /// The schedule an "Automatic" theme follows and whether it was night
     /// when last applied: sunrise and sunset re-theme without a file change.
@@ -652,7 +652,7 @@ struct AppConstructionInputs {
     palette_source: PaletteSource,
     watch_system_settings: bool,
     debug_mode: fn() -> bool,
-    theme_store_stamp: fn() -> Option<crate::time::SystemTime>,
+    theme_store_stamp: fn() -> Option<settings_store::SettingsStamp>,
     local_author: ConstructionValue<crate::permissions::UserId>,
     presence_ctx: ConstructionValue<PresenceCtx>,
     screen_reader: fn() -> Option<crate::screen_reader::ScreenReader>,
@@ -750,10 +750,7 @@ impl AppConstructionInputs {
             debug_mode: || {
                 cfg!(debug_assertions) && crate::host::environment().diagnostics.debug_overlay
             },
-            theme_store_stamp: || {
-                settings_store::settings_path()
-                    .and_then(|path| std::fs::metadata(path).ok()?.modified().ok())
-            },
+            theme_store_stamp: settings_store::stamp,
             local_author: ConstructionValue::Lazy(crate::collaboration::local_user_id),
             presence_ctx: ConstructionValue::Lazy(App::initial_presence_context),
             screen_reader: || {
@@ -1897,10 +1894,7 @@ impl App {
         }
         self.reconcile_configured_theme_with(
             crate::time::now(),
-            || {
-                settings_store::settings_path()
-                    .and_then(|path| std::fs::metadata(path).ok()?.modified().ok())
-            },
+            settings_store::stamp,
             Self::apply_configured_theme,
         )
     }
@@ -1909,7 +1903,7 @@ impl App {
     fn reconcile_configured_theme_with(
         &mut self,
         now: Instant,
-        stamp: impl FnOnce() -> Option<crate::time::SystemTime>,
+        stamp: impl FnOnce() -> Option<settings_store::SettingsStamp>,
         apply: impl FnOnce(&mut Self),
     ) -> bool {
         // Only an explicitly native service host watches process settings.
@@ -2732,7 +2726,7 @@ mod document_routes;
 #[path = "app/focus_selection_tests.rs"]
 mod focus_selection_tests;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "local-daemons"))]
 #[path = "app/local_privacy_tests.rs"]
 mod local_privacy_tests;
 
