@@ -189,7 +189,6 @@ impl Widget for Probe {
         );
         self.applied.fetch_add(1, Ordering::SeqCst);
     }
-    fn sync(&mut self, _: &mut AutoCommit, _: &ObjId) {}
     fn build_layout(
         &mut self,
         tree: &mut ui::taffy::TaffyTree<()>,

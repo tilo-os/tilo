@@ -578,7 +578,6 @@ fn translated(transform: Affine, x: f64, y: f64) -> Affine {
 }
 
 impl Widget for Toolbar {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
     fn build_layout(
         &mut self,
         tree: &mut TaffyTree<()>,

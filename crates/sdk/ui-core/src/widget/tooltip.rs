@@ -257,8 +257,6 @@ const TOOLTIP_WIDTH: f64 = 220.0;
 const TOOLTIP_HEIGHT: f64 = 28.0;
 
 impl Widget for Tooltip {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

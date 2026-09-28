@@ -3346,7 +3346,6 @@ mod tests {
             Some(self)
         }
 
-        fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
         fn build_layout(
             &mut self,
             taffy: &mut TaffyTree<()>,
@@ -3793,7 +3792,6 @@ mod tests {
         fn set_focus(&mut self, focused: bool) {
             self.focused = focused;
         }
-        fn sync(&mut self, _: &mut AutoCommit, _: &ObjId) {}
         fn build_layout(
             &mut self,
             tree: &mut TaffyTree<()>,
@@ -4178,7 +4176,6 @@ mod tests {
     struct EventProbe(std::rc::Rc<std::cell::Cell<usize>>);
 
     impl Widget for EventProbe {
-        fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
         fn build_layout(
             &mut self,
             taffy: &mut TaffyTree<()>,
@@ -4440,7 +4437,6 @@ mod tests {
     }
     const FLOOD: vello::peniko::Color = vello::peniko::Color::from_rgb8(0xFF, 0x00, 0x00);
     impl Widget for FloodFill {
-        fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
         fn build_layout(
             &mut self,
             taffy: &mut TaffyTree<()>,
@@ -4510,7 +4506,6 @@ mod tests {
         color: vello::peniko::Color,
     }
     impl Widget for Flood {
-        fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
         fn build_layout(
             &mut self,
             taffy: &mut TaffyTree<()>,
@@ -4587,7 +4582,6 @@ mod tests {
             Some(self)
         }
 
-        fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
         fn build_layout(
             &mut self,
             taffy: &mut TaffyTree<()>,

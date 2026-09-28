@@ -1131,7 +1131,6 @@ mod tests {
         }
     }
     impl Widget for TW {
-        fn sync(&mut self, _s: &mut automerge::AutoCommit, _p: &automerge::ObjId) {}
         fn build_layout(
             &mut self,
             taffy: &mut TaffyTree<()>,

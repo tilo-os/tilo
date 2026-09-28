@@ -143,12 +143,6 @@ impl ModalBody {
 }
 
 impl Widget for ModalBody {
-    fn sync(&mut self, state: &mut automerge::AutoCommit, path: &automerge::ObjId) {
-        if let Some(input) = &mut self.input {
-            input.sync(state, path);
-        }
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

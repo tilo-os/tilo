@@ -799,8 +799,6 @@ fn ellipsize_back(tr: &mut TextRenderer, s: &str, size: f32, max_w: f64) -> Stri
 }
 
 impl Widget for BottomPanel {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

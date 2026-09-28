@@ -289,8 +289,6 @@ impl BreadcrumbBar {
 }
 
 impl Widget for BreadcrumbBar {
-    fn sync(&mut self, _state: &mut automerge::AutoCommit, _path: &automerge::ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

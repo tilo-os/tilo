@@ -1887,12 +1887,6 @@ impl<Row: 'static> Widget for DataTable<Row> {
         received_changes || moved || children_changed
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
-        for cell in &mut self.mounted_cells {
-            cell.widget.sync(state, path);
-        }
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

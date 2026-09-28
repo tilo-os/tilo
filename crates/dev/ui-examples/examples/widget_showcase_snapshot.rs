@@ -53,7 +53,6 @@ impl LabelTile {
     }
 }
 impl Widget for LabelTile {
-    fn sync(&mut self, _: &mut AutoCommit, _: &automerge::ObjId) {}
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

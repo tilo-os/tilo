@@ -1857,9 +1857,6 @@ thread_local! { static PANIC_VIEW: Cell<bool> = const { Cell::new(false) }; }
 
 struct ReplacingHost(TileHost, std::rc::Rc<Cell<bool>>);
 impl Widget for ReplacingHost {
-    fn sync(&mut self, doc: &mut AutoCommit, path: &ObjId) {
-        self.0.sync(doc, path);
-    }
     fn update(&mut self, doc: &mut AutoCommit, path: &ObjId) -> bool {
         if self.1.replace(false) {
             self.0

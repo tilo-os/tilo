@@ -2791,7 +2791,6 @@ mod legacy_owner_routing_tests {
     }
 
     impl Widget for OwnerProbe {
-        fn sync(&mut self, _: &mut automerge::AutoCommit, _: &automerge::ObjId) {}
         fn build_layout(
             &mut self,
             tree: &mut taffy::TaffyTree<()>,

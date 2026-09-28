@@ -1071,7 +1071,14 @@ pub trait Widget {
         }
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId);
+    /// Pull model state into this widget before layout. The default syncs the
+    /// children [`Widget::children_mut`] returns; a widget overrides it only to
+    /// read state of its own, or to sync children it does not expose there.
+    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+        for child in self.children_mut() {
+            child.sync(state, path);
+        }
+    }
 
     /// Expose cross-device continuation for app roots that support it.
     fn continuable(&self) -> Option<&dyn Continuable> {
@@ -3284,7 +3291,6 @@ mod tests {
                     self.0.set(self.0.get() + 1);
                     Some(serde_json::json!({"keys": doc.keys(path).collect::<Vec<_>>() }))
                 }
-                fn sync(&mut self, _: &mut AutoCommit, _: &ObjId) {}
                 fn build_layout(
                     &mut self,
                     _: &mut TaffyTree<()>,
@@ -3557,7 +3563,6 @@ pub(crate) mod control_result_probe {
                 }
             })
         }
-        fn sync(&mut self, _: &mut AutoCommit, _: &ObjId) {}
         fn build_layout(
             &mut self,
             tree: &mut TaffyTree<()>,

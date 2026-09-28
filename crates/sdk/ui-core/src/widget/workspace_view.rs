@@ -97,7 +97,6 @@ impl Widget for WorkspaceView {
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }
-    fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
     fn update(&mut self, _s: &mut AutoCommit, _p: &ObjId) -> bool {
         if self.slide.is_settled() {
             false

@@ -6,7 +6,6 @@ use crate::record::{RecordCheckout, RecordId, RecordKind};
 use crate::state::State;
 use crate::view::{FreezeThaw, ViewContribution, ViewSubset};
 use crate::widget::Widget;
-use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use taffy::TaffyTree;
@@ -34,7 +33,6 @@ impl ViewRoot {
 }
 
 impl Widget for ViewRoot {
-    fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

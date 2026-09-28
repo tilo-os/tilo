@@ -148,7 +148,6 @@ impl Widget for Probe {
             tilo_actions::ActionOutput::default(),
         )))
     }
-    fn sync(&mut self, _: &mut AutoCommit, _: &ObjId) {}
     fn build_layout(
         &mut self,
         tree: &mut ui::taffy::TaffyTree<()>,

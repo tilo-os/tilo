@@ -215,12 +215,6 @@ fn translated(transform: Affine, x: f64, y: f64) -> Affine {
 }
 
 impl Widget for Breadcrumb {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {
-        // Breadcrumb segments are pushed in by the host (file explorer,
-        // settings page, etc.) rather than mirrored from a CRDT path.
-        // Sync is intentionally a no-op.
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

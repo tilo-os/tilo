@@ -76,7 +76,6 @@ impl Widget for PreviewCanvas {
     fn test_id(&self) -> Option<&str> {
         Some("history-preview")
     }
-    fn sync(&mut self, _: &mut AutoCommit, _: &ObjId) {}
     fn build_layout(
         &mut self,
         tree: &mut TaffyTree<()>,
