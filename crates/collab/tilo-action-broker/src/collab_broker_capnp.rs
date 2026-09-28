@@ -9855,6 +9855,35 @@ fn rename_socket_noreplace(source: &Path, destination: &Path) -> std::io::Result
             libc::RENAME_NOREPLACE,
         )
     };
+    // A filesystem without RENAME_NOREPLACE (gVisor's gofer mounts answer
+    // EINVAL) claims the name with a hard link, which refuses an occupied
+    // destination the same way, then drops the staging name.
+    #[cfg(target_os = "linux")]
+    let result = if result != 0
+        && matches!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::EINVAL | libc::ENOSYS)
+        ) {
+        // SAFETY: both pointers refer to live NUL-terminated path buffers.
+        let linked = unsafe {
+            libc::linkat(
+                libc::AT_FDCWD,
+                source.as_ptr(),
+                libc::AT_FDCWD,
+                destination.as_ptr(),
+                0,
+            )
+        };
+        if linked == 0 {
+            // SAFETY: `source` is a live NUL-terminated path buffer.
+            unsafe { libc::unlink(source.as_ptr()) };
+            0
+        } else {
+            -1
+        }
+    } else {
+        result
+    };
     #[cfg(target_os = "macos")]
     // SAFETY: both pointers refer to live NUL-terminated path buffers.
     // RENAME_EXCL atomically refuses an occupied destination.
