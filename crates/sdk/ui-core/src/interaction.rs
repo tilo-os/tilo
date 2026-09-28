@@ -46,12 +46,20 @@ impl ControllerFamily {
 
     /// Classify the names exposed by HID/udev, SDL or a platform gamepad API.
     /// Unknown hardware remains positional/generic rather than guessing face
-    /// letters incorrectly.
+    /// letters incorrectly. Linux hid-nintendo names a lone half "Nintendo
+    /// Switch Left Joy-Con" (with " (Grip)" in the charging grip); joycond
+    /// names a pair "Nintendo Switch Combined Joy-Cons".
     pub fn from_device_name(name: &str) -> Self {
         let name = name.to_ascii_lowercase();
-        if name.contains("joy-con (l)") || name.contains("joycon left") {
+        if name.contains("joy-con (l)")
+            || name.contains("left joy-con")
+            || name.contains("joycon left")
+        {
             Self::JoyConLeft
-        } else if name.contains("joy-con (r)") || name.contains("joycon right") {
+        } else if name.contains("joy-con (r)")
+            || name.contains("right joy-con")
+            || name.contains("joycon right")
+        {
             Self::JoyConRight
         } else if name.contains("joy-con") || name.contains("joycon") {
             Self::JoyConPair
@@ -829,6 +837,18 @@ mod tests {
             assert_eq!(
                 ControllerFamily::from_device_name("Nintendo Switch Joy-Con (L)"),
                 ControllerFamily::JoyConLeft
+            );
+            assert_eq!(
+                ControllerFamily::from_hid(Some(0x057e), "Nintendo Switch Left Joy-Con"),
+                ControllerFamily::JoyConLeft
+            );
+            assert_eq!(
+                ControllerFamily::from_hid(Some(0x057e), "Nintendo Switch Right Joy-Con (Grip)"),
+                ControllerFamily::JoyConRight
+            );
+            assert_eq!(
+                ControllerFamily::from_hid(Some(0x057e), "Nintendo Switch Combined Joy-Cons"),
+                ControllerFamily::JoyConPair
             );
             assert_eq!(
                 ControllerFamily::from_device_name("Sony DualSense Wireless Controller"),
