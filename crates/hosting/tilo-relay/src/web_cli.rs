@@ -370,3 +370,199 @@ pub async fn dev(
     hosted.shutdown().await;
     Ok(())
 }
+
+/// `tilo-relay room`.
+#[derive(clap::Args, Clone, Debug)]
+pub struct RoomArgs {
+    #[command(flatten)]
+    pub web: WebArgs,
+    /// The room's throwaway user root, host device and documents. The
+    /// operator removes it when the room ends.
+    #[arg(long, value_name = "DIR")]
+    pub state: PathBuf,
+}
+
+/// What the room's operator sends on stdin, one per line.
+enum Operator {
+    /// Certify the pending browser that displays this pairing code.
+    Admit(String),
+    Shutdown,
+}
+
+/// Operator lines from stdin, read on their own thread: a blocking read
+/// must never hold up the host.
+fn operator_lines() -> anyhow::Result<tokio::sync::mpsc::Receiver<Operator>> {
+    use std::io::BufRead;
+    let (sender, receiver) = tokio::sync::mpsc::channel(16);
+    std::thread::Builder::new()
+        .name("tilo-room-operator".into())
+        .spawn(move || {
+            for line in std::io::stdin().lock().lines() {
+                let Ok(line) = line else { break };
+                let command = match line.trim() {
+                    "shutdown" => Operator::Shutdown,
+                    other => match other.strip_prefix("admit ") {
+                        Some(code) if !code.trim().is_empty() => Operator::Admit(code.trim().into()),
+                        _ => continue,
+                    },
+                };
+                if sender.blocking_send(command).is_err() {
+                    break;
+                }
+            }
+            let _ = sender.blocking_send(Operator::Shutdown);
+        })
+        .context("spawn the operator reader")?;
+    Ok(receiver)
+}
+
+/// Certify, as the room's user root, exactly the pending browsers whose
+/// pairing codes the operator admitted, each once; announce each on stdout.
+/// Agent grants are never approved.
+async fn approve_admitted(
+    mut approver: tilo_relay_client::Approver,
+    root: &SigningKey,
+    mut operator: tokio::sync::mpsc::Receiver<Operator>,
+) -> anyhow::Result<()> {
+    let mut admitted = std::collections::BTreeSet::new();
+    loop {
+        while let Ok(command) = operator.try_recv() {
+            match command {
+                Operator::Admit(code) => {
+                    admitted.insert(code);
+                }
+                Operator::Shutdown => return Ok(()),
+            }
+        }
+        if !admitted.is_empty() {
+            let agents = approver
+                .list_agent_proposals()
+                .await
+                .context("list agent proposals")?;
+            for pending in approver
+                .list_pending()
+                .await
+                .context("list certification requests")?
+            {
+                if agents.iter().any(|agent| agent.request_digest == pending.request_digest)
+                    || !admitted.remove(&pending.pairing_code)
+                {
+                    continue;
+                }
+                let decision = issue_device_cert(
+                    &pending.request,
+                    root,
+                    &CertificationPolicy::browser(),
+                    &RevocationList::new(),
+                    tilo_clock::unix_now_ns(),
+                );
+                let certified = decision.is_ok();
+                approver
+                    .decide(
+                        pending.request_digest,
+                        decision.map_or(
+                            tilo_relay::certify::ApproverDecision::Deny,
+                            tilo_relay::certify::ApproverDecision::Issue,
+                        ),
+                    )
+                    .await
+                    .context("answer a certification request")?;
+                if certified {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "event": "member_certified",
+                            "device": hex::encode(pending.request.device_public_key),
+                            "label": pending.request.device_label,
+                            "pairingCode": pending.pairing_code,
+                        })
+                    );
+                }
+            }
+        }
+        tokio::select! {
+            () = tokio::time::sleep(Duration::from_millis(100)) => {}
+            command = operator.recv() => match command {
+                Some(Operator::Admit(code)) => { admitted.insert(code); }
+                Some(Operator::Shutdown) | None => return Ok(()),
+            },
+        }
+    }
+}
+
+/// A short-lived shared room: a throwaway user root kept under `--state`,
+/// the browser listener, and an approver that certifies only the browsers
+/// the operator admits. Its first stdout line is the connection JSON `dev`
+/// prints; each certified browser follows as a `member_certified` line.
+///
+/// # Errors
+/// The state directory, relay or listener cannot be set up.
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the guard only lives for the lookup; the value kept is a clone"
+)]
+pub async fn room(
+    args: RoomArgs,
+    shutdown: impl std::future::Future<Output = anyhow::Result<()>>,
+) -> anyhow::Result<()> {
+    let state = args.state;
+    std::fs::create_dir_all(&state).with_context(|| format!("create {}", state.display()))?;
+    let listen = args.web.web.context("a room needs --web")?;
+    let operator = operator_lines()?;
+    let [root, host, approver_key] = dev_identity(&state)?;
+    let user = root.verifying_key().to_bytes();
+    let host_cert = enrol(&root, &host, "room host", DeviceCapabilities::host())?;
+    let approver_cert = enrol(&root, &approver_key, "room approver", DeviceCapabilities::primary())?;
+    let config = tilo_relay::RelayConfig {
+        state_root: state.join("relay"),
+        identity_root: state.join("identity"),
+        ..Default::default()
+    };
+    let hosted = start_relay(
+        config,
+        RelayIdentity {
+            user_public_key: user,
+            device_signing_key: host,
+            device_cert: host_cert,
+            revocations: RevocationList::new(),
+        },
+        &args.web,
+        &state,
+    )
+    .await?;
+    let relay = &hosted.relay;
+    let web = relay
+        .serve_web(web_config(&args.web, listen, &state))
+        .await
+        .context("start the browser listener")?;
+    println!(
+        "{}",
+        serde_json::json!({
+            "origin": web.origin,
+            "userPublicKey": hex::encode(user),
+            "certificateSha256": web.certificate_sha256,
+            "allowedOrigins": args.web.allowed_origins,
+        })
+    );
+    let endpoint = iroh::endpoint::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .bind()
+        .await
+        .context("bind the approver's endpoint")?;
+    let approver = tilo_relay_client::Approver::connect(
+        &endpoint,
+        relay.node_addr(),
+        approver_cert,
+        &approver_key,
+        &RevocationList::new(),
+    )
+    .await
+    .context("connect the room approver")?;
+    tokio::select! {
+        result = approve_admitted(approver, &root, operator) => result?,
+        result = shutdown => result?,
+    }
+    drop(web);
+    endpoint.close().await;
+    hosted.shutdown().await;
+    Ok(())
+}
