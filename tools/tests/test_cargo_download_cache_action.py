@@ -16,7 +16,7 @@ PREPARED_CONSUMERS = {
     "canonical-verifier-bundle.yml": 1,
     "check.yml": 7,
     "legacy-app-e2e.yml": 1,
-    "nightly.yml": 1,
+    "nightly.yml": 2,
     "refresh-visual-baselines.yml": 1,
     "weekly-quality.yml": 1,
 }
