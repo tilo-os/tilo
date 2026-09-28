@@ -40,6 +40,102 @@ pub const MAX_CHUNK_DATA: usize = MAX_STREAM_FRAME_BYTES - CHUNK_HEADER;
 pub const MAX_ENCODED_FRAME_BYTES: usize = 4 * 1024 * 1024;
 /// Streams one index may list.
 pub const MAX_STREAMS: usize = 32;
+/// Proof-required HTTPS route a controlling viewer sends input on.
+pub const INPUT_TARGET: &str = "/peer/v3/live/legacy-input";
+/// Input request body ceiling.
+pub const MAX_INPUT_BYTES: usize = 16 * 1024;
+/// Events one input request may carry.
+pub const MAX_INPUT_EVENTS: usize = 64;
+
+/// One input event for a legacy window: the session's remote-input
+/// vocabulary (`RemoteInput::event`), variant for variant, so its postcard
+/// encoding is the one the session decodes. Coordinates are surface-local.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum InputEvent {
+    /// The pointer moved to surface-local `(x, y)`.
+    PointerMotion {
+        /// Surface-local x, pixels.
+        x: f64,
+        /// Surface-local y, pixels.
+        y: f64,
+    },
+    /// A pointer button changed.
+    PointerButton {
+        /// Linux input code (272 = left).
+        button: u32,
+        /// Pressed or released.
+        pressed: bool,
+    },
+    /// The pointer entered the window.
+    PointerEnter {
+        /// The window's surface.
+        surface: u64,
+    },
+    /// The pointer left the window.
+    PointerLeave {
+        /// The window's surface.
+        surface: u64,
+    },
+    /// A key changed.
+    Key {
+        /// Linux evdev keycode.
+        keysym: u32,
+        /// Pressed or released.
+        pressed: bool,
+        /// Diagnostic xkb-style modifier bits; the session tracks its own.
+        #[serde(default)]
+        modifiers: u32,
+    },
+    /// Keyboard focus moved to or away from the window.
+    KeyboardFocus {
+        /// The window's surface.
+        surface: u64,
+        /// Gained or lost.
+        focused: bool,
+    },
+}
+impl InputEvent {
+    /// This event for `surface`: the surface a viewer names is never trusted.
+    #[must_use]
+    pub fn for_surface(self, surface: u64) -> Self {
+        match self {
+            Self::PointerEnter { .. } => Self::PointerEnter { surface },
+            Self::PointerLeave { .. } => Self::PointerLeave { surface },
+            Self::KeyboardFocus { focused, .. } => Self::KeyboardFocus { surface, focused },
+            other => other,
+        }
+    }
+}
+
+/// What a controlling viewer sends on [`INPUT_TARGET`] (JSON).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InputRequest {
+    /// The stream's record id ([`Stream::record`]).
+    pub record: String,
+    /// The events, in order.
+    pub events: Vec<InputEvent>,
+}
+impl InputRequest {
+    /// # Errors
+    ///
+    /// [`LiveWireError::Codec`] for an oversized or malformed body,
+    /// [`LiveWireError::Invalid`] for no, too many or non-finite events.
+    pub fn decode(bytes: &[u8]) -> Result<Self, LiveWireError> {
+        if bytes.len() > MAX_INPUT_BYTES {
+            return Err(LiveWireError::Codec);
+        }
+        let request: Self = serde_json::from_slice(bytes).map_err(|_| LiveWireError::Codec)?;
+        let finite = request.events.iter().all(|event| match event {
+            InputEvent::PointerMotion { x, y } => x.is_finite() && y.is_finite(),
+            _ => true,
+        });
+        if request.events.is_empty() || request.events.len() > MAX_INPUT_EVENTS || !finite {
+            return Err(LiveWireError::Invalid);
+        }
+        Ok(request)
+    }
+}
 
 /// One legacy window stream, as the index and each group's start name it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -353,6 +449,28 @@ mod tests {
             (listed.source.as_str(), listed.surface.as_str()),
             ("0000000000000001", "0000000000000007")
         );
+    }
+
+    #[test]
+    fn input_requests_are_bounded_and_the_named_surface_is_replaced() {
+        let body = br#"{"record":"r","events":[{"PointerMotion":{"x":1.5,"y":2}},{"PointerEnter":{"surface":99}},{"Key":{"keysym":30,"pressed":true}}]}"#;
+        let request = InputRequest::decode(body).unwrap();
+        assert_eq!(request.events.len(), 3);
+        assert_eq!(
+            request.events[1].clone().for_surface(7),
+            InputEvent::PointerEnter { surface: 7 }
+        );
+        assert_eq!(
+            request.events[2],
+            InputEvent::Key {
+                keysym: 30,
+                pressed: true,
+                modifiers: 0
+            }
+        );
+        assert!(InputRequest::decode(br#"{"record":"r","events":[]}"#).is_err());
+        assert!(InputRequest::decode(br#"{"record":"r","events":[],"x":1}"#).is_err());
+        assert!(InputRequest::decode(&vec![b' '; MAX_INPUT_BYTES + 1]).is_err());
     }
 
     #[test]

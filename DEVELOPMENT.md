@@ -31,6 +31,15 @@ compiles faster. Driving is the same `tilo-control` story as on the host, throug
 driving, storage, platforms and troubleshooting; its source is
 `crates/dev/tilo-vm/guide/`.
 
+Image-level changes (`os/`, units, packages) move the VM onto a new image
+instead: `tilo-vm vm upgrade --from sha:<commit>` for any commit CI has built,
+`--from local` for one that is not pushed yet (`tilo-vm guide images`). The
+`Build / OS dev` workflow builds every main push and every pull request that
+touches `os/`, fully cached, and publishes `tilo-ci:<ref>-<sha7>-<arch>` plus
+the dev image `tilo-vm:<ref>-<sha7>-ci` (`<ref>` is `main` or `pr-<number>`).
+`Release / OS` builds signed, reproduced releases only: tags, the nightly run
+and a `release` dispatch of main.
+
 The [Fedora 44 disposable-VM loop](#fedora-44-disposable-vm-loop-legacy)
 (`dist/dev/fedora44-vm-iterate.sh`) is the legacy path until slots cover what it
 does; `tilo-vm guide fedora-loop` maps its commands.

@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   CHUNK_FIRST, CHUNK_KEY, CHUNK_LAST, INDEX_RECORD, LEGACY_APP,
-  createLegacyWindows, createReassembler, createStreamDecoder, decodeFrame, h264CodecString, matchStreams,
+  createLegacyWindows, createReassembler, createStreamDecoder, decodeFrame, evdevKey, h264CodecString, matchStreams,
+  windowPoint,
 } from './legacy-windows.mjs';
 
 const unhex = value => Uint8Array.from(value.match(/../g), byte => parseInt(byte, 16));
@@ -101,17 +102,26 @@ function fakeDocument() {
   function element(tag) {
     return {
       tag, children: [], parent: null, dataset: {}, style: {}, width: 0, height: 0, drawn: 0,
+      listeners: {},
       append(...nodes) { for (const child of nodes) { child.parent = this; this.children.push(child); } },
+      addEventListener(type, handler) { (this.listeners[type] ??= []).push(handler); },
+      dispatch(type, event = {}) { for (const handler of this.listeners[type] ?? []) handler({preventDefault() {}, ...event}); },
+      focus() {},
+      getBoundingClientRect() { return {left: 10, top: 36, width: 400, height: 264}; },
       remove() { if (this.parent) this.parent.children = this.parent.children.filter(child => child !== this); this.parent = null; },
       getContext() { const node = this; return {drawImage() { node.drawn++; }}; },
     };
   }
   return {createElement: element};
 }
-function fakeLive() {
+function fakeLive({control = false, status = 200} = {}) {
   const watches = [];
+  const sent = [];
   return {
     watches,
+    sent,
+    get canControl() { return control; },
+    async sendLegacyInput(request) { sent.push(request); return {ok: status === 200, status}; },
     watchRecord(record, onFrame) { const entry = {record, onFrame, active: true}; watches.push(entry); return () => { entry.active = false; }; },
     deliver(record, publisher, bytes) { for (const entry of watches) if (entry.active && entry.record.record === record) entry.onFrame(publisher, bytes); },
   };
@@ -175,4 +185,64 @@ test('a listed stream is subscribed, decoded and drawn over its tab until the in
   assert.equal(layer.stats().streams, 0);
   layer.close();
   assert.equal(surface.children.length, 0);
+});
+
+test('keys map to evdev codes and points to window pixels through the letterbox', () => {
+  assert.deepEqual(['KeyA', 'KeyQ', 'Digit1', 'Digit0', 'Enter', 'F5', 'ArrowLeft', 'Numpad7'].map(evdevKey), [30, 16, 2, 11, 28, 63, 105, null]);
+  // 1280x720 into 400x300: scale 0.3125, 37.5px bars above and below.
+  const box = {left: 10, top: 20, width: 400, height: 300};
+  assert.deepEqual(windowPoint(box, 1280, 720, 10, 57.5), [0, 0]);
+  assert.deepEqual(windowPoint(box, 1280, 720, 210, 170), [640, 360]);
+  assert.equal(windowPoint(box, 1280, 720, 210, 30), null, 'on the bar');
+});
+
+async function inputLayer(live) {
+  const doc = fakeDocument();
+  const frames = [];
+  const layer = createLegacyWindows({
+    surface: doc.createElement('div'), document: doc, live: () => live, presented: () => 1,
+    snapshot: () => ({covered: false, groups: [{id: 'g', legacy: {app: STREAM.app, tab: 't', content: [10, 36, 400, 264]}}]}),
+    ...fakeCodecs(), requestFrame: callback => { frames.push(callback); return 1; }, cancelFrame: () => {},
+    setInterval: () => 1, clearInterval: () => {},
+  });
+  live.deliver(INDEX_RECORD.record, 'ab'.repeat(32), json(1, [STREAM]));
+  for (const callback of frames.splice(0)) callback();
+  return {layer, canvas: layer.layer.children[0]};
+}
+
+test('a controlling member clicks and types into the window it sees', async () => {
+  const live = fakeLive({control: true});
+  const {layer, canvas} = await inputLayer(live);
+  assert.equal(canvas.style.pointerEvents, 'auto');
+  canvas.dispatch('pointerdown', {button: 0, clientX: 210, clientY: 168});
+  canvas.dispatch('pointerup', {button: 0});
+  canvas.dispatch('keydown', {code: 'KeyA'});
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(live.sent[0].record, STREAM.record);
+  const events = live.sent.flatMap(request => request.events);
+  assert.deepEqual(events[0], {KeyboardFocus: {surface: 0, focused: true}});
+  assert.ok('PointerMotion' in events[1]);
+  assert.deepEqual(events.slice(2), [
+    {PointerButton: {button: 272, pressed: true}},
+    {PointerButton: {button: 272, pressed: false}},
+    {Key: {keysym: 30, pressed: true, modifiers: 0}},
+  ]);
+  assert.equal(layer.stats().inputSent, 5);
+  layer.close();
+});
+
+test('a watching member sends nothing, and a refusal is counted', async () => {
+  const watcher = fakeLive({control: false});
+  const watched = await inputLayer(watcher);
+  assert.equal(watched.canvas.style.pointerEvents, 'none');
+  watched.canvas.dispatch('pointerdown', {button: 0, clientX: 210, clientY: 168});
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(watcher.sent.length, 0);
+  watched.layer.close();
+  const refused = fakeLive({control: true, status: 403});
+  const {layer, canvas} = await inputLayer(refused);
+  canvas.dispatch('pointerdown', {button: 0, clientX: 210, clientY: 168});
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(layer.stats().inputRefused, 3);
+  layer.close();
 });

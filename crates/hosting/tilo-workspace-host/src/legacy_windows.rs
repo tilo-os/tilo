@@ -15,6 +15,11 @@ use tilo_peer_state::NeighbourMsg;
 const INDEX_EVERY: Duration = Duration::from_secs(1);
 /// A session away from the relay this long has left: its streams end.
 const DEPARTURE: Duration = Duration::from_secs(15);
+/// The session is reminded who sends it input at least this often: it drops a
+/// device's identity when its route goes quiet.
+const HELLO_EVERY: Duration = Duration::from_secs(30);
+/// Input messages waiting for the owner loop to forward.
+const MAX_PENDING_INPUT: usize = 256;
 /// Most bytes of one coded sequence kept for a viewer that subscribes later.
 const MAX_SEQUENCE_BYTES: usize = 8 * 1024 * 1024;
 
@@ -41,6 +46,19 @@ pub(crate) struct LegacyWindows {
     listed: BTreeSet<[u8; 32]>,
     index_sent: Option<Instant>,
     index_dirty: bool,
+    /// `RemoteInput` for sessions, sent as this host's governor device.
+    input: Vec<NeighbourMsg>,
+    hello_sent: Option<Instant>,
+}
+
+/// The session's peer handle for a device key: 64-bit FNV-1a, as the session
+/// folds an authenticated endpoint into `RemoteInput::peer`.
+pub(crate) fn peer_handle(device: &[u8; 32]) -> u64 {
+    device
+        .iter()
+        .fold(0xcbf2_9ce4_8422_2325, |hash: u64, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
+        })
 }
 
 impl LegacyWindows {
@@ -52,7 +70,54 @@ impl LegacyWindows {
             listed: BTreeSet::new(),
             index_sent: None,
             index_dirty: false,
+            input: Vec::new(),
+            hello_sent: None,
         }
+    }
+
+    /// Input a controlling viewer sent for one stream, to be forwarded to its
+    /// session as `RemoteInput` of `governor` (this host's device, which the
+    /// session shares its legacy windows with).
+    pub(crate) fn queue_input(
+        &mut self,
+        request: wire::InputRequest,
+        governor: &[u8; 32],
+    ) -> Result<(), String> {
+        let surface = self
+            .streams
+            .iter()
+            .find(|(_, stream)| stream.listed.record == request.record)
+            .map(|((_, surface), _)| *surface)
+            .ok_or("no such legacy window")?;
+        if self.input.len() + request.events.len() > MAX_PENDING_INPUT {
+            return Err("legacy window input is backed up".into());
+        }
+        let peer = peer_handle(governor);
+        for event in request.events {
+            let event = postcard::to_allocvec(&event.for_surface(surface))
+                .map_err(|error| error.to_string())?;
+            self.input.push(NeighbourMsg::RemoteInput {
+                peer,
+                surface,
+                event,
+            });
+        }
+        Ok(())
+    }
+
+    /// The input to forward, and whether the governor's identity must go
+    /// first.
+    pub(crate) fn take_input(&mut self, now: Instant) -> (bool, Vec<NeighbourMsg>) {
+        if self.input.is_empty() {
+            return (false, Vec::new());
+        }
+        let hello = self
+            .hello_sent
+            .is_none_or(|sent| now.saturating_duration_since(sent) >= HELLO_EVERY);
+        if hello {
+            self.hello_sent = Some(now);
+        }
+        (hello, std::mem::take(&mut self.input))
     }
 
     /// The session devices with a live stream.
@@ -471,6 +536,63 @@ mod tests {
         })
         .await;
         assert!(emptied);
+    }
+
+    #[tokio::test]
+    async fn viewer_input_becomes_remote_input_of_the_governor_for_that_surface() {
+        let live = LoopbackLive::start(Arc::new(Authority)).unwrap();
+        let mut bridge = LegacyWindows::new(ROOM);
+        bridge.observe(&live.relay, SESSION, &start(7));
+        let record = wire::stream_record(0xABCD, 7).record;
+        let governor = [5; 32];
+        let request = |record: &str| wire::InputRequest {
+            record: record.into(),
+            events: vec![
+                wire::InputEvent::PointerEnter { surface: 1 },
+                wire::InputEvent::PointerButton {
+                    button: 272,
+                    pressed: true,
+                },
+            ],
+        };
+        assert!(bridge.queue_input(request("other"), &governor).is_err());
+        bridge.queue_input(request(&record), &governor).unwrap();
+        let now = Instant::now();
+        let (hello, messages) = bridge.take_input(now);
+        assert!(hello, "the session learns the governor's identity first");
+        assert_eq!(messages.len(), 2);
+        let NeighbourMsg::RemoteInput {
+            peer,
+            surface,
+            event,
+        } = &messages[0]
+        else {
+            panic!("not remote input");
+        };
+        assert_eq!((*peer, *surface), (peer_handle(&governor), 7));
+        assert_eq!(
+            postcard::from_bytes::<wire::InputEvent>(event).unwrap(),
+            wire::InputEvent::PointerEnter { surface: 7 },
+            "the viewer's surface is replaced by the stream's"
+        );
+        bridge.queue_input(request(&record), &governor).unwrap();
+        assert!(
+            !bridge.take_input(now).0,
+            "identity is not repeated at once"
+        );
+        assert_eq!(bridge.take_input(now), (false, Vec::new()));
+    }
+
+    /// The public key of the Ed25519 seed `[1; 32]`; the session's
+    /// `peer_liveness_handle` of it pins the same value.
+    const SEED_ONE_PUBLIC: [u8; 32] = [
+        138, 136, 227, 221, 116, 9, 241, 149, 253, 82, 219, 45, 60, 186, 93, 114, 202, 103, 9, 191,
+        29, 148, 18, 27, 243, 116, 136, 1, 180, 15, 111, 92,
+    ];
+
+    #[test]
+    fn the_peer_handle_is_the_sessions_handle_of_the_device_key() {
+        assert_eq!(peer_handle(&SEED_ONE_PUBLIC), 0x90b3_65ba_582f_856f);
     }
 
     #[tokio::test]

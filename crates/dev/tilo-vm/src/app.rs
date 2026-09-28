@@ -2541,7 +2541,25 @@ impl App {
                     return Ok(Some(CiUpgrade::Base(base.clone())));
                 }
             }
-            Ok(None)
+            // Not a main build: a branch or pull request build of the commit.
+            let Some(sha) = imageup::ci_commit(tag) else {
+                return Ok(None);
+            };
+            let mut listing = |repository| -> Result<String, CliError> {
+                let output = runner.output(&imageup::list_tags_command(repository))?;
+                Ok(if output.success {
+                    output.stdout
+                } else {
+                    String::new()
+                })
+            };
+            let vm_tags = listing("registry.tilo.so/tilo/tilo-vm")?;
+            let ci_tags = listing("registry.tilo.so/tilo/tilo-ci")?;
+            let refs = imageup::ci_ref_candidates(sha, std::env::consts::ARCH, &vm_tags, &ci_tags);
+            if let Some(image) = refs.dev_images.first() {
+                return Ok(Some(CiUpgrade::Published(image.clone())));
+            }
+            Ok(refs.bases.first().cloned().map(CiUpgrade::Base))
         })?;
         let Some(found) = found else {
             let tried = candidates
@@ -2554,7 +2572,7 @@ impl App {
             return Err(CliError::ImageRefused {
                 image: format!("ci:{tag}"),
                 problem: format!("names no CI build this host can pull (tried {tried})"),
-                fix: "list the builds CI pushed: skopeo list-tags docker://registry.tilo.so/tilo/tilo-ci   |   a main build is tagged main-<sha7>: tilo-vm vm upgrade --from sha:<commit>   |   or build this worktree: tilo-vm vm upgrade --from local".into(),
+                fix: "list the builds CI pushed: skopeo list-tags docker://registry.tilo.so/tilo/tilo-ci   |   main and pull request builds are tagged <ref>-<sha7>: tilo-vm vm upgrade --from sha:<commit>   |   or build this worktree: tilo-vm vm upgrade --from local".into(),
             });
         };
         if let CiUpgrade::Base(base) = &found {

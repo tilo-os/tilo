@@ -43,6 +43,9 @@
 #   CHANNEL            true advances tilo-vm:latest, only forward (default false)
 #   TILO_PACKAGE_TOKEN, TILO_PACKAGE_PUBLIC_BASE_URL   generic package access
 #   TILO_VM_PUBLISH_DIR  scratch for converted disks (default /var/tmp/tilo-vm-publish)
+#   IMAGE_ONLY         1 publishes the child and index only: no disk, no disk
+#                      manifest, no latest (Build / OS dev; SOURCE_DISK and the
+#                      package settings are then ignored)
 # Registry credentials for registry.tilo.so come from the job's login.
 set -euo pipefail
 
@@ -52,8 +55,12 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 die() { printf '::error::%s\n' "$*" >&2; exit 1; }
 note() { printf '::notice::%s\n' "$*"; }
 
-for name in DEV_IMAGE DEV_TAG ARCH SOURCE_REVISION DISK_TOOLING_REVISION SOURCE_DISK BASE_REPOSITORY BASE_TRUST \
-            BASE_INDEX_DIGEST BASE_CHILD_DIGEST TILO_PACKAGE_TOKEN TILO_PACKAGE_PUBLIC_BASE_URL; do
+IMAGE_ONLY=${IMAGE_ONLY:-0}
+[[ $IMAGE_ONLY == 0 || $IMAGE_ONLY == 1 ]] || die "IMAGE_ONLY must be 0 or 1"
+required=(DEV_IMAGE DEV_TAG ARCH SOURCE_REVISION DISK_TOOLING_REVISION BASE_REPOSITORY BASE_TRUST
+          BASE_INDEX_DIGEST BASE_CHILD_DIGEST)
+[[ $IMAGE_ONLY == 1 ]] || required+=(SOURCE_DISK TILO_PACKAGE_TOKEN TILO_PACKAGE_PUBLIC_BASE_URL)
+for name in "${required[@]}"; do
   [[ -n ${!name:-} ]] || die "$name is required"
 done
 DISK_FORMATS=${DISK_FORMATS:-qcow2}
@@ -79,9 +86,11 @@ for digest in "$BASE_INDEX_DIGEST" "$BASE_CHILD_DIGEST"; do
   [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]] || die "base digest $digest is not sha256:<64 hex>"
 done
 [[ $CHANNEL == true || $CHANNEL == false ]] || die "CHANNEL must be true or false"
-test -s "$SOURCE_DISK" || die "no installed disk at $SOURCE_DISK"
+[[ $IMAGE_ONLY == 1 ]] || test -s "$SOURCE_DISK" || die "no installed disk at $SOURCE_DISK"
 podman image exists "$DEV_IMAGE" || die "$DEV_IMAGE is not in local storage"
 
+manifest_digest() { skopeo inspect --raw "docker://$1" | sha256sum | awk '{print "sha256:" $1}'; }
+if [[ $IMAGE_ONLY == 0 ]]; then
 # Large-disk runners do not resolve the in-cluster Forgejo service, so uploads
 # cross the public TLS edge.
 package_api=${TILO_PACKAGE_PUBLIC_BASE_URL%/}
@@ -100,8 +109,7 @@ case "$status" in
   3??) die "reading $package/$manifest_file was redirected (HTTP $status): the package base moved; update TILO_PACKAGE_PUBLIC_BASE_URL" ;;
   *) die "reading $package/$manifest_file answered HTTP $status" ;;
 esac
-
-manifest_digest() { skopeo inspect --raw "docker://$1" | sha256sum | awk '{print "sha256:" $1}'; }
+fi
 
 # ---- 1. the child ------------------------------------------------------------
 # Not committed until the manifest below exists, so a rerun may replace it.
@@ -178,6 +186,7 @@ index_digest=$(manifest_digest "$index_tag")
 skopeo copy --all --preserve-digests "docker://$REPOSITORY@$index_digest" \
   "docker://$REPOSITORY:$DEV_TAG-${index_digest:7:16}" >/dev/null
 note "$index_tag ($index_digest) holds $(jq -r '[.[].architecture] | join(", ")' <<< "$wanted")"
+[[ $IMAGE_ONLY == 0 ]] || exit 0
 
 # ---- 3. the disks --------------------------------------------------------------
 rm -rf -- "$out"
