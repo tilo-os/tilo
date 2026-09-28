@@ -1075,3 +1075,68 @@ fn dragging_a_group_onto_another_display_moves_it_there() {
         }
     }
 }
+
+/// `output` mirrored onto another connector as output `id`: the same
+/// logical rectangle and the same place in the scene, as the backend lays
+/// out a `mirror_of` pair.
+fn mirrored(output: &Output, id: u32, monitor: (&str, &str, &str, &str)) -> Output {
+    let mut mirror = output.clone();
+    mirror.id = OutputId(id);
+    mirror.identity = identity(monitor);
+    mirror
+}
+
+const PROJECTOR: (&str, &str, &str, &str) = ("HDMI-1", "Tilo", "Test Projector", "J-0001");
+
+/// A projector mirroring the panel shows the same image: one display to
+/// the partition, not a second lane laid over the first.
+#[test]
+fn a_mirrored_pair_is_one_display() {
+    let panel = parse_output_spec("1920x1080").expect("spec").remove(0);
+    let outputs = vec![panel.clone(), mirrored(&panel, 1, MONITOR)];
+    let mut desk = Desk::across(outputs);
+    let displays = desk.fb.chrome().tree().desktop.outputs.displays.clone();
+    assert_eq!(
+        displays.iter().map(|d| d.id).collect::<Vec<_>>(),
+        vec![0],
+        "the mirror is not a display of its own: {displays:?}"
+    );
+    assert!(!desk.fb.host().is_partitioned(), "one image, one row");
+    let panel = desk.display(0);
+    for (id, rect, display) in desk.layout() {
+        assert_eq!(display, None, "{id} is in a partitioned row");
+        assert!(
+            rect.width() > 0.0 && rect.y1 <= panel.y1 + 0.5,
+            "{id} is laid out on the shared image: {rect:?}"
+        );
+    }
+    let bars = desk.fb.host().top_bar_rects();
+    assert!(
+        bars.iter().all(|b| b.2),
+        "no compact bar over the mirrored image: {bars:?}"
+    );
+}
+
+/// A mirrored pair beside a third monitor: two displays, and the mirror
+/// gets neither a lane nor a compact bar over the image it copies.
+#[test]
+fn a_mirrored_pair_beside_a_monitor_is_two_displays() {
+    let mut outputs = with_monitors(parse_output_spec("1920x1080,1920x1080").expect("spec"));
+    let projector = mirrored(&outputs[0], 2, PROJECTOR);
+    outputs.push(projector);
+    let desk = Desk::with_tree(tree(), outputs);
+    let displays = desk.fb.chrome().tree().desktop.outputs.displays.clone();
+    assert_eq!(
+        displays.iter().map(|d| d.id).collect::<Vec<_>>(),
+        vec![0, 1],
+        "{displays:?}"
+    );
+    let bars = desk.fb.host().top_bar_rects();
+    let compact: Vec<u32> = bars.iter().filter(|b| !b.2).map(|b| b.0).collect();
+    assert_eq!(compact, vec![1], "{bars:?}");
+    assert_eq!(
+        desk.fb.host().display_partition_summary(),
+        vec![(0, ON_PRIMARY.to_vec()), (1, ON_SECOND.to_vec())],
+        "each monitor keeps its own windows"
+    );
+}
