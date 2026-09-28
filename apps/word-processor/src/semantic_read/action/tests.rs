@@ -113,7 +113,7 @@ fn semantic_read_action_encodes_and_json_contract_decodes() {
 
 #[test]
 fn the_registered_projection_pages_body_text_at_the_given_heads() {
-    let mut source = qdoc::Document::new();
+    let mut source = tilo_doc::Document::new();
     let first = source.insert_block(None, "heading");
     source.splice_text(&first, 0, 0, "Q3 Planning");
     let second = source.insert_block(Some(&first), "paragraph");
