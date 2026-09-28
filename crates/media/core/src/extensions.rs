@@ -111,15 +111,7 @@ pub fn needs_rescan(
 
 /// The per-user file recording the stamp the registry cache reflects.
 pub fn default_stamp_path() -> Option<PathBuf> {
-    let cache = std::env::var_os("XDG_CACHE_HOME")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute())
-        .or_else(|| {
-            std::env::var_os("HOME")
-                .filter(|value| !value.is_empty())
-                .map(|home| PathBuf::from(home).join(".cache"))
-        })?;
+    let cache = xdg_paths::xdg::cache_home()?;
     Some(cache.join("tilo").join("media-extensions.stamp"))
 }
 

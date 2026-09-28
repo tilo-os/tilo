@@ -77,17 +77,13 @@ impl Default for PortalDocumentStore {
 /// appliance-control namespace below `/run/tilo/windows-vm`.
 #[must_use]
 pub fn portal_lease_root() -> PathBuf {
-    std::env::var_os("XDG_RUNTIME_DIR")
-        .filter(|path| Path::new(path).is_absolute())
-        .map_or_else(
-            || {
-                // SAFETY: `geteuid` only reads the process credentials and has no
-                // preconditions.
-                let uid = unsafe { libc::geteuid() };
-                PathBuf::from(format!("/run/user/{uid}"))
-            },
-            PathBuf::from,
-        )
+    xdg_paths::xdg::runtime_dir()
+        .unwrap_or_else(|| {
+            // SAFETY: `geteuid` only reads the process credentials and has no
+            // preconditions.
+            let uid = unsafe { libc::geteuid() };
+            PathBuf::from(format!("/run/user/{uid}"))
+        })
         .join("tilo/windows-vm/leases")
 }
 

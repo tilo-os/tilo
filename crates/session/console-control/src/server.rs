@@ -52,9 +52,7 @@ impl Endpoint {
     /// virtio port when the hypervisor attached one.
     pub fn discover(app: &str) -> Vec<Self> {
         let mut endpoints = Vec::new();
-        if let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from)
-            && runtime.is_absolute()
-        {
+        if let Some(runtime) = xdg_paths::xdg::runtime_dir() {
             endpoints.push(Self::Socket(socket_path(&runtime, app)));
         }
         if std::fs::metadata(VIRTIO_PORT).is_ok_and(|meta| meta.file_type().is_char_device()) {

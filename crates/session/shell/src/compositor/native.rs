@@ -1354,10 +1354,7 @@ fn spawn_agent_mcp(
         eprintln!("tilo compositor: agent MCP endpoint: no active workspace");
         return;
     };
-    let scratch = std::env::var_os("XDG_CACHE_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
-        .map(|cache| cache.join("tilo").join("computer"));
+    let scratch = xdg_paths::xdg::cache_home().map(|cache| cache.join("tilo").join("computer"));
     let Some(scratch) = scratch.filter(|path| {
         std::fs::create_dir_all(path).is_ok()
             && std::fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o700))
