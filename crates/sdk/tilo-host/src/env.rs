@@ -22,7 +22,17 @@ pub fn legacy_name(name: &str) -> Option<String> {
 /// `std::env::var_os(name)`, falling back to the legacy `QUICK_UI_*` name.
 #[must_use]
 pub fn var_os(name: &str) -> Option<OsString> {
-    lookup(name, |key| std::env::var_os(key))
+    lookup(name, |key| {
+        #[cfg(feature = "native")]
+        {
+            crate::native::env_vars::var_os(key)
+        }
+        #[cfg(not(feature = "native"))]
+        {
+            let _ = key;
+            None
+        }
+    })
 }
 
 fn lookup(name: &str, read: impl Fn(&str) -> Option<OsString>) -> Option<OsString> {
