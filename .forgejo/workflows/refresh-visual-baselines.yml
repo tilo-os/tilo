@@ -1,4 +1,4 @@
-name: Development / visual baselines
+name: Dev / visual baselines
 
 # Goldens must be produced by the same font stack and software Vulkan renderer
 # used by nightly verification. This manual workflow emits review candidates;

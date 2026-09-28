@@ -1,4 +1,4 @@
-name: Snapshot / kernel
+name: Build / kernel
 
 # Rebuilds Fedora's kernel with the Tilo config fragment. Pull requests
 # validate the build; pushes to main, version tags and manual dispatches publish

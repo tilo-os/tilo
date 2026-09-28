@@ -1,4 +1,4 @@
-name: Snapshot / CI fast images
+name: Build / CI fast images
 
 # Publishes registry.tilo.so/tilo/ci-fast (lint, planning and other quick jobs)
 # and registry.tilo.so/tilo/ci-control (ci-fast plus the Docker client, for

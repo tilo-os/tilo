@@ -93,7 +93,7 @@ disabled during alpha; tags do not enable those lanes.
 ## Fast checks before assembly
 
 For a native integration test without a full workspace dispatch, use
-**Development / focused native test** (`focused-test.yml`). Select a full source
+**Dev / focused test** (`focused-test.yml`). Select a full source
 commit SHA, one Cargo package, integration target and exact Rust test path. For
 example: package `shell`, target `it`, test
 `concept_parity_spec::overview_add_workspace::overview_add_workspace_button_renders_and_click_appends_workspace`.
