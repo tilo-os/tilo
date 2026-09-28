@@ -3311,11 +3311,21 @@ impl Collaborative for ChatApp {
         requests
     }
 
-    fn handle_collab_event(&mut self, event: &ui::collaboration::CollabEvent) {
+    fn handle_collab_event(&mut self, event: &ui::collaboration::CollabEvent) -> bool {
         match event {
             ui::collaboration::CollabEvent::NativeMediaCommandResult { request_id, result } => {
+                // The call is polled for its status; an answer that finds it
+                // as it was changes nothing this Chat offers.
+                let before = (
+                    self.native_voice.snapshot.clone(),
+                    self.native_voice.channel.clone(),
+                );
                 self.native_voice.complete(*request_id, result);
                 self.project_native_voice();
+                return (
+                    self.native_voice.snapshot.clone(),
+                    self.native_voice.channel.clone(),
+                ) != before;
             }
             ui::collaboration::CollabEvent::RealtimeCommandResult { result, .. } => match result {
                 Ok(ui::realtime_continuity::RealtimeReply::Registered { session }) => {
@@ -3336,7 +3346,7 @@ impl Collaborative for ChatApp {
                 },
             ) if intent.provider == "tilo.chat" => {
                 let Some(workspace_id) = intent.semantic_position.clone() else {
-                    return;
+                    return false;
                 };
                 let offered = crate::continuity::ChatCallContinuation {
                     workspace_id,
@@ -3378,8 +3388,9 @@ impl Collaborative for ChatApp {
             ) if self.realtime.session.as_ref() == Some(session) => {
                 self.realtime.session = None;
             }
-            _ => {}
+            _ => return false,
         }
+        true
     }
 }
 

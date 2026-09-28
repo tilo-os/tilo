@@ -878,7 +878,7 @@ impl App {
         for event in events {
             declarations_may_have_changed |= Self::collab_event_may_change_declarations(&event);
             action_surface_may_have_changed |= Self::collab_event_may_change_action_surface(&event);
-            self.forward_session_notification(&event);
+            declarations_may_have_changed |= self.forward_session_notification(&event);
             self.apply_collab_presence_event(event);
         }
         (

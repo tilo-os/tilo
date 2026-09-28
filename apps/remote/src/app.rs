@@ -2305,15 +2305,15 @@ impl Collaborative for RemoteApp {
         std::mem::take(&mut self.collab_outbox)
     }
 
-    fn handle_collab_event(&mut self, event: &ui::collaboration::CollabEvent) {
+    fn handle_collab_event(&mut self, event: &ui::collaboration::CollabEvent) -> bool {
         let ui::collaboration::CollabEvent::WorkspaceControl { session_id, event } = event else {
-            return;
+            return false;
         };
         let Some(LiveSession::Tilo(session)) = self.live.as_mut() else {
-            return;
+            return false;
         };
         if session.id != *session_id {
-            return;
+            return false;
         }
         match event {
             runtime_collab::WorkspaceControlEvent::WaitingForConsent { .. } => {
@@ -2347,6 +2347,7 @@ impl Collaborative for RemoteApp {
             }
         }
         self.dirty = true;
+        true
     }
 }
 

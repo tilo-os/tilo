@@ -2167,16 +2167,39 @@ impl App {
         )
     }
 
-    /// Whether applying `event` may change what the app declares. A peer's
-    /// request for a document is answered from it without changing it, and
-    /// a grant invalidates the declarations itself when it changes what the
-    /// app may do; the broker repeats an unchanged one. Neither may retire
-    /// the directory revision a caller has just listed.
+    /// Whether applying `event` may change what the app declares. Presence
+    /// cannot: it leaves the action surface as it was (see
+    /// [`Self::collab_event_may_change_action_surface`]), and what the app
+    /// declares is that surface. A peer's request for a document is answered
+    /// from it without changing it, and a grant invalidates the declarations
+    /// itself when it changes what the app may do; the broker repeats an
+    /// unchanged one. None of these may retire the directory revision a
+    /// caller has just listed.
+    ///
+    /// A session answer the host applies nothing for (a catalogue, a media
+    /// command's result, a task's reply) changes what the app declares only
+    /// if the widget receiving it says so; see [`Widget::handle_collab_event`].
     fn collab_event_may_change_declarations(event: &CollabEvent) -> bool {
-        !matches!(
-            event,
-            CollabEvent::DocumentSnapshotRequested { .. } | CollabEvent::Grant { .. }
-        )
+        Self::collab_event_may_change_action_surface(event)
+            && !matches!(
+                event,
+                CollabEvent::DocumentSnapshotRequested { .. }
+                    | CollabEvent::Grant { .. }
+                    | CollabEvent::ActionCatalogue { .. }
+                    | CollabEvent::ActionDirectoryPage { .. }
+                    | CollabEvent::PublishedActionResolution { .. }
+                    | CollabEvent::EnrolledTask(_)
+                    | CollabEvent::EnrolledTaskReply { .. }
+                    | CollabEvent::EnrolledTaskDisconnected { .. }
+                    | CollabEvent::NativeMediaCommandResult { .. }
+                    | CollabEvent::TaskRun(_)
+                    | CollabEvent::TaskActionInvocationResult { .. }
+                    | CollabEvent::TaskRunCancellation { .. }
+                    | CollabEvent::WorkspaceControl { .. }
+                    | CollabEvent::RealtimeCommandResult { .. }
+                    | CollabEvent::NearbyTransferCommandResult { .. }
+                    | CollabEvent::Realtime(_)
+            )
     }
 }
 

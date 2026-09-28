@@ -442,10 +442,12 @@ impl Collaborative for RemoteActions {
             .collect()
     }
 
-    fn handle_collab_event(&mut self, event: &CollabEvent) {
-        if let CollabEvent::RemoteAction { message } = event {
-            self.receive(message);
-        }
+    fn handle_collab_event(&mut self, event: &CollabEvent) -> bool {
+        let CollabEvent::RemoteAction { message } = event else {
+            return false;
+        };
+        self.receive(message);
+        true
     }
 }
 

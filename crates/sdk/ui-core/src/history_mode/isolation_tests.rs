@@ -199,11 +199,12 @@ struct LiveOwner {
     mutable_identity: Option<Rc<MutableContinuationIdentity>>,
 }
 impl crate::widget::Collaborative for LiveOwner {
-    fn handle_collab_event(&mut self, _: &crate::collaboration::CollabEvent) {
+    fn handle_collab_event(&mut self, _: &crate::collaboration::CollabEvent) -> bool {
         self.collab_events.set(self.collab_events.get() + 1);
         self.collab_wake_handles
             .borrow_mut()
             .push(crate::WakeHandle::new());
+        true
     }
 }
 

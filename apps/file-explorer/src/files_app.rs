@@ -7419,7 +7419,7 @@ impl Collaborative for FileExplorerWidget {
         requests
     }
 
-    fn handle_collab_event(&mut self, event: &ui::collaboration::CollabEvent) {
+    fn handle_collab_event(&mut self, event: &ui::collaboration::CollabEvent) -> bool {
         self.handle_shortcut_event(event);
         for effect in self.nearby_send.handle_event(event) {
             match effect {
@@ -7511,6 +7511,7 @@ impl Collaborative for FileExplorerWidget {
             }
         }
         self.structure_dirty = true;
+        true
     }
 }
 
