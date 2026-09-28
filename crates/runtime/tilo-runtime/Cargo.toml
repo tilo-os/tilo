@@ -20,6 +20,7 @@ name = "tilo-runtime"
 path = "src/bin/tilo-runtime.rs"
 
 [dependencies]
+xdg-paths = { path = "../../system/xdg-paths" }
 advisory-lock = { path = "../../system/advisory-lock" }
 atomic-file = { path = "../../system/atomic-file" }
 automerge.workspace = true

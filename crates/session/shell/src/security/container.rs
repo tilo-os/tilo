@@ -179,8 +179,8 @@ impl Container {
 
         // 5. Wayland Socket
         let host_runtime_dir =
-            std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/run/user/1000".into());
-        let host_socket_path = format!("{host_runtime_dir}/{wayland_socket}");
+            xdg_paths::xdg::runtime_dir().unwrap_or_else(|| "/run/user/1000".into());
+        let host_socket_path = format!("{}/{wayland_socket}", host_runtime_dir.display());
 
         let sandbox_runtime_dir = "/tmp/runtime";
         cmd.arg("--dir").arg(sandbox_runtime_dir);
