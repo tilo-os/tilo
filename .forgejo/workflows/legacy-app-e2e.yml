@@ -60,6 +60,7 @@ jobs:
     uses: ./.forgejo/workflows/applicability.yml
     with:
       workflow: .forgejo/workflows/legacy-app-e2e.yml
+      event: ${{ github.event_name }}
 
   builder:
     needs: applicability

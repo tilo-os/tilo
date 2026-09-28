@@ -193,6 +193,7 @@ jobs:
     uses: ./.forgejo/workflows/applicability.yml
     with:
       workflow: .forgejo/workflows/fs-fuse.yml
+      event: ${{ github.event_name }}
 
   builder:
     needs: applicability

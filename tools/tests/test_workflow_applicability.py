@@ -338,7 +338,8 @@ jobs:
             }
             shared = (ROOT/'.forgejo/workflows/applicability.yml').read_text(encoding='utf-8')
             gate_job = job(shared, '  compare:')
-            self.assertIn("if: ${{ github.event_name == 'pull_request' }}", gate_job)
+            self.assertIn("if: ${{ inputs.event == 'pull_request' }}", gate_job)
+            self.assertIn('--event "${{ inputs.event }}"', gate_job)
             self.assertIn('runs-on: runner-quality', gate_job)
             self.assertIn('timeout-minutes: 5', gate_job)
             self.assertRegex(gate_job, r'image: registry\.tilo\.so/tilo/ci-fast@sha256:[0-9a-f]{64}')
@@ -355,6 +356,7 @@ jobs:
                 caller = job(text, '  applicability:')
                 self.assertIn('uses: ./.forgejo/workflows/applicability.yml', caller)
                 self.assertIn('workflow: .forgejo/workflows/'+name, caller)
+                self.assertIn('event: ${{ github.event_name }}', caller)
                 for job_name in expensive_jobs:
                     with self.subTest(workflow=name, job=job_name):
                         build = job(text, f'  {job_name}:')
