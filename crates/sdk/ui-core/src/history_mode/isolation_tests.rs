@@ -213,7 +213,8 @@ impl Widget for LiveOwner {
         dyn crate::widget::Collaborative,
         dyn crate::undo::CommittedActions,
         dyn crate::undo::UndoControl,
-        dyn crate::undo::LocalUndo
+        dyn crate::undo::LocalUndo,
+        dyn crate::widget::controls::ActionControls
     );
 
     fn name(&self) -> &str {
@@ -273,12 +274,6 @@ impl Widget for LiveOwner {
     fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
         [self.type_id.to_owned()].into_iter().collect()
     }
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.manual
-            .borrow_mut()
-            .take()
-            .or_else(|| self.emitter.borrow_mut().take())
-    }
     fn start_operation(
         &mut self,
         op: &crate::widget::ResourceOperation<'_>,
@@ -316,6 +311,15 @@ impl Widget for LiveOwner {
             invocation,
             output: tilo_actions::ActionOutput::default(),
         })
+    }
+}
+
+impl crate::widget::controls::ActionControls for LiveOwner {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.manual
+            .borrow_mut()
+            .take()
+            .or_else(|| self.emitter.borrow_mut().take())
     }
 }
 

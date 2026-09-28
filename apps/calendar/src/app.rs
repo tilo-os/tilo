@@ -6612,42 +6612,10 @@ impl Default for CalendarApp {
 }
 
 impl Widget for CalendarApp {
-    ui::provides!(dyn ui::undo::CommittedActions);
-
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        if !self.launch_import_emitted
-            && let Some(resource) = self.pending_launch_resource()
-            && let Some(spec) = resource.actions.first()
-            && let Ok(binding) =
-                tilo_actions::ActionBinding::new(&resource, spec, |()| serde_json::Map::new())
-            && let Ok(intent) = binding.invoke(())
-        {
-            self.launch_import_emitted = true;
-            return Some(intent);
-        }
-        self.children_mut()
-            .into_iter()
-            .find_map(Widget::take_control_invocation)
-    }
-
-    fn on_control_invocation_result(
-        &mut self,
-        address: &tilo_actions::ActionAddress,
-        result: &Result<ui::widget::ResourceOperationStart, tilo_actions::DoorError>,
-    ) {
-        if address.resource == "calendar.pending-import"
-            && address.action == "finalize"
-            && let Err(error) = result
-        {
-            self.pending_launch_ics = None;
-            self.launch_import_emitted = false;
-            self.status = Some(format!("Import failed: {error}"));
-            self.dirty = true;
-        }
-        for child in self.children_mut() {
-            child.on_control_invocation_result(address, result);
-        }
-    }
+    ui::provides!(
+        dyn ui::undo::CommittedActions,
+        dyn ui::widget::controls::ActionControls
+    );
 
     fn start_operation(
         &mut self,
@@ -7410,6 +7378,42 @@ impl Widget for CalendarApp {
         _permissions: &PermissionContext,
     ) {
         self.draw(scene, transform, text_renderer, theme, presence);
+    }
+}
+
+impl ui::widget::controls::ActionControls for CalendarApp {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        if !self.launch_import_emitted
+            && let Some(resource) = self.pending_launch_resource()
+            && let Some(spec) = resource.actions.first()
+            && let Ok(binding) =
+                tilo_actions::ActionBinding::new(&resource, spec, |()| serde_json::Map::new())
+            && let Ok(intent) = binding.invoke(())
+        {
+            self.launch_import_emitted = true;
+            return Some(intent);
+        }
+        self.children_mut()
+            .into_iter()
+            .find_map(ui::widget::controls::take_control_invocation)
+    }
+    fn on_control_invocation_result(
+        &mut self,
+        address: &tilo_actions::ActionAddress,
+        result: &Result<ui::widget::ResourceOperationStart, tilo_actions::DoorError>,
+    ) {
+        if address.resource == "calendar.pending-import"
+            && address.action == "finalize"
+            && let Err(error) = result
+        {
+            self.pending_launch_ics = None;
+            self.launch_import_emitted = false;
+            self.status = Some(format!("Import failed: {error}"));
+            self.dirty = true;
+        }
+        for child in self.children_mut() {
+            ui::widget::controls::on_control_invocation_result(child, address, result);
+        }
     }
 }
 

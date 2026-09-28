@@ -136,6 +136,8 @@ impl BottomPanelToggle {
 }
 
 impl Widget for BottomPanelToggle {
+    ui::provides!(dyn ui::widget::controls::ActionControls);
+
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.button.sync(state, path);
     }
@@ -304,21 +306,6 @@ impl Widget for BottomPanelToggle {
         self.button.perform_action(action, state, path)
     }
 
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.button.take_control_invocation()
-    }
-
-    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
-        self.button.control_action_bindings()
-    }
-
-    fn refresh_control_action_availability(
-        &mut self,
-        allowed: &HashSet<tilo_actions::ActionAddress>,
-    ) {
-        self.button.refresh_control_action_availability(allowed);
-    }
-
     fn set_interaction_environment(
         &mut self,
         environment: ui::interaction::InteractionEnvironment,
@@ -333,6 +320,21 @@ impl Widget for BottomPanelToggle {
     fn mark_drawn(&mut self) {
         self.dirty = false;
         self.button.mark_drawn();
+    }
+}
+
+impl ui::widget::controls::ActionControls for BottomPanelToggle {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.button.take_control_invocation()
+    }
+    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
+        self.button.control_action_bindings()
+    }
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &HashSet<tilo_actions::ActionAddress>,
+    ) {
+        self.button.refresh_control_action_availability(allowed);
     }
 }
 
@@ -3424,7 +3426,10 @@ fn find_char_span(text: &str, needle: &str) -> Option<(usize, usize, usize)> {
 }
 
 impl Widget for CodeApp {
-    ui::provides!(dyn ui::undo::CommittedActions);
+    ui::provides!(
+        dyn ui::undo::CommittedActions,
+        dyn ui::widget::controls::ActionControls
+    );
 
     fn native_input_snapshot(&self, doc: &AppModel, path: &ModelPath) -> Option<serde_json::Value> {
         fn rect(rect: Rect) -> [f64; 4] {
@@ -4049,26 +4054,6 @@ impl Widget for CodeApp {
         )
     }
 
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.palette.take_control_invocation().or_else(|| {
-            self.children_mut()
-                .into_iter()
-                .find_map(Widget::take_control_invocation)
-        })
-    }
-
-    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
-        let mut bindings = self
-            .children()
-            .into_iter()
-            .flat_map(Widget::control_action_bindings)
-            .collect::<Vec<_>>();
-        if self.palette.is_visible() {
-            bindings.extend(self.palette.control_action_bindings());
-        }
-        bindings
-    }
-
     /// Expose the panes so headless driving can address them by name. Without
     /// this the whole editor is one opaque rect and `--headless-drive` can only
     /// click at raw coordinates.
@@ -4269,6 +4254,27 @@ impl Widget for CodeApp {
         self.editor.mark_drawn();
         self.panel.mark_drawn();
         self.find.mark_drawn();
+    }
+}
+
+impl ui::widget::controls::ActionControls for CodeApp {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.palette.take_control_invocation().or_else(|| {
+            self.children_mut()
+                .into_iter()
+                .find_map(ui::widget::controls::take_control_invocation)
+        })
+    }
+    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
+        let mut bindings = self
+            .children()
+            .into_iter()
+            .flat_map(ui::widget::controls::control_action_bindings)
+            .collect::<Vec<_>>();
+        if self.palette.is_visible() {
+            bindings.extend(self.palette.control_action_bindings());
+        }
+        bindings
     }
 }
 

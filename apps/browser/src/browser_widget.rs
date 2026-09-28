@@ -4663,7 +4663,8 @@ impl FloatingSurfaceProvider for BrowserWidget {
 impl Widget for BrowserWidget {
     ui::provides!(
         dyn ui::widget::Continuable,
-        dyn ui::widget::FloatingSurfaceProvider
+        dyn ui::widget::FloatingSurfaceProvider,
+        dyn ui::widget::controls::ActionControls
     );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
@@ -6235,14 +6236,6 @@ impl Widget for BrowserWidget {
             .collect()
     }
 
-    fn take_control_invocation(&mut self) -> Option<ControlInvocation> {
-        self.pending_controls.pop_front().or_else(|| {
-            self.children_mut()
-                .into_iter()
-                .find_map(Widget::take_control_invocation)
-        })
-    }
-
     fn name(&self) -> &'static str {
         "BrowserWidget"
     }
@@ -6263,6 +6256,16 @@ impl Widget for BrowserWidget {
             && (self.pip_float_page_rect.contains(point)
                 || self.pip_select_area_rect.contains(point)))
         .then_some(winit::window::CursorIcon::Pointer)
+    }
+}
+
+impl ui::widget::controls::ActionControls for BrowserWidget {
+    fn take_control_invocation(&mut self) -> Option<ControlInvocation> {
+        self.pending_controls.pop_front().or_else(|| {
+            self.children_mut()
+                .into_iter()
+                .find_map(ui::widget::controls::take_control_invocation)
+        })
     }
 }
 
@@ -6410,12 +6413,16 @@ mod architecture_tests {
     }
 
     fn assert_no_document_control_paths(widget: &BrowserWidget) {
-        assert!(widget.control_action_bindings().iter().all(|binding| {
-            !matches!(
-                binding.kind,
-                ui::widget::ControlBindingKind::CollaborativeDocument(_)
-            )
-        }));
+        assert!(
+            ui::widget::controls::control_action_bindings(widget)
+                .iter()
+                .all(|binding| {
+                    !matches!(
+                        binding.kind,
+                        ui::widget::ControlBindingKind::CollaborativeDocument(_)
+                    )
+                })
+        );
     }
 
     fn assert_action_binding(
@@ -6425,14 +6432,16 @@ mod architecture_tests {
         action: &str,
     ) {
         assert!(
-            widget.control_action_bindings().iter().any(|binding| {
-                binding.control_id == control_id
-                    && matches!(
-                        &binding.kind,
-                        ui::widget::ControlBindingKind::Action(address)
-                            if address.resource == resource && address.action == action
-                    )
-            }),
+            ui::widget::controls::control_action_bindings(widget)
+                .iter()
+                .any(|binding| {
+                    binding.control_id == control_id
+                        && matches!(
+                            &binding.kind,
+                            ui::widget::ControlBindingKind::Action(address)
+                                if address.resource == resource && address.action == action
+                        )
+                }),
             "{control_id} must retain its canonical {resource}/{action} address"
         );
     }
@@ -7479,7 +7488,7 @@ mod architecture_tests {
                 .record_at("https://second.example", "Second", 2);
             widget.show_library = true;
             compose(&mut widget);
-            let bindings = widget.control_action_bindings();
+            let bindings = ui::widget::controls::control_action_bindings(&widget);
             for url in ["https://first.example", "https://second.example"] {
                 let resource = history_resource_id(url);
                 assert!(bindings.iter().any(|binding| {
@@ -8199,15 +8208,19 @@ mod tests {
             widget.debug_show_library("history");
             widget.debug_set_viewport_width(390);
             layout_at(&mut widget, 390.0, 844.0);
-            assert!(widget.control_action_bindings().iter().any(|binding| {
-                binding.control_id == "browser.library.history-pause"
-                    && matches!(
-                        &binding.kind,
-                        ui::widget::ControlBindingKind::Action(address)
-                            if address.resource == "browser.session"
-                                && address.action == "toggle-history-pause"
-                    )
-            }));
+            assert!(
+                ui::widget::controls::control_action_bindings(&widget)
+                    .iter()
+                    .any(|binding| {
+                        binding.control_id == "browser.library.history-pause"
+                            && matches!(
+                                &binding.kind,
+                                ui::widget::ControlBindingKind::Action(address)
+                                    if address.resource == "browser.session"
+                                        && address.action == "toggle-history-pause"
+                            )
+                    })
+            );
         }
 
         // Phase `populated_library_rows_have_a_bounded_compact_measure_at_all_widths`.
@@ -8419,8 +8432,7 @@ mod tests {
                 &mut AutoCommit::new(),
                 &automerge::ROOT,
             ));
-            let invocation = widget
-                .take_control_invocation()
+            let invocation = ui::widget::controls::take_control_invocation(&mut widget)
                 .expect("accessibility activation must queue Browser's action binding");
             assert_eq!(invocation.address.resource, "browser.page");
             assert_eq!(invocation.address.action, "navigate");
@@ -8603,8 +8615,7 @@ mod tests {
                 widget: &BrowserWidget,
                 control: &str,
             ) -> ui::tilo_actions::ActionAddress {
-                widget
-                    .control_action_bindings()
+                ui::widget::controls::control_action_bindings(widget)
                     .into_iter()
                     .find_map(|binding| match binding.kind {
                         ui::widget::ControlBindingKind::Action(address)
@@ -10031,8 +10042,7 @@ mod tests {
                 bookmark_resource_id("https://developer.mozilla.org/"),
                 bookmark_resource_id("https://legacy.example"),
             ];
-            let controls = w
-                .control_action_bindings()
+            let controls = ui::widget::controls::control_action_bindings(&w)
                 .into_iter()
                 .filter_map(|binding| match binding.kind {
                     ui::widget::ControlBindingKind::Action(address)

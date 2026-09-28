@@ -754,6 +754,8 @@ impl ToggleGroup {
 }
 
 impl Widget for ToggleGroup {
+    crate::provides!(dyn crate::widget::controls::ActionControls);
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -947,37 +949,6 @@ impl Widget for ToggleGroup {
             .unwrap_or_default()
     }
 
-    fn refresh_control_action_availability(
-        &mut self,
-        allowed: &std::collections::HashSet<crate::tilo_actions::ActionAddress>,
-    ) {
-        if let Some(action) = &mut self.action {
-            action.refresh_availability(allowed);
-        }
-    }
-
-    fn install_control_custody(
-        &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
-    ) {
-        if let Some(action) = &mut self.action {
-            let _ = action.install_custody(domain, attachment);
-        }
-    }
-    fn take_control_invocation(&mut self) -> Option<crate::tilo_actions::ControlInvocation> {
-        self.action.as_mut().and_then(ActionEmitter::take)
-    }
-
-    fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
-        let Some(action) = &self.action else {
-            return Vec::new();
-        };
-        (0..self.segments.len())
-            .map(|index| action.metadata(self.segment_id(index)))
-            .collect()
-    }
-
     fn start_operation(
         &mut self,
         op: &super::ResourceOperation<'_>,
@@ -1056,6 +1027,37 @@ impl Widget for ToggleGroup {
         }
         self.request_selection(index);
         true
+    }
+}
+
+impl crate::widget::controls::ActionControls for ToggleGroup {
+    fn install_control_custody(
+        &mut self,
+        domain: &crate::ControlDomain,
+        attachment: crate::control_custody::CustodyAttachment,
+    ) {
+        if let Some(action) = &mut self.action {
+            let _ = action.install_custody(domain, attachment);
+        }
+    }
+    fn take_control_invocation(&mut self) -> Option<crate::tilo_actions::ControlInvocation> {
+        self.action.as_mut().and_then(ActionEmitter::take)
+    }
+    fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
+        let Some(action) = &self.action else {
+            return Vec::new();
+        };
+        (0..self.segments.len())
+            .map(|index| action.metadata(self.segment_id(index)))
+            .collect()
+    }
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<crate::tilo_actions::ActionAddress>,
+    ) {
+        if let Some(action) = &mut self.action {
+            action.refresh_availability(allowed);
+        }
     }
 }
 
@@ -1408,7 +1410,7 @@ mod tests {
                 Rect::new(0.0, 0.0, 200.0, 44.0),
             )
             .on_view("appearance", |_| {});
-            Widget::refresh_control_action_availability(
+            crate::widget::controls::refresh_control_action_availability(
                 &mut group,
                 &std::collections::HashSet::new(),
             );
@@ -1618,7 +1620,7 @@ mod tests {
             );
             assert!(changed.borrow().is_empty());
 
-            let invocation = Widget::take_control_invocation(&mut group).unwrap();
+            let invocation = crate::widget::controls::take_control_invocation(&mut group).unwrap();
             assert_eq!(
                 invocation.address,
                 crate::tilo_actions::ActionAddress::new("tilo.control:appearance", "select")

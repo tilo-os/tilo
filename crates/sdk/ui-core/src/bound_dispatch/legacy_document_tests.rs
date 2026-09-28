@@ -112,7 +112,8 @@ pub(crate) fn address() -> ActionAddress {
 impl Widget for Probe {
     crate::provides!(
         dyn crate::undo::CommittedActions,
-        dyn crate::history_mode::capability::DocumentHistory
+        dyn crate::history_mode::capability::DocumentHistory,
+        dyn crate::widget::controls::ActionControls
     );
 
     crate::testing::inert_widget_methods!(
@@ -237,6 +238,9 @@ impl Widget for Probe {
             })
             .collect()
     }
+}
+
+impl crate::widget::controls::ActionControls for Probe {
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.queue.borrow_mut().pop_front()
     }
@@ -474,7 +478,7 @@ fn legacy_route_two_owners_exact_envelope_noop_undo_and_no_outer_fallback() {
     outer.commit();
     let outer_bytes = outer.save();
     assert!(select_local_target(&root, &outer, &address()).is_err());
-    assert!(root.take_control_invocation().is_none());
+    assert!(crate::widget::controls::take_control_invocation(&mut root).is_none());
     let controls = drain_legacy_controls(&mut root).controls;
     assert_eq!(controls.len(), 1);
     assert!(controls[0].0.owner.same_owner(&a.target.owner));

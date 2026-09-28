@@ -4409,13 +4409,10 @@ impl crate::widget::AppWidget for ComponentControlOwner {
 }
 
 impl crate::widget::Widget for ComponentControlOwner {
+    crate::provides!(dyn crate::widget::controls::ActionControls);
+
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         self.text.accessibility()
-    }
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.emitter
-            .as_ref()
-            .and_then(|emitter| emitter.borrow_mut().take())
     }
     fn name(&self) -> &str {
         &self.id
@@ -4526,6 +4523,14 @@ impl crate::widget::Widget for ComponentControlOwner {
             invocation,
             output: tilo_actions::ActionOutput::default(),
         })
+    }
+}
+
+impl crate::widget::controls::ActionControls for ComponentControlOwner {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.emitter
+            .as_ref()
+            .and_then(|emitter| emitter.borrow_mut().take())
     }
 }
 
@@ -5720,8 +5725,7 @@ fn mounted_component_bridge_first_emits_after_return_and_discards_suspended_outp
     emit_later("after-return");
     assert!(binding.queued_controls.borrow().is_empty());
     assert!(
-        app.root_widget.children_mut()[0]
-            .take_control_invocation()
+        crate::widget::controls::take_control_invocation(app.root_widget.children_mut()[0])
             .is_none()
     );
     assert_eq!(
@@ -5738,8 +5742,7 @@ fn mounted_component_bridge_first_emits_after_return_and_discards_suspended_outp
     layout(&mut app);
     emit_later("while-suspended");
     assert!(
-        app.root_widget.children_mut()[0]
-            .take_control_invocation()
+        crate::widget::controls::take_control_invocation(app.root_widget.children_mut()[0])
             .is_none()
     );
     assert_eq!(binding.queued_controls.borrow().len(), 1);
@@ -5822,6 +5825,8 @@ struct CustodyDeniedRoot {
 }
 
 impl crate::widget::Widget for CustodyDeniedRoot {
+    crate::provides!(dyn crate::widget::controls::ActionControls);
+
     fn name(&self) -> &str {
         "Controlled component boundary"
     }
@@ -5877,13 +5882,6 @@ impl crate::widget::Widget for CustodyDeniedRoot {
             vec![self.child.as_mut()]
         }
     }
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        if self.denied.get() {
-            None
-        } else {
-            self.child.take_control_invocation()
-        }
-    }
     fn visit_components(
         &mut self,
         request: &mut crate::bound_dispatch::ComponentRequest<'_>,
@@ -5892,6 +5890,16 @@ impl crate::widget::Widget for CustodyDeniedRoot {
             Err(crate::bound_dispatch::BoundDispatchError::CrossRecordReentry)
         } else {
             self.child.visit_components(request)
+        }
+    }
+}
+
+impl crate::widget::controls::ActionControls for CustodyDeniedRoot {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        if self.denied.get() {
+            None
+        } else {
+            crate::widget::controls::take_control_invocation(self.child.as_mut())
         }
     }
 }
@@ -6108,6 +6116,8 @@ struct CustodyControlsRoot {
 }
 
 impl crate::widget::Widget for CustodyControlsRoot {
+    crate::provides!(dyn crate::widget::controls::ActionControls);
+
     fn take_structure_dirty(&mut self) -> bool {
         self.child.take_structure_dirty()
             | self
@@ -6119,19 +6129,6 @@ impl crate::widget::Widget for CustodyControlsRoot {
         self.child.mark_drawn();
         if let Some(callback) = &mut self.mark_drawn_callback {
             callback();
-        }
-    }
-    fn install_control_custody(
-        &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
-    ) {
-        self.child.install_control_custody(domain, attachment);
-        if let Some(output) = &self.installed_output {
-            if output.borrow().is_none() {
-                *output.borrow_mut() =
-                    Some(domain.producer(crate::ControlProducerDiscipline::Fifo { limit: 64 }));
-            }
         }
     }
     fn draw_overlay(
@@ -6232,6 +6229,22 @@ impl crate::widget::Widget for CustodyControlsRoot {
         Ok(Some(crate::widget::ResourceOperationStart::Completed(
             tilo_actions::ActionOutput::default(),
         )))
+    }
+}
+
+impl crate::widget::controls::ActionControls for CustodyControlsRoot {
+    fn install_control_custody(
+        &mut self,
+        domain: &crate::ControlDomain,
+        attachment: crate::control_custody::CustodyAttachment,
+    ) {
+        crate::widget::controls::install_control_custody(self.child.as_mut(), domain, attachment);
+        if let Some(output) = &self.installed_output {
+            if output.borrow().is_none() {
+                *output.borrow_mut() =
+                    Some(domain.producer(crate::ControlProducerDiscipline::Fifo { limit: 64 }));
+            }
+        }
     }
 }
 
@@ -7618,8 +7631,11 @@ fn control_custody_core_nested_unbound_tile_follows_authorized_record_renewal() 
 
     let c = ControlDomain::outer();
     c.finish_initial_installation();
-    app.root_widget.children_mut()[0].children_mut()[0]
-        .install_control_custody(&c, CustodyAttachment::Dynamic);
+    crate::widget::controls::install_control_custody(
+        app.root_widget.children_mut()[0].children_mut()[0],
+        &c,
+        CustodyAttachment::Dynamic,
+    );
     assert!(c.coverage().unsafe_late_attachments > 0);
     assert!(c.drain_live().is_empty());
 
@@ -7686,7 +7702,11 @@ fn control_custody_core_unbound_tile_foreign_attachment_preserves_owner() {
         let mut tile =
             crate::widget::TileHost::new(crate::widget::TileContent::App(Box::new(live)));
         assert!(tile.history_owner().is_none(), "actual unbound TileHost");
-        tile.install_control_custody(&left, CustodyAttachment::Initial);
+        crate::widget::controls::install_control_custody(
+            &mut tile,
+            &left,
+            CustodyAttachment::Initial,
+        );
         a.finish_initial_installation();
         b.finish_initial_installation();
         let activate = |tile: &mut crate::widget::TileHost| {
@@ -7703,7 +7723,7 @@ fn control_custody_core_unbound_tile_foreign_attachment_preserves_owner() {
         } else {
             (None, vec![])
         };
-        tile.install_control_custody(&b, CustodyAttachment::Dynamic);
+        crate::widget::controls::install_control_custody(&mut tile, &b, CustodyAttachment::Dynamic);
         assert!(
             b.drain_live().is_empty(),
             "foreign B must not adopt queued shared-control E"
@@ -7744,7 +7764,11 @@ fn control_custody_core_unbound_tile_foreign_attachment_preserves_owner() {
         );
         drop(lease);
         // Legitimate presentation reparenting stays in A's exact incarnation.
-        tile.install_control_custody(&right, CustodyAttachment::Dynamic);
+        crate::widget::controls::install_control_custody(
+            &mut tile,
+            &right,
+            CustodyAttachment::Dynamic,
+        );
         activate(&mut tile);
         assert_eq!(
             a.drain_live().len(),

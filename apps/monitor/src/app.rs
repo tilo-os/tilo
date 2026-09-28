@@ -5417,7 +5417,10 @@ impl MonitorApp {
 }
 
 impl Widget for MonitorApp {
-    ui::provides!(dyn ui::history_mode::capability::DocumentHistory);
+    ui::provides!(
+        dyn ui::history_mode::capability::DocumentHistory,
+        dyn ui::widget::controls::ActionControls
+    );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[MONITOR_OPERATION_TYPE]
@@ -5491,10 +5494,6 @@ impl Widget for MonitorApp {
 
     fn search_providers(&self) -> Vec<Box<dyn SearchProvider>> {
         vec![Box::new(self.process_search.clone())]
-    }
-
-    fn take_control_invocation(&mut self) -> Option<ControlInvocation> {
-        self.pending_control_invocation.take()
     }
 
     fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
@@ -5915,6 +5914,12 @@ impl Widget for MonitorApp {
         if reduced {
             self.proc_push.snap(self.proc_push.pane());
         }
+    }
+}
+
+impl ui::widget::controls::ActionControls for MonitorApp {
+    fn take_control_invocation(&mut self) -> Option<ControlInvocation> {
+        self.pending_control_invocation.take()
     }
 }
 
@@ -6767,13 +6772,13 @@ mod tests {
             let pid = a.visible_rows()[0].pid;
             a.request_process_control(pid, "stop");
             assert_eq!(
-                a.take_control_invocation()
+                ui::widget::controls::take_control_invocation(&mut a)
                     .map(|invocation| invocation.address),
                 Some(ActionAddress::new(resource_id_for(&a, pid), "stop"))
             );
             a.request_process_control(pid, "kill");
             assert_eq!(
-                a.take_control_invocation()
+                ui::widget::controls::take_control_invocation(&mut a)
                     .map(|invocation| invocation.address),
                 Some(ActionAddress::new(resource_id_for(&a, pid), "kill"))
             );
@@ -6857,7 +6862,7 @@ mod tests {
             a.on_click(Point::new(10.0, 10.0), &mut doc, &root, &mut h);
             assert!(h);
             assert_eq!(
-                a.take_control_invocation()
+                ui::widget::controls::take_control_invocation(&mut a)
                     .map(|invocation| invocation.address),
                 Some(ActionAddress::new(resource_id_for(&a, pid), "kill"))
             );
@@ -7616,7 +7621,7 @@ mod tests {
             assert!(h2, "menu item click consumed");
             assert!(!a.context.is_open(), "menu closed after action");
             assert_eq!(
-                a.take_control_invocation()
+                ui::widget::controls::take_control_invocation(&mut a)
                     .map(|invocation| invocation.address),
                 Some(ActionAddress::new(resource_id_for(&a, pid), "stop"))
             );
@@ -7650,7 +7655,7 @@ mod tests {
             let mut h2 = false;
             a.on_click(rect.center(), &mut doc, &root, &mut h2);
             assert_eq!(
-                a.take_control_invocation()
+                ui::widget::controls::take_control_invocation(&mut a)
                     .map(|invocation| invocation.address),
                 Some(ActionAddress::new(resource_id_for(&a, pid), "kill"))
             );
@@ -7683,7 +7688,7 @@ mod tests {
             let mut h2 = false;
             a.on_click(rect.center(), &mut doc, &root, &mut h2);
             assert_eq!(
-                a.take_control_invocation()
+                ui::widget::controls::take_control_invocation(&mut a)
                     .map(|invocation| invocation.address),
                 Some(ActionAddress::new(resource_id_for(&a, pid), "copy-pid"))
             );
@@ -8218,7 +8223,7 @@ mod tests {
             let pid = a.visible_rows()[0].pid;
             a.request_process_control(pid, "kill");
             assert_eq!(
-                a.take_control_invocation()
+                ui::widget::controls::take_control_invocation(&mut a)
                     .map(|invocation| invocation.address),
                 Some(ActionAddress::new(resource_id_for(&a, pid), "kill"))
             );
@@ -8644,7 +8649,7 @@ mod tests {
                 &mut doc,
                 &automerge::ROOT,
             ));
-            assert!(a.take_control_invocation().is_none());
+            assert!(ui::widget::controls::take_control_invocation(&mut a).is_none());
         }
 
         // Phase `copy_pid_resource_operation_is_safe_and_shows_expiring_toast`.
@@ -8860,7 +8865,7 @@ mod tests {
                 &automerge::ROOT,
             ));
             assert_eq!(
-                a.take_control_invocation()
+                ui::widget::controls::take_control_invocation(&mut a)
                     .map(|invocation| invocation.address),
                 Some(ActionAddress::new(resource_id_for(&a, pid), "copy-pid"))
             );
@@ -8882,7 +8887,7 @@ mod tests {
                 &automerge::ROOT,
             ));
             assert_eq!(
-                a.take_control_invocation()
+                ui::widget::controls::take_control_invocation(&mut a)
                     .map(|invocation| invocation.address),
                 Some(ActionAddress::new(resource_id_for(&a, pid), "kill"))
             );
@@ -8919,7 +8924,7 @@ mod tests {
                 &automerge::ROOT,
             ));
             assert_eq!(
-                a.take_control_invocation()
+                ui::widget::controls::take_control_invocation(&mut a)
                     .map(|invocation| invocation.address),
                 Some(ActionAddress::new("processes", "refresh")),
                 "recovery uses the root resource action, not a direct sampler call"

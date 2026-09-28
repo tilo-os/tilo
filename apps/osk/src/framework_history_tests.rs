@@ -105,7 +105,10 @@ impl LiveFixture {
     }
 }
 impl Widget for LiveFixture {
-    ui::provides!(dyn ui::history_mode::capability::DocumentHistory);
+    ui::provides!(
+        dyn ui::history_mode::capability::DocumentHistory,
+        dyn ui::widget::controls::ActionControls
+    );
 
     fn sync(&mut self, d: &mut AppModel, p: &ModelPath) {
         self.keyboard.borrow_mut().sync(d, p);
@@ -131,12 +134,6 @@ impl Widget for LiveFixture {
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
         self.keyboard.borrow_mut().start_operation(op, doc, path)
-    }
-    fn take_control_invocation(&mut self) -> Option<ControlInvocation> {
-        self.queue
-            .borrow_mut()
-            .pop_front()
-            .or_else(|| self.keyboard.borrow_mut().take_control_invocation())
     }
     fn build_layout(
         &mut self,
@@ -175,6 +172,15 @@ impl Widget for LiveFixture {
     }
     fn take_structure_dirty(&mut self) -> bool {
         self.keyboard.borrow_mut().take_structure_dirty()
+    }
+}
+
+impl ui::widget::controls::ActionControls for LiveFixture {
+    fn take_control_invocation(&mut self) -> Option<ControlInvocation> {
+        self.queue
+            .borrow_mut()
+            .pop_front()
+            .or_else(|| self.keyboard.borrow_mut().take_control_invocation())
     }
 }
 
@@ -420,16 +426,19 @@ fn framework_history_finite_drain_stale_lifetime_and_newer_field_survive_old_ack
     root.set_personalization_enabled(false);
     root.sync(&mut doc, &automerge::ROOT);
     let mut offers = Vec::new();
-    while let Some(offer) = root.take_control_invocation() {
+    while let Some(offer) = ui::widget::controls::take_control_invocation(&mut root) {
         offers.push(offer);
         assert!(offers.len() <= 3);
     }
     assert_eq!(offers.len(), 3);
     assert!(root.drafts.pending());
-    root.refresh_control_action_availability(&std::collections::HashSet::default());
+    ui::widget::controls::refresh_control_action_availability(
+        &mut root,
+        &std::collections::HashSet::default(),
+    );
     root.set_suggestions_enabled(true);
     assert!(
-        root.take_control_invocation().is_none(),
+        ui::widget::controls::take_control_invocation(&mut root).is_none(),
         "availability and reentrant setter never rearm consumed offers"
     );
     let old = &offers[1];
@@ -464,7 +473,7 @@ fn framework_history_finite_drain_stale_lifetime_and_newer_field_survive_old_ack
         "old lifetime acknowledgement cannot settle replacement root"
     );
     root.sync(&mut doc, &automerge::ROOT);
-    assert!(root.take_control_invocation().is_some());
+    assert!(ui::widget::controls::take_control_invocation(&mut root).is_some());
 }
 #[test]
 fn framework_history_shared_host_restore_undo_and_absence_preserve_unrelated_roots() {
@@ -1104,9 +1113,9 @@ fn assert_no_reentrant_offer(root: &mut OskWidget, doc: &AutoCommit) {
         .filter(|door| door.contract.availability.is_available())
         .map(|door| door.address)
         .collect();
-    root.refresh_control_action_availability(&allowed);
+    ui::widget::controls::refresh_control_action_availability(root, &allowed);
     assert!(
-        root.take_control_invocation().is_none(),
+        ui::widget::controls::take_control_invocation(root).is_none(),
         "in-flight enumeration/availability cannot reoffer"
     );
 }

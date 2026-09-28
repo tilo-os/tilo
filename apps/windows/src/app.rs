@@ -1395,6 +1395,8 @@ impl WindowsApp {
 }
 
 impl Widget for WindowsApp {
+    ui::provides!(dyn ui::widget::controls::ActionControls);
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[
             "windows.launch",
@@ -2906,9 +2908,6 @@ impl Widget for WindowsApp {
     fn test_id(&self) -> Option<&str> {
         Some("windows-app")
     }
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.pending_control_invocation.take()
-    }
     fn modal_capture(&self) -> Option<Rect> {
         self.delete_confirmation_layout
             .as_ref()
@@ -3071,6 +3070,12 @@ impl Widget for WindowsApp {
         children.push(&mut self.update_windows_button);
         children.push(&mut self.revoke_windows_connection_button);
         children
+    }
+}
+
+impl ui::widget::controls::ActionControls for WindowsApp {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.pending_control_invocation.take()
     }
 }
 

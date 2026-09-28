@@ -460,6 +460,8 @@ impl TimePicker {
 }
 
 impl Widget for TimePicker {
+    crate::provides!(dyn crate::widget::controls::ActionControls);
+
     fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
         if let Some(value) = self
             .local_state
@@ -674,12 +676,6 @@ impl Widget for TimePicker {
         )
     }
 
-    fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
-        vec![crate::widget::ControlBindingMetadata::semantic(
-            self.id.clone(),
-        )]
-    }
-
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
@@ -720,6 +716,14 @@ impl Widget for TimePicker {
         });
         self.fire_on_change();
         true
+    }
+}
+
+impl crate::widget::controls::ActionControls for TimePicker {
+    fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
+        vec![crate::widget::ControlBindingMetadata::semantic(
+            self.id.clone(),
+        )]
     }
 }
 

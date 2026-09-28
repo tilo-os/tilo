@@ -3896,6 +3896,8 @@ fn text_at(state: &AutoCommit, root: &ObjId, key: &str) -> String {
 }
 
 impl Widget for StoreApp {
+    ui::provides!(dyn ui::widget::controls::ActionControls);
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[
             crate::browse_actions::STORE_BROWSE_OPERATION_TYPE,
@@ -4463,13 +4465,6 @@ impl Widget for StoreApp {
             .collect()
     }
 
-    fn take_control_invocation(&mut self) -> Option<ControlInvocation> {
-        self.root
-            .as_mut()
-            .and_then(|root| root.take_control_invocation())
-            .or_else(|| self.pending_control_invocation.take())
-    }
-
     fn name(&self) -> &'static str {
         "StoreApp"
     }
@@ -4512,6 +4507,15 @@ impl Widget for StoreApp {
                 .as_ref()
                 .is_some_and(|images| images.pending() > 0)
             || self.report_export.is_some()
+    }
+}
+
+impl ui::widget::controls::ActionControls for StoreApp {
+    fn take_control_invocation(&mut self) -> Option<ControlInvocation> {
+        self.root
+            .as_mut()
+            .and_then(|root| ui::widget::controls::take_control_invocation(root.as_mut()))
+            .or_else(|| self.pending_control_invocation.take())
     }
 }
 
@@ -5545,7 +5549,8 @@ mod tests {
                             },
                         );
                     }
-                    let details = grid.take_control_invocation().expect("pointer Details");
+                    let details = ui::widget::controls::take_control_invocation(&mut grid)
+                        .expect("pointer Details");
                     assert_eq!(details.address.resource, format!("app:{}", item.id));
                     assert_eq!(details.address.action, "show-details");
                     let primary = control_mut(&mut grid, "primary").unwrap();
@@ -5558,7 +5563,7 @@ mod tests {
                         ),
                         !busy
                     );
-                    let invoked = grid.take_control_invocation();
+                    let invoked = ui::widget::controls::take_control_invocation(&mut grid);
                     if busy {
                         assert!(invoked.is_none());
                     } else {
@@ -5597,8 +5602,7 @@ mod tests {
                 &automerge::ROOT,
             )
             .unwrap();
-            let intent = app
-                .take_control_invocation()
+            let intent = ui::widget::controls::take_control_invocation(&mut app)
                 .expect("refresh action intent");
             assert_eq!(intent.address.resource, "store:remotes");
             assert_eq!(intent.address.action, "refresh");

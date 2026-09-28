@@ -148,7 +148,7 @@ pub(crate) fn refresh_bound_controls(
             .filter(|descriptor| descriptor.contract.availability.is_available())
             .map(|descriptor| descriptor.address)
             .collect();
-        widget.refresh_control_action_availability(&allowed);
+        crate::widget::controls::refresh_control_action_availability(widget, &allowed);
         None
     };
     root.visit_components(&mut ComponentRequest {
@@ -260,7 +260,7 @@ fn visit_control_queues(root: &mut dyn Widget, drain: bool) -> BoundControlBatch
                 intent,
             ));
         }
-        while let Some(intent) = widget.take_control_invocation() {
+        while let Some(intent) = crate::widget::controls::take_control_invocation(widget) {
             invocations.push((
                 BoundActionTarget {
                     binding: binding.clone(),
@@ -298,7 +298,11 @@ pub(crate) fn notify_control_invocation_result(
     let mut visit = |_: &CallbackBinding,
                      widget: &mut dyn crate::widget::AppWidget,
                      _: &tilo_actions::ActionRegistry| {
-        widget.on_control_invocation_result(&target.address.address, result);
+        crate::widget::controls::on_control_invocation_result(
+            widget,
+            &target.address.address,
+            result,
+        );
         None
     };
     root.visit_components(&mut ComponentRequest {
