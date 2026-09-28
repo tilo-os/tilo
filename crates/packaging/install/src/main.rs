@@ -456,22 +456,6 @@ fn store_error(error: StoreError) -> Error {
     }
 }
 
-/// Move packages still in the layout that predates the content store.
-/// Idempotent, and a no-op once everything has moved.
-fn migrate_store() -> Result<(), Error> {
-    let report = store()?.migrate_legacy_layout().map_err(store_error)?;
-    if !report.migrated.is_empty() {
-        eprintln!(
-            "tilo-install: moved {} installed package(s) into the content store",
-            report.migrated.len()
-        );
-    }
-    for (id, reason) in &report.kept {
-        eprintln!("tilo-install: {id} stays in its old layout: {reason}");
-    }
-    Ok(())
-}
-
 /// attestor policy. Returns the publisher key set for `verify_with_trust`.
 fn validate_registry_constraints(
     pkg_id: PackageId,
@@ -1857,27 +1841,9 @@ fn runtime(cmd: RuntimeCmd) -> Result<(), Error> {
     }
 }
 
-/// Bring the package store up to date before a command that reads or
-/// writes installed packages. Trust, revocation, runtime and PATH commands
-/// do not touch the store.
-fn prepare(cmd: &Cmd) -> Result<(), Error> {
-    match cmd {
-        Cmd::Trust { .. }
-        | Cmd::Revoke { .. }
-        | Cmd::Revoked { .. }
-        | Cmd::Path
-        | Cmd::Runtime { .. }
-        // A dry run promises to write nothing.
-        | Cmd::Install { dry_run: true, .. }
-        | Cmd::Update { dry_run: true, .. }
-        | Cmd::Uninstall { dry_run: true, .. } => Ok(()),
-        _ => migrate_store(),
-    }
-}
-
 fn main() {
     let cli = Cli::parse();
-    let result = prepare(&cli.cmd).and_then(|()| match cli.cmd {
+    let result = match cli.cmd {
         Cmd::Install {
             tapp,
             pinned,
@@ -1955,7 +1921,7 @@ fn main() {
         },
         Cmd::Path => print_path(),
         Cmd::Runtime { cmd } => runtime(cmd),
-    });
+    };
     if let Err(e) = result {
         eprintln!("tilo-install: {e}");
         std::process::exit(1);
