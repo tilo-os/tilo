@@ -1139,7 +1139,8 @@ impl DrmDispatchState {
     /// hot-plug takes, so a display present at boot and one plugged in
     /// later end up configured identically. Each is interned by `(device,
     /// connector)` so its `OutputId` is stable, and the first gets
-    /// `OutputId(0)`, preserving the "primary == `OutputId(0)`" contract.
+    /// `OutputId(0)`: the last tie-break for the primary when Settings names
+    /// none and no built-in panel is attached (see `relayout_with`).
     /// Also seeds the pointer at the center of the combined space and
     /// publishes the initial display snapshot. Extracted from
     /// [`DrmRuntime::new`] to keep that constructor a readable top-level
@@ -1859,10 +1860,14 @@ impl DrmDispatchState {
     }
 
     /// The public output table, in `OutputId` order.
-    fn output_table(&self) -> Vec<Output> {
-        let mut outs: Vec<Output> = self.output_meta.values().cloned().collect();
-        outs.sort_by_key(|o| o.id.0);
-        outs
+    /// The published outputs in the order [`Self::relayout_with`] keeps the
+    /// live set: the primary chosen in Settings first, else the built-in
+    /// panel, then by id. Everything downstream takes the first as primary.
+    pub(super) fn output_table(&self) -> Vec<Output> {
+        self.live
+            .iter()
+            .filter_map(|l| self.output_meta.get(&l.id).cloned())
+            .collect()
     }
 
     /// Perform one step of the pause/resume sequence the session state machine asked for.
@@ -6514,6 +6519,32 @@ mod tests {
         assert_eq!(external.logical_position, (1280, 0));
         assert_eq!(panel.scale, 1.5);
         assert_eq!(external.scale, 1.0);
+    }
+
+    #[test]
+    fn the_output_table_lists_the_primary_chosen_in_settings_first() {
+        use settings_store::hardware::{DisplayConfig, OutputConfig};
+
+        let (mut state, _rx) = dispatch_with_channel();
+        state.live = vec![
+            entry(0, 10, (1920, 1080), Some((527, 296))),
+            entry(1, 11, (2560, 1440), Some((597, 336))),
+        ];
+        let mut config = DisplayConfig::default();
+        config.outputs.insert(
+            "TEST-11".into(),
+            OutputConfig {
+                primary: true,
+                ..OutputConfig::default()
+            },
+        );
+        state.relayout_with(&config);
+        let table = state.output_table();
+        assert_eq!(
+            table.iter().map(|output| output.id).collect::<Vec<_>>(),
+            [OutputId(1), OutputId(0)],
+            "the shell, the lock screen and pointer clamping take the first output as primary"
+        );
     }
 
     #[test]
