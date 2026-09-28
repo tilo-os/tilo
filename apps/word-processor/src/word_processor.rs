@@ -2449,18 +2449,17 @@ impl WordProcessor {
     }
 
     fn region_set_kind(&mut self, state: &mut AutoCommit, block: &str, kind: &str) {
-        let region = self.region;
-        let Some(containers) = self.containers.clone() else {
+        if self.containers.is_none() || self.ids.is_none() {
             return;
-        };
-        if let Some(ids) = self.ids.as_mut() {
-            let mut dm = DocMut {
-                doc: state,
-                c: &containers,
-                ids,
-            };
-            dm.set_kind_in(region, block, kind);
         }
+        let action = crate::actions::RichTextAction::SetParagraphStyle {
+            region: self.action_region(),
+            blocks: vec![block.to_string()],
+            kind: kind.to_string(),
+            level: None,
+            ordered: None,
+        };
+        let _ = action.apply_under(state, &automerge::ROOT);
     }
 
     fn region_remove_block(&mut self, state: &mut AutoCommit, block: &str) {
