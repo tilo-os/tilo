@@ -80,8 +80,8 @@ use winit::event::WindowEvent;
 
 use super::{
     ActionDirectoryInvocationDomain, ActionDirectoryResourcePage, ControlBindingMetadata, EventCtx,
-    LayoutInfo, ManualPolicy, ParticipantPresence, PrimaryScrollAction, PrimaryScrollRegion,
-    PrimaryScrollResult, ResourceOperationStart, Widget, WindowCloseAdmission,
+    LayoutInfo, ManualPolicy, PrimaryScrollAction, PrimaryScrollRegion, PrimaryScrollResult,
+    ResourceOperationStart, Widget, WindowCloseAdmission,
 };
 use crate::dnd::DragPayload;
 use crate::permissions::PermissionScope;
@@ -717,26 +717,6 @@ pub trait Decorator {
             .activate_search_result(action_id, doc, path);
     }
 
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.inner_mut().take_committed_action()
-    }
-
-    fn keeps_undo_step_open(&self) -> bool {
-        self.inner().keeps_undo_step_open()
-    }
-
-    fn set_undo_status(&mut self, status: &mut dyn FnMut() -> crate::undo::UndoStatus) {
-        self.inner_mut().set_undo_status(status)
-    }
-
-    fn take_undo_request(&mut self) -> Option<crate::undo::UndoRequest> {
-        self.inner_mut().take_undo_request()
-    }
-
-    fn handle_local_undo_request(&mut self, request: crate::undo::UndoRequest) -> bool {
-        self.inner_mut().handle_local_undo_request(request)
-    }
-
     fn apply_room_action(&mut self, doc: &mut AutoCommit, type_id: &str, payload: &[u8]) -> bool {
         self.inner_mut().apply_room_action(doc, type_id, payload)
     }
@@ -748,56 +728,6 @@ pub trait Decorator {
         path: &ObjId,
     ) -> Result<Option<ResourceOperationStart>, String> {
         self.inner_mut().start_operation(op, doc, path)
-    }
-
-    fn invoke_resource_operation(
-        &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Result<bool, String> {
-        self.inner_mut()
-            .invoke_resource_operation(kind, type_id, payload, doc, path)
-    }
-
-    fn invoke_resource_operation_v2(
-        &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<tilo_actions::ActionOutput>, String> {
-        self.inner_mut()
-            .invoke_resource_operation_v2(kind, type_id, payload, doc, path)
-    }
-
-    fn start_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ResourceOperationStart>, String> {
-        self.inner_mut()
-            .start_resource_operation(invocation, kind, type_id, payload, doc, path)
-    }
-
-    fn start_resource_operation_with_document(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ResourceOperationStart>, String> {
-        self.inner_mut()
-            .start_resource_operation_with_document(invocation, kind, type_id, payload, doc, path)
     }
 
     fn poll_resource_operation(
@@ -920,10 +850,6 @@ pub trait Decorator {
         self.inner().caller_view_resources(doc)
     }
 
-    fn collaboration_children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.inner_mut().collaboration_children_mut()
-    }
-
     fn focus_requested(&mut self, target: Option<NodeId>, tree: &TaffyTree<()>) {
         self.inner_mut().focus_requested(target, tree)
     }
@@ -944,16 +870,8 @@ pub trait Decorator {
         self.inner().is_default_keyboard_focus()
     }
 
-    fn join_participant(&mut self, participant: &tilo_actions::ParticipantId) -> bool {
-        self.inner_mut().join_participant(participant)
-    }
-
     fn keyboard_input_scope(&self) -> Option<crate::application::InstanceId> {
         self.inner().keyboard_input_scope()
-    }
-
-    fn leave_participant(&mut self, participant: &tilo_actions::ParticipantId) {
-        self.inner_mut().leave_participant(participant)
     }
 
     fn mount_native_views(&mut self, host: &crate::widget::native_view::NativeViewHost<'_>) {
@@ -962,10 +880,6 @@ pub trait Decorator {
 
     fn native_view_frame_start(&mut self) {
         self.inner_mut().native_view_frame_start()
-    }
-
-    fn participant_presence(&self, doc: &AutoCommit) -> Vec<ParticipantPresence> {
-        self.inner().participant_presence(doc)
     }
 
     fn primary_vertical_scroll(&self) -> Option<PrimaryScrollRegion> {
@@ -1008,14 +922,6 @@ pub trait Decorator {
         &self,
     ) -> &'static [crate::semantic_document_read::RegisteredSemanticReader] {
         self.inner().semantic_readers()
-    }
-
-    fn set_participant_host(&mut self, host: bool) {
-        self.inner_mut().set_participant_host(host)
-    }
-
-    fn set_participant_label(&mut self, participant: &tilo_actions::ParticipantId, label: &str) {
-        self.inner_mut().set_participant_label(participant, label)
     }
 
     fn unmount_native_views(&mut self) {
@@ -1642,26 +1548,6 @@ impl<T: Decorator> Widget for T {
         Decorator::activate_search_result(self, action_id, doc, path);
     }
 
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        Decorator::take_committed_action(self)
-    }
-
-    fn keeps_undo_step_open(&self) -> bool {
-        Decorator::keeps_undo_step_open(self)
-    }
-
-    fn set_undo_status(&mut self, status: &mut dyn FnMut() -> crate::undo::UndoStatus) {
-        Decorator::set_undo_status(self, status)
-    }
-
-    fn take_undo_request(&mut self) -> Option<crate::undo::UndoRequest> {
-        Decorator::take_undo_request(self)
-    }
-
-    fn handle_local_undo_request(&mut self, request: crate::undo::UndoRequest) -> bool {
-        Decorator::handle_local_undo_request(self, request)
-    }
-
     fn apply_room_action(&mut self, doc: &mut AutoCommit, type_id: &str, payload: &[u8]) -> bool {
         Decorator::apply_room_action(self, doc, type_id, payload)
     }
@@ -1673,54 +1559,6 @@ impl<T: Decorator> Widget for T {
         path: &ObjId,
     ) -> Result<Option<ResourceOperationStart>, String> {
         Decorator::start_operation(self, op, doc, path)
-    }
-
-    fn invoke_resource_operation(
-        &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Result<bool, String> {
-        Decorator::invoke_resource_operation(self, kind, type_id, payload, doc, path)
-    }
-
-    fn invoke_resource_operation_v2(
-        &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<tilo_actions::ActionOutput>, String> {
-        Decorator::invoke_resource_operation_v2(self, kind, type_id, payload, doc, path)
-    }
-
-    fn start_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ResourceOperationStart>, String> {
-        Decorator::start_resource_operation(self, invocation, kind, type_id, payload, doc, path)
-    }
-
-    fn start_resource_operation_with_document(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ResourceOperationStart>, String> {
-        Decorator::start_resource_operation_with_document(
-            self, invocation, kind, type_id, payload, doc, path,
-        )
     }
 
     fn poll_resource_operation(
@@ -1842,10 +1680,6 @@ impl<T: Decorator> Widget for T {
         Decorator::caller_view_resources(self, doc)
     }
 
-    fn collaboration_children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        Decorator::collaboration_children_mut(self)
-    }
-
     fn focus_requested(&mut self, target: Option<NodeId>, tree: &TaffyTree<()>) {
         Decorator::focus_requested(self, target, tree)
     }
@@ -1866,16 +1700,8 @@ impl<T: Decorator> Widget for T {
         Decorator::is_default_keyboard_focus(self)
     }
 
-    fn join_participant(&mut self, participant: &tilo_actions::ParticipantId) -> bool {
-        Decorator::join_participant(self, participant)
-    }
-
     fn keyboard_input_scope(&self) -> Option<crate::application::InstanceId> {
         Decorator::keyboard_input_scope(self)
-    }
-
-    fn leave_participant(&mut self, participant: &tilo_actions::ParticipantId) {
-        Decorator::leave_participant(self, participant)
     }
 
     fn mount_native_views(&mut self, host: &crate::widget::native_view::NativeViewHost<'_>) {
@@ -1884,10 +1710,6 @@ impl<T: Decorator> Widget for T {
 
     fn native_view_frame_start(&mut self) {
         Decorator::native_view_frame_start(self)
-    }
-
-    fn participant_presence(&self, doc: &AutoCommit) -> Vec<ParticipantPresence> {
-        Decorator::participant_presence(self, doc)
     }
 
     fn primary_vertical_scroll(&self) -> Option<PrimaryScrollRegion> {
@@ -1919,14 +1741,6 @@ impl<T: Decorator> Widget for T {
         &self,
     ) -> &'static [crate::semantic_document_read::RegisteredSemanticReader] {
         Decorator::semantic_readers(self)
-    }
-
-    fn set_participant_host(&mut self, host: bool) {
-        Decorator::set_participant_host(self, host)
-    }
-
-    fn set_participant_label(&mut self, participant: &tilo_actions::ParticipantId, label: &str) {
-        Decorator::set_participant_label(self, participant, label)
     }
 
     fn unmount_native_views(&mut self) {

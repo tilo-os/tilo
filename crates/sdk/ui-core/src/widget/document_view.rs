@@ -193,7 +193,10 @@ impl<K> Widget for ModelView<K>
 where
     K: PartialEq + 'static,
 {
-    crate::provides!(dyn crate::widget::FullscreenProvider);
+    crate::provides!(
+        dyn crate::widget::FullscreenProvider,
+        dyn crate::undo::CommittedActions
+    );
 
     fn install_control_custody(
         &mut self,
@@ -383,10 +386,6 @@ where
         self.child.activate_search_result(action_id, doc, path);
     }
 
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.child.take_committed_action()
-    }
-
     fn apply_room_action(&mut self, doc: &mut AutoCommit, type_id: &str, payload: &[u8]) -> bool {
         self.child.apply_room_action(doc, type_id, payload)
     }
@@ -408,6 +407,15 @@ where
             presence,
             permissions,
         );
+    }
+}
+
+impl<K> crate::undo::CommittedActions for ModelView<K>
+where
+    K: PartialEq + 'static,
+{
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        crate::undo::take_committed_action(self.child.as_mut())
     }
 }
 

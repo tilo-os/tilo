@@ -746,7 +746,7 @@ fn analysis_queue_is_shared_bounded_and_commits_only_current_results() {
             app.resource_result,
             Some(tilo_actions::InvocationUpdate::Succeeded { .. })
         ));
-        assert!(app.take_committed_action().is_some());
+        assert!(ui::undo::take_committed_action(&mut app).is_some());
     }
 }
 
@@ -1619,7 +1619,7 @@ fn operations_fail_canonically_cancel_terminally_and_confirm_removal() {
         assert_eq!(app.library_remove_confirm.as_deref(), Some(id.as_str()));
         assert!(app.perform_library_semantic_action(&target, &AccessAction::Activate, &mut doc));
         assert!(PhotosDoc::library(&doc).photo(&id).is_none());
-        assert!(app.take_committed_action().is_some());
+        assert!(ui::undo::take_committed_action(&mut app).is_some());
     }
 }
 
@@ -1682,7 +1682,7 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
         ));
         assert_eq!(PhotosDoc::edits(&doc).rotate_quarters, 1);
         assert!(
-            app.take_committed_action().is_some(),
+            ui::undo::take_committed_action(&mut app).is_some(),
             "the semantic route must create the normal undo boundary"
         );
 

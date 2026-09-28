@@ -214,6 +214,8 @@ impl crate::search::SearchProvider for LazyProbe {
     }
 }
 impl Widget for Probe {
+    crate::provides!(dyn crate::undo::CommittedActions);
+
     fn refresh_control_action_availability(
         &mut self,
         allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
@@ -410,9 +412,6 @@ impl Widget for Probe {
         Self::capture("mutable-operation");
         Ok(Some(crate::widget::ResourceOperationStart::Accepted))
     }
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
-    }
     fn poll_resource_operation(
         &mut self,
         invocation: tilo_actions::InvocationId,
@@ -520,6 +519,12 @@ impl Widget for Probe {
         doc.put(ROOT, "action", true).unwrap();
         Self::capture("action");
         true
+    }
+}
+
+impl crate::undo::CommittedActions for Probe {
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
     }
 }
 impl AppWidget for Probe {

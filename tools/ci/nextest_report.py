@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """Summarise a cargo-nextest JUnit report for a CI job summary.
 
-The CI nextest profile retries a failing test once. A test that fails and then
-passes is reported by nextest as FLAKY and does not fail the job, so without
-this report an intermittently failing test is only visible by reading the
-whole log. This lists every retried test (flaky or finally failed) and the
-20 slowest tests, the ones that decide a shard's wall time and are worth
+The CI profile does not retry: a first-run failure fails the job. This still
+lists any retried case (a profile that turns retries back on marks a pass
+after a failure as FLAKY, which would otherwise hide in the log) and the 20
+slowest tests, the ones that decide a shard's wall time and are worth
 speeding up or starting first (.config/nextest.toml priorities), and emits one
 warning annotation per flaky test.
 

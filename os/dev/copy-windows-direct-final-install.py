@@ -156,20 +156,19 @@ def load_plan(path):
 
 def expected_rows(plan, stage_receipt, current_rows):
     require(stage_receipt is None, "direct final copy cannot include staging receipt")
-    current_by_id = {r["partuuid"]: r for r in normalized(current_rows)}
-    require(len(current_by_id) == len(current_rows), "physical partition IDs are not unique")
+    rows = normalized(current_rows)
+    require(len(rows) == 7 and len({r["number"] for r in rows}) == 7
+            and len({r["partuuid"] for r in rows}) == 7,
+            "physical partition numbers or IDs are not unique")
+    # A reboot can renumber Get-Partition rows by offset after insertion before
+    # WinRE. The reviewed plan still records the original GPT entry slots.
+    require(same_gpt_content(rows, plan["preserve_partitions"] + plan["target_partitions"]),
+            "physical partition map differs from reviewed final map")
+    current_by_id = {r["partuuid"]: r for r in rows}
     final_rows = []
     for row in plan["target_partitions"]:
         identity = stage.guid(row["partuuid"])
-        require(identity in current_by_id, "final partition absent from physical GPT")
-        require(row.get("number") == current_by_id[identity]["number"],
-                "Windows-assigned final partition number differs from direct plan")
-        final_rows.append({"number": current_by_id[identity]["number"],
-                           "partuuid": identity, "type_guid": stage.guid(row["type_guid"]),
-                           "offset_bytes": row["offset_bytes"], "size_bytes": row["size_bytes"]})
-    rows = normalized(plan["preserve_partitions"] + final_rows)
-    require(len(rows) == 7 and len({r["number"] for r in rows}) == 7,
-            "direct plan does not identify exactly seven partition slots")
+        final_rows.append(current_by_id[identity])
     return rows, final_rows
 def read_gpt(stream, disk_size):
     """Read both GPT copies, including their CRCs, independently of Windows' cache."""
@@ -273,8 +272,9 @@ def source_preflight(source_path, source_receipt, rows, final_rows, disk_size):
             and source_receipt.get("raw_size_bytes") == disk_size,
             "VM-installed source receipt has wrong schema or size")
     source_rows = source_receipt.get("partitions")
-    expected_source = rows
-    require(type(source_rows) is list and normalized(source_rows) == expected_source,
+    require(type(source_rows) is list and len(source_rows) == 7
+            and len({r["number"] for r in normalized(source_rows)}) == 7
+            and same_gpt_content(source_rows, rows),
             "VM-installed source receipt partition map differs")
     final = source_receipt.get("final_sha256")
     require(type(final) is dict and set(final) == set(ROLES), "VM-installed source lacks exact final hashes")
@@ -282,7 +282,7 @@ def source_preflight(source_path, source_receipt, rows, final_rows, disk_size):
         digest(final[role])
     with source_path.open("rb", buffering=0) as source:
         _, actual_rows = read_gpt(source, disk_size)
-        require(same_gpt_content(actual_rows, expected_source),
+        require(same_gpt_content(actual_rows, rows),
                 "VM-installed source GPT differs from physical plan")
         for role, row in zip(ROLES, final_rows, strict=True):
             require(hash_range(source, row["offset_bytes"], row["size_bytes"]) == final[role],

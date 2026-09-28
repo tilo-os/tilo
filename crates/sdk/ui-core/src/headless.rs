@@ -1721,7 +1721,7 @@ impl FrameHarness {
                     &self.bindings,
                     &self.node_map,
                     node,
-                    |widget| widget.take_undo_request(),
+                    |widget| crate::undo::take_undo_request(widget),
                 )
             } {
                 requests.push((
@@ -1826,7 +1826,7 @@ impl FrameHarness {
                     &self.bindings,
                     &self.node_map,
                     node,
-                    |widget| widget.set_undo_status(&mut status),
+                    |widget| crate::undo::set_undo_status(widget, &mut status),
                 )
             };
         }
@@ -4534,7 +4534,7 @@ impl FrameHarness {
                     if framework {
                         return;
                     }
-                    if self.root.handle_local_undo_request(request) {
+                    if crate::undo::handle_local_undo_request(self.root.as_mut(), request) {
                         self.relayout();
                     } else {
                         match request {
@@ -6545,8 +6545,12 @@ impl FrameHarness {
     /// first invocation (`HostWorker::join_participant`). A host whose own author
     /// is that participant makes the component act as the agent. Idempotent.
     pub fn join_participant(&mut self, participant: &tilo_actions::ParticipantId, label: &str) {
-        self.root.join_participant(participant);
-        self.root.set_participant_label(participant, label);
+        crate::collaboration::participants::join_participant(self.root.as_mut(), participant);
+        crate::collaboration::participants::set_participant_label(
+            self.root.as_mut(),
+            participant,
+            label,
+        );
     }
 
     /// The scene the last laid-out frame encoded: what [`Self::render_rgba`]
@@ -10921,7 +10925,7 @@ mod undo_driver_tests {
 /// `on_commit`, where the widget writes the document itself. An app built on
 /// [`ActionHost`](crate::action_host::ActionHost) never sets `needs_commit`:
 /// its boundary arrives through
-/// [`take_committed_action`](crate::widget::Widget::take_committed_action)
+/// [`take_committed_action`](crate::undo::CommittedActions::take_committed_action)
 /// instead. Until the driver drained that, a headless test of such an app could
 /// deliver the input but could not observe the undo history the input produced,
 /// so undo behaviour was untestable for the majority of the fleet.
@@ -10997,6 +11001,8 @@ mod dispatched_action_driver_tests {
     }
 
     impl crate::widget::Widget for ActionEditor {
+        crate::provides!(dyn crate::undo::CommittedActions);
+
         fn build_layout(
             &mut self,
             taffy: &mut TaffyTree<()>,
@@ -11098,10 +11104,6 @@ mod dispatched_action_driver_tests {
             true
         }
 
-        fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-            self.actions.take_committed()
-        }
-
         fn name(&self) -> &'static str {
             "ActionEditor"
         }
@@ -11128,6 +11130,12 @@ mod dispatched_action_driver_tests {
                     .with_name("Editor")
                     .with_state(AccessState::new().focusable(true).focused(self.focused)),
             )
+        }
+    }
+
+    impl crate::undo::CommittedActions for ActionEditor {
+        fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+            self.actions.take_committed()
         }
     }
 
@@ -11430,6 +11438,8 @@ mod prepared_driver_tests {
         }
     }
     impl Widget for Observer {
+        crate::provides!(dyn crate::undo::UndoControl);
+
         fn set_motion_reduced(&mut self, _: bool) {
             if !std::mem::replace(&mut self.motion_delivered, true)
                 && let Some(local) = self.observed.local.borrow().as_ref()
@@ -11502,9 +11512,6 @@ mod prepared_driver_tests {
                 *ctx.handled = true;
             }
         }
-        fn set_undo_status(&mut self, status: &mut dyn FnMut() -> crate::undo::UndoStatus) {
-            *self.observed.published.borrow_mut() = status();
-        }
         fn is_focusable(&self) -> bool {
             true
         }
@@ -11522,6 +11529,12 @@ mod prepared_driver_tests {
         }
         fn get_state(&self) -> Option<String> {
             Some(self.snapshot.clone())
+        }
+    }
+
+    impl crate::undo::UndoControl for Observer {
+        fn set_undo_status(&mut self, status: &mut dyn FnMut() -> crate::undo::UndoStatus) {
+            *self.observed.published.borrow_mut() = status();
         }
     }
     impl crate::widget::AppWidget for Observer {

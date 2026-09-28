@@ -861,9 +861,7 @@ mod tests {
                 &ROOT
             ));
             panel.body_editor_mut().sync(&mut state.doc, &ROOT);
-            let before = panel
-                .body_editor_mut()
-                .take_committed_action()
+            let before = ui::undo::take_committed_action(panel.body_editor_mut())
                 .expect("a source edit is a Notes action");
             state.record_committed_action(before, None, None);
             let edited_heads = state.doc.get_heads();

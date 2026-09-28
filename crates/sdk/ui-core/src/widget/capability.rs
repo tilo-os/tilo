@@ -95,11 +95,21 @@ pub fn capability_mut<T: ?Sized + 'static>(widget: &mut (impl Widget + ?Sized)) 
 
 /// Declare the capabilities a widget provides, inside its `impl Widget`:
 /// `provides!(dyn FullscreenProvider, dyn Continuable);`
+///
+/// A wrapper that provides some capabilities itself and passes every other
+/// request to the widget in one of its fields names that field:
+/// `provides!(dyn CommittedActions; inner = content);`
 #[macro_export]
 macro_rules! provides {
-    ($($capability:ty),+ $(,)?) => {
+    (@each [$($capability:ty),+] { $($field:ident)? }) => {
         fn provide<'a>(&'a self, request: &mut $crate::widget::capability::Request<'a, '_>) {
-            $(request.provide::<$capability>(self);)+
+            $(
+                if request.wants::<$capability>() {
+                    request.provide::<$capability>(self);
+                    return;
+                }
+            )+
+            $(self.$field.provide(request);)?
         }
 
         fn provide_mut<'a>(
@@ -112,7 +122,14 @@ macro_rules! provides {
                     return;
                 }
             )+
+            $(self.$field.provide_mut(request);)?
         }
+    };
+    ($($capability:ty),+ $(,)?) => {
+        $crate::provides!(@each [$($capability),+] {});
+    };
+    ($($capability:ty),+ ; inner = $field:ident) => {
+        $crate::provides!(@each [$($capability),+] { $field });
     };
 }
 

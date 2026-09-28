@@ -443,7 +443,7 @@ impl ThemesApp {
     /// replays byte-identically on peers), exactly as the palette does. The
     /// document heads captured just before the first action of the batch are
     /// stashed so the host records **one** undo boundary bracketing it
-    /// ([`Widget::take_committed_action`]); Ctrl+Z then reverts it.
+    /// ([`CommittedActions::take_committed_action`](ui::undo::CommittedActions::take_committed_action)); Ctrl+Z then reverts it.
     fn perform_action(&mut self, state: &mut AutoCommit, action: &crate::actions::ThemesAction) {
         self.actions.dispatch_with_context(
             state,
@@ -1401,6 +1401,8 @@ impl ThemesApp {
 }
 
 impl Widget for ThemesApp {
+    ui::provides!(dyn ui::undo::CommittedActions);
+
     fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
         Some(&crate::framework_history::HISTORY)
     }
@@ -1475,13 +1477,6 @@ impl Widget for ThemesApp {
             return self.completed_apply.take();
         }
         None
-    }
-
-    /// Hand the host the heads captured before an on-screen affordance dispatched
-    /// its Themes action, so it records one undo boundary for it (see
-    /// `Self::perform_action`). Rising-edge: cleared on read.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
     }
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
@@ -1919,6 +1914,15 @@ impl Widget for ThemesApp {
         _permissions: &ui::permissions::PermissionContext,
     ) {
         self.draw(scene, transform, text_renderer, theme, presence);
+    }
+}
+
+impl ui::undo::CommittedActions for ThemesApp {
+    /// Hand the host the heads captured before an on-screen affordance dispatched
+    /// its Themes action, so it records one undo boundary for it (see
+    /// `Self::perform_action`). Rising-edge: cleared on read.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
     }
 }
 
@@ -2693,7 +2697,7 @@ mod tests {
                 "attributed to the local user, so their Ctrl+Z can reach it"
             );
             assert!(
-                app.take_committed_action().is_none(),
+                ui::undo::take_committed_action(&mut app).is_none(),
                 "rising-edge: the boundary is consumed once"
             );
 

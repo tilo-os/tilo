@@ -7873,7 +7873,7 @@ fn host_identity_for_key(
     let mut workspace_device_certs = std::collections::HashMap::new();
     let mut workspace_revocations = std::collections::HashMap::new();
     if let Ok(store) = crate::identity_registry::IdentityRegistryStore::from_env()
-        && let Ok(registry) = store.migrate_legacy_primary()
+        && let Ok(registry) = store.load_reconciled()
     {
         for (room, identity_id) in &registry.workspace_identities {
             let Some(profile) = registry.identities.get(identity_id) else {

@@ -713,7 +713,7 @@ impl FirewallApp {
     /// executor (a pinned actor + committed change, so it replays byte-identically
     /// on peers), exactly as the palette does. The document heads captured just
     /// before the first action of an event are stashed so the host records
-    /// **one** undo boundary bracketing it ([`Widget::take_committed_action`]).
+    /// **one** undo boundary bracketing it ([`CommittedActions::take_committed_action`](ui::undo::CommittedActions::take_committed_action)).
     /// The action mutates its addressed shared document field; we then adopt
     /// the result back into the in-memory view so the next frame paints it, and
     /// remember the JSON so `sync` doesn't re-adopt our own write as a remote
@@ -1449,6 +1449,8 @@ fn selected_on(ground: Color) -> (Color, Color) {
 }
 
 impl Widget for FirewallApp {
+    ui::provides!(dyn ui::undo::CommittedActions);
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[
             "firewall.apply",
@@ -1999,7 +2001,9 @@ impl Widget for FirewallApp {
         }
         false
     }
+}
 
+impl ui::undo::CommittedActions for FirewallApp {
     /// Hand the host the heads captured before an on-screen affordance dispatched
     /// its firewall action, so it records one undo boundary for it (see
     /// `Self::perform_action`). Rising-edge: cleared on read.

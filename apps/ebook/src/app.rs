@@ -4847,7 +4847,7 @@ impl Continuable for BooksApp {
 }
 
 impl Widget for BooksApp {
-    ui::provides!(dyn ui::widget::Continuable);
+    ui::provides!(dyn ui::widget::Continuable, dyn ui::undo::CommittedActions);
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::EBOOK_OPERATION_TYPE]
@@ -4967,21 +4967,6 @@ impl Widget for BooksApp {
 
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
         <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
-    }
-
-    /// Hand the host the heads captured before an on-page affordance
-    /// dispatched its annotation action. Rising-edge: cleared on read.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions
-            .take_committed()
-            .or_else(|| self.note_composer.take_committed())
-            .or_else(|| self.comment_overlay.take_committed())
-    }
-
-    /// A word typed into a note or comment is one undo step, kept open for
-    /// its next letters.
-    fn keeps_undo_step_open(&self) -> bool {
-        self.note_composer.keeps_step_open() || self.comment_overlay.keeps_step_open()
     }
 
     /// Make books, chapters and annotations findable through canonical
@@ -5859,6 +5844,22 @@ impl Widget for BooksApp {
 
     fn is_layout_dirty(&self) -> bool {
         self.rect == Rect::ZERO
+    }
+}
+
+impl ui::undo::CommittedActions for BooksApp {
+    /// Hand the host the heads captured before an on-page affordance
+    /// dispatched its annotation action. Rising-edge: cleared on read.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions
+            .take_committed()
+            .or_else(|| self.note_composer.take_committed())
+            .or_else(|| self.comment_overlay.take_committed())
+    }
+    /// A word typed into a note or comment is one undo step, kept open for
+    /// its next letters.
+    fn keeps_undo_step_open(&self) -> bool {
+        self.note_composer.keeps_step_open() || self.comment_overlay.keeps_step_open()
     }
 }
 

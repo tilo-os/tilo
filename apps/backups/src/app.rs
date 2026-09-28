@@ -4771,6 +4771,8 @@ impl BackupsApp {
 }
 
 impl Widget for BackupsApp {
+    ui::provides!(dyn ui::undo::CommittedActions);
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::BACKUPS_OPERATION_TYPE]
     }
@@ -4959,13 +4961,6 @@ impl Widget for BackupsApp {
         vec![Box::new(self.search_index.provider())]
     }
 
-    /// Hand the host the heads captured before an on-screen affordance dispatched
-    /// its action, so it records exactly one undo boundary bracketing it — the
-    /// same path a Ctrl+K palette dispatch takes.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
-    }
-
     fn start_operation(
         &mut self,
         op: &ui::widget::ResourceOperation<'_>,
@@ -5143,6 +5138,15 @@ impl Widget for BackupsApp {
             || self.job.is_some()
             || self.drawer.is_animating()
             || self.status_bubble.needs_frame(Instant::now())
+    }
+}
+
+impl ui::undo::CommittedActions for BackupsApp {
+    /// Hand the host the heads captured before an on-screen affordance dispatched
+    /// its action, so it records exactly one undo boundary bracketing it — the
+    /// same path a Ctrl+K palette dispatch takes.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
     }
 }
 

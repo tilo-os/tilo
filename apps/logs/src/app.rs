@@ -54,7 +54,6 @@ use ui::tilo_actions::{ActionAddress, ControlInvocation, OperationKind, Resource
 use ui::widget::{TextInput, Widget};
 
 use crate::actions::{self, LogsOperation};
-use crate::doc::LogsDoc;
 use crate::model::{Filter, LogEntry, Priority};
 use crate::theme_ext::{ThemeColors, tint};
 use ui::paint::{PaintCtx, fill_rect, fill_round, stroke_round};
@@ -2519,10 +2518,6 @@ impl Widget for LogsApp {
 
     fn sync(&mut self, doc: &mut AppModel, root: &ModelPath) {
         let (doc, root) = ui::doc::document(doc, root);
-        // Upgrade old shared documents by removing the transient keys written
-        // by previous Logs versions. Nothing below reads or writes view state
-        // in the document.
-        LogsDoc::prune_legacy_view_state(doc, root);
         self.drain_export_portal();
         if let Some(filter) = self.shot_filter.take() {
             self.filter = filter;

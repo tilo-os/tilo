@@ -1018,6 +1018,8 @@ impl SnippetsApp {
 }
 
 impl ui::widget::Widget for SnippetsApp {
+    ui::provides!(dyn ui::undo::CommittedActions);
+
     fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
         Some(&crate::framework_history::HISTORY)
     }
@@ -1082,13 +1084,6 @@ impl ui::widget::Widget for SnippetsApp {
             .into_iter()
             .find(|(tag, _)| crate::actions::tag_resource_id(tag) == id)
             .map(|(tag, _)| crate::actions::provide_tag_resource(tag))
-    }
-
-    /// Hand the host the heads captured before an on-screen affordance dispatched
-    /// its action, so it records one undo boundary for it (see
-    /// `Self::perform_action`). Rising-edge: cleared on read.
-    fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
-        self.actions.take_committed()
     }
 
     /// Fold the library into the unified Ctrl+K palette. The provider is an
@@ -1530,6 +1525,15 @@ impl ui::widget::Widget for SnippetsApp {
         _permissions: &PermissionContext,
     ) {
         self.draw(scene, transform, tr, theme, presence);
+    }
+}
+
+impl ui::undo::CommittedActions for SnippetsApp {
+    /// Hand the host the heads captured before an on-screen affordance dispatched
+    /// its action, so it records one undo boundary for it (see
+    /// `Self::perform_action`). Rising-edge: cleared on read.
+    fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
+        self.actions.take_committed()
     }
 }
 
@@ -3271,7 +3275,7 @@ mod tests {
             app.sync(&mut state.doc, &state.root);
             app.new_snippet_for_test(&mut state.doc);
             let id = app.open_id_for_test().unwrap();
-            app.take_committed_action();
+            ui::undo::take_committed_action(&mut app);
             app.sync(&mut state.doc, &state.root);
             app.layout_at_width_for_test(1280.0).unwrap();
             assert!(app.perform_semantic_action(
@@ -3688,7 +3692,7 @@ mod tests {
                 "the host recorded an undo boundary for the dispatched star"
             );
             assert!(
-                Widget::take_committed_action(&mut app).is_none(),
+                ui::undo::take_committed_action(&mut app).is_none(),
                 "rising-edge: the captured heads are cleared on read",
             );
             let entry = state

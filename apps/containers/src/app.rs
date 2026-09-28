@@ -2367,8 +2367,19 @@ impl Widget for ContainersApp {
         if self.seed_demo && !self.seeded {
             self.seed_demo_scene(doc);
         }
-        // Periodically re-probe the engine for fresh stats / state.
-        if self.live && self.last_refresh.elapsed() >= podman::REFRESH_INTERVAL {
+        // Periodically re-probe the engine for fresh stats / state. Controlled
+        // fixtures own that cadence through the request channel; a wall-clock
+        // tick would race their emptiness asserts under a slow runner.
+        if self.live && self.last_refresh.elapsed() >= podman::REFRESH_INTERVAL && {
+            #[cfg(test)]
+            {
+                self.controlled_runtime.is_none()
+            }
+            #[cfg(not(test))]
+            {
+                true
+            }
+        } {
             self.spawn_refresh();
         }
         self.hydrate_selection(doc);
@@ -3914,6 +3925,20 @@ mod tests {
         assert!(
             requests.try_recv().is_err(),
             "terminal event was reduced once"
+        );
+    }
+
+    #[test]
+    fn controlled_runtime_owns_refresh_cadence() {
+        let (mut app, requests, _results) = ContainersApp::history_test_runtime_root();
+        app.last_refresh = Instant::now()
+            .checked_sub(crate::podman::REFRESH_INTERVAL + std::time::Duration::from_millis(1))
+            .expect("refresh interval fits below Instant::now");
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+        assert!(
+            requests.try_recv().is_err(),
+            "controlled fixtures own refresh; wall-clock must not enqueue Refresh"
         );
     }
 

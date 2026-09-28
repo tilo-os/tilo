@@ -3848,7 +3848,9 @@ impl Widget for ChatApp {
     ui::provides!(
         dyn ui::widget::Collaborative,
         dyn ui::widget::Continuable,
-        dyn ui::widget::FloatingSurfaceProvider
+        dyn ui::widget::FloatingSurfaceProvider,
+        dyn ui::collaboration::participants::Participants,
+        dyn ui::undo::CommittedActions
     );
 
     fn semantic_readers(&self) -> &'static [ui::semantic_document_read::RegisteredSemanticReader] {
@@ -4376,32 +4378,6 @@ impl Widget for ChatApp {
         }
     }
 
-    fn join_participant(&mut self, participant: &tilo_actions::ParticipantId) -> bool {
-        if participant.agent_task().is_some() {
-            self.participant_labels
-                .entry(participant.as_str().to_owned())
-                .or_default();
-        }
-        false
-    }
-
-    fn leave_participant(&mut self, participant: &tilo_actions::ParticipantId) {
-        self.participant_labels.remove(participant.as_str());
-    }
-
-    fn set_participant_label(&mut self, participant: &tilo_actions::ParticipantId, label: &str) {
-        if participant.agent_task().is_some() {
-            let label = label.trim();
-            self.participant_labels
-                .insert(participant.as_str().to_owned(), label.to_owned());
-            // A host acting as this agent: it is also the local participant.
-            if participant.as_str() == self.me.id && !label.is_empty() {
-                label.clone_into(&mut self.me.name);
-                self.me.initials = crate::identity::initials_for(label);
-            }
-        }
-    }
-
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Role};
 
@@ -4623,13 +4599,6 @@ impl Widget for ChatApp {
         })
     }
 
-    /// Hand the host the heads captured before an on-screen affordance dispatched
-    /// its action, so it records exactly one undo boundary bracketing the event —
-    /// the same path a Ctrl+K palette dispatch takes.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
-    }
-
     /// Fold conversations, full-text messages, and people into global search.
     /// Every result names an exported `View` action; there is no app-private
     /// activation path.
@@ -4831,6 +4800,41 @@ impl Widget for ChatApp {
         self.canonical_dirty = false;
         self.composer_main.mark_drawn();
         self.composer_thread.mark_drawn();
+    }
+}
+
+impl ui::undo::CommittedActions for ChatApp {
+    /// Hand the host the heads captured before an on-screen affordance dispatched
+    /// its action, so it records exactly one undo boundary bracketing the event —
+    /// the same path a Ctrl+K palette dispatch takes.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
+    }
+}
+
+impl ui::collaboration::participants::Participants for ChatApp {
+    fn join_participant(&mut self, participant: &tilo_actions::ParticipantId) -> bool {
+        if participant.agent_task().is_some() {
+            self.participant_labels
+                .entry(participant.as_str().to_owned())
+                .or_default();
+        }
+        false
+    }
+    fn leave_participant(&mut self, participant: &tilo_actions::ParticipantId) {
+        self.participant_labels.remove(participant.as_str());
+    }
+    fn set_participant_label(&mut self, participant: &tilo_actions::ParticipantId, label: &str) {
+        if participant.agent_task().is_some() {
+            let label = label.trim();
+            self.participant_labels
+                .insert(participant.as_str().to_owned(), label.to_owned());
+            // A host acting as this agent: it is also the local participant.
+            if participant.as_str() == self.me.id && !label.is_empty() {
+                label.clone_into(&mut self.me.name);
+                self.me.initials = crate::identity::initials_for(label);
+            }
+        }
     }
 }
 
@@ -5101,8 +5105,8 @@ mod agent_attribution_tests {
         crate::doc::ChatDoc::seed_if_empty(&mut doc);
         app.sync(&mut doc, &ROOT);
         let agent = ParticipantId::for_agent_task("11111111-1111-4111-8111-111111111111").unwrap();
-        Widget::join_participant(&mut app, &agent);
-        Widget::set_participant_label(&mut app, &agent, "Tide");
+        ui::collaboration::participants::join_participant(&mut app, &agent);
+        ui::collaboration::participants::set_participant_label(&mut app, &agent, "Tide");
 
         let resources = Widget::resources_for(&app, Some(&agent), &doc);
         let encoded = post_via(&resources, "hello from the agent");

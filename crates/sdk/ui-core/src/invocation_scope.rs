@@ -886,8 +886,26 @@ fn record_loan_matches(
     })
 }
 
+/// The record a disclosed read names: its room when it is shared in one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RecordStamp {
+    pub(crate) room: Option<uuid::Uuid>,
+    pub(crate) app_id: String,
+    pub(crate) record_id: String,
+}
+
+impl From<&RouteSpec> for RecordStamp {
+    fn from(route: &RouteSpec) -> Self {
+        Self {
+            room: Some(route.cluster_id),
+            app_id: route.app_id.clone(),
+            record_id: route.record.clone().unwrap_or_default(),
+        }
+    }
+}
+
 struct MountedDocument {
-    route: RouteSpec,
+    stamp: RecordStamp,
     document: *const AutoCommit,
 }
 thread_local! {
@@ -902,32 +920,67 @@ impl Drop for MountedLoan {
     }
 }
 
-/// Lend the app's mounted primary document to `callback`, identified as the
-/// canonical record on `route`. Without a current primary route the document
-/// is lent unidentified, and nothing may disclose it as a record.
-pub(crate) fn with_mounted_document<R>(
-    route: Option<RouteSpec>,
+/// Lend `document` to `callback`, identified as the record `stamp` names.
+/// Without a stamp the document is lent unidentified, and nothing may
+/// disclose it as a record.
+fn with_identified_document<R>(
+    stamp: Option<RecordStamp>,
     document: &mut AutoCommit,
     callback: impl FnOnce(&mut AutoCommit) -> R,
 ) -> R {
-    let Some(route) = route else {
+    let Some(stamp) = stamp else {
         return callback(document);
     };
     MOUNTED_DOCUMENTS.with_borrow_mut(|mounted| {
-        mounted.push(MountedDocument { route, document });
+        mounted.push(MountedDocument { stamp, document });
     });
     let _loan = MountedLoan;
     callback(document)
 }
 
-/// The route of the innermost mounted primary document, when it is exactly
+/// Lend the app's mounted primary document to `callback`, identified as the
+/// canonical record on `route`. Without a current primary route the document
+/// is lent unidentified.
+pub(crate) fn with_mounted_document<R>(
+    route: Option<RouteSpec>,
+    document: &mut AutoCommit,
+    callback: impl FnOnce(&mut AutoCommit) -> R,
+) -> R {
+    with_identified_document(route.as_ref().map(RecordStamp::from), document, callback)
+}
+
+/// Lend a component's record document to `callback`, identified only when it
+/// is the record store's current loan of exactly `checkout`'s document: on
+/// its canonical `route` when it has one, else as `app_id`'s local record.
+pub(crate) fn with_loaned_record<R>(
+    store: &RecordStore,
+    checkout: &RecordCheckout,
+    app_id: &str,
+    route: Option<RouteSpec>,
+    document: &mut AutoCommit,
+    callback: impl FnOnce(&mut AutoCommit) -> R,
+) -> R {
+    let stamp = record_loan_matches(store, checkout, document).then(|| {
+        route.as_ref().map_or_else(
+            || RecordStamp {
+                room: None,
+                app_id: app_id.to_string(),
+                record_id: checkout.id.as_str().to_string(),
+            },
+            RecordStamp::from,
+        )
+    });
+    with_identified_document(stamp, document, callback)
+}
+
+/// The record the innermost identified document names, when it is exactly
 /// `document`.
-pub(crate) fn mounted_document_route(document: &AutoCommit) -> Option<RouteSpec> {
+pub(crate) fn identified_record(document: &AutoCommit) -> Option<RecordStamp> {
     MOUNTED_DOCUMENTS.with_borrow(|mounted| {
         mounted
             .last()
             .filter(|mount| std::ptr::eq(mount.document, document))
-            .map(|mount| mount.route.clone())
+            .map(|mount| mount.stamp.clone())
     })
 }
 

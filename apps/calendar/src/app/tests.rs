@@ -1175,7 +1175,7 @@ fn ics_imports_are_idempotent_atomic_and_commit_one_batch() {
                     .is_some_and(|status| status.starts_with("Import failed:"))
             );
             assert!(
-                Widget::take_committed_action(&mut app).is_none(),
+                ui::undo::take_committed_action(&mut app).is_none(),
                 "refused import creates no successful history boundary"
             );
             assert!(

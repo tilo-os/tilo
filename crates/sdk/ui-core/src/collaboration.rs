@@ -31,6 +31,7 @@ pub use transport::{
 mod broker;
 pub mod handoff;
 mod history;
+pub mod participants;
 #[cfg(feature = "broker-transport")]
 mod route_keys;
 #[cfg(feature = "broker-transport")]

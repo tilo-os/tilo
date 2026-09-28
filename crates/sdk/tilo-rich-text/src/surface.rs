@@ -595,6 +595,8 @@ impl ResourceSurface<RichText> for RichTextSurface {
 }
 
 impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
+    ui::provides!(dyn ui::undo::CommittedActions; inner = editor);
+
     type Inner = BlockEditor;
 
     fn inner(&self) -> &BlockEditor {
@@ -632,10 +634,6 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
         false
     }
 
-    fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
-        self.source.take_committed()
-    }
-
     /// An assistive technology focuses the field or sets its text, as a
     /// person typing would: the new text is written through the source's
     /// edits, a paragraph per line.
@@ -661,7 +659,12 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
             _ => self.editor.perform_action(action, state, path),
         }
     }
+}
 
+impl<S: RichTextSource + 'static> ui::undo::CommittedActions for RichTextSurface<S> {
+    fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
+        self.source.take_committed()
+    }
     fn keeps_undo_step_open(&self) -> bool {
         self.source.keeps_step_open()
     }

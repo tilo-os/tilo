@@ -301,6 +301,9 @@ pub const APPLICATION_RESOURCE_PREFIX: &str = "app.";
 /// Action id that opens an application into a workspace.
 pub const APPLICATION_OPEN_ACTION: &str = "open";
 
+/// Action id that closes a running application's windows in a workspace.
+pub const APPLICATION_CLOSE_ACTION: &str = "close";
+
 /// The provider token for the actions workspace `room` itself offers.
 #[must_use]
 pub fn workspace_provider(room: &str) -> String {

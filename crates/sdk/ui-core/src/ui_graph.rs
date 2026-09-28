@@ -1509,26 +1509,6 @@ impl Widget for LiveUi {
             .map(|output| Some(crate::widget::ResourceOperationStart::Completed(output)))
     }
 
-    /// Legacy adapter: apps not yet on [`Widget::start_operation`] still reach
-    /// the live graph through their read-only routing.
-    fn invoke_resource_operation_v2(
-        &mut self,
-        kind: crate::tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<crate::tilo_actions::ActionOutput>, String> {
-        if type_id.starts_with(LIVE_GRAPH_OPERATION) {
-            if kind == crate::tilo_actions::OperationKind::Document {
-                return Ok(None);
-            }
-            return self.invoke_graph_operation(type_id, payload).map(Some);
-        }
-        self.child
-            .invoke_resource_operation_v2(kind, type_id, payload, doc, path)
-    }
-
     fn draw_with_presence(
         &mut self,
         scene: &mut Scene,
@@ -3048,6 +3028,8 @@ fn delete_button(
 }
 
 impl Widget for UiGraphEditor {
+    crate::provides!(dyn crate::undo::LocalUndo);
+
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.rebuild_if_changed();
         self.child.sync(state, path);
@@ -3161,6 +3143,27 @@ impl Widget for UiGraphEditor {
             || self.child.needs_idle_sync()
     }
 
+    fn draw_with_presence(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut crate::text_render::TextRenderer,
+        theme: &Theme,
+        presence: &crate::presence::PresenceCtx,
+        permissions: &crate::permissions::PermissionContext,
+    ) {
+        self.child.draw_with_presence(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            presence,
+            permissions,
+        );
+    }
+}
+
+impl crate::undo::LocalUndo for UiGraphEditor {
     fn handle_local_undo_request(&mut self, request: crate::undo::UndoRequest) -> bool {
         if !widget_tree_has_focus(self.child.as_ref()) {
             return false;
@@ -3181,25 +3184,6 @@ impl Widget for UiGraphEditor {
             (_, Err(error)) => status.set(format!("History action failed: {error}")),
         }
         true
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut crate::text_render::TextRenderer,
-        theme: &Theme,
-        presence: &crate::presence::PresenceCtx,
-        permissions: &crate::permissions::PermissionContext,
-    ) {
-        self.child.draw_with_presence(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-            permissions,
-        );
     }
 }
 

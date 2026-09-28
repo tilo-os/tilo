@@ -7793,27 +7793,34 @@ fn history_buttons_follow_the_host() {
         let (_, rect) = app.history_buttons(&r)[0];
         click(&mut app, &mut doc, rect.center().x, rect.center().y);
         assert_eq!(
-            app.take_undo_request(),
+            ui::undo::take_undo_request(&mut app),
             None,
             "with nothing to undo the button raises no request at all",
         );
         // Once the host says there is, the same press does.
-        app.set_undo_status(&mut || ui::UndoStatus {
+        ui::undo::set_undo_status(&mut app, &mut || ui::UndoStatus {
             can_undo: true,
             undo_summary: Some("2 fields".into()),
             ..Default::default()
         });
         click(&mut app, &mut doc, rect.center().x, rect.center().y);
-        assert_eq!(app.take_undo_request(), Some(ui::UndoRequest::Undo));
         assert_eq!(
-            app.take_undo_request(),
+            ui::undo::take_undo_request(&mut app),
+            Some(ui::UndoRequest::Undo)
+        );
+        assert_eq!(
+            ui::undo::take_undo_request(&mut app),
             None,
             "and the request is taken once"
         );
         // Redo is still unavailable, and its button still refuses.
         let (_, redo) = app.history_buttons(&r)[1];
         click(&mut app, &mut doc, redo.center().x, redo.center().y);
-        assert_eq!(app.take_undo_request(), None, "redo is separately gated");
+        assert_eq!(
+            ui::undo::take_undo_request(&mut app),
+            None,
+            "redo is separately gated"
+        );
     }
     // Case `the_undo_node_reports_disabled_exactly_when_it_cannot_act`:
     // The accessibility node must report `disabled` exactly when the verb is
@@ -7845,7 +7852,7 @@ fn history_buttons_follow_the_host() {
             "the reader hears the honest reason, not a described action",
         );
 
-        app.set_undo_status(&mut || ui::UndoStatus {
+        ui::undo::set_undo_status(&mut app, &mut || ui::UndoStatus {
             can_undo: true,
             undo_summary: Some("2 fields".into()),
             ..Default::default()
@@ -7864,17 +7871,20 @@ fn history_buttons_follow_the_host() {
     // Case `activating_the_undo_node_raises_the_same_request_a_click_does`.
     {
         let (mut app, _doc) = app_and_doc();
-        app.set_undo_status(&mut || ui::UndoStatus {
+        ui::undo::set_undo_status(&mut app, &mut || ui::UndoStatus {
             can_undo: true,
             ..Default::default()
         });
         let key = ui::a11y::hash_key(&ui::UndoRequest::Undo.verb());
         assert!(app.a11y_transport_action(&ui::a11y::Action::Activate, &[key]));
-        assert_eq!(app.take_undo_request(), Some(ui::UndoRequest::Undo));
+        assert_eq!(
+            ui::undo::take_undo_request(&mut app),
+            Some(ui::UndoRequest::Undo)
+        );
         // With the history empty again the same activation refuses.
-        app.set_undo_status(&mut || ui::UndoStatus::empty());
+        ui::undo::set_undo_status(&mut app, &mut || ui::UndoStatus::empty());
         assert!(!app.a11y_transport_action(&ui::a11y::Action::Activate, &[key]));
-        assert_eq!(app.take_undo_request(), None);
+        assert_eq!(ui::undo::take_undo_request(&mut app), None);
         // And the transport's own buttons still work, so the new key lookup
         // has not shadowed them.
         let play = ui::a11y::hash_key(&2usize);

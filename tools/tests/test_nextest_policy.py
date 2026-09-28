@@ -38,14 +38,27 @@ def folded_values(workflow: str, key: str) -> list[str]:
     return values
 
 
+def effective_overrides(config: dict, profile_name: str) -> list[dict]:
+    """CI inherits default overrides. A CI override is added on top, not a second copy."""
+    default = config["profile"]["default"].get("overrides", [])
+    if profile_name == "default":
+        return default
+    return [*default, *config["profile"].get(profile_name, {}).get("overrides", [])]
+
+
 class NextestPolicyTests(unittest.TestCase):
+    def test_ci_does_not_retry(self) -> None:
+        ci = tomllib.loads(NEXTEST.read_text(encoding="utf-8"))["profile"]["ci"]
+        self.assertEqual(ci.get("retries", 0), 0)
+        self.assertNotIn("overrides", ci)
+
     def test_every_native_4k_test_gets_an_exclusive_cpu_budget(self) -> None:
         config = tomllib.loads(NEXTEST.read_text(encoding="utf-8"))
         expected = native_4k_tests()
         self.assertTrue(expected, "the source scan must find native-4K renderer tests")
 
         for profile_name in ("default", "ci"):
-            overrides = config["profile"][profile_name]["overrides"]
+            overrides = effective_overrides(config, profile_name)
             exclusive_filters = [
                 override["filter"]
                 for override in overrides
@@ -80,7 +93,7 @@ class NextestPolicyTests(unittest.TestCase):
         filters = {
             f"nextest {profile}": override["filter"]
             for profile in ("default", "ci")
-            for override in config["profile"][profile]["overrides"]
+            for override in effective_overrides(config, profile)
             if override.get("test-group") == "gpu-golden"
         }
         for name in ("check.yml", "nightly.yml", "refresh-visual-baselines.yml"):

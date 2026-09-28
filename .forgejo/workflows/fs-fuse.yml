@@ -69,7 +69,6 @@ on:
   #     - "os/usr/lib/systemd/system/tilo-relay.service"
   #     - "os/usr/lib/systemd/user/tilo-fs-recipient.service"
   #     - "os/usr/lib/systemd/user/tilo-graphical-session.target"
-  #     - "os/usr/lib/systemd/user/tilo-identity.service"
   #     - "os/usr/libexec/tilo-relay-firstboot"
   #     - "os/usr/libexec/tilo-session"
   #     - "os/usr/share/wayland-sessions/shell*.desktop"
@@ -150,7 +149,6 @@ on:
       - "os/usr/lib/systemd/system/tilo-relay.service"
       - "os/usr/lib/systemd/user/tilo-fs-recipient.service"
       - "os/usr/lib/systemd/user/tilo-graphical-session.target"
-      - "os/usr/lib/systemd/user/tilo-identity.service"
       - "os/usr/libexec/tilo-relay-firstboot"
       - "os/usr/libexec/tilo-session"
       - "os/usr/share/wayland-sessions/shell*.desktop"
@@ -163,6 +161,7 @@ on:
       - "tools/native-tier1.sh"
       - ".forgejo/workflows/build-image.yml"
       - ".forgejo/workflows/fs-fuse.yml"
+      - ".forgejo/workflows/resolve-builder.yml"
   schedule:
     - cron: "30 4 * * *"
   workflow_dispatch:
@@ -225,21 +224,8 @@ jobs:
          (needs.applicability.result == 'success' && needs.applicability.outputs.applicable == 'true')) &&
         true
       }}
-    runs-on: runner-quality
-    timeout-minutes: 5
-    container:
-      image: registry.tilo.so/tilo/ci-control@sha256:cc33624d156302fa0c62c065b9babf1d18c6d3103116ff9b0ecf4e0f316d9ce5
-    outputs:
-      image: ${{ steps.resolve.outputs.image }}
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          sparse-checkout: tools/ci/resolve_builder.py
-          sparse-checkout-cone-mode: false
-          token: ${{ secrets.REGISTRY_TOKEN }}
-      - name: Resolve the CI builder
-        id: resolve
-        run: python3 tools/ci/resolve_builder.py
+    uses: ./.forgejo/workflows/resolve-builder.yml
+    secrets: inherit
 
   real-fuse:
     needs: [applicability, builder]
