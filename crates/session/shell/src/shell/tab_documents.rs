@@ -493,8 +493,8 @@ mod tests {
             let store = RecordStore::in_memory();
             let a = Tile::notes(TAB_A, &store);
             let b = Tile::notes(TAB_B, &store);
-            let ka = a.host.presence_key();
-            let kb = b.host.presence_key();
+            let ka = ui::presence::capability::presence_key(&a.host);
+            let kb = ui::presence::capability::presence_key(&b.host);
             assert!(ka.is_some(), "a hosted tab has a presence identity");
             assert_ne!(ka, kb, "two tabs of one app must not share a presence key");
 
@@ -502,7 +502,7 @@ mod tests {
             // `EditorApp::draw` looks caret up by): the record must be part
             // of it or the caret is drawn in both tabs at once.
             let body_key = |t: &Tile| match t.host.content() {
-                UiTile::App(w) => w.presence_key(),
+                UiTile::App(w) => ui::presence::capability::presence_key(w.as_ref()),
                 _ => None,
             };
             let ba = body_key(&a).expect("the notes body publishes presence");

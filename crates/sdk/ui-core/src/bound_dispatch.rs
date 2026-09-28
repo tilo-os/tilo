@@ -509,12 +509,11 @@ pub(crate) fn search_providers(root: &dyn Widget) -> Vec<Box<dyn crate::search::
         if let Some(binding) = &binding
             && seen.insert(binding.lifetime_id)
         {
-            providers.extend(widget.search_providers());
+            providers.extend(crate::search::capability::search_providers(widget));
         }
         widget.for_each_child(&mut |child| visit(child, seen, providers));
     }
-    let mut providers = root
-        .search_providers()
+    let mut providers = crate::search::capability::search_providers(root)
         .into_iter()
         .filter(|provider| provider.callback_binding().is_none())
         .collect::<Vec<_>>();
@@ -527,8 +526,7 @@ fn provider_resource(
     binding: &CallbackBinding,
     address: &tilo_actions::ActionAddress,
 ) -> Option<tilo_actions::Resource> {
-    widget
-        .search_providers()
+    crate::search::capability::search_providers(widget)
         .into_iter()
         .filter(|provider| {
             provider
@@ -650,7 +648,7 @@ pub(crate) fn activate_bound_search(
             current
                 .with_document(doc, |doc, path| {
                     current.finish_action_boundary(doc)?;
-                    widget.activate_search_result(id, doc, path);
+                    crate::search::capability::activate_search_result(widget, id, doc, path);
                     current.drain_owned_tree(widget, doc)?;
                     current.finish_action_boundary(doc)
                 })

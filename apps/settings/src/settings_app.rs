@@ -1702,7 +1702,8 @@ fn valid_input_fraction(value: f64) -> Result<f64, String> {
 impl Widget for SettingsApp {
     ui::provides!(
         dyn ui::undo::CommittedActions,
-        dyn ui::resources::PublishesResources
+        dyn ui::resources::PublishesResources,
+        dyn ui::search::capability::SearchSource
     );
 
     fn native_input_snapshot(
@@ -2129,7 +2130,9 @@ impl Widget for SettingsApp {
             shell.poll_resource_operation(invocation, cancellation_requested, doc, path)
         })
     }
+}
 
+impl ui::search::capability::SearchSource for SettingsApp {
     /// Fold the settings panes into the unified Ctrl+K palette. Every result
     /// addresses the pane resource's exported `open` View operation, alongside
     /// the collaborative setting-change actions those resources own.

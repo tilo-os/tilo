@@ -1165,7 +1165,8 @@ impl AuthenticatorApp {
 impl Widget for AuthenticatorApp {
     ui::provides!(
         dyn ui::undo::CommittedActions,
-        dyn ui::resources::PublishesResources
+        dyn ui::resources::PublishesResources,
+        dyn ui::search::capability::SearchSource
     );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
@@ -1457,15 +1458,6 @@ impl Widget for AuthenticatorApp {
             }))
     }
 
-    /// Fold the vault into the unified Ctrl+K palette through an O(1) handle to
-    /// the retained
-    /// [`TotpSearchProvider`](crate::search_provider::TotpSearchProvider), which
-    /// makes every account findable there by issuer or account name alongside
-    /// the actions the app exports.
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(self.search_provider.clone())]
-    }
-
     fn name(&self) -> &'static str {
         "AuthenticatorApp"
     }
@@ -1687,6 +1679,17 @@ impl Widget for AuthenticatorApp {
 
     fn set_motion_reduced(&mut self, reduced: bool) {
         self.reduce_motion = reduced;
+    }
+}
+
+impl ui::search::capability::SearchSource for AuthenticatorApp {
+    /// Fold the vault into the unified Ctrl+K palette through an O(1) handle to
+    /// the retained
+    /// [`TotpSearchProvider`](crate::search_provider::TotpSearchProvider), which
+    /// makes every account findable there by issuer or account name alongside
+    /// the actions the app exports.
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(self.search_provider.clone())]
     }
 }
 

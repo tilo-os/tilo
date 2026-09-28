@@ -3467,8 +3467,8 @@ fn terminal_resource_identity_convergence_and_presence() {
         let (mut b, _rx_b) = build_test_widget();
         b.sync(&mut doc_b, &automerge::ROOT);
 
-        let ka = a.presence_key().expect("A presence key");
-        let kb = b.presence_key().expect("B presence key");
+        let ka = ui::presence::capability::presence_key(&a).expect("A presence key");
+        let kb = ui::presence::capability::presence_key(&b).expect("B presence key");
         assert_eq!(
             ka, kb,
             "both peers scope presence under the same shared pane id"
@@ -3484,7 +3484,7 @@ fn terminal_resource_identity_convergence_and_presence() {
     // Case `presence_payload_reports_selection_then_cursor`.
     {
         use ui::collaboration::PresencePayload;
-        use ui::widget::Widget as _;
+
         let (mut w, _) = build_test_widget();
         let mut doc = AutoCommit::new();
         w.init_crdt(&mut doc, &automerge::ROOT);
@@ -3495,7 +3495,8 @@ fn terminal_resource_identity_convergence_and_presence() {
             anchor: GridPos { row: 0, col: 2 },
             cursor: GridPos { row: 0, col: 5 },
         }));
-        let (_key, payload) = w.presence_payload().expect("payload with selection");
+        let (_key, payload) =
+            ui::presence::capability::presence_payload(&w).expect("payload with selection");
         match payload {
             // width defaults to 80, so row 0 linearises to the column itself.
             PresencePayload::Selection { start, end } => {
@@ -3506,7 +3507,8 @@ fn terminal_resource_identity_convergence_and_presence() {
 
         // Without a selection, the payload is a Caret at the cursor.
         w.force_selection(None);
-        let (_key, payload) = w.presence_payload().expect("payload with cursor");
+        let (_key, payload) =
+            ui::presence::capability::presence_payload(&w).expect("payload with cursor");
         assert!(
             matches!(payload, PresencePayload::Caret { .. }),
             "cursor payload"

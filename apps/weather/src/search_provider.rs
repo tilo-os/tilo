@@ -214,7 +214,7 @@ mod tests {
 
             // Find Tokyo (not the default index-0 selection) through the real hook.
             let (address, id) = {
-                let providers = app.search_providers();
+                let providers = ui::search::capability::search_providers(&app);
                 assert!(!providers.is_empty(), "weather publishes a search provider");
                 let hit = providers[0]
                     .search("tokyo")

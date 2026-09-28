@@ -5588,7 +5588,8 @@ impl Widget for SlidesApp {
         dyn ui::widget::AudiencePresentationProvider,
         dyn ui::undo::CommittedActions,
         dyn ui::history_mode::capability::DocumentHistory,
-        dyn ui::resources::PublishesResources
+        dyn ui::resources::PublishesResources,
+        dyn ui::search::capability::SearchSource
     );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
@@ -6290,7 +6291,9 @@ impl Widget for SlidesApp {
     fn on_commit(&mut self) {
         self.needs_commit = false;
     }
+}
 
+impl ui::search::capability::SearchSource for SlidesApp {
     /// Fold the deck's slides, elements, text and notes into the unified Ctrl+K
     /// palette. Every row addresses an exported resource `View` operation, so
     /// search uses the same brokered navigation route as agents and a11y.

@@ -128,7 +128,7 @@ fn accessibility_exposes_project_and_active_document_context() {
 }
 
 fn invoke_search_hit(app: &mut CodeApp, doc: &mut AutoCommit, query: &str, kind: &str) {
-    let hit = app.search_providers()[0]
+    let hit = ui::search::capability::search_providers(app)[0]
         .search(query)
         .into_iter()
         .find(|hit| hit.kind == kind)
@@ -204,7 +204,7 @@ fn stale_search_address_is_refused_by_current_widget_authority() {
     app.refresh_search_catalog(&mut doc);
     assert!(ui::resources::resource(&app, &doc, &address.resource).is_none());
     assert!(
-        app.search_providers()[0]
+        ui::search::capability::search_providers(&app)[0]
             .search("prime.rs")
             .into_iter()
             .all(|hit| hit.action_address() != Some(address.clone()))
@@ -237,7 +237,7 @@ fn search_projection_rebuilds_only_for_document_project_or_result_revisions() {
     let after_document = app.search_refresh_stats();
     assert_eq!(after_document.rebuilds, idle.rebuilds.saturating_add(1));
     assert!(
-        app.search_providers()[0]
+        ui::search::capability::search_providers(&app)[0]
             .search("revision_gate_needle")
             .iter()
             .any(|hit| hit.kind == crate::search_provider::SYMBOL_KIND)
@@ -256,7 +256,7 @@ fn search_projection_rebuilds_only_for_document_project_or_result_revisions() {
         after_document.rebuilds.saturating_add(1)
     );
     assert!(
-        app.search_providers()[0]
+        ui::search::capability::search_providers(&app)[0]
             .search("project-revision-needle")
             .iter()
             .any(|hit| {
@@ -288,7 +288,7 @@ fn search_projection_rebuilds_only_for_document_project_or_result_revisions() {
         after_project.rebuilds.saturating_add(1)
     );
     assert!(
-        app.search_providers()[0]
+        ui::search::capability::search_providers(&app)[0]
             .search("result_revision_needle")
             .iter()
             .any(|hit| hit.kind == crate::search_provider::RESULT_KIND)

@@ -4893,7 +4893,8 @@ include!("app_events.rs");
 impl Widget for PdfApp {
     ui::provides!(
         dyn ui::undo::CommittedActions,
-        dyn ui::resources::PublishesResources
+        dyn ui::resources::PublishesResources,
+        dyn ui::search::capability::SearchSource
     );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
@@ -4991,17 +4992,6 @@ impl Widget for PdfApp {
         self.portal_action = None;
         self.completed_portal_action = None;
         Ok(())
-    }
-
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        (self.has_document && !self.awaiting_markup_record)
-            .then(|| {
-                Box::new(crate::search_provider::PdfSearchProvider::from_catalog(
-                    self.search_catalog.clone(),
-                )) as Box<dyn ui::search::SearchProvider>
-            })
-            .into_iter()
-            .collect()
     }
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
@@ -5920,6 +5910,19 @@ impl Widget for PdfApp {
     }
 }
 
+impl ui::search::capability::SearchSource for PdfApp {
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        (self.has_document && !self.awaiting_markup_record)
+            .then(|| {
+                Box::new(crate::search_provider::PdfSearchProvider::from_catalog(
+                    self.search_catalog.clone(),
+                )) as Box<dyn ui::search::SearchProvider>
+            })
+            .into_iter()
+            .collect()
+    }
+}
+
 impl ui::resources::PublishesResources for PdfApp {
     /// Publish the open document + its markup so the host's Ctrl+K action palette
     /// scopes to them. Delegates to the
@@ -6369,7 +6372,7 @@ mod tests {
             annotate(&mut app, &mut st);
             record_frame(&mut app, &mut st, &mut set, &mut room);
             assert!(!PdfDoc::list_annotations(&st.doc).is_empty());
-            let provider = app.search_providers().remove(0);
+            let provider = ui::search::capability::search_providers(&app).remove(0);
             assert!(!provider.search("").is_empty());
             let original = st.doc.get_heads();
 
@@ -6394,7 +6397,7 @@ mod tests {
                 provider.search("").is_empty(),
                 "retained providers drop a's text"
             );
-            assert!(app.search_providers().is_empty());
+            assert!(ui::search::capability::search_providers(&app).is_empty());
             assert!(ui::resources::resources(&app, &st.doc).is_empty());
 
             record_frame(&mut app, &mut st, &mut set, &mut room);
@@ -6747,7 +6750,7 @@ mod tests {
         eprintln!("phase global_search_pages_canonically_and_stale_page_hits_fail_closed");
         {
             let (mut app, mut state) = app_with_state();
-            let provider = Widget::search_providers(&app)
+            let provider = ui::search::capability::search_providers(&app)
                 .into_iter()
                 .next()
                 .expect("the open PDF contributes a global search provider");
@@ -6814,7 +6817,7 @@ mod tests {
             app.search_input.set_text("sandbox");
             app.recompute_matches();
             app.sync(&mut state.doc, &state.root);
-            let find_provider = Widget::search_providers(&app)
+            let find_provider = ui::search::capability::search_providers(&app)
                 .into_iter()
                 .next()
                 .expect("find projection is retained in global search");
@@ -6854,8 +6857,12 @@ mod tests {
             let action = crate::actions::delete_page_plan_action("source-1");
             app.perform_action(&mut state.doc, &action);
             app.sync(&mut state.doc, &state.root);
-            let restarted =
-                Widget::search_providers(&app)[0].search_page("", Some(&stale_cursor), 1, 1);
+            let restarted = ui::search::capability::search_providers(&app)[0].search_page(
+                "",
+                Some(&stale_cursor),
+                1,
+                1,
+            );
             assert!(
                 restarted.results.len() <= 1,
                 "a stale cursor restarts against the new generation"
@@ -6915,11 +6922,12 @@ mod tests {
             a.sync(&mut state_a.doc, &state_a.root);
             b.sync(&mut state_b.doc, &state_b.root);
             assert_eq!(a.resource_page_ids, b.resource_page_ids);
-            let source_two_hits: Vec<tilo_actions::ActionAddress> = Widget::search_providers(&a)[0]
-                .search("Per-cluster sandboxing")
-                .into_iter()
-                .filter_map(|result| result.action_address())
-                .collect();
+            let source_two_hits: Vec<tilo_actions::ActionAddress> =
+                ui::search::capability::search_providers(&a)[0]
+                    .search("Per-cluster sandboxing")
+                    .into_iter()
+                    .filter_map(|result| result.action_address())
+                    .collect();
             assert!(
                 source_two_hits
                     .iter()

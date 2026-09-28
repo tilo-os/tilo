@@ -307,7 +307,8 @@ impl CompleteContentProvider for NotesApp {
 impl Widget for NotesApp {
     ui::provides!(
         dyn ui::widget::CompleteContentProvider,
-        dyn ui::history_mode::capability::DocumentHistory
+        dyn ui::history_mode::capability::DocumentHistory,
+        dyn ui::presence::capability::PublishesPresence
     );
 
     fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
@@ -442,10 +443,6 @@ impl Widget for NotesApp {
         self.body.set_record(record);
     }
 
-    fn presence_key(&self) -> Option<ui::presence::PresenceKey> {
-        Some(self.body.presence_key())
-    }
-
     fn get_rect(&self) -> Rect {
         self.rect
     }
@@ -503,6 +500,12 @@ impl Widget for NotesApp {
             self.selection = Selection::collapsed(pos);
             self.clamp_cursor();
         }
+    }
+}
+
+impl ui::presence::capability::PublishesPresence for NotesApp {
+    fn presence_key(&self) -> Option<ui::presence::PresenceKey> {
+        Some(self.body.presence_key())
     }
 }
 

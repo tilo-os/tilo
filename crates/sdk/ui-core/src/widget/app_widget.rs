@@ -552,7 +552,10 @@ mod component_adapter {
             dyn crate::undo::LocalUndo,
             dyn crate::history_mode::capability::DocumentHistory,
             dyn crate::widget::controls::ActionControls,
-            dyn crate::resources::PublishesResources
+            dyn crate::resources::PublishesResources,
+            dyn crate::search::capability::SearchSource,
+            dyn crate::permissions::capability::PermissionGated,
+            dyn crate::presence::capability::PublishesPresence
         );
 
         // A component's diagnostic probe observes its own record, the
@@ -1256,22 +1259,6 @@ mod component_adapter {
             };
             root.set_record_scope(record);
         }
-        fn presence_key(&self) -> Option<PresenceKey> {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return None;
-            };
-            let root = self.component.root.as_deref()?;
-            root.presence_key()
-        }
-        fn presence_payload(&self) -> Option<(PresenceKey, crate::collaboration::PresencePayload)> {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return None;
-            };
-            let root = self.component.root.as_deref()?;
-            root.presence_payload()
-        }
         fn needs_idle_sync(&self) -> bool {
             let binding = self.component.callback_binding();
             let Ok(_entry) = binding.enter() else {
@@ -1282,35 +1269,7 @@ mod component_adapter {
             };
             root.needs_idle_sync()
         }
-        fn permission_scope(&self) -> Option<PermissionScope> {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return None;
-            };
-            let root = self.component.root.as_deref()?;
-            root.permission_scope()
-        }
 
-        fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
-            self.component.search_providers()
-        }
-        fn activate_search_result(
-            &mut self,
-            action_id: &str,
-            doc: &mut crate::widget::AppModel,
-            path: &crate::widget::ModelPath,
-        ) {
-            let (doc, _) = crate::doc::document(doc, path);
-            let binding = self.component.callback_binding();
-            binding
-                .with_document(doc, |document, record_root| {
-                    let Some(root) = self.component.root.as_deref_mut() else {
-                        return;
-                    };
-                    root.activate_search_result(action_id, document, record_root);
-                })
-                .unwrap_or(());
-        }
         fn apply_room_action(
             &mut self,
             doc: &mut AutoCommit,
@@ -1566,6 +1525,64 @@ mod component_adapter {
                 return;
             };
             root.draw_overlay(scene, transform, text_renderer, theme, presence);
+        }
+    }
+
+    impl crate::presence::capability::PublishesPresence for BoundAppWidget {
+        fn presence_key(&self) -> Option<PresenceKey> {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return None;
+            };
+            let root = self.component.root.as_deref()?;
+            crate::presence::capability::presence_key(root)
+        }
+        fn presence_payload(&self) -> Option<(PresenceKey, crate::collaboration::PresencePayload)> {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return None;
+            };
+            let root = self.component.root.as_deref()?;
+            crate::presence::capability::presence_payload(root)
+        }
+    }
+
+    impl crate::permissions::capability::PermissionGated for BoundAppWidget {
+        fn permission_scope(&self) -> Option<PermissionScope> {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return None;
+            };
+            let root = self.component.root.as_deref()?;
+            crate::permissions::capability::permission_scope(root)
+        }
+    }
+
+    impl crate::search::capability::SearchSource for BoundAppWidget {
+        fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
+            self.component.search_providers()
+        }
+        fn activate_search_result(
+            &mut self,
+            action_id: &str,
+            doc: &mut crate::widget::AppModel,
+            path: &crate::widget::ModelPath,
+        ) {
+            let (doc, _) = crate::doc::document(doc, path);
+            let binding = self.component.callback_binding();
+            binding
+                .with_document(doc, |document, record_root| {
+                    let Some(root) = self.component.root.as_deref_mut() else {
+                        return;
+                    };
+                    crate::search::capability::activate_search_result(
+                        root,
+                        action_id,
+                        document,
+                        record_root,
+                    );
+                })
+                .unwrap_or(());
         }
     }
 
