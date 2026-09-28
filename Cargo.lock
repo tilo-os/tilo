@@ -4006,6 +4006,7 @@ name = "file-explorer"
 version = "0.2.0"
 dependencies = [
  "accounts",
+ "atomic-file",
  "automerge",
  "cap-fs-ext",
  "cap-std",
@@ -6492,6 +6493,7 @@ name = "imager"
 version = "0.1.0"
 dependencies = [
  "advisory-lock",
+ "atomic-file",
  "automerge",
  "base64",
  "blake3",
@@ -8223,6 +8225,7 @@ name = "media"
 version = "0.1.0"
 dependencies = [
  "advisory-lock",
+ "atomic-file",
  "automerge",
  "blake3",
  "bounded-command",
@@ -15213,6 +15216,7 @@ dependencies = [
 name = "tilo-lockdown-policy"
 version = "0.1.0"
 dependencies = [
+ "atomic-file",
  "serde",
  "serde_json",
  "tempfile",
@@ -15709,6 +15713,7 @@ dependencies = [
 name = "tilo-startup-metrics"
 version = "0.1.0"
 dependencies = [
+ "atomic-file",
  "serde",
  "serde_json",
  "tracing",
@@ -15904,6 +15909,7 @@ dependencies = [
 name = "tilo-vm"
 version = "0.1.0"
 dependencies = [
+ "atomic-file",
  "base64",
  "chrono",
  "clap",
@@ -15938,6 +15944,7 @@ name = "tilo-vmd"
 version = "0.1.0"
 dependencies = [
  "advisory-lock",
+ "atomic-file",
  "base64",
  "chrono",
  "clap",

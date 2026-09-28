@@ -1198,19 +1198,8 @@ impl UiGraphHandle {
 }
 
 fn write_live_graph_atomic(path: &Path, json: &str) -> Result<(), UiGraphError> {
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let temporary = parent.join(format!(
-        ".{}.tmp",
-        path.file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("ui-graph.json")
-    ));
-    std::fs::write(&temporary, json)
-        .map_err(|error| UiGraphError::Io(format!("writing {}: {error}", temporary.display())))?;
-    std::fs::rename(&temporary, path).map_err(|error| {
-        let _ = std::fs::remove_file(&temporary);
-        UiGraphError::Io(format!("publishing {}: {error}", path.display()))
-    })
+    atomic_file::write(path, json.as_bytes())
+        .map_err(|error| UiGraphError::Io(format!("publishing {}: {error}", path.display())))
 }
 
 fn advance_graph_revision(revision: &mut u64) -> Result<(), UiGraphError> {
