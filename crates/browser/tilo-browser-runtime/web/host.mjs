@@ -13,7 +13,7 @@ import {semanticBridge} from './semantics.mjs';
 import {createLiveOverlay} from './live-overlay.mjs';
 import {settleComponentClose,recoverableClose} from './close-recovery.mjs';
 import {SideModuleLinker} from './dylink.mjs';
-import {createAppInstaller,canonicalAppId} from './app-installer.mjs';
+import {createAppInstaller,canonicalAppId,localSeed} from './app-installer.mjs';
 import {importGlue,loadCore} from './core-loader.mjs';
 import {checkOpens,loadOpenBytes,openRequest} from './open-file.mjs';
 let registry=new MountRegistry();
@@ -99,6 +99,9 @@ export async function mountDesktop(target,options={}) {
   const presentationWaiters=new Set();
   const config={app:'writer',profile:'renderer-proof',device:'browser-proof-device',room:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',author:'Browser proof user',instance:1,mac:/Mac/.test(navigator.platform),...options};
   delete config.onNavigation;delete config.onStatus;delete config.signal;delete config.loadAsset;delete config.actionsV1;delete config.subscribeDesktopCommits;delete config.live;delete config.liveMembers;delete config.resolveApp;delete config.open;
+  // A local desktop names apps by id or alias; the core resolves exact ids.
+  const local=config.app==='desktop'&&options.local!==undefined?localSeed(options.local):undefined;
+  if(local)config.local=local.seed;else delete config.local;
   let unsubscribeDesktopCommits;
   let liveOverlay;
   let semantic,semanticKeys,hiddenKeys,composition,actionPalette,desktopCommands,desktopSpeculation,navigation,fontDemands,externalFocusEpoch=0,runtimeReady=false,desktopOwnership=false,localActivationGesture;
@@ -184,7 +187,8 @@ export async function mountDesktop(target,options={}) {
   // static asset where its resolver placed it, or a same-origin fetch.
   async function admittedBytes(requested){
     if(options.loadAsset)return options.loadAsset(requested,listeners.signal);
-    const appAsset=application&&apps.assets(application.id)?.get(requested);
+    // A desktop's windows are any linked apps.
+    const appAsset=application?apps.assets(application.id)?.get(requested):apps.asset(requested);
     const url=new URL(appAsset??requested,location.href);
     if((!appAsset&&url.origin!==location.origin)||!['http:','https:'].includes(url.protocol))throw Error('asset unavailable: no admitted content transport');
     const response=await fetch(url,{signal:listeners.signal,credentials:'same-origin'});
@@ -271,7 +275,8 @@ export async function mountDesktop(target,options={}) {
   try{
     if(!navigator.gpu)throw Error('WebGPU is required for the Tilo Vello compute renderer');
     // An app the core lacks is resolved while the core itself loads.
-    const installing=config.app==='desktop'?undefined:apps.ensure(config.app,{resolveApp:options.resolveApp,signal:options.signal,onStatus:report});
+    const install={resolveApp:options.resolveApp,signal:options.signal,onStatus:report};
+    const installing=config.app!=='desktop'?apps.ensure(config.app,install):local?.apps.length?apps.preload(local.apps,install):undefined;
     void installing?.catch(()=>{});
     const failed=error=>{report({phase:'failed',error:error instanceof Error?error.message:String(error)});return error instanceof Error?error:Error(String(error));};
     await ready();if(!registry.current(token))throw Error('mount disposed');
@@ -397,7 +402,10 @@ export async function mountDesktop(target,options={}) {
         const request=navigationFocus.begin(JSON.parse(command),navigation.controller.getSnapshot());
         try{const result=runtime.desktop_navigate(id,command);navigationFocus.accepted(request);return result;}
         catch(error){navigationFocus.failed(request);throw error;}
-      },search:(generation,query)=>runtime.desktop_command_search(id,generation,query),globalSearch:runtime.desktop_global_search?(generation,query)=>runtime.desktop_global_search(id,generation,query):undefined,focusSearch:()=>{inputScope.capture();canvas.focus({preventScroll:true});},captureSelect:()=>({scope:inputScope.capture(),epoch:externalFocusEpoch}),completeSelect:before=>handoff.complete(before.scope,before.epoch),awaitTerminal:desktopCommands?invocation=>desktopCommands.waitForTerminal(invocation):undefined});
+      },search:(generation,query)=>runtime.desktop_command_search(id,generation,query),globalSearch:runtime.desktop_global_search?(generation,query)=>runtime.desktop_global_search(id,generation,query):undefined,focusSearch:()=>{inputScope.capture();canvas.focus({preventScroll:true});},captureSelect:()=>({scope:inputScope.capture(),epoch:externalFocusEpoch}),completeSelect:before=>handoff.complete(before.scope,before.epoch),
+        // The local owner applies a command before desktop_navigate returns.
+        awaitTerminal:local?async()=>{}:desktopCommands?invocation=>desktopCommands.waitForTerminal(invocation):undefined,
+        install:async app=>{const appId=canonicalAppId(app);await apps.ensure(appId,install);return appId;}});
       unsubscribeDesktopCommits=options.subscribeDesktopCommits?.(event=>{if(active()){navigation.commandCommitted(event);desktopSpeculation?.committed(event);}});
 
       // Cloud's toolbar is a sibling of the renderer in its Desktop section.
@@ -413,8 +421,10 @@ export async function mountDesktop(target,options={}) {
     return {navigation: navigation?.controller,application,retryAsset,
       get record(){return lastState?.record||undefined;},
       get opened(){return opened;},
-      actions:resource=>JSON.parse(runtime.component_actions(actionSurface(),resource)),
-      invokeAction:(resource,action,args={},{confirm=false}={})=>JSON.parse(runtime.invoke_component_action(actionSurface(),resource,action,JSON.stringify(args),confirm)),cleanup:async()=>{registry.remove(token);await cleanup();},flush:()=>{persistenceFailed=false;return persist();},
+      actions:(resource,{window}={})=>JSON.parse(runtime.component_actions(actionSurface(),resource,window)),
+      invokeAction:(resource,action,args={},{confirm=false,window}={})=>JSON.parse(runtime.invoke_component_action(actionSurface(),resource,action,JSON.stringify(args),confirm,window)),
+      openApp:app=>{if(!navigation)throw Error('the mount is not a desktop');return navigation.controller.dispatch({kind:'open',generation:navigation.controller.getSnapshot().generation,app});},
+      cleanup:async()=>{registry.remove(token);await cleanup();},flush:()=>{persistenceFailed=false;return persist();},
       state:()=>lastState,canvas,get editor(){return editor;},semantics:accessibility,requestSemantics,
 
       durableState:()=>acquired.hydrate(),probePixels:async()=>JSON.parse(await runtime.probe_pixels(id)),failNextWrite:()=>{storage.abortNext=true;},destroyDevice:()=>runtime.destroy_device(id),recover:()=>runtime.recover(id),
