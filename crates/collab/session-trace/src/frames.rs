@@ -423,6 +423,31 @@ impl SemanticLayout {
             .map(|(_, _, regions)| regions.as_slice())
     }
 
+    /// What a frame of `surface` taken at `at` is compared in: the layout
+    /// in effect, plus every transient region the surface declared anywhere
+    /// in the session. Transient feedback comes and goes on the recording
+    /// device's clock, so the replay can show it where the recording showed
+    /// none at that moment; wherever it appeared is left out at every step.
+    pub fn for_comparison(&self, surface: &Route, at: Offset) -> Vec<ElementRegion> {
+        let mut regions: Vec<ElementRegion> =
+            self.at(surface, at).map(<[_]>::to_vec).unwrap_or_default();
+        for (_, _, keyframe) in self
+            .keyframes
+            .iter()
+            .filter(|(route, _, _)| same_surface(route, surface))
+        {
+            for region in keyframe.iter().filter(|region| region.transient) {
+                if !regions
+                    .iter()
+                    .any(|kept| kept.transient && kept.bounds == region.bounds)
+                {
+                    regions.push(region.clone());
+                }
+            }
+        }
+        regions
+    }
+
     /// The first keyframe for `surface` after `at`.
     fn next(&self, surface: &Route, at: Offset) -> Option<&[ElementRegion]> {
         self.keyframes

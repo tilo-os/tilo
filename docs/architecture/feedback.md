@@ -197,11 +197,14 @@ bounds before it is encoded, then again against the finished trace. Frames
 are lossless PNG keyframes, because a lossy codec would make the check
 compare codec noise. They form one bounded blob that the `session` record
 references with relation `frames`. Pixels that no semantic node describes
-are flagged per region as unexplained and are never guessed at. A node can
-declare its pixels transient: feedback the device paints on its own clock and
-from its own local state, such as the status pill that appears after a save
-and fades. No session event reproduces it, so the check leaves those
-rectangles out on both sides instead of blaming the renderer. The check
+are flagged per region as unexplained and are never guessed at. Toolkit
+widgets that paint on the device's own clock declare those pixels transient
+as they paint them: the status pill that appears after a save and fades,
+toasts, tooltips, spinners and indeterminate progress. Each app publishes
+the rectangles as hidden transient nodes of its semantic tree, with nothing
+to opt into. No session event reproduces them, so the check leaves every
+rectangle a surface ever declared out on both sides at every step, instead of
+blaming the renderer. The check
 compares pixels per element with a perceptual tolerance that ignores
 anti-aliasing, and each diverging region comes with a small cropped
 evidence frame.

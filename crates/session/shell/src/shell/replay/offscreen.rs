@@ -532,8 +532,8 @@ fn shows_recorded(check: &Check, at: Offset, frames: &[Result<SurfaceFrame, Stri
             .iter()
             .filter(|stored| stored.at == at && frame.same_surface(&stored.route))
             .all(|stored| {
-                let regions = check.layout.at(&stored.route, at).unwrap_or_default();
-                session_trace::divergence::compare_frame(stored, Some(frame), regions, &tolerance)
+                let regions = check.layout.for_comparison(&stored.route, at);
+                session_trace::divergence::compare_frame(stored, Some(frame), &regions, &tolerance)
                     .is_ok_and(|step| step.regions.is_empty())
             })
     })

@@ -244,6 +244,56 @@ mod tests {
     }
 
     #[test]
+    fn a_status_pill_painted_in_a_frame_is_published_as_transient_pixels() {
+        let mut root = form();
+        let map = layout(&mut root);
+        let mut tree = SemanticTree::new();
+        let base = vello::kurbo::Affine::scale(2.0);
+        crate::transient::begin_frame();
+        let mut scene = vello::Scene::new();
+        let mut text = crate::text_render::TextRenderer::new();
+        let pill = Rect::new(300.0, 250.0, 380.0, 280.0);
+        crate::status_bubble::draw_pill(
+            &mut scene,
+            base,
+            &mut text,
+            &Theme::dark(),
+            pill,
+            "Saved",
+            12.0,
+        );
+        tree.set_transient(crate::transient::end_frame(base));
+        tree.refresh(&root, &map, None, &[]);
+        let reply = tree.inspect(&InspectRequest::new(
+            InspectQuery::Subtree {
+                root: None,
+                depth: 8,
+            },
+            Audience::LocalSession,
+        ));
+        let transient: Vec<&InspectedNode> = reply
+            .nodes
+            .iter()
+            .filter(|node| node.pixels == Pixels::Transient)
+            .collect();
+        assert_eq!(transient.len(), 1, "{reply:#?}");
+        let bounds = transient[0].visible.expect("on screen");
+        assert!(
+            bounds.x <= pill.x0
+                && bounds.y <= pill.y0
+                && bounds.x + bounds.width >= pill.x1
+                && bounds.y + bounds.height >= pill.y1,
+            "the pill and its shadow, in logical pixels: {bounds:?}"
+        );
+        assert!(
+            tree.hit_path(Point::new(340.0, 265.0))
+                .iter()
+                .all(|id| !id.0.contains("transient")),
+            "hidden from hit testing"
+        );
+    }
+
+    #[test]
     fn a_secret_never_crosses_and_personal_content_keeps_its_shape_beyond_the_device() {
         let mut root = form();
         let tree = tree_of(&mut root);

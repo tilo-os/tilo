@@ -94,6 +94,11 @@ pub fn draw_chip(
 ) {
     let radius = f64::from(theme.tokens.radii.sm);
 
+    // A chip opens after a local hover delay, which no session carries.
+    crate::transient::declare(
+        transform,
+        crate::surface::shadow_extent(rect, &theme.tokens.elevation.e2),
+    );
     // The elevation token's own blur, following the chip's radius — the same
     // painter every other raised surface uses, rather than two hand-offset
     // translucent copies approximating it.

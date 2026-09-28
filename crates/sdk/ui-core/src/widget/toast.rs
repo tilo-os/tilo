@@ -488,6 +488,8 @@ pub fn paint_card(
     // Drop shadow from the elevation token (not ad-hoc literals), following
     // the card's own radius and fading with the card.
     let mut elev = theme.tokens.elevation.e3;
+    // A card arrives on a local event and leaves on its own timer.
+    crate::transient::declare(transform, crate::surface::shadow_extent(rect, &elev));
     elev.color = elev.color.with_alpha_factor(a);
     crate::surface::shadow(scene, transform, rect, radius, &elev);
 

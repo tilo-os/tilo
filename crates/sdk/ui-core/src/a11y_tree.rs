@@ -217,8 +217,9 @@ pub struct SemanticNode {
     /// resource node, the declared [`resource`](crate::a11y::AccessNode::resource)
     /// resolved against the app's resource forest for a widget.
     pub reference: Option<tilo_reference::ResourceRef>,
-    /// The node paints feedback of this device's own clock and state; see
-    /// [`AccessNode::transient`](crate::a11y::AccessNode::transient).
+    /// The node stands for pixels painted on this device's own clock (see
+    /// [`crate::transient`]): hidden, and left out of a recording's frame
+    /// check.
     pub transient: bool,
 }
 
@@ -336,6 +337,9 @@ pub struct SemanticTree {
     /// The surface the window is laid out on, in logical pixels: the
     /// window root's bounds.
     surface: Option<Rect>,
+    /// Where the last painted frame showed transient feedback (see
+    /// [`crate::transient`]), in logical pixels.
+    transient: Vec<Rect>,
 }
 
 impl Default for SemanticTree {
@@ -359,6 +363,7 @@ impl SemanticTree {
             overlays: Vec::new(),
             revision: 0,
             surface: None,
+            transient: Vec::new(),
         }
     }
 
@@ -367,6 +372,13 @@ impl SemanticTree {
     /// first layout.
     pub fn set_surface(&mut self, surface: Option<Rect>) {
         self.surface = surface.filter(|rect| rect.width() > 0.0 && rect.height() > 0.0);
+    }
+
+    /// Where the last painted frame showed transient feedback, published
+    /// from the next refresh on as hidden
+    /// [`transient`](SemanticNode::transient) nodes of the window.
+    pub fn set_transient(&mut self, transient: Vec<Rect>) {
+        self.transient = transient;
     }
 
     /// Rebuild the tree from the live UI and diff it against the retained frame.
@@ -495,6 +507,38 @@ impl SemanticTree {
             for resource in &component.resources {
                 root_children.push(builder.visit_resource(resource, Some(&component.binding)));
             }
+        }
+
+        // Transient feedback describes nothing a reader or an agent acts on:
+        // hidden from both, present only so a frame check can leave it out.
+        for (index, bounds) in self.transient.iter().enumerate() {
+            let id = SemanticId(format!("{}~transient:{index}", root_id.0));
+            builder.order.push(id.clone());
+            builder.nodes.insert(
+                id.clone(),
+                SemanticNode {
+                    id: id.clone(),
+                    durable_identity: false,
+                    role: Role::Generic,
+                    name: None,
+                    value: None,
+                    sensitivity: Sensitivity::Public,
+                    state: AccessState {
+                        hidden: true,
+                        ..AccessState::default()
+                    },
+                    bounds: Some(*bounds),
+                    clip: None,
+                    actions: Vec::new(),
+                    children: Vec::new(),
+                    widget_taffy_id: None,
+                    semantic_target: None,
+                    control_key: None,
+                    reference: None,
+                    transient: true,
+                },
+            );
+            root_children.push(id);
         }
 
         builder.nodes.insert(
@@ -1040,7 +1084,7 @@ impl<const BOUND: bool> Build<'_, BOUND> {
                                 .and_then(|referent| referent.selection_reference(doc))
                         })
                     },
-                    transient: access.transient,
+                    transient: false,
                 };
                 self.declare_resource(&id, &access);
                 self.order.push(id.clone());
@@ -1134,7 +1178,7 @@ impl<const BOUND: bool> Build<'_, BOUND> {
             semantic_target: semantic_target.map(str::to_owned),
             control_key: None,
             reference: None,
-            transient: access.transient,
+            transient: false,
         };
         self.declare_resource(&id, access);
         self.order.push(id.clone());

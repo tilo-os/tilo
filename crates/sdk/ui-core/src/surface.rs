@@ -437,6 +437,19 @@ pub fn shadow(scene: &mut Scene, transform: Affine, rect: Rect, radius: f64, tok
     );
 }
 
+/// The area [`shadow`] with `token` can paint around `rect`, `rect`
+/// included.
+pub fn shadow_extent(rect: Rect, token: &Shadow) -> Rect {
+    let reach = std_dev_for(token.blur) * 2.5;
+    let offset = f64::from(token.offset_y);
+    rect.union(Rect::new(
+        rect.x0 - reach,
+        rect.y0 + offset - reach,
+        rect.x1 + reach,
+        rect.y1 + offset + reach,
+    ))
+}
+
 /// The Gaussian standard deviation a CSS-style `blur` radius means.
 ///
 /// Halving is the conventional mapping, and vello cuts its kernel at

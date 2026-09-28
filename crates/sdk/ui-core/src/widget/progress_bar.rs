@@ -239,6 +239,10 @@ impl Widget for ProgressBar {
         let accent = theme.tokens.colors.accent[ACCENT_PRIMARY_IDX];
 
         if self.indeterminate {
+            if !theme.reduce_motion {
+                // The sweep runs on the wall clock.
+                crate::transient::declare(transform, self.rect);
+            }
             // Slide a fixed-width segment across the track. Phase [0,1)
             // drives its left edge from `-segment_width` (off-screen
             // left) to `track_width` (off-screen right) each period.
