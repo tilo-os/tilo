@@ -3,24 +3,13 @@ name: CI / runtime on macOS
 # The per-user runtime (`tilo-runtime`) is the Tilo host on machines without
 # the Tilo desktop, stock macOS first. Its library, standalone services and
 # `tilo-runtime` executable must keep building there, which no Linux lane
-# observes. Its dependency closure reaches the toolkit and most shared crates
-# and grows with them, so the path filter names the top-level source trees
-# rather than a list a new toolkit dependency would leave incomplete
-# (tools/policy/check_workflow_package_paths.py audits it either way). Not a
-# required check. It requests no OIDC token: the macOS runners'
-# release-signing credentials are never minted for it.
+# observes. Not a required check. It requests no OIDC token: the macOS
+# runners' release-signing credentials are never minted for it.
+# Manual only: no macOS runner serves imager-macos-aarch64, so pull-request
+# runs only queued. When one is registered, restore a pull_request trigger
+# whose paths cover tilo-runtime's dependency closure
+# (tools/policy/check_workflow_package_paths.py audits it).
 on:
-  pull_request:
-    branches: ["main"]
-    paths:
-      - ".forgejo/workflows/runtime-macos.yml"
-      - ".cargo/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "rust-toolchain.toml"
-      - "apps/**"
-      - "crates/**"
-      - "vendor/**"
   workflow_dispatch:
 
 concurrency:
