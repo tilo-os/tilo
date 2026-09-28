@@ -293,12 +293,15 @@ impl FrameHarness {
                 .document_history
                 .pane_mut()
                 .ok_or("History is not open")?;
-            pane.start_resource_operation(
-                tilo_actions::InvocationId::new(),
-                tilo_actions::OperationKind::View,
-                &encoded.type_id,
-                &encoded.payload,
-                &self.state.doc,
+            crate::widget::start_without_document_writes(
+                pane,
+                &crate::widget::ResourceOperation::local(
+                    tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::View,
+                    &encoded.type_id,
+                    &encoded.payload,
+                ),
+                &mut self.state.doc,
                 &self.state.root,
             )?
             .ok_or("Unknown local History operation")?;

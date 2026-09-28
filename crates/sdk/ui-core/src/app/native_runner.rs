@@ -75,6 +75,17 @@ struct AppHandler {
     /// Per-window state handed to the next in-place reload. Keyed by the
     /// window id that stays for the life of the process.
     dev_window_state: std::collections::HashMap<String, Vec<u8>>,
+    /// The reload library this process runs. The dev loop stages the first one
+    /// from the build that produced this host, so it starts as the running code.
+    dev_loaded_library: Option<std::path::PathBuf>,
+}
+
+/// The reload library the dev session currently points at.
+fn dev_reload_library(session: &std::path::Path) -> Option<std::path::PathBuf> {
+    std::fs::read_to_string(session.join("reload.path"))
+        .ok()
+        .map(|text| std::path::PathBuf::from(text.trim()))
+        .filter(|path| path.is_file())
 }
 
 struct AudiencePresentationWindow {
@@ -2534,14 +2545,12 @@ impl AppHandler {
         let Some(session) = crate::host::environment().dev_session.clone() else {
             return;
         };
-        let library = std::fs::read_to_string(session.join("reload.path"))
-            .ok()
-            .map(|text| std::path::PathBuf::from(text.trim()))
-            .filter(|path| path.is_file());
+        let library = dev_reload_library(&session)
+            .filter(|library| self.dev_loaded_library.as_ref() != Some(library));
         let Some(library) = library else {
-            // A build that did not publish a library keeps the code already
-            // running. Catalogs on disk still replace the strings baked into
-            // this process.
+            // No new library: a build that did not publish one, or a signal for
+            // catalogs alone, keeps the code already running. Catalogs on disk
+            // still replace the strings baked into this process.
             super::reload_dev_locale_catalogs_from(std::path::Path::new("locales"));
             self.app.needs_sync = true;
             for (_, window) in &windows {
@@ -2578,6 +2587,7 @@ impl AppHandler {
             }
             self.app.init_layout();
         }
+        self.dev_loaded_library = Some(library);
         self.dev_window_state = reloaded
             .windows
             .into_iter()
@@ -3705,6 +3715,10 @@ impl App {
             native_input_route_isolation: false,
             animation_schedule: animation_schedule::AnimationSchedule::default(),
             dev_window_state: std::collections::HashMap::new(),
+            dev_loaded_library: crate::host::environment()
+                .dev_session
+                .as_deref()
+                .and_then(dev_reload_library),
         };
         match event_loop.run_app(&mut handler) {
             Ok(()) => {}

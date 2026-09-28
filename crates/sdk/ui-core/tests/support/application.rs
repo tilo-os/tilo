@@ -676,15 +676,15 @@ impl Widget for ProbeRoot {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &["probe.view", "probe.effect", "probe.pending"]
     }
-    fn start_resource_operation_with_document(
+    fn start_operation(
         &mut self,
-        _: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        _: &[u8],
+        op: &tilo_ui::widget::ResourceOperation<'_>,
         _: &mut AutoCommit,
         _: &ObjId,
     ) -> Result<Option<tilo_ui::widget::ResourceOperationStart>, String> {
+        let Some(tilo_ui::widget::OperationRequest { kind, type_id, .. }) = op.unscoped() else {
+            return Ok(None);
+        };
         if !self.local_resource_operation_handlers().contains(&type_id) {
             return Ok(None);
         }

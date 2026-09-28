@@ -1583,22 +1583,24 @@ impl Widget for LiveUi {
         resources
     }
 
-    fn invoke_resource_operation_v2(
+    fn start_operation(
         &mut self,
-        kind: crate::tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
+        op: &crate::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
         path: &ObjId,
-    ) -> Result<Option<crate::tilo_actions::ActionOutput>, String> {
-        if type_id.starts_with(LIVE_GRAPH_OPERATION) {
-            if kind == crate::tilo_actions::OperationKind::Document {
-                return Ok(None);
-            }
-            return self.invoke_graph_operation(type_id, payload).map(Some);
+    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        if let Some(started) = crate::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
         }
-        self.child
-            .invoke_resource_operation_v2(kind, type_id, payload, doc, path)
+        let Some(request) = op
+            .unscoped()
+            .filter(|request| request.type_id.starts_with(LIVE_GRAPH_OPERATION))
+            .filter(|request| request.kind != crate::tilo_actions::OperationKind::Document)
+        else {
+            return Ok(None);
+        };
+        self.invoke_graph_operation(request.type_id, request.payload)
+            .map(|output| Some(crate::widget::ResourceOperationStart::Completed(output)))
     }
 
     fn draw_with_presence(
@@ -3302,6 +3304,22 @@ mod tests {
     use automerge::transaction::Transactable;
     use automerge::{ObjType, ROOT};
 
+    fn run_operation(
+        live: &mut impl Widget,
+        kind: crate::tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+    ) -> Result<Option<crate::tilo_actions::ActionOutput>, String> {
+        crate::widget::ResourceOperation::local(
+            crate::tilo_actions::InvocationId::new(),
+            kind,
+            type_id,
+            payload,
+        )
+        .start(live, &mut AutoCommit::new(), &ROOT)
+        .map(|started| started.and_then(crate::widget::ResourceOperationStart::completed))
+    }
+
     fn sample() -> UiDocument {
         UiDocument::new(UiNode::Column {
             id: "root".into(),
@@ -3912,15 +3930,13 @@ mod tests {
         let before = handle.to_json_pretty().unwrap();
         let edits = r#"[{"op":"set-property","id":"save","property":"label","value":""}]"#;
         let payload = serde_json::to_vec(&serde_json::json!({ "edits": edits })).unwrap();
-        let error = live
-            .invoke_resource_operation_v2(
-                crate::tilo_actions::OperationKind::Effect,
-                "tilo.ui.graph.apply",
-                &payload,
-                &AutoCommit::new(),
-                &automerge::ROOT,
-            )
-            .unwrap_err();
+        let error = run_operation(
+            &mut live,
+            crate::tilo_actions::OperationKind::Effect,
+            "tilo.ui.graph.apply",
+            &payload,
+        )
+        .unwrap_err();
         assert!(
             error.contains("edit") || error.contains("Unknown") || error.contains("missing"),
             "rejected apply must surface an error, got {error}"
@@ -3974,31 +3990,27 @@ mod tests {
         );
         let edits = r#"[{"op":"set-property","id":"save","property":"label","value":"Publish"}]"#;
         let payload = serde_json::to_vec(&serde_json::json!({ "edits": edits })).unwrap();
-        let output = live
-            .invoke_resource_operation_v2(
-                crate::tilo_actions::OperationKind::Effect,
-                "tilo.ui.graph.apply",
-                &payload,
-                &AutoCommit::new(),
-                &automerge::ROOT,
-            )
-            .unwrap()
-            .unwrap();
+        let output = run_operation(
+            &mut live,
+            crate::tilo_actions::OperationKind::Effect,
+            "tilo.ui.graph.apply",
+            &payload,
+        )
+        .unwrap()
+        .unwrap();
         assert!(output.value.is_none());
         assert!(matches!(
             handle.node("save"),
             Ok(UiNode::Button { label, .. }) if label == "Publish"
         ));
-        let dumped = live
-            .invoke_resource_operation_v2(
-                crate::tilo_actions::OperationKind::View,
-                "tilo.ui.graph.dump",
-                b"null",
-                &AutoCommit::new(),
-                &automerge::ROOT,
-            )
-            .unwrap()
-            .unwrap();
+        let dumped = run_operation(
+            &mut live,
+            crate::tilo_actions::OperationKind::View,
+            "tilo.ui.graph.dump",
+            b"null",
+        )
+        .unwrap()
+        .unwrap();
         assert!(
             dumped
                 .value

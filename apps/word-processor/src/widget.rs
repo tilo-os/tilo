@@ -10101,6 +10101,94 @@ impl WordProcessorWidget {
     }
 }
 
+impl WordProcessorWidget {
+    /// Apply a synchronous command or view operation. Returns `Ok(false)`
+    /// when `type_id` is not this widget's.
+    fn apply_operation(
+        &mut self,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+    ) -> Result<bool, String> {
+        use crate::actions::WordProcessorOperation;
+
+        if kind == tilo_actions::OperationKind::Document {
+            return Ok(false);
+        }
+        // A delivered invocation by a participant (an agent task) moves only
+        // that participant's view: its own `move-caret`/`select-*`/
+        // `find-text`, and `go-to` on its own search hits, cells or comments.
+        if let Some(invoker) = ui::invocation_scope::current_invoker()
+            && invoker.participant.is_some()
+            && (type_id == crate::actions::view_ops::WORD_PROCESSOR_VIEW_OPERATION_TYPE
+                || matches!(
+                    crate::actions::decode_operation(type_id, payload)?,
+                    Some(WordProcessorOperation::NavigateTo { .. })
+                ))
+        {
+            self.invoke_participant_view_operation(&invoker, type_id, payload, doc)?;
+            return Ok(true);
+        }
+        // Without a participant a view operation is this window's own
+        // (Ctrl+K, accessibility).
+        if let Some(operation) = crate::actions::view_ops::decode_view_operation(type_id, payload)?
+        {
+            self.apply_local_view_operation(doc, &operation)?;
+            self.lifecycle.dirty = true;
+            return Ok(true);
+        }
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
+        };
+        match operation {
+            WordProcessorOperation::ResolveFileChoice { .. }
+            | WordProcessorOperation::Open { .. }
+            | WordProcessorOperation::Save { .. }
+            | WordProcessorOperation::SaveAs { .. } => {
+                return Err("file operations require the lifecycle-capable operation host".into());
+            }
+            WordProcessorOperation::Find => self.open_find(doc),
+            WordProcessorOperation::ZoomIn => {
+                self.zoom_by(0.1);
+            }
+            WordProcessorOperation::ZoomOut => {
+                self.zoom_by(-0.1);
+            }
+            WordProcessorOperation::ZoomReset => {
+                self.set_zoom(1.0);
+            }
+            WordProcessorOperation::ToggleSpellcheck => self.toggle_spellcheck(),
+            WordProcessorOperation::ToggleMarkup => self.toggle_markup(),
+            WordProcessorOperation::ToggleStyles => {
+                self.view.styles_panel_visible = !self.view.styles_panel_visible;
+            }
+            WordProcessorOperation::ToggleRuler => {
+                self.view.ruler_visible = !self.view.ruler_visible;
+            }
+            WordProcessorOperation::ToggleOutline => self.outline.toggle(),
+            // Hosted, the framework's History is the only History surface.
+            WordProcessorOperation::ToggleHistory | WordProcessorOperation::ShowRevision { .. }
+                if self.hosted() =>
+            {
+                return Ok(false);
+            }
+            WordProcessorOperation::ToggleHistory => self.history.toggle(),
+            WordProcessorOperation::NavigateTo { block, start, end } => {
+                self.navigate_to_range(doc, &block, start, end)?;
+            }
+            WordProcessorOperation::ShowRevision { index } => {
+                if !self.history.is_open() {
+                    self.history.toggle();
+                }
+                self.pending_history_revision = Some(index);
+            }
+        }
+        self.lifecycle.dirty = true;
+        Ok(true)
+    }
+}
+
 impl Widget for WordProcessorWidget {
     fn action_directory_invocation_domain(
         &self,
@@ -10265,121 +10353,27 @@ impl Widget for WordProcessorWidget {
         ]
     }
 
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        use crate::actions::WordProcessorOperation;
-
-        if kind == tilo_actions::OperationKind::Document {
-            return Ok(false);
-        }
-        // A delivered invocation by a participant (an agent task) moves only
-        // that participant's view: its own `move-caret`/`select-*`/
-        // `find-text`, and `go-to` on its own search hits, cells or comments.
-        if let Some(invoker) = ui::invocation_scope::current_invoker()
-            && invoker.participant.is_some()
-            && (type_id == crate::actions::view_ops::WORD_PROCESSOR_VIEW_OPERATION_TYPE
-                || matches!(
-                    crate::actions::decode_operation(type_id, payload)?,
-                    Some(WordProcessorOperation::NavigateTo { .. })
-                ))
-        {
-            self.invoke_participant_view_operation(&invoker, type_id, payload, doc)?;
-            return Ok(true);
-        }
-        // Without a participant a view operation is this window's own
-        // (Ctrl+K, accessibility).
-        if let Some(operation) = crate::actions::view_ops::decode_view_operation(type_id, payload)?
-        {
-            self.apply_local_view_operation(doc, &operation)?;
-            self.lifecycle.dirty = true;
-            return Ok(true);
-        }
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(false);
-        };
-        match operation {
-            WordProcessorOperation::ResolveFileChoice { .. }
-            | WordProcessorOperation::Open { .. }
-            | WordProcessorOperation::Save { .. }
-            | WordProcessorOperation::SaveAs { .. } => {
-                return Err("file operations require the lifecycle-capable operation host".into());
-            }
-            WordProcessorOperation::Find => self.open_find(doc),
-            WordProcessorOperation::ZoomIn => {
-                self.zoom_by(0.1);
-            }
-            WordProcessorOperation::ZoomOut => {
-                self.zoom_by(-0.1);
-            }
-            WordProcessorOperation::ZoomReset => {
-                self.set_zoom(1.0);
-            }
-            WordProcessorOperation::ToggleSpellcheck => self.toggle_spellcheck(),
-            WordProcessorOperation::ToggleMarkup => self.toggle_markup(),
-            WordProcessorOperation::ToggleStyles => {
-                self.view.styles_panel_visible = !self.view.styles_panel_visible;
-            }
-            WordProcessorOperation::ToggleRuler => {
-                self.view.ruler_visible = !self.view.ruler_visible;
-            }
-            WordProcessorOperation::ToggleOutline => self.outline.toggle(),
-            // Hosted, the framework's History is the only History surface.
-            WordProcessorOperation::ToggleHistory | WordProcessorOperation::ShowRevision { .. }
-                if self.hosted() =>
-            {
-                return Ok(false);
-            }
-            WordProcessorOperation::ToggleHistory => self.history.toggle(),
-            WordProcessorOperation::NavigateTo { block, start, end } => {
-                self.navigate_to_range(doc, &block, start, end)?;
-            }
-            WordProcessorOperation::ShowRevision { index } => {
-                if !self.history.is_open() {
-                    self.history.toggle();
-                }
-                self.pending_history_revision = Some(index);
-            }
-        }
-        self.lifecycle.dirty = true;
-        Ok(true)
-    }
-
-    fn start_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        self.start_file_operation(invocation, kind, type_id, payload, doc, path, None)
-    }
-
-    fn start_resource_operation_scoped(
-        &mut self,
-        scope: &ui::invocation_scope::ResourceInvocationScope,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
+        op: &ui::widget::ResourceOperation<'_>,
         doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        self.start_file_operation(
-            scope.invocation(),
-            kind,
-            type_id,
-            payload,
-            doc,
-            path,
-            Some(scope),
-        )
+        let (request, scope) = op.with_custody();
+        if scope.is_some() {
+            return self.start_file_operation(request, doc, scope);
+        }
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
+        }
+        if let Some(started) = self.start_file_operation(request, doc, None)? {
+            return Ok(Some(started));
+        }
+        Ok(self
+            .apply_operation(request.kind, request.type_id, request.payload, doc)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(tilo_actions::ActionOutput::default())
+            }))
     }
 
     fn poll_resource_operation(

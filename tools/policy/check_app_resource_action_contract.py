@@ -31,8 +31,11 @@ BROKER_CATALOGUE_CONSUMER = re.compile(r"\bRemoteActionMessage\s*::\s*CatalogueR
 BROKER_ACTION_INVOKER = re.compile(r"\bRemoteActionMessage\s*::\s*Invoke\b")
 BROKER_ACTION_STATUS = re.compile(r"\bRemoteActionMessage\s*::\s*(?:Observe|Update)\b")
 OPERATION_KIND = re.compile(r"\bOperationKind\s*::\s*(?:Effect|View)\b")
-OPERATION_HANDLER = re.compile(
+LEGACY_OPERATION_HANDLER = re.compile(
     r"\bfn\s+(?:invoke_resource_operation(?:_v2)?|start_resource_operation(?:_with_document)?)\s*\("
+)
+OPERATION_HANDLER = re.compile(
+    r"\bfn\s+start_operation\s*\(|" + LEGACY_OPERATION_HANDLER.pattern
 )
 OPERATION_HANDLER_REGISTRY = re.compile(
     r"\bfn\s+local_resource_operation_handlers\s*\("
@@ -124,6 +127,10 @@ RATCHETS = {
     "opaque_search_activation": (
         re.compile(r"\bfn\s+activate_search_result\s*\("),
         "opaque search activation bypass; return SearchResult::for_action with a published resource action",
+    ),
+    "legacy_resource_operation_override": (
+        LEGACY_OPERATION_HANDLER,
+        "legacy resource-operation hook; implement Widget::start_operation, the single operation entry",
     ),
 }
 
@@ -319,6 +326,7 @@ def reachable_handler_code(text: str) -> str:
     """The canonical handler plus local helper functions it directly reaches."""
     bodies = function_bodies(text)
     pending = [
+        "start_operation",
         "invoke_resource_operation",
         "invoke_resource_operation_v2",
         "start_resource_operation",
@@ -762,7 +770,7 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
                     Violation(
                         manifest_path,
                         1,
-                        "effect/view actions require the canonical invoke_resource_operation handler",
+                        "effect/view actions require the canonical Widget::start_operation handler",
                     )
                 )
             if (

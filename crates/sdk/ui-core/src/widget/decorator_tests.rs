@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use super::*;
+use crate::widget::ResourceOperation;
 use crate::widget::TaffyTreeExt;
 use automerge::ReadDoc;
 
@@ -124,7 +125,7 @@ fn decorators_forward_override_and_intercept_their_inner_widget() {
                 "handle_event_ctx",
                 "resources",
                 "take_control_invocation",
-                "start_with_document",
+                "start_operation",
             ]
         );
         // The inner widget registered its own node.
@@ -326,17 +327,17 @@ impl Widget for Recorder {
         std::mem::take(&mut self.dirty)
     }
 
-    fn start_resource_operation_with_document(
+    fn start_operation(
         &mut self,
-        _invocation: tilo_actions::InvocationId,
-        _kind: tilo_actions::OperationKind,
-        _type_id: &str,
-        _payload: &[u8],
+        op: &ResourceOperation<'_>,
         doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ResourceOperationStart>, String> {
         use automerge::transaction::Transactable;
-        self.note("start_with_document");
+        if op.unscoped().is_none() {
+            return Ok(None);
+        }
+        self.note("start_operation");
         doc.put(path, "admitted", true)
             .map_err(|error| error.to_string())?;
         Ok(Some(ResourceOperationStart::Accepted))
@@ -365,14 +366,12 @@ impl Decorator for Named {
 }
 
 fn start(widget: &mut dyn Widget, doc: &mut AutoCommit) -> Option<ResourceOperationStart> {
-    widget
-        .start_resource_operation_with_document(
-            tilo_actions::InvocationId::new(),
-            tilo_actions::OperationKind::Effect,
-            "test.effect",
-            b"{}",
-            doc,
-            &automerge::ROOT,
-        )
-        .expect("admission succeeds")
+    ResourceOperation::local(
+        tilo_actions::InvocationId::new(),
+        tilo_actions::OperationKind::Effect,
+        "test.effect",
+        b"{}",
+    )
+    .start(widget, doc, &automerge::ROOT)
+    .expect("admission succeeds")
 }
