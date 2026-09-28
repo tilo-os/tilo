@@ -504,16 +504,8 @@ fn the_runtime_governs_only_its_own_room_from_its_own_device() {
         room: room.to_string(),
         device: [2; 32],
     };
-    let cert = |device| tilo_user_identity::DeviceCert {
-        user_public_key: [1; 32],
-        device_public_key: device,
-        device_label: "mac".into(),
-        capabilities: tilo_user_identity::DeviceCapabilities::primary(),
-        issued_at_ns: 1,
-        expires_at_ns: None,
-        signature: [0; 64],
-    };
-    assert!(certificates.governs(room, &cert([2; 32])));
-    assert!(!certificates.governs(room, &cert([3; 32])));
-    assert!(!certificates.governs(uuid::Uuid::from_u128(8), &cert([2; 32])));
+    assert!(certificates.governs(room, Some(&[2; 32])));
+    assert!(certificates.governs(room, None));
+    assert!(!certificates.governs(room, Some(&[3; 32])));
+    assert!(!certificates.governs(uuid::Uuid::from_u128(8), None));
 }
