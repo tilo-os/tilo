@@ -591,9 +591,17 @@ pub struct FrameHarness {
     /// Concrete type of `root` when it was mounted through
     /// [`FrameHarness::for_root`]; gates [`FrameHarness::root`].
     root_type: Option<std::any::TypeId>,
-    /// Style of the viewport-sized node the root is laid out in; its size is
-    /// always the viewport's.
-    host_style: Style,
+    /// How the node the root is laid out in is sized and styled.
+    host: HostLayout,
+}
+
+/// The node a [`FrameHarness`] lays its root out in.
+#[derive(Clone, Default)]
+struct HostLayout {
+    /// Its width is always the viewport's.
+    style: Style,
+    /// Its height is the root's content height rather than the viewport's.
+    content_height: bool,
 }
 
 /// What one completed [`FrameHarness::relayout`] did with its layout tree.
@@ -641,6 +649,10 @@ pub struct FrameOptions {
     /// that must not be stretched by the default row. Its size is replaced
     /// by the viewport.
     pub host_style: Option<Style>,
+    /// Lay the root out at its content height, measured against unbounded
+    /// height, the way a scrolling host lays out the document inside it. The
+    /// viewport still bounds culling and rasterisation.
+    pub content_height: bool,
 }
 
 /// A logical `(width, height)` as a harness viewport.
@@ -1206,7 +1218,7 @@ impl FrameHarness {
         viewport: (u32, u32),
         theme: Theme,
         text: TextRenderer,
-        host_style: Style,
+        host: HostLayout,
     ) -> Self {
         Self::with_inputs_and_host(
             state,
@@ -1216,7 +1228,7 @@ impl FrameHarness {
             text,
             crate::collaboration::local_user_id,
             None,
-            host_style,
+            host,
         )
     }
 
@@ -1237,7 +1249,7 @@ impl FrameHarness {
             text,
             author,
             component_wake,
-            Style::default(),
+            HostLayout::default(),
         )
     }
 
@@ -1253,7 +1265,7 @@ impl FrameHarness {
         mut text: TextRenderer,
         author: impl FnOnce() -> crate::permissions::UserId,
         component_wake: Option<ComponentRunnerWakeState>,
-        host_style: Style,
+        host: HostLayout,
     ) -> Self {
         if component_wake.is_some() {
             let ui_scale = theme.ui_scale;
@@ -1333,7 +1345,7 @@ impl FrameHarness {
             retained_geometry_check_every: 0,
             verifying_geometry: false,
             root_type: None,
-            host_style,
+            host,
         };
         // Match `App::rebuild_theme`: reduced motion is both a paint-time
         // theme property and a lifecycle policy retained widgets use to settle
@@ -1374,6 +1386,7 @@ impl FrameHarness {
             theme,
             text,
             host_style,
+            content_height,
         } = options;
         let mut harness = Self::with_inputs_styled(
             state,
@@ -1381,7 +1394,10 @@ impl FrameHarness {
             viewport,
             theme.unwrap_or_else(Theme::dark),
             text.unwrap_or_default(),
-            host_style.unwrap_or_default(),
+            HostLayout {
+                style: host_style.unwrap_or_default(),
+                content_height,
+            },
         );
         harness.root_type = Some(std::any::TypeId::of::<W>());
         harness
@@ -2431,9 +2447,13 @@ impl FrameHarness {
                     Style {
                         size: Size {
                             width: Dimension::length(w as f32),
-                            height: Dimension::length(h as f32),
+                            height: if self.host.content_height {
+                                Dimension::auto()
+                            } else {
+                                Dimension::length(h as f32)
+                            },
                         },
-                        ..self.host_style.clone()
+                        ..self.host.style.clone()
                     },
                     &[presentation_node],
                 );
@@ -2458,7 +2478,11 @@ impl FrameHarness {
                         self.root_node,
                         Size {
                             width: AvailableSpace::Definite(w as f32),
-                            height: AvailableSpace::Definite(h as f32),
+                            height: if self.host.content_height {
+                                AvailableSpace::MaxContent
+                            } else {
+                                AvailableSpace::Definite(h as f32)
+                            },
                         },
                         &self.node_map,
                         &self.bindings,
@@ -12095,6 +12119,90 @@ mod framed_tests {
             },
         );
         assert!((probe.rect.x0 - 140.0).abs() < f64::EPSILON);
+    }
+
+    /// A leaf 300 px tall that records the heights it was offered.
+    struct Tall {
+        rect: Rect,
+        offered: Vec<AvailableSpace>,
+    }
+
+    impl Widget for Tall {
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _theme: &Theme,
+            node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            let node = taffy.new_leaf(Style::default()).unwrap();
+            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+            node
+        }
+
+        fn measure(
+            &mut self,
+            _known: Size<Option<f32>>,
+            available: Size<AvailableSpace>,
+            _text_renderer: &mut TextRenderer,
+        ) -> Size<f32> {
+            self.offered.push(available.height);
+            Size {
+                width: 100.0,
+                height: 300.0,
+            }
+        }
+
+        fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+            let layout = taffy.layout(node).unwrap();
+            self.rect = Rect::from_origin_size(
+                (
+                    origin.x + f64::from(layout.location.x),
+                    origin.y + f64::from(layout.location.y),
+                ),
+                (f64::from(layout.size.width), f64::from(layout.size.height)),
+            );
+        }
+
+        fn draw(
+            &mut self,
+            _scene: &mut Scene,
+            _transform: Affine,
+            _text_renderer: &mut TextRenderer,
+            _theme: &Theme,
+            _presence: &PresenceCtx,
+        ) {
+        }
+
+        fn get_rect(&self) -> Rect {
+            self.rect
+        }
+
+        fn name(&self) -> &'static str {
+            "Tall"
+        }
+    }
+
+    #[test]
+    fn content_height_lays_the_root_out_past_the_viewport() {
+        let tall = || Tall {
+            rect: Rect::ZERO,
+            offered: Vec::new(),
+        };
+        let bounded = Framed::new(State::new(), tall(), (400, 200), Theme::dark());
+        assert!((bounded.rect.height() - 200.0).abs() < f64::EPSILON);
+        assert!(!bounded.offered.contains(&AvailableSpace::MaxContent));
+
+        let unbounded = Framed::with_options(
+            State::new(),
+            tall(),
+            (400, 200),
+            FrameOptions {
+                content_height: true,
+                ..Default::default()
+            },
+        );
+        assert!((unbounded.rect.height() - 300.0).abs() < f64::EPSILON);
+        assert!(unbounded.offered.contains(&AvailableSpace::MaxContent));
     }
 
     #[test]
