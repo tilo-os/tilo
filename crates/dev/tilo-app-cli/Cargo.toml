@@ -43,6 +43,8 @@ tilo-headless-schema = { path = "../headless-schema" }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+serde_yaml = "0.9"
+tempfile.workspace = true
 tilo-test-env = { path = "../test-env" }
 
 [lints]
