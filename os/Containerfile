@@ -2224,10 +2224,12 @@ COPY os/usr/lib/sysctl.d/70-tilo-performance.conf /usr/lib/sysctl.d/70-tilo-perf
 # Read by tilo-launcher when it compiles the syscall filter. Same reasoning as
 # the file above and the same format: a package that could name its own
 # profile would be lifting a protection off itself, so the image decides and
-# the manifest only asks.
+# the manifest only asks. web-engine-entitled.conf names the packages that may
+# create the namespaces of a web engine's own renderer sandbox.
 COPY \
     os/usr/lib/tilo/untrusted-parsers.conf \
     os/usr/lib/tilo/jit-entitled.conf \
+    os/usr/lib/tilo/web-engine-entitled.conf \
     /usr/lib/tilo/
 
 # hidepid on /proc + the boot self-check that ASSERTS what's actually active.
