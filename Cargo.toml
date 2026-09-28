@@ -133,6 +133,7 @@ members = [
     "crates/collab/feedback-review",
     "crates/collab/neighbour-wire",
     "crates/collab/reference",
+    "crates/collab/tilo-community",
     "crates/collab/session-trace",
     "crates/collab/threshold-identity",
     "crates/collab/tilo-callstream",

@@ -13236,6 +13236,7 @@ dependencies = [
  "tilo-bluez",
  "tilo-callstream",
  "tilo-clock",
+ "tilo-community",
  "tilo-content",
  "tilo-copy-lint",
  "tilo-delivery-protocol",
@@ -14970,6 +14971,24 @@ dependencies = [
  "word-processor",
  "workspace-hack",
  "zeroize",
+]
+
+[[package]]
+name = "tilo-community"
+version = "0.1.0"
+dependencies = [
+ "collab-types",
+ "hex",
+ "iroh-base",
+ "neighbour-wire",
+ "serde",
+ "settings-store",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tilo-desktop-model",
+ "tilo-reference",
+ "toml 1.0.6+spec-1.1.0",
+ "workspace-hack",
 ]
 
 [[package]]

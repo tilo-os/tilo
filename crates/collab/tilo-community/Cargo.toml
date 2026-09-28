@@ -1,0 +1,37 @@
+[package]
+name = "tilo-community"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Keeping a person in the Tilo Community: the release's community configuration, the Tilo team principal, and the join, retry, refusal and leave rules every host that holds a person's rooms runs."
+
+[lib]
+name = "tilo_community"
+path = "src/lib.rs"
+
+# Pure rules and configuration. Each host (the native shell, a hosted
+# desktop) observes its own rooms and performs the steps through
+# `CommunityHost`; none of them keeps its own copy of the rules.
+
+[dependencies]
+collab-types = { path = "../collab-types" }
+# The standing invitation's validation and id.
+neighbour-wire = { path = "../neighbour-wire" }
+# The team's direct room id.
+tilo-reference = { path = "../reference" }
+tilo-desktop-model = { path = "../../session/desktop-model" }
+# The person's membership choice, `tilo.community.membership`.
+settings-store = { path = "../../system/settings-store" }
+iroh-base = { workspace = true, features = ["key"] }
+serde.workspace = true
+toml.workspace = true
+hex.workspace = true
+thiserror.workspace = true
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

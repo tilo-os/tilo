@@ -943,42 +943,68 @@ fn role_key(role: crate::shell::state::CapRole) -> &'static str {
     }
 }
 
-/// How often the session looks at whether it is where the person wants to be
-/// in the Tilo Community. Joins themselves back off on their own schedule
-/// ([`crate::shell::community::AutoJoin`]).
-const COMMUNITY_CHECK_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
-
 /// The configured community's standing invitation and the room it names.
 ///
 /// # Errors
 ///
 /// The community is not configured, or its invitation does not validate, is
 /// not a standing one or names no room.
-fn configured_community() -> Result<(String, crate::shell::state::RoomId), String> {
+fn configured_community() -> Result<tilo_community::StandingCommunity, String> {
     let config = crate::shell::community::load().map_err(|error| error.to_string())?;
-    let invite = config.invite.ok_or_else(|| {
-        format!(
-            "no community invitation is configured in {}",
-            config.source.display()
-        )
-    })?;
-    let parsed = crate::network::invite::validate_invite_token(&invite)?;
-    if !parsed.standing {
-        return Err("the configured community invitation is not a standing invitation".into());
-    }
-    let room = crate::shell::state::RoomId::parse(&parsed.room_id)
-        .ok_or_else(|| "the community invitation names no room".to_string())?;
-    Ok((invite, room))
+    tilo_community::standing(&config)
 }
 
-/// [`ShellNetwork::keep_community`]'s state.
-#[derive(Default)]
-struct CommunityRuntime {
-    auto: crate::shell::community::AutoJoin,
-    checked: Option<std::time::Instant>,
-    /// The room topic, hosts and invitation id (hex) being redeemed, so a
-    /// refusal by the community's own host is told from any other host's.
-    redeeming: Option<(u64, Vec<iroh::EndpointId>, String)>,
+/// The shell as the host [`tilo_community::CommunityKeeper`] keeps the person
+/// in the community through: its settings, its rooms and its network.
+struct ShellCommunityHost<'a> {
+    net: &'a ShellNetwork,
+    settings: serde_json::Map<String, serde_json::Value>,
+}
+
+impl tilo_community::CommunityHost for ShellCommunityHost<'_> {
+    fn has_identity(&self) -> bool {
+        self.net.host_identity.is_some()
+    }
+
+    fn membership(&self) -> settings_store::community::Membership {
+        settings_store::community::membership_in(&self.settings)
+    }
+
+    fn refused_invite(&self) -> Option<String> {
+        settings_store::community::refused_invite_in(&self.settings).map(str::to_string)
+    }
+
+    fn holding(&self, room: crate::shell::state::RoomId) -> tilo_community::Holding {
+        match self.net.room_status(room) {
+            Ok(status) if status.role.is_some() => tilo_community::Holding::Admitted,
+            Ok(_) => tilo_community::Holding::Held,
+            Err(_) => tilo_community::Holding::No,
+        }
+    }
+
+    fn join(&mut self, community: &tilo_community::StandingCommunity) -> Result<(), String> {
+        self.net
+            .enter_community(&community.invite, community.room)
+            .map(|_| ())
+    }
+
+    fn redeem(&mut self, community: &tilo_community::StandingCommunity) {
+        self.net.redeem_invite(community.room, &community.invite);
+        self.net.publish_sync_requests();
+    }
+
+    fn open_team_room(&mut self) -> Result<(), String> {
+        self.net.open_team_direct_room().map(|_| ())
+    }
+
+    fn remember_refusal(&mut self, invite_hex: &str) -> Result<(), String> {
+        settings_store::community::set_refused_invite(Some(invite_hex))
+            .map_err(|error| error.to_string())
+    }
+
+    fn leave(&mut self, room: crate::shell::state::RoomId) -> Result<(), String> {
+        self.net.leave_room(room)
+    }
 }
 
 /// Messages held for devices whose identity has not arrived yet; see
@@ -1398,7 +1424,7 @@ pub struct ShellNetwork {
     /// room checkpoint names exactly the ones it holds.
     retained_coverage: Mutex<std::collections::HashMap<u64, crate::network::coverage::CoverageLog>>,
     /// Keeps this session in the Tilo Community ([`Self::keep_community`]).
-    community: Mutex<CommunityRuntime>,
+    community: Mutex<tilo_community::CommunityKeeper>,
     /// Inbound presence updates pushed by [`Self::tick`], drained by the
     /// shell's frame-tick into `PresenceCtx::remote_cursors`.
     inbound_presence: Arc<Mutex<Vec<InboundPresence>>>,
@@ -1836,7 +1862,7 @@ impl ShellNetwork {
             unidentified_host_messages: Mutex::new(UnidentifiedHostMessages::default()),
             retained_coverage: Mutex::new(std::collections::HashMap::new()),
             native_enrollment: native_enrollment::State::default(),
-            community: Mutex::new(CommunityRuntime::default()),
+            community: Mutex::new(tilo_community::CommunityKeeper::default()),
             inbound_presence: Arc::new(Mutex::new(Vec::new())),
             inbound_documents: Arc::new(Mutex::new(Vec::new())),
             inbound_channel_governance: Arc::new(Mutex::new(Vec::new())),
@@ -3185,17 +3211,16 @@ impl ShellNetwork {
     /// is not a standing one, or joining fails.
     pub fn join_community(&self) -> Result<RoomStatus, String> {
         use settings_store::community::{Membership, membership_in, refused_invite_in};
-        let (invite, room) = configured_community()?;
+        let community = configured_community()?;
         let settings = settings_store::load();
         if membership_in(&settings) != Membership::Auto || refused_invite_in(&settings).is_some() {
             settings_store::community::set_membership(Membership::Auto)
                 .map_err(|error| format!("membership not saved: {error}"))?;
         }
-        if let Ok(mut runtime) = self.community.lock() {
-            runtime.auto.reset();
-            runtime.checked = None;
+        if let Ok(mut keeper) = self.community.lock() {
+            keeper.rejoin();
         }
-        self.enter_community(&invite, room)
+        self.enter_community(&community.invite, community.room)
     }
 
     /// Leave the Tilo community room and remember that the person left, so
@@ -3211,15 +3236,13 @@ impl ShellNetwork {
             settings_store::community::set_membership(Membership::Left)
                 .map_err(|error| format!("membership not saved: {error}"))?;
         }
-        if let Ok(mut runtime) = self.community.lock() {
-            runtime.auto.reset();
-            runtime.checked = None;
-            runtime.redeeming = None;
+        if let Ok(mut keeper) = self.community.lock() {
+            keeper.left();
         }
-        if let Ok((_, room)) = configured_community()
-            && self.room_status(room).is_ok()
+        if let Ok(community) = configured_community()
+            && self.room_status(community.room).is_ok()
         {
-            self.leave_room(room)?;
+            self.leave_room(community.room)?;
         }
         Ok(serde_json::json!({
             "joined": false,
@@ -3258,74 +3281,29 @@ impl ShellNetwork {
     /// learns it leaves the room. A refusal by the community's host is
     /// remembered for that invitation and not asked again.
     fn keep_community(&self, now: std::time::Instant) {
-        use crate::shell::community::{Observed, Step};
-        let Ok(mut runtime) = self.community.lock() else {
+        use tilo_community::KeeperNote;
+        let Ok(mut keeper) = self.community.lock() else {
             return;
         };
-        if runtime
-            .checked
-            .is_some_and(|checked| now.saturating_duration_since(checked) < COMMUNITY_CHECK_EVERY)
-        {
+        if !keeper.is_due(now) {
             return;
         }
-        runtime.checked = Some(now);
-        let Ok((invite, room)) = configured_community() else {
-            runtime.auto.next(now, &Observed::default());
-            return;
+        let mut host = ShellCommunityHost {
+            net: self,
+            settings: settings_store::load(),
         };
-        let invite_hex = hex::encode(crate::network::invite::invite_id(&invite));
-        let settings = settings_store::load();
-        let status = self.room_status(room).ok();
-        let observed = Observed {
-            identity: self.host_identity.is_some(),
-            invite: Some(invite_hex.clone()),
-            membership: settings_store::community::membership_in(&settings),
-            refused_invite: settings_store::community::refused_invite_in(&settings)
-                .map(str::to_string),
-            held: status.is_some(),
-            admitted: status.as_ref().is_some_and(|status| status.role.is_some()),
-        };
-        let step = runtime.auto.next(now, &observed);
-        match step {
-            Step::Wait => {}
-            Step::Join | Step::Redeem => {
-                let hosts = crate::network::invite::validate_invite_token(&invite)
-                    .map(|parsed| parsed.host_addrs.iter().map(|host| host.id).collect())
-                    .unwrap_or_default();
-                runtime.redeeming = Some((room_topic_id(room), hosts, invite_hex));
-                runtime.auto.attempted(now);
-                drop(runtime);
-                let outcome = if step == Step::Join {
-                    self.enter_community(&invite, room).map(|_| ())
-                } else {
-                    self.redeem_invite(room, &invite);
-                    self.publish_sync_requests();
-                    Ok(())
-                };
-                if let Err(error) = outcome {
+        for note in keeper.tick(now, configured_community(), &mut host) {
+            match note {
+                KeeperNote::JoinDidNotStart(error) => {
                     tracing::warn!(%error, "community: joining did not start; trying again later");
                 }
-            }
-            Step::OpenTeamRoom => {
-                runtime.auto.team_room_opened();
-                runtime.redeeming = None;
-                drop(runtime);
-                if let Err(error) = self.open_team_direct_room() {
+                KeeperNote::NoTeamRoom(error) => {
                     tracing::info!(%error, "community: no private room with the Tilo team");
                 }
-            }
-            Step::RecordRefusal | Step::Leave => {
-                runtime.redeeming = None;
-                drop(runtime);
-                if step == Step::RecordRefusal
-                    && let Err(error) =
-                        settings_store::community::set_refused_invite(Some(&invite_hex))
-                {
+                KeeperNote::RefusalNotRemembered(error) => {
                     tracing::warn!(%error, "community: the refusal could not be remembered");
                 }
-                if observed.held
-                    && let Err(error) = self.leave_room(room)
-                {
+                KeeperNote::CouldNotLeave(error) => {
                     tracing::warn!(%error, "community: could not leave the room");
                 }
             }
@@ -3337,16 +3315,11 @@ impl ShellNetwork {
     /// community's host refusing the invitation being redeemed, the refusal
     /// is final for that invitation ([`Self::keep_community`]).
     fn note_host_refusal(&self, ws: u64, peer: iroh::EndpointId, reason: &str) {
-        let Ok(mut runtime) = self.community.lock() else {
+        let Ok(mut keeper) = self.community.lock() else {
             return;
         };
-        let Some((topic, hosts, invite)) = runtime.redeeming.clone() else {
-            return;
-        };
-        if topic == ws && hosts.contains(&peer) {
+        if keeper.note_refusal(|room| room_topic_id(room) == ws, &peer) {
             tracing::warn!(%reason, "community: the community's host refused this device");
-            runtime.auto.refused(&invite);
-            runtime.checked = None;
         }
     }
 
@@ -8045,7 +8018,7 @@ pub(crate) fn shell_network_for_test(
         unidentified_host_messages: Mutex::new(UnidentifiedHostMessages::default()),
         retained_coverage: Mutex::new(std::collections::HashMap::new()),
         native_enrollment: native_enrollment::State::default(),
-        community: Mutex::new(CommunityRuntime::default()),
+        community: Mutex::new(tilo_community::CommunityKeeper::default()),
         inbound_presence: Arc::new(Mutex::new(Vec::new())),
         inbound_documents: Arc::new(Mutex::new(Vec::new())),
         inbound_channel_governance: Arc::new(Mutex::new(Vec::new())),

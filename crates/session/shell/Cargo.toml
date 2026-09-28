@@ -200,6 +200,8 @@ session-trace = { path = "../../collab/session-trace" }
 # What a remark is and where it goes: the private feedback room is the
 # reporter's derived direct room with the Tilo team principal.
 tilo-reference = { path = "../../collab/reference" }
+# The Tilo Community: its configuration and the rules that keep a person in it.
+tilo-community = { path = "../../collab/tilo-community" }
 # The on-device review contract a recording passes before it leaves.
 tilo-feedback-review = { path = "../../collab/feedback-review", features = ["trace"] }
 # Review asks the device-local review model through the gateway's session
