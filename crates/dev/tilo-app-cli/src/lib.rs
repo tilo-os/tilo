@@ -9567,6 +9567,19 @@ fn app_readme(spec: &AppSpec) -> String {
     );
     let _ = writeln!(
         out,
+        "\nThe same source runs on Linux, macOS and the web; `--target` picks the platform (each builds on its own host OS, the web on any):\n"
+    );
+    let _ = writeln!(out, "```bash");
+    let _ = writeln!(out, "tilo-app run --target linux");
+    let _ = writeln!(out, "tilo-app run --target macos");
+    let _ = writeln!(out, "tilo-app run --target web");
+    let _ = writeln!(out, "tilo-app build --target macos");
+    let _ = writeln!(out, "tilo-app package --target linux");
+    let _ = writeln!(out, "tilo-app package --target macos");
+    let _ = writeln!(out, "tilo-app package --target web");
+    let _ = writeln!(out, "```");
+    let _ = writeln!(
+        out,
         "\nCargo remains available directly with `cargo test` and `cargo run`."
     );
     let _ = writeln!(

@@ -862,6 +862,28 @@ what the Android host does not provide.
 `tilo-app keys new`, `tilo-app apply` and `tilo-app publish` take a package to
 the store; [Publish a Tilo app](publishing.md) walks through them.
 
+### Linux, macOS and the web from one source
+
+`run`, `build` and `package` take `--target linux|macos|web`. The app source
+does not change: `tilo-app` selects the runner and the platform crates select
+each backend. Linux and macOS artifacts build on their own OS; the web builds
+anywhere.
+
+```bash
+tilo-app run --target macos            # a signed development .app, launched
+tilo-app run --target web              # serve, rebuild on change, reload the page
+tilo-app build --target linux          # target/tilo-app/linux/<app>/<bin>
+tilo-app package --target linux        # a signed .tapp (thin against the shared runtime in this repository)
+tilo-app package --target macos        # a zipped .app; Developer ID + notarization with TILO_MAC_* / TILO_NOTARY_* set
+tilo-app package --target web          # dist/web/<app-id>/versions/<digest>/
+```
+
+`tilo-app.toml` narrows the targets with `platforms = ["linux", "macos"]` and a
+`platform-reason`; the default is all three. `tilo-app check --target <t>` runs
+the portability and capability checks for a target on any host. For
+`package`, a `--target` value other than `linux`, `macos` or `web` is a Rust
+target triple.
+
 ## The app shape
 
 Keep the binary boring:
