@@ -11,10 +11,14 @@ use base64::Engine as _;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
+    collections::HashMap,
     io::{self, BufRead, BufReader, Write},
     os::unix::net::UnixStream,
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -28,11 +32,36 @@ const MAX_WAIT: Duration = Duration::from_secs(30);
 const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(10);
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// One compositor reached through its control socket.
+/// One compositor reached through its control socket, shared by every agent
+/// of the machine.
+///
+/// The compositor gives each agent named on a command its own seat and strip:
+/// its coordinates and screenshots are that strip's, and the keys and buttons
+/// it holds never reach another agent's window. What this side remembers per
+/// agent (pointer, last frame's geometry) is kept per agent for the same
+/// reason.
 pub struct Computer {
     socket: PathBuf,
     scratch: PathBuf,
-    state: Mutex<State>,
+    /// Screenshot file names, unique across agents.
+    shots: AtomicU64,
+    anonymous: Arc<Mutex<State>>,
+    agents: Mutex<HashMap<String, Arc<Mutex<State>>>>,
+}
+
+/// Who a run acts for: an agent run of the MCP layer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Agent {
+    pub id: String,
+    /// Human name, shown on the agent's strip.
+    pub label: String,
+}
+
+/// One run of actions for one agent.
+struct Turn<'a> {
+    computer: &'a Computer,
+    agent: Option<&'a Agent>,
+    state: &'a Mutex<State>,
 }
 
 #[derive(Default)]
@@ -134,17 +163,92 @@ impl Computer {
         Self {
             socket,
             scratch,
-            state: Mutex::new(State::default()),
+            shots: AtomicU64::new(0),
+            anonymous: Arc::default(),
+            agents: Mutex::default(),
         }
     }
 
-    /// Run a sequence of actions in order, stopping at the first failure.
-    /// Only the last step carries a screenshot unless a step asks for one.
+    /// [`Self::run_as`] for a caller that names no agent: the compositor's
+    /// default agent.
     ///
     /// # Errors
     ///
     /// The failing step's index and reason.
     pub fn run(&self, actions: &[Action], batch: bool) -> Result<Vec<Outcome>, String> {
+        self.run_as(None, actions, batch)
+    }
+
+    /// Run a sequence of actions for `agent` in order, stopping at the first
+    /// failure. Only the last step carries a screenshot unless a step asks
+    /// for one.
+    ///
+    /// # Errors
+    ///
+    /// The failing step's index and reason.
+    pub fn run_as(
+        &self,
+        agent: Option<&Agent>,
+        actions: &[Action],
+        batch: bool,
+    ) -> Result<Vec<Outcome>, String> {
+        let state = self.state_of(agent);
+        Turn {
+            computer: self,
+            agent,
+            state: &state,
+        }
+        .run(actions, batch)
+    }
+
+    /// Give `agent` the compositor's seat without acting, so the window of an
+    /// app it opens next lands in its strip.
+    ///
+    /// # Errors
+    ///
+    /// The compositor's refusal, or why it could not be reached.
+    pub fn seat(&self, agent: &Agent) -> Result<(), String> {
+        let state = self.state_of(Some(agent));
+        Turn {
+            computer: self,
+            agent: Some(agent),
+            state: &state,
+        }
+        .send(&json!({"op":"agent_seat"}))
+    }
+
+    /// End `agent`: the compositor releases whatever it still holds, and this
+    /// side forgets its pointer and frame.
+    ///
+    /// # Errors
+    ///
+    /// The compositor's refusal, or why it could not be reached.
+    pub fn leave(&self, agent: &Agent) -> Result<(), String> {
+        let state = self.lock_agents().remove(&agent.id).unwrap_or_default();
+        Turn {
+            computer: self,
+            agent: Some(agent),
+            state: &state,
+        }
+        .send(&json!({"op":"agent_leave"}))
+    }
+
+    fn lock_agents(&self) -> std::sync::MutexGuard<'_, HashMap<String, Arc<Mutex<State>>>> {
+        self.agents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn state_of(&self, agent: Option<&Agent>) -> Arc<Mutex<State>> {
+        match agent {
+            Some(agent) => Arc::clone(self.lock_agents().entry(agent.id.clone()).or_default()),
+            None => Arc::clone(&self.anonymous),
+        }
+    }
+}
+
+impl Turn<'_> {
+    fn run(&self, actions: &[Action], batch: bool) -> Result<Vec<Outcome>, String> {
         if actions.is_empty() || actions.len() > MAX_BATCH {
             return Err(format!("between 1 and {MAX_BATCH} actions"));
         }
@@ -384,9 +488,15 @@ impl Computer {
         result
     }
 
-    /// Send one control command and require an `ok` reply.
+    /// Send one control command, for this turn's agent, and require an `ok`
+    /// reply.
     fn send(&self, command: &Value) -> Result<(), String> {
-        let reply = self.request(command).map_err(|error| error.to_string())?;
+        let mut command = command.clone();
+        if let (Some(agent), Some(fields)) = (self.agent, command.as_object_mut()) {
+            fields.insert("agent".into(), json!(agent.id));
+            fields.insert("agent_label".into(), json!(agent.label));
+        }
+        let reply = self.request(&command).map_err(|error| error.to_string())?;
         if let Some(error) = reply.get("err") {
             let code = error.get("code").and_then(Value::as_str).unwrap_or("error");
             let message = error.get("message").and_then(Value::as_str).unwrap_or("");
@@ -396,7 +506,7 @@ impl Computer {
     }
 
     fn request(&self, command: &Value) -> io::Result<Value> {
-        let mut stream = UnixStream::connect(&self.socket)?;
+        let mut stream = UnixStream::connect(&self.computer.socket)?;
         stream.set_read_timeout(Some(CONTROL_TIMEOUT))?;
         stream.set_write_timeout(Some(CONTROL_TIMEOUT))?;
         let mut line = serde_json::to_vec(command).map_err(io::Error::other)?;
@@ -411,12 +521,12 @@ impl Computer {
     /// A fresh frame of the whole screen, or of `region` scaled up to the
     /// frame size, encoded as the action asks.
     fn capture(&self, region: Option<[f64; 4]>, action: &Action) -> Result<Frame, String> {
-        let frame = {
+        {
             let mut state = self.lock();
             state.frame = state.frame.saturating_add(1);
-            state.frame
-        };
-        let path = self.scratch.join(format!("frame-{frame}.png"));
+        }
+        let shot = self.computer.shots.fetch_add(1, Ordering::Relaxed);
+        let path = self.computer.scratch.join(format!("frame-{shot}.png"));
         let _ = std::fs::remove_file(&path);
         self.send(&json!({"op":"snapshot","path":path.to_string_lossy()}))?;
         let screen = read_png(&path, SNAPSHOT_TIMEOUT)?;
@@ -456,7 +566,15 @@ impl Computer {
 
 impl crate::watch::WatchSink for Computer {
     fn set_watching(&self, watching: bool) -> Result<(), String> {
-        self.send(&json!({"op":"watch","watching":watching}))
+        // Watch is session-wide paint policy, not per-agent input: use the
+        // default (no agent) turn so the command still reaches the socket.
+        let state = self.state_of(None);
+        Turn {
+            computer: self,
+            agent: None,
+            state: &state,
+        }
+        .send(&json!({"op":"watch","watching":watching}))
     }
 }
 

@@ -237,6 +237,36 @@ pub enum Command {
     },
     /// Collect the answer to an [`Command::Inspect`]: `{"pending": true}` until the app answers, then the answer itself (once).
     InspectAnswer { inspection: u64 },
+    /// Seat the request's [`Agent`] without injecting input: its strip takes
+    /// focus, so a window launched next lands there. Answers the strip and its
+    /// viewport `[x, y, w, h]` in screen pixels.
+    AgentSeat,
+    /// End the request's [`Agent`]: release every key and button it holds and
+    /// drop its seat. Its strip stays while it holds windows.
+    AgentLeave,
+}
+
+/// Longest agent id a request may name.
+pub const MAX_AGENT_ID_CHARS: usize = 128;
+/// Longest agent label; longer labels are cut, not refused.
+pub const MAX_AGENT_LABEL_CHARS: usize = 80;
+
+/// The participant a request acts for. Every agent has its own seat and strip:
+/// input it sends is attributed to it, its held keys never reach another
+/// agent's window, and its coordinates and screenshots are its strip's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Agent {
+    pub id: String,
+    /// Human name for the agent's strip; the id when absent.
+    pub label: Option<String>,
+}
+
+/// One parsed request line: a [`Command`], optionally on behalf of an agent
+/// named by the line's `agent` (and `agent_label`) fields.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Request {
+    pub command: Command,
+    pub agent: Option<Agent>,
 }
 
 /// Which application an inspection addresses.
@@ -806,8 +836,18 @@ pub fn dispatch_command<S: ControlState>(
             answer_or_err(state.inspection_answer(*inspection), "inspect_failed"),
             Vec::new(),
         ),
+        Command::AgentSeat | Command::AgentLeave => (
+            Response::Err {
+                code: AGENT_REQUIRED.to_string(),
+                message: "agent_seat and agent_leave name an agent".to_string(),
+            },
+            Vec::new(),
+        ),
     }
 }
+
+/// Error code for an agent-only command sent without an `agent`.
+pub const AGENT_REQUIRED: &str = "agent_required";
 
 fn invocation_control(id: String) -> (Response, Vec<PlannedAction>) {
     (
@@ -1304,6 +1344,65 @@ pub fn parse_command(line: &str) -> Result<Command, Response> {
     })
 }
 
+/// Parse a request line: the [`Command`] plus the optional `agent` (id) and
+/// `agent_label` fields that name who it acts for.
+///
+/// # Errors
+///
+/// [`Response::Err`] `parse_error` for a line that is no command, and
+/// `invalid_agent` for an empty, overlong or control-character agent id.
+#[allow(
+    clippy::result_large_err,
+    reason = "same wire Response error as parse_command, whose rationale applies unchanged"
+)]
+pub fn parse_request(line: &str) -> Result<Request, Response> {
+    let parse_error = |message: String| Response::Err {
+        code: "parse_error".to_string(),
+        message,
+    };
+    let mut value = serde_json::from_str::<serde_json::Value>(line.trim())
+        .map_err(|e| parse_error(format!("invalid JSON command: {e}")))?;
+    let (agent, label) = match value.as_object_mut() {
+        Some(fields) => (fields.remove("agent"), fields.remove("agent_label")),
+        None => (None, None),
+    };
+    let command = serde_json::from_value::<Command>(value)
+        .map_err(|e| parse_error(format!("invalid JSON command: {e}")))?;
+    let invalid = |message: &str| Response::Err {
+        code: "invalid_agent".to_string(),
+        message: message.to_string(),
+    };
+    let agent = match agent {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::String(id)) => {
+            if id.is_empty()
+                || id.chars().count() > MAX_AGENT_ID_CHARS
+                || id.chars().any(char::is_control)
+            {
+                return Err(invalid(
+                    "agent must be 1 to 128 characters without control characters",
+                ));
+            }
+            let label = match label {
+                Some(serde_json::Value::String(label)) => Some(label),
+                None | Some(serde_json::Value::Null) => None,
+                Some(_) => return Err(invalid("agent_label must be a string")),
+            }
+            .map(|label| {
+                label
+                    .chars()
+                    .filter(|c| !c.is_control())
+                    .take(MAX_AGENT_LABEL_CHARS)
+                    .collect::<String>()
+            })
+            .filter(|label| !label.trim().is_empty());
+            Some(Agent { id, label })
+        }
+        Some(_) => return Err(invalid("agent must be a string")),
+    };
+    Ok(Request { command, agent })
+}
+
 /// Protocol error for a command an agent-control connection may not send.
 pub const AGENT_CONTROL_NOT_PERMITTED: &str =
     "the agent-control socket serves input, screenshots and the watch signal only";
@@ -1334,6 +1433,8 @@ impl Command {
                 | Self::ClipboardCopy { .. }
                 | Self::ClipboardPaste { .. }
                 | Self::Watch { .. }
+                | Self::AgentSeat
+                | Self::AgentLeave
         )
     }
 }
@@ -2609,6 +2710,79 @@ mod framing_tests {
                 "expected TooLarge on a 100k newline-less stream; got Ok({:?})",
                 opt.is_some()
             ),
+        }
+    }
+}
+
+#[cfg(test)]
+mod agent_request_tests {
+    use super::*;
+
+    fn code(response: Response) -> String {
+        match response {
+            Response::Err { code, .. } => code,
+            other => panic!("expected an error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_request_names_the_agent_it_acts_for() {
+        let request = parse_request(
+            r#"{"op":"key_down","key":"Shift","agent":"mcp:1","agent_label":"Claude\u0007 Code"}"#,
+        )
+        .unwrap_or_else(|error| panic!("{error:?}"));
+        assert_eq!(
+            request,
+            Request {
+                command: Command::KeyDown {
+                    key: "Shift".into()
+                },
+                agent: Some(Agent {
+                    id: "mcp:1".into(),
+                    label: Some("Claude Code".into()),
+                }),
+            }
+        );
+        let plain =
+            parse_request(r#"{"op":"list_targets"}"#).unwrap_or_else(|error| panic!("{error:?}"));
+        assert_eq!(plain.agent, None, "a line naming nobody acts for nobody");
+        let blank_label = parse_request(r#"{"op":"agent_seat","agent":"a","agent_label":"  "}"#)
+            .unwrap_or_else(|error| panic!("{error:?}"));
+        assert_eq!(blank_label.agent.and_then(|agent| agent.label), None);
+    }
+
+    #[test]
+    fn a_malformed_agent_is_refused_not_ignored() {
+        let long = "x".repeat(MAX_AGENT_ID_CHARS + 1);
+        for line in [
+            r#"{"op":"key","key":"a","agent":""}"#.to_string(),
+            r#"{"op":"key","key":"a","agent":"a\nb"}"#.to_string(),
+            r#"{"op":"key","key":"a","agent":7}"#.to_string(),
+            r#"{"op":"key","key":"a","agent":"a","agent_label":3}"#.to_string(),
+            format!(r#"{{"op":"key","key":"a","agent":"{long}"}}"#),
+        ] {
+            let error = parse_request(&line)
+                .err()
+                .unwrap_or_else(|| panic!("{line}"));
+            assert_eq!(code(error), "invalid_agent", "{line}");
+        }
+        let error = parse_request(r#"{"op":"go_fishing","agent":"a"}"#).err();
+        assert_eq!(error.map(code).as_deref(), Some("parse_error"));
+    }
+
+    #[test]
+    fn seat_and_leave_need_an_agent_and_pass_the_agent_socket() {
+        struct NoState;
+        impl ControlState for NoState {
+            fn widget_registry(&self) -> HashMap<String, Rect> {
+                HashMap::new()
+            }
+        }
+        for command in [Command::AgentSeat, Command::AgentLeave] {
+            assert!(command.agent_permitted());
+            let (response, actions) = dispatch_command(&command, &NoState);
+            assert_eq!(code(response), AGENT_REQUIRED);
+            assert!(actions.is_empty());
         }
     }
 }

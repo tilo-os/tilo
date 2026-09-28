@@ -151,10 +151,32 @@ impl<H: ActionHost + InspectionSource + Send + Sync> McpServer<H> {
             Ok(actions) => actions,
             Err(error) => return tool_result(Err(error)),
         };
-        match tokio::task::spawn_blocking(move || computer.run(&actions, batch)).await {
+        let agent = self.agent();
+        match tokio::task::spawn_blocking(move || computer.run_as(agent.as_ref(), &actions, batch))
+            .await
+        {
             Ok(Ok(outcomes)) => crate::computer::content(&outcomes, batch),
             Ok(Err(error)) => tool_result(Err(error)),
             Err(error) => tool_result(Err(error.to_string())),
+        }
+    }
+    /// The agent this connection's pixel actions act for: its agent run, so
+    /// concurrent agents get separate seats and strips.
+    fn agent(&self) -> Option<crate::computer::Agent> {
+        self.run.as_ref().map(|run| crate::computer::Agent {
+            id: run.id.clone(),
+            label: run.label.clone(),
+        })
+    }
+    /// Seat this connection's agent before it opens something through the
+    /// workspace, so the window lands in the agent's strip. Best effort: an
+    /// app opened without a seat still opens, beside whatever has focus.
+    async fn seat_for_launch(&self) {
+        let (Some(computer), Some(agent)) = (self.computer.clone(), self.agent()) else {
+            return;
+        };
+        if let Ok(Err(error)) = tokio::task::spawn_blocking(move || computer.seat(&agent)).await {
+            tracing::debug!(%error, "agent seat before a workspace action");
         }
     }
     /// Attribute every invocation of this connection to one agent run, so
@@ -390,6 +412,9 @@ impl<H: ActionHost + InspectionSource + Send + Sync> McpServer<H> {
                     return Err("revision must not be empty".into());
                 }
                 let provider = self.provider(a.peer_id, a.workspace).await?;
+                if a.workspace {
+                    self.seat_for_launch().await;
+                }
                 let invocation = a
                     .invocation_id
                     .as_deref()

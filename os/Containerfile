@@ -577,9 +577,9 @@ ARG TILO_PREBUILT_DESKTOP=0
 ARG TILO_CARGO_BUILD_JOBS=4
 ARG TILO_REQUIRE_COMPILER_CACHE=0
 # `shared` compiles through sccache (its S3 backend when configured). `off` is
-# for publications: a shared compiler cache is writable by every CI job, so a
-# signed image must be compiled without one. It runs no wrapper, and refuses
-# compiler-cache credentials or settings so none can reach the compile.
+# the independent reproduction lane of a publication: with no cache at all, a
+# planted object in the shared cache makes the two builds differ. It runs no
+# wrapper, and refuses compiler-cache credentials or settings.
 # `publication` is a publication's own cache: short-lived role credentials
 # (a session token is required, so the shared static key cannot stand in)
 # for a bucket only publication runs can write, under tilo/publication/.
