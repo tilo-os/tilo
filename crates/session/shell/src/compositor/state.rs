@@ -4723,6 +4723,9 @@ impl XdgShellHandler for State {
             self.fullscreen_output = None;
             self.fullscreen_target = None;
         }
+        // The tab's size was withheld while fullscreen; the next configure
+        // pass hands it back.
+        crate::compositor::foreign::store().resend_configure(surface_id);
         surface.with_pending_state(|state| {
             state.states.unset(
                 smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Fullscreen,
