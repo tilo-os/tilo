@@ -2466,7 +2466,8 @@ impl LogsApp {
 impl Widget for LogsApp {
     ui::provides!(
         dyn ui::history_mode::capability::DocumentHistory,
-        dyn ui::widget::controls::ActionControls
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::resources::PublishesResources
     );
 
     fn measure(
@@ -2484,10 +2485,6 @@ impl Widget for LogsApp {
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[actions::LOGS_OPERATION_TYPE]
-    }
-
-    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
-        actions::resources(&self.entries, &self.filter, self.live_tail, self.allow_live)
     }
 
     fn start_operation(
@@ -2874,6 +2871,12 @@ impl Widget for LogsApp {
         // Keep pumping frames while the push slide eases into place, or
         // while live tail is on.
         self.push.is_animating() || (self.allow_live && self.live_tail) || self.export_rx.is_some()
+    }
+}
+
+impl ui::resources::PublishesResources for LogsApp {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
+        actions::resources(&self.entries, &self.filter, self.live_tail, self.allow_live)
     }
 }
 

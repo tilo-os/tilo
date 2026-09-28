@@ -4891,7 +4891,10 @@ include!("app_draw.rs");
 include!("app_events.rs");
 
 impl Widget for PdfApp {
-    ui::provides!(dyn ui::undo::CommittedActions);
+    ui::provides!(
+        dyn ui::undo::CommittedActions,
+        dyn ui::resources::PublishesResources
+    );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::PDF_VIEWER_OPERATION_TYPE]
@@ -4999,39 +5002,6 @@ impl Widget for PdfApp {
             })
             .into_iter()
             .collect()
-    }
-
-    /// Publish the open document + its markup so the host's Ctrl+K action palette
-    /// scopes to them. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
-    /// [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
-    }
-
-    fn action_directory_resource_page(
-        &self,
-        _doc: &AutoCommit,
-        cursor: &[u8],
-        max_results: usize,
-    ) -> Option<ui::widget::ActionDirectoryResourcePage> {
-        let resources = (cursor.is_empty() && max_results > 0)
-            .then(|| {
-                self.pdf_resource_ctx()
-                    .map(|ctx| crate::actions::document_root(&ctx))
-            })
-            .flatten()
-            .into_iter()
-            .collect();
-        Some(ui::widget::ActionDirectoryResourcePage {
-            resources,
-            next_cursor: Vec::new(),
-            exhausted: true,
-        })
-    }
-
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
     }
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
@@ -5950,6 +5920,39 @@ impl Widget for PdfApp {
     }
 }
 
+impl ui::resources::PublishesResources for PdfApp {
+    /// Publish the open document + its markup so the host's Ctrl+K action palette
+    /// scopes to them. Delegates to the
+    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
+    /// [`crate::actions`].
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+    }
+    fn action_directory_resource_page(
+        &self,
+        _doc: &AutoCommit,
+        cursor: &[u8],
+        max_results: usize,
+    ) -> Option<ui::widget::ActionDirectoryResourcePage> {
+        let resources = (cursor.is_empty() && max_results > 0)
+            .then(|| {
+                self.pdf_resource_ctx()
+                    .map(|ctx| crate::actions::document_root(&ctx))
+            })
+            .flatten()
+            .into_iter()
+            .collect();
+        Some(ui::widget::ActionDirectoryResourcePage {
+            resources,
+            next_cursor: Vec::new(),
+            exhausted: true,
+        })
+    }
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
+    }
+}
+
 impl ui::undo::CommittedActions for PdfApp {
     /// Hand the host the heads captured before an on-page affordance dispatched
     /// its markup action, so it records one undo boundary for it (see
@@ -6392,7 +6395,7 @@ mod tests {
                 "retained providers drop a's text"
             );
             assert!(app.search_providers().is_empty());
-            assert!(Widget::resources(&app, &st.doc).is_empty());
+            assert!(ui::resources::resources(&app, &st.doc).is_empty());
 
             record_frame(&mut app, &mut st, &mut set, &mut room);
             assert!(PdfDoc::list_annotations(&st.doc).is_empty());
@@ -6426,7 +6429,7 @@ mod tests {
                 assert_eq!(st.doc.get_heads(), original);
                 assert!(app.awaiting_markup_record);
                 assert!(app.has_pending_visual_work());
-                assert!(Widget::resources(&app, &st.doc).is_empty());
+                assert!(ui::resources::resources(&app, &st.doc).is_empty());
                 let semantics = format!("{:?}", Widget::accessibility(&app));
                 assert!(
                     semantics.contains("Opening PDF") && !semantics.contains("pdf.page:"),
@@ -6444,7 +6447,7 @@ mod tests {
             let mut room = AutoCommit::new();
             record_frame(&mut app, &mut st, &mut set, &mut room);
             assert!(!app.awaiting_markup_record);
-            assert!(!Widget::resources(&app, &st.doc).is_empty());
+            assert!(!ui::resources::resources(&app, &st.doc).is_empty());
             assert!(app.perform_semantic_action(
                 "pdf.tool:2",
                 &ui::a11y::Action::Activate,

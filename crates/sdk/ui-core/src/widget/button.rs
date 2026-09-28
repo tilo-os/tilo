@@ -1114,7 +1114,10 @@ impl Button {
 }
 
 impl Widget for Button {
-    crate::provides!(dyn crate::widget::controls::ActionControls);
+    crate::provides!(
+        dyn crate::widget::controls::ActionControls,
+        dyn crate::resources::PublishesResources
+    );
 
     fn set_interaction_environment(
         &mut self,
@@ -1579,30 +1582,6 @@ impl Widget for Button {
         self.effectively_enabled()
     }
 
-    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        let Some(mut resource) = self.native_resource.clone() else {
-            return Vec::new();
-        };
-        // The action directory refuses unnamed resources and actions, and
-        // an icon-only button learns its accessible name or tooltip after
-        // `on_effect` built the resource; publish the name it is announced by.
-        if resource.label.trim().is_empty()
-            && let Some(name) = self
-                .accessible_name
-                .as_ref()
-                .or(self.tooltip.as_ref())
-                .filter(|name| !name.trim().is_empty())
-        {
-            resource.label.clone_from(name);
-            for action in &mut resource.actions {
-                if action.label.trim().is_empty() {
-                    action.label.clone_from(name);
-                }
-            }
-        }
-        vec![resource]
-    }
-
     fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
         self.native_resource
             .as_ref()
@@ -1725,6 +1704,32 @@ impl Widget for Button {
         {
             presence.draw_peer_focus(scene, theme, user, self.rect);
         }
+    }
+}
+
+impl crate::resources::PublishesResources for Button {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        let Some(mut resource) = self.native_resource.clone() else {
+            return Vec::new();
+        };
+        // The action directory refuses unnamed resources and actions, and
+        // an icon-only button learns its accessible name or tooltip after
+        // `on_effect` built the resource; publish the name it is announced by.
+        if resource.label.trim().is_empty()
+            && let Some(name) = self
+                .accessible_name
+                .as_ref()
+                .or(self.tooltip.as_ref())
+                .filter(|name| !name.trim().is_empty())
+        {
+            resource.label.clone_from(name);
+            for action in &mut resource.actions {
+                if action.label.trim().is_empty() {
+                    action.label.clone_from(name);
+                }
+            }
+        }
+        vec![resource]
     }
 }
 
@@ -3506,7 +3511,7 @@ mod tests {
                 .on_effect(|| {})
                 .tooltip("Search");
             for (button, name) in [(named, "New Private Window"), (tooltip_after, "Search")] {
-                let resources = Widget::resources(&button, &doc);
+                let resources = crate::resources::resources(&button, &doc);
                 assert_eq!(resources.len(), 1);
                 assert_eq!(resources[0].label, name);
                 assert!(

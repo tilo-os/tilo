@@ -1322,7 +1322,7 @@ fn clipboard_gestures_route_through_confirmed_actions() {
         let intent = ui::widget::controls::take_control_invocation(&mut widget)
             .expect("copy shortcut queues a canonical action");
         assert_eq!(intent.address.action, "copy-selection");
-        let resources = widget.resources(&doc);
+        let resources = ui::resources::resources(&widget, &doc);
         let spec = ui::tilo_actions::door::resolve(&resources, &intent.address).unwrap();
         assert_eq!(spec.kind, ui::tilo_actions::OperationKind::Effect);
         assert_eq!(
@@ -1358,7 +1358,7 @@ fn clipboard_gestures_route_through_confirmed_actions() {
             let intent = ui::widget::controls::take_control_invocation(&mut widget)
                 .expect("paste shortcut queues a canonical action");
             assert_eq!(intent.address.action, "paste");
-            let resources = widget.resources(&doc);
+            let resources = ui::resources::resources(&widget, &doc);
             let spec = ui::tilo_actions::door::resolve(&resources, &intent.address).unwrap();
             assert_eq!(spec.params().len(), 1);
             assert_eq!(spec.params()[0].name.as_ref(), "text");
@@ -1430,7 +1430,7 @@ fn clipboard_gestures_route_through_confirmed_actions() {
         let intent = ui::widget::controls::take_control_invocation(&mut w)
             .expect("middle-click queues a canonical action");
         assert_eq!(intent.address.action, "paste-primary");
-        let resources = w.resources(&doc);
+        let resources = ui::resources::resources(&w, &doc);
         let spec = ui::tilo_actions::door::resolve(&resources, &intent.address).unwrap();
         assert_eq!(
             spec.contract.confirmation,
@@ -2060,7 +2060,7 @@ fn context_menu_is_keyboard_navigable_and_laid_out_in_view() {
             &mut widget,
             &std::collections::HashSet::from([intent.address.clone()]),
         );
-        let resources = widget.resources(&doc);
+        let resources = ui::resources::resources(&widget, &doc);
         let spec = ui::tilo_actions::door::resolve(&resources, &intent.address).unwrap();
         assert_eq!(spec.kind, ui::tilo_actions::OperationKind::Effect);
         assert_eq!(
@@ -2563,7 +2563,7 @@ fn menu_and_paste_actions_recheck_live_permissions() {
             .expect("menu paste queues its captured canonical intent");
 
         ui::clipboard_copy("menu substitution");
-        let resources = widget.resources(&doc);
+        let resources = ui::resources::resources(&widget, &doc);
         let spec = ui::tilo_actions::door::resolve(&resources, &intent.address).unwrap();
         let encoded = spec.build_json(&intent.arguments).unwrap();
         assert!(
@@ -3233,12 +3233,10 @@ fn ime_and_accessibility_expose_terminal_semantics() {
 fn terminal_resource_identity_convergence_and_presence() {
     // Case `terminal_resource_uses_the_shared_pane_identity`.
     {
-        use ui::widget::Widget;
-
         let (mut w, _writes) = build_test_widget();
         let mut doc = AutoCommit::new();
         w.init_crdt(&mut doc, &automerge::ROOT);
-        let resource = Widget::resources(&w, &doc)
+        let resource = ui::resources::resources(&w, &doc)
             .into_iter()
             .next()
             .expect("terminal session resource");
@@ -3246,7 +3244,7 @@ fn terminal_resource_identity_convergence_and_presence() {
         let mut peer_doc = AutoCommit::load(&saved).expect("load collaborator replica");
         let (mut peer, _writes) = build_test_widget();
         peer.init_crdt(&mut peer_doc, &automerge::ROOT);
-        let peer_resource = Widget::resources(&peer, &peer_doc)
+        let peer_resource = ui::resources::resources(&peer, &peer_doc)
             .into_iter()
             .next()
             .expect("peer terminal session resource");
@@ -3265,7 +3263,6 @@ fn terminal_resource_identity_convergence_and_presence() {
     // presence addresses would split despite the document converging.
     {
         use automerge::ActorId;
-        use ui::widget::Widget;
 
         let mut base = AutoCommit::new();
         let mut left_doc = base.fork().with_actor(ActorId::random());
@@ -3298,12 +3295,12 @@ fn terminal_resource_identity_convergence_and_presence() {
         // replicas without a conflict-cleanup write.
         left.init_crdt(&mut left_doc, &ROOT);
         right.init_crdt(&mut right_doc, &ROOT);
-        let left_id = Widget::resources(&left, &left_doc)
+        let left_id = ui::resources::resources(&left, &left_doc)
             .into_iter()
             .next()
             .expect("left terminal resource")
             .id;
-        let right_id = Widget::resources(&right, &right_doc)
+        let right_id = ui::resources::resources(&right, &right_doc)
             .into_iter()
             .next()
             .expect("right terminal resource")
@@ -3329,7 +3326,7 @@ fn terminal_resource_identity_convergence_and_presence() {
         );
         widget.sync(&mut doc, &ROOT);
 
-        let root = Widget::resources(&widget, &doc)
+        let root = ui::resources::resources(&widget, &doc)
             .into_iter()
             .next()
             .expect("session root");
@@ -3345,7 +3342,7 @@ fn terminal_resource_identity_convergence_and_presence() {
             .find(|resource| resource.kind == "terminal.link")
             .expect("visible OSC link child");
         assert_eq!(link.label, "https://example.test/docs");
-        assert!(Widget::resource(&widget, &doc, link.id.as_str()).is_some());
+        assert!(ui::resources::resource(&widget, &doc, link.id.as_str()).is_some());
         let semantics = Widget::accessibility(&widget).expect("terminal semantics");
         assert!(semantics.children.iter().any(|child| {
             child.role == ui::a11y::Role::Link
@@ -3353,8 +3350,8 @@ fn terminal_resource_identity_convergence_and_presence() {
                 && child.action_target.as_deref() == Some(link.id.as_str())
                 && child.state.focusable
         }));
-        let initial_revision =
-            Widget::action_directory_revision(&widget, &doc).expect("terminal directory revision");
+        let initial_revision = ui::resources::action_directory_revision(&widget, &doc)
+            .expect("terminal directory revision");
 
         let mut link_burst = Vec::new();
         for index in 0..40 {
@@ -3365,11 +3362,11 @@ fn terminal_resource_identity_convergence_and_presence() {
         widget.feed(&mut doc, &ROOT, &link_burst);
         widget.sync(&mut doc, &ROOT);
         assert_ne!(
-            Widget::action_directory_revision(&widget, &doc).as_deref(),
+            ui::resources::action_directory_revision(&widget, &doc).as_deref(),
             Some(initial_revision.as_str()),
             "new visible link resources invalidate the directory snapshot"
         );
-        let bounded = Widget::resources(&widget, &doc)
+        let bounded = ui::resources::resources(&widget, &doc)
             .into_iter()
             .next()
             .and_then(|root| {
@@ -3390,15 +3387,15 @@ fn terminal_resource_identity_convergence_and_presence() {
             .map(|(prefix, _)| prefix)
             .expect("link id suffix");
         assert!(
-            Widget::resource(&widget, &doc, &format!("{prefix}:41")).is_some(),
+            ui::resources::resource(&widget, &doc, &format!("{prefix}:41")).is_some(),
             "a link omitted from the contextual cap resolves lazily"
         );
 
-        let page = Widget::action_directory_resource_page(&widget, &doc, b"", 1)
+        let page = ui::resources::action_directory_resource_page(&widget, &doc, b"", 1)
             .expect("bounded directory page");
         assert_eq!(page.resources.len(), 1);
         assert!(page.exhausted && page.next_cursor.is_empty());
-        let exhausted = Widget::action_directory_resource_page(&widget, &doc, b"done", 1)
+        let exhausted = ui::resources::action_directory_resource_page(&widget, &doc, b"done", 1)
             .expect("terminal owns its empty tail page");
         assert!(exhausted.resources.is_empty() && exhausted.exhausted);
     }

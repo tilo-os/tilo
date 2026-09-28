@@ -296,7 +296,7 @@ mod tests {
             };
 
             let resources = vec![
-                Widget::resource(&app, &doc, &address.resource)
+                ui::resources::resource(&app, &doc, &address.resource)
                     .expect("search address lazily resolves against the live app"),
             ];
             let spec = tilo_actions::door::resolve(&resources, &address)
@@ -352,7 +352,7 @@ mod tests {
                 .expect("the tag provider hit");
             let address = hit.action_address().expect("canonical tag address");
             let resources = vec![
-                Widget::resource(&app, &doc, &address.resource)
+                ui::resources::resource(&app, &doc, &address.resource)
                     .expect("tag address lazily resolves against the live app"),
             ];
             let spec = tilo_actions::door::resolve(&resources, &address)

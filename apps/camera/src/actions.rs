@@ -847,7 +847,7 @@ mod tests {
     fn published(doc: &AutoCommit) -> Vec<Resource> {
         let mut app = CameraApp::sample();
         app.sync(&mut doc.clone(), &ROOT);
-        Widget::resources(&app, doc)
+        ui::resources::resources(&app, doc)
     }
 
     fn encoded(action: &CameraAction) -> EncodedAction {
@@ -916,7 +916,7 @@ mod tests {
         // contextual handoff, never a media library management surface.
         {
             let (app, doc) = seeded();
-            let resources = Widget::resources(&app, &doc);
+            let resources = ui::resources::resources(&app, &doc);
             assert!(
                 resources.len() >= 3,
                 "capture, scanner, document scanner, settings, and Camera discovery"

@@ -177,7 +177,7 @@ mod tests {
     ui::action_contract_tests! {
         seed: ui::automerge::AutoCommit::new(),
         registry: ui::tilo_actions::ActionRegistry::new(),
-        resources: |doc| ui::widget::Widget::resources(
+        resources: |doc| ui::resources::resources(
             &crate::PasswordsSurface::demo(crate::ShowcaseMode::Editor),
             doc,
         ),

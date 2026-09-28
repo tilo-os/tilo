@@ -63,7 +63,7 @@
 //!
 //! ## Consequence
 //!
-//! [`Widget::resources`](ui::widget::Widget::resources) publishes a storage
+//! [`Widget::resources`](ui::resources::resources) publishes a storage
 //! root, a resource for every drive and child resources for every partition.
 //! Each meaningful operation is an `OperationKind::Effect` handled by
 //! `disks.operation`: format and benchmark for disks/partitions, eject for a
@@ -138,7 +138,7 @@ mod tests {
     fn resources_for(doc: &AutoCommit) -> Vec<ui::tilo_actions::Resource> {
         let mut app = DisksApp::new();
         app.sync(&mut doc.clone(), &ROOT);
-        Widget::resources(&app, doc)
+        ui::resources::resources(&app, doc)
     }
 
     // Disks publishes only effect operations, so the registry decodes nothing.
@@ -354,7 +354,7 @@ mod tests {
             // Real event path: move the pointer over the surface.
             send(&mut app, &mut doc, &cursor_at(200.0, 200.0));
 
-            let resources = Widget::resources(&app, &doc);
+            let resources = ui::resources::resources(&app, &doc);
             assert_eq!(resources.len(), 1, "one storage-system root");
             let system = &resources[0];
             assert_eq!(system.kind, "disks.system");

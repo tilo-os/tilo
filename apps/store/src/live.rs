@@ -56,14 +56,13 @@ impl LiveStore {
 }
 
 impl Widget for LiveStore {
-    ui::provides!(dyn ui::widget::controls::ActionControls);
+    ui::provides!(
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::resources::PublishesResources
+    );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         self.inner.local_resource_operation_handlers()
-    }
-
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        self.inner.resources(doc)
     }
 
     fn start_operation(
@@ -300,6 +299,12 @@ impl Widget for LiveStore {
 
     fn needs_animation_frame(&self) -> bool {
         self.worker.has_pending() || self.inner.needs_animation_frame()
+    }
+}
+
+impl ui::resources::PublishesResources for LiveStore {
+    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+        self.inner.resources(doc)
     }
 }
 

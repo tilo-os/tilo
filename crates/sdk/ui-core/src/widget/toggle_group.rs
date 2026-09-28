@@ -754,7 +754,10 @@ impl ToggleGroup {
 }
 
 impl Widget for ToggleGroup {
-    crate::provides!(dyn crate::widget::controls::ActionControls);
+    crate::provides!(
+        dyn crate::widget::controls::ActionControls,
+        dyn crate::resources::PublishesResources
+    );
 
     fn build_layout(
         &mut self,
@@ -938,10 +941,6 @@ impl Widget for ToggleGroup {
         self.id.as_deref()
     }
 
-    fn resources(&self, _doc: &AutoCommit) -> Vec<crate::tilo_actions::Resource> {
-        self.native_resource.iter().cloned().collect()
-    }
-
     fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
         self.native_resource
             .as_ref()
@@ -1027,6 +1026,12 @@ impl Widget for ToggleGroup {
         }
         self.request_selection(index);
         true
+    }
+}
+
+impl crate::resources::PublishesResources for ToggleGroup {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<crate::tilo_actions::Resource> {
+        self.native_resource.iter().cloned().collect()
     }
 }
 
@@ -1593,7 +1598,7 @@ mod tests {
             let mut group = ToggleGroup::new(vec![Segment::new("Light"), Segment::new("Dark")], 0)
                 .on_view("appearance", move |index| captured.borrow_mut().push(index));
 
-            let resources = Widget::resources(&group, &AutoCommit::new());
+            let resources = crate::resources::resources(&group, &AutoCommit::new());
             assert_eq!(resources.len(), 1);
             let resource = &resources[0];
             assert_eq!(resource.id.as_str(), "tilo.control:appearance");

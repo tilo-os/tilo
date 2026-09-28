@@ -17,8 +17,7 @@ impl FrameHarness {
     pub(super) fn caller_resources(&self) -> Vec<tilo_actions::Resource> {
         let mut resources = self.caller_palette.resources.clone();
         resources.extend(
-            self.root
-                .caller_view_resources(&self.state.doc)
+            crate::resources::caller_view_resources(self.root.as_ref(), &self.state.doc)
                 .into_iter()
                 .filter(|resource| {
                     resource
@@ -115,7 +114,7 @@ impl FrameHarness {
     }
 
     pub(super) fn finish_caller_palette(&mut self) {
-        let local = self.root.caller_view_resources(&self.state.doc);
+        let local = crate::resources::caller_view_resources(self.root.as_ref(), &self.state.doc);
         let resources = self.caller_resources();
         let mut local_pending = None;
         if let Some(palette) = &mut self.caller_palette.palette {
