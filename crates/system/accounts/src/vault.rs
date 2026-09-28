@@ -367,35 +367,6 @@ mod tests {
             std::fs::remove_dir_all(root).unwrap();
         }
 
-        // Phase `windows_dpapi_migrates_legacy_key_without_changing_vault`.
-        {
-            let root = temp_root();
-            let dir = crate::vault_dir_in(&root);
-            let id = AccountId::from("migration");
-            let mut legacy = SecretVault::open_at(dir.clone(), SecretCustody::LocalFile);
-            legacy.put(&id, &Secret::password("preserve original"));
-            legacy.try_save().unwrap();
-            let key = read_key_bytes(&dir.join("vault.key")).unwrap();
-            let encrypted = std::fs::read(dir.join("vault.enc")).unwrap();
-            let migrated = SecretVault::open_in(&root);
-            assert_eq!(migrated.get(&id).unwrap().password, "preserve original");
-            assert!(!dir.join("vault.key").exists());
-            let protected = std::fs::read(dir.join("vault.key.dpapi")).unwrap();
-            assert_eq!(std::fs::read(dir.join("vault.enc")).unwrap(), encrypted);
-
-            // Reconstruct interrupted cleanup after the protected key was published.
-            private_fs::create_atomic(&dir.join("vault.key"), &key).unwrap();
-            let reopened = SecretVault::open_in(&root);
-            assert_eq!(reopened.get(&id).unwrap().password, "preserve original");
-            assert!(!dir.join("vault.key").exists());
-            assert_eq!(
-                std::fs::read(dir.join("vault.key.dpapi")).unwrap(),
-                protected
-            );
-            assert_eq!(std::fs::read(dir.join("vault.enc")).unwrap(), encrypted);
-            std::fs::remove_dir_all(root).unwrap();
-        }
-
         // Phase `windows_dpapi_insecure_protected_key_cannot_replace_existing_vault`.
         {
             let root = temp_root();
@@ -423,19 +394,16 @@ mod tests {
             std::fs::remove_dir_all(root).unwrap();
         }
 
-        // Phase `windows_dpapi_corrupt_protected_key_never_falls_back_to_legacy`.
+        // Phase `windows_dpapi_corrupt_protected_key_never_falls_back_to_a_plaintext_key`.
         {
             let root = temp_root();
             let dir = crate::vault_dir_in(&root);
-            let mut legacy = SecretVault::open_at(dir.clone(), SecretCustody::LocalFile);
-            legacy.put(&AccountId::from("original"), &Secret::password("fixture"));
-            legacy.try_save().unwrap();
-            let original_key = read_key_bytes(&dir.join("vault.key")).unwrap();
+            let mut vault = SecretVault::open_in(&root);
+            vault.put(&AccountId::from("original"), &Secret::password("fixture"));
+            vault.try_save().unwrap();
             let encrypted = std::fs::read(dir.join("vault.enc")).unwrap();
-            let migrated = SecretVault::open_in(&root);
-            assert!(migrated.recovery_error().is_none());
-            assert!(!dir.join("vault.key").exists());
-            private_fs::create_atomic(&dir.join("vault.key"), &original_key).unwrap();
+            let stray_key = [7; KEY_LEN];
+            private_fs::create_atomic(&dir.join("vault.key"), &stray_key).unwrap();
             private_fs::write_atomic(&dir.join("vault.key.dpapi"), b"corrupt protected key")
                 .unwrap();
             let failed = SecretVault::open_in(&root);
@@ -443,7 +411,7 @@ mod tests {
             assert!(failed.try_save().is_err());
             assert_eq!(
                 std::fs::read(dir.join("vault.key")).unwrap(),
-                original_key.as_slice()
+                stray_key.as_slice()
             );
             assert_eq!(
                 std::fs::read(dir.join("vault.key.dpapi")).unwrap(),

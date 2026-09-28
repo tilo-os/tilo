@@ -4,10 +4,7 @@
 //! envelope (XChaCha20-Poly1305, versioned authenticated header, random
 //! 192-bit nonce) under a 256-bit key. The envelope is bound to the vault's
 //! [`VaultFormat`] identity, so a vault never opens as another kind of vault.
-//! Vaults written before that envelope existed —
-//! `magic(4) || 0x01 || nonce(24) || ciphertext+tag`, with no associated
-//! data — still open, and are rewritten in the current format on their next
-//! save. What the plaintext means is the caller's business; this crate only
+//! What the plaintext means is the caller's business; this crate only
 //! seals it and keeps the key.
 //!
 //! Each consumer describes its on-disk identity with a [`VaultFormat`]: the
@@ -23,8 +20,7 @@
 //! - [`Custody::LocalFile`]: an owner-only `vault.key` beside the vault, for
 //!   headless and test environments without Secret Service.
 //! - `Custody::WindowsDpapi`: current-user DPAPI with a private
-//!   `vault.key.dpapi`. Legacy private keys migrate only after a verified
-//!   restore; a DPAPI failure never falls back to plaintext.
+//!   `vault.key.dpapi`; a DPAPI failure never falls back to plaintext.
 //!
 //! Every custody refuses to replace a key it cannot read, and refuses to mint
 //! a key when `vault.enc` already exists without one: a fresh key would make
