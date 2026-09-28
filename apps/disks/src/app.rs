@@ -3586,66 +3586,35 @@ impl Widget for DisksApp {
         vec![root]
     }
 
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: OperationKind,
-        type_id: &str,
-        _payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        if kind != OperationKind::Effect || type_id != "disks.operation" {
-            return Ok(false);
-        }
-        Err("disk operations require the lifecycle-capable operation host".into())
-    }
-
-    fn start_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if kind != OperationKind::Effect || type_id != "disks.operation" {
-            return Ok(None);
+        let Some(request) = op.unscoped() else {
+            return ui::widget::start_in_children(self, op, doc, path);
+        };
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
         }
-        if self.action_rx.is_some() {
-            return Err("another disk operation is still running".into());
+        if let Some(started) = self.admit_resource_operation(
+            request.invocation,
+            request.kind,
+            request.type_id,
+            request.payload,
+            doc,
+            path,
+        )? {
+            return Ok(Some(started));
         }
-        let args: Vec<String> = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
-        let action = ActionKind::from_key(args.first().map_or("", String::as_str))
-            .ok_or_else(|| "unknown disk operation".to_string())?;
-        let leaf = args
-            .get(1)
-            .ok_or_else(|| "missing device".to_string())?
-            .clone();
-        if !self.live {
-            return Err("live disk access is disabled".into());
-        }
-        // Re-check against the locally probed inventory immediately before
-        // execution. This rejects stale remote/search invocations and ignores
-        // a caller-supplied filesystem type in favour of current system data.
-        let fstype = self.revalidate_operation_target(action, &leaf)?;
-        let (tx, rx) = mpsc::channel();
-        let refresh = action.changes_topology();
-        thread::spawn(move || {
-            let (text, error) = match ops::run(action.op(), &leaf, fstype.as_deref()) {
-                Ok(text) => (text, None),
-                Err(error) => (format!("{} failed — {error}", action.label()), Some(error)),
-            };
-            let _ = tx.send(ActionResult {
-                text,
-                error,
-                refresh,
-            });
-        });
-        self.action_rx = Some(rx);
-        self.action_invocation = Some(invocation);
-        self.dirty = true;
-        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
     }
 
     fn poll_resource_operation(
@@ -4376,6 +4345,70 @@ impl Widget for DisksApp {
         _permissions: &PermissionContext,
     ) {
         self.draw(scene, transform, text_renderer, theme, presence);
+    }
+}
+
+impl DisksApp {
+    fn answer_resource_operation(
+        &mut self,
+        kind: OperationKind,
+        type_id: &str,
+        _payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind != OperationKind::Effect || type_id != "disks.operation" {
+            return Ok(false);
+        }
+        Err("disk operations require the lifecycle-capable operation host".into())
+    }
+
+    fn admit_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        kind: OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if kind != OperationKind::Effect || type_id != "disks.operation" {
+            return Ok(None);
+        }
+        if self.action_rx.is_some() {
+            return Err("another disk operation is still running".into());
+        }
+        let args: Vec<String> = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+        let action = ActionKind::from_key(args.first().map_or("", String::as_str))
+            .ok_or_else(|| "unknown disk operation".to_string())?;
+        let leaf = args
+            .get(1)
+            .ok_or_else(|| "missing device".to_string())?
+            .clone();
+        if !self.live {
+            return Err("live disk access is disabled".into());
+        }
+        // Re-check against the locally probed inventory immediately before
+        // execution. This rejects stale remote/search invocations and ignores
+        // a caller-supplied filesystem type in favour of current system data.
+        let fstype = self.revalidate_operation_target(action, &leaf)?;
+        let (tx, rx) = mpsc::channel();
+        let refresh = action.changes_topology();
+        thread::spawn(move || {
+            let (text, error) = match ops::run(action.op(), &leaf, fstype.as_deref()) {
+                Ok(text) => (text, None),
+                Err(error) => (format!("{} failed — {error}", action.label()), Some(error)),
+            };
+            let _ = tx.send(ActionResult {
+                text,
+                error,
+                refresh,
+            });
+        });
+        self.action_rx = Some(rx);
+        self.action_invocation = Some(invocation);
+        self.dirty = true;
+        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
     }
 }
 

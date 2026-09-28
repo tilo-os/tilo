@@ -54,16 +54,20 @@ fn resource_operations_are_window_local_brokered_and_unique() {
             .id
             .clone();
         let payload = serde_json::to_vec(&id).unwrap();
-        assert!(
-            app.invoke_resource_operation(
-                OperationKind::View,
-                "maps.open-place",
-                &payload,
-                &state.doc,
-                &state.root,
+        assert!(matches!(
+            app.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    OperationKind::View,
+                    "maps.open-place",
+                    &payload
+                ),
+                &mut state.doc,
+                &state.root
             )
-            .unwrap()
-        );
+            .unwrap(),
+            Some(ui::widget::ResourceOperationStart::Completed(_))
+        ));
         assert_eq!(app.model.selected.as_deref(), Some(id.as_str()));
         assert!(
             MapsDoc::load(&state.doc).is_some_and(|model| model.selected.is_none()),
@@ -78,16 +82,20 @@ fn resource_operations_are_window_local_brokered_and_unique() {
         app.sync(&mut state.doc, &state.root);
         let recents_before = MapsDoc::load(&state.doc).unwrap().recents;
         let payload = serde_json::to_vec("Marienplatz").unwrap();
-        assert!(
-            app.invoke_resource_operation(
-                OperationKind::View,
-                "maps.search",
-                &payload,
-                &state.doc,
-                &state.root,
+        assert!(matches!(
+            app.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    OperationKind::View,
+                    "maps.search",
+                    &payload
+                ),
+                &mut state.doc,
+                &state.root
             )
-            .unwrap()
-        );
+            .unwrap(),
+            Some(ui::widget::ResourceOperationStart::Completed(_))
+        ));
         assert_eq!(app.model.query, "Marienplatz");
         assert!(!app.model.results.is_empty());
         assert_eq!(MapsDoc::load(&state.doc).unwrap().recents, recents_before);

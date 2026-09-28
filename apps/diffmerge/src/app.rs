@@ -1021,76 +1021,35 @@ impl Widget for DiffMergeApp {
         &[crate::actions::DIFFMERGE_OPERATION_TYPE]
     }
 
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        if kind == tilo_actions::OperationKind::Document {
-            return Ok(false);
-        }
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(false);
-        };
-        self.act(match operation {
-            DiffmergeOperation::ShowDiff => Action::ModeDiff,
-            DiffmergeOperation::ShowMerge => Action::ModeMerge,
-            DiffmergeOperation::PreviousChange => Action::PrevChange,
-            DiffmergeOperation::NextChange => Action::NextChange,
-            DiffmergeOperation::ShowDiffBlock { block, fingerprint } => {
-                let Ok(block) = usize::try_from(block) else {
-                    return Err("this change target is no longer available".into());
-                };
-                if !self.diff.show_block(block, &fingerprint) {
-                    return Err(
-                        "the comparison changed; reopen this change from the current results"
-                            .into(),
-                    );
-                }
-                self.dirty = true;
-                return Ok(true);
-            }
-            DiffmergeOperation::OpenFiles { .. } => Action::Open,
-            DiffmergeOperation::LoadSample => Action::LoadSample,
-        });
-        Ok(true)
-    }
-
-    fn start_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(None);
+        let Some(request) = op.unscoped() else {
+            return ui::widget::start_in_children(self, op, doc, path);
         };
-        let crate::actions::DiffmergeOperation::OpenFiles { left, right } = operation else {
-            let encoded = serde_json::to_vec(&operation).map_err(|e| e.to_string())?;
-            return self
-                .invoke_resource_operation_v2(kind, type_id, &encoded, doc, path)
-                .map(|v| v.map(ui::widget::ResourceOperationStart::Completed));
-        };
-        if self.resource_invocation.is_some() || self.pending_resource_paths.is_some() {
-            return Err("another file operation is already running".into());
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
         }
-        match (left, right) {
-            (Some(left), Some(right)) => {
-                self.pending_resource_paths = Some((invocation, left.into(), right.into()));
-            }
-            (None, None) => {
-                self.resource_invocation = Some(invocation);
-                self.request_open_via_portal();
-            }
-            _ => return Err("left and right paths must be supplied together".into()),
+        if let Some(started) = self.admit_resource_operation(
+            request.invocation,
+            request.kind,
+            request.type_id,
+            request.payload,
+            doc,
+            path,
+        )? {
+            return Ok(Some(started));
         }
-        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
     }
 
     fn poll_resource_operation(
@@ -1560,6 +1519,86 @@ impl Widget for DiffMergeApp {
     }
 }
 
+impl DiffMergeApp {
+    fn answer_resource_operation(
+        &mut self,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind == tilo_actions::OperationKind::Document {
+            return Ok(false);
+        }
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
+        };
+        self.act(match operation {
+            DiffmergeOperation::ShowDiff => Action::ModeDiff,
+            DiffmergeOperation::ShowMerge => Action::ModeMerge,
+            DiffmergeOperation::PreviousChange => Action::PrevChange,
+            DiffmergeOperation::NextChange => Action::NextChange,
+            DiffmergeOperation::ShowDiffBlock { block, fingerprint } => {
+                let Ok(block) = usize::try_from(block) else {
+                    return Err("this change target is no longer available".into());
+                };
+                if !self.diff.show_block(block, &fingerprint) {
+                    return Err(
+                        "the comparison changed; reopen this change from the current results"
+                            .into(),
+                    );
+                }
+                self.dirty = true;
+                return Ok(true);
+            }
+            DiffmergeOperation::OpenFiles { .. } => Action::Open,
+            DiffmergeOperation::LoadSample => Action::LoadSample,
+        });
+        Ok(true)
+    }
+
+    fn admit_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(None);
+        };
+        let crate::actions::DiffmergeOperation::OpenFiles { left, right } = operation else {
+            let encoded = serde_json::to_vec(&operation).map_err(|e| e.to_string())?;
+            return self
+                .answer_resource_operation(kind, type_id, &encoded, doc, path)
+                .map(|handled| {
+                    handled.then(|| {
+                        ui::widget::ResourceOperationStart::Completed(
+                            ui::tilo_actions::ActionOutput::default(),
+                        )
+                    })
+                });
+        };
+        if self.resource_invocation.is_some() || self.pending_resource_paths.is_some() {
+            return Err("another file operation is already running".into());
+        }
+        match (left, right) {
+            (Some(left), Some(right)) => {
+                self.pending_resource_paths = Some((invocation, left.into(), right.into()));
+            }
+            (None, None) => {
+                self.resource_invocation = Some(invocation);
+                self.request_open_via_portal();
+            }
+            _ => return Err("left and right paths must be supplied together".into()),
+        }
+        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1617,13 +1656,15 @@ mod tests {
             right: Some(right.display().to_string()),
         })
         .unwrap();
-        let started = Widget::start_resource_operation(
+        let started = Widget::start_operation(
             &mut app,
-            invocation,
-            tilo_actions::OperationKind::Effect,
-            crate::actions::DIFFMERGE_OPERATION_TYPE,
-            &payload,
-            &state.doc,
+            &ui::widget::ResourceOperation::local(
+                invocation,
+                tilo_actions::OperationKind::Effect,
+                crate::actions::DIFFMERGE_OPERATION_TYPE,
+                &payload,
+            ),
+            &mut state.doc,
             &state.root,
         )
         .unwrap()
@@ -2451,19 +2492,22 @@ mod tests {
             "after.txt",
             "same\nreplacement value\n",
         );
-        let state = ui::State::new();
+        let mut state = ui::State::new();
         let payload = serde_json::to_vec(&DiffmergeOperation::ShowDiffBlock {
             block: 0,
             fingerprint: stale_fingerprint,
         })
         .expect("operation serializes");
 
-        let error = Widget::invoke_resource_operation(
+        let error = Widget::start_operation(
             &mut app,
-            tilo_actions::OperationKind::View,
-            crate::actions::DIFFMERGE_OPERATION_TYPE,
-            &payload,
-            &state.doc,
+            &ui::widget::ResourceOperation::local(
+                ui::tilo_actions::InvocationId::new(),
+                tilo_actions::OperationKind::View,
+                crate::actions::DIFFMERGE_OPERATION_TYPE,
+                &payload,
+            ),
+            &mut state.doc,
             &state.root,
         )
         .expect_err("stale local operation must explain why its target is unsafe");

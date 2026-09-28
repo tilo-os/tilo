@@ -2639,89 +2639,37 @@ impl Widget for ImageEditorApp {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::OPERATION_TYPE]
     }
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _: &AutoCommit,
-        _: &ObjId,
-    ) -> Result<bool, String> {
-        if kind == tilo_actions::OperationKind::Document {
-            return Ok(false);
-        }
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(false);
-        };
-        if self.picker.is_some() {
-            return Err("an image picker is already open".into());
-        }
-        match operation {
-            crate::actions::EditorOperation::Open => self.request_open(),
-            crate::actions::EditorOperation::Export => {
-                return Err(
-                    "export operations must be started through the invocation broker".into(),
-                );
-            }
-            crate::actions::EditorOperation::Select { id } => {
-                if !self.project.graph.nodes.contains_key(&id) {
-                    return Err("that image-editor resource no longer exists".into());
-                }
-                self.editor.select_only(id.clone());
-                self.rebuild_crop_editor();
-                self.notice = if id == "source" {
-                    "Original source selected".into()
-                } else if id == self.project.output {
-                    "Final export selected".into()
-                } else {
-                    "Adjustment selected".into()
-                };
-            }
-        }
-        Ok(true)
-    }
-    fn start_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if kind != tilo_actions::OperationKind::Document
-            && let Some(crate::actions::EditorOperation::Export) =
-                crate::actions::decode_operation(type_id, payload)?
-        {
-            self.resource_result = Some(match self.export_beside_source() {
-                Ok(notice) => {
-                    self.notice = notice;
-                    tilo_actions::InvocationUpdate::Succeeded {
-                        invocation,
-                        output: tilo_actions::ActionOutput::default(),
-                    }
-                }
-                Err(message) => {
-                    self.notice = message.clone();
-                    tilo_actions::InvocationUpdate::Failed {
-                        invocation,
-                        error: tilo_actions::ActionFailure {
-                            code: "image-editor.export-failed".into(),
-                            message,
-                            details: None,
-                            retryable: true,
-                        },
-                    }
-                }
-            });
-            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+        let Some(request) = op.unscoped() else {
+            return ui::widget::start_in_children(self, op, doc, path);
+        };
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
         }
-        if !self.invoke_resource_operation(kind, type_id, payload, doc, path)? {
-            return Ok(None);
+        if let Some(started) = self.admit_resource_operation(
+            request.invocation,
+            request.kind,
+            request.type_id,
+            request.payload,
+            doc,
+            path,
+        )? {
+            return Ok(Some(started));
         }
-        self.resource_invocation = Some(invocation);
-        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
     }
+
     fn poll_resource_operation(
         &mut self,
         invocation: tilo_actions::InvocationId,
@@ -3035,6 +2983,93 @@ impl Widget for ImageEditorApp {
             }
         }
         true
+    }
+}
+
+impl ImageEditorApp {
+    fn answer_resource_operation(
+        &mut self,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _: &AutoCommit,
+        _: &ObjId,
+    ) -> Result<bool, String> {
+        if kind == tilo_actions::OperationKind::Document {
+            return Ok(false);
+        }
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
+        };
+        if self.picker.is_some() {
+            return Err("an image picker is already open".into());
+        }
+        match operation {
+            crate::actions::EditorOperation::Open => self.request_open(),
+            crate::actions::EditorOperation::Export => {
+                return Err(
+                    "export operations must be started through the invocation broker".into(),
+                );
+            }
+            crate::actions::EditorOperation::Select { id } => {
+                if !self.project.graph.nodes.contains_key(&id) {
+                    return Err("that image-editor resource no longer exists".into());
+                }
+                self.editor.select_only(id.clone());
+                self.rebuild_crop_editor();
+                self.notice = if id == "source" {
+                    "Original source selected".into()
+                } else if id == self.project.output {
+                    "Final export selected".into()
+                } else {
+                    "Adjustment selected".into()
+                };
+            }
+        }
+        Ok(true)
+    }
+
+    fn admit_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if kind != tilo_actions::OperationKind::Document
+            && let Some(crate::actions::EditorOperation::Export) =
+                crate::actions::decode_operation(type_id, payload)?
+        {
+            self.resource_result = Some(match self.export_beside_source() {
+                Ok(notice) => {
+                    self.notice = notice;
+                    tilo_actions::InvocationUpdate::Succeeded {
+                        invocation,
+                        output: tilo_actions::ActionOutput::default(),
+                    }
+                }
+                Err(message) => {
+                    self.notice = message.clone();
+                    tilo_actions::InvocationUpdate::Failed {
+                        invocation,
+                        error: tilo_actions::ActionFailure {
+                            code: "image-editor.export-failed".into(),
+                            message,
+                            details: None,
+                            retryable: true,
+                        },
+                    }
+                }
+            });
+            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+        }
+        if !self.answer_resource_operation(kind, type_id, payload, doc, path)? {
+            return Ok(None);
+        }
+        self.resource_invocation = Some(invocation);
+        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
     }
 }
 
