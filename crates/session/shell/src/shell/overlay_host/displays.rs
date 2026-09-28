@@ -686,6 +686,61 @@ impl ShellOverlayHost {
         moved
     }
 
+    /// Reordering past the last group on a display carries the group onto
+    /// the neighbouring display, where it lands beside the seam it crossed.
+    pub(super) fn carry_focused_group_across_seam(&mut self, direction: i32) -> bool {
+        if direction == 0 || !self.move_focused_group_to_display(direction) {
+            return false;
+        }
+        let Some(chrome) = self.chrome.clone() else {
+            return true;
+        };
+        let reorder = {
+            let state = chrome.borrow();
+            let tree = state.tree();
+            let partition = &tree.desktop.outputs;
+            let seam_slot = || {
+                let strip_id = *tree.desktop.active_strip.get(&tree.desktop.active)?;
+                let group = tree.desktop.active_group_for(strip_id)?;
+                let display = partition.display_of(group)?;
+                let strip = tree
+                    .desktop
+                    .active_workspace()?
+                    .strips
+                    .iter()
+                    .find(|s| s.id == strip_id)?;
+                let current = strip.window_groups.iter().position(|g| g.id == group)?;
+                let mut neighbours = strip
+                    .window_groups
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, g)| g.id != group && partition.display_of(g.id) == Some(display))
+                    .map(|(i, _)| i);
+                // `to` is the index after the group leaves its old slot.
+                let to = if direction > 0 {
+                    let first = neighbours.next()?;
+                    if first > current { first - 1 } else { first }
+                } else {
+                    let last = neighbours.last()?;
+                    if last < current { last + 1 } else { last }
+                };
+                (to != current).then_some((strip_id, group, to))
+            };
+            seam_slot()
+        };
+        if let Some((strip, group, to)) = reorder {
+            let reorder = tilo_desktop::intents::SessionIntent::ReorderGroup { strip, group, to };
+            if Self::dispatch_desktop_intents(
+                &chrome,
+                [tilo_desktop::intents::DesktopIntent::Session(reorder)],
+            ) > 0
+            {
+                chrome.borrow_mut().bump();
+            }
+        }
+        true
+    }
+
     /// The groups of the active strip on each display, in the order they
     /// are laid out, for the state dump.
     pub fn display_partition_summary(&self) -> Vec<(u32, Vec<GroupId>)> {
