@@ -119,19 +119,13 @@ impl<K: Clone + PartialEq + 'static> Widget for Switch<K> {
         self.part.take_structure_dirty() | own
     }
 
-    // A transparent container forwards document-capable operation admission
-    // to the handlers it hosts (see the toolkit's `Widget` docs).
-    fn start_resource_operation_with_document(
+    fn start_operation(
         &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
+        op: &ui_core::widget::ResourceOperation<'_>,
         doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui_core::widget::ResourceOperationStart>, String> {
-        self.part
-            .start_resource_operation_with_document(invocation, kind, type_id, payload, doc, path)
+        ui_core::widget::start_in_children(self, op, doc, path)
     }
 
     fn children(&self) -> Vec<&dyn Widget> {

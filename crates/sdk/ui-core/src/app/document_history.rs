@@ -269,20 +269,21 @@ impl App {
         if encoded.type_id == HISTORY_OPERATION {
             return self.invoke_history_local(encoded);
         }
-        let doc = &self.state.doc;
-        let path = &self.state.root;
-        let result = self
+        let pane = self
             .document_history
             .pane_mut()
-            .ok_or("History is not open")?
-            .start_resource_operation(
+            .ok_or("History is not open")?;
+        let result = crate::widget::start_without_document_writes(
+            pane,
+            &crate::widget::ResourceOperation::local(
                 tilo_actions::InvocationId::new(),
                 tilo_actions::OperationKind::View,
                 &encoded.type_id,
                 &encoded.payload,
-                doc,
-                path,
-            )?;
+            ),
+            &mut self.state.doc,
+            &self.state.root,
+        )?;
         if result.is_none() {
             return Err("Unknown History operation".into());
         }

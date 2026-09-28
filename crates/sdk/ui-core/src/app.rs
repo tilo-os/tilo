@@ -3394,23 +3394,21 @@ pub(crate) mod ordinary_confirmation_tests {
             handlers.insert("fixture.control".into());
             handlers
         }
-        fn start_resource_operation_with_document(
+        fn start_operation(
             &mut self,
-            invocation: tilo_actions::InvocationId,
-            kind: tilo_actions::OperationKind,
-            operation: &str,
-            payload: &[u8],
+            op: &crate::widget::ResourceOperation<'_>,
             doc: &mut automerge::AutoCommit,
             path: &automerge::ObjId,
         ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-            if operation != "fixture.control" {
-                return self.child.start_resource_operation_with_document(
-                    invocation, kind, operation, payload, doc, path,
-                );
-            }
+            let Some(request) = op
+                .unscoped()
+                .filter(|request| request.type_id == "fixture.control")
+            else {
+                return self.child.start_operation(op, doc, path);
+            };
             self.ledger
                 .borrow_mut()
-                .push(serde_json::from_slice(payload).unwrap());
+                .push(serde_json::from_slice(request.payload).unwrap());
             Ok(Some(crate::widget::ResourceOperationStart::Completed(
                 tilo_actions::ActionOutput::default(),
             )))

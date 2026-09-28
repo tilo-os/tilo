@@ -154,15 +154,21 @@ impl Widget for Probe {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &["controlled.effect"]
     }
-    fn start_resource_operation_with_document(
+    fn start_operation(
         &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        _: &[u8],
+        op: &crate::widget::ResourceOperation<'_>,
         doc: &mut AutoCommit,
         _: &ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        let Some(crate::widget::OperationRequest {
+            invocation,
+            kind,
+            type_id,
+            ..
+        }) = op.unscoped()
+        else {
+            return Ok(None);
+        };
         if type_id != "controlled.effect" {
             return Ok(None);
         }
