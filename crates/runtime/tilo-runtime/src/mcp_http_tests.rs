@@ -428,7 +428,12 @@ impl crate::viewer::HostOperator for IssuingHost {
         action: &str,
         _params: Option<Value>,
     ) -> Result<Value, crate::viewer::ViewerError> {
-        assert_eq!(action, "invitation.issue");
+        if action != "invitation.issue" {
+            return Err(crate::viewer::ViewerError {
+                status: 404,
+                message: action.into(),
+            });
+        }
         Ok(json!({"invite":"signed","invite_id":"ab".repeat(32),"expires_at_ms":1_000_000}))
     }
 }

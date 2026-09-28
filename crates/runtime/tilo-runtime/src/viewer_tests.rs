@@ -9,11 +9,13 @@ struct Invite {
     participant: Option<String>,
 }
 
+type Calls = Arc<StdMutex<Vec<(String, Option<Value>)>>>;
+
 /// Answers like the device host's operator route.
 #[derive(Clone, Default)]
 struct FakeHost {
     invites: Arc<StdMutex<Vec<Invite>>>,
-    calls: Arc<StdMutex<Vec<(String, Option<Value>)>>>,
+    calls: Calls,
     down: Arc<std::sync::atomic::AtomicBool>,
 }
 
@@ -23,6 +25,7 @@ impl FakeHost {
         let invite = invites.iter_mut().find(|invite| invite.id == id).unwrap();
         invite.status = "redeemed";
         invite.participant = Some(participant.into());
+        drop(invites);
     }
     fn actions(&self) -> Vec<String> {
         self.calls
@@ -47,7 +50,7 @@ impl HostOperator for FakeHost {
         let mut invites = self.invites.lock().unwrap();
         match action {
             "invitation.issue" => {
-                let id = format!("{:064x}", invites.len() + 1);
+                let id = format!("{:064x}", invites.len().saturating_add(1));
                 invites.push(Invite {
                     id: id.clone(),
                     role: params["role"].as_str().unwrap().into(),
@@ -69,17 +72,20 @@ impl HostOperator for FakeHost {
                 let invite = invites
                     .iter_mut()
                     .find(|invite| invite.id == params["invite_id"])
-                    .unwrap();
+                    .ok_or_else(|| ViewerError::new(409, "unknown invitation"))?;
                 invite.status = "revoked";
                 Ok(json!({}))
             }
             "member.role.set" | "member.remove" => {
-                assert!(invites.iter().any(
-                    |invite| invite.participant.as_deref() == params["participant_id"].as_str()
-                ));
-                Ok(json!({"generation": "2"}))
+                if invites.iter().any(|invite| {
+                    invite.participant.as_deref() == params["participant_id"].as_str()
+                }) {
+                    Ok(json!({"generation": "2"}))
+                } else {
+                    Err(ViewerError::new(409, "not a member"))
+                }
             }
-            other => panic!("unexpected {other}"),
+            other => Err(ViewerError::new(404, format!("unexpected {other}"))),
         }
     }
 }
