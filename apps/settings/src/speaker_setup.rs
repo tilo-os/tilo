@@ -15,8 +15,11 @@ use std::collections::BTreeMap;
 
 use ui::collaboration::{
     CalibrationInfo, CalibrationPhaseInfo, MicrophoneStatus, SpeakerCommand, SpeakerDeviceInfo,
-    SpeakerGroupInfo, SpeakerMemberSpec, SpeakerMemberStatus, SpeakerRoleSpec, SpeakerSnapshot,
+    SpeakerGroupInfo, SpeakerMemberSpec, SpeakerMemberStatus, SpeakerPlaybackInfo, SpeakerRoleSpec,
+    SpeakerSnapshot,
 };
+
+use crate::i18n::{t, t_args};
 
 /// Default distance of a new room point from the listening position.
 pub const ROOM_RADIUS_MM: i32 = 2_000;
@@ -37,13 +40,24 @@ pub enum Arrangement {
 impl Arrangement {
     pub const ALL: [Self; 3] = [Self::Stereo, Self::Surround, Self::Room];
 
+    /// The arrangement's name, as the chooser lists it.
     #[must_use]
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Stereo => "Stereo pair",
-            Self::Surround => "Surround",
-            Self::Room => "Around the room",
-        }
+    pub fn label(self) -> String {
+        t(match self {
+            Self::Stereo => "speakers-arrangement-stereo",
+            Self::Surround => "speakers-arrangement-surround",
+            Self::Room => "speakers-arrangement-room",
+        })
+    }
+
+    /// What the arrangement means, beside the chooser.
+    #[must_use]
+    pub fn description(self) -> String {
+        t(match self {
+            Self::Stereo => "speakers-arrangement-stereo-description",
+            Self::Surround => "speakers-arrangement-surround-description",
+            Self::Room => "speakers-arrangement-room-description",
+        })
     }
 
     #[must_use]
@@ -60,6 +74,58 @@ impl Arrangement {
             Self::Room => (1, 8),
         }
     }
+}
+
+/// A speaker's role as a phrase inside a sentence: "left speaker".
+#[must_use]
+pub fn role_text(role: SpeakerRoleSpec) -> String {
+    t(match role {
+        SpeakerRoleSpec::Left => "speakers-role-left",
+        SpeakerRoleSpec::Right => "speakers-role-right",
+        SpeakerRoleSpec::Center => "speakers-role-center",
+        SpeakerRoleSpec::Lfe => "speakers-role-lfe",
+        SpeakerRoleSpec::SurroundLeft => "speakers-role-surround-left",
+        SpeakerRoleSpec::SurroundRight => "speakers-role-surround-right",
+        SpeakerRoleSpec::Room { .. } => "speakers-role-room",
+    })
+}
+
+/// A role as a button answers "Which one just played?": "Left".
+#[must_use]
+pub fn role_answer(role: SpeakerRoleSpec) -> String {
+    t(match role {
+        SpeakerRoleSpec::Left => "speakers-answer-left",
+        SpeakerRoleSpec::Right => "speakers-answer-right",
+        SpeakerRoleSpec::Center => "speakers-answer-center",
+        SpeakerRoleSpec::Lfe => "speakers-answer-lfe",
+        SpeakerRoleSpec::SurroundLeft => "speakers-answer-surround-left",
+        SpeakerRoleSpec::SurroundRight => "speakers-answer-surround-right",
+        SpeakerRoleSpec::Room { .. } => "speakers-answer-room",
+    })
+}
+
+/// Where one member of a set stands.
+#[must_use]
+pub fn member_status_text(status: SpeakerMemberStatus) -> String {
+    t(match status {
+        SpeakerMemberStatus::Ready => "speakers-member-ready",
+        SpeakerMemberStatus::AwaitingConsent => "speakers-member-awaiting-consent",
+        SpeakerMemberStatus::Offline => "speakers-member-offline",
+        SpeakerMemberStatus::OutputMissing => "speakers-member-output-missing",
+        SpeakerMemberStatus::Unavailable => "speakers-member-unavailable",
+        SpeakerMemberStatus::NotCertified => "speakers-member-not-certified",
+    })
+}
+
+/// A session playing on a set, as its status pill reads.
+#[must_use]
+pub fn playback_text(playback: &SpeakerPlaybackInfo) -> String {
+    t(match playback {
+        SpeakerPlaybackInfo::Playing => "speakers-playback-playing",
+        SpeakerPlaybackInfo::Connecting => "speakers-playback-connecting",
+        SpeakerPlaybackInfo::SyncingClocks => "speakers-playback-syncing",
+        SpeakerPlaybackInfo::ClockFailed { .. } => "speakers-playback-clock-failed",
+    })
 }
 
 /// One output that can join a speaker set.
@@ -99,12 +165,12 @@ impl Microphone {
     /// describes it.
     #[must_use]
     pub fn status_text(&self) -> String {
-        let role = crate::i18n::t(if self.member {
+        let role = t(if self.member {
             "speakers-microphone-role-member"
         } else {
             "speakers-microphone-role-cross-check"
         });
-        let status = crate::i18n::t(match self.status {
+        let status = t(match self.status {
             MicrophoneStatus::Ready if self.local => "speakers-microphone-this-device",
             MicrophoneStatus::Ready => "speakers-microphone-ready",
             MicrophoneStatus::NotAsked => "speakers-microphone-not-asked",
@@ -168,7 +234,7 @@ impl Default for SpeakerSetup {
             arrangement: Arrangement::Stereo,
             chosen: Vec::new(),
             roles: Vec::new(),
-            name: "Speakers".into(),
+            name: t("speakers-default-name"),
             snapshot: SpeakerSnapshot::default(),
             message: None,
             calibrate_seen: false,
@@ -440,16 +506,18 @@ impl SpeakerSetup {
         let (low, high) = self.arrangement.member_range();
         let count = self.chosen.len();
         if count < low {
-            return Some(match self.arrangement {
-                Arrangement::Stereo => "Choose two speakers for a stereo pair".into(),
-                Arrangement::Surround => "Choose at least three speakers for surround".into(),
-                Arrangement::Room => "Choose at least one speaker".into(),
-            });
+            return Some(t(match self.arrangement {
+                Arrangement::Stereo => "speakers-problem-stereo-too-few",
+                Arrangement::Surround => "speakers-problem-surround-too-few",
+                Arrangement::Room => "speakers-problem-room-too-few",
+            }));
         }
-        (count > high).then(|| match self.arrangement {
-            Arrangement::Stereo => "A stereo pair has exactly two speakers".into(),
-            Arrangement::Surround => "Surround uses at most six speakers".into(),
-            Arrangement::Room => "Use at most eight speakers".into(),
+        (count > high).then(|| {
+            t(match self.arrangement {
+                Arrangement::Stereo => "speakers-problem-stereo-too-many",
+                Arrangement::Surround => "speakers-problem-surround-too-many",
+                Arrangement::Room => "speakers-problem-room-too-many",
+            })
         })
     }
 
@@ -529,16 +597,16 @@ impl SpeakerSetup {
     /// When the role is taken or does not fit the arrangement.
     pub fn assign(&mut self, role: SpeakerRoleSpec) -> Result<(), String> {
         let Step::Identify { index, .. } = self.step else {
-            return Err("listen to a speaker first".into());
+            return Err(t("speakers-assign-listen-first"));
         };
         if self.arrangement == Arrangement::Room {
             if !matches!(role, SpeakerRoleSpec::Room { .. }) {
-                return Err("place room speakers on the layout".into());
+                return Err(t("speakers-assign-room-on-layout"));
             }
         } else if !self.remaining_roles().contains(&role) {
-            return Err(format!(
-                "another speaker is already the {}",
-                role.describe()
+            return Err(t_args(
+                "speakers-assign-taken",
+                &[("role", role_text(role).into())],
             ));
         }
         if let Some(slot) = self.roles.get_mut(index) {
@@ -624,7 +692,7 @@ impl SpeakerSetup {
                 .skip(index.saturating_add(1))
                 .any(|other| other == point)
         });
-        crowded.then(|| "Two speakers cannot stand in exactly the same spot".into())
+        crowded.then(|| t("speakers-layout-crowded"))
     }
 
     pub fn finish_layout(&mut self) {
@@ -645,10 +713,10 @@ impl SpeakerSetup {
     pub fn save_command(&self) -> Result<SpeakerCommand, String> {
         let name = self.name.trim();
         if name.is_empty() {
-            return Err("Give the speakers a name".into());
+            return Err(t("speakers-name-empty"));
         }
         if name.chars().count() > ui::collaboration::MAX_SPEAKER_NAME_CHARS {
-            return Err("Use a shorter name".into());
+            return Err(t("speakers-name-too-long"));
         }
         let members = self
             .chosen
@@ -660,7 +728,12 @@ impl SpeakerSetup {
                     output: candidate.output.clone(),
                     role,
                 })
-                .ok_or_else(|| format!("Tell which speaker {} is", candidate.label()))
+                .ok_or_else(|| {
+                    t_args(
+                        "speakers-name-unidentified",
+                        &[("speaker", candidate.label().into())],
+                    )
+                })
             })
             .collect::<Result<Vec<_>, _>>()?;
         Ok(SpeakerCommand::Create {
@@ -673,10 +746,7 @@ impl SpeakerSetup {
     pub fn saved(&mut self, group: String) {
         self.calibrate_seen = self.group(&group).is_some();
         self.step = Step::Calibrate { group };
-        self.message = Some(
-            "Saved. Your other devices ask once whether to join; approve there, then calibrate here."
-                .into(),
-        );
+        self.message = Some(t("speakers-saved-message"));
     }
 
     pub fn open_calibration(&mut self, group: &str) {
@@ -693,12 +763,15 @@ impl SpeakerSetup {
     #[must_use]
     pub fn calibration_problem(&self, group: &str) -> Option<String> {
         let Some(known) = self.group(group) else {
-            return Some("That speaker set is gone".into());
+            return Some(t("speakers-calibrate-gone"));
         };
         if !known.led_here {
-            return Some(format!(
-                "Calibrate {} on {}, where it was set up",
-                known.name, known.leader_label
+            return Some(t_args(
+                "speakers-calibrate-elsewhere",
+                &[
+                    ("name", known.name.as_str().into()),
+                    ("leader", known.leader_label.as_str().into()),
+                ],
             ));
         }
         if let Some(member) = known
@@ -706,15 +779,17 @@ impl SpeakerSetup {
             .iter()
             .find(|member| member.status != SpeakerMemberStatus::Ready)
         {
-            return Some(format!(
-                "{}: {}",
-                member.device_label,
-                member.status.label()
+            return Some(t_args(
+                "speakers-calibrate-member-not-ready",
+                &[
+                    ("device", member.device_label.as_str().into()),
+                    ("status", member_status_text(member.status).into()),
+                ],
             ));
         }
         self.listening(group)
             .is_none()
-            .then(|| crate::i18n::t("speakers-calibrate-no-microphone"))
+            .then(|| t("speakers-calibrate-no-microphone"))
     }
 
     /// Start measuring `group` from where the person sits, with every extra
@@ -733,7 +808,7 @@ impl SpeakerSetup {
                 CalibrationPhaseInfo::Measuring | CalibrationPhaseInfo::WaitingForMicrophones
             )
         }) {
-            return Err(crate::i18n::t("speakers-calibrate-already-running"));
+            return Err(t("speakers-calibrate-already-running"));
         }
         let listening = self.listening(group).map(|microphone| microphone.device);
         let excluded = self
