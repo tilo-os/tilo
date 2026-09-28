@@ -635,6 +635,7 @@ fn tab_context_menu_opens_navigates_dismisses_and_paints_only_while_open() {
                 theme: &h.theme,
                 presence: &presence,
                 geometry: h.host.layer_geometry(&outputs),
+                thumbnails: &mut crate::shell::window_previews::WindowPreviews::default(),
             },
         );
         assert!(
@@ -653,6 +654,7 @@ fn tab_context_menu_opens_navigates_dismisses_and_paints_only_while_open() {
                 theme: &h.theme,
                 presence: &presence,
                 geometry: h.host.layer_geometry(&outputs),
+                thumbnails: &mut crate::shell::window_previews::WindowPreviews::default(),
             },
         );
         assert!(

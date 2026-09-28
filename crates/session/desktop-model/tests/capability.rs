@@ -15,7 +15,7 @@ use tilo_desktop_model::*;
     clippy::too_many_lines,
     reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
 )]
-fn capability_grants_start_empty_and_round_trip_with_legacy_workspaces() {
+fn capability_grants_start_empty_and_round_trip() {
     // Phase `a_new_workspace_holds_no_capabilities_and_grants_nothing`.
     {
         // Both `Workspace::default()` (used by `..Default::default()`
@@ -113,21 +113,6 @@ fn capability_grants_start_empty_and_round_trip_with_legacy_workspaces() {
             "and a host outside the allowlist stays denied"
         );
     }
-    // Phase `legacy_workspace_without_grants_field_deserialises`.
-    {
-        // `#[serde(default)]` keeps the upgrade path lossless.
-        let legacy = r#"{
-            "id": 1,
-            "name": "Old",
-            "strips": []
-        }"#;
-        let ws: Workspace = serde_json::from_str(legacy).expect("legacy compat");
-        assert!(ws.capabilities.is_empty());
-        assert!(ws.app_grants_snapshot_at(NOW).is_empty());
-        assert_eq!(ws.owner, None, "a legacy workspace records no owner");
-        assert_eq!(ws.id, WorkspaceId::from(1));
-        assert_eq!(ws.name, "Old");
-    }
     // Phase `all_capability_variants_round_trip_through_serde`.
     {
         // Pin the wire shape of every variant so a downstream change
@@ -153,20 +138,6 @@ fn capability_grants_start_empty_and_round_trip_with_legacy_workspaces() {
         let json = serde_json::to_string(&caps).expect("serialize caps");
         let round: Vec<Capability> = serde_json::from_str(&json).expect("deserialize caps");
         assert_eq!(round, caps);
-    }
-    // Phase `legacy_workspace_without_shared_surfaces_field_deserialises`.
-    {
-        // Persisted workspaces before this field existed lack it;
-        // `#[serde(default)]` keeps the upgrade path lossless.
-        let legacy = r#"{
-            "id": 1,
-            "name": "Old",
-            "strips": [],
-            "grants": {}
-        }"#;
-        let ws: Workspace = serde_json::from_str(legacy).expect("legacy compat");
-        assert!(ws.shared_surfaces.is_empty());
-        assert_eq!(ws.id, WorkspaceId::from(1));
     }
 }
 

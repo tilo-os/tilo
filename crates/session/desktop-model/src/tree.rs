@@ -22,13 +22,6 @@ use crate::workspace::Workspace;
 /// direction with no safe default: older reading newer.
 pub const STATE_SCHEMA_VERSION: u32 = 1;
 
-/// A file with no `schema_version` key is version 1 — the key was added
-/// alongside the check, not a format change, and defaulting to "unknown"
-/// would strand every existing session on upgrade.
-fn state_schema_version_of_a_file_without_one() -> u32 {
-    1
-}
-
 /// Something a member asked about another person, by their participant id
 /// (the hex of their user key).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -44,7 +37,6 @@ pub enum PersonRequest {
 pub struct DesktopTree {
     /// Which version of the on-disk shape the file describes. Read back to
     /// decide whether this build may touch the file at all.
-    #[serde(default = "state_schema_version_of_a_file_without_one")]
     pub schema_version: u32,
     /// Counts rounds in which a peer's changes landed. `#[serde(skip)]`
     /// — a restored value could match a live reader's cache and

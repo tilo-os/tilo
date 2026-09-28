@@ -2047,11 +2047,168 @@ impl Widget for SettingsApp {
         <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
     }
 
+    fn start_operation(
+        &mut self,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut automerge::AutoCommit,
+        path: &automerge::ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        let Some(request) = op.unscoped() else {
+            return ui::widget::start_in_children(self, op, doc, path);
+        };
+        if let Some(started) = self.admit_resource_operation_with_document(
+            request.invocation,
+            request.kind,
+            request.type_id,
+            request.payload,
+            doc,
+            path,
+        )? {
+            return Ok(Some(started));
+        }
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
+    }
+
+    fn poll_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        cancellation_requested: bool,
+        doc: &automerge::AutoCommit,
+        path: &automerge::ObjId,
+    ) -> Option<tilo_actions::InvocationUpdate> {
+        if self.local_operation == Some(invocation) {
+            // These contracts explicitly advertise `cancellable: false`.
+            // Once the pane has admitted a system command it may be touching
+            // firmware, boot configuration, or durable input preferences, so
+            // a cancellation request cannot honestly stop or cancel history.
+            let _ = cancellation_requested;
+            let terminal = self.local_operation_status.get();
+            match terminal {
+                crate::actions::LocalOperationStatus::Succeeded { token, message }
+                    if self.local_operation_token.as_deref() == Some(token.as_str()) =>
+                {
+                    self.local_operation = None;
+                    self.local_operation_token = None;
+                    self.local_operation_status
+                        .set(crate::actions::LocalOperationStatus::Idle);
+                    return Some(tilo_actions::InvocationUpdate::Succeeded {
+                        invocation,
+                        output: tilo_actions::ActionOutput {
+                            value: Some(serde_json::Value::String(message)),
+                            resources: Vec::new(),
+                        },
+                    });
+                }
+                crate::actions::LocalOperationStatus::Failed { token, message }
+                    if self.local_operation_token.as_deref() == Some(token.as_str()) =>
+                {
+                    self.local_operation = None;
+                    self.local_operation_token = None;
+                    self.local_operation_status
+                        .set(crate::actions::LocalOperationStatus::Idle);
+                    return Some(tilo_actions::InvocationUpdate::Failed {
+                        invocation,
+                        error: tilo_actions::ActionFailure {
+                            code: "device_local_operation_failed".into(),
+                            message,
+                            details: None,
+                            retryable: false,
+                        },
+                    });
+                }
+                _ => return None,
+            }
+        }
+        if self
+            .account_probe
+            .as_ref()
+            .is_some_and(|(id, _)| *id == invocation)
+        {
+            if cancellation_requested {
+                self.account_probe = None;
+                return Some(tilo_actions::InvocationUpdate::Cancelled {
+                    invocation,
+                    message: Some("connection check cancelled".into()),
+                });
+            }
+            let result = self
+                .account_probe
+                .as_ref()
+                .and_then(|(_, receiver)| receiver.try_recv().ok());
+            if let Some(result) = result {
+                self.account_probe = None;
+                return Some(match result {
+                    Ok(message) => tilo_actions::InvocationUpdate::Succeeded {
+                        invocation,
+                        output: tilo_actions::ActionOutput {
+                            value: Some(serde_json::Value::String(message)),
+                            resources: Vec::new(),
+                        },
+                    },
+                    Err(message) => tilo_actions::InvocationUpdate::Failed {
+                        invocation,
+                        error: tilo_actions::ActionFailure {
+                            code: "account_connection_failed".into(),
+                            message,
+                            details: None,
+                            retryable: true,
+                        },
+                    },
+                });
+            }
+            return None;
+        }
+        self.shell.as_mut().and_then(|shell| {
+            shell.poll_resource_operation(invocation, cancellation_requested, doc, path)
+        })
+    }
+
+    /// Fold the settings panes into the unified Ctrl+K palette. Every result
+    /// addresses the pane resource's exported `open` View operation, alongside
+    /// the collaborative setting-change actions those resources own.
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(self.search_provider.clone())]
+    }
+
+    /// Bubble an on-screen control's dispatched-action undo bracket up from
+    /// whichever pane produced it. A settings control lives deep under the shell
+    /// (`AppShell → content → Scrollable → … → pane`), and the intermediate
+    /// containers don't forward this rising-edge signal, so the root walks its
+    /// subtree and returns the first pane's captured heads. The host records one
+    /// undo boundary from it, so Ctrl+Z reverts the setting change.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        fn walk(w: &mut dyn Widget) -> Option<Vec<automerge::ChangeHash>> {
+            if let Some(heads) = w.take_committed_action() {
+                return Some(heads);
+            }
+            for child in w.children_mut() {
+                if let Some(heads) = walk(child) {
+                    return Some(heads);
+                }
+            }
+            None
+        }
+        for child in self.children_mut() {
+            if let Some(heads) = walk(child) {
+                return Some(heads);
+            }
+        }
+        None
+    }
+}
+
+impl SettingsApp {
     #[allow(
         clippy::too_many_lines,
         reason = "local account and presentation operation routing stays auditable in one dispatch point"
     )]
-    fn invoke_resource_operation(
+    fn answer_resource_operation(
         &mut self,
         kind: tilo_actions::OperationKind,
         type_id: &str,
@@ -2180,7 +2337,7 @@ impl Widget for SettingsApp {
         clippy::too_many_lines,
         reason = "central router keeps validation beside dispatch"
     )]
-    fn start_resource_operation_with_document(
+    fn admit_resource_operation_with_document(
         &mut self,
         invocation: tilo_actions::InvocationId,
         kind: tilo_actions::OperationKind,
@@ -2218,7 +2375,15 @@ impl Widget for SettingsApp {
             if let Some(started) = ui::widget::start_in_children(self, &op, doc, path)? {
                 return Ok(Some(started));
             }
-            return self.start_resource_operation(invocation, kind, type_id, payload, doc, path);
+            return self
+                .answer_resource_operation(kind, type_id, payload, doc, path)
+                .map(|handled| {
+                    handled.then(|| {
+                        ui::widget::ResourceOperationStart::Completed(
+                            tilo_actions::ActionOutput::default(),
+                        )
+                    })
+                });
         }
         let operation: crate::actions::AccountOperation =
             serde_json::from_slice(payload).map_err(|error| error.to_string())?;
@@ -2233,7 +2398,7 @@ impl Widget for SettingsApp {
                 | crate::actions::AccountOperation::CancelForm
                 | crate::actions::AccountOperation::CancelReauthentication),
             ) => {
-                self.invoke_resource_operation(
+                self.answer_resource_operation(
                     kind,
                     type_id,
                     &serde_json::to_vec(&operation).map_err(|error| error.to_string())?,
@@ -2246,7 +2411,7 @@ impl Widget for SettingsApp {
                 operation @ (crate::actions::AccountOperation::SubmitForm
                 | crate::actions::AccountOperation::SubmitReauthentication),
             ) => {
-                self.invoke_resource_operation(
+                self.answer_resource_operation(
                     kind,
                     type_id,
                     &serde_json::to_vec(&operation).map_err(|error| error.to_string())?,
@@ -2319,133 +2484,6 @@ impl Widget for SettingsApp {
         Ok(Some(ui::widget::ResourceOperationStart::Completed(
             tilo_actions::ActionOutput::default(),
         )))
-    }
-
-    fn poll_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        cancellation_requested: bool,
-        doc: &automerge::AutoCommit,
-        path: &automerge::ObjId,
-    ) -> Option<tilo_actions::InvocationUpdate> {
-        if self.local_operation == Some(invocation) {
-            // These contracts explicitly advertise `cancellable: false`.
-            // Once the pane has admitted a system command it may be touching
-            // firmware, boot configuration, or durable input preferences, so
-            // a cancellation request cannot honestly stop or cancel history.
-            let _ = cancellation_requested;
-            let terminal = self.local_operation_status.get();
-            match terminal {
-                crate::actions::LocalOperationStatus::Succeeded { token, message }
-                    if self.local_operation_token.as_deref() == Some(token.as_str()) =>
-                {
-                    self.local_operation = None;
-                    self.local_operation_token = None;
-                    self.local_operation_status
-                        .set(crate::actions::LocalOperationStatus::Idle);
-                    return Some(tilo_actions::InvocationUpdate::Succeeded {
-                        invocation,
-                        output: tilo_actions::ActionOutput {
-                            value: Some(serde_json::Value::String(message)),
-                            resources: Vec::new(),
-                        },
-                    });
-                }
-                crate::actions::LocalOperationStatus::Failed { token, message }
-                    if self.local_operation_token.as_deref() == Some(token.as_str()) =>
-                {
-                    self.local_operation = None;
-                    self.local_operation_token = None;
-                    self.local_operation_status
-                        .set(crate::actions::LocalOperationStatus::Idle);
-                    return Some(tilo_actions::InvocationUpdate::Failed {
-                        invocation,
-                        error: tilo_actions::ActionFailure {
-                            code: "device_local_operation_failed".into(),
-                            message,
-                            details: None,
-                            retryable: false,
-                        },
-                    });
-                }
-                _ => return None,
-            }
-        }
-        if self
-            .account_probe
-            .as_ref()
-            .is_some_and(|(id, _)| *id == invocation)
-        {
-            if cancellation_requested {
-                self.account_probe = None;
-                return Some(tilo_actions::InvocationUpdate::Cancelled {
-                    invocation,
-                    message: Some("connection check cancelled".into()),
-                });
-            }
-            let result = self
-                .account_probe
-                .as_ref()
-                .and_then(|(_, receiver)| receiver.try_recv().ok());
-            if let Some(result) = result {
-                self.account_probe = None;
-                return Some(match result {
-                    Ok(message) => tilo_actions::InvocationUpdate::Succeeded {
-                        invocation,
-                        output: tilo_actions::ActionOutput {
-                            value: Some(serde_json::Value::String(message)),
-                            resources: Vec::new(),
-                        },
-                    },
-                    Err(message) => tilo_actions::InvocationUpdate::Failed {
-                        invocation,
-                        error: tilo_actions::ActionFailure {
-                            code: "account_connection_failed".into(),
-                            message,
-                            details: None,
-                            retryable: true,
-                        },
-                    },
-                });
-            }
-            return None;
-        }
-        self.shell.as_mut().and_then(|shell| {
-            shell.poll_resource_operation(invocation, cancellation_requested, doc, path)
-        })
-    }
-
-    /// Fold the settings panes into the unified Ctrl+K palette. Every result
-    /// addresses the pane resource's exported `open` View operation, alongside
-    /// the collaborative setting-change actions those resources own.
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(self.search_provider.clone())]
-    }
-
-    /// Bubble an on-screen control's dispatched-action undo bracket up from
-    /// whichever pane produced it. A settings control lives deep under the shell
-    /// (`AppShell → content → Scrollable → … → pane`), and the intermediate
-    /// containers don't forward this rising-edge signal, so the root walks its
-    /// subtree and returns the first pane's captured heads. The host records one
-    /// undo boundary from it, so Ctrl+Z reverts the setting change.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        fn walk(w: &mut dyn Widget) -> Option<Vec<automerge::ChangeHash>> {
-            if let Some(heads) = w.take_committed_action() {
-                return Some(heads);
-            }
-            for child in w.children_mut() {
-                if let Some(heads) = walk(child) {
-                    return Some(heads);
-                }
-            }
-            None
-        }
-        for child in self.children_mut() {
-            if let Some(heads) = walk(child) {
-                return Some(heads);
-            }
-        }
-        None
     }
 }
 
@@ -2790,11 +2828,13 @@ mod tests {
             let payload = serde_json::to_vec(&crate::actions::UpdateOperation::Check).unwrap();
             let invocation = tilo_actions::InvocationId::new();
             let start = app
-                .start_resource_operation_with_document(
-                    invocation,
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::UPDATE_OPERATION_TYPE,
-                    &payload,
+                .start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        invocation,
+                        tilo_actions::OperationKind::Effect,
+                        crate::actions::UPDATE_OPERATION_TYPE,
+                        &payload,
+                    ),
                     &mut doc,
                     &root,
                 )
@@ -2847,11 +2887,13 @@ mod tests {
             let root = automerge::ROOT;
             let invocation = tilo_actions::InvocationId::new();
             let payload = serde_json::to_vec(&crate::actions::UpdateOperation::Check).unwrap();
-            app.start_resource_operation_with_document(
-                invocation,
-                tilo_actions::OperationKind::Effect,
-                crate::actions::UPDATE_OPERATION_TYPE,
-                &payload,
+            app.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    invocation,
+                    tilo_actions::OperationKind::Effect,
+                    crate::actions::UPDATE_OPERATION_TYPE,
+                    &payload,
+                ),
                 &mut doc,
                 &root,
             )
@@ -2883,11 +2925,13 @@ mod tests {
             let root = automerge::ROOT;
             let invocation = tilo_actions::InvocationId::new();
             let payload = serde_json::to_vec(&crate::actions::UpdateOperation::Check).unwrap();
-            app.start_resource_operation_with_document(
-                invocation,
-                tilo_actions::OperationKind::Effect,
-                crate::actions::UPDATE_OPERATION_TYPE,
-                &payload,
+            app.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    invocation,
+                    tilo_actions::OperationKind::Effect,
+                    crate::actions::UPDATE_OPERATION_TYPE,
+                    &payload,
+                ),
                 &mut doc,
                 &root,
             )
@@ -2929,11 +2973,13 @@ mod tests {
                 schedule: "Daily".into(),
             };
             let payload = serde_json::to_vec(&daily).unwrap();
-            app.start_resource_operation_with_document(
-                invocation,
-                tilo_actions::OperationKind::Effect,
-                crate::actions::UPDATE_OPERATION_TYPE,
-                &payload,
+            app.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    invocation,
+                    tilo_actions::OperationKind::Effect,
+                    crate::actions::UPDATE_OPERATION_TYPE,
+                    &payload,
+                ),
                 &mut doc,
                 &root,
             )
@@ -2975,11 +3021,13 @@ mod tests {
             let root = automerge::ROOT;
             let invocation = tilo_actions::InvocationId::new();
             let payload = serde_json::to_vec(&crate::actions::UpdateOperation::Check).unwrap();
-            app.start_resource_operation_with_document(
-                invocation,
-                tilo_actions::OperationKind::Effect,
-                crate::actions::UPDATE_OPERATION_TYPE,
-                &payload,
+            app.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    invocation,
+                    tilo_actions::OperationKind::Effect,
+                    crate::actions::UPDATE_OPERATION_TYPE,
+                    &payload,
+                ),
                 &mut doc,
                 &root,
             )
@@ -3157,33 +3205,41 @@ mod tests {
             }
 
             let heads = doc.get_heads();
-            assert!(
-                app.invoke_resource_operation(
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::ACCOUNT_OPERATION_TYPE,
-                    &serde_json::to_vec(&crate::actions::AccountOperation::SubmitForm).unwrap(),
-                    &doc,
-                    &root,
+            assert!(matches!(
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        tilo_actions::OperationKind::Effect,
+                        crate::actions::ACCOUNT_OPERATION_TYPE,
+                        &serde_json::to_vec(&crate::actions::AccountOperation::SubmitForm).unwrap()
+                    ),
+                    &mut doc,
+                    &root
                 )
-                .expect("account form command is admitted")
-            );
+                .expect("account form command is admitted"),
+                Some(ui::widget::ResourceOperationStart::Completed(_))
+            ));
             assert_eq!(doc.get_heads(), heads, "account command touched Automerge");
             covered.insert(crate::actions::ACCOUNT_OPERATION_TYPE);
 
             let heads = doc.get_heads();
-            assert!(
-                app.invoke_resource_operation(
-                    tilo_actions::OperationKind::Effect,
-                    crate::ai_settings::AI_OPERATION_TYPE,
-                    &serde_json::to_vec(&crate::ai_settings::AiOperation::SetPreset {
-                        preset: Some(agent_provider_config::assign::Preset::Private),
-                    })
-                    .unwrap(),
-                    &doc,
-                    &root,
+            assert!(matches!(
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        tilo_actions::OperationKind::Effect,
+                        crate::ai_settings::AI_OPERATION_TYPE,
+                        &serde_json::to_vec(&crate::ai_settings::AiOperation::SetPreset {
+                            preset: Some(agent_provider_config::assign::Preset::Private),
+                        })
+                        .unwrap()
+                    ),
+                    &mut doc,
+                    &root
                 )
-                .expect("provider command is admitted")
-            );
+                .expect("provider command is admitted"),
+                Some(ui::widget::ResourceOperationStart::Completed(_))
+            ));
             assert_eq!(doc.get_heads(), heads, "provider command touched Automerge");
             covered.insert(crate::ai_settings::AI_OPERATION_TYPE);
 
@@ -3209,11 +3265,13 @@ mod tests {
             let payload = serde_json::to_vec(&operation).expect("network operation serializes");
             let invocation = tilo_actions::InvocationId::new();
             let start = app
-                .start_resource_operation_with_document(
-                    invocation,
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::NETWORK_OPERATION_TYPE,
-                    &payload,
+                .start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        invocation,
+                        tilo_actions::OperationKind::Effect,
+                        crate::actions::NETWORK_OPERATION_TYPE,
+                        &payload,
+                    ),
                     &mut doc,
                     &root,
                 )
@@ -3263,11 +3321,13 @@ mod tests {
             let payload = serde_json::to_vec(&operation).expect("operation serializes");
             let invocation = tilo_actions::InvocationId::new();
             let start = app
-                .start_resource_operation_with_document(
-                    invocation,
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::INPUT_OPERATION_TYPE,
-                    &payload,
+                .start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        invocation,
+                        tilo_actions::OperationKind::Effect,
+                        crate::actions::INPUT_OPERATION_TYPE,
+                        &payload,
+                    ),
                     &mut doc,
                     &root,
                 )
@@ -3300,11 +3360,13 @@ mod tests {
             let payload = serde_json::to_vec(&operation).expect("Bluetooth operation serializes");
             let invocation = tilo_actions::InvocationId::new();
             let start = app
-                .start_resource_operation_with_document(
-                    invocation,
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::BLUETOOTH_OPERATION_TYPE,
-                    &payload,
+                .start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        invocation,
+                        tilo_actions::OperationKind::Effect,
+                        crate::actions::BLUETOOTH_OPERATION_TYPE,
+                        &payload,
+                    ),
                     &mut doc,
                     &root,
                 )

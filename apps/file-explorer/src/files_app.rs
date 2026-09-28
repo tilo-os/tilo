@@ -103,12 +103,6 @@ fn build_thumb_service(config_dir: Option<&Path>) -> Option<ThumbnailService> {
     })
 }
 
-/// Route a toolkit-owned control resource to the exact retained leaf that
-/// published it.  The default `Widget::invoke_resource_operation_v2` adapts
-/// legacy operations and therefore cannot discover a nested modern Button's
-/// v2-only native handler through an arbitrary container.  Keeping this small
-/// recursive router at the app action boundary makes a screen-reader/agent
-/// action reach precisely the same callback as pointer and keyboard input.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct CollabPanel {
     title: String,
@@ -7963,381 +7957,6 @@ impl Widget for FileExplorerWidget {
 
     #[allow(
         clippy::too_many_lines,
-        reason = "this is the single protocol dispatcher for the declared local file operations; keeping the match together makes handler coverage auditable"
-    )]
-    fn invoke_resource_operation(
-        &mut self,
-        kind: OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &automerge::AutoCommit,
-        _path: &automerge::ObjId,
-    ) -> Result<bool, String> {
-        match (kind, type_id) {
-            (OperationKind::Effect, "files.refresh") => self.refresh(),
-            (OperationKind::Effect, "files.new-folder") => {
-                let name: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
-                fileops::new_folder(&self.current_path, &name)?;
-                self.refresh();
-            }
-            (OperationKind::Effect, "files.new-from-template") => {
-                let template_id: String =
-                    serde_json::from_slice(payload).map_err(|e| e.to_string())?;
-                let Some(template_dir) = templates::templates_dir() else {
-                    return Err("the Templates directory is unavailable".into());
-                };
-                let target = templates::list_templates(&template_dir)
-                    .iter()
-                    .find(|candidate| {
-                        template_resource_id(&candidate.to_string_lossy()) == template_id
-                    })
-                    .cloned()
-                    .ok_or_else(|| "the template is no longer available".to_string())?;
-                templates::create_from_template(&target, &self.current_path)?;
-                self.refresh();
-            }
-            (OperationKind::Effect, "files.paste") => {
-                if self.clipboard.is_empty() {
-                    return Err("The clipboard is empty".into());
-                }
-                let destination = self.current_path.clone();
-                let sources = self.clipboard.clone();
-                let cut = self.clipboard_cut;
-                let mut failures = Vec::new();
-                let mut remaining_cut_sources = Vec::new();
-                for source in &sources {
-                    let result = if cut {
-                        fileops::move_into(source, &destination)
-                    } else {
-                        fileops::copy_into(source, &destination)
-                    };
-                    if let Err(error) = result {
-                        if cut {
-                            remaining_cut_sources.push(source.clone());
-                        }
-                        failures.push(format!("{}: {error}", source.display()));
-                    }
-                }
-                if cut {
-                    self.clipboard = remaining_cut_sources;
-                }
-                self.refresh();
-                if !failures.is_empty() {
-                    return Err(format!("paste failed: {}", failures.join("; ")));
-                }
-            }
-            (OperationKind::View, "files.open") => {
-                let resource_id: String =
-                    serde_json::from_slice(payload).map_err(|e| e.to_string())?;
-                // `open` is an action on an already-published resource, not a
-                // general ambient-path launcher. Resolve its opaque id only
-                // against the live presentation snapshot so deleted, renamed,
-                // or replayed rows cannot regain authority or disclose paths.
-                let target = self
-                    .visible_open_path(&resource_id)
-                    .ok_or_else(|| "file location is no longer available".to_string())?;
-                self.open_path(target);
-            }
-            (OperationKind::Effect, "files.open-with") => {
-                self.invoke_open_with(payload)?;
-            }
-            (OperationKind::View, "files.reveal-record") => {
-                let value: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
-                let record_id = uuid::Uuid::parse_str(&value)
-                    .map_err(|_| "invalid collaborative record id".to_string())?;
-                let record = self
-                    .collaborative_search
-                    .record(record_id)
-                    .ok_or_else(|| "collaborative record is not indexed yet".to_string())?;
-                if crate::model::read_record_id(&record.path) != Some(*record_id.as_bytes()) {
-                    return Err("collaborative record is no longer available".into());
-                }
-                if record.path.parent() != Some(self.current_path.as_path())
-                    && let Some(parent) = record.path.parent().map(Path::to_path_buf)
-                {
-                    self.navigate(parent);
-                }
-                if let Some(index) = self.entries.iter().position(|entry| {
-                    entry.record_id == Some(*record_id.as_bytes()) || entry.path == record.path
-                }) {
-                    self.selection.select_only(index);
-                }
-            }
-            (kind, "files.folder-command") => {
-                let verb: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
-                let expected_kind = match verb.as_str() {
-                    "up" | "back" | "forward" | "recent" | "list" | "grid" | "sort-name"
-                    | "sort-size" | "sort-type" | "sort-modified" | "sort-ascending"
-                    | "sort-descending" | "zoom-in" | "zoom-out" | "hidden" | "shortcuts" => {
-                        OperationKind::View
-                    }
-                    "add-favorite" | "remove-favorite" | "empty-trash" | "terminal"
-                    | "undo-trash" => OperationKind::Effect,
-                    _ => return Ok(false),
-                };
-                if kind != expected_kind {
-                    return Err("file command has an invalid operation kind".into());
-                }
-                match verb.as_str() {
-                    "up" => self.go_up(),
-                    "back" => self.history_back(),
-                    "forward" => self.history_forward(),
-                    "recent" => self.navigate(crate::recent::location()),
-                    "list" => self.set_view_mode(ViewMode::List),
-                    "grid" => self.set_view_mode(ViewMode::Grid),
-                    "sort-name" => self.set_sort_by(SortBy::Name),
-                    "sort-size" => self.set_sort_by(SortBy::Size),
-                    "sort-type" => self.set_sort_by(SortBy::Type),
-                    "sort-modified" => self.set_sort_by(SortBy::Modified),
-                    "sort-ascending" => {
-                        self.apply_set_sort_order(SortOrder::Ascending);
-                    }
-                    "sort-descending" => {
-                        self.apply_set_sort_order(SortOrder::Descending);
-                    }
-                    "zoom-in" => self.set_zoom(self.zoom_level.saturating_add(1)),
-                    "zoom-out" => self.set_zoom(self.zoom_level.saturating_sub(1)),
-                    "shortcuts" => self.show_keyboard_shortcuts_panel(),
-                    "hidden" => {
-                        self.apply_command(FileCommand::ToggleHidden);
-                    }
-                    "add-favorite" => {
-                        if !self.current_path.is_dir() {
-                            return Err("the current location cannot be a favourite".into());
-                        }
-                        self.apply_command(FileCommand::AddFavorite(self.current_path.clone()));
-                    }
-                    "remove-favorite" => {
-                        self.apply_command(FileCommand::RemoveFavorite(self.current_path.clone()));
-                    }
-                    "empty-trash" if self.is_trash_view() => {
-                        // The action contract was confirmation-gated by the
-                        // resource broker; do not make an agent traverse an
-                        // inaccessible second UI-only confirmation sheet.
-                        self.perform_empty_trash();
-                    }
-                    "undo-trash" => {
-                        self.apply_undo_last_trash();
-                    }
-                    "terminal" => self
-                        .open_terminal(&mut SystemRunner)
-                        .map_err(|e| format!("could not open terminal: {e}"))?,
-                    _ => return Ok(false),
-                }
-            }
-            (kind, "files.entry-command") => {
-                let args: Vec<String> =
-                    serde_json::from_slice(payload).map_err(|e| e.to_string())?;
-                let verb = args
-                    .first()
-                    .ok_or_else(|| "missing file command".to_string())?;
-                let resource_id = args
-                    .get(1)
-                    .ok_or_else(|| "missing file resource".to_string())?;
-                let target = self
-                    .visible_entry_path(resource_id)
-                    .ok_or_else(|| "file entry is no longer visible".to_string())?;
-                let expected_kind = match verb.as_str() {
-                    "properties" | "sharing" | "history" | "availability" | "send-nearby" => {
-                        OperationKind::View
-                    }
-                    "copy" | "cut" | "restore" | "purge" | "trash" | "keep-offline"
-                    | "automatic-storage" | "free-local-space" | "retry-transfer" => {
-                        OperationKind::Effect
-                    }
-                    _ => return Ok(false),
-                };
-                if kind != expected_kind {
-                    return Err("file command has an invalid operation kind".into());
-                }
-                let index = self
-                    .entries
-                    .iter()
-                    .position(|entry| entry.path == target)
-                    .ok_or_else(|| "file entry is no longer visible".to_string())?;
-                self.selection.select_only(index);
-                if verb == "trash" {
-                    if self.is_trash_view() {
-                        return Err("Use the separately confirmed permanent-delete action for items already in Trash".into());
-                    }
-                    self.apply_delete();
-                    self.structure_dirty = true;
-                    return Ok(true);
-                }
-                let command = match verb.as_str() {
-                    "copy" => FileCommand::Copy,
-                    "cut" => FileCommand::Cut,
-                    "extract" => FileCommand::ExtractHere,
-                    "compress" => FileCommand::CompressSelection,
-                    "restore" if self.is_trash_view() => FileCommand::RestoreFromTrash,
-                    "purge" if self.is_trash_view() => FileCommand::ConfirmPermanentDelete {
-                        paths: vec![target],
-                    },
-                    "properties" => FileCommand::ShowProperties,
-                    "sharing" => FileCommand::ShowSharing,
-                    "history" => FileCommand::ShowHistory,
-                    "availability" => FileCommand::ShowAvailability,
-                    "keep-offline" => FileCommand::KeepOffline,
-                    "automatic-storage" => FileCommand::RemoveOfflinePin,
-                    "free-local-space" => FileCommand::FreeLocalSpace,
-                    "retry-transfer" => FileCommand::RetryTransfer,
-                    "send-nearby" => FileCommand::OpenNearbySend,
-                    _ => return Ok(false),
-                };
-                if !self.apply_command(command) {
-                    return Err("file operation could not be applied".into());
-                }
-            }
-            (OperationKind::Effect, "files.nearby-send") => {
-                let (resource_id, handle): (String, ui::collaboration::NearbyTargetHandle) =
-                    serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-                let target = self
-                    .visible_entry_path(&resource_id)
-                    .ok_or_else(|| "file entry is no longer visible".to_string())?;
-                if !self
-                    .nearby_send
-                    .targets()
-                    .iter()
-                    .any(|target| target.handle == handle && target.online)
-                {
-                    return Err("nearby device is no longer available".into());
-                }
-                self.nearby_send.send(&target, handle)?;
-                self.nearby_send_path = Some(target.clone());
-                self.status = Some(t("files-nearby-queueing"));
-            }
-            (OperationKind::Effect, "files.nearby-decide") => {
-                let (handle, destination, remember_for_session): (
-                    ui::collaboration::NearbyTransferHandle,
-                    Option<ui::collaboration::NearbyDestinationHandle>,
-                    bool,
-                ) = serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-                let transfer = self
-                    .nearby_send
-                    .transfers()
-                    .iter()
-                    .find(|transfer| transfer.handle == handle)
-                    .ok_or_else(|| "nearby transfer is no longer available".to_string())?;
-                if transfer.direction != ui::collaboration::NearbyTransferDirection::Receiving
-                    || !matches!(
-                        transfer.phase,
-                        ui::collaboration::NearbyTransferPhase::AwaitingConsent
-                            | ui::collaboration::NearbyTransferPhase::AwaitingDestination
-                    )
-                {
-                    return Err("nearby transfer no longer awaits a receiver decision".into());
-                }
-                if let Some(destination) = destination
-                    && !self
-                        .nearby_send
-                        .destinations()
-                        .iter()
-                        .any(|candidate| candidate.handle == destination)
-                {
-                    return Err("nearby destination is no longer available".into());
-                }
-                self.nearby_send
-                    .decide(handle, destination, remember_for_session);
-                self.status = Some(if destination.is_some() {
-                    t("files-nearby-accepted")
-                } else {
-                    t("files-nearby-declined")
-                });
-            }
-            (OperationKind::Effect, "files.nearby-retry") => {
-                let handle: ui::collaboration::NearbyTransferHandle =
-                    serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-                if !self.nearby_send.transfers().iter().any(|transfer| {
-                    transfer.handle == handle
-                        && transfer.phase == ui::collaboration::NearbyTransferPhase::Failed
-                }) {
-                    return Err("nearby transfer is not retryable".into());
-                }
-                self.nearby_send.retry(handle);
-                self.status = Some(t("files-nearby-retrying"));
-            }
-            (OperationKind::Effect, "files.nearby-cancel") => {
-                let handle: ui::collaboration::NearbyTransferHandle =
-                    serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-                if !self.nearby_send.transfers().iter().any(|transfer| {
-                    transfer.handle == handle
-                        && matches!(
-                            transfer.phase,
-                            ui::collaboration::NearbyTransferPhase::Queued
-                                | ui::collaboration::NearbyTransferPhase::Transferring
-                        )
-                }) {
-                    return Err("nearby transfer is not cancellable".into());
-                }
-                self.nearby_send.cancel(handle);
-                self.status = Some(t("files-nearby-cancelled"));
-            }
-            (OperationKind::Effect, "files.rename") => {
-                let args: Vec<String> =
-                    serde_json::from_slice(payload).map_err(|e| e.to_string())?;
-                let resource_id = args
-                    .first()
-                    .ok_or_else(|| "missing file resource".to_string())?;
-                let name = args
-                    .get(1)
-                    .ok_or_else(|| "missing new file name".to_string())?;
-                let target = self
-                    .visible_entry_path(resource_id)
-                    .ok_or_else(|| "file entry is no longer visible".to_string())?;
-                fileops::rename(&target, name)?;
-                self.refresh();
-            }
-            (OperationKind::Effect, "files.share-link") => {
-                let resource_id: String =
-                    serde_json::from_slice(payload).map_err(|e| e.to_string())?;
-                let target = self
-                    .visible_entry_path(&resource_id)
-                    .ok_or_else(|| "file entry is no longer visible".to_string())?;
-                let index = self
-                    .displayed_entries()
-                    .iter()
-                    .position(|entry| entry.path == target)
-                    .ok_or_else(|| "file entry is no longer visible".to_string())?;
-                self.selection.select_only(index);
-                if !self.apply_command(FileCommand::CreateOneTimeShareLink)
-                    || self.share_pending_path.is_none()
-                {
-                    return Err(self
-                        .status
-                        .clone()
-                        .unwrap_or_else(|| "sharing is unavailable for this file".into()));
-                }
-            }
-            (OperationKind::View, "files.remote-account") => {
-                let args: Vec<String> =
-                    serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-                let operation = args
-                    .first()
-                    .ok_or_else(|| "missing remote account operation".to_string())?;
-                let id = args
-                    .get(1)
-                    .ok_or_else(|| "missing remote account id".to_string())?;
-                let account = self
-                    .remote_account(id)
-                    .ok_or_else(|| "remote account is no longer available".to_string())?;
-                match operation.as_str() {
-                    "open" => match (&account.mount, remote_folder_availability(&account)) {
-                        (Some(mount), Availability::Available) => self.open_path(mount.clone()),
-                        _ => self.show_remote_account_panel(&account, false),
-                    },
-                    "details" => self.show_remote_account_panel(&account, false),
-                    "reauthenticate" => self.show_remote_account_panel(&account, true),
-                    _ => return Ok(false),
-                }
-            }
-            _ => return Ok(false),
-        }
-        self.structure_dirty = true;
-        Ok(true)
-    }
-
-    #[allow(
-        clippy::too_many_lines,
         reason = "the resource dispatcher keeps every typed Files operation at one auditable authorization boundary"
     )]
     fn start_operation(
@@ -8371,7 +7990,7 @@ impl Widget for FileExplorerWidget {
         if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
             return Ok(Some(started));
         }
-        self.start_resource_operation(
+        self.admit_resource_operation(
             request.invocation,
             request.kind,
             request.type_id,
@@ -8379,31 +7998,6 @@ impl Widget for FileExplorerWidget {
             doc,
             path,
         )
-    }
-
-    fn start_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &automerge::AutoCommit,
-        path: &automerge::ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if self.resource_invocation.is_some() {
-            return Err("another file operation is still running".into());
-        }
-        if !self.invoke_resource_operation(kind, type_id, payload, doc, path)? {
-            return Ok(None);
-        }
-        if matches!(type_id, "files.share-link" | "files.nearby-send") {
-            self.resource_invocation = Some(invocation);
-            Ok(Some(ui::widget::ResourceOperationStart::Accepted))
-        } else {
-            Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                tilo_actions::ActionOutput::default(),
-            )))
-        }
     }
 
     fn poll_resource_operation(
@@ -9096,6 +8690,408 @@ impl Widget for FileExplorerWidget {
             return false;
         }
         false
+    }
+}
+
+impl FileExplorerWidget {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "this is the single protocol dispatcher for the declared local file operations; keeping the match together makes handler coverage auditable"
+    )]
+    fn answer_resource_operation(
+        &mut self,
+        kind: OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &automerge::AutoCommit,
+        _path: &automerge::ObjId,
+    ) -> Result<bool, String> {
+        match (kind, type_id) {
+            (OperationKind::Effect, "files.refresh") => self.refresh(),
+            (OperationKind::Effect, "files.new-folder") => {
+                let name: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+                fileops::new_folder(&self.current_path, &name)?;
+                self.refresh();
+            }
+            (OperationKind::Effect, "files.new-from-template") => {
+                let template_id: String =
+                    serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+                let Some(template_dir) = templates::templates_dir() else {
+                    return Err("the Templates directory is unavailable".into());
+                };
+                let target = templates::list_templates(&template_dir)
+                    .iter()
+                    .find(|candidate| {
+                        template_resource_id(&candidate.to_string_lossy()) == template_id
+                    })
+                    .cloned()
+                    .ok_or_else(|| "the template is no longer available".to_string())?;
+                templates::create_from_template(&target, &self.current_path)?;
+                self.refresh();
+            }
+            (OperationKind::Effect, "files.paste") => {
+                if self.clipboard.is_empty() {
+                    return Err("The clipboard is empty".into());
+                }
+                let destination = self.current_path.clone();
+                let sources = self.clipboard.clone();
+                let cut = self.clipboard_cut;
+                let mut failures = Vec::new();
+                let mut remaining_cut_sources = Vec::new();
+                for source in &sources {
+                    let result = if cut {
+                        fileops::move_into(source, &destination)
+                    } else {
+                        fileops::copy_into(source, &destination)
+                    };
+                    if let Err(error) = result {
+                        if cut {
+                            remaining_cut_sources.push(source.clone());
+                        }
+                        failures.push(format!("{}: {error}", source.display()));
+                    }
+                }
+                if cut {
+                    self.clipboard = remaining_cut_sources;
+                }
+                self.refresh();
+                if !failures.is_empty() {
+                    return Err(format!("paste failed: {}", failures.join("; ")));
+                }
+            }
+            (OperationKind::View, "files.open") => {
+                let resource_id: String =
+                    serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+                // `open` is an action on an already-published resource, not a
+                // general ambient-path launcher. Resolve its opaque id only
+                // against the live presentation snapshot so deleted, renamed,
+                // or replayed rows cannot regain authority or disclose paths.
+                let target = self
+                    .visible_open_path(&resource_id)
+                    .ok_or_else(|| "file location is no longer available".to_string())?;
+                self.open_path(target);
+            }
+            (OperationKind::Effect, "files.open-with") => {
+                self.invoke_open_with(payload)?;
+            }
+            (OperationKind::View, "files.reveal-record") => {
+                let value: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+                let record_id = uuid::Uuid::parse_str(&value)
+                    .map_err(|_| "invalid collaborative record id".to_string())?;
+                let record = self
+                    .collaborative_search
+                    .record(record_id)
+                    .ok_or_else(|| "collaborative record is not indexed yet".to_string())?;
+                if crate::model::read_record_id(&record.path) != Some(*record_id.as_bytes()) {
+                    return Err("collaborative record is no longer available".into());
+                }
+                if record.path.parent() != Some(self.current_path.as_path())
+                    && let Some(parent) = record.path.parent().map(Path::to_path_buf)
+                {
+                    self.navigate(parent);
+                }
+                if let Some(index) = self.entries.iter().position(|entry| {
+                    entry.record_id == Some(*record_id.as_bytes()) || entry.path == record.path
+                }) {
+                    self.selection.select_only(index);
+                }
+            }
+            (kind, "files.folder-command") => {
+                let verb: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+                let expected_kind = match verb.as_str() {
+                    "up" | "back" | "forward" | "recent" | "list" | "grid" | "sort-name"
+                    | "sort-size" | "sort-type" | "sort-modified" | "sort-ascending"
+                    | "sort-descending" | "zoom-in" | "zoom-out" | "hidden" | "shortcuts" => {
+                        OperationKind::View
+                    }
+                    "add-favorite" | "remove-favorite" | "empty-trash" | "terminal"
+                    | "undo-trash" => OperationKind::Effect,
+                    _ => return Ok(false),
+                };
+                if kind != expected_kind {
+                    return Err("file command has an invalid operation kind".into());
+                }
+                match verb.as_str() {
+                    "up" => self.go_up(),
+                    "back" => self.history_back(),
+                    "forward" => self.history_forward(),
+                    "recent" => self.navigate(crate::recent::location()),
+                    "list" => self.set_view_mode(ViewMode::List),
+                    "grid" => self.set_view_mode(ViewMode::Grid),
+                    "sort-name" => self.set_sort_by(SortBy::Name),
+                    "sort-size" => self.set_sort_by(SortBy::Size),
+                    "sort-type" => self.set_sort_by(SortBy::Type),
+                    "sort-modified" => self.set_sort_by(SortBy::Modified),
+                    "sort-ascending" => {
+                        self.apply_set_sort_order(SortOrder::Ascending);
+                    }
+                    "sort-descending" => {
+                        self.apply_set_sort_order(SortOrder::Descending);
+                    }
+                    "zoom-in" => self.set_zoom(self.zoom_level.saturating_add(1)),
+                    "zoom-out" => self.set_zoom(self.zoom_level.saturating_sub(1)),
+                    "shortcuts" => self.show_keyboard_shortcuts_panel(),
+                    "hidden" => {
+                        self.apply_command(FileCommand::ToggleHidden);
+                    }
+                    "add-favorite" => {
+                        if !self.current_path.is_dir() {
+                            return Err("the current location cannot be a favourite".into());
+                        }
+                        self.apply_command(FileCommand::AddFavorite(self.current_path.clone()));
+                    }
+                    "remove-favorite" => {
+                        self.apply_command(FileCommand::RemoveFavorite(self.current_path.clone()));
+                    }
+                    "empty-trash" if self.is_trash_view() => {
+                        // The action contract was confirmation-gated by the
+                        // resource broker; do not make an agent traverse an
+                        // inaccessible second UI-only confirmation sheet.
+                        self.perform_empty_trash();
+                    }
+                    "undo-trash" => {
+                        self.apply_undo_last_trash();
+                    }
+                    "terminal" => self
+                        .open_terminal(&mut SystemRunner)
+                        .map_err(|e| format!("could not open terminal: {e}"))?,
+                    _ => return Ok(false),
+                }
+            }
+            (kind, "files.entry-command") => {
+                let args: Vec<String> =
+                    serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+                let verb = args
+                    .first()
+                    .ok_or_else(|| "missing file command".to_string())?;
+                let resource_id = args
+                    .get(1)
+                    .ok_or_else(|| "missing file resource".to_string())?;
+                let target = self
+                    .visible_entry_path(resource_id)
+                    .ok_or_else(|| "file entry is no longer visible".to_string())?;
+                let expected_kind = match verb.as_str() {
+                    "properties" | "sharing" | "history" | "availability" | "send-nearby" => {
+                        OperationKind::View
+                    }
+                    "copy" | "cut" | "restore" | "purge" | "trash" | "keep-offline"
+                    | "automatic-storage" | "free-local-space" | "retry-transfer" => {
+                        OperationKind::Effect
+                    }
+                    _ => return Ok(false),
+                };
+                if kind != expected_kind {
+                    return Err("file command has an invalid operation kind".into());
+                }
+                let index = self
+                    .entries
+                    .iter()
+                    .position(|entry| entry.path == target)
+                    .ok_or_else(|| "file entry is no longer visible".to_string())?;
+                self.selection.select_only(index);
+                if verb == "trash" {
+                    if self.is_trash_view() {
+                        return Err("Use the separately confirmed permanent-delete action for items already in Trash".into());
+                    }
+                    self.apply_delete();
+                    self.structure_dirty = true;
+                    return Ok(true);
+                }
+                let command = match verb.as_str() {
+                    "copy" => FileCommand::Copy,
+                    "cut" => FileCommand::Cut,
+                    "extract" => FileCommand::ExtractHere,
+                    "compress" => FileCommand::CompressSelection,
+                    "restore" if self.is_trash_view() => FileCommand::RestoreFromTrash,
+                    "purge" if self.is_trash_view() => FileCommand::ConfirmPermanentDelete {
+                        paths: vec![target],
+                    },
+                    "properties" => FileCommand::ShowProperties,
+                    "sharing" => FileCommand::ShowSharing,
+                    "history" => FileCommand::ShowHistory,
+                    "availability" => FileCommand::ShowAvailability,
+                    "keep-offline" => FileCommand::KeepOffline,
+                    "automatic-storage" => FileCommand::RemoveOfflinePin,
+                    "free-local-space" => FileCommand::FreeLocalSpace,
+                    "retry-transfer" => FileCommand::RetryTransfer,
+                    "send-nearby" => FileCommand::OpenNearbySend,
+                    _ => return Ok(false),
+                };
+                if !self.apply_command(command) {
+                    return Err("file operation could not be applied".into());
+                }
+            }
+            (OperationKind::Effect, "files.nearby-send") => {
+                let (resource_id, handle): (String, ui::collaboration::NearbyTargetHandle) =
+                    serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+                let target = self
+                    .visible_entry_path(&resource_id)
+                    .ok_or_else(|| "file entry is no longer visible".to_string())?;
+                if !self
+                    .nearby_send
+                    .targets()
+                    .iter()
+                    .any(|target| target.handle == handle && target.online)
+                {
+                    return Err("nearby device is no longer available".into());
+                }
+                self.nearby_send.send(&target, handle)?;
+                self.nearby_send_path = Some(target.clone());
+                self.status = Some(t("files-nearby-queueing"));
+            }
+            (OperationKind::Effect, "files.nearby-decide") => {
+                let (handle, destination, remember_for_session): (
+                    ui::collaboration::NearbyTransferHandle,
+                    Option<ui::collaboration::NearbyDestinationHandle>,
+                    bool,
+                ) = serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+                let transfer = self
+                    .nearby_send
+                    .transfers()
+                    .iter()
+                    .find(|transfer| transfer.handle == handle)
+                    .ok_or_else(|| "nearby transfer is no longer available".to_string())?;
+                if transfer.direction != ui::collaboration::NearbyTransferDirection::Receiving
+                    || !matches!(
+                        transfer.phase,
+                        ui::collaboration::NearbyTransferPhase::AwaitingConsent
+                            | ui::collaboration::NearbyTransferPhase::AwaitingDestination
+                    )
+                {
+                    return Err("nearby transfer no longer awaits a receiver decision".into());
+                }
+                if let Some(destination) = destination
+                    && !self
+                        .nearby_send
+                        .destinations()
+                        .iter()
+                        .any(|candidate| candidate.handle == destination)
+                {
+                    return Err("nearby destination is no longer available".into());
+                }
+                self.nearby_send
+                    .decide(handle, destination, remember_for_session);
+                self.status = Some(if destination.is_some() {
+                    t("files-nearby-accepted")
+                } else {
+                    t("files-nearby-declined")
+                });
+            }
+            (OperationKind::Effect, "files.nearby-retry") => {
+                let handle: ui::collaboration::NearbyTransferHandle =
+                    serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+                if !self.nearby_send.transfers().iter().any(|transfer| {
+                    transfer.handle == handle
+                        && transfer.phase == ui::collaboration::NearbyTransferPhase::Failed
+                }) {
+                    return Err("nearby transfer is not retryable".into());
+                }
+                self.nearby_send.retry(handle);
+                self.status = Some(t("files-nearby-retrying"));
+            }
+            (OperationKind::Effect, "files.nearby-cancel") => {
+                let handle: ui::collaboration::NearbyTransferHandle =
+                    serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+                if !self.nearby_send.transfers().iter().any(|transfer| {
+                    transfer.handle == handle
+                        && matches!(
+                            transfer.phase,
+                            ui::collaboration::NearbyTransferPhase::Queued
+                                | ui::collaboration::NearbyTransferPhase::Transferring
+                        )
+                }) {
+                    return Err("nearby transfer is not cancellable".into());
+                }
+                self.nearby_send.cancel(handle);
+                self.status = Some(t("files-nearby-cancelled"));
+            }
+            (OperationKind::Effect, "files.rename") => {
+                let args: Vec<String> =
+                    serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+                let resource_id = args
+                    .first()
+                    .ok_or_else(|| "missing file resource".to_string())?;
+                let name = args
+                    .get(1)
+                    .ok_or_else(|| "missing new file name".to_string())?;
+                let target = self
+                    .visible_entry_path(resource_id)
+                    .ok_or_else(|| "file entry is no longer visible".to_string())?;
+                fileops::rename(&target, name)?;
+                self.refresh();
+            }
+            (OperationKind::Effect, "files.share-link") => {
+                let resource_id: String =
+                    serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+                let target = self
+                    .visible_entry_path(&resource_id)
+                    .ok_or_else(|| "file entry is no longer visible".to_string())?;
+                let index = self
+                    .displayed_entries()
+                    .iter()
+                    .position(|entry| entry.path == target)
+                    .ok_or_else(|| "file entry is no longer visible".to_string())?;
+                self.selection.select_only(index);
+                if !self.apply_command(FileCommand::CreateOneTimeShareLink)
+                    || self.share_pending_path.is_none()
+                {
+                    return Err(self
+                        .status
+                        .clone()
+                        .unwrap_or_else(|| "sharing is unavailable for this file".into()));
+                }
+            }
+            (OperationKind::View, "files.remote-account") => {
+                let args: Vec<String> =
+                    serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+                let operation = args
+                    .first()
+                    .ok_or_else(|| "missing remote account operation".to_string())?;
+                let id = args
+                    .get(1)
+                    .ok_or_else(|| "missing remote account id".to_string())?;
+                let account = self
+                    .remote_account(id)
+                    .ok_or_else(|| "remote account is no longer available".to_string())?;
+                match operation.as_str() {
+                    "open" => match (&account.mount, remote_folder_availability(&account)) {
+                        (Some(mount), Availability::Available) => self.open_path(mount.clone()),
+                        _ => self.show_remote_account_panel(&account, false),
+                    },
+                    "details" => self.show_remote_account_panel(&account, false),
+                    "reauthenticate" => self.show_remote_account_panel(&account, true),
+                    _ => return Ok(false),
+                }
+            }
+            _ => return Ok(false),
+        }
+        self.structure_dirty = true;
+        Ok(true)
+    }
+
+    fn admit_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        kind: OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &automerge::AutoCommit,
+        path: &automerge::ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if self.resource_invocation.is_some() {
+            return Err("another file operation is still running".into());
+        }
+        if !self.answer_resource_operation(kind, type_id, payload, doc, path)? {
+            return Ok(None);
+        }
+        if matches!(type_id, "files.share-link" | "files.nearby-send") {
+            self.resource_invocation = Some(invocation);
+            Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+        } else {
+            Ok(Some(ui::widget::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            )))
+        }
     }
 }
 

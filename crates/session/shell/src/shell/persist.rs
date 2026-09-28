@@ -354,7 +354,7 @@ fn attach_saved_doc(tree: &mut WorkspaceTree, path: &Path, state_json: &[u8]) {
 /// # Errors
 ///
 /// Returns an error if `path` can't be read, its contents don't parse as
-/// a [`WorkspaceTree`], or its `schema_version` is newer than
+/// a [`WorkspaceTree`], or its `schema_version` is not
 /// [`NATIVE_STATE_SCHEMA_VERSION`].
 pub fn load_tree_from(path: &Path) -> std::io::Result<WorkspaceTree> {
     use std::io::Read;
@@ -371,19 +371,14 @@ pub fn load_tree_from(path: &Path) -> std::io::Result<WorkspaceTree> {
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     // Refuse before anything else touches it: mutators here write the
     // whole tree back, so "load it and see" is "overwrite it and see".
-    if tree.desktop.schema_version > NATIVE_STATE_SCHEMA_VERSION {
+    if tree.desktop.schema_version != NATIVE_STATE_SCHEMA_VERSION {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             format!(
-                "state file layout {} is newer than the {NATIVE_STATE_SCHEMA_VERSION} \
+                "state file layout {} is not the {NATIVE_STATE_SCHEMA_VERSION} \
                  this build understands",
                 tree.desktop.schema_version
             ),
-        ));
-    }
-    if tree.desktop.schema_version < 2 && !tree.native_authority.is_empty() {
-        return Err(std::io::Error::other(
-            "native authority requires state file layout 2",
         ));
     }
     super::native_workspace_owner::publication::validate_file_layout(
@@ -395,29 +390,12 @@ pub fn load_tree_from(path: &Path) -> std::io::Result<WorkspaceTree> {
         &tree.native_authority,
         super::native_workspace_owner::store::MAX_AUTHORITY_BYTES,
     )?;
-    // Normalise so the next write stamps the current version rather
-    // than carrying an old one forward for ever.
+    // The file envelope's version is stamped on write; in memory the tree
+    // carries the portable desktop schema.
     tree.desktop.schema_version = STATE_SCHEMA_VERSION;
-    // An early production bootstrap accidentally used the screenshot/demo
-    // fixture. One of its own two-session demonstrations then renamed that
-    // synthetic Home room to `Shared room <unix time>`, leaving the invented
-    // Notes/Files/Terminal/Browser layout to be restored on every login. This
-    // signature is deliberately much stricter than a name or tab-count check:
-    // any genuine furniture edit makes it a near miss and preserves it.
-    if tree.native_authority.is_empty() && is_legacy_demo_bootstrap(&tree) {
-        tracing::warn!(
-            path = %path.display(),
-            "replacing the legacy synthetic demo workspace with an empty desktop"
-        );
-        tree = WorkspaceTree::bootstrap_default();
-        // Make the migration one-shot and crash-safe. A second restart reads
-        // the already-empty replacement rather than making the decision again.
-        save_tree_to(&tree, path)?;
-    } else {
-        // Before the repairs below, so they apply to what the document
-        // restores too, and the seed after them records their outcome.
-        attach_saved_doc(&mut tree, path, s.as_bytes());
-    }
+    // Before the repairs below, so they apply to what the document
+    // restores too, and the seed after them records their outcome.
+    attach_saved_doc(&mut tree, path, s.as_bytes());
     // Repair state written by older builds which serialised process-local
     // Wayland surface ids.  This must happen before seeding the room document,
     // otherwise the dead window is immediately promoted back into the
@@ -441,159 +419,6 @@ pub fn load_tree_from(path: &Path) -> std::io::Result<WorkspaceTree> {
     // allocation collides with a persisted id.
     tree.seed_next_id_from_self();
     Ok(tree)
-}
-
-/// Exact structural signature of the two known demo bootstraps that escaped
-/// into user state. IDs are checked as one contiguous allocation sequence;
-/// names, furniture, active pointers and every user-content-bearing side map
-/// must also match. Governance is intentionally ignored because the demo's
-/// join/adoption flow itself changes owners, capabilities and room authority.
-#[allow(
-    clippy::too_many_lines,
-    reason = "the exact legacy-bootstrap signature is intentionally kept as one auditable predicate so migration cannot match a partial user workspace"
-)]
-fn is_legacy_demo_bootstrap(tree: &WorkspaceTree) -> bool {
-    use crate::shell::state::{AppKind, TileContent, WindowWidth};
-
-    let [home, research, design] = tree.desktop.workspaces.as_slice() else {
-        return false;
-    };
-    let shared_demo_name = home
-        .name
-        .strip_prefix("Shared room ")
-        .is_some_and(|suffix| {
-            suffix.len() == 10 && suffix.bytes().all(|byte| byte.is_ascii_digit())
-        });
-    if home.name != "Home" && !shared_demo_name {
-        return false;
-    }
-    if research.name != "Research" || design.name != "Design" {
-        return false;
-    }
-
-    let base = home.id.raw();
-    let id = |offset| base.checked_add(offset);
-    let (
-        Some(home_strip_id),
-        Some(group_id),
-        Some(notes_id),
-        Some(files_id),
-        Some(terminal_id),
-        Some(fourth_id),
-        Some(research_id),
-        Some(research_strip_id),
-        Some(design_id),
-        Some(design_strip_id),
-    ) = (
-        id(1),
-        id(2),
-        id(3),
-        id(4),
-        id(5),
-        id(6),
-        id(7),
-        id(8),
-        id(9),
-        id(10),
-    )
-    else {
-        return false;
-    };
-    let ([home_strip], [research_strip], [design_strip]) = (
-        home.strips.as_slice(),
-        research.strips.as_slice(),
-        design.strips.as_slice(),
-    ) else {
-        return false;
-    };
-    let [group] = home_strip.window_groups.as_slice() else {
-        return false;
-    };
-    if !research_strip.window_groups.is_empty()
-        || !design_strip.window_groups.is_empty()
-        || home_strip.name != "Main"
-        || research_strip.name != "Main"
-        || design_strip.name != "Main"
-        || home_strip.id.raw() != home_strip_id
-        || group.id != group_id
-        || research.id.raw() != research_id
-        || research_strip.id.raw() != research_strip_id
-        || design.id.raw() != design_id
-        || design_strip.id.raw() != design_strip_id
-        || tree.desktop.active != home.id
-        || tree.desktop.active_strip.len() != 3
-        || tree.desktop.active_strip.get(&home.id) != Some(&home_strip.id)
-        || tree.desktop.active_strip.get(&research.id) != Some(&research_strip.id)
-        || tree.desktop.active_strip.get(&design.id) != Some(&design_strip.id)
-        || tree.desktop.active_group.len() != 1
-        || tree.desktop.active_group.get(&home_strip.id) != Some(&group.id)
-        || group.active_tab != notes_id
-        || group.width != WindowWidth::Wide
-        || group.maximized
-        || home
-            .strips
-            .iter()
-            .chain(&research.strips)
-            .chain(&design.strips)
-            .any(|strip| strip.name != "Main")
-        || tree
-            .desktop
-            .workspaces
-            .iter()
-            .any(|workspace| !workspace.tasks.is_empty() || !workspace.shared_surfaces.is_empty())
-        || !tree.room_peer_names.is_empty()
-        || !tree.room_peer_identities.is_empty()
-        || !tree.room_share_floor.is_empty()
-        || !tree.continuation_tabs.is_empty()
-        || !tree.continuation_rooms.is_empty()
-        || !tree.continuation_owned_tabs.is_empty()
-        || !tree.continuation_closed_tabs.is_empty()
-        || !tree.continuation_file_references.is_empty()
-        || !tree.native_document_tabs.is_empty()
-    {
-        return false;
-    }
-
-    let [notes, files, terminal, fourth] = group.tabs.as_slice() else {
-        return false;
-    };
-    if [notes.id, files.id, terminal.id, fourth.id] != [notes_id, files_id, terminal_id, fourth_id]
-        || notes.title != "Notes"
-        || files.title != "Files"
-        || terminal.title != "Terminal"
-        || !matches!(
-            &notes.tile,
-            TileContent::AppPlaceholder { kind: AppKind::Other(kind), label }
-                if kind == "Notes" && label == "Notes"
-        )
-        || !matches!(
-            &files.tile,
-            TileContent::AppPlaceholder { kind: AppKind::FileExplorer, label }
-                if label == "Files"
-        )
-        || !matches!(
-            &terminal.tile,
-            TileContent::AppPlaceholder { kind: AppKind::Terminal, label }
-                if label == "Terminal"
-        )
-    {
-        return false;
-    }
-
-    // Browser was the original fourth fake tile; a later demo revision
-    // replaced it with the in-process Document placeholder. Both are wholly
-    // synthetic and otherwise share the exact allocation signature above.
-    (fourth.title == "Browser"
-        && matches!(
-            &fourth.tile,
-            TileContent::Stub { kind: AppKind::Browser, label } if label == "Browser"
-        ))
-        || (fourth.title == "Document"
-            && matches!(
-                &fourth.tile,
-                TileContent::AppPlaceholder { kind: AppKind::Other(kind), label }
-                    if kind == "Word" && label == "Document"
-            ))
 }
 
 /// The identity a live client window is relaunched by.
@@ -794,58 +619,6 @@ fn schema_version_in(path: &Path) -> Option<u32> {
 mod tests {
     use super::*;
 
-    fn escaped_demo_fixture() -> WorkspaceTree {
-        use crate::shell::state::{AppKind, TileContent};
-
-        let mut tree = WorkspaceTree::bootstrap_demo();
-        let base = 12_u64;
-        let home = &mut tree.desktop.workspaces[0];
-        home.id = crate::shell::state::WorkspaceId(base);
-        home.name = "Shared room 1786892560".into();
-        home.strips[0].id = crate::shell::state::StripId(base + 1);
-        home.strips[0].window_groups[0].id = base + 2;
-        let group = &mut home.strips[0].window_groups[0];
-        for (offset, tab) in (3_u64..=6).zip(&mut group.tabs) {
-            tab.id = base.saturating_add(offset);
-        }
-        group.active_tab = base.saturating_add(3);
-        group.tabs[3].title = "Browser".into();
-        group.tabs[3].tile = TileContent::Stub {
-            kind: AppKind::Browser,
-            label: "Browser".into(),
-        };
-        tree.desktop.workspaces[1].id = crate::shell::state::WorkspaceId(base + 7);
-        tree.desktop.workspaces[1].strips[0].id = crate::shell::state::StripId(base + 8);
-        tree.desktop.workspaces[2].id = crate::shell::state::WorkspaceId(base + 9);
-        tree.desktop.workspaces[2].strips[0].id = crate::shell::state::StripId(base + 10);
-        tree.desktop.active = crate::shell::state::WorkspaceId(base);
-        tree.desktop.active_strip = [
-            (
-                crate::shell::state::WorkspaceId(base),
-                crate::shell::state::StripId(base + 1),
-            ),
-            (
-                crate::shell::state::WorkspaceId(base + 7),
-                crate::shell::state::StripId(base + 8),
-            ),
-            (
-                crate::shell::state::WorkspaceId(base + 9),
-                crate::shell::state::StripId(base + 10),
-            ),
-        ]
-        .into_iter()
-        .collect();
-        tree.desktop.active_group = [(crate::shell::state::StripId(base + 1), base + 2)]
-            .into_iter()
-            .collect();
-        // The leaked collaboration demo adopted/changed governance after
-        // creating the furniture. Those mutations are evidence of the demo,
-        // not user-created windows, and must not prevent cleanup.
-        tree.desktop.workspaces[0].owner = Some("alice".into());
-        let _ = tree.adopt_ownerless_workspaces(&"quinten".to_string());
-        tree
-    }
-
     #[test]
     fn an_ephemeral_room_is_never_written_offered_or_synced() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -920,97 +693,6 @@ mod tests {
             !tree.leave_room(home_room),
             "the last durable room is never left"
         );
-    }
-
-    fn assert_demo_near_miss_is_preserved(tree: &WorkspaceTree, label: &str) {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("state.json");
-        save_tree_to(tree, &path).expect("save near miss");
-        let loaded = load_tree_from(&path).expect("load near miss");
-        assert_eq!(
-            loaded.desktop.workspaces.len(),
-            3,
-            "a user-modified demo-shaped layout must be preserved ({label})"
-        );
-    }
-
-    #[test]
-    fn demo_bootstrap_migrates_once_without_touching_user_layouts() {
-        fn escaped_demo_bootstrap_migrates_once_to_an_empty_desktop() {
-            let dir = tempfile::tempdir().expect("tempdir");
-            let path = dir.path().join("state.json");
-            let fixture = escaped_demo_fixture();
-            assert!(fixture.desktop.workspaces[0].owner.is_some());
-            assert!(fixture.desktop.workspaces[1].owner.is_some());
-            assert!(!fixture.desktop.workspaces[1].capabilities.is_empty());
-            assert!(
-                is_legacy_demo_bootstrap(&fixture),
-                "automatic collaboration governance changes remain part of the escaped demo signature"
-            );
-            save_tree_to(&fixture, &path).expect("save escaped fixture");
-            drop(fixture); // Simulate the old process releasing its state-file writer.
-
-            let first = load_tree_from(&path).expect("migrate escaped fixture");
-            assert_eq!(first.desktop.workspaces.len(), 1);
-            assert_eq!(first.desktop.workspaces[0].name, "Home");
-            assert!(
-                first.desktop.workspaces[0].strips[0]
-                    .window_groups
-                    .is_empty()
-            );
-            let replacement = std::fs::read(&path).expect("read atomic replacement");
-
-            let second = load_tree_from(&path).expect("load replacement again");
-            assert_eq!(second.desktop.workspaces.len(), 1);
-            assert!(
-                second.desktop.workspaces[0].strips[0]
-                    .window_groups
-                    .is_empty()
-            );
-            assert_eq!(
-                std::fs::read(&path).expect("read after second restart"),
-                replacement,
-                "the migration must be one-shot; a later restart does not rewrite it"
-            );
-        }
-
-        fn demo_migration_preserves_every_near_miss_user_layout() {
-            let mut renamed = escaped_demo_fixture();
-            renamed.desktop.workspaces[0].name = "My actual room".into();
-            assert_demo_near_miss_is_preserved(&renamed, "renamed room");
-
-            let mut retitled = escaped_demo_fixture();
-            retitled.desktop.workspaces[0].strips[0].window_groups[0].tabs[0].title =
-                "My notes".into();
-            assert_demo_near_miss_is_preserved(&retitled, "retitled tab");
-
-            let mut reordered = escaped_demo_fixture();
-            reordered.desktop.workspaces[0].strips[0].window_groups[0]
-                .tabs
-                .swap(0, 1);
-            assert_demo_near_miss_is_preserved(&reordered, "reordered tabs");
-
-            let mut resized = escaped_demo_fixture();
-            resized.desktop.workspaces[0].strips[0].window_groups[0].width =
-                crate::shell::state::WindowWidth::Normal;
-            assert_demo_near_miss_is_preserved(&resized, "resized group");
-
-            let mut continued = escaped_demo_fixture();
-            continued.continuation_tabs.insert(15);
-            assert_demo_near_miss_is_preserved(&continued, "continuation state");
-
-            let mut non_contiguous = escaped_demo_fixture();
-            non_contiguous.desktop.workspaces[2].strips[0].id =
-                crate::shell::state::StripId(99_999);
-            non_contiguous.desktop.active_strip.insert(
-                non_contiguous.desktop.workspaces[2].id,
-                crate::shell::state::StripId(99_999),
-            );
-            assert_demo_near_miss_is_preserved(&non_contiguous, "non-demo id allocation");
-        }
-
-        escaped_demo_bootstrap_migrates_once_to_an_empty_desktop();
-        demo_migration_preserves_every_near_miss_user_layout();
     }
 
     fn foreign_tabs(tree: &WorkspaceTree) -> Vec<(u64, u64)> {
@@ -1143,6 +825,7 @@ mod tests {
                 },
             }];
             group.active_tab = 91_103;
+            legacy.desktop.schema_version = NATIVE_STATE_SCHEMA_VERSION;
             std::fs::write(&path, serde_json::to_vec_pretty(&legacy).expect("encode"))
                 .expect("write legacy state");
 
@@ -1383,6 +1066,7 @@ mod tests {
                     note: String::new(),
                 },
             });
+            legacy.desktop.schema_version = NATIVE_STATE_SCHEMA_VERSION;
             std::fs::write(&path, serde_json::to_vec_pretty(&legacy).expect("encode"))
                 .expect("stage legacy state");
 
@@ -1788,7 +1472,7 @@ mod tests {
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
-    fn state_file_schema_versions_are_stamped_refused_when_newer_and_legacy_opens() {
+    fn state_file_schema_versions_are_stamped_and_anything_else_is_refused() {
         /// Every state file this build writes says which layout it is. Without
         /// this the version check has nothing to read on the next boot, and the
         /// refusal below can only ever fire for a hand-edited file.
@@ -1899,11 +1583,8 @@ mod tests {
             );
         }
 
-        /// The complement, and the reason the default is 1 rather than 0:
-        /// every state file written before the key existed must still open,
-        /// or the upgrade that introduced the check would itself cause the
-        /// exact failure the check is meant to prevent.
-        fn a_state_file_written_before_versioning_still_opens() {
+        /// Older layouts are refused too, and the file is left untouched.
+        fn older_and_unversioned_state_files_are_refused_and_preserved() {
             let dir = tempfile::tempdir().expect("tempdir");
             let path = dir.path().join("state.json");
 
@@ -1916,38 +1597,43 @@ mod tests {
                     "Home",
                 ));
             save_tree_to(&original, &path).expect("save");
-            let mut raw: serde_json::Value =
+            let written: serde_json::Value =
                 serde_json::from_str(&std::fs::read_to_string(&path).expect("read")).expect("json");
+            let mut unversioned = written.clone();
             assert!(
-                raw.as_object_mut()
+                unversioned
+                    .as_object_mut()
                     .expect("object")
                     .remove("schema_version")
                     .is_some(),
                 "the current writer must emit schema_version, or this fixture \
                  removes nothing and the test is vacuous"
             );
-            std::fs::write(&path, serde_json::to_string_pretty(&raw).expect("re-json"))
-                .expect("write pre-versioning state");
+            let mut older = written;
+            older["schema_version"] = serde_json::json!(NATIVE_STATE_SCHEMA_VERSION - 1);
+            for raw in [unversioned, older] {
+                let on_disk = serde_json::to_string_pretty(&raw).expect("re-json");
+                std::fs::write(&path, &on_disk).expect("write older state");
 
-            let (tree, notice) = load_or_default(&path);
-            assert!(
-                notice.is_none(),
-                "a pre-versioning file must not be refused"
-            );
-            assert!(
-                tree.desktop.workspaces.iter().any(|w| w.id.0 == 9),
-                "the workspaces in a pre-versioning file must still be loaded"
-            );
-            assert_eq!(
-                tree.desktop.schema_version,
-                crate::shell::state::STATE_SCHEMA_VERSION,
-                "and the loaded tree must carry the current version, so the next \
-                 write stamps it rather than leaving the file unversioned for ever"
-            );
+                let (tree, notice) = load_or_default(&path);
+                assert!(
+                    matches!(notice, Some(StateNotice::Unreadable { .. })),
+                    "an older state file must be refused, got {notice:?}"
+                );
+                assert!(
+                    !tree.desktop.workspaces.iter().any(|w| w.id.0 == 9),
+                    "the workspaces in an older file must not be loaded"
+                );
+                assert_eq!(
+                    std::fs::read_to_string(&path).expect("re-read"),
+                    on_disk,
+                    "the state file must not have been touched"
+                );
+            }
         }
 
         a_written_state_file_stamps_its_schema_version();
         a_newer_state_file_is_refused_preserved_and_reported();
-        a_state_file_written_before_versioning_still_opens();
+        older_and_unversioned_state_files_are_refused_and_preserved();
     }
 }

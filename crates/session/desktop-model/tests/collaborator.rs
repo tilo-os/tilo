@@ -52,23 +52,7 @@ fn collaborator_builders_set_each_concept_field() {
 }
 
 #[test]
-fn collaborator_json_round_trips_and_accepts_legacy_fields() {
-    // Phase `legacy_json_without_concept_fields_still_deserializes`.
-    {
-        // Workspaces persisted before the struct grew concept fields
-        // omit them; `#[serde(default)]` keeps those payloads loadable.
-        let legacy = r#"{"id":"alice","name":"Alice","active_tab":null}"#;
-        let c: Collaborator = serde_json::from_str(legacy).unwrap();
-        assert_eq!(c.id, "alice");
-        assert_eq!(c.name, "Alice");
-        assert_eq!(c.active_tab, None);
-        assert_eq!(c.cursor_color, None);
-        assert_eq!(c.avatar, None);
-        assert_eq!(c.role_id, None);
-        // Present, not invited — defaulting the other way would redraw
-        // every already-saved participant as someone who never showed.
-        assert!(!c.invited);
-    }
+fn collaborator_json_round_trips() {
     // Phase `fully_populated_round_trip`.
     {
         let c = Collaborator::with_active_tab("alice", "Alice", 3)

@@ -1,10 +1,10 @@
 //! One private peer representation; storage qualification cannot be copied.
 use super::{
     AcceptedCheckpoint, Actor, ArtifactKind, AutoCommit, BTreeMap, CachedDocument, CapDecision,
-    CapOverride, ChannelState, DeviceCert, DurableV4, DurableV5, Ed25519PublicKey, ExactAdmissions,
-    GovernedIdentity, NeighbourMsg, Principal, RedemptionReceipt, ResourceRef, RevocationList,
-    Role, Route, Scope, StatePeer, Subject, SystemTime, VecDeque, Verb, VerifiedCertificate,
-    decide_capability, err, now_ns, now_secs, room,
+    CapOverride, ChannelState, DeviceCert, DurableV4, DurableV5, DurableV6, Ed25519PublicKey,
+    ExactAdmissions, GovernedIdentity, NeighbourMsg, Principal, RedemptionReceipt, ResourceRef,
+    RevocationList, Role, Route, Scope, StatePeer, Subject, SystemTime, VecDeque, Verb,
+    VerifiedCertificate, decide_capability, err, now_ns, now_secs, room,
 };
 use crate::resources::native::NativeDocument;
 pub(super) mod access;
@@ -99,6 +99,10 @@ pub(super) struct PeerDocument<S: Storage> {
     pub(super) encryption_required: bool,
     pub(super) covered: BTreeMap<String, u64>,
     pub(super) covered_snapshot: Option<S::Checkpoint>,
+    /// Sealed writes this replica admitted but holds no key to open, in
+    /// admission order: the durable record of an encrypted document here.
+    /// Bounded reads refuse encrypted documents and leave it empty.
+    pub(super) sealed: Vec<collab_types::SignedOp>,
 }
 impl Clone for PeerDocument<LegacyNative> {
     fn clone(&self) -> Self {
@@ -108,6 +112,7 @@ impl Clone for PeerDocument<LegacyNative> {
             encryption_required: self.encryption_required,
             covered: self.covered.clone(),
             covered_snapshot: self.covered_snapshot.clone(),
+            sealed: self.sealed.clone(),
         }
     }
 }
