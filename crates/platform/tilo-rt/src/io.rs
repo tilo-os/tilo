@@ -26,6 +26,10 @@ const IO_THREADS: usize = 4;
 
 fn pool() -> Result<&'static JobPool, std::io::Error> {
     static POOL: OnceLock<Result<JobPool, String>> = OnceLock::new();
+    // A browser page has neither threads nor a local filesystem.
+    if cfg!(target_family = "wasm") {
+        return Err(std::io::ErrorKind::Unsupported.into());
+    }
     POOL.get_or_init(|| JobPool::start("tilo-io", IO_THREADS).map_err(|error| error.to_string()))
         .as_ref()
         .map_err(|message| std::io::Error::other(message.clone()))
@@ -157,17 +161,17 @@ mod positioned {
     }
 }
 
-/// The browser has no files; its storage is the page's.
 #[cfg(not(any(unix, windows)))]
 mod positioned {
     use std::fs::File;
+    use std::io::{Error, ErrorKind};
 
-    pub(super) fn read(_: &File, _: &mut [u8], _: u64) -> std::io::Result<usize> {
-        Err(std::io::ErrorKind::Unsupported.into())
+    pub(super) fn read(_file: &File, _buffer: &mut [u8], _offset: u64) -> std::io::Result<usize> {
+        Err(Error::from(ErrorKind::Unsupported))
     }
 
-    pub(super) fn write(_: &File, _: &[u8], _: u64) -> std::io::Result<usize> {
-        Err(std::io::ErrorKind::Unsupported.into())
+    pub(super) fn write(_file: &File, _data: &[u8], _offset: u64) -> std::io::Result<usize> {
+        Err(Error::from(ErrorKind::Unsupported))
     }
 }
 

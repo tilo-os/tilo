@@ -5,9 +5,10 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 /// Blocking-pool bound for the app runtime. An app's blocking calls are a
 /// handful of D-Bus or file calls at a time; queueing beyond that is fine.
+#[cfg(not(target_family = "wasm"))]
 pub(crate) const APP_BLOCKING_THREADS: usize = 8;
 /// Blocking-pool bound for a daemon runtime.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 pub(crate) const DAEMON_BLOCKING_THREADS: usize = 32;
 /// Blocking-pool bound for the short-lived [`crate::block_on`] runtime.
 pub(crate) const BLOCK_ON_BLOCKING_THREADS: usize = 4;

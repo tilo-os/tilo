@@ -1,6 +1,14 @@
-//! Reading the time, once.
+//! Reading the time, once, the same way on every target.
 //!
-//! The free functions read the wall clock as integer time since the Unix
+//! [`now`] and [`wall`] are the sanctioned monotonic and wall-clock reads, and
+//! the re-exported clock types are the ones to name instead of `std::time`'s.
+//! On Linux and macOS they are `std::time`'s own types, so values cross freely
+//! into crates that name `std::time` directly. `std`'s clocks panic in a
+//! browser page; there the page's clocks (`performance.now()` and
+//! `Date.now()`) back the same API. [`to_std`] and [`from_std`] cross into and
+//! out of `std::time::SystemTime` where an API names it.
+//!
+//! The `unix_now*` functions read the wall clock as integer time since the Unix
 //! epoch. The unchecked forms return `0` when the system clock is set before
 //! the epoch and saturate at `u64::MAX`; the `try_` forms return `None` for a
 //! pre-epoch clock so callers that must fail closed can choose their own
@@ -13,16 +21,88 @@
 
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
-// The browser has no process clock: std's readings panic on
-// wasm32-unknown-unknown, so the page's clock stands in for it there.
-#[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
-#[cfg(all(target_family = "wasm", target_os = "unknown"))]
-use web_time::{Instant, SystemTime, UNIX_EPOCH};
+
+pub use imp::{Duration, Instant, SystemTime, SystemTimeError, UNIX_EPOCH};
+
+#[cfg(not(target_family = "wasm"))]
+mod imp {
+    pub use std::time::{Duration, Instant, SystemTime, SystemTimeError, UNIX_EPOCH};
+
+    #[inline]
+    pub const fn to_std(time: SystemTime) -> std::time::SystemTime {
+        time
+    }
+
+    #[inline]
+    pub const fn from_std(time: std::time::SystemTime) -> SystemTime {
+        time
+    }
+}
+
+#[cfg(target_family = "wasm")]
+mod imp {
+    pub use web_time::{Duration, Instant, SystemTime, SystemTimeError, UNIX_EPOCH};
+
+    pub fn to_std(time: SystemTime) -> std::time::SystemTime {
+        let converted = match time.duration_since(UNIX_EPOCH) {
+            Ok(after) => std::time::UNIX_EPOCH.checked_add(after),
+            Err(before) => std::time::UNIX_EPOCH.checked_sub(before.duration()),
+        };
+        // Both clocks span far more than any real timestamp.
+        converted.unwrap_or(std::time::UNIX_EPOCH)
+    }
+
+    pub fn from_std(time: std::time::SystemTime) -> SystemTime {
+        let converted = match time.duration_since(std::time::UNIX_EPOCH) {
+            Ok(after) => UNIX_EPOCH.checked_add(after),
+            Err(before) => UNIX_EPOCH.checked_sub(before.duration()),
+        };
+        // Both clocks span far more than any real timestamp.
+        converted.unwrap_or(UNIX_EPOCH)
+    }
+}
+
+/// The current monotonic instant, for measuring elapsed time and scheduling
+/// deadlines.
+#[must_use]
+#[inline]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the one sanctioned monotonic clock read"
+)]
+pub fn now() -> Instant {
+    Instant::now()
+}
+
+/// The current wall-clock time, for timestamps shown to people or persisted.
+#[must_use]
+#[inline]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the one sanctioned wall-clock read"
+)]
+pub fn wall() -> SystemTime {
+    SystemTime::now()
+}
+
+/// A wall-clock time as `std::time`'s, for crates and APIs that name
+/// `std::time::SystemTime` directly. The identity where the clock is native.
+#[must_use]
+#[inline]
+pub fn to_std(time: SystemTime) -> std::time::SystemTime {
+    imp::to_std(time)
+}
+
+/// A `std::time` wall-clock time, such as a file's modification time, as this
+/// crate's. The identity where the clock is native.
+#[must_use]
+#[inline]
+pub fn from_std(time: std::time::SystemTime) -> SystemTime {
+    imp::from_std(time)
+}
 
 fn since_epoch() -> Option<Duration> {
-    SystemTime::now().duration_since(UNIX_EPOCH).ok()
+    wall().duration_since(UNIX_EPOCH).ok()
 }
 
 fn saturating_u64(value: u128) -> u64 {
@@ -89,7 +169,7 @@ pub struct MonotonicClock;
 impl Clock for MonotonicClock {
     fn now_ms(&self) -> u64 {
         static START: OnceLock<Instant> = OnceLock::new();
-        saturating_u64(START.get_or_init(Instant::now).elapsed().as_millis())
+        saturating_u64(START.get_or_init(now).elapsed().as_millis())
     }
 }
 
@@ -166,5 +246,25 @@ mod tests {
             let first = MonotonicClock.now_ms();
             assert!(MonotonicClock.now_ms() >= first);
         }
+    }
+
+    #[test]
+    fn now_is_monotonic() {
+        let earlier = now();
+        assert!(now() >= earlier);
+    }
+
+    #[test]
+    fn wall_is_after_the_epoch() {
+        assert!(wall().duration_since(UNIX_EPOCH).is_ok());
+    }
+
+    #[test]
+    fn std_conversions_round_trip_on_both_sides_of_the_epoch() {
+        let offset = Duration::from_millis(1_700_000_000_123);
+        for time in [UNIX_EPOCH + offset, UNIX_EPOCH - offset, UNIX_EPOCH] {
+            assert_eq!(from_std(to_std(time)), time);
+        }
+        assert_eq!(to_std(UNIX_EPOCH + offset), std::time::UNIX_EPOCH + offset);
     }
 }

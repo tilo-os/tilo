@@ -19,9 +19,21 @@
 //!   [`cpu()`], a dedicated pool, never onto an async worker.
 //! - **Bulk file I/O** goes through [`io`], std I/O on dedicated threads
 //!   behind an interface narrow enough to swap for `io_uring`.
+//! - **Toolkit background work and timers** go through [`background`], the
+//!   executor a host installs, and wake the UI through [`wake`].
+//! - **A long-lived thread of its own** — an event loop, a device poller —
+//!   comes from [`spawn_thread`], never `std::thread::spawn`.
+//! - **A pause inside async work** — a retry backoff, a poll interval — is
+//!   [`sleep`], never `std::thread::sleep`.
 //!
 //! Every thread this crate starts is named, so a stack dump or `top -H`
 //! attributes it.
+//!
+//! In a browser (`target_family = "wasm"`) no thread is started: [`app()`]
+//! tasks run on the page thread from its microtask queue, [`cpu()`] work runs
+//! there as an app task, [`io`] refuses, [`spawn_thread`] fails, and nothing
+//! may block. [`availability`] answers which [`Feature`]s the running target
+//! has; [`CAPABILITIES`] lists them for every target.
 
 #![cfg_attr(
     test,
@@ -33,21 +45,30 @@
     )
 )]
 
+#[cfg(not(target_family = "wasm"))]
 mod app;
+#[cfg(target_family = "wasm")]
+#[path = "app_web.rs"]
+mod app;
+pub mod background;
+mod caps;
 mod cpu;
-// A daemon runtime is multi-threaded, which tokio does not offer on wasm32.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 mod daemon;
 pub mod io;
 mod pool;
+mod timer;
+pub mod wake;
 
 use std::cell::Cell;
 use std::future::Future;
 
 pub use app::{AppRuntime, app, try_app};
+pub use caps::{Availability, CAPABILITIES, Feature, availability};
 pub use cpu::{CpuTask, cpu, cpu_pool};
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 pub use daemon::{Daemon, daemon};
+pub use timer::sleep;
 pub use tokio::runtime::{Handle, Runtime};
 pub use tokio::task::JoinHandle;
 
@@ -94,7 +115,7 @@ impl Driving {
 
 /// Mark the calling thread as driving async tasks for as long as it lives:
 /// a runtime worker.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 pub(crate) fn mark_driving() {
     DRIVING.with(|driving| driving.set(true));
 }
@@ -156,6 +177,10 @@ fn check_may_block() -> Result<(), Error> {
 /// runtime context, [`Error::Start`] when the runtime cannot be built.
 pub fn block_on<F: Future>(future: F) -> Result<F::Output, Error> {
     check_may_block()?;
+    // A browser page's one thread is its UI thread, and it cannot park.
+    if cfg!(target_family = "wasm") {
+        return Err(Error::UiThread);
+    }
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .thread_name("tilo-rt-block-on")
@@ -165,15 +190,41 @@ pub fn block_on<F: Future>(future: F) -> Result<F::Output, Error> {
     Ok(runtime.block_on(future))
 }
 
-/// Start a named OS thread.
+/// Park the calling thread for `duration`: the sanctioned replacement for
+/// `std::thread::sleep`. Async code awaits [`sleep`] instead.
 ///
-/// For work that owns its thread for a long time — an event loop, a device
-/// poller, a blocking protocol client. Short jobs belong on [`cpu()`], the
-/// [`io`] pool, or a runtime's blocking pool instead.
+/// For desktop-only waits — a headless capture pumping a decoder, a device
+/// poller on its own thread. A browser page has one thread and cannot park;
+/// there this returns at once with an error, where `std::thread::sleep`
+/// panics.
 ///
 /// # Errors
 ///
-/// Returns the OS error when the thread cannot be created.
+/// [`Error::UiThread`] on the web.
+pub fn sleep_thread(duration: std::time::Duration) -> Result<(), Error> {
+    if cfg!(target_family = "wasm") {
+        return Err(Error::UiThread);
+    }
+    std::thread::sleep(duration);
+    Ok(())
+}
+
+/// Start a named OS thread: the sanctioned replacement for
+/// `std::thread::spawn` and `std::thread::Builder::spawn`.
+///
+/// For work that owns its thread for a long time — an event loop, a device
+/// poller, a blocking protocol client. Short jobs belong on [`cpu()`], the
+/// [`io`] pool, [`background`], or a runtime's blocking pool instead.
+///
+/// Unlike `std::thread::spawn`, this never panics: where
+/// [`Feature::Threads`] is unsupported (a browser page) it returns an error,
+/// and the caller degrades — skips optional work, or runs a short step
+/// inline.
+///
+/// # Errors
+///
+/// Returns the OS error when the thread cannot be created, and
+/// [`std::io::ErrorKind::Unsupported`] on a target without threads.
 pub fn spawn_thread<T, F>(
     name: impl Into<String>,
     body: F,

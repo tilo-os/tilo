@@ -118,6 +118,23 @@ impl AppRuntime {
         self.handle.spawn(async move { deliver(future.await) })
     }
 
+    /// Run the future `make` builds, where the future may hold values that
+    /// stay on one thread (a browser page's storage handles, where that is
+    /// the target): natively it is built and driven on one thread of the
+    /// blocking pool, with the runtime's drivers.
+    pub fn spawn_pinned<M, F>(&self, make: M) -> JoinHandle<F::Output>
+    where
+        M: FnOnce() -> F + Send + 'static,
+        F: Future + 'static,
+        F::Output: Send + 'static,
+    {
+        let handle = self.handle.clone();
+        self.handle.spawn_blocking(move || {
+            let _driving = crate::Driving::enter();
+            handle.block_on(make())
+        })
+    }
+
     /// Run a blocking call on the runtime's bounded blocking pool.
     pub fn spawn_blocking<F, R>(&self, call: F) -> JoinHandle<R>
     where
@@ -189,6 +206,16 @@ mod tests {
                 move |out| tx.send(out).unwrap(),
             );
             assert_eq!(tilo_test_env::recv("the slept task's output", &rx), "slept");
+        }
+        // phase: a_pinned_task_may_hold_a_value_that_stays_on_its_thread
+        {
+            let (tx, rx) = mpsc::channel();
+            app().spawn_pinned(move || async move {
+                let pinned = std::rc::Rc::new(4);
+                tokio::time::sleep(Duration::from_millis(2)).await;
+                tx.send(*pinned + 1).unwrap();
+            });
+            assert_eq!(tilo_test_env::recv("the pinned task's value", &rx), 5);
         }
     }
 
