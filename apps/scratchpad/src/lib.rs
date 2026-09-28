@@ -4,16 +4,11 @@
 //! Storage, sync, collaboration, history, undo, permissions and the action
 //! palette come from the framework.
 
-// The fixture drives the app through the native test host.
-#[cfg(not(target_arch = "wasm32"))]
-mod native_fixture;
 mod native_probe;
 
 use std::cell::Cell;
 use std::rc::Rc;
 
-#[cfg(not(target_arch = "wasm32"))]
-pub use native_fixture::{NativeFixtureManifest, seed_native_fixture};
 use ui::prelude::*;
 
 /// The note.
