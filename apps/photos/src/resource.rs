@@ -132,6 +132,10 @@ impl ActionSink {
         self.framework = Some(dispatcher);
     }
 
+    pub(crate) fn is_hosted(&self) -> bool {
+        self.framework.is_some()
+    }
+
     pub(crate) fn dispatch_with_context(
         &mut self,
         doc: &mut AutoCommit,

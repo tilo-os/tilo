@@ -5841,6 +5841,14 @@ impl ui::resources::PublishesResources for BooksApp {
     /// palette scopes to them, via [`crate::actions`]'s
     /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl.
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        // The framework root publishes the library and its books. Keep only
+        // reading settings when hosted — they are not Resource::children.
+        if self.actions.is_hosted() {
+            return self
+                .publish_resource(doc, "ebook.settings")
+                .into_iter()
+                .collect();
+        }
         self.publish_resources(doc)
     }
     fn action_directory_resource_page(
@@ -5854,7 +5862,11 @@ impl ui::resources::PublishesResources for BooksApp {
             [offset] => usize::from(*offset),
             _ => return None,
         };
-        let roots = ["ebook.library", "ebook.settings"];
+        let roots: &[&str] = if self.actions.is_hosted() {
+            &["ebook.settings"]
+        } else {
+            &["ebook.library", "ebook.settings"]
+        };
         if offset > roots.len() {
             return None;
         }

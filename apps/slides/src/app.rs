@@ -6346,6 +6346,11 @@ impl ui::resources::PublishesResources for SlidesApp {
     /// document-mutating affordance exported as the same action it dispatches on
     /// screen. See [`crate::actions`].
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        // The framework root publishes the deck and its slides. The widget
+        // tree would be a second door.
+        if self.framework.is_some() {
+            return Vec::new();
+        }
         if !self.canonical_matches(doc) {
             return Vec::new();
         }
@@ -6370,17 +6375,16 @@ impl ui::undo::CommittedActions for SlidesApp {
     /// its slides action, so it records one undo boundary for it (see
     /// `Self::perform_action`). Rising-edge: cleared on read.
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        let typed = self
-            .text_editor
-            .as_mut()
-            .and_then(|editor| editor.host.widget_mut().take_committed_action());
+        let typed = self.text_editor.as_mut().and_then(|editor| {
+            ui::undo::CommittedActions::take_committed_action(editor.host.widget_mut())
+        });
         typed.or_else(|| self.actions.take_committed())
     }
     /// Typing a word into a text box is one undo step, open until the word ends.
     fn keeps_undo_step_open(&self) -> bool {
-        self.text_editor
-            .as_ref()
-            .is_some_and(|editor| editor.host.widget().keeps_undo_step_open())
+        self.text_editor.as_ref().is_some_and(|editor| {
+            ui::undo::CommittedActions::keeps_undo_step_open(editor.host.widget())
+        })
     }
 }
 
