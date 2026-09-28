@@ -260,3 +260,12 @@ history-action-stale-cursor = Der Verlauf hat sich seit dieser Seite geändert. 
 history-action-unknown-entry = Diese Änderung ist nicht im Verlauf dieses Dokuments.
 history-action-unknown-session = Diese Vorschau ist nicht geöffnet.
 history-action-invalid = Diese Verlaufsanfrage ist ungültig.
+
+command-palette-hint-navigate = Navigieren
+command-palette-hint-open = Öffnen
+command-palette-hint-run = Ausführen
+command-palette-hint-close = Schließen
+command-palette-result-count = { $count ->
+    [one] { $count } Ergebnis
+   *[other] { $count } Ergebnisse
+}

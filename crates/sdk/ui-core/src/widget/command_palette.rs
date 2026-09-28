@@ -1457,19 +1457,19 @@ impl CommandPalette {
         let chip_h = (footer.height() - 12.0).max(13.0);
 
         let mut x = footer.x0 + 6.0;
-        let hints: &[(&str, &str)] = match self.mode {
-            PaletteMode::Search => &[
-                ("\u{2191}\u{2193}", "Navigate"),
-                ("\u{21b5}", "Open"),
-                ("Esc", "Close"),
-            ],
-            PaletteMode::Commands => &[
-                ("\u{2191}\u{2193}", "Navigate"),
-                ("\u{21b5}", "Run"),
-                ("Esc", "Close"),
-            ],
+        let enter = match self.mode {
+            PaletteMode::Search => crate::i18n!("command-palette-hint-open"),
+            PaletteMode::Commands => crate::i18n!("command-palette-hint-run"),
         };
-        for (key, label) in hints {
+        let hints = [
+            (
+                "\u{2191}\u{2193}",
+                crate::i18n!("command-palette-hint-navigate"),
+            ),
+            ("\u{21b5}", enter),
+            ("Esc", crate::i18n!("command-palette-hint-close")),
+        ];
+        for (key, label) in &hints {
             let (kw, kh) = text_renderer.measure(key, size, None);
             let chip_w = (f64::from(kw) + 10.0).max(chip_h);
             let chip_rect = Rect::new(x, cy - chip_h / 2.0, x + chip_w, cy + chip_h / 2.0);
@@ -1506,11 +1506,7 @@ impl CommandPalette {
 
         let n = self.result_total();
         if n > 0 {
-            let right = if n == 1 {
-                "1 result".to_string()
-            } else {
-                format!("{n} results")
-            };
+            let right = crate::i18n!("command-palette-result-count", "count" => n);
             let (sw, sh) = text_renderer.measure(&right, size, None);
             text_renderer.draw_text(
                 scene,
