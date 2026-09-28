@@ -2,13 +2,17 @@
 //! they enter.
 
 use super::App;
-use crate::host_chrome::model::{self, EDIT_OPERATION, EDIT_RESOURCE, HostCommand, RecentChange};
+use crate::host_chrome::edit::{EDIT_OPERATION, EDIT_RESOURCE, edit_resource};
+#[cfg(any(feature = "native", test))]
+use crate::host_chrome::model::{self, HostCommand, RecentChange};
+#[cfg(any(feature = "native", test))]
 use crate::platform::HostShortcut;
+#[cfg(any(feature = "native", test))]
 use crate::standalone_history::{HistoryReadContext, StandaloneHistory};
 
 /// Changes whenever a host command's label, enabled state or presence may
 /// have, so the host chrome rebuilds only then.
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "native"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct HostCommandsKey {
     undo: u64,
@@ -21,88 +25,8 @@ pub(crate) struct HostCommandsKey {
     minute: u64,
 }
 
+/// The Edit door: the one undo, reached by keyboard, menu and automation.
 impl App {
-    /// The commands the host chrome presents. Recent changes are read from
-    /// the document history, so only a History menu asks for them.
-    pub(crate) fn host_commands(&mut self, with_recent_changes: bool) -> Vec<HostCommand> {
-        let mut resources = vec![model::edit_resource(&self.focused_undo_status())];
-        resources.extend(self.history_local_resources());
-        if self.palette_presented()
-            && let Some(search) = resources.iter_mut().find(|resource| {
-                resource.id.as_str() == crate::standalone_history_host::SEARCH_RESOURCE
-            })
-        {
-            // The open palette answers its own shortcut by closing.
-            for action in &mut search.actions {
-                action.contract.availability = tilo_actions::Availability::Unavailable {
-                    code: "search_open".into(),
-                    reason: crate::i18n::I18nManager::lookup_plain("host-search"),
-                };
-            }
-        }
-        resources.extend(self.collect_declared_resources());
-        let recent = if with_recent_changes {
-            self.recent_changes()
-        } else {
-            Vec::new()
-        };
-        model::host_commands(
-            &resources,
-            &recent,
-            self.input.platform,
-            crate::time::wall(),
-        )
-    }
-
-    #[cfg(target_os = "macos")]
-    pub(crate) fn host_commands_key(&self) -> HostCommandsKey {
-        HostCommandsKey {
-            undo: self.state.history_revision(),
-            standalone_history: self.document_history.revision(),
-            framework_history_open: self
-                .history
-                .as_ref()
-                .is_some_and(|history| history.is_open()),
-            palette: self.palette_presented(),
-            focus: self.focused_node,
-            resources: (
-                self.actions.resource_generation.get(),
-                self.actions.permission_generation.get(),
-            ),
-            minute: crate::time::wall()
-                .duration_since(crate::time::UNIX_EPOCH)
-                .map_or(0, |elapsed| elapsed.as_secs() / 60),
-        }
-    }
-
-    /// Activate a host command through the same local door the palette and
-    /// assistive technology enter. Returns whether the door accepted it.
-    pub(crate) fn invoke_host_command(
-        &mut self,
-        invocation: &tilo_actions::ControlInvocation,
-    ) -> bool {
-        let argument = (!invocation.arguments.is_empty()).then(|| {
-            format!(
-                "{}{}",
-                tilo_actions::ARGUMENTS_JSON_PREFIX,
-                serde_json::Value::Object(invocation.arguments.clone())
-            )
-        });
-        self.invoke_local_address(&invocation.address, argument.as_deref())
-    }
-
-    /// The command a host shortcut stands for, invoked; `false` when it is
-    /// unavailable, so the key can still reach the app.
-    pub(crate) fn invoke_host_shortcut(&mut self, service: HostShortcut) -> bool {
-        let shortcut = service.shortcut(self.input.platform);
-        let invocation = self
-            .host_commands(false)
-            .into_iter()
-            .find(|command| command.enabled && command.shortcut.as_ref() == Some(&shortcut))
-            .and_then(|command| command.invocation());
-        invocation.is_some_and(|invocation| self.invoke_host_command(&invocation))
-    }
-
     /// Run an `tilo.host:edit` operation: the same undo the keyboard does.
     pub(super) fn execute_edit_operation(
         &mut self,
@@ -120,8 +44,7 @@ impl App {
         &mut self,
         address: &tilo_actions::ActionAddress,
     ) -> Option<tilo_actions::Resource> {
-        (address.resource == EDIT_RESOURCE)
-            .then(|| model::edit_resource(&self.focused_undo_status()))
+        (address.resource == EDIT_RESOURCE).then(|| edit_resource(&self.focused_undo_status()))
     }
 
     /// Undo or redo for the local author, offered first to a focused
@@ -201,6 +124,90 @@ impl App {
         }
         self.state
             .undo_status_snapshot(Some(&self.collaboration.local_author))
+    }
+}
+
+#[cfg(any(feature = "native", test))]
+impl App {
+    /// The commands the host chrome presents. Recent changes are read from
+    /// the document history, so only a History menu asks for them.
+    pub(crate) fn host_commands(&mut self, with_recent_changes: bool) -> Vec<HostCommand> {
+        let mut resources = vec![edit_resource(&self.focused_undo_status())];
+        resources.extend(self.history_local_resources());
+        if self.palette_presented()
+            && let Some(search) = resources.iter_mut().find(|resource| {
+                resource.id.as_str() == crate::standalone_history_host::SEARCH_RESOURCE
+            })
+        {
+            // The open palette answers its own shortcut by closing.
+            for action in &mut search.actions {
+                action.contract.availability = tilo_actions::Availability::Unavailable {
+                    code: "search_open".into(),
+                    reason: crate::i18n::I18nManager::lookup_plain("host-search"),
+                };
+            }
+        }
+        resources.extend(self.collect_declared_resources());
+        let recent = if with_recent_changes {
+            self.recent_changes()
+        } else {
+            Vec::new()
+        };
+        model::host_commands(
+            &resources,
+            &recent,
+            self.input.platform,
+            crate::time::wall(),
+        )
+    }
+
+    #[cfg(all(target_os = "macos", feature = "native"))]
+    pub(crate) fn host_commands_key(&self) -> HostCommandsKey {
+        HostCommandsKey {
+            undo: self.state.history_revision(),
+            standalone_history: self.document_history.revision(),
+            framework_history_open: self
+                .history
+                .as_ref()
+                .is_some_and(|history| history.is_open()),
+            palette: self.palette_presented(),
+            focus: self.focused_node,
+            resources: (
+                self.actions.resource_generation.get(),
+                self.actions.permission_generation.get(),
+            ),
+            minute: crate::time::wall()
+                .duration_since(crate::time::UNIX_EPOCH)
+                .map_or(0, |elapsed| elapsed.as_secs() / 60),
+        }
+    }
+
+    /// Activate a host command through the same local door the palette and
+    /// assistive technology enter. Returns whether the door accepted it.
+    pub(crate) fn invoke_host_command(
+        &mut self,
+        invocation: &tilo_actions::ControlInvocation,
+    ) -> bool {
+        let argument = (!invocation.arguments.is_empty()).then(|| {
+            format!(
+                "{}{}",
+                tilo_actions::ARGUMENTS_JSON_PREFIX,
+                serde_json::Value::Object(invocation.arguments.clone())
+            )
+        });
+        self.invoke_local_address(&invocation.address, argument.as_deref())
+    }
+
+    /// The command a host shortcut stands for, invoked; `false` when it is
+    /// unavailable, so the key can still reach the app.
+    pub(crate) fn invoke_host_shortcut(&mut self, service: HostShortcut) -> bool {
+        let shortcut = service.shortcut(self.input.platform);
+        let invocation = self
+            .host_commands(false)
+            .into_iter()
+            .find(|command| command.enabled && command.shortcut.as_ref() == Some(&shortcut))
+            .and_then(|command| command.invocation());
+        invocation.is_some_and(|invocation| self.invoke_host_command(&invocation))
     }
 
     /// Only standalone History opens at a change; a framework History has

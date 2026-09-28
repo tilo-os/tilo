@@ -313,6 +313,7 @@ impl StandaloneHistoryHost {
 
     /// The host's own chrome presents History and Search: drop the in-window
     /// buttons. Their actions stay, reachable from that chrome.
+    #[cfg(any(feature = "native", test))]
     pub(crate) fn remove_in_window_controls(&mut self) {
         let had_toolbar = self.toolbar.take().is_some();
         let had_search = self.search.take().is_some();

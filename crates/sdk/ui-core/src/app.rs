@@ -50,6 +50,7 @@ mod history_actions;
 mod host_commands;
 
 /// The broker-facing History door, which host chrome presents as its own.
+#[cfg(any(feature = "native", test))]
 pub(crate) const HISTORY_ACTION_RESOURCE: &str = history_actions::RESOURCE;
 #[cfg(test)]
 mod history_actions_tests;

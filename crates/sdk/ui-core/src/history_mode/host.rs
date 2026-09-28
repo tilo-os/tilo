@@ -146,6 +146,7 @@ impl HistoryHost {
     }
 
     /// The host's own chrome presents History: drop the toolbar's button.
+    #[cfg(any(feature = "native", test))]
     pub(crate) fn remove_open_button(&mut self) {
         self.open_button = false;
         self.rebuild_toolbar();

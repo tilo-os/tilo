@@ -7,62 +7,17 @@
 use crate::time::SystemTime;
 
 use fluent::FluentArgs;
-use tilo_actions::{
-    ActionBinding, ActionSpec, Availability, ControlInvocation, OperationKind, Resource,
-};
+use tilo_actions::{ActionBinding, ActionSpec, ControlInvocation, OperationKind, Resource};
 
+use super::edit::EDIT_RESOURCE;
 use crate::i18n::I18nManager;
 use crate::platform::{HostShortcut, PlatformConventions, Shortcut};
 use crate::standalone_history_host::{HISTORY_RESOURCE, SEARCH_RESOURCE, encode_entry};
-use crate::undo::{UndoRequest, UndoStatus};
 use crate::widget::HistoryEntryId;
 
-pub(crate) const EDIT_RESOURCE: &str = "tilo.host:edit";
-pub(crate) const EDIT_OPERATION: &str = "tilo.host.edit";
 const HISTORY_SESSION_KIND: &str = "tilo.host.history.session";
 /// How many recent changes a History menu lists.
 pub(crate) const RECENT_CHANGES: usize = 8;
-
-/// Undo and Redo for the local author, titled with the change each would
-/// revert and unavailable when there is none.
-#[expect(
-    clippy::expect_used,
-    reason = "fixed unit Edit payloads serialize infallibly"
-)]
-pub(crate) fn edit_resource(status: &UndoStatus) -> Resource {
-    let action = |request: UndoRequest, key: &str| {
-        let label = match status.summary(request) {
-            Some(change) if change != crate::history_source::NO_VISIBLE_CHANGE => {
-                let mut args = FluentArgs::new();
-                args.set("change", change.to_owned());
-                I18nManager::lookup(&format!("{key}-named"), Some(&args))
-            }
-            _ => I18nManager::lookup_plain(key),
-        };
-        let mut spec = ActionSpec::operation(
-            request.verb(),
-            label,
-            OperationKind::Effect,
-            EDIT_OPERATION,
-            &request,
-        )
-        .expect("unit Edit operation serializes");
-        if !status.can(request) {
-            spec.contract.availability = Availability::Unavailable {
-                code: "nothing_to_undo".into(),
-                reason: status.description(request),
-            };
-        }
-        spec
-    };
-    Resource::new(
-        EDIT_RESOURCE,
-        "tilo.host.edit",
-        I18nManager::lookup_plain("host-menu-edit"),
-    )
-    .with_action(action(UndoRequest::Undo, "host-undo"))
-    .with_action(action(UndoRequest::Redo, "host-redo"))
-}
 
 /// Where a command sits. Hosts map groups onto their own menus and
 /// separate adjacent groups.
