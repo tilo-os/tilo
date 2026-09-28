@@ -3809,6 +3809,52 @@ fn app_task_plans_are_scoped_to_the_app_and_gated_by_doctor() {
         );
     }
 
+    // Phase: platform_clippy_lints_other_targets_and_leaves_the_host_to_check.
+    {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let destination = temp.path().join("reading-list");
+        create_app(request(destination.clone())).expect("create app");
+        let host = PackageArch::host().expect("an x86_64 or aarch64 host");
+        for platform in [PackagePlatform::Tilo, PackagePlatform::Linux] {
+            assert_eq!(
+                plan_platform_clippy(&destination, platform, None).expect("host plan"),
+                None,
+                "{platform:?} on this machine is the host build"
+            );
+        }
+        let other = match host {
+            PackageArch::X86_64 => PackageArch::Aarch64,
+            PackageArch::Aarch64 => PackageArch::X86_64,
+        };
+        let cross = plan_platform_clippy(&destination, PackagePlatform::Linux, Some(other))
+            .expect("cross plan")
+            .expect("another architecture is linted");
+        assert_eq!(
+            cross.args,
+            [
+                OsString::from("clippy"),
+                OsString::from("--manifest-path"),
+                destination.join("Cargo.toml").into_os_string(),
+                OsString::from("--package"),
+                OsString::from("reading-list"),
+                OsString::from("--target"),
+                OsString::from(format!("{}-unknown-linux-gnu", other.as_str())),
+                OsString::from("--no-deps"),
+                OsString::from("--"),
+                OsString::from("-D"),
+                OsString::from("warnings"),
+            ]
+        );
+        let windows = plan_platform_clippy(&destination, PackagePlatform::Windows, None)
+            .expect("windows plan")
+            .expect("windows is not the host");
+        assert!(windows.args.contains(&OsString::from(format!(
+            "{}-pc-windows-msvc",
+            host.as_str()
+        ))));
+        assert!(plan_platform_clippy(&destination, PackagePlatform::Web, None).is_err());
+    }
+
     // Phase: app_task_refuses_to_spawn_when_doctor_fails.
     {
         let temp = tempfile::tempdir().expect("temp dir");
