@@ -1537,33 +1537,34 @@ fn join(
         .with_context(|| format!("read {}", token_file.display()))?;
     join_with_token(
         token_text.trim(),
-        identity_root,
-        label,
-        timeout,
-        EnrollmentKind::HomePeer,
-        Some(home_peer_output),
-        None,
-        None,
-        NEARBY_PORT,
+        JoinOptions {
+            identity_root,
+            label,
+            timeout,
+            kind: EnrollmentKind::HomePeer,
+            home_peer_output: Some(home_peer_output),
+            identity_dir: None,
+            requester_lease: None,
+            port: NEARBY_PORT,
+        },
     )
 }
 
 #[allow(
-    clippy::too_many_arguments,
     clippy::too_many_lines,
-    reason = "the join state machine keeps all authenticated inputs visible at its single protocol boundary"
+    reason = "one ordered join exchange; each step relies on the token and identity checks before it"
 )]
-fn join_with_token(
-    token_text: &str,
-    identity_root: &std::path::Path,
-    label: &str,
-    timeout: u64,
-    kind: EnrollmentKind,
-    home_peer_output: Option<&std::path::Path>,
-    identity_dir: Option<&std::path::Path>,
-    requester_lease: Option<tilo_relay::ProcessLease>,
-    port: u16,
-) -> anyhow::Result<()> {
+fn join_with_token(token_text: &str, options: JoinOptions<'_>) -> anyhow::Result<()> {
+    let JoinOptions {
+        identity_root,
+        label,
+        timeout,
+        kind,
+        home_peer_output,
+        identity_dir,
+        requester_lease,
+        port,
+    } = options;
     validate_requester(requester_lease)?;
     let token = decode_enrollment_token(token_text).context("decode enrollment token")?;
     verify_enrollment_token(&token, now_ns()?).context("verify enrollment token")?;
@@ -1794,21 +1795,19 @@ fn join_with_token(
 }
 
 #[allow(
-    clippy::too_many_arguments,
     clippy::too_many_lines,
-    reason = "the pairing state machine keeps its UI outputs and authenticated requester lease at one boundary"
+    reason = "one ordered pairing exchange; the requester lease is revalidated at every step of it"
 )]
-fn pair(
-    identity_root: &std::path::Path,
-    label: &str,
-    timeout: u64,
-    kind: EnrollmentKind,
-    home_peer_output: Option<&std::path::Path>,
-    identity_dir: Option<&std::path::Path>,
-    status_file: Option<&std::path::Path>,
-    requester_lease: Option<tilo_relay::ProcessLease>,
-    port: u16,
-) -> anyhow::Result<()> {
+fn pair(options: JoinOptions<'_>, status_file: Option<&std::path::Path>) -> anyhow::Result<()> {
+    let JoinOptions {
+        identity_root,
+        label,
+        timeout,
+        kind,
+        requester_lease,
+        port,
+        ..
+    } = options;
     if kind == EnrollmentKind::PersonalDevice && requester_lease.is_none() {
         bail!("personal-device pairing requires a live first-use requester");
     }
@@ -1875,14 +1874,10 @@ fn pair(
                 println!("Nearby Tilo device approved code {code}");
                 join_with_token(
                     token_text.trim(),
-                    identity_root,
-                    &label,
-                    timeout,
-                    kind,
-                    home_peer_output,
-                    identity_dir,
-                    requester_lease,
-                    port,
+                    JoinOptions {
+                        label: &label,
+                        ..options
+                    },
                 )?;
                 if let Some(path) = status_file {
                     atomic_file::write_with_mode(
@@ -1908,6 +1903,22 @@ fn pair(
         }
     }
     bail!("no trusted Tilo device approved nearby pairing before the window closed")
+}
+
+/// How one requester-side enrollment runs: where its identity lives, the
+/// label it asks for, the window, the device role, where a home peer's
+/// descriptor goes, the requester lease that must stay live and the
+/// nearby port.
+#[derive(Clone, Copy)]
+struct JoinOptions<'a> {
+    identity_root: &'a std::path::Path,
+    label: &'a str,
+    timeout: u64,
+    kind: EnrollmentKind,
+    home_peer_output: Option<&'a std::path::Path>,
+    identity_dir: Option<&'a std::path::Path>,
+    requester_lease: Option<tilo_relay::ProcessLease>,
+    port: u16,
 }
 
 struct ApprovalOptions<'a> {
@@ -2413,15 +2424,17 @@ fn run() -> anyhow::Result<()> {
             timeout,
             home_peer_output,
         } => pair(
-            &identity_root,
-            &label,
-            timeout,
-            EnrollmentKind::HomePeer,
-            Some(&home_peer_output),
+            JoinOptions {
+                identity_root: &identity_root,
+                label: &label,
+                timeout,
+                kind: EnrollmentKind::HomePeer,
+                home_peer_output: Some(&home_peer_output),
+                identity_dir: None,
+                requester_lease: None,
+                port: NEARBY_PORT,
+            },
             None,
-            None,
-            None,
-            NEARBY_PORT,
         ),
         Command::PairDevice {
             identity_root,
@@ -2432,18 +2445,20 @@ fn run() -> anyhow::Result<()> {
             requester_pid,
             requester_start_time,
         } => pair(
-            &identity_root,
-            &label,
-            timeout,
-            EnrollmentKind::PersonalDevice,
-            None,
-            Some(&identity_dir),
+            JoinOptions {
+                identity_root: &identity_root,
+                label: &label,
+                timeout,
+                kind: EnrollmentKind::PersonalDevice,
+                home_peer_output: None,
+                identity_dir: Some(&identity_dir),
+                requester_lease: Some(tilo_relay::ProcessLease::from_parts(
+                    requester_pid,
+                    requester_start_time,
+                )),
+                port: NEARBY_PORT,
+            },
             status_file.as_deref(),
-            Some(tilo_relay::ProcessLease::from_parts(
-                requester_pid,
-                requester_start_time,
-            )),
-            NEARBY_PORT,
         ),
         Command::Approve {
             identity_root,
@@ -3036,15 +3051,17 @@ mod tests {
             let identity_dir = tempfile::tempdir().unwrap();
             assert!(
                 pair(
-                    identity_root.path(),
-                    "New laptop",
-                    1,
-                    EnrollmentKind::PersonalDevice,
+                    JoinOptions {
+                        identity_root: identity_root.path(),
+                        label: "New laptop",
+                        timeout: 1,
+                        kind: EnrollmentKind::PersonalDevice,
+                        home_peer_output: None,
+                        identity_dir: Some(identity_dir.path()),
+                        requester_lease: Some(lease),
+                        port: 0,
+                    },
                     None,
-                    Some(identity_dir.path()),
-                    None,
-                    Some(lease),
-                    0,
                 )
                 .is_err()
             );
@@ -3173,15 +3190,17 @@ mod tests {
             (0..3).map(|_| bind_pair_listener(port).unwrap()).collect();
         let requester = tilo_relay::ProcessLease::capture(std::process::id()).unwrap();
         pair(
-            new_root.path(),
-            "New laptop",
-            60,
-            EnrollmentKind::PersonalDevice,
+            JoinOptions {
+                identity_root: new_root.path(),
+                label: "New laptop",
+                timeout: 60,
+                kind: EnrollmentKind::PersonalDevice,
+                home_peer_output: None,
+                identity_dir: Some(new_identities.path()),
+                requester_lease: Some(requester),
+                port,
+            },
             None,
-            Some(new_identities.path()),
-            None,
-            Some(requester),
-            port,
         )
         .unwrap();
         approval.join().unwrap().unwrap();

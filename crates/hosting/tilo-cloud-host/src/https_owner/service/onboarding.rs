@@ -91,14 +91,20 @@ struct SeenNonce {
     expires: u64,
 }
 struct Admission {
-    certificate: DeviceCert,
+    proof: AdmittedProof,
     request: JoinTransportRequest,
+    _decode_credit: ByteCredit,
+}
+/// The verified request proof the signed reply is bound to: the device
+/// certificate, the operation and request digest it signed, its nonce and
+/// expiry, and the descriptor digest pinned at admission.
+struct AdmittedProof {
+    certificate: DeviceCert,
     operation: OnboardingOperation,
     request_digest: [u8; 32],
     nonce: [u8; 32],
     expires: u64,
     descriptor: [u8; 32],
-    _decode_credit: ByteCredit,
 }
 struct Pinned {
     manifest: Vec<u8>,
@@ -260,32 +266,18 @@ impl Onboarding {
             self.observe(now)?;
             let admission = self.verify(turn, pins, request.target(), request.body(), now)?;
             let Admission {
-                certificate,
+                proof,
                 request: join,
-                operation,
-                request_digest,
-                nonce,
-                expires,
-                descriptor,
                 _decode_credit,
             } = admission;
-            let response = invoke(turn, certificate.device_public_key, join, now)?;
+            let response = invoke(turn, proof.certificate.device_public_key, join, now)?;
             let now = turn.fresh_now_ns()?;
-            ensure!(now < expires, "onboarding proof expired during service");
+            ensure!(
+                now < proof.expires,
+                "onboarding proof expired during service"
+            );
             self.observe(now)?;
-            self.reply(
-                turn,
-                pins,
-                request.body(),
-                &certificate,
-                operation,
-                request_digest,
-                nonce,
-                expires,
-                descriptor,
-                response,
-                now,
-            )
+            self.reply(turn, pins, request.body(), &proof, response, now)
         })
     }
 
@@ -352,35 +344,36 @@ impl Onboarding {
             expires: wire.expires_at_ns,
         });
         Ok(Admission {
-            certificate,
+            proof: AdmittedProof {
+                certificate,
+                operation: wire.operation,
+                request_digest: wire.request_digest()?,
+                nonce: wire.nonce,
+                expires: wire.expires_at_ns,
+                descriptor: descriptor.descriptor_digest(),
+            },
             request,
-            operation: wire.operation,
-            request_digest: wire.request_digest()?,
-            nonce: wire.nonce,
-            expires: wire.expires_at_ns,
-            descriptor: descriptor.descriptor_digest(),
             _decode_credit: credit,
         })
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "explicit protocol inputs stay separate parameters"
-    )]
     fn reply(
         &mut self,
         turn: &CloudStoreTurn,
         pins: &Pins,
         original: &[u8],
-        certificate: &DeviceCert,
-        operation: OnboardingOperation,
-        request_digest: [u8; 32],
-        nonce: [u8; 32],
-        expires: u64,
-        descriptor_digest: [u8; 32],
+        proof: &AdmittedProof,
         response: JoinTransportResponse,
         now: u64,
     ) -> Result<Vec<u8>> {
+        let AdmittedProof {
+            ref certificate,
+            operation,
+            request_digest,
+            nonce,
+            expires,
+            descriptor: descriptor_digest,
+        } = *proof;
         let descriptor = turn.verified_descriptor(pins.capabilities)?;
         ensure!(
             descriptor.descriptor_digest() == descriptor_digest,

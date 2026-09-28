@@ -673,10 +673,6 @@ pub fn cloud_refresh_media(id: u32, material: Vec<u8>, peer: u32) -> Result<(), 
 /// custody layer holds both scope and device locks); both copies are wiped
 /// here. Returns only the public signed request JSON.
 #[wasm_bindgen]
-#[expect(
-    clippy::too_many_arguments,
-    reason = "flat wasm-bindgen boundary; both custody sides travel as primitives"
-)]
 pub fn cloud_mesh_link(
     account_id: String,
     source_machine_id: String,

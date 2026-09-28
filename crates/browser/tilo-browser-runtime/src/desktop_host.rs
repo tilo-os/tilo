@@ -28,7 +28,8 @@ use ui::widget::{AppModel, ModelPath};
 use ui::{TextRenderer, Theme, presence::PresenceCtx};
 use ui::{
     application::{
-        ApplicationDefinition, ComponentCloseReport, HostContext, LaunchTarget, RestoreInput,
+        ApplicationDefinition, ComponentCloseReport, HostContext, HostContextInputs, LaunchTarget,
+        RestoreInput,
     },
     application_view::InstanceViewStore,
     portable_storage::{PortableStorage, StorageKey},
@@ -366,30 +367,20 @@ impl Contexts {
             .open(app_id, &self.room)
             .map_err(|e| ui::launch::LaunchError::Operation(e.to_string()))?;
         let checkout = self.checkout(definition, request)?;
-        let author = ui::permissions::UserId(self.author.clone());
+        let inputs = HostContextInputs {
+            records: store.clone(),
+            views: self.views.clone(),
+            device_id: self.device.clone(),
+            instance_id: request.tab.id,
+            permissions: self.permissions.clone(),
+            author: ui::permissions::UserId(self.author.clone()),
+            action_context: tilo_actions::ActionContext::default(),
+        };
         let mut context = match create {
-            Some(new) if !new.id.is_package_primary() => HostContext::prepare_new_record(
-                definition,
-                store.clone(),
-                self.views.clone(),
-                self.device.clone(),
-                request.tab.id,
-                self.permissions.clone(),
-                author,
-                tilo_actions::ActionContext::default(),
-                new.id.clone(),
-            )?,
-            _ => HostContext::prepare(
-                definition,
-                store.clone(),
-                self.views.clone(),
-                self.device.clone(),
-                request.tab.id,
-                self.permissions.clone(),
-                author,
-                tilo_actions::ActionContext::default(),
-                target,
-            )?,
+            Some(new) if !new.id.is_package_primary() => {
+                HostContext::prepare_new_record(definition, inputs, new.id.clone())?
+            }
+            _ => HostContext::prepare(definition, inputs, target)?,
         };
         if let Some(content) = &self.content {
             context.provide_content(content.clone());
@@ -834,10 +825,6 @@ impl DesktopRoot {
         }
         Self::queue_activation_after_route_change(handle, tree, previous);
     }
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "each argument is a distinct piece of custody or context the caller already holds"
-    )]
     pub fn new(
         admission: Admission,
         storage: PortableStorage,

@@ -4406,7 +4406,6 @@ impl QuickFS {
     // one atomic signed replacement transaction.
     #[allow(
         clippy::significant_drop_tightening,
-        clippy::too_many_arguments,
         clippy::too_many_lines,
         reason = "the explicit authenticated rename facts feed one atomic signed replacement transaction"
     )]
