@@ -20,7 +20,13 @@ export interface CertifiedPeer {
  readonly invitedIdentity?:{scope:string};
  getSnapshot():PeerSnapshot;
  subscribe(listener:(snapshot:PeerSnapshot)=>void):()=>void;
- mountDesktop(target:HTMLElement,options:Pick<MountOptions,'app'|'instance'|'signal'|'onStatus'|'onNavigation'>&{onSurface?:(surfaceId:string)=>void;onMount?:(mount:DesktopMount)=>void}):Promise<DesktopMount>;
+ /**
+  * Without `app`, the session's canonical desktop. With `app` (an installed id
+  * or the aliases `writer` and `chat`), that app on one of its admitted
+  * records in `getSnapshot().records`: `record` names which, else the first.
+  * Rejects with `Canonical record missing` when the room has no such record.
+  */
+ mountDesktop(target:HTMLElement,options:Pick<MountOptions,'app'|'record'|'instance'|'open'|'resolveApp'|'loadAsset'|'signal'|'onStatus'|'onNavigation'>&{onSurface?:(surfaceId:string)=>void;onMount?:(mount:DesktopMount)=>void}):Promise<DesktopMount>;
  recover(request:RecoveryRequest):Promise<RecoveryResult>;
  reconnect():Promise<void>;
  retryPersistence():Promise<void>;

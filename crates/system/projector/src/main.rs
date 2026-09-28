@@ -350,10 +350,7 @@ impl SessionPaths {
     fn resolve() -> Result<Self, String> {
         let root = std::env::var_os("TILO_PROJECTOR_RUNTIME_DIR")
             .map(PathBuf::from)
-            .or_else(|| {
-                std::env::var_os("XDG_RUNTIME_DIR")
-                    .map(|dir| Path::new(&dir).join("tilo-projector"))
-            })
+            .or_else(|| xdg_paths::xdg::runtime_dir().map(|dir| dir.join("tilo-projector")))
             .ok_or_else(|| "XDG_RUNTIME_DIR is unavailable".to_owned())?;
         Self::for_root(root)
     }

@@ -80,9 +80,7 @@ fn wayland_socket() -> Result<PathBuf, String> {
     let socket = if display.is_absolute() {
         display
     } else {
-        std::env::var_os("XDG_RUNTIME_DIR")
-            .filter(|value| !value.is_empty())
-            .map(PathBuf::from)
+        xdg_paths::xdg::runtime_dir()
             .ok_or("refusing to launch: the Wayland display has no runtime directory")?
             .join(display)
     };

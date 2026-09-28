@@ -357,8 +357,8 @@ mod native {
     }
     /// The per-user cache directory that holds `tilo-internal-install`.
     pub(in crate::setup) fn cache_base() -> Result<std::path::PathBuf> {
-        if let Some(raw) = std::env::var_os("XDG_CACHE_HOME").filter(|p| !p.is_empty()) {
-            Ok(std::path::PathBuf::from(raw))
+        if let Some(cache) = xdg_paths::env_dir("XDG_CACHE_HOME") {
+            Ok(cache)
         } else {
             let home = xdg_paths::home().ok_or("Current-user home directory unavailable")?;
             raw_components(home.as_os_str().as_bytes())?;

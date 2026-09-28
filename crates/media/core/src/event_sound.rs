@@ -66,15 +66,7 @@ fn command_exists(name: &str) -> bool {
 /// freedesktop sound-theme spec.
 fn sound_roots() -> Vec<PathBuf> {
     let mut roots = Vec::new();
-    let home_data = std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute())
-        .or_else(|| {
-            std::env::var_os("HOME")
-                .map(PathBuf::from)
-                .map(|home| home.join(".local/share"))
-        });
-    roots.extend(home_data);
+    roots.extend(xdg_paths::xdg::data_home());
     let data_dirs = std::env::var_os("XDG_DATA_DIRS")
         .filter(|dirs| !dirs.is_empty())
         .unwrap_or_else(|| "/usr/local/share:/usr/share".into());

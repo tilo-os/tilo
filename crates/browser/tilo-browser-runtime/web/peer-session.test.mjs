@@ -134,6 +134,24 @@ function fixture({enroll,recoveryClock,initialStatus,acquireStorage,createMedia,
  }});
  return{runtime,storage,connect:options=>connect({actionsVersion:1,...options}),syncs,peers,mounts,closed,mountSignals,mountOptionsSeen,queueMount:gate=>mountGates.push(gate),rebound,suspended,setFailMount:v=>failMount=v,setPublishFailure:v=>{publishFailure=v;pendingWrite=true;},setCommitStatus:v=>commitStatus=v,setRefreshStatus:v=>refreshStatus=v,setReconnectStatus:v=>reconnectStatus=v,status:value=>statusCallback(JSON.stringify(value)),recovery:()=>({componentOwners,durableRecord}),setFailCommit:v=>{failCommit=v;pendingWrite=true;},setFailConnect:v=>failConnect=v,setFailClose:v=>failClose=v,setGate:v=>gate=v,counts:()=>({held,storageRefs,attempts})};
 }
+test('an app mount opens that app\'s admitted record, the one named or else the first',async t=>{
+ const books=[{app_id:'so.tilo.ebook',record_id:'tab:4',heads:['a']},{app_id:'so.tilo.ebook',record_id:'tab:9',heads:['b']}];
+ const f=fixture({initialStatus:{phase:'ready',records:[{app_id:'so.tilo.word-processor',record_id:'tab:1',heads:['h']},...books,{app_id:'so.tilo.chat',record_id:'',heads:['c']}],health:{transport:{phase:'connected',authenticated:true,generation:'1'},admission:{phase:'ready',requiredRecords:[],pendingPrerequisites:0,progressRevision:'0'}}}});
+ const peer=await f.connect();t.after(()=>peer.dispose());
+ const open={url:'/books/the-odyssey.epub'};
+ await peer.mountDesktop({},{app:'so.tilo.ebook',record:'tab:9',open});
+ assert.deepEqual([f.mountOptionsSeen.at(-1).app,f.mountOptionsSeen.at(-1).record,f.mountOptionsSeen.at(-1).open],['so.tilo.ebook','tab:9',open]);
+ await peer.mountDesktop({},{app:'so.tilo.ebook'});
+ assert.equal(f.mountOptionsSeen.at(-1).record,'tab:4');
+ await peer.mountDesktop({},{app:'writer'});
+ assert.equal(f.mountOptionsSeen.at(-1).record,'tab:1');
+ await peer.mountDesktop({},{app:'chat'});
+ assert.equal(f.mountOptionsSeen.at(-1).record,undefined,'the package-primary record travels as none');
+ const seen=f.mountOptionsSeen.length;
+ await assert.rejects(peer.mountDesktop({},{app:'so.tilo.ebook',record:'tab:5'}),/Canonical record missing/);
+ await assert.rejects(peer.mountDesktop({},{app:'so.tilo.notes'}),/Canonical record missing/);
+ assert.equal(f.mountOptionsSeen.length,seen,'no mount is attempted without an admitted record');
+});
 test('committed desktop notices reach live mount subscriptions without entering snapshots or replaying',async t=>{
  const f=fixture(),peer=await f.connect();t.after(()=>peer.dispose());
  await peer.mountDesktop({});await drain();
