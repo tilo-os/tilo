@@ -332,7 +332,7 @@ jobs:
       # Where the runner's kernel can enforce Landlock, the PDF helper's
       # sandbox is also required rather than allowed to stand down.
       - name: Ensure native PDF capture dependency
-        if: contains(matrix.test_packages, '-p pdf-viewer') || contains(matrix.test_packages, '-p tilo-pdf') || contains(matrix.test_packages, '-p thumbnail')
+        if: contains(matrix.test_packages, '-p pdf-viewer') || contains(matrix.test_packages, '-p tilo-pdf') || contains(matrix.test_packages, '-p tilo-thumbnail')
         run: |
           asset=$(bash tools/ci/install-pdfium.sh --asset-name)
           ./os/dev/cache-github-assets.sh "$asset"

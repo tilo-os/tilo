@@ -11,7 +11,7 @@ path = "src/lib.rs"
 
 [dependencies]
 hex.workspace = true
-advisory-lock = { path = "../advisory-lock" }
+tilo-advisory-lock = { path = "../advisory-lock" }
 tilo-clock = { path = "../../platform/tilo-clock" }
 # Credentials are long-lived bearer secrets, so the vault is sealed on disk
 # with XChaCha20-Poly1305 under a 256-bit key held by Secret Service, DPAPI
@@ -19,13 +19,13 @@ tilo-clock = { path = "../../platform/tilo-clock" }
 # the key custody.
 secret-vault = { path = "../secret-vault" }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
-atomic-file = { path = "../../../crates/system/atomic-file" }
+tilo-atomic-file = { path = "../../../crates/system/atomic-file" }
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 # Resolves the per-user config root ($XDG_CONFIG_HOME/tilo) the same way the
 # Settings app does, so every app agrees on one directory.
-xdg-paths = { path = "../xdg-paths" }
+tilo-xdg-paths = { path = "../xdg-paths" }
 # The vault in a browser page, which has no native config directory.
 tilo-files = { path = "../../platform/tilo-files" }
 tilo-paths = { path = "../../platform/tilo-paths" }

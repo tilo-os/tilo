@@ -29,7 +29,7 @@ thin = ["dep:runtime-dylib"]
 fnv.workspace = true
 private-fs = { path = "../../crates/system/private-fs" }
 # Session-store ownership and the private cache root's cleanup barrier.
-advisory-lock = { path = "../../crates/system/advisory-lock" }
+tilo-advisory-lock = { path = "../../crates/system/advisory-lock" }
 tilo-clock = { path = "../../crates/platform/tilo-clock" }
 # ui — UI toolkit. The browser is chrome around the toolkit's WebView
 # widget: the engine lives behind `ui::webview::WebViewEngine`, and the

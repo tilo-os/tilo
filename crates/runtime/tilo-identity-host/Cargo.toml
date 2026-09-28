@@ -14,8 +14,8 @@ name = "tilo_identity_host"
 path = "src/lib.rs"
 
 [dependencies]
-advisory-lock = { path = "../../system/advisory-lock" }
-atomic-file = { path = "../../system/atomic-file", features = ["json"] }
+tilo-advisory-lock = { path = "../../system/advisory-lock" }
+tilo-atomic-file = { path = "../../system/atomic-file", features = ["json"] }
 collab-types = { path = "../../collab/collab-types" }
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
 getrandom.workspace = true

@@ -2,8 +2,8 @@
 # Run workspace tests locally the way CI runs them.
 #
 #   scripts/test-local.sh                            # every workspace test but the goldens
-#   scripts/test-local.sh -p fs -p tilo-ui           # selected packages
-#   scripts/test-local.sh -p fs -- checked_restore   # ... and only matching tests
+#   scripts/test-local.sh -p tilo-fs -p tilo-ui           # selected packages
+#   scripts/test-local.sh -p tilo-fs -- checked_restore   # ... and only matching tests
 #   scripts/test-local.sh --goldens                  # only the visual goldens
 #
 # Arguments before `--` select what to build (packages, features); arguments

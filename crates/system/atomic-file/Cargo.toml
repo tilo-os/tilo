@@ -1,5 +1,5 @@
 [package]
-name = "atomic-file"
+name = "tilo-atomic-file"
 version = "0.1.0"
 edition = "2024"
 publish.workspace = true
@@ -21,7 +21,7 @@ test-support = ["windows-sys/Win32_System_LibraryLoader", "windows-sys/Win32_Sys
 
 [dependencies]
 # `FileLease` holds its native lock through the workspace's single lock guard.
-advisory-lock = { path = "../advisory-lock" }
+tilo-advisory-lock = { path = "../advisory-lock" }
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 
