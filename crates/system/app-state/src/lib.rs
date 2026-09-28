@@ -1120,73 +1120,10 @@ fn publish_claim(marker: &Path, room_key: &str) -> Result<bool, StoreError> {
     }
 }
 
-/// Make `dir` an existing, writable directory, recovering from a state path
-/// a previous layout left as a *file*. `create_dir_all` fails EEXIST there,
-/// which the caller swallows into a disabled in-memory session — so without
-/// recovery, an app that ever ran the old layout would lose persistence on
-/// every launch. A zero-byte leftover is removed; a non-empty one (possibly
-/// an old-format document) is moved aside to `<dir>.stale` — never deleted —
-/// and best-effort seeded as the new document so it migrates in. A genuine
-/// filesystem failure still surfaces as an error.
+/// Make `dir` an existing, writable directory.
 fn ensure_state_dir(dir: &Path) -> Result<(), StoreError> {
-    match fs::metadata(dir) {
-        Ok(meta) if meta.is_dir() => return Ok(()),
-        // Exists, but not as a directory — the old-layout leftover.
-        Ok(meta) => {
-            if meta.len() == 0 {
-                fs::remove_file(dir).map_err(|e| {
-                    io_err(format!("removing stale state file {}", dir.display()), e)
-                })?;
-            } else {
-                let aside = stale_sibling(dir);
-                fs::rename(dir, &aside).map_err(|e| {
-                    io_err(
-                        format!(
-                            "moving aside stale state file {} to {}",
-                            dir.display(),
-                            aside.display()
-                        ),
-                        e,
-                    )
-                })?;
-                fs::create_dir_all(dir).map_err(|e| {
-                    io_err(format!("creating state directory {}", dir.display()), e)
-                })?;
-                // Best effort: a genuine old-format document migrates in on the next load;
-                // anything else leaves the store empty while the bytes stay safe at `<dir>.stale`.
-                let _ = fs::copy(&aside, dir.join(DOCUMENT_FILE));
-                return Ok(());
-            }
-        }
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-        // A real failure inspecting the path (e.g. a non-directory parent).
-        Err(e) => {
-            return Err(io_err(
-                format!("inspecting state path {}", dir.display()),
-                e,
-            ));
-        }
-    }
     fs::create_dir_all(dir)
         .map_err(|e| io_err(format!("creating state directory {}", dir.display()), e))
-}
-
-/// A sibling path `<dir>.stale`, `.stale.1`, `.stale.2`, … — the first that
-/// doesn't exist yet, so preserving one leftover never clobbers another.
-fn stale_sibling(dir: &Path) -> PathBuf {
-    // Append rather than replace the extension: package ids contain dots
-    // (`so.tilo.maps`), so `with_extension` would eat the last id segment.
-    let mut base = dir.as_os_str().to_owned();
-    base.push(".stale");
-    let mut candidate = PathBuf::from(&base);
-    let mut n = 0u32;
-    while candidate.exists() {
-        n = n.saturating_add(1);
-        let mut next = base.clone();
-        next.push(format!(".{n}"));
-        candidate = PathBuf::from(next);
-    }
-    candidate
 }
 
 /// Take an exclusive, non-blocking lock on `path`. `None` when another
@@ -1999,7 +1936,7 @@ mod tests {
         clippy::too_many_lines,
         reason = "each phase keeps one former test's body verbatim"
     )]
-    fn opening_over_existing_or_stale_state_keeps_persistence() {
+    fn opening_over_existing_state_keeps_persistence() {
         // Phase `opening_twice_against_an_existing_dir_keeps_persistence_enabled`.
         // If the directory create were not idempotent, the second open would fail
         // EEXIST and swallow into an in-memory fallback, silently losing state
@@ -2054,95 +1991,6 @@ mod tests {
             doc2.put(&ROOT, "note", ScalarValue::Str("again".into()))
                 .unwrap();
             autosave2.flush();
-        }
-        // Phase `opening_when_the_state_path_is_a_stale_empty_file_recovers_persistence`.
-        // An older layout's zero-byte file at the directory's path used to fail
-        // `create_dir_all` with EEXIST on every launch; opening must recover and
-        // come up enabled.
-        {
-            let _tmp = scratch_home();
-            let pkg = "so.tilo.stale-empty";
-            let path = cli::standalone_state_dir(pkg);
-
-            fs::write(&path, b"").unwrap();
-            assert!(path.is_file(), "the leftover is a file, not a directory");
-
-            let mut run1 = DocStore::open_for(pkg).expect("open must recover from a stale file");
-            assert!(path.is_dir(), "the stale file must have become a directory");
-            let mut doc = run1.load_or_new();
-            let mut autosave1 = run1.writer();
-            assert!(
-                autosave1.is_enabled(),
-                "recovering from a stale file must enable persistence, not fall back"
-            );
-            autosave1.seed(&mut doc);
-            doc.put(&ROOT, "note", ScalarValue::Str("recovered".into()))
-                .unwrap();
-            autosave1.request(&mut doc);
-            autosave1.flush();
-            assert_eq!(autosave1.last_error(), None, "no write may have failed");
-            drop(autosave1);
-
-            let mut run2 = DocStore::open_for(pkg).expect("second open after recovery");
-            let doc2 = run2.load_or_new();
-            assert_eq!(
-                text_of(&doc2, "note").as_deref(),
-                Some("recovered"),
-                "state written after recovery must round-trip across the re-open"
-            );
-        }
-        // Phase `opening_when_the_state_path_is_a_nonempty_file_preserves_and_migrates_it`.
-        // A *non-empty* file at the state path might be an old-format document, so
-        // recovery must not delete it: moved aside to a `.stale` sibling and, if a
-        // real document, migrated in — persistence comes up enabled either way.
-        {
-            let _tmp = scratch_home();
-            let pkg = "so.tilo.stale-doc";
-            let path = cli::standalone_state_dir(pkg);
-
-            // The old layout wrote a real Automerge document straight to the path.
-            let mut old = AutoCommit::new();
-            old.put(&ROOT, "note", ScalarValue::Str("from-old-layout".into()))
-                .unwrap();
-            let original = old.save();
-            fs::write(&path, &original).unwrap();
-
-            let mut store =
-                DocStore::open_for(pkg).expect("open must recover from a stale document");
-            assert!(
-                path.is_dir(),
-                "the stale document must have become a directory"
-            );
-
-            // The old bytes are preserved beside the directory, never deleted.
-            let aside = PathBuf::from({
-                let mut s = path.as_os_str().to_owned();
-                s.push(".stale");
-                s
-            });
-            assert!(
-                aside.exists(),
-                "the old document must be preserved at {}",
-                aside.display()
-            );
-            assert_eq!(
-                fs::read(&aside).unwrap(),
-                original,
-                "preserved bytes must be intact"
-            );
-
-            // And, being a genuine document, it migrated in and loads.
-            let doc = store.load_or_new();
-            assert_eq!(
-                text_of(&doc, "note").as_deref(),
-                Some("from-old-layout"),
-                "an old-format document must migrate into the recovered store"
-            );
-            let autosave = store.writer();
-            assert!(
-                autosave.is_enabled(),
-                "persistence must be enabled after migration"
-            );
         }
     }
 }
