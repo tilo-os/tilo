@@ -86,6 +86,10 @@ pub(crate) struct HostCommand {
     pub label: String,
     pub shortcut: Option<Shortcut>,
     pub enabled: bool,
+    #[cfg_attr(
+        not(target_os = "macos"),
+        allow(dead_code, reason = "only the macOS menu bar places commands so far")
+    )]
     pub group: CommandGroup,
 }
 
