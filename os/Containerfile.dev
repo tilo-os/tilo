@@ -187,7 +187,7 @@ ARG TILO_CARGO_FRESHNESS=clean
 # CI's dev lane links without LTO, as its production image does; everyone else
 # keeps thin LTO.
 ARG TILO_DEV_RUST_LTO=thin
-# The shared compiler cache CI and the rcargo builder use, when its settings
+# The shared compiler cache CI and remote builders use, when its settings
 # and credentials (BuildKit or podman secrets) are passed. Without them sccache
 # keeps its local cache mount only.
 ARG SCCACHE_BUCKET=""

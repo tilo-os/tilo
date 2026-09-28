@@ -25,8 +25,7 @@ release profile, `--label` and `--application-id` override the launcher name
 and the default `so.tilo.<app>` package. Run `build-apk.sh --help` for the
 full usage.
 
-The Rust library is built with `$CARGO`, by default `rcargo` and otherwise
-`cargo`; the Java classes are compiled with `javac` and packed with the SDK's
+The Rust library is built with `$CARGO` (default `cargo`); the Java classes are compiled with `javac` and packed with the SDK's
 build tools. [DEVELOPMENT.md](../DEVELOPMENT.md#android-app-host) lists what
 each needs. The APK requires API 29 and Vulkan 1.1
 (`AndroidManifest.xml.in`).

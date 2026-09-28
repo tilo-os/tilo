@@ -5,8 +5,8 @@
 #       [--label LABEL] [--application-id ID]
 #
 # ABI is arm64-v8a or x86_64 (default: both). The app's Rust library is its
-# `<app>-android` cdylib example (see `ui::android_main!`), built with `rcargo`
-# (or `$CARGO`). The Java side is TiloActivity alone, compiled against the
+# `<app>-android` cdylib example (see `ui::android_main!`), built with `$CARGO`
+# (default `cargo`). The Java side is TiloActivity alone, compiled against the
 # pinned platform and packed with the pinned build-tools; no Gradle.
 #
 # Output: target/android/<app>/<profile>/<app>.apk, signed with a debug key
@@ -65,8 +65,7 @@ android_jar="$sdk/platforms/$PLATFORM/android.jar"
 command -v javac >/dev/null || die "javac (JDK 17 or newer) is not on PATH"
 command -v zip >/dev/null || die "zip is not on PATH"
 
-cargo=${CARGO:-rcargo}
-command -v "$cargo" >/dev/null || cargo=cargo
+cargo=${CARGO:-cargo}
 
 # The NDK's llvm-strip, for dropping DWARF from debug libraries (the symbol
 # table stays, so backtraces still name functions).
