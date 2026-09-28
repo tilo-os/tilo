@@ -282,6 +282,16 @@ impl Action for FeedsAction {
     fn locus(&self) -> ExecutionLocus {
         ExecutionLocus::ClientLocal
     }
+
+    /// Whether an article was read is state about it, not a change to it.
+    fn change_kind(&self) -> tilo_actions::ChangeKind {
+        match self {
+            FeedsAction::MarkRead { .. } | FeedsAction::MarkAllRead { .. } => {
+                tilo_actions::ChangeKind::Housekeeping
+            }
+            _ => tilo_actions::ChangeKind::Content,
+        }
+    }
 }
 
 fn parse_opt_id(s: &str) -> Option<Id> {
