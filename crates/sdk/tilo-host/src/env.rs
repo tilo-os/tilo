@@ -22,9 +22,13 @@ pub fn legacy_name(name: &str) -> Option<String> {
 /// `std::env::var_os(name)`, falling back to the legacy `QUICK_UI_*` name.
 #[must_use]
 pub fn var_os(name: &str) -> Option<OsString> {
-    std::env::var_os(name).or_else(|| {
+    lookup(name, |key| std::env::var_os(key))
+}
+
+fn lookup(name: &str, read: impl Fn(&str) -> Option<OsString>) -> Option<OsString> {
+    read(name).or_else(|| {
         let legacy = legacy_name(name)?;
-        let value = std::env::var_os(&legacy)?;
+        let value = read(&legacy)?;
         warn_once(&legacy, name);
         Some(value)
     })
@@ -43,7 +47,7 @@ pub fn var(name: &str) -> Result<String, VarError> {
     }
 }
 
-fn warn_once(legacy: &str, name: &str) {
+fn warn_once(legacy: &str, name: &str) -> bool {
     static WARNED: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
     let first = WARNED
         .lock()
@@ -53,6 +57,7 @@ fn warn_once(legacy: &str, name: &str) {
         tracing::warn!("{legacy} is deprecated; set {name} instead");
         eprintln!("warning: {legacy} is deprecated; set {name} instead");
     }
+    first
 }
 
 #[cfg(test)]
@@ -66,6 +71,42 @@ mod tests {
             Some("QUICK_UI_SCREENSHOT_DIR")
         );
         assert_eq!(legacy_name("TILO_PROFILE"), None);
+    }
+
+    fn environment(
+        pairs: &'static [(&'static str, &'static str)],
+    ) -> impl Fn(&str) -> Option<OsString> {
+        move |key| {
+            pairs
+                .iter()
+                .find(|(name, _)| *name == key)
+                .map(|(_, value)| OsString::from(value))
+        }
+    }
+
+    #[test]
+    fn the_new_name_wins_and_the_old_one_is_a_fallback() {
+        let both = environment(&[
+            ("TILO_UI_TEST_LOOKUP_BOTH", "new"),
+            ("QUICK_UI_TEST_LOOKUP_BOTH", "old"),
+        ]);
+        assert_eq!(
+            lookup("TILO_UI_TEST_LOOKUP_BOTH", &both),
+            Some("new".into())
+        );
+        let old = environment(&[("QUICK_UI_TEST_LOOKUP_OLD", "old")]);
+        assert_eq!(lookup("TILO_UI_TEST_LOOKUP_OLD", &old), Some("old".into()));
+        assert_eq!(lookup("TILO_PROFILE_TEST_LOOKUP", &old), None);
+    }
+
+    #[test]
+    fn each_old_name_warns_once() {
+        assert!(warn_once("QUICK_UI_TEST_WARN", "TILO_UI_TEST_WARN"));
+        assert!(!warn_once("QUICK_UI_TEST_WARN", "TILO_UI_TEST_WARN"));
+        assert!(warn_once(
+            "QUICK_UI_TEST_WARN_OTHER",
+            "TILO_UI_TEST_WARN_OTHER"
+        ));
     }
 
     #[test]
