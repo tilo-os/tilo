@@ -808,6 +808,29 @@ fn grant_user_home_to_file_manager(chrome: &Chrome, package_id: &str) {
     }
 }
 
+/// The person at this machine opening `package_id` in the active workspace
+/// grants it authorship of the space when they may change it, so it opens
+/// as an author rather than a viewer. See
+/// [`crate::shell::state::WorkspaceTree::grant_app_authorship`].
+fn grant_opener_authorship(chrome: &Chrome, package_id: &str) {
+    let granted = {
+        let st = chrome.borrow_mut();
+        let mut tree = st.tree_mut();
+        let Some((id, room)) = tree
+            .desktop
+            .active_workspace()
+            .map(|workspace| (workspace.id, workspace.room))
+        else {
+            return;
+        };
+        let person = crate::shell::state::local_user_id_for_room(&room);
+        tree.grant_app_authorship(id, &person, package_id).is_some()
+    };
+    if granted {
+        chrome.borrow_mut().bump();
+    }
+}
+
 /// [`grant_user_home_to_file_manager`] against a tree, for launches that
 /// don't come from the palette (also reached from
 /// [`crate::shell::peer_windows`]). Returns whether a grant was added, so a
@@ -944,6 +967,7 @@ fn launch_resolved_installed_app(
     let package_id = app.package_id.as_str();
     let display_name = app.display_name.as_str();
     grant_user_home_to_file_manager(chrome, package_id);
+    grant_opener_authorship(chrome, package_id);
     // If the room already has this app open, focus it rather than starting
     // a second copy. See `peer_windows::opened_for_the_room`.
     let already = {

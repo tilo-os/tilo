@@ -584,7 +584,10 @@ fn answer_snapshot(
 
 /// Which recorded document an app's route in the replay room stands for:
 /// the one already bound to it, else the recorded route of the same app and
-/// record, else the only recorded route of that app.
+/// record, else the only recorded route of that app of the same shape. A
+/// room route (no record, carrying the room index) stands only for a
+/// recorded room route and a record route only for a record route: an app
+/// joins its room route too, and that must not take the record it shows.
 fn resolve(routes: &[RouteDoc], live: &CrdtRoute) -> Option<usize> {
     if let Some(index) = routes
         .iter()
@@ -592,7 +595,11 @@ fn resolve(routes: &[RouteDoc], live: &CrdtRoute) -> Option<usize> {
     {
         return Some(index);
     }
-    let unbound = |route: &&RouteDoc| route.recorded.app_id == live.app_id && route.live.is_none();
+    let unbound = |route: &&RouteDoc| {
+        route.recorded.app_id == live.app_id
+            && route.live.is_none()
+            && route.recorded.record_id.is_empty() == live.record_id.is_empty()
+    };
     if let Some(index) = routes
         .iter()
         .position(|route| unbound(&route) && route.recorded.record_id == live.record_id)
@@ -843,6 +850,35 @@ mod tests {
     use super::*;
     use crate::shell::participant_keys::Participant;
     use crate::shell::participant_keys::tests::{Fixture, replay};
+
+    /// An app joins its room route and the record route it shows. Whichever
+    /// asks first, the recorded record goes to the record route, even when
+    /// the replayed record's id differs from the recorded one.
+    #[test]
+    fn a_recorded_record_stands_for_the_record_route_not_the_room_route() {
+        let doc = |record: &str| RouteDoc {
+            recorded: Route::new("so.tilo.notes", "recorded-room", record),
+            start: Vec::new(),
+            doc: AutoCommit::new(),
+            live: None,
+            seq: 0,
+        };
+        let live = |record: &str| CrdtRoute {
+            app_id: "so.tilo.notes".into(),
+            cluster_id: "replay-room".into(),
+            record_id: record.into(),
+        };
+        let routes = vec![doc("derived:default-notebook")];
+        assert_eq!(resolve(&routes, &live("")), None, "the room route");
+        assert_eq!(resolve(&routes, &live("derived:default-notebook")), Some(0));
+        assert_eq!(
+            resolve(&routes, &live("uuid:another")),
+            Some(0),
+            "the only recorded record stands for the record route"
+        );
+        let with_room = vec![doc("derived:default-notebook"), doc("")];
+        assert_eq!(resolve(&with_room, &live("")), Some(1));
+    }
 
     /// What the peer says in an encrypted replay room is sealed for the
     /// route's channel, and a member of the room opens it to exactly the

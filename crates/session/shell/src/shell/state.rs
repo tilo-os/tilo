@@ -3307,6 +3307,48 @@ impl WorkspaceTree {
         Some(stored.id)
     }
 
+    /// Record `person` granting `app` authorship of `workspace_id`'s space,
+    /// as a person who may change the workspace does by opening an app in
+    /// it: the launcher runs an app with no such grant as a viewer. Stored
+    /// once; [`Self::grant_in_workspace`] checks `person`'s own authority,
+    /// so anyone who may not write grants nothing and the app opens as a
+    /// viewer. Returns the grant when one was recorded now.
+    pub fn grant_app_authorship(
+        &mut self,
+        workspace_id: WorkspaceId,
+        person: &UserId,
+        app: &str,
+    ) -> Option<CapOverride> {
+        let workspace = self
+            .desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.id == workspace_id)?;
+        if WorkspaceExt::allows(
+            workspace,
+            &workspace.actor_for_app(app),
+            &ResourceRef::Workspace,
+            Verb::Write,
+        ) {
+            return None;
+        }
+        let grant = CapOverride::grant(Subject::app(app), Scope::Workspace, Verb::Write);
+        let recorded = self.grant_in_workspace(workspace_id, person, grant)?;
+        self.desktop.external_revision = self.desktop.external_revision.wrapping_add(1);
+        self.flush_to_disk();
+        self.desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.id == workspace_id)
+            .and_then(|workspace| {
+                workspace
+                    .capabilities
+                    .iter()
+                    .find(|capability| capability.id == recorded)
+            })
+            .cloned()
+    }
+
     /// Admit an agent to `workspace_id` as `person`'s delegate on this device,
     /// with no administrator's grant: `cap` must name an agent, cover the
     /// room, and ask no more than `person`'s own role allows, and the room
