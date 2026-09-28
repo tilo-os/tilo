@@ -16,8 +16,8 @@ use tilo_relay_protocol::Envelope;
 use tilo_relay_protocol::auth::{self, AuthError, Hello, HelloAck2};
 use tilo_relay_protocol::certify::CertifyReply;
 use tilo_relay_protocol::web::{
-    API_PREFIX, AgentLiveGrantRequest, EventsPage, EventsRequest, LiveGrant, MAX_POLL_MS,
-    SessionChallenge, SessionFinish, SessionGrant,
+    API_PREFIX, AgentLiveGrantRequest, EventsPage, EventsRequest, FEATURE_RESUME, LiveGrant,
+    MAX_POLL_MS, SessionChallenge, SessionFinish, decode_grant,
 };
 use tilo_user_identity::{CertificationRequest, DeviceCert, RevocationList};
 use tokio::sync::{mpsc, watch};
@@ -64,14 +64,22 @@ async fn call<T: serde::de::DeserializeOwned>(
     session: Option<&str>,
     body: Vec<u8>,
 ) -> Result<T, LinkError> {
+    let bytes = call_raw(client, route, session, body).await?;
+    postcard::from_bytes(&bytes).map_err(|error| LinkError::Malformed(error.to_string()))
+}
+
+async fn call_raw(
+    client: &dyn HttpClient,
+    route: &str,
+    session: Option<&str>,
+    body: Vec<u8>,
+) -> Result<Vec<u8>, LinkError> {
     let (status, bytes) = client
         .post(&path(route), session, body)
         .await
         .map_err(LinkError::Unavailable)?;
     match status {
-        200 => {
-            postcard::from_bytes(&bytes).map_err(|error| LinkError::Malformed(error.to_string()))
-        }
+        200 => Ok(bytes),
         401 | 403 => Err(LinkError::Refused(
             String::from_utf8_lossy(&bytes).into_owned(),
         )),
@@ -154,6 +162,7 @@ pub struct HttpsLink {
     session: String,
     client: Arc<dyn HttpClient>,
     end: watch::Sender<bool>,
+    features: u64,
 }
 
 impl HttpsLink {
@@ -197,18 +206,21 @@ impl HttpsLink {
             .sign(auth::challenge_digest(&challenge.ack.server_nonce).to_vec())
             .await
             .map_err(|error| LinkError::Sign(error.0))?;
-        let grant: SessionGrant = call(
-            client.as_ref(),
-            "/session/finish",
-            None,
-            encode(&SessionFinish {
-                handshake: challenge.handshake,
-                ack2: HelloAck2 {
-                    sig_over_server_nonce,
-                },
-            })?,
+        let (grant, features) = decode_grant(
+            &call_raw(
+                client.as_ref(),
+                "/session/finish",
+                None,
+                encode(&SessionFinish {
+                    handshake: challenge.handshake,
+                    ack2: HelloAck2 {
+                        sig_over_server_nonce,
+                    },
+                })?,
+            )
+            .await?,
         )
-        .await?;
+        .map_err(|error| LinkError::Malformed(error.to_string()))?;
         let session = hex::encode(grant.token);
         let (outbound, outgoing) = mpsc::unbounded_channel();
         let (incoming, inbound) = mpsc::channel(1024);
@@ -232,7 +244,14 @@ impl HttpsLink {
             session,
             client,
             end,
+            features,
         })
+    }
+
+    /// Whether the host resumes subscriptions from positions
+    /// (`Envelope::SubscribeFrom`).
+    pub fn resumable(&self) -> bool {
+        self.features & FEATURE_RESUME != 0
     }
 
     /// Queue one envelope for the host, in order.

@@ -266,22 +266,33 @@ impl ReplayHandle {
     }
 }
 impl State {
+    #[cfg(test)]
     pub(crate) fn capture_replay(
         &mut self,
         authority: &Arc<Authority>,
     ) -> Result<Step<ReplayHandle>, StoreError> {
-        self.capture_replay_at(authority, false)
+        self.capture_replay_at(authority, false, None)
+    }
+    /// A replay that leaves out the retained frames the resuming device
+    /// already holds.
+    pub(crate) fn capture_resumed_replay(
+        &mut self,
+        authority: &Arc<Authority>,
+        skip: Option<crate::store::replay::ResumeSkip>,
+    ) -> Result<Step<ReplayHandle>, StoreError> {
+        self.capture_replay_at(authority, false, skip)
     }
     pub(crate) fn capture_pending_replay(
         &mut self,
         authority: &Arc<Authority>,
     ) -> Result<Step<ReplayHandle>, StoreError> {
-        self.capture_replay_at(authority, true)
+        self.capture_replay_at(authority, true, None)
     }
     fn capture_replay_at(
         &mut self,
         authority: &Arc<Authority>,
         pending_only: bool,
+        skip: Option<crate::store::replay::ResumeSkip>,
     ) -> Result<Step<ReplayHandle>, StoreError> {
         #[cfg(test)]
         if pending_only {
@@ -327,6 +338,7 @@ impl State {
             } else {
                 self.store
                     .start_replay_capture(authority.id, authority.device)
+                    .map(|build| build.skipping(skip))
             };
             // Register even a failed start so its known reserved root is reclaimed.
             self.replays.entries.insert(

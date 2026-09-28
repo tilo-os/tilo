@@ -122,7 +122,9 @@ fn state_in_scope(scope: &InteractiveWorkspaceScope, envelope: &Envelope) -> boo
         | Envelope::LiveJoin { workspace_id }
         | Envelope::LiveLeave { workspace_id }
         | Envelope::Live { workspace_id, .. }
-        | Envelope::LiveMember { workspace_id, .. } => *workspace_id == scope.workspace_id,
+        | Envelope::LiveMember { workspace_id, .. }
+        | Envelope::SubscribeFrom { workspace_id, .. }
+        | Envelope::Position { workspace_id, .. } => *workspace_id == scope.workspace_id,
         Envelope::Ping | Envelope::Pong => true,
         Envelope::PeerRelayHello { .. } => false,
     }

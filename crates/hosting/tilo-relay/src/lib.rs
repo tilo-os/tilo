@@ -95,6 +95,7 @@ pub mod metrics;
 pub mod peer;
 #[cfg(not(target_arch = "wasm32"))]
 mod persistence;
+pub mod position;
 mod session_carrier;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod store;

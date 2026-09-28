@@ -521,10 +521,15 @@ async fn route(
         }
         "/session/finish" => {
             let finish: SessionFinish = decode(&bytes)?;
-            sessions
+            let grant = sessions
                 .finish(&finish.handshake, &finish.ack2)
-                .map(|grant| encoded(&grant))
-                .map_err(|error| session_status(&error))
+                .map_err(|error| session_status(&error))?;
+            Ok(
+                match protocol::encode_grant(&grant, protocol::FEATURE_RESUME) {
+                    Ok(bytes) => reply(StatusCode::OK, bytes),
+                    Err(_) => reply(StatusCode::INTERNAL_SERVER_ERROR, Vec::new()),
+                },
+            )
         }
         "/send" => {
             let session = authed()?;

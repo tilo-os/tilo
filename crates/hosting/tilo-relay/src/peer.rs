@@ -228,6 +228,9 @@ pub struct PeerContext {
     pub live_bridge: Option<LiveBridge>,
     /// Agent devices this host was told about, see [`AgentRegistry`].
     pub agents: AgentRegistry,
+    /// Mints and checks resumable subscribers' positions; `None` refuses
+    /// resumption, and a `SubscribeFrom` replays everything.
+    pub positions: Option<crate::position::PositionIssuer>,
 }
 
 /// Receives every validated live frame: workspace, stamped sender, frame.
@@ -291,6 +294,64 @@ struct SessionCtx<'a> {
     revocations: &'a Arc<std::sync::RwLock<tilo_user_identity::RevocationList>>,
     live_bridge: Option<&'a LiveBridge>,
     agents: &'a AgentRegistry,
+    positions: Option<crate::position::PositionIssuer>,
+    /// This connection's resume log per resumed workspace.
+    resumes: &'a std::sync::Mutex<HashMap<u64, ResumeLog>>,
+}
+
+/// What a resuming subscriber has received: the frames this connection wrote
+/// to it are appended to its resume log, and a [`Envelope::Position`] naming
+/// the log's length follows them.
+struct ResumeLog {
+    store: crate::store::WorkspaceStore,
+    issuer: crate::position::PositionIssuer,
+    device: [u8; 32],
+    generation: [u8; 16],
+    resume: crate::position::Resume,
+}
+
+impl ResumeLog {
+    /// Record `frames` as delivered; returns the position covering them.
+    fn record<'f>(&mut self, frames: impl IntoIterator<Item = &'f Envelope>) -> Envelope {
+        let digests: Vec<[u8; 32]> = frames
+            .into_iter()
+            .filter(|frame| matches!(frame, Envelope::Delta { .. }))
+            .filter_map(crate::store::resume::frame_digest)
+            .collect();
+        if !digests.is_empty() {
+            match self
+                .store
+                .append_resume(&self.device, &self.resume.log, &digests)
+            {
+                Ok(()) => {
+                    self.resume.len = self.resume.len.saturating_add(digests.len() as u64);
+                }
+                // A position never covers what the log did not record; the
+                // device replays those frames once more on its next resume.
+                Err(error) => tracing::warn!(%error, "resume log append failed"),
+            }
+        }
+        self.issuer.envelope(
+            self.store.workspace_id(),
+            self.device,
+            self.generation,
+            self.resume,
+        )
+    }
+}
+
+/// Record frames written to `workspace_id` in its resume log, if it has one,
+/// and return the position to write after them.
+fn resume_record<'f>(
+    session: &SessionCtx<'_>,
+    workspace_id: u64,
+    frames: impl IntoIterator<Item = &'f Envelope>,
+) -> Option<Envelope> {
+    let mut resumes = session
+        .resumes
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    resumes.get_mut(&workspace_id).map(|log| log.record(frames))
 }
 
 /// Run one peer connection until the wire closes.
@@ -399,7 +460,9 @@ where
         app_serving,
         live_bridge,
         agents,
+        positions,
     } = ctx;
+    let resumes = std::sync::Mutex::new(HashMap::new());
 
     // Outbound channel — every workspace runtime this peer is
     // subscribed to writes into it; we drain to the wire.
@@ -434,6 +497,8 @@ where
         revocations: &revocations,
         live_bridge: live_bridge.as_ref(),
         agents: &agents,
+        positions,
+        resumes: &resumes,
     };
 
     // A clean EOF is only one of the ways this ends: a write to a
@@ -475,9 +540,13 @@ where
                         prefix_budgets.push(Some(budget));
                     }
                     let env = prefix.remove(0);
-                    let replaying = matches!(env, Envelope::Subscribe { .. });
+                    let replaying = matches!(
+                        env,
+                        Envelope::Subscribe { .. } | Envelope::SubscribeFrom { .. }
+                    );
                     let blocked_room = match &env {
                         Envelope::Subscribe { workspace_id }
+                        | Envelope::SubscribeFrom { workspace_id, .. }
                         | Envelope::Unsubscribe { workspace_id } => Some(*workspace_id),
                         _ => None,
                     };
@@ -755,7 +824,9 @@ impl Drop for ConnectionLease {
 fn control_room(frame: &EnvelopeV2) -> Option<u64> {
     match frame {
         EnvelopeV2::State(
-            Envelope::Subscribe { workspace_id } | Envelope::Unsubscribe { workspace_id },
+            Envelope::Subscribe { workspace_id }
+            | Envelope::SubscribeFrom { workspace_id, .. }
+            | Envelope::Unsubscribe { workspace_id },
         ) => Some(*workspace_id),
         EnvelopeV2::EnableActions { room }
         | EnvelopeV2::EnableBrokerClient { room }
@@ -1103,6 +1174,9 @@ async fn finish_replay_write<W: tokio::io::AsyncWrite + Unpin>(
                                 frame, session.v2,
                             )?)
                             .await?;
+                        // The position follows after `Ready`; a reconnect
+                        // before it replays these frames once more.
+                        let _ = resume_record(session, workspace_id, [frame]);
                         frames.pop_written();
                     }
                     written = Some(WrittenBatch(frames.number));
@@ -1235,6 +1309,15 @@ async fn finish_replay_write<W: tokio::io::AsyncWrite + Unpin>(
                 &reply, session.v2,
             )?)
             .await?;
+        if let Envelope::Ready { workspace_id, .. } = &reply
+            && let Some(position) = resume_record(session, *workspace_id, [])
+        {
+            write
+                .write_all(&tilo_delivery_protocol::transport_v2::encode_state(
+                    &position, session.v2,
+                )?)
+                .await?;
+        }
         if let Some((catchup, workspace, source, ticket)) = completed_replay {
             complete_replay_ready(&workspace, &source, &ticket.authority, &catchup).await?;
         }
@@ -1546,7 +1629,10 @@ async fn handle_inbound_frame<W>(
 where
     W: tokio::io::AsyncWrite + Unpin,
 {
-    let replaying = matches!(env, Envelope::Subscribe { .. });
+    let replaying = matches!(
+        env,
+        Envelope::Subscribe { .. } | Envelope::SubscribeFrom { .. }
+    );
     let mut ticket = None;
     let reply = handle_envelope(peer, env, session, subscribed, &mut ticket).await?;
     let pending = std::sync::atomic::AtomicUsize::new(usize::from(replaying));
@@ -1575,7 +1661,29 @@ async fn handle_envelope(
 ) -> Result<Option<Envelope>, PeerError> {
     match env {
         Envelope::Subscribe { workspace_id } => {
-            handle_subscribe(peer, session, subscribed, replay, workspace_id).await
+            handle_subscribe(
+                peer,
+                session,
+                subscribed,
+                replay,
+                workspace_id,
+                Subscription::Whole,
+            )
+            .await
+        }
+        Envelope::SubscribeFrom {
+            workspace_id,
+            position,
+        } => {
+            handle_subscribe(
+                peer,
+                session,
+                subscribed,
+                replay,
+                workspace_id,
+                Subscription::From(position),
+            )
+            .await
         }
         Envelope::Unsubscribe { workspace_id } => {
             handle_unsubscribe(peer, session, subscribed, workspace_id).await
@@ -1629,7 +1737,8 @@ async fn handle_envelope(
         | Envelope::RemoteActionUndeliverable { .. }
         | Envelope::Committed { .. }
         | Envelope::CommitRefused { .. }
-        | Envelope::LiveMember { .. } => Ok(None),
+        | Envelope::LiveMember { .. }
+        | Envelope::Position { .. } => Ok(None),
     }
 }
 
@@ -1637,6 +1746,83 @@ async fn handle_envelope(
 enum SubscribeReplayCompletion {
     Ready(ReplayHandle),
     Superseded,
+}
+
+/// How a subscription asks for its replay.
+enum Subscription {
+    /// `Subscribe`: everything, with no positions.
+    Whole,
+    /// `SubscribeFrom`: what the device has not received since the position.
+    From(Option<Vec<u8>>),
+}
+
+/// Set up this subscription's resume log. A plain `Subscribe` has none. A
+/// `SubscribeFrom` with a position this host issued to this device for this
+/// store continues that log and returns the retained frames the device holds,
+/// which its replay leaves out; any other `SubscribeFrom` starts a new log
+/// and replays everything.
+async fn open_resume(
+    session: &SessionCtx<'_>,
+    peer: &AuthenticatedPeer,
+    workspace_id: u64,
+    store: crate::store::WorkspaceStore,
+    resume: Subscription,
+) -> Result<Option<crate::store::replay::ResumeSkip>, PeerError> {
+    let (Subscription::From(position), Some(issuer)) = (resume, session.positions) else {
+        session
+            .resumes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&workspace_id);
+        return Ok(None);
+    };
+    let device = peer.device_public_key;
+    let opened = tokio::task::spawn_blocking(move || {
+        let generation = store.generation()?;
+        let held = match position
+            .as_deref()
+            .and_then(|position| issuer.verify(position, workspace_id, &device, &generation))
+        {
+            Some(resume) => store
+                .load_resume(&device, &resume.log, resume.len)?
+                .filter(|_| {
+                    store
+                        .truncate_resume(&device, &resume.log, resume.len)
+                        .unwrap_or(false)
+                })
+                .map(|held| (resume, held)),
+            None => None,
+        };
+        let (resume, skip) = match held {
+            Some((resume, held)) => (resume, Some(Arc::new(held))),
+            None => (
+                crate::position::Resume {
+                    log: store.start_resume(&device)?,
+                    len: 0,
+                },
+                None,
+            ),
+        };
+        Ok::<_, crate::store::StoreError>((
+            ResumeLog {
+                store,
+                issuer,
+                device,
+                generation,
+                resume,
+            },
+            skip,
+        ))
+    })
+    .await
+    .map_err(|error| PeerError::Io(std::io::Error::other(error)))??;
+    let (log, skip) = opened;
+    session
+        .resumes
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(workspace_id, log);
+    Ok(skip)
 }
 
 /// Handle `Subscribe`: gate on membership (or admit, for a
@@ -1656,6 +1842,7 @@ async fn handle_subscribe(
     subscribed: &mut Vec<u64>,
     replay: &mut Option<(u64, ReplayTicket, ReplayHandle, Arc<ReplayCatchup>)>,
     workspace_id: u64,
+    resume: Subscription,
 ) -> Result<Option<Envelope>, PeerError> {
     if let Err(reason) = agent_admits(session.agents, &peer.device_public_key, workspace_id) {
         return Ok(Some(Envelope::NotAuthorised {
@@ -1721,7 +1908,9 @@ async fn handle_subscribe(
         .subscribers
         .get(&peer.device_public_key)
         .map(|sub| sub.tx.clone());
+    let store = wr.store.clone();
     drop(wr);
+    let skip = open_resume(session, peer, workspace_id, store, resume).await?;
     let owner = crate::persistence::handle(&ws).await;
     let source = StateSource::new(peer, session);
     let state_tx = session
@@ -1741,7 +1930,7 @@ async fn handle_subscribe(
             1,
             async { Ok(()) },
             move |state, _| {
-                let step = state.capture_replay(&capture)?;
+                let step = state.capture_resumed_replay(&capture, skip.clone())?;
                 match step {
                     Step::More => Ok(Step::More),
                     Step::Done(handle) => Ok(Step::Done(SubscribeReplayCompletion::Ready(handle))),
@@ -4589,6 +4778,13 @@ async fn write_state_delivery<W: tokio::io::AsyncWrite + Unpin>(
             session.v2,
         )?)
         .await?;
+    if let Some(position) = resume_record(session, *workspace_id, [&*delivery.envelope]) {
+        write
+            .write_all(&tilo_delivery_protocol::transport_v2::encode_state(
+                &position, session.v2,
+            )?)
+            .await?;
+    }
     if let Some(path) = &delivery.cleanup {
         let path = path.clone();
         // Enqueue is never receipt. Exact cleanup is admitted only after the
@@ -4738,6 +4934,7 @@ async fn handle_commit(
         signature: [0; 64],
     };
     let author = source.clone();
+    let authored = delta.clone();
     let admitted = Box::pin(enqueue_state_inner(
         &ws,
         delta,
@@ -4747,6 +4944,10 @@ async fn handle_commit(
         false,
     ))
     .await?;
+    // The author holds what it committed; a resume never replays it to it.
+    if let Some(position) = resume_record(session, workspace_id, [&authored]) {
+        let _ = session.outbound.try_send(position);
+    }
     // Acknowledged once durable, at the host order it was published in: an
     // earlier acknowledgement could name a change a restart then lost, and a
     // separately taken order could disagree with what members receive.
@@ -6938,6 +7139,7 @@ mod private_transport_tests {
                 metrics,
                 live_bridge: None,
                 agents: crate::peer::AgentRegistry::default(),
+                positions: None,
             },
             true,
             false,
@@ -7925,6 +8127,7 @@ mod private_transport_tests {
                 metrics: Arc::new(crate::metrics::Metrics::default()),
                 live_bridge: None,
                 agents: crate::peer::AgentRegistry::default(),
+                positions: None,
             };
             tasks.push(tokio::spawn(run_peer_stream(
                 peer.clone(),
@@ -8266,6 +8469,7 @@ mod private_transport_tests {
                     metrics: Arc::new(crate::metrics::Metrics::default()),
                     live_bridge: None,
                     agents: crate::peer::AgentRegistry::default(),
+                    positions: None,
                 },
                 true,
                 false,
@@ -8552,6 +8756,8 @@ mod private_transport_tests {
             revocations: &revocations,
             live_bridge: None,
             agents: Box::leak(Box::default()),
+            positions: None,
+            resumes: Box::leak(Box::default()),
         };
         let (mut broken, reader) = tokio::io::duplex(1);
         drop(reader);
@@ -8770,6 +8976,8 @@ mod private_transport_tests {
             revocations: &revocations,
             live_bridge: None,
             agents: Box::leak(Box::default()),
+            positions: None,
+            resumes: Box::leak(Box::default()),
         };
         let receiver = SessionCtx {
             outbound: &btx,
@@ -8893,6 +9101,8 @@ mod private_transport_tests {
             revocations: &revocations,
             live_bridge: None,
             agents: Box::leak(Box::default()),
+            positions: None,
+            resumes: Box::leak(Box::default()),
         };
         let receiver = SessionCtx {
             outbound: &btx,
@@ -9032,6 +9242,8 @@ mod private_transport_tests {
             revocations: &revocations,
             live_bridge: None,
             agents: Box::leak(Box::default()),
+            positions: None,
+            resumes: Box::leak(Box::default()),
         };
         assert!(matches!(
             handle_private(EnvelopeV2::EnableActions { room }, &source, &source_session)
@@ -9248,6 +9460,8 @@ mod private_transport_tests {
             revocations: &revocations,
             live_bridge: None,
             agents: Box::leak(Box::default()),
+            positions: None,
+            resumes: Box::leak(Box::default()),
         };
         let receiver = SessionCtx {
             outbound: &btx,
@@ -9711,6 +9925,8 @@ mod private_transport_tests {
             revocations: &revocations,
             live_bridge: None,
             agents: Box::leak(Box::default()),
+            positions: None,
+            resumes: Box::leak(Box::default()),
         };
         // The browser sends a SyncReq as presence.
         handle_presence(
