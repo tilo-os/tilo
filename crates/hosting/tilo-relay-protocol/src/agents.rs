@@ -143,10 +143,6 @@ impl AgentDelegation {
     /// # Errors
     ///
     /// Returns [`DelegationError::Invalid`] for out-of-bounds fields.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each field of the signed statement is its own argument"
-    )]
     pub fn sign(
         root: &SigningKey,
         agent_device_public_key: [u8; 32],
