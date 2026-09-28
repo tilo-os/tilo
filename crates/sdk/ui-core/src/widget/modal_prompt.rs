@@ -20,7 +20,6 @@
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Vec2};
@@ -252,6 +251,7 @@ impl Widget for PromptBody {
 mod tests {
     use super::*;
     use crate::widget::ModalDialog;
+    use automerge::AutoCommit;
     use vello::kurbo::Point;
     use winit::event::{DeviceId, ElementState, KeyEvent, MouseButton};
     use winit::keyboard::{Key, KeyLocation, NamedKey, PhysicalKey};

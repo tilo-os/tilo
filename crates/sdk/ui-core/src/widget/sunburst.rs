@@ -9,7 +9,6 @@ use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 use std::f64::consts::{FRAC_PI_2, TAU};
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Point, Rect, RoundedRect, Stroke};

@@ -26,7 +26,6 @@
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use taffy::{Dimension, Display, NodeId, Size, Style, TaffyTree};
 use threshold_identity::{DkgSession, EnrolmentRound1, ThresholdIdentity};
@@ -1003,6 +1002,7 @@ impl Widget for PairDeviceScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::AutoCommit;
 
     #[test]
     fn pair_code_parsing_and_payload_validation() {

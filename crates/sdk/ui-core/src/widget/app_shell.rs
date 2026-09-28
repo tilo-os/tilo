@@ -16,7 +16,6 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::{auto, length, percent};
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
@@ -1064,6 +1063,7 @@ impl Widget for AppShell {
 mod tests {
     use super::*;
     use crate::widget::{Text, TextInput};
+    use automerge::AutoCommit;
     use vello::kurbo::Affine;
     use vello_encoding::DrawTag;
 

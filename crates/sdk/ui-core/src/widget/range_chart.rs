@@ -6,7 +6,6 @@
 )]
 
 use crate::widget::{AppModel, ModelPath};
-use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;

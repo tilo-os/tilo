@@ -10,7 +10,6 @@
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Stroke};
@@ -630,6 +629,7 @@ impl Widget for NativeView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::AutoCommit;
     use std::cell::RefCell;
     use std::rc::Rc;
 

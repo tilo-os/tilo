@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId};
+use automerge::AutoCommit;
 use taffy::prelude::*;
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};

@@ -17,7 +17,6 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
@@ -1036,6 +1035,7 @@ mod tests {
     use super::*;
     use crate::command::new_sink;
     use crate::favorites;
+    use automerge::AutoCommit;
     use std::path::Path;
 
     fn lay_out(sb: &mut PlacesSidebar) -> (TaffyTree<()>, NodeId) {

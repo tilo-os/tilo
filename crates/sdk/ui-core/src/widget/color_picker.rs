@@ -29,7 +29,6 @@ use crate::widget::Widget;
 use crate::widget::{AppModel, ModelPath};
 use crate::widget::{Button, ButtonFace, ColorSwatchFace};
 use crate::widget::{TextInput, TextInputKind};
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
@@ -1429,6 +1428,7 @@ fn parse_hex(s: &str) -> Option<Color> {
 mod tests {
     use super::*;
     use crate::theme::Theme;
+    use automerge::AutoCommit;
 
     /// Force a deterministic layout without spinning up a real taffy
     /// pass. Mirrors the SV/hue/slider arithmetic in `apply_layout`.

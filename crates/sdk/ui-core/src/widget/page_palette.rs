@@ -11,7 +11,6 @@
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, Style, TaffyTree};
 use uuid::Uuid;
 use vello::Scene;

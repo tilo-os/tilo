@@ -10,7 +10,6 @@ use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::scrollbar::{PressOutcome, ScrollMetrics, Scrollbar};
 use crate::widget::{Element, Widget};
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
@@ -1747,6 +1746,7 @@ impl Widget for Scrollable {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::AutoCommit;
 
     fn vertical(content_h: f32) -> Scrollable {
         let mut s = Scrollable::new_vertical();

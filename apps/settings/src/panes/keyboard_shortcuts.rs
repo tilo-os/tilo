@@ -8,7 +8,7 @@
 use crate::actions::{SETTINGS_ACTION_TYPE, SettingsAction, set_bool_action};
 use crate::i18n::t;
 use crate::widgets::{card, rows, setting_row};
-use automerge::{AutoCommit, ObjId, transaction::Transactable};
+use automerge::{AutoCommit, transaction::Transactable};
 use settings_store::hardware::{KeyChord, ShortcutAction, ShortcutConfig};
 use settings_store::keyboard_shortcuts::{ShortcutCategory, ShortcutEntry, catalogue};
 use std::collections::HashMap;

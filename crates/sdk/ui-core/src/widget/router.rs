@@ -5,7 +5,6 @@ use std::cell::RefCell;
 use std::collections::HashSet;
 use std::rc::Rc;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::percent;
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;

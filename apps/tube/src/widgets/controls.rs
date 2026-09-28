@@ -7,7 +7,6 @@
 use std::collections::HashMap;
 use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -227,6 +226,7 @@ impl Widget for Switch {
 mod tests {
     use super::*;
     use crate::action::{self, SettingFlag};
+    use automerge::AutoCommit;
 
     fn switch() -> Switch {
         Switch::new(

@@ -22,7 +22,6 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
@@ -2007,6 +2006,7 @@ fn draw_button(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::AutoCommit;
     use std::fs;
     use winit::event::{DeviceId, ElementState, MouseButton};
 

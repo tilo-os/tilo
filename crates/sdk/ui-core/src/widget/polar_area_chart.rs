@@ -6,7 +6,6 @@
 )]
 
 use crate::widget::{AppModel, ModelPath};
-use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
 use std::f64::consts::{FRAC_PI_2, TAU};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};

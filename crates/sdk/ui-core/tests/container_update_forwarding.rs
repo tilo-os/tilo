@@ -24,7 +24,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use tilo_ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId, ROOT};
+use automerge::{AutoCommit, ROOT};
 use taffy::{NodeId, Style, TaffyTree};
 use tilo_ui::presence::PresenceCtx;
 use tilo_ui::text_render::TextRenderer;

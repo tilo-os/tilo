@@ -20,7 +20,6 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -410,6 +409,7 @@ pub fn path_completions(input: &str, home: Option<&Path>) -> Vec<Suggestion> {
 mod tests {
     use super::*;
     use crate::command::new_sink;
+    use automerge::AutoCommit;
 
     /// Editing keeps completion and submission on one location, accepted locations preserve roots, and breadcrumb mode enters named text input.
     #[allow(

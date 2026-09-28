@@ -10,7 +10,6 @@
 
 use crate::time::Instant;
 use crate::widget::{AppModel, ModelPath};
-use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -1639,6 +1638,7 @@ impl NavShell {
 mod tests {
     use super::*;
     use crate::widget::Text;
+    use automerge::AutoCommit;
     use vello_encoding::DrawTag;
 
     /// A leaf pane that proves which retained pane received an input event.

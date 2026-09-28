@@ -1353,7 +1353,7 @@ mod cleanup_tests {
 mod bound_lifetime_tests {
     use super::*;
     use crate::widget::{AppKind, Column, Widget};
-    use automerge::ObjId;
+
     use taffy::{NodeId, TaffyTree};
     struct Root(Column);
     impl Widget for Root {
