@@ -464,6 +464,22 @@ fn channel_keys(
     }
 }
 
+/// This machine's device key and its certificate for the identity selected
+/// in `room`, while that certificate is valid, enrolled and not revoked. For
+/// the host that governs the room with the device key; apps never get it.
+///
+/// # Errors
+///
+/// Returns an error when no identity is selected in `room` or the device is
+/// not trusted for it.
+pub fn trusted_current_device(
+    room: &str,
+) -> io::Result<(ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert)> {
+    let profile = crate::registry::selected_identity_profile(room)?
+        .ok_or_else(|| io::Error::other("no identity is selected for this workspace"))?;
+    require_trusted_current_device(&profile)
+}
+
 /// Root-key operations are available only while this machine is covered by
 /// a valid, non-revoked `identity -> device` certificate. Apps never receive
 /// either key; this check makes revocation effective at the local broker too.
