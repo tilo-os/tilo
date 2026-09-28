@@ -371,7 +371,7 @@ fn color_management_protocol_negotiates_records_and_survives_unsupported_request
             .expect("survivor dispatch remains serviceable");
     }
 
-    // Phase `unsupported_windows_scrgb_new_id_does_not_panic_dispatch`.
+    // Phase `windows_scrgb_description_becomes_ready`.
     {
         let event_loop: EventLoop<'static, State> =
             EventLoop::try_new().expect("calloop event loop");
@@ -396,14 +396,32 @@ fn color_management_protocol_negotiates_records_and_survives_unsupported_request
             |state| state.color_manager_done,
             "color manager ready",
         );
+        assert!(
+            app.supported_features
+                .contains(&(Feature::WindowsScrgb as u32)),
+            "windows_scrgb feature not advertised: {:?}",
+            app.supported_features
+        );
+        assert!(
+            app.supported_transfers
+                .contains(&(TransferFunction::ExtLinear as u32)),
+            "ext_linear transfer not advertised: {:?}",
+            app.supported_transfers
+        );
         app.color_manager
             .as_ref()
             .expect("color manager")
             .create_windows_scrgb(&qh, ());
-        conn.flush().expect("flush unsupported request");
-        display
-            .dispatch_clients(&mut server_state)
-            .expect("unsupported scRGB request must not panic server dispatch");
+        conn.flush().expect("flush scRGB request");
+        pump(
+            &conn,
+            &mut event_queue,
+            &mut app,
+            &mut display,
+            &mut server_state,
+            |state| state.image_description_ready,
+            "scRGB description ready",
+        );
     }
 
     // Phase `client_attaches_bt2020_pq_image_description_and_surface_data_records_it`.

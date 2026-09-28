@@ -34,12 +34,13 @@ use vello::Scene;
 
 use paint::{
     SceneDamage, SubrectSource, copy_rgba_subrect, encode_subrect_rgba_to_xbgr2101010_transformed,
-    swizzle_subrect_rgba_to_xrgb8888_transformed,
+    swizzle_subrect_rgba_to_xrgb8888_composited,
 };
 
 use super::{Backend, BackendEvent, Output, OutputId, combined_geometry};
 use crate::compositor::frame::FramePaint;
 use crate::compositor::present::Presenter;
+use crate::shell::hdr_surface::{CpuComposite, HdrLayer};
 pub use runtime::DrmBackendError;
 use runtime::{ScanoutCommand, ScanoutEntry, SignalReport};
 
@@ -697,6 +698,7 @@ impl DrmPresenter {
             self.pointer,
             scene,
             None,
+            &[],
             Some(&mut self.phase_window),
             &mut self.direct_bypass_reported,
         );
@@ -723,6 +725,7 @@ impl DrmPresenter {
                 previous_revision: frame.previous_revision,
                 regions: frame.damage_regions.as_deref(),
             }),
+            &frame.hdr_layers,
             Some(&mut self.phase_window),
             &mut self.direct_bypass_reported,
         );
@@ -1011,6 +1014,7 @@ fn paint_scanouts(
     pointer: (f64, f64),
     scene: &Scene,
     damage: Option<SceneDamage<'_>>,
+    hdr_layers: &[HdrLayer],
     mut phase_window: Option<&mut PhaseWindow>,
     direct_bypass_reported: &mut bool,
 ) -> PaintScanoutSample {
@@ -1224,6 +1228,7 @@ fn paint_scanouts(
                             target,
                             deadline,
                             sdr_white,
+                            hdr_layers,
                         ) {
                             Ok(stats) => {
                                 targets.mark_rendered(index, revision);
@@ -1298,7 +1303,8 @@ fn paint_scanouts(
             }
         }
         // HDR without the direct path goes through the combined readback
-        // below, into 10-bit dumb buffers; everything else stays XRGB8888.
+        // below, into 10-bit dumb buffers; everything else stays XRGB8888
+        // and shows HDR layers through their tone-mapped rendition.
         if !entry.sync_hdr_readback() {
             return present_single_xrgb(
                 entry,
@@ -1321,7 +1327,15 @@ fn paint_scanouts(
     for entry in scanouts.iter_mut().filter(|entry| !entry.powered_off) {
         entry.sync_hdr_readback();
     }
-    render_combined_readback(scanouts, outputs, paint, pointer, scene, target_size)
+    render_combined_readback(
+        scanouts,
+        outputs,
+        paint,
+        pointer,
+        scene,
+        target_size,
+        hdr_layers,
+    )
 }
 
 /// Direct targets in the format the output needs now: the HDR formats in
@@ -1420,6 +1434,14 @@ fn present_single_xrgb(
 /// Render the combined scene ONCE into a tight RGBA buffer, then swizzle
 /// (or, for an HDR output, PQ-encode) each output's sub-rect into its own
 /// scanout's dumb buffer in a single pass per output.
+///
+/// While an output is driven in HDR, `hdr_layers` are composited on the CPU
+/// at full precision: into the PQ signal of HDR outputs and tone-mapped for
+/// SDR ones.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the frame, its HDR layers and the presenter state it paints are independent inputs"
+)]
 fn render_combined_readback(
     scanouts: &mut [ScanoutEntry],
     outputs: &[Output],
@@ -1427,12 +1449,24 @@ fn render_combined_readback(
     pointer: (f64, f64),
     scene: &Scene,
     target_size: (u32, u32),
+    hdr_layers: &[HdrLayer],
 ) -> PaintScanoutSample {
     let Some(bridge) = paint.as_mut() else {
         return PaintScanoutSample::default();
     };
     let bridge_started = Instant::now();
-    let rgba = match bridge.paint(scene) {
+    let composite = !hdr_layers.is_empty()
+        && scanouts
+            .iter()
+            .any(|entry| !entry.powered_off && entry.scanout.format().is_hdr());
+    let painted = if composite {
+        bridge
+            .paint_with_hdr_layers(scene, hdr_layers)
+            .map(|(rgba, second)| (rgba, Some(second)))
+    } else {
+        bridge.paint(scene).map(|rgba| (rgba, None))
+    };
+    let (rgba, second) = match painted {
         Ok(b) => b,
         Err(e) => {
             match e {
@@ -1451,8 +1485,13 @@ fn render_combined_readback(
     let bridge_us = bridge_started.elapsed().as_micros();
     let scanout_started = Instant::now();
     let (cw, ch) = (target_size.0 as usize, target_size.1 as usize);
+    let hdr = second.as_deref().map(|second| CpuComposite {
+        second,
+        scene_width: cw,
+        layers: hdr_layers,
+    });
     for e in scanouts.iter_mut().filter(|entry| !entry.powered_off) {
-        paint_one_scanout(e, outputs, rgba, cw, ch, pointer);
+        paint_one_scanout(e, outputs, rgba, cw, ch, pointer, hdr);
     }
     PaintScanoutSample {
         legacy_attempted: true,
@@ -1528,6 +1567,10 @@ fn page_flip_completion_recipients<T: Copy + Eq>(
 /// (possibly colour-transformed) sub-rect for `e`, then presents it —
 /// unchanged from the inline version, so the present call still lands at
 /// exactly the same point in the per-output iteration.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the combined frame, its extent, the pointer and the HDR composite are independent inputs"
+)]
 fn paint_one_scanout(
     e: &mut ScanoutEntry,
     outputs: &[Output],
@@ -1535,6 +1578,7 @@ fn paint_one_scanout(
     cw: usize,
     ch: usize,
     pointer: (f64, f64),
+    hdr_layers: Option<CpuComposite<'_>>,
 ) {
     let (px, py) = e.position;
     let (physical_w, physical_h) = e.scanout.size();
@@ -1585,6 +1629,7 @@ fn paint_one_scanout(
     let hdr = e.scanout.format().is_hdr();
     // An ICC profile describes the panel's SDR response; while the output
     // runs in HDR the PQ encode replaces it.
+    let copied = e.color_transform.is_some() && !hdr;
     let (source, source_w, source_h, source_x, source_y): (&[u8], usize, usize, usize, usize) =
         if let Some(transform) = e.color_transform.as_ref().filter(|_| !hdr) {
             copy_rgba_subrect(
@@ -1619,6 +1664,10 @@ fn paint_one_scanout(
         src_y: source_y,
     };
     let transform = e.transform;
+    // Scene position of the source buffer's origin: the output's own copy
+    // starts at the output, the combined frame at the scene's origin.
+    let scene_origin = if copied { (sx, sy) } else { (0, 0) };
+    let composite = hdr_layers.map(|layers| (layers, scene_origin));
     e.scanout
         .present_no_drain(local_cursor, |dst, pitch| match &encoder {
             Some(encoder) => encode_subrect_rgba_to_xbgr2101010_transformed(
@@ -1628,14 +1677,15 @@ fn paint_one_scanout(
                 (physical_w as usize, physical_h as usize),
                 transform,
                 encoder,
+                composite,
             ),
-            None => swizzle_subrect_rgba_to_xrgb8888_transformed(
+            None => swizzle_subrect_rgba_to_xrgb8888_composited(
                 subrect,
                 dst,
                 pitch,
-                physical_w as usize,
-                physical_h as usize,
+                (physical_w as usize, physical_h as usize),
                 transform,
+                composite,
             ),
         });
 }
@@ -1708,6 +1758,7 @@ impl Backend for DrmBackend {
             pointer,
             scene,
             None,
+            &[],
             None,
             &mut self.direct_bypass_reported,
         );
@@ -1730,6 +1781,7 @@ impl Backend for DrmBackend {
                 previous_revision: frame.previous_revision,
                 regions: frame.damage_regions.as_deref(),
             }),
+            &frame.hdr_layers,
             None,
             &mut self.direct_bypass_reported,
         );
