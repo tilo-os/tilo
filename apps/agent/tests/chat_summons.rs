@@ -14,12 +14,12 @@ use chat::{
     doc::ChatDoc,
     model::{AgentRoute, AgentStepOutcome, AgentWorkState},
 };
-use std::time::{Duration, Instant};
 use tilo_actions::{Action, ActionAddress};
 use tilo_agent::{Config, Session};
 use tilo_automerge::ApplyIncoming as _;
 use typed_peer::{TypedPeer, send};
 use ui::collaboration::{CollabEvent, CollabRequest, DocumentMutation};
+use ui::time::Duration;
 const CHAT: &str = "so.tilo.chat";
 const WP: &str = "so.tilo.word-processor";
 
@@ -228,7 +228,7 @@ fn scenario_outcome(
         let runner = std::thread::spawn(move || {
             let mut s = Session::connect(cfg).unwrap();
             tx.send(()).unwrap();
-            s.run_until(Instant::now() + Duration::from_secs(3))
+            s.run_until(ui::time::now() + Duration::from_secs(3))
                 .unwrap()
         });
         rx.recv_timeout(tilo_test_env::hang_bound()).unwrap();
@@ -244,8 +244,8 @@ fn scenario_outcome(
             &CollabRequest::document_snapshot(chat.save()),
         )
         .unwrap();
-        let deadline = Instant::now() + Duration::from_secs(4);
-        while Instant::now() < deadline && !runner.is_finished() {
+        let deadline = ui::time::now() + Duration::from_secs(4);
+        while ui::time::now() < deadline && !runner.is_finished() {
             if owner_online && let Some(event) = owner.recv().unwrap() {
                 match event {
                     CollabEvent::RemotePresenceUpdate {
@@ -344,7 +344,7 @@ fn scenario_outcome(
             }
         }
         let acted = runner.join().unwrap();
-        let drain = Instant::now()
+        let drain = ui::time::now()
             + if !restart && expected_reply {
                 Duration::from_secs(4)
             } else {
@@ -352,7 +352,7 @@ fn scenario_outcome(
             };
         let expected_requests = requests.max(1);
         let mut durable_reply = false;
-        while Instant::now() < drain {
+        while ui::time::now() < drain {
             if let Some(event) = chat_peer.recv().unwrap()
                 && let Some(DocumentMutation::Incremental(data)) =
                     typed_peer::document_mutation(&event)

@@ -18,7 +18,7 @@
 
 use std::io;
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use ui::time::SystemTime;
 
 /// Files larger than this are not opened as text buffers. The editor holds the
 /// whole body in the CRDT as a character-addressed `Text`, so a hundred-megabyte

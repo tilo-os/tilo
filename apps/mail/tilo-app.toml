@@ -14,6 +14,8 @@ category = "Office"
 version  = "0.1.0"
 kind     = "app"
 runtime  = "tilo-runtime/2026.07"
+platforms = ["linux", "macos"]
+platform-reason = "Speaks IMAP and SMTP over raw sockets until a host-side proxy exists."
 
 [package.isa]
 x86_64 = "v3"

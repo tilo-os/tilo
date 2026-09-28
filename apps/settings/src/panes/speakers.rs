@@ -14,7 +14,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
-use std::time::{Duration, Instant};
+use ui::time::{Duration, Instant};
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId, transaction::Transactable};
@@ -200,7 +200,7 @@ impl SpeakersPane {
             finished_rx,
             in_flight: 0,
             refreshing: false,
-            next_refresh: Instant::now(),
+            next_refresh: ui::time::now(),
             delete_armed: HashSet::new(),
             arrangement_state: ui::LocalState::new(Arrangement::Stereo.label()),
             name_state: ui::LocalState::new(t("speakers-default-name")),
@@ -263,7 +263,7 @@ impl SpeakersPane {
             self.refreshing = true;
             self.call(Purpose::Refresh, SpeakerCommand::Snapshot);
         }
-        self.next_refresh = Instant::now() + REFRESH_INTERVAL;
+        self.next_refresh = ui::time::now() + REFRESH_INTERVAL;
     }
 
     fn run(&mut self, operation: SpeakerOperation, typed: bool) {
@@ -1305,7 +1305,7 @@ impl Widget for SpeakersPane {
         self.read_controls();
         self.read_latches(state, root);
         self.sync_bound_states();
-        if Instant::now() >= self.next_refresh {
+        if ui::time::now() >= self.next_refresh {
             self.refresh();
         }
         if let Some(composed) = &mut self.composed {
@@ -1404,7 +1404,7 @@ impl Widget for SpeakersPane {
 
     fn next_wake_deadline(&self) -> Option<Instant> {
         if self.in_flight > 0 {
-            Some(Instant::now() + POLL_INTERVAL)
+            Some(ui::time::now() + POLL_INTERVAL)
         } else {
             Some(self.next_refresh)
         }
@@ -1750,8 +1750,8 @@ mod tests {
 
     /// Run sync passes until the pane has no call in flight.
     fn settle(pane: &mut SpeakersPane, doc: &mut AutoCommit) {
-        let deadline = std::time::Instant::now() + HANG_BOUND;
-        while std::time::Instant::now() < deadline {
+        let deadline = ui::time::now() + HANG_BOUND;
+        while ui::time::now() < deadline {
             pane.sync(doc, &automerge::ROOT);
             if pane.in_flight == 0 {
                 return;

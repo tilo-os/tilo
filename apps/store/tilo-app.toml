@@ -9,6 +9,8 @@ category = "System"
 version = "0.1.2"
 kind    = "app"
 runtime = "tilo-runtime/2026.07"
+platforms = ["tilo-os"]
+platform-reason = "Installs packages from the tilo-os registry."
 
 [package.isa]
 x86_64 = "v3"

@@ -40,8 +40,8 @@ collab-types = { path = "../../crates/collab/collab-types" }
 # The Tilo action model: every setting mutation is a serializable, replayable
 # `SettingsAction` the on-screen controls and the Ctrl+K palette both dispatch.
 tilo-actions = { path = "../../crates/collab/actions" }
-# The CA-certificate chooser and captive-portal sign-in go through the desktop
-# portals, never a host tool.
+# The CA-certificate chooser and captive-portal sign-in go through
+# `ui::portal`, never a host tool.
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # Shared shell-out helpers for the interactive panes (display, audio,
 # network, bluetooth). The crate lives at the workspace root so both

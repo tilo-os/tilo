@@ -40,6 +40,10 @@ pub const WORKSPACE_ROOT: &str = "/var/workspace";
 /// per-cluster sandbox allowlist a single grant rather than per-file.
 pub const MEDIA_PREFIX: &str = "media";
 
+/// Prefix of a media path naming the editor's own copy of a file imported by
+/// its contents (a browser page has no paths to store).
+pub const KEPT_PREFIX: &str = "tilo-kept";
+
 /// Whether a media reference's *content* is available locally yet. The CRDT
 /// always carries the reference (so the clip can be laid out, trimmed and
 /// drawn from metadata); the bytes are a separate, lazily-hydrated concern.

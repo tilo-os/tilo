@@ -95,27 +95,39 @@ fn list_filtered(dir: &Path, accept: fn(&str) -> bool) -> Vec<PickEntry> {
     out
 }
 
+/// Whether `dir` can be listed.
+pub fn folder_readable(dir: &Path) -> bool {
+    tilo_files::Dir::open(tilo_files::Location::Native(dir.to_path_buf()))
+        .and_then(|folder| tilo_files::blocking::list(&folder, &tilo_files::VPath::root()))
+        .is_ok()
+}
+
 fn collect(dir: &Path, depth: usize, accept: fn(&str) -> bool, out: &mut Vec<PickEntry>) {
-    let Ok(rd) = std::fs::read_dir(dir) else {
+    let Ok(folder) = tilo_files::Dir::open(tilo_files::Location::Native(dir.to_path_buf())) else {
         return;
     };
-    for entry in rd.flatten() {
+    let Ok(entries) = tilo_files::blocking::list(&folder, &tilo_files::VPath::root()) else {
+        return;
+    };
+    for entry in entries {
         if out.len() >= 200 {
             return;
         }
-        let path = entry.path();
-        let Ok(ft) = entry.file_type() else { continue };
-        if ft.is_dir() {
+        let path = dir.join(&entry.name);
+        if entry.kind == tilo_files::Kind::Dir {
             if depth > 0 {
                 collect(&path, depth - 1, accept, out);
             }
             continue;
         }
-        let name = entry.file_name().to_string_lossy().into_owned();
+        let name = entry.name;
         if !accept(&name) {
             continue;
         }
-        let size = entry.metadata().map_or(0, |m| m.len());
+        let size = tilo_files::VPath::new(&name)
+            .ok()
+            .and_then(|vpath| tilo_files::blocking::metadata(&folder, &vpath).ok())
+            .map_or(0, |meta| meta.len);
         let is_video = is_video_name(&name);
         out.push(PickEntry {
             path,

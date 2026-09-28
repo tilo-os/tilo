@@ -187,8 +187,8 @@ mod tests {
         std::env::temp_dir().join(format!(
             "tilo-video-player-preferences-{}-{}-{}.json",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
+            ui::time::wall()
+                .duration_since(ui::time::UNIX_EPOCH)
                 .expect("system clock after epoch")
                 .as_nanos(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed),

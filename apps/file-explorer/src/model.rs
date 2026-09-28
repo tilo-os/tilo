@@ -724,7 +724,7 @@ fn root_generation(root: &Path) -> String {
             hasher.update(b"metadata\\0");
             hasher.update(metadata.len().to_be_bytes());
             if let Ok(modified) = metadata.modified()
-                && let Ok(duration) = modified.duration_since(std::time::UNIX_EPOCH)
+                && let Ok(duration) = modified.duration_since(ui::time::UNIX_EPOCH)
             {
                 hasher.update(duration.as_secs().to_be_bytes());
                 hasher.update(duration.subsec_nanos().to_be_bytes());

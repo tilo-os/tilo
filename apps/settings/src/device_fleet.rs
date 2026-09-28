@@ -152,8 +152,8 @@ pub(crate) fn revoke(device: [u8; 32], reason: RevocationReason) -> io::Result<(
             "active signing identity does not match its device fleet",
         ));
     }
-    let revoked_at_ns = std::time::SystemTime::now()
-        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+    let revoked_at_ns = ui::time::wall()
+        .duration_since(ui::time::SystemTime::UNIX_EPOCH)
         .map_or(0, |duration| {
             u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
         });

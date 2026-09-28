@@ -17,6 +17,8 @@ category = "Development"
 version  = "0.1.0"
 kind     = "app"
 runtime  = "tilo-runtime/2026.07"
+platforms = ["tilo-os"]
+platform-reason = "Manages podman containers through the podman CLI; a podman-machine backend would widen it to macOS."
 
 [package.isa]
 x86_64 = "v3"

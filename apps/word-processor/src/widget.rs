@@ -1283,6 +1283,9 @@ pub struct WordProcessorWidget {
     save_status: DocumentSaveStatus,
     // Full read-only content projection, including formatting/comments/media.
     // Host undo and remote document actions need not touch the UI status enum.
+    /// Mounted on a record another participant created: until its content
+    /// arrives the document is left untouched rather than seeded.
+    joined: bool,
     saved_document: Option<serde_json::Value>,
     /// Framework-owned action dispatch: brackets the undo boundary and dispatches
     /// each action through the executor (so a test can prove parity with Ctrl+K).
@@ -1579,6 +1582,7 @@ impl WordProcessorWidget {
                 needs_commit: false,
             },
             save_status: DocumentSaveStatus::Clean,
+            joined: ui::launch::record_launch() == Some(ui::launch::RecordLaunch::Joined),
             saved_document: None,
             actions: crate::framework::ActionSink::default(),
             source: crate::framework::StateSource::default(),
@@ -3098,7 +3102,12 @@ impl WordProcessorWidget {
     /// content store and the document references them; the renderer/exporter
     /// decode them on demand.
     fn insert_image_from_path(&mut self, state: &mut AutoCommit, path: &std::path::Path) -> bool {
-        match std::fs::read(path) {
+        let file = tilo_files::file_at(path);
+        match file
+            .as_ref()
+            .map_err(Clone::clone)
+            .and_then(|(dir, name)| tilo_files::blocking::read(dir, name))
+        {
             Ok(bytes) => {
                 let hash = match self.inner.content_store().put(&bytes) {
                     Ok(hash) => hash,
@@ -3151,8 +3160,10 @@ impl WordProcessorWidget {
                 // A drop arrives as a file the toolkit spooled into our
                 // runtime dir; once the bytes live in the document the
                 // spool copy has no owner.
-                if is_dnd_spool_path(path) {
-                    let _ = std::fs::remove_file(path);
+                if is_dnd_spool_path(path)
+                    && let Ok((dir, name)) = &file
+                {
+                    let _ = tilo_files::blocking::remove(dir, name);
                 }
                 true
             }
@@ -10335,9 +10346,19 @@ impl Widget for WordProcessorWidget {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the editor binds, rebases and reconciles in one sync pass"
+    )]
     fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
         let (state, root) = ui::doc::document(state, root);
         self.expire_file_jobs();
+        if self.joined
+            && self.inner.containers.is_none()
+            && state.get(root, "schema").ok().flatten().is_none()
+        {
+            return;
+        }
         if self.canonical {
             self.inner.reconcile(state);
         } else {

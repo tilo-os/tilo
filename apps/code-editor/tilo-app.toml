@@ -21,6 +21,8 @@ category = "Development"
 version  = "0.1.0"
 kind     = "app"
 runtime  = "tilo-runtime/2026.07"
+platforms = ["linux", "macos"]
+platform-reason = "Runs language servers and build tools as processes."
 
 [package.isa]
 x86_64 = "v3"

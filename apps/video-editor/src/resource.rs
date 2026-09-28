@@ -19,7 +19,7 @@ use ui::tilo_resource::{ActionDecl, ActionRef, Doc, Invoke, ModelError, Resource
 use ui::widget::Element;
 
 use crate::actions::{VIDEO_EDITOR_ACTION_TYPE, VideoEditorAction};
-use crate::app::{EMPTY_CAPTURE, IMPORT_CAPTURE, NARROW_CAPTURE, ShotScenario};
+use crate::app::{EMPTY_CAPTURE, IMPORT_CAPTURE, ShotScenario};
 use crate::doc::VideoDoc;
 use crate::model::{Marker, Project};
 
@@ -140,11 +140,6 @@ impl ResourceApp for VideoEditor {
     }
 }
 
-const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
-/// Narrow capture viewport: below the bin's collapse breakpoint, so `--shots
-/// --narrow` shows the overlay-flap layout.
-const NARROW_SHOTS_VIEWPORT: (u32, u32) = (720, 820);
-
 /// The editor's launch: the framework's, plus the capture flags. Every mode
 /// — the live window, `--shots`, `--responsive-matrix`, `--native-audit`,
 /// `--headless` — runs the framework-hosted editor:
@@ -154,6 +149,7 @@ const NARROW_SHOTS_VIEWPORT: (u32, u32) = (720, 820);
 /// * `--empty` captures the live app on a blank project;
 /// * `--narrow` captures the collapsed media bin at a narrow width;
 /// * `--import PATH` imports a real file, places it and waits for its frame.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn launch_spec() -> ui::launch::LaunchSpec {
     ui::framework::launch_spec::<VideoEditor>()
         .capture_scenario(capture)
@@ -162,7 +158,12 @@ pub fn launch_spec() -> ui::launch::LaunchSpec {
         .allowed_options(&["--data-dir", "--import"])
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn shot_viewport(args: &ui::launch::LaunchArgs) -> (u32, u32) {
+    const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
+    /// Narrow capture viewport: below the bin's collapse breakpoint, so
+    /// `--shots --narrow` shows the overlay-flap layout.
+    const NARROW_SHOTS_VIEWPORT: (u32, u32) = (720, 820);
     if args.has("--narrow") {
         NARROW_SHOTS_VIEWPORT
     } else {
@@ -170,6 +171,7 @@ fn shot_viewport(args: &ui::launch::LaunchArgs) -> (u32, u32) {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn capture(
     harness: &mut ui::headless::FrameHarness,
     args: &ui::launch::LaunchArgs,
@@ -182,7 +184,7 @@ fn capture(
     } else if args.has("--empty") {
         Some(EMPTY_CAPTURE)
     } else if args.has("--narrow") {
-        Some(NARROW_CAPTURE)
+        Some(crate::app::NARROW_CAPTURE)
     } else {
         args.scenario.as_deref()
     };

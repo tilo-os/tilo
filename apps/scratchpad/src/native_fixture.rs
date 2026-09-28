@@ -29,7 +29,12 @@ pub struct NativeFixtureManifest {
 /// # Errors
 /// Returns directory creation, launch, action or storage errors.
 pub fn seed_native_fixture(directory: &Path) -> anyhow::Result<NativeFixtureManifest> {
-    std::fs::create_dir(directory)?;
+    let (parent, name) = tilo_files::file_at(directory)?;
+    match tilo_files::blocking::metadata(&parent, &name) {
+        Err(tilo_files::FsError::NotFound) => tilo_files::blocking::create_dir_all(&parent, &name)?,
+        Ok(_) => anyhow::bail!("{} already exists", directory.display()),
+        Err(error) => return Err(error.into()),
+    }
     let body = (0..1000).fold(String::new(), |mut body, line| {
         let _ = writeln!(
             body,

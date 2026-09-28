@@ -139,7 +139,7 @@ fn bounded_output(command: &mut std::process::Command) -> std::process::Output {
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
     let mut child = command.spawn().unwrap();
-    let start = std::time::Instant::now();
+    let start = ui::time::now();
     loop {
         if child.try_wait().unwrap().is_some() {
             return child.wait_with_output().unwrap();

@@ -22,37 +22,6 @@ use crate::model::{Source, SourceIdentity, SourceKind, TargetDrive, TargetKind, 
 const PROBE_OUTPUT_LIMIT: usize = 1024 * 1024;
 const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
-/// The platform's own file dialog for a disk image; `None` when dismissed.
-#[cfg(target_os = "macos")]
-pub(crate) fn native_image_path() -> std::io::Result<Option<std::path::PathBuf>> {
-    let script = r#"try
-set picked to choose file with prompt "Choose a Tilo or disk image"
-POSIX path of picked
-on error number -128
-return ""
-end try"#;
-    let out = Command::new("osascript").args(["-e", script]).output()?;
-    if !out.status.success() {
-        return Err(std::io::Error::other("macOS file dialog failed"));
-    }
-    let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    Ok((!path.is_empty()).then(|| std::path::PathBuf::from(path)))
-}
-
-/// The platform's own file dialog for a disk image; `None` when dismissed.
-#[cfg(target_os = "windows")]
-pub(crate) fn native_image_path() -> std::io::Result<Option<std::path::PathBuf>> {
-    let script = r#"Add-Type -AssemblyName System.Windows.Forms; $d=New-Object System.Windows.Forms.OpenFileDialog; $d.Title='Choose a Tilo or disk image'; $d.Filter='Disk images (*.iso;*.img;*.raw)|*.iso;*.img;*.raw|All files (*.*)|*.*'; if($d.ShowDialog() -eq 'OK'){[Console]::Out.Write($d.FileName)}"#;
-    let out = Command::new("powershell.exe")
-        .args(["-NoProfile", "-STA", "-Command", script])
-        .output()?;
-    if !out.status.success() {
-        return Err(std::io::Error::other("Windows file dialog failed"));
-    }
-    let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    Ok((!path.is_empty()).then(|| std::path::PathBuf::from(path)))
-}
-
 /// Enumerate candidate write targets. Returns `None` when the platform probe
 /// is unavailable or malformed, and `Some(Vec::new())` when it succeeded but
 /// found no usable disks.
@@ -769,7 +738,7 @@ mod tests {
     #[test]
     fn inspect_source_rejects_fifo_without_waiting_for_a_writer() {
         use std::os::unix::ffi::OsStrExt;
-        use std::time::{Duration, Instant};
+        use ui::time::Duration;
 
         const CHILD_FIFO: &str = "TILO_IMAGER_TEST_INSPECTION_FIFO";
         if let Some(path) = std::env::var_os(CHILD_FIFO) {
@@ -798,7 +767,7 @@ mod tests {
         let status = loop {
             match child.try_wait() {
                 Ok(Some(status)) => break Some(status),
-                Ok(None) if Instant::now() < deadline => {
+                Ok(None) if ui::time::now() < deadline => {
                     std::thread::sleep(Duration::from_millis(10));
                 }
                 _ => break None,

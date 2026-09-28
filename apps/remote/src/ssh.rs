@@ -901,8 +901,8 @@ VYO75vHKVaGSkOCr8Ui2AAAAF3Fvcy1yZW1vdGUtdGVzdC1ob3N0a2V5AQIDBAUG
 
         // Poll to Connected.
         let mut connected = false;
-        let deadline = std::time::Instant::now() + HANG_BOUND;
-        while std::time::Instant::now() < deadline {
+        let deadline = ui::time::now() + HANG_BOUND;
+        while ui::time::now() < deadline {
             match ssh.status() {
                 SessionStatus::Connected => {
                     connected = true;
@@ -916,8 +916,8 @@ VYO75vHKVaGSkOCr8Ui2AAAAF3Fvcy1yZW1vdGUtdGVzdC1ob3N0a2V5AQIDBAUG
 
         // Drain the banner into the grid.
         let mut saw_banner = false;
-        let deadline = std::time::Instant::now() + HANG_BOUND;
-        while std::time::Instant::now() < deadline {
+        let deadline = ui::time::now() + HANG_BOUND;
+        while ui::time::now() < deadline {
             ssh.pump();
             if ssh.grid().lines().iter().any(|l| {
                 l.cells
@@ -943,8 +943,8 @@ VYO75vHKVaGSkOCr8Ui2AAAAF3Fvcy1yZW1vdGUtdGVzdC1ob3N0a2V5AQIDBAUG
             "resource input is acknowledged only after the SSH channel write"
         );
         let mut saw_echo = false;
-        let deadline = std::time::Instant::now() + HANG_BOUND;
-        while std::time::Instant::now() < deadline {
+        let deadline = ui::time::now() + HANG_BOUND;
+        while ui::time::now() < deadline {
             ssh.pump();
             if ssh.grid().lines().iter().any(|l| {
                 l.cells

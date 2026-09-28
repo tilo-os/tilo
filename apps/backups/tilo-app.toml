@@ -12,6 +12,8 @@ category = "System"
 version  = "0.1.0"
 kind     = "app"
 runtime  = "tilo-runtime/2026.07"
+platforms = ["linux", "macos"]
+platform-reason = "Backs up the local file system (real paths, modes, symlinks)."
 
 [package.isa]
 x86_64 = "v3"

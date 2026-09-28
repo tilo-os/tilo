@@ -11,7 +11,6 @@
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
-use std::io::Read as _;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -71,12 +70,12 @@ fn workspace_image_fetcher(root: &std::path::Path) -> ui::Fetcher {
             return None;
         }
         let source = source.split(['?', '#']).next().unwrap_or(source);
-        let candidate = std::fs::canonicalize(base.join(source)).ok()?;
+        let candidate = crate::files::canonical(&base.join(source))?;
         if !candidate.starts_with(&canonical_root) {
             return None;
         }
-        let metadata = std::fs::metadata(&candidate).ok()?;
-        if !metadata.is_file() || metadata.len() > MAX_IMAGE_BYTES {
+        let metadata = crate::files::metadata(&candidate).ok()?;
+        if !crate::files::is_file(&metadata) || metadata.len > MAX_IMAGE_BYTES {
             return None;
         }
         std::fs::read(candidate).ok()
@@ -482,14 +481,9 @@ fn write_portable_markdown_export_scoped(
 
 fn read_image_asset(source: &std::path::Path) -> Result<(Vec<u8>, &'static str), String> {
     const MAX_IMAGE_BYTES: u64 = crate::notebook::MAX_ASSET_BYTES as u64;
-    let file = std::fs::File::open(source).map_err(|error| error.to_string())?;
-    let mut bytes = Vec::new();
-    file.take(MAX_IMAGE_BYTES.saturating_add(1))
-        .read_to_end(&mut bytes)
-        .map_err(|error| error.to_string())?;
-    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_IMAGE_BYTES {
-        return Err("Image is larger than 1 MiB".into());
-    }
+    let bytes = crate::files::read_bounded(source, MAX_IMAGE_BYTES)
+        .map_err(|error| error.to_string())?
+        .ok_or("Image is larger than 1 MiB")?;
     let extension = if bytes.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]) {
         "png"
     } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
@@ -535,14 +529,9 @@ fn load_image(
 }
 
 fn read_bounded_markdown(path: &std::path::Path) -> Result<String, String> {
-    let file = std::fs::File::open(path).map_err(|error| error.to_string())?;
-    let mut bytes = Vec::new();
-    file.take(MAX_MARKDOWN_IMPORT_BYTES.saturating_add(1))
-        .read_to_end(&mut bytes)
-        .map_err(|error| error.to_string())?;
-    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_MARKDOWN_IMPORT_BYTES {
-        return Err("Markdown file is larger than 1 MiB".into());
-    }
+    let bytes = crate::files::read_bounded(path, MAX_MARKDOWN_IMPORT_BYTES)
+        .map_err(|error| error.to_string())?
+        .ok_or("Markdown file is larger than 1 MiB")?;
     let body = String::from_utf8(bytes).map_err(|_| "Markdown file is not UTF-8".to_string())?;
     if crate::markdown::parse(&body).len() > MAX_MARKDOWN_IMPORT_BLOCKS {
         return Err("Markdown file contains more than 10,000 blocks".into());
@@ -572,7 +561,7 @@ pub struct NotesApp {
     /// the editor spans to the window bottom.
     status_bubble: ui::StatusBubble,
     transfer_toasts: ui::widget::toast::ToastStack,
-    last_toast_tick: ui::clock::Instant,
+    last_toast_tick: ui::time::Instant,
     /// `--shots` forces the bubble fully visible so a still frame captures it.
     shots_status: bool,
     /// Shot-only override for the real save progress/failure presentation.
@@ -614,7 +603,7 @@ pub struct NotesApp {
     canonical_asset_manifest: Vec<(String, String)>,
     /// Some referenced image's bytes are still on their way from a
     /// collaborator's device; retried at most once a second.
-    canonical_assets_waiting: Option<ui::clock::Instant>,
+    canonical_assets_waiting: Option<ui::time::Instant>,
     /// Whether this instance already offered to move inline images into the
     /// content store.
     inline_assets_offered: bool,
@@ -635,7 +624,7 @@ pub struct NotesApp {
     /// takes seconds, and measuring from spawn would let a late joiner's
     /// grace lapse before its first sync, making it seed its own welcome
     /// instead of adopting an existing peer's.
-    started: ui::clock::Instant,
+    started: ui::time::Instant,
     /// Whether the first `sync` has run (which (re)bases `started`).
     synced_once: bool,
     /// True once we've taken on shared document state — either by
@@ -880,7 +869,7 @@ impl NotesApp {
         main.set_image_store(Some(canonical_image_store(&canonical_assets, None)));
         let mut app = Self::build_widget(workspace, sidebar, main, None);
         app.canonical_assets = canonical_assets;
-        app.canonical_assets_waiting = waiting.then(ui::clock::Instant::now);
+        app.canonical_assets_waiting = waiting.then(ui::time::Instant::now);
         app.canonical_asset_manifest = crate::notebook::asset_manifest(doc)?;
         app.main = app.main.project_canonical(doc, &app.workspace)?;
         app.bound_page = app.workspace.selected();
@@ -941,7 +930,7 @@ impl NotesApp {
             status: StatusModel::new(),
             status_bubble: ui::StatusBubble::new(),
             transfer_toasts: ui::widget::toast::ToastStack::new().with_max(3),
-            last_toast_tick: ui::clock::Instant::now(),
+            last_toast_tick: ui::time::now(),
             shots_status: false,
             shots_save_status: None,
             shortcuts: ShortcutsOverlay::new(),
@@ -968,7 +957,7 @@ impl NotesApp {
             import_control_emitted: false,
             pending_events: Vec::new(),
             last_mouse: Point::ZERO,
-            started: ui::clock::Instant::now(),
+            started: ui::time::now(),
             synced_once: false,
             adopted: canonical,
             seeded: canonical,
@@ -1067,7 +1056,7 @@ impl NotesApp {
         // Counts stay live when revealed, but each new word must not restart
         // a decorative animation while the user is concentrating on writing.
         if announce {
-            self.status_bubble.poke(ui::clock::Instant::now());
+            self.status_bubble.poke(ui::time::now());
         }
     }
 
@@ -1075,7 +1064,7 @@ impl NotesApp {
     /// frame captures the floating chip.
     pub fn arm_status_bubble_for_shots(&mut self) {
         self.shots_status = true;
-        self.status_bubble.poke(ui::clock::Instant::now());
+        self.status_bubble.poke(ui::time::now());
     }
 
     /// `--shots`: capture an actual save-state presentation deterministically,
@@ -1107,7 +1096,7 @@ impl NotesApp {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let now = ui::clock::Instant::now();
+        let now = ui::time::now();
         // On a phone the full page/word summary becomes a wide obstruction.
         // Keep the transient edge affordance to the actionable save state;
         // wider layouts retain the richer summary.
@@ -1619,7 +1608,7 @@ impl NotesApp {
         // Base the seed-grace window on the first sync (collab is live by
         // now), not spawn — see `started`'s doc comment.
         if !self.synced_once {
-            self.started = ui::clock::Instant::now();
+            self.started = ui::time::now();
             self.synced_once = true;
         }
         // Apply local deletions through their canonical action BEFORE reading
@@ -1949,9 +1938,9 @@ impl NotesApp {
     /// seeds immediately (tests can't wait 800 ms of wall-clock).
     #[doc(hidden)]
     pub fn bypass_seed_grace_for_test(&mut self) {
-        self.started = ui::clock::Instant::now()
+        self.started = ui::time::now()
             .checked_sub(SEED_GRACE + Duration::from_secs(1))
-            .unwrap_or_else(ui::clock::Instant::now);
+            .unwrap_or_else(ui::time::Instant::now);
         // Mark first-sync as done so `sync` doesn't re-base `started`
         // back to "now" and undo the bypass.
         self.synced_once = true;
@@ -3018,7 +3007,8 @@ impl NotesApp {
                 ui::portal::PortalOutcome::Opened(path),
             ) => {
                 let completion = self.markdown_job.begin();
-                std::thread::spawn(move || {
+                let target = path.clone();
+                let spawned = ui::rt::spawn_thread("notes-markdown-export", move || {
                     let result = write_portable_markdown_export_scoped(
                         asset_root.as_deref(),
                         &canonical_assets,
@@ -3028,6 +3018,14 @@ impl NotesApp {
                     );
                     completion.complete(MarkdownJobResult::Exported { path, result });
                 });
+                if let Err(error) = spawned {
+                    self.markdown_job
+                        .begin()
+                        .complete(MarkdownJobResult::Exported {
+                            path: target,
+                            result: Err(format!("could not start the export: {error}")),
+                        });
+                }
             }
             (MarkdownTransfer::Import, ui::portal::PortalOutcome::Opened(path)) => {
                 let completion = self.markdown_job.begin();
@@ -3035,7 +3033,8 @@ impl NotesApp {
                     .legacy_fixture_storage
                     .as_ref()
                     .map(|legacy| legacy.root.clone());
-                std::thread::spawn(move || {
+                let source = path.clone();
+                let spawned = ui::rt::spawn_thread("notes-markdown-import", move || {
                     let result = (|| {
                         let body = file_effect(scope.as_ref(), || read_bounded_markdown(&path))??;
                         if let Some(root) = root {
@@ -3047,6 +3046,14 @@ impl NotesApp {
                     })();
                     completion.complete(MarkdownJobResult::Imported { path, result });
                 });
+                if let Err(error) = spawned {
+                    self.markdown_job
+                        .begin()
+                        .complete(MarkdownJobResult::Imported {
+                            path: source,
+                            result: Err(format!("could not start the import: {error}")),
+                        });
+                }
             }
             (MarkdownTransfer::InsertImage { page }, ui::portal::PortalOutcome::Opened(path)) => {
                 let completion = self.markdown_job.begin();
@@ -3512,7 +3519,7 @@ impl NotesApp {
             *assets = snapshot;
         }
         self.canonical_asset_manifest = manifest;
-        self.canonical_assets_waiting = waiting.then(ui::clock::Instant::now);
+        self.canonical_assets_waiting = waiting.then(ui::time::Instant::now);
         if arrived && retry {
             // The image store remembers a failed load; a fresh store draws the
             // images that were placeholders while their bytes were on the way.
@@ -4679,7 +4686,7 @@ impl Widget for NotesApp {
         // Transient floating status bubble (bottom-right), in place of the
         // old permanent bottom status strip.
         self.draw_status_bubble(scene, transform, text_renderer, theme);
-        let now = ui::clock::Instant::now();
+        let now = ui::time::now();
         self.transfer_toasts
             .tick(now.saturating_duration_since(self.last_toast_tick));
         self.last_toast_tick = now;
@@ -4704,7 +4711,7 @@ impl Widget for NotesApp {
         // Keep frames coming only while the floating status bubble is lingering
         // / fading, so it hides itself without needing a stray pointer event.
         // Idle otherwise (no idle redraw spin).
-        (!self.motion_reduced && self.status_bubble.needs_frame(ui::clock::Instant::now()))
+        (!self.motion_reduced && self.status_bubble.needs_frame(ui::time::now()))
             || !self.transfer_toasts.is_empty()
             || (self.pending_markdown_source.is_some() && !self.import_control_emitted)
     }
@@ -6494,7 +6501,7 @@ mod tests {
                 .set_blocks(vec![ui::widget::Block::paragraph("One two three")]);
             app.refresh_status();
             assert_eq!(app.status.state().word_count, Some(3));
-            assert!(!app.status_bubble.is_visible(std::time::Instant::now()));
+            assert!(!app.status_bubble.is_visible(ui::time::now()));
 
             app.shots_save_status = Some(SaveStatus::Failed);
             app.refresh_status();
@@ -6508,11 +6515,11 @@ mod tests {
             );
             assert!(
                 app.status_bubble
-                    .is_visible(std::time::Instant::now() + std::time::Duration::from_secs(60)),
+                    .is_visible(ui::time::now() + std::time::Duration::from_secs(60)),
                 "an unresolved save failure must not fade out"
             );
             assert!(
-                !app.status_bubble.needs_frame(std::time::Instant::now()),
+                !app.status_bubble.needs_frame(ui::time::now()),
                 "persistent status must not cause an idle redraw loop"
             );
         }
@@ -6590,7 +6597,7 @@ mod tests {
                 if let Some(status) = child.try_wait().unwrap() {
                     break status;
                 }
-                if std::time::Instant::now() >= deadline {
+                if ui::time::now() >= deadline {
                     child.kill().unwrap();
                     child.wait().unwrap();
                     panic!("isolated clipboard regression timed out");

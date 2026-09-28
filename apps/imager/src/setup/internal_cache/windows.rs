@@ -1135,8 +1135,8 @@ mod native {
     }
     fn generated() -> Result<String> {
         static COUNTER: AtomicU64 = AtomicU64::new(0);
-        let ticks = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        let ticks = ui::time::wall()
+            .duration_since(ui::time::UNIX_EPOCH)
             .map_err(|e| e.to_string())?
             .as_nanos();
         let mut h = Sha256::new();

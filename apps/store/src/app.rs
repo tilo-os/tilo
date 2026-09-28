@@ -3626,7 +3626,7 @@ impl StoreApp {
     /// same information in the catalogue surface and never overlay a card.
     pub fn arm_status_bubble_for_shots(&mut self) {
         self.shots_status = true;
-        self.status_bubble.poke(std::time::Instant::now());
+        self.status_bubble.poke(ui::time::now());
     }
 
     /// The pill's type: the theme's small step, handed to the renderer once
@@ -3720,7 +3720,7 @@ impl StoreApp {
         {
             return;
         }
-        let now = std::time::Instant::now();
+        let now = ui::time::now();
         let label = self.footer_label();
         if label != self.last_status_label {
             self.last_status_label.clone_from(&label);
@@ -4170,7 +4170,7 @@ impl Widget for StoreApp {
             .is_some_and(|r| r.needs_animation_frame())
             || (!self.compact_layout()
                 && !self.reduce_motion
-                && self.status_bubble.needs_frame(std::time::Instant::now()))
+                && self.status_bubble.needs_frame(ui::time::now()))
             || self
                 .images
                 .as_ref()

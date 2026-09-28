@@ -14,6 +14,8 @@ category = "System"
 version  = "0.1.0"
 kind     = "app"
 runtime  = "tilo-runtime/2026.07"
+platforms = ["tilo-os"]
+platform-reason = "Reads the systemd journal; a unified-log backend would widen it to macOS."
 
 [package.isa]
 x86_64 = "v3"
