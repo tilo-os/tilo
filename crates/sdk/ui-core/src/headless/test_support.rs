@@ -25,8 +25,7 @@ pub fn unversioned_driver(
     root: Box<dyn Widget>,
     viewport: (u32, u32),
 ) -> Driver {
-    let definition = root
-        .document_history_definition()
+    let definition = crate::history_mode::capability::document_history_definition(root.as_ref())
         .expect("the root declares framework History");
     let scope = &definition.scopes[0];
     let HistoryPresentation::External { reason } = scope.presentation else {

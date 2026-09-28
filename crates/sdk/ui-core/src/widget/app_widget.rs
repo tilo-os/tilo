@@ -549,7 +549,8 @@ mod component_adapter {
             dyn crate::collaboration::participants::Participants,
             dyn crate::undo::CommittedActions,
             dyn crate::undo::UndoControl,
-            dyn crate::undo::LocalUndo
+            dyn crate::undo::LocalUndo,
+            dyn crate::history_mode::capability::DocumentHistory
         );
 
         // A component's diagnostic probe observes its own record, the
@@ -900,18 +901,6 @@ mod component_adapter {
                 .root
                 .as_deref_mut()
                 .map_or_else(Vec::new, |root| vec![root as &mut dyn Widget])
-        }
-        fn history_restore_readiness(&self, scope: &str) -> Result<(), String> {
-            let binding = self.component.callback_binding();
-            let _entry = binding
-                .enter()
-                .map_err(|error| format!("Component is unavailable: {error:?}"))?;
-            let root = self
-                .component
-                .root
-                .as_deref()
-                .ok_or("Component root is unavailable")?;
-            root.history_restore_readiness(scope)
         }
         fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
             let binding = self.component.callback_binding();
@@ -1815,6 +1804,21 @@ mod component_adapter {
                 return;
             };
             root.draw_overlay(scene, transform, text_renderer, theme, presence);
+        }
+    }
+
+    impl crate::history_mode::capability::DocumentHistory for BoundAppWidget {
+        fn history_restore_readiness(&self, scope: &str) -> Result<(), String> {
+            let binding = self.component.callback_binding();
+            let _entry = binding
+                .enter()
+                .map_err(|error| format!("Component is unavailable: {error:?}"))?;
+            let root = self
+                .component
+                .root
+                .as_deref()
+                .ok_or("Component root is unavailable")?;
+            crate::history_mode::capability::history_restore_readiness(root, scope)
         }
     }
 

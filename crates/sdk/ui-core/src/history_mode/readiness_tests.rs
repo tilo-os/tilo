@@ -17,6 +17,8 @@ impl DraftRoot {
     }
 }
 impl Widget for DraftRoot {
+    crate::provides!(dyn crate::history_mode::capability::DocumentHistory);
+
     crate::testing::delegate_widget_methods!(
         inner: sync,
         build_layout,
@@ -25,6 +27,9 @@ impl Widget for DraftRoot {
         get_rect
     );
     crate::testing::inert_widget_methods!(name = "draft-root");
+}
+
+impl crate::history_mode::capability::DocumentHistory for DraftRoot {
     fn history_restore_readiness(&self, scope: &str) -> Result<(), String> {
         assert_eq!(scope, "document");
         self.calls.set(self.calls.get() + 1);
@@ -154,19 +159,27 @@ fn readiness_component_adapter_forwards_only_its_own_root_and_refuses_unavailabl
     let calls = Rc::new(Cell::new(0));
     let (_host, owned) = component(pending.clone(), calls.clone(), 182);
     let mut adapter = BoundAppWidget { component: owned };
-    assert!(adapter.history_restore_readiness("document").is_err());
+    assert!(
+        crate::history_mode::capability::history_restore_readiness(&adapter, "document").is_err()
+    );
     let other_calls = Rc::new(Cell::new(0));
     let (_other, other) = component(Rc::new(Cell::new(false)), other_calls.clone(), 183);
     let other = BoundAppWidget { component: other };
-    assert!(other.history_restore_readiness("document").is_ok());
+    assert!(crate::history_mode::capability::history_restore_readiness(&other, "document").is_ok());
     assert_eq!(calls.get(), 1);
     assert_eq!(other_calls.get(), 1);
     pending.set(false);
-    assert!(adapter.history_restore_readiness("document").is_ok());
+    assert!(
+        crate::history_mode::capability::history_restore_readiness(&adapter, "document").is_ok()
+    );
     adapter.component.root = None;
-    assert!(adapter.history_restore_readiness("document").is_err());
+    assert!(
+        crate::history_mode::capability::history_restore_readiness(&adapter, "document").is_err()
+    );
     adapter.component.close();
-    assert!(adapter.history_restore_readiness("document").is_err());
+    assert!(
+        crate::history_mode::capability::history_restore_readiness(&adapter, "document").is_err()
+    );
     assert_eq!(calls.get(), 2);
 }
 #[test]

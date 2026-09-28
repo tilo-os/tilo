@@ -2465,9 +2465,7 @@ impl LogsApp {
 }
 
 impl Widget for LogsApp {
-    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
-        Some(&crate::framework_history::HISTORY)
-    }
+    ui::provides!(dyn ui::history_mode::capability::DocumentHistory);
 
     fn measure(
         &mut self,
@@ -2884,6 +2882,12 @@ impl Widget for LogsApp {
         // Keep pumping frames while the push slide eases into place, or
         // while live tail is on.
         self.push.is_animating() || (self.allow_live && self.live_tail) || self.export_rx.is_some()
+    }
+}
+
+impl ui::history_mode::capability::DocumentHistory for LogsApp {
+    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
+        Some(&crate::framework_history::HISTORY)
     }
 }
 

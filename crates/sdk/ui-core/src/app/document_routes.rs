@@ -267,8 +267,10 @@ impl App {
         // Such omissions cannot serve as proof that every live owner was queued.
         let mut current = vec![];
         collect(self.root_widget.as_ref(), &mut current);
-        self.root_widget
-            .visit_framework_history(&mut |_, live| collect(live, &mut current));
+        crate::history_mode::capability::visit_framework_history(
+            self.root_widget.as_ref(),
+            &mut |_, live| collect(live, &mut current),
+        );
         if current.is_empty() {
             return Ok(());
         }
