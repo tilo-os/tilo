@@ -21,6 +21,7 @@ path = "src/lib.rs"
 
 [features]
 test-support = []
+web = ["dep:tilo-moq", "dep:hyper", "dep:hyper-util", "dep:http-body", "dep:http-body-util", "dep:tokio-rustls", "dep:rustls", "dep:bytes"]
 
 [[bin]]
 name = "tilo-relay"
@@ -127,6 +128,19 @@ tracing.workspace = true
 sd-notify.workspace = true
 workspace-hack = { version = "0.1" }
 
+# Browser carriers (feature `web`): HTTPS for the durable plane and device
+# certification, WebTransport + moq-lite for the live plane. quinn (under
+# web-transport-quinn) is a second QUIC stack next to iroh's noq, so only
+# hosts that serve browsers link it.
+tilo-moq = { path = "../tilo-moq", features = ["relay"], optional = true }
+hyper = { version = "1", features = ["server", "http1", "http2"], optional = true }
+hyper-util = { version = "0.1", features = ["tokio", "server-auto"], optional = true }
+http-body = { version = "1", optional = true }
+http-body-util = { version = "0.1", optional = true }
+tokio-rustls = { workspace = true, optional = true }
+rustls = { workspace = true, optional = true }
+bytes = { workspace = true, optional = true }
+
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 bounded-command = { path = "../../system/bounded-command" }
 launcher = { path = "../../packaging/launcher" }
@@ -165,7 +179,6 @@ word-processor = { path = "../../../apps/word-processor" }
 qdoc = { path = "../../doc/qdoc" }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
-tilo-browser-runtime = { path = "../../browser/tilo-browser-runtime" }
 iroh-relay = { version = "1.0.3", features = ["server"] }
 tempfile.workspace = true
 tilo-test-env = { path = "../../dev/test-env" }
