@@ -1162,6 +1162,7 @@ fn peer_mounts_and_rejected_deltas_keep_owners_and_the_empty_cta() {
             a.relayout();
             a.expect(
                 &ui::headless::SemanticExpectation::named("notes.first_note")
+                    .semantic_target("notes.first_note")
                     .role(ui::a11y::Role::Button)
                     .name("New note"),
             )
