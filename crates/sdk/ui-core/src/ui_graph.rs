@@ -1509,26 +1509,6 @@ impl Widget for LiveUi {
             .map(|output| Some(crate::widget::ResourceOperationStart::Completed(output)))
     }
 
-    /// Legacy adapter: apps not yet on [`Widget::start_operation`] still reach
-    /// the live graph through their read-only routing.
-    fn invoke_resource_operation_v2(
-        &mut self,
-        kind: crate::tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<crate::tilo_actions::ActionOutput>, String> {
-        if type_id.starts_with(LIVE_GRAPH_OPERATION) {
-            if kind == crate::tilo_actions::OperationKind::Document {
-                return Ok(None);
-            }
-            return self.invoke_graph_operation(type_id, payload).map(Some);
-        }
-        self.child
-            .invoke_resource_operation_v2(kind, type_id, payload, doc, path)
-    }
-
     fn draw_with_presence(
         &mut self,
         scene: &mut Scene,

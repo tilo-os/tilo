@@ -19,6 +19,7 @@ on:
       - "os/tests/staging_helper_loop.sh"
       - "os/tests/staging_reclaim_loop.sh"
       - ".forgejo/workflows/staging-loop.yml"
+      - ".forgejo/workflows/resolve-builder.yml"
   push:
     branches: ["main"]
     paths:
@@ -30,6 +31,7 @@ on:
       - "os/tests/staging_helper_loop.sh"
       - "os/tests/staging_reclaim_loop.sh"
       - ".forgejo/workflows/staging-loop.yml"
+      - ".forgejo/workflows/resolve-builder.yml"
   workflow_dispatch:
 
 concurrency:
@@ -46,20 +48,8 @@ env:
   FALLBACK_AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_AWS_SECRET_ACCESS_KEY }}
 jobs:
   builder:
-    runs-on: runner-quality
-    timeout-minutes: 5
-    container:
-      image: registry.tilo.so/tilo/ci-control@sha256:cc33624d156302fa0c62c065b9babf1d18c6d3103116ff9b0ecf4e0f316d9ce5
-    outputs:
-      image: ${{ steps.resolve.outputs.image }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
-      - name: Resolve the CI builder
-        id: resolve
-        run: python3 tools/ci/resolve_builder.py
+    uses: ./.forgejo/workflows/resolve-builder.yml
+    secrets: inherit
 
   loop:
     needs: [builder]

@@ -2011,18 +2011,15 @@ COPY --chmod=0755 \
     os/usr/libexec/tilo-session \
     os/usr/libexec/tilo-security-audit \
     /usr/libexec/
-# User units: the graphical-session target; the user unit that read-only
-# verifies the identity after tilo-session's first-login ceremony, `--global`
-# enabled further down (`systemctl --global enable` resolves the unit file at
+# User units: the graphical-session target and the opt-in peer-sync user
+# service. (`systemctl --global enable` further down resolves each unit file at
 # build time, so a unit that was never copied in fails the build outright with
-# "does not exist" — which is what a unit whose ExecStart is wrong looks like
-# too); and the opt-in peer-sync user service. Peer sync is NOT enabled by
+# "does not exist".) Peer sync is NOT enabled by
 # default — users opt in via `systemctl --user enable shell-peer-sync` or by
 # picking the "Tilo (peer-sync)" session entry at the greetd prompt. See
 # /usr/share/doc/tilo/peer-sync.md for the privacy / discovery trade-off.
 COPY \
     os/usr/lib/systemd/user/tilo-graphical-session.target \
-    os/usr/lib/systemd/user/tilo-identity.service \
     os/usr/lib/systemd/user/shell-peer-sync.service \
     /usr/lib/systemd/user/
 
@@ -2385,7 +2382,6 @@ RUN systemctl enable greetd.service && \
     systemctl enable tilo-system-extension-dispatcher.socket && \
     systemctl enable tilo-system-extension-boot-pack-status.timer && \
     systemctl enable tilo-system-extension-boot-pack-stage.path && \
-    systemctl --global enable tilo-identity.service && \
     systemctl --global enable tilo-models.socket && \
     systemctl --global enable tilo-model-gateway.socket && \
     systemctl --global enable tilo-app-host.socket && \
@@ -2547,6 +2543,9 @@ RUN --mount=type=bind,from=public-trust-tools,source=/usr/bin/openssl,target=/ru
 # crypt, systemd-cryptsetup, tpm2-tss and clevis modules.
 ARG TILO_HARDWARE_PROFILE=generic
 ARG TILO_TARGET_IMGREF=
+# The Lenovo profile needs the Adreno SQE firmware from Fedora's qcom-firmware
+# RPM. Keep it in the frozen ARM package set, but install it only in that image.
+# tilo-rpm-snapshot-package[aarch64]: qcom-firmware
 RUN --mount=type=bind,from=rpms,source=/repo,target=/frozen-repo \
     --mount=type=bind,from=kernel-rpms,source=/repo,target=/qkernel-repo \
     --mount=type=bind,source=os/hardware/firmware,target=/run/tilo-hardware-firmware \
@@ -2559,6 +2558,9 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/frozen-repo \
         > /etc/tilo-swap.d/frozen.repo; \
     printf '[tilo-kernel]\nname=tilo-kernel\nbaseurl=file:///qkernel-repo\ngpgcheck=0\nenabled=1\n' \
         > /etc/tilo-swap.d/tilo-kernel.repo; \
+    if [ "$TILO_HARDWARE_PROFILE" = lenovo-83ed ]; then \
+        dnf install -y --setopt=reposdir=/etc/tilo-swap.d qcom-firmware; \
+    fi; \
     # --allowerasing lets the swap drop the base's `kernel` meta-package
     # (it hard-requires kernel-core-uname-r = <exact-fedora-version>,
     # which our tilo-kernel-core doesn't satisfy since it carries a
