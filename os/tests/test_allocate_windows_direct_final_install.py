@@ -144,6 +144,25 @@ class AllocateTests(unittest.TestCase):
                 if count == 3:
                     realized = allocate.complete_plan(request, added)
                     self.assertEqual(realized, plan)
+            # Get-Partition renumbers WinRE by offset as partitions are inserted
+            # before it; its GUID, type, and extent remain unchanged.
+            for count in (1, 2, 3):
+                renumbered = json.loads(json.dumps(request["preserve_partitions"] + final[:count]))
+                renumbered[3]["number"] = 4 + count
+                for index, row in enumerate(renumbered[4:], start=4):
+                    row["number"] = index
+                snapshot = {"partitions": renumbered, **plan["windows_disk"]}
+                state, added = allocate.classify(request, snapshot)
+                self.assertEqual(state, "complete" if count == 3 else f"partial-{count}")
+                self.assertEqual(len(added), count)
+            changed_winre = json.loads(json.dumps(snapshot))
+            changed_winre["partitions"][3]["size_bytes"] += MIB
+            with self.assertRaisesRegex(ValueError, "preserved Windows"):
+                allocate.classify(request, changed_winre)
+            duplicate_number = json.loads(json.dumps(snapshot))
+            duplicate_number["partitions"][3]["number"] = 3
+            with self.assertRaisesRegex(ValueError, "partition numbers are not unique"):
+                allocate.classify(request, duplicate_number)
             altered = json.loads(json.dumps(after_shrink))
             altered["partitions"][0]["partuuid"] = str(uuid.UUID(int=201))
             with self.assertRaisesRegex(ValueError, "preserved Windows"):
