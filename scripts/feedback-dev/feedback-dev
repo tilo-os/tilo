@@ -676,6 +676,9 @@ def package_apps(rebuild: bool) -> Apps:
         say(f"packaging apps/{app} from this worktree (built by rcargo)")
         out.parent.mkdir(parents=True, exist_ok=True)
         stamp.unlink(missing_ok=True)
+        # Only the runtime this packaging bakes is installed beside the app,
+        # not every one an earlier packaging left behind.
+        shutil.rmtree(APPS / "runtime", ignore_errors=True)
         log = APPS / f"{app}.log"
         with open(log, "wb") as output:
             # Thin, against a runtime bundle baked from this same build — the
@@ -1042,9 +1045,13 @@ def app_actions(name: str, query: str) -> list[dict]:
     return [row for row in rows if row.get("provider") == "app-actions"]
 
 
-def chat_action(name: str, resource: str, action: str, query: str) -> dict | None:
+def chat_action(name: str, resource: str, action: str, query: str,
+                room: str | None = None) -> dict | None:
+    """`action` on `resource` as a Chat offers it — the Chat in `room`, when
+    one is named."""
     for row in app_actions(name, query):
-        if row.get("resource") == resource and row["id"].endswith("\x1f" + action):
+        if (row.get("resource") == resource and row["id"].endswith("\x1f" + action)
+                and (room is None or row.get("room") == room)):
             return row
     return None
 
@@ -1080,9 +1087,9 @@ def ensure_chat(name: str, room: str, where: str = "the community room") -> None
     raise Fix(f"Chat did not start in the {name} shell", f"grep so.tilo.chat {session_dir(name) / 'log'}")
 
 
-def invoke_chat(name: str, resource: str, action: str, query: str) -> None:
+def invoke_chat(name: str, resource: str, action: str, query: str, room: str | None = None) -> None:
     for _ in range(180):
-        row = chat_action(name, resource, action, query)
+        row = chat_action(name, resource, action, query, room)
         if row:
             answer(name, {"op": "actions_invoke", "provider": row["provider"], "id": row["id"], "args": {}})
             return
@@ -1265,7 +1272,16 @@ def send_recording(name: str, text: str) -> None:
     activate_room(name, home)
     shell_action(name, "feedback.recent-buffer.set", {"enabled": True})
     ensure_chat(name, home, "their own workspace")
-    invoke_chat(name, "chat.channel:c_general", "open", "general")
+    # The buffer keeps what happens in the rooms the Recorder holds: the
+    # active one, once it has joined it.
+    for _ in range(60):
+        if home in state_dump(name).get("chrome", {}).get("feedback", {}).get("rooms", []):
+            break
+        time.sleep(1.0)
+    else:
+        raise Fix(f"the Recorder never joined the {name}'s own workspace",
+                  f"feedback-dev ctl {name} -- feedback status")
+    invoke_chat(name, "chat.channel:c_general", "open", "open", home)
     time.sleep(2.0)
     shell_action(name, "remark.open")
     until_remark(name, "opening on the app in front", lambda state: state.get("context"))
