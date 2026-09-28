@@ -56,6 +56,7 @@ jobs:
     uses: ./.forgejo/workflows/applicability.yml
     with:
       workflow: .forgejo/workflows/package-desktop.yml
+      event: ${{ github.event_name }}
 
   validate:
     needs: applicability

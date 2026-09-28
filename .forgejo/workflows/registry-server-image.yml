@@ -52,6 +52,7 @@ jobs:
     uses: ./.forgejo/workflows/applicability.yml
     with:
       workflow: .forgejo/workflows/registry-server-image.yml
+      event: ${{ github.event_name }}
 
   build-test-publish:
     needs: applicability

@@ -12,13 +12,18 @@ on:
         description: The calling workflow file
         required: true
         type: string
+      event:
+        description: The calling workflow's github.event_name
+        required: true
+        type: string
     outputs:
       applicable:
         value: ${{ jobs.compare.outputs.applicable }}
 
 jobs:
   compare:
-    if: ${{ github.event_name == 'pull_request' }}
+    # Inside a called workflow github.event_name is workflow_call.
+    if: ${{ inputs.event == 'pull_request' }}
     runs-on: runner-quality
     timeout-minutes: 5
     container:
@@ -43,4 +48,4 @@ jobs:
         run: python3 -I tools/ci/prepare_pr_history.py
       - name: Require an exact relevant PR diff
         id: compare
-        run: python3 -I tools/ci/workflow_applicability.py --workflow "${{ inputs.workflow }}"
+        run: python3 -I tools/ci/workflow_applicability.py --workflow "${{ inputs.workflow }}" --event "${{ inputs.event }}"
