@@ -265,14 +265,17 @@ impl AccountRoot {
         }
     }
 
-    /// What the account store file looks like on disk now: its identity,
-    /// size and modification time. Every save replaces the file atomically,
-    /// so any save changes the stamp. `None` when there is no store.
+    /// What the account store file holds on disk now: a digest of its bytes,
+    /// with its size and modification time. Any save changes the bytes, so
+    /// any save changes the stamp. `None` when there is no store.
     fn store_stamp(&self) -> Option<StoreStamp> {
-        use std::os::unix::fs::MetadataExt as _;
-        let metadata = std::fs::metadata(accounts::store_path_in(&self.path()?)).ok()?;
+        use std::hash::{Hash as _, Hasher as _};
+        let path = accounts::store_path_in(&self.path()?);
+        let metadata = std::fs::metadata(&path).ok()?;
+        let mut digest = std::collections::hash_map::DefaultHasher::new();
+        std::fs::read(&path).ok()?.hash(&mut digest);
         Some(StoreStamp {
-            inode: metadata.ino(),
+            content: digest.finish(),
             len: metadata.len(),
             modified: metadata.modified().ok(),
         })
@@ -281,7 +284,7 @@ impl AccountRoot {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct StoreStamp {
-    inode: u64,
+    content: u64,
     len: u64,
     modified: Option<std::time::SystemTime>,
 }
