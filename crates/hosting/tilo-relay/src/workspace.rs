@@ -148,6 +148,9 @@ impl LiveBudget {
     }
 }
 
+/// The first bytes of every Automerge chunk (document, change or bundle).
+const AUTOMERGE_MAGIC: [u8; 4] = [0x85, 0x6f, 0x4a, 0x83];
+
 impl WorkspaceRuntime {
     /// Build a runtime for a bound workspace. Loads the snapshot
     /// from disk if pinned + present.
@@ -646,7 +649,10 @@ impl WorkspaceRuntime {
     ///   doc + snapshot untouched;
     /// - a delta that adds nothing new writes no snapshot.
     fn materialize(&mut self, delta_bytes: &[u8]) -> bool {
-        if delta_bytes.is_empty() {
+        // Automerge logs every chunk it cannot parse at error level before
+        // returning the error, and co-edit wrappers never start with its
+        // magic.
+        if !delta_bytes.starts_with(&AUTOMERGE_MAGIC) {
             return false;
         }
         let Some(current) = self.doc.as_ref() else {
@@ -795,6 +801,46 @@ pub type SharedWorkspace = Arc<AsyncMutex<WorkspaceRuntime>>;
 mod tests {
     use super::*;
     use crate::transport::Envelope;
+
+    /// An auto-bound workspace is pinned, and every delta a session sends is
+    /// a co-edit wrapper: routing one must not reach Automerge's parser,
+    /// which logs each chunk it rejects at error level.
+    #[test]
+    fn co_edit_payload_logs_no_automerge_error() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tracing_subscriber::layer::SubscriberExt as _;
+
+        struct Errors(Arc<AtomicUsize>);
+        impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Errors {
+            fn on_event(
+                &self,
+                event: &tracing::Event<'_>,
+                _: tracing_subscriber::layer::Context<'_, S>,
+            ) {
+                if *event.metadata().level() == tracing::Level::ERROR {
+                    self.0.fetch_add(1, Ordering::SeqCst);
+                }
+            }
+        }
+
+        let tmp = tempfile::tempdir().unwrap();
+        let mut rt = WorkspaceRuntime::open(tmp.path(), 57, true, Membership::default()).unwrap();
+        let payload = crate::coedit::CoeditPayload::Checkpoint {
+            channel: [3; 32],
+            body: b"opaque".to_vec(),
+        }
+        .encode()
+        .unwrap();
+        let errors = Arc::new(AtomicUsize::new(0));
+        let subscriber = tracing_subscriber::registry().with(Errors(Arc::clone(&errors)));
+        tracing::subscriber::with_default(subscriber, || {
+            rt.fanout_delta(&[6u8; 32], PeerRole::Device, &env_delta(57, [6u8; 32]), &payload, 1)
+                .unwrap();
+        });
+        assert_eq!(errors.load(Ordering::SeqCst), 0);
+        assert!(rt.current_heads().is_empty());
+    }
+
 
     fn env_delta(id: u64, author: [u8; 32]) -> Envelope {
         Envelope::Delta {
