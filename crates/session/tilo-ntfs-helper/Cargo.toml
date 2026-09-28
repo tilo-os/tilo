@@ -16,6 +16,9 @@ sha2.workspace = true
 wire-frame = { path = "../../system/wire-frame" }
 workspace-hack = { version = "0.1" }
 
+[dev-dependencies]
+tempfile.workspace = true
+
 [[test]]
 name = "it"
 path = "tests/it.rs"

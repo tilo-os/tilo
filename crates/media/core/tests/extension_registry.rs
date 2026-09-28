@@ -57,28 +57,6 @@ fn announce(extensions: &Path, name: &str, modified: SystemTime) {
 }
 
 /// A private directory under Cargo's per-target scratch space, removed at the end.
-struct Scratch(PathBuf);
-
-impl Scratch {
-    fn new() -> Self {
-        let path = Path::new(env!("CARGO_TARGET_TMPDIR"))
-            .join(format!("extension-registry-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&path);
-        std::fs::create_dir_all(&path).unwrap();
-        Self(path)
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
 #[test]
 fn registry_follows_extension_merges() {
     let (Some(videotestsrc), Some(audiotestsrc)) = (
@@ -89,7 +67,7 @@ fn registry_follows_extension_merges() {
         return;
     };
 
-    let root = Scratch::new();
+    let root = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
     let plugins = root.path().join("plugins");
     let extensions = root.path().join("extension-release.d");
     let stamp = root.path().join("cache/tilo/media-extensions.stamp");
