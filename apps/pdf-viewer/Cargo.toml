@@ -40,7 +40,7 @@ winit.workspace = true
 taffy.workspace = true
 anyhow.workspace = true
 # Rendering, text layer, forms and export through Tilo's sandboxed PDF engine.
-tilo-pdf = { path = "../../crates/doc/pdf" }
+tilo-pdf = { path = "../../crates/platform/tilo-pdf" }
 image = { workspace = true, features = ["png", "jpeg"] }
 tempfile.workspace = true
 workspace-hack = { version = "0.1" }

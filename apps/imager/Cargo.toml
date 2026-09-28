@@ -50,7 +50,7 @@ serde_json.workspace = true
 hex.workspace = true
 sha2.workspace = true
 reqwest = { workspace = true, features = ["blocking"] }
-tilo-net = { path = "../../crates/system/tilo-net", features = ["blocking"] }
+tilo-net = { path = "../../crates/platform/tilo-net", features = ["blocking"] }
 # Pure Rust: a thin app gets the `zstd` crate from libruntime_dylib.so, which
 # exports Rust symbols only, so zstd's C decoder would not link.
 ruzstd = { version = "0.9", default-features = false, features = ["std"] }

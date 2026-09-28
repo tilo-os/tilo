@@ -23,7 +23,7 @@ name = "runtime_bundle"
 path = "src/lib.rs"
 
 [dependencies]
-tilo-clock = { path = "../../system/tilo-clock" }
+tilo-clock = { path = "../../platform/tilo-clock" }
 clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
