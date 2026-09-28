@@ -495,10 +495,83 @@ pub struct PackageRequest {
     /// Link everything into the binary instead of against the toolkit and
     /// `libstd` the OS ships. Static binaries are several times the size limit.
     pub static_link: bool,
+    /// Rust target triple; overrides the one `platform` and `arch` pick.
     pub target: Option<String>,
+    pub platform: PackagePlatform,
+    /// `None` builds for the host architecture.
+    pub arch: Option<PackageArch>,
     pub features: Vec<String>,
     pub no_default_features: bool,
     pub force: bool,
+}
+
+/// The system a package is built for.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PackagePlatform {
+    /// A thin Tilo OS app, linked against the toolkit the OS ships.
+    #[default]
+    Tilo,
+    /// One self-contained Windows executable with the toolkit linked in.
+    Windows,
+    /// One self-contained macOS executable with the toolkit linked in.
+    Macos,
+}
+
+impl PackagePlatform {
+    /// The registry's name for the platform family.
+    #[must_use]
+    pub const fn registry_name(self) -> &'static str {
+        match self {
+            Self::Tilo => registry_types::TILO_OS_PLATFORM,
+            Self::Windows => registry_types::WINDOWS_PLATFORM,
+            Self::Macos => registry_types::MACOS_PLATFORM,
+        }
+    }
+
+    /// The Rust target triple for `arch`.
+    #[must_use]
+    pub fn triple(self, arch: PackageArch) -> String {
+        let arch = arch.as_str();
+        match self {
+            Self::Tilo => format!("{arch}-unknown-linux-gnu"),
+            Self::Windows => format!("{arch}-pc-windows-msvc"),
+            Self::Macos => format!("{arch}-apple-darwin"),
+        }
+    }
+
+    const fn executable_suffix(self) -> &'static str {
+        match self {
+            Self::Windows => ".exe",
+            Self::Tilo | Self::Macos => "",
+        }
+    }
+}
+
+/// A CPU architecture a package can target.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PackageArch {
+    X86_64,
+    Aarch64,
+}
+
+impl PackageArch {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::X86_64 => "x86_64",
+            Self::Aarch64 => "aarch64",
+        }
+    }
+
+    /// The architecture `tilo-app` itself runs on, when it is one of these.
+    #[must_use]
+    pub fn host() -> Option<Self> {
+        match std::env::consts::ARCH {
+            "x86_64" => Some(Self::X86_64),
+            "aarch64" => Some(Self::Aarch64),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -4567,6 +4640,8 @@ struct AppPackageSpec {
     cargo_package: String,
     manifest_path: PathBuf,
     entrypoints: Vec<(String, PathBuf)>,
+    /// The Cargo binary of the GUI entrypoint, the one a desktop build ships.
+    gui_bin: Option<String>,
     thin_feature: bool,
 }
 
@@ -4588,7 +4663,8 @@ pub fn package_app(start: &Path, request: &PackageRequest) -> Result<PackageOutc
         bail!("app preflight failed\n\n{}", report.summary());
     }
     let spec = load_app_package_spec(app_dir)?;
-    if !request.static_link && !spec.thin_feature {
+    let desktop = request.platform != PackagePlatform::Tilo;
+    if !desktop && !request.static_link && !spec.thin_feature {
         bail!(
             "{} has no `thin` feature, so it cannot link against the toolkit the OS ships; \
              add `thin = [\"dep:runtime-dylib\"]` to [features] (as `tilo-app new` does) or pass --static",
@@ -4596,35 +4672,44 @@ pub fn package_app(start: &Path, request: &PackageRequest) -> Result<PackageOutc
         );
     }
     let profile = package_profile(request)?;
-    let budget = std::fs::read_to_string(&spec.manifest_path)
-        .map_err(anyhow::Error::from)
-        .and_then(|source| size::Budget::from_manifest(&source))
-        .with_context(|| format!("reading [budget] from {}", spec.manifest_path.display()))?;
-    let output = request.output.as_ref().map_or_else(
-        || {
-            spec.app_dir
-                .join("dist")
-                .join(format!("{}.tapp", spec.cargo_package))
-        },
-        |path| absolute_from(&spec.app_dir, path),
-    );
-    if output.exists() && !request.force {
-        bail!(
-            "package output {} already exists; pass --force to replace it",
-            output.display()
-        );
-    }
+    let manifest_source = std::fs::read_to_string(&spec.manifest_path)
+        .with_context(|| format!("reading {}", spec.manifest_path.display()))?;
+    // `[budget]` bounds the thin Tilo OS build; a desktop build carries the
+    // whole toolkit and answers to the registry's desktop limit instead.
+    let budget = if desktop {
+        size::Budget::default()
+    } else {
+        size::Budget::from_manifest(&manifest_source)
+            .with_context(|| format!("reading [budget] from {}", spec.manifest_path.display()))?
+    };
+    let desktop_arch = match (desktop, request.arch.or_else(PackageArch::host)) {
+        (false, _) => None,
+        (true, Some(arch)) => Some(arch),
+        (true, None) => bail!(
+            "cannot tell which architecture to build for on {}; pass --arch",
+            std::env::consts::ARCH
+        ),
+    };
+    let output = package_output(&spec, request, desktop_arch)?;
     let output_parent = output
         .parent()
         .ok_or_else(|| anyhow::anyhow!("package output has no parent: {}", output.display()))?;
-    std::fs::create_dir_all(output_parent).with_context(|| {
-        format!(
-            "creating package output directory {}",
-            output_parent.display()
-        )
-    })?;
-
-    let built = build_entrypoints(&spec, request, &profile)?;
+    let shipped = shipped_binaries(&spec, request, desktop)?;
+    let triple = request.target.clone().or_else(|| {
+        desktop_arch
+            .or(request.arch)
+            .map(|arch| request.platform.triple(arch))
+    });
+    let built = build_entrypoints(
+        &spec,
+        &BuildPlan {
+            bins: &shipped,
+            triple: triple.as_deref(),
+            thin: !desktop && !request.static_link,
+            profile: &profile,
+        },
+        request,
+    )?;
     let staging = tempfile::Builder::new()
         .prefix(".tilo-app-package-")
         .tempdir_in(output_parent)
@@ -4635,41 +4720,32 @@ pub fn package_app(start: &Path, request: &PackageRequest) -> Result<PackageOutc
             )
         })?;
     let payload = staging.path().join("payload");
-    std::fs::create_dir(&payload).context("creating staged payload")?;
-    let app_payload = spec.app_dir.join("payload");
-    if app_payload.is_dir() {
-        copy_payload_tree(&app_payload, &payload)?;
-    }
-    for (cargo_bin, payload_path) in &spec.entrypoints {
-        let source = built
-            .get(cargo_bin)
-            .ok_or_else(|| anyhow::anyhow!("Cargo did not report binary {cargo_bin}"))?;
-        let destination = payload.join(payload_path);
-        if let Some(parent) = destination.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("creating payload directory {}", parent.display()))?;
-        }
-        std::fs::copy(source, &destination).with_context(|| {
-            format!("copying {} to {}", source.display(), destination.display())
-        })?;
-        let permissions = std::fs::metadata(source)?.permissions();
-        std::fs::set_permissions(&destination, permissions)?;
-    }
+    stage_payload(&spec, &shipped, &built, &payload)?;
 
     let staged_package = staging.path().join("package.tapp");
     let identity = signing_identity(&spec.app_dir, request.identity.as_deref())?;
-    let packed = pack::pack_payload(
-        &spec.manifest_path,
-        resource_kinds::declared_in(&spec.app_dir)?,
-        &payload,
-        &staged_package,
-        &identity,
-    )?;
-    let entrypoints: Vec<PathBuf> = spec
-        .entrypoints
-        .iter()
-        .map(|(_, path)| path.clone())
-        .collect();
+    let resource_kinds = resource_kinds::declared_in(&spec.app_dir)?;
+    let packed = match (desktop_arch, shipped.first()) {
+        (Some(arch), Some((_, module))) => {
+            let manifest =
+                desktop_manifest(&spec, request.platform, arch, &manifest_source, module)?;
+            pack::pack_manifest(
+                manifest,
+                resource_kinds,
+                &payload,
+                &staged_package,
+                &identity,
+            )?
+        }
+        _ => pack::pack_payload(
+            &spec.manifest_path,
+            resource_kinds,
+            &payload,
+            &staged_package,
+            &identity,
+        )?,
+    };
+    let entrypoints: Vec<PathBuf> = shipped.iter().map(|(_, path)| path.clone()).collect();
     let size = within_budget(&payload, &entrypoints, packed.bytes, budget, &output)?;
     std::fs::rename(&staged_package, &output)
         .with_context(|| format!("publishing package to {}", output.display()))?;
@@ -4686,9 +4762,123 @@ pub fn package_app(start: &Path, request: &PackageRequest) -> Result<PackageOutc
     })
 }
 
+/// Where the package goes: `--output`, or `dist/<package>.tapp` (with the
+/// platform and architecture for a desktop build). Refuses to replace an
+/// existing file without `force`, and creates the directory.
+fn package_output(
+    spec: &AppPackageSpec,
+    request: &PackageRequest,
+    desktop_arch: Option<PackageArch>,
+) -> Result<PathBuf> {
+    let output = request.output.as_ref().map_or_else(
+        || {
+            let name = match desktop_arch {
+                Some(arch) => format!(
+                    "{}-{}-{}.tapp",
+                    spec.cargo_package,
+                    request.platform.registry_name(),
+                    arch.as_str()
+                ),
+                None => format!("{}.tapp", spec.cargo_package),
+            };
+            spec.app_dir.join("dist").join(name)
+        },
+        |path| absolute_from(&spec.app_dir, path),
+    );
+    if output.exists() && !request.force {
+        bail!(
+            "package output {} already exists; pass --force to replace it",
+            output.display()
+        );
+    }
+    let parent = output
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("package output has no parent: {}", output.display()))?;
+    std::fs::create_dir_all(parent)
+        .with_context(|| format!("creating package output directory {}", parent.display()))?;
+    Ok(output)
+}
+
+/// The Cargo binaries a package ships and their payload paths: every declared
+/// entrypoint for Tilo OS, the GUI executable alone for a desktop build.
+fn shipped_binaries(
+    spec: &AppPackageSpec,
+    request: &PackageRequest,
+    desktop: bool,
+) -> Result<Vec<(String, PathBuf)>> {
+    if !desktop {
+        return Ok(spec.entrypoints.clone());
+    }
+    let bin = spec.gui_bin.clone().ok_or_else(|| {
+        anyhow::anyhow!(
+            "{} has no GUI entrypoint; a {} build ships one executable",
+            spec.manifest_path.display(),
+            request.platform.registry_name()
+        )
+    })?;
+    let path = PathBuf::from(format!("bin/{bin}{}", request.platform.executable_suffix()));
+    Ok(vec![(bin, path)])
+}
+
+/// Fill `payload` with the app's `payload/` tree and the built binaries.
+fn stage_payload(
+    spec: &AppPackageSpec,
+    shipped: &[(String, PathBuf)],
+    built: &HashMap<String, PathBuf>,
+    payload: &Path,
+) -> Result<()> {
+    std::fs::create_dir(payload).context("creating staged payload")?;
+    let app_payload = spec.app_dir.join("payload");
+    if app_payload.is_dir() {
+        copy_payload_tree(&app_payload, payload)?;
+    }
+    for (cargo_bin, payload_path) in shipped {
+        let source = built
+            .get(cargo_bin)
+            .ok_or_else(|| anyhow::anyhow!("Cargo did not report binary {cargo_bin}"))?;
+        let destination = payload.join(payload_path);
+        if let Some(parent) = destination.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("creating payload directory {}", parent.display()))?;
+        }
+        std::fs::copy(source, &destination).with_context(|| {
+            format!("copying {} to {}", source.display(), destination.display())
+        })?;
+        let permissions = std::fs::metadata(source)?.permissions();
+        std::fs::set_permissions(&destination, permissions)?;
+    }
+    Ok(())
+}
+
+/// The authored manifest around a desktop build's executable at `module`.
+fn desktop_manifest(
+    spec: &AppPackageSpec,
+    platform: PackagePlatform,
+    arch: PackageArch,
+    manifest_source: &str,
+    module: &Path,
+) -> Result<tilo_app_package::Manifest> {
+    let authored = tilo_app_package::Manifest::from_toml_str(manifest_source)
+        .with_context(|| format!("parsing {}", spec.manifest_path.display()))?;
+    tilo_app_package::desktop::desktop_manifest(
+        &authored,
+        platform.registry_name(),
+        arch.as_str(),
+        arch.as_str(),
+        &module.to_string_lossy(),
+    )
+    .map_err(|error| {
+        anyhow::anyhow!(
+            "{}: {error}; a {} build declares the toolkit release it links as [package].runtime",
+            spec.manifest_path.display(),
+            platform.registry_name()
+        )
+    })
+}
+
 fn package_profile(request: &PackageRequest) -> Result<String> {
     let profile = request.profile.clone().unwrap_or_else(|| {
-        if request.static_link {
+        if request.static_link || request.platform != PackagePlatform::Tilo {
             "release"
         } else {
             "thin-app"
@@ -4766,6 +4956,11 @@ fn load_app_package_spec(app_dir: PathBuf) -> Result<AppPackageSpec> {
         .entrypoint
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("tilo-app.toml declares no package entrypoint"))?;
+    let gui_bin = entrypoint
+        .gui_bin_path()
+        .and_then(|path| path.file_name())
+        .and_then(|name| name.to_str())
+        .map(str::to_owned);
     let mut payload_paths = Vec::new();
     if let Some(path) = entrypoint.gui_bin_path() {
         payload_paths.push(path.clone());
@@ -4800,14 +4995,24 @@ fn load_app_package_spec(app_dir: PathBuf) -> Result<AppPackageSpec> {
         cargo_package,
         manifest_path,
         entrypoints,
+        gui_bin,
         thin_feature,
     })
 }
 
+/// What [`build_entrypoints`] compiles: `bins` for `triple` (the host when
+/// `None`), linked against the OS toolkit when `thin`.
+struct BuildPlan<'a> {
+    bins: &'a [(String, PathBuf)],
+    triple: Option<&'a str>,
+    thin: bool,
+    profile: &'a str,
+}
+
 fn build_entrypoints(
     spec: &AppPackageSpec,
+    plan: &BuildPlan<'_>,
     request: &PackageRequest,
-    profile: &str,
 ) -> Result<HashMap<String, PathBuf>> {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
     let mut command = ProcessCommand::new(&cargo);
@@ -4816,21 +5021,17 @@ fn build_entrypoints(
         .arg("--manifest-path")
         .arg(spec.app_dir.join("Cargo.toml"))
         .arg("--profile")
-        .arg(profile)
+        .arg(plan.profile)
         .arg("--message-format=json-render-diagnostics")
         .current_dir(&spec.app_dir)
         .stdout(Stdio::piped());
-    for (cargo_bin, _) in &spec.entrypoints {
+    for (cargo_bin, _) in plan.bins {
         command.arg("--bin").arg(cargo_bin);
     }
     let mut features = request.features.clone();
-    if request.static_link {
-        if let Some(target) = &request.target {
-            command.arg("--target").arg(target);
-        }
-    } else {
-        let triple = match &request.target {
-            Some(target) => target.clone(),
+    if plan.thin {
+        let triple = match plan.triple {
+            Some(target) => target.to_owned(),
             None => host_triple(&spec.app_dir)?,
         };
         let (key, flags) = prefer_dynamic_rustflags(&triple);
@@ -4838,6 +5039,8 @@ fn build_entrypoints(
         if !features.iter().any(|feature| feature == "thin") {
             features.push("thin".to_owned());
         }
+    } else if let Some(target) = plan.triple {
+        command.arg("--target").arg(target);
     }
     if request.no_default_features {
         command.arg("--no-default-features");
@@ -4866,7 +5069,7 @@ fn build_entrypoints(
     if !status.success() {
         bail!("Cargo package build failed with {status}");
     }
-    for (cargo_bin, _) in &spec.entrypoints {
+    for (cargo_bin, _) in plan.bins {
         if !artifacts.contains_key(cargo_bin) {
             bail!("Cargo build completed without reporting binary {cargo_bin}");
         }
