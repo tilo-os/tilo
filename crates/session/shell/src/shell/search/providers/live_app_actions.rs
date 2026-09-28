@@ -164,8 +164,9 @@ fn directory_start_ticket(
 }
 
 /// Poll an admission from the frame loop until it answers or `deadline`
-/// passes. Dropped once answered or given up on, so a start still waiting
-/// sees nobody wants it and does not begin after the deadline.
+/// passes. Past the deadline the ticket gives the admission up, so a start
+/// that has not begun never does; one that already began is waited for, so
+/// the caller is never told an action that ran did not start.
 fn admission_ticket(
     admission: Pending<Result<(u64, InvocationReceipt), ActionHostError>>,
     deadline: Instant,
@@ -174,13 +175,26 @@ fn admission_ticket(
 ) -> PendingInvocation {
     let admission = Rc::new(RefCell::new(Some(admission)));
     Rc::new(move || {
-        let polled = admission
-            .borrow_mut()
+        let mut slot = admission.borrow_mut();
+        let mut polled = slot
             .as_mut()
             .map_or(PendingPoll::Abandoned, Pending::poll_ready);
-        if !matches!(polled, PendingPoll::Waiting) || Instant::now() >= deadline {
-            admission.borrow_mut().take();
+        if matches!(polled, PendingPoll::Waiting)
+            && Instant::now() >= deadline
+            && let Some(waiting) = slot.take()
+        {
+            match waiting.give_up() {
+                Ok(()) => return Err(timed_out()),
+                Err(mut began) => {
+                    polled = began.poll_ready();
+                    *slot = Some(began);
+                }
+            }
         }
+        if !matches!(polled, PendingPoll::Waiting) {
+            slot.take();
+        }
+        drop(slot);
         match polled {
             PendingPoll::Ready(Ok((job, receipt))) => Ok(Some(ActionReceipt {
                 broker_invocation_id: Some(job),
@@ -190,7 +204,6 @@ fn admission_ticket(
             PendingPoll::Abandoned => Err(ActionError::Refused(
                 "the action's admission was unavailable".into(),
             )),
-            PendingPoll::Waiting if Instant::now() >= deadline => Err(timed_out()),
             PendingPoll::Waiting => Ok(None),
         }
     })
@@ -2881,7 +2894,34 @@ mod tests {
                 start_sender.is_abandoned(),
                 "an expired action ticket lets go of its admission"
             );
+            assert!(
+                !start_sender.begin(),
+                "a start the caller was told timed out never begins"
+            );
             assert!(invalidations.borrow().contains(&key));
+
+            // A start that began before the deadline passed is waited for:
+            // the caller hears that it ran, never that it timed out.
+            let (start_sender, start_receiver) = pending();
+            let ticket =
+                directory_start_ticket(start_receiver, Rc::clone(&invalidations), key, expired);
+            assert!(start_sender.begin());
+            assert!(
+                matches!(ticket(), Ok(None)),
+                "a start that began is still awaited past the deadline"
+            );
+            let invocation = tilo_actions::InvocationId::new();
+            start_sender.complete(Ok((
+                9,
+                tilo_actions::remote::InvocationReceipt {
+                    invocation,
+                    status: tilo_actions::remote::ReceiptStatus::Accepted,
+                },
+            )));
+            let receipt = ticket()
+                .expect("the start that ran is reported")
+                .expect("its receipt");
+            assert_eq!(receipt.broker_invocation_id, Some(9));
         }
 
         // Phase `directory_cache_keeps_room_actors_separate_for_the_current_needle`.

@@ -24,6 +24,16 @@ final-status-level = "flaky"
 [profile.ci.junit]
 path = "junit.xml"
 
+# The apps and launcher the shell's end-to-end tests run, built beside the
+# shell's own binaries in check.yml, travel with a test archive so the
+# partitions that run from it find them in target/ as a local build does.
+[profile.ci.archive]
+include = [
+  { path = "debug/notes", relative-to = "target", on-missing = "ignore" },
+  { path = "debug/chat", relative-to = "target", on-missing = "ignore" },
+  { path = "debug/tilo-launcher", relative-to = "target", on-missing = "ignore" },
+]
+
 # Process-isolated compositor, GPU, and collaboration tests need shared limits.
 #
 # Nextest starts tests in order and a test that needs every thread waits for

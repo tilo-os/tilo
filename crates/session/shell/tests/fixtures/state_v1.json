@@ -108,6 +108,7 @@
       ],
       "channel_class": "encrypted",
       "recording_delegates_forbidden": false,
+      "triage_in_direct_rooms": false,
       "permission_profiles": [],
       "default_apps": {
         "policy": {},
@@ -168,6 +169,7 @@
       "capabilities": [],
       "channel_class": "encrypted",
       "recording_delegates_forbidden": false,
+      "triage_in_direct_rooms": false,
       "permission_profiles": [],
       "default_apps": {
         "policy": {},

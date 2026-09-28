@@ -35,6 +35,8 @@ pub mod mcp_process;
 pub mod profile;
 pub mod standalone;
 pub mod unix;
+pub mod viewer;
+pub mod watch;
 
 // Room admission decodes peer bytes in automerge worker processes started
 // from this test binary; this serves them.

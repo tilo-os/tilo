@@ -14,73 +14,33 @@ fn production_history_root_and_sync_preserve_the_exact_graph() {
         assert!(crate::app_root().document_history_definition().is_some());
     }
 
-    eprintln!("phase legacy_and_blank_production_sync_preserves_exact_graph");
+    eprintln!("phase blank_production_sync_preserves_exact_graph");
     {
-        for legacy in [false, true] {
-            let mut doc = AutoCommit::new();
-            doc.put(ROOT, "runtime_metadata", "current").unwrap();
-            if legacy {
-                doc.put(ROOT, "image", "null").unwrap();
-                doc.put(
-                    ROOT,
-                    "edits",
-                    serde_json::to_string(&Edits::default()).unwrap(),
-                )
-                .unwrap();
-                doc.put(
-                    ROOT,
-                    "library",
-                    serde_json::to_string(&PhotoLibrary::default()).unwrap(),
-                )
-                .unwrap();
-            }
-            let heads = doc.get_heads();
-            crate::app_root().sync(&mut doc, &ROOT);
-            assert_eq!(
-                doc.get_heads(),
-                heads,
-                "sync must not author or migrate content"
-            );
-            let mut reopened = AutoCommit::load(&doc.save()).unwrap();
-            crate::app_root().sync(&mut reopened, &ROOT);
-            assert_eq!(reopened.get_heads(), heads);
-        }
+        let mut doc = AutoCommit::new();
+        doc.put(ROOT, "runtime_metadata", "current").unwrap();
+        let heads = doc.get_heads();
+        crate::app_root().sync(&mut doc, &ROOT);
+        assert_eq!(
+            doc.get_heads(),
+            heads,
+            "sync must not author or migrate content"
+        );
+        let mut reopened = AutoCommit::load(&doc.save()).unwrap();
+        crate::app_root().sync(&mut reopened, &ROOT);
+        assert_eq!(reopened.get_heads(), heads);
     }
 
-    eprintln!(
-        "phase exact_current_and_legacy_roots_tombstones_unknown_authored_fields_survive_restore"
-    );
+    eprintln!("phase exact_current_roots_tombstones_unknown_authored_fields_survive_restore");
     {
-        for legacy in [false, true] {
+        {
             let (open, _, _) = image_fixture();
             let mut doc = AutoCommit::new();
-            if legacy {
-                doc.put(ROOT, "image", serde_json::to_string(&Some(&open)).unwrap())
-                    .unwrap();
-                doc.put(
-                    ROOT,
-                    "edits",
-                    serde_json::to_string(&Edits::default().rotated_right()).unwrap(),
-                )
+            PhotosDoc::set_image(&mut doc, Some(&open));
+            let root = doc.get(ROOT, "photos_library").unwrap().unwrap().1;
+            doc.put(&root, "future_authored_setting", "retained")
                 .unwrap();
-                doc.put(
-                    ROOT,
-                    "library",
-                    serde_json::to_string(&PhotoLibrary {
-                        photos: vec![crate::model::LibraryPhoto::from_image(open.clone())],
-                        albums: vec![],
-                    })
-                    .unwrap(),
-                )
-                .unwrap();
-            } else {
-                PhotosDoc::set_image(&mut doc, Some(&open));
-                let root = doc.get(ROOT, "photos_library").unwrap().unwrap().1;
-                doc.put(&root, "future_authored_setting", "retained")
-                    .unwrap();
-                let removed = doc.get(&root, "removed_photos").unwrap().unwrap().1;
-                doc.put(&removed, "deleted-photo", true).unwrap();
-            }
+            let removed = doc.get(&root, "removed_photos").unwrap().unwrap().1;
+            doc.put(&removed, "deleted-photo", true).unwrap();
             let selected = doc.get_heads();
             let saved = doc.save();
             PhotosDoc::set_image(&mut doc, None);
@@ -114,7 +74,7 @@ fn production_history_root_and_sync_preserve_the_exact_graph() {
 
     eprintln!("phase typed_schema_refuses_defaulted_malformed_values_without_writes");
     {
-        for case in 0..9 {
+        for case in 0..7 {
             let (mut doc, _, _) = fixture();
             let edits = doc.get(ROOT, "photos_edits").unwrap().unwrap().1;
             let library = doc.get(ROOT, "photos_library").unwrap().unwrap().1;
@@ -126,11 +86,7 @@ fn production_history_root_and_sync_preserve_the_exact_graph() {
                     .unwrap(),
                 3 => doc.delete(&edits, "crop").unwrap(),
                 4 => doc.put(&library, "photo_order", false).unwrap(),
-                5 => doc.put(&library, "photos", "bad").unwrap(),
-                6 => doc
-                    .put(ROOT, "edits", r#"{"crop":{},"rotate_quarters":0}"#)
-                    .unwrap(),
-                7 => doc.put(ROOT, "library", r#"{"photos":[{}]}"#).unwrap(),
+                5 => doc.put(&library, "photo_core", "bad").unwrap(),
                 _ => {
                     let tombstones = doc.get(&library, "removed_photos").unwrap().unwrap().1;
                     doc.put(tombstones, "id", "true").unwrap();
@@ -664,7 +620,7 @@ fn frozen_preparation_layout_navigation_and_drop_have_no_live_store_or_transport
 }
 
 #[test]
-fn conflicts_preview_unflattened_and_legacy_materializes_once() {
+fn conflicts_preview_unflattened_but_restore_refuses_them() {
     eprintln!(
         "phase supported_conflict_branches_preview_without_flattening_but_restore_refuses_conflict"
     );
@@ -706,60 +662,5 @@ fn conflicts_preview_unflattened_and_legacy_materializes_once() {
             prepare_content_restore(&doc, &crate::framework_history::SCHEMA, &heads, &heads)
                 .is_err()
         );
-    }
-
-    eprintln!(
-        "phase explicit_normal_edit_materializes_legacy_once_and_undo_restores_legacy_representation"
-    );
-    {
-        let (open, _, bytes) = image_fixture();
-        let store = tilo_content::ContentStore::memory();
-        store.put(&bytes).unwrap();
-        let mut doc = AutoCommit::new();
-        doc.put(ROOT, "image", serde_json::to_string(&Some(&open)).unwrap())
-            .unwrap();
-        doc.put(
-            ROOT,
-            "edits",
-            serde_json::to_string(&Edits::default()).unwrap(),
-        )
-        .unwrap();
-        doc.put(
-            ROOT,
-            "library",
-            serde_json::to_string(&PhotoLibrary {
-                photos: vec![crate::model::LibraryPhoto::from_image(open)],
-                albums: vec![],
-            })
-            .unwrap(),
-        )
-        .unwrap();
-        let heads = doc.get_heads();
-        let expected = project_content(&doc, &crate::framework_history::SCHEMA).unwrap();
-        crate::strings::install();
-        let mut driver = ui::headless::Driver::new(
-            ui::State::from_doc(doc),
-            Box::new(crate::PhotosApp::with_content(store)),
-            (1000, 750),
-        );
-        driver
-            .perform_semantic_named(
-                "PhotosApp",
-                Some("photos:toolbar:photos-rotate-right"),
-                &ui::a11y::Action::Activate,
-            )
-            .unwrap();
-        assert_eq!(driver.state_mut().doc.get_changes(&heads).len(), 1);
-        assert_eq!(PhotosDoc::edits(&driver.state_mut().doc).rotate_quarters, 1);
-        assert!(driver.state_mut().doc.get(ROOT, "edits").unwrap().is_none());
-        assert!(driver.state_mut().undo(None, None).is_some());
-        driver.resize((1000, 750)).unwrap();
-        assert_eq!(
-            project_content(&driver.state_mut().doc, &crate::framework_history::SCHEMA).unwrap(),
-            expected
-        );
-        assert!(driver.state_mut().redo(None, None).is_some());
-        driver.resize((1000, 750)).unwrap();
-        assert_eq!(PhotosDoc::edits(&driver.state_mut().doc).rotate_quarters, 1);
     }
 }

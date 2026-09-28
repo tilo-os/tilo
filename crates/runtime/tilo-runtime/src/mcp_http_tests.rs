@@ -388,6 +388,155 @@ fn client_labels_are_bounded_and_printable() {
     assert_eq!(client_label(&json!({})), "MCP agent");
 }
 
+#[derive(Default)]
+struct WatchRecorder(StdMutex<Vec<bool>>);
+
+impl crate::watch::WatchSink for WatchRecorder {
+    fn set_watching(&self, watching: bool) -> Result<(), String> {
+        self.0.lock().unwrap().push(watching);
+        Ok(())
+    }
+}
+
+fn watched_endpoint(token: Option<&str>) -> (Arc<Endpoint<StubHost>>, Arc<WatchRecorder>) {
+    let sink = Arc::new(WatchRecorder::default());
+    let lease = WatchLease::new(sink.clone(), WATCH_LEASE);
+    let endpoint = Endpoint::build(
+        StubHost::default(),
+        "room".into(),
+        "owner".into(),
+        token.map(str::to_owned),
+        None,
+        None,
+        Some(lease),
+    );
+    (endpoint, sink)
+}
+
+#[test]
+fn watch_is_a_bearer_authenticated_lease_answered_with_its_length() {
+    let (endpoint, sink) = watched_endpoint(Some("secret"));
+    let bearer = headers(&[("authorization", "Bearer secret")]);
+    run(async {
+        let refused = endpoint
+            .dispatch(
+                &Method::POST,
+                "/watch",
+                &headers(&[("authorization", "Bearer nope")]),
+                br#"{"watching":true}"#,
+            )
+            .await;
+        assert_eq!(refused.status(), StatusCode::UNAUTHORIZED);
+        assert!(sink.0.lock().unwrap().is_empty());
+
+        for watching in [true, false] {
+            let body_bytes = json!({"watching": watching}).to_string();
+            let reply = endpoint
+                .dispatch(&Method::POST, "/watch", &bearer, body_bytes.as_bytes())
+                .await;
+            assert_eq!(reply.status(), StatusCode::OK);
+            assert_eq!(
+                body(reply).await,
+                json!({"watching": watching, "lease_seconds": 60})
+            );
+        }
+        let wrong_method = endpoint
+            .dispatch(&Method::GET, "/watch", &bearer, b"")
+            .await;
+        assert_eq!(wrong_method.status(), StatusCode::METHOD_NOT_ALLOWED);
+    });
+    assert_eq!(*sink.0.lock().unwrap(), [true, false]);
+}
+
+#[test]
+fn watch_accepts_exactly_one_boolean() {
+    let (endpoint, sink) = watched_endpoint(None);
+    run(async {
+        for bad in [
+            &b""[..],
+            b"true",
+            b"{}",
+            br#"{"watching":1}"#,
+            br#"{"watching":"true"}"#,
+            br#"{"watching":true,"lease_seconds":600}"#,
+        ] {
+            let reply = endpoint
+                .dispatch(&Method::POST, "/watch", &HeaderMap::new(), bad)
+                .await;
+            assert_eq!(
+                reply.status(),
+                StatusCode::BAD_REQUEST,
+                "{}",
+                String::from_utf8_lossy(bad)
+            );
+        }
+    });
+    assert!(sink.0.lock().unwrap().is_empty());
+}
+
+#[test]
+fn watch_is_not_found_without_a_compositor() {
+    let endpoint = endpoint(StubHost::default(), None);
+    let reply = run(endpoint.dispatch(
+        &Method::POST,
+        "/watch",
+        &HeaderMap::new(),
+        br#"{"watching":true}"#,
+    ));
+    assert_eq!(reply.status(), StatusCode::NOT_FOUND);
+}
+
+#[test]
+fn watch_reaches_the_compositor_as_its_control_command() {
+    use std::io::{BufRead, BufReader, Write};
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("agent.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    let compositor = std::thread::spawn(move || {
+        let mut lines = Vec::new();
+        for _ in 0..2 {
+            let (stream, _) = listener.accept().unwrap();
+            let mut line = String::new();
+            BufReader::new(&stream).read_line(&mut line).unwrap();
+            lines.push(serde_json::from_str::<Value>(&line).unwrap());
+            (&stream).write_all(b"{\"ok\":{\"frame\":0}}\n").unwrap();
+        }
+        lines
+    });
+    let computer = Arc::new(crate::computer::Computer::new(
+        socket,
+        dir.path().join("scratch"),
+    ));
+    let endpoint = Endpoint::new(
+        StubHost::default(),
+        "room".into(),
+        "owner".into(),
+        None,
+        Some(computer),
+    );
+    run(async {
+        for watching in [true, false] {
+            let body_bytes = json!({"watching": watching}).to_string();
+            let reply = endpoint
+                .dispatch(
+                    &Method::POST,
+                    "/watch",
+                    &HeaderMap::new(),
+                    body_bytes.as_bytes(),
+                )
+                .await;
+            assert_eq!(reply.status(), StatusCode::OK);
+        }
+    });
+    assert_eq!(
+        compositor.join().unwrap(),
+        [
+            json!({"op":"watch","watching":true}),
+            json!({"op":"watch","watching":false})
+        ]
+    );
+}
+
 #[test]
 fn the_workspace_itself_is_addressable_for_installed_apps() {
     let host = StubHost::default();
@@ -422,4 +571,86 @@ fn the_workspace_itself_is_addressable_for_installed_apps() {
     let invoked = invoked.lock().unwrap().clone();
     assert_eq!(invoked.len(), 1);
     assert_eq!(invoked[0].target.provider, "workspace:room");
+}
+
+struct IssuingHost;
+impl crate::viewer::HostOperator for IssuingHost {
+    fn call(
+        &self,
+        action: &str,
+        _params: Option<Value>,
+    ) -> Result<Value, crate::viewer::ViewerError> {
+        if action != "invitation.issue" {
+            return Err(crate::viewer::ViewerError {
+                status: 404,
+                message: action.into(),
+            });
+        }
+        Ok(json!({"invite":"signed","invite_id":"ab".repeat(32),"expires_at_ms":1_000_000}))
+    }
+}
+
+#[test]
+fn viewer_invitations_need_a_configured_viewer_and_the_bearer_token() {
+    let issue = br#"{"mode":"watch","ttl_seconds":300}"#;
+    let bare = endpoint(StubHost::default(), Some("secret"));
+    let response = run(bare.dispatch(
+        &Method::POST,
+        "/viewer/invitations",
+        &headers(&[("authorization", "Bearer secret")]),
+        issue,
+    ));
+    assert_eq!(
+        response.status(),
+        StatusCode::NOT_FOUND,
+        "no viewer: unsupported"
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let viewer = crate::viewer::Viewer::new(
+        "https://c1.viewer.example".into(),
+        Box::new(IssuingHost),
+        dir.path().join("ledger.json"),
+    )
+    .unwrap();
+    let served = Endpoint::with_viewer(
+        StubHost::default(),
+        "room".into(),
+        "owner".into(),
+        Some("secret".into()),
+        None,
+        Some(Arc::new(viewer)),
+    );
+    let response = run(served.dispatch(
+        &Method::POST,
+        "/viewer/invitations",
+        &HeaderMap::new(),
+        issue,
+    ));
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let authorized = headers(&[("authorization", "Bearer secret")]);
+    let response = run(served.dispatch(&Method::POST, "/viewer/invitations", &authorized, issue));
+    assert_eq!(response.status(), StatusCode::OK);
+    let reply = run(body(response));
+    assert_eq!(reply["origin"], "https://c1.viewer.example");
+    assert_eq!(reply["invitation"], "signed");
+    assert_eq!(reply["role"], "viewer");
+    let unknown = format!("/viewer/invitations/{}", "cd".repeat(32));
+    let response = run(served.dispatch(&Method::DELETE, &unknown, &authorized, b""));
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let response = run(served.dispatch(&Method::GET, "/viewer/invitations", &authorized, b""));
+    assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+    let response = run(served.dispatch(
+        &Method::DELETE,
+        "/viewer/invitations/not-hex",
+        &authorized,
+        b"",
+    ));
+    assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+    let response = run(served.dispatch(
+        &Method::POST,
+        "/viewer/invitations",
+        &authorized,
+        br#"{"mode":"watch"}"#,
+    ));
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }

@@ -215,9 +215,9 @@ pub use record_replication::{
 };
 #[cfg(feature = "filesystem")]
 pub use record_repository::{
-    MAX_RECORD_FILE_BYTES, MAX_RECORD_OPERATIONS, MAX_RECORD_VERSIONS, MAX_REPOSITORY_RECORDS,
-    RECORD_REPOSITORY_VERSION, RecordRepository, RecordRepositoryError, RecordRepositoryKey,
-    RecordTransactionCheckpoint, RecordTransactionStatus,
+    MAX_RECORD_OPERATIONS, MAX_RECORD_VERSIONS, MAX_REPOSITORY_RECORDS, RecordRepository,
+    RecordRepositoryError, RecordRepositoryKey, RecordTransactionCheckpoint,
+    RecordTransactionStatus,
 };
 #[cfg(feature = "filesystem")]
 pub use record_subscription::{

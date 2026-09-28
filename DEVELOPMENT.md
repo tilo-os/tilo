@@ -1479,14 +1479,11 @@ lint `#[allow]` policy, `#[ignore]` reasons, integration-test module
 declarations, conflict markers, `dbg!` and secrets. Compilation and tests run in
 CI (`.forgejo/workflows/check.yml`).
 
-The hook runs rustfmt on the staged `.rs` files, except `vendor/` and any
-generated source: a file with an `@generated` marker in its first five lines
-(the capnpc-rust bindings, the tilo-app registries). Such a file is exactly
-what its generator emits; regenerate it rather than formatting it.
-
-The added-code policy checks (a reason on every `#[ignore]`, `#[allow]`
-placement, `dbg!`) skip `vendor/` the same way: a vendored crate is
-upstream's code, carried as it ships.
+A vendored crate under `vendor/` is upstream's code, carried as it ships: the
+added-code checks (`#[ignore]` reasons, `#[allow]` placement, `dbg!`) and
+rustfmt skip it. rustfmt also skips a generated source, one with an
+`@generated` marker in its first five lines (capnpc-rust bindings, tilo-app
+registries); CI's `tools/ci/check-changed-rustfmt.sh` applies the same rule.
 
 The hook refuses a staged `Cargo.lock` change with no `Cargo.toml` beside it,
 except a declared single-crate update. Name the `cargo update` you ran (several

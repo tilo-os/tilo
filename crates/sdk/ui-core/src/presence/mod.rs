@@ -490,7 +490,7 @@ pub struct PresenceCtx {
     /// agent run from another device), by text, with when each was last
     /// heard. They are never painted as someone else; a session that
     /// coordinates with its siblings reads them. Bounded.
-    sibling_statuses: HashMap<String, std::time::SystemTime>,
+    sibling_statuses: HashMap<String, SystemTime>,
     /// Broker-authenticated semantic activity, keyed by invocation. Unlike
     /// pointer/caret presence this never pretends an action caller has an
     /// input device: applications may project its stable resource anchor to
@@ -1545,7 +1545,7 @@ impl PresenceCtx {
     /// Room statuses from other sessions of this same participant, with when
     /// each was last heard: how one agent run from several devices hears
     /// itself.
-    pub fn sibling_statuses(&self) -> impl Iterator<Item = (&str, std::time::SystemTime)> {
+    pub fn sibling_statuses(&self) -> impl Iterator<Item = (&str, SystemTime)> {
         self.sibling_statuses
             .iter()
             .map(|(text, heard)| (text.as_str(), *heard))

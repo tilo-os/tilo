@@ -32,6 +32,10 @@ rustix = { version = "=1.1.4", features = ["fs", "process"] }
 windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Threading", "Win32_System_IO", "Wdk_Foundation", "Wdk_Storage_FileSystem", "Wdk_System_SystemServices", "Win32_System_SystemServices"] }
 
 [dev-dependencies]
+# The package's own tests and its probe example exercise the test-support
+# hooks; enabling them here runs those tests whenever the package is tested,
+# not only when a dependant happens to unify the feature in.
+atomic-file = { path = ".", features = ["test-support"] }
 tempfile.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -40,6 +44,7 @@ tilo-test-env = { path = "../../dev/test-env" }
 [[example]]
 name = "directory_commit_probe"
 required-features = ["test-support"]
+test = true
 
 [lints]
 workspace = true

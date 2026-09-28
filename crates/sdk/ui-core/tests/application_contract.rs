@@ -6,7 +6,7 @@ use tilo_ui::application::{ApplicationCatalog, HostContext, LaunchTarget, Restor
 use tilo_ui::application_view::{InstanceViewStore, SavedInstanceView};
 use tilo_ui::launch::LaunchError;
 use tilo_ui::record::RecordId;
-use tilo_ui::view::{FROZEN_VERSION, FocusView, FrozenApp, ThawError, View};
+use tilo_ui::view::{FocusView, ThawError, View};
 
 #[allow(
     clippy::too_many_lines,
@@ -187,53 +187,6 @@ fn restore_paths_validate_bindings_and_never_roll_back_documents() {
         assert_eq!(body(&host.records, &checkout), "initialized");
     }
 
-    // Case `legacy_recovery_is_validated_but_never_adopted`.
-    {
-        let host = ProbeHost::new();
-        let a = instantiate_probe(&host, 11, LaunchTarget::New, RestoreInput::None).unwrap();
-        let checkout = a.record().clone();
-        let frozen = FrozenApp {
-            version: FROZEN_VERSION,
-            state: automerge::AutoCommit::new().save(),
-            view: View::default(),
-        };
-        let error = instantiate_probe(
-            &host,
-            12,
-            existing(&checkout),
-            RestoreInput::LegacyRecovery(frozen.clone()),
-        )
-        .err()
-        .unwrap();
-        assert!(
-            matches!(error, LaunchError::ComponentSetup { source, .. } if matches!(*source, LaunchError::RecoveryRequired))
-        );
-        let mut bad = frozen.clone();
-        bad.version = 9;
-        assert!(matches!(
-            instantiate_probe(
-                &host,
-                12,
-                existing(&checkout),
-                RestoreInput::LegacyRecovery(bad)
-            ),
-            Err(LaunchError::ComponentSetup { source, .. }) if matches!(*source, LaunchError::Restore(ThawError::UnsupportedVersion { .. }))
-        ));
-        let mut bad = frozen;
-        bad.state = b"bad".to_vec();
-        assert!(matches!(
-            instantiate_probe(
-                &host,
-                12,
-                existing(&checkout),
-                RestoreInput::LegacyRecovery(bad)
-            ),
-            Err(LaunchError::ComponentSetup { source, .. }) if matches!(*source, LaunchError::Restore(_))
-        ));
-        assert_eq!(body(&host.records, &checkout), "initialized");
-        assert_eq!(calls(), 1);
-    }
-
     // Case `new_restore_hook_failure_keeps_ready_record_and_old_view_bytes`.
     {
         let host = ProbeHost::new();
@@ -347,41 +300,6 @@ fn local_envelopes_are_scoped_versioned_and_never_replaced_by_invalid_saves() {
             root.join("instance-views/2e2e2f44/412f42/11.postcard")
                 .exists()
         );
-    }
-
-    // Case `v1_local_envelope_loads_as_v2_without_rewriting_exact_source`.
-    // Catches interpreting old postcard bytes as a V2 struct or rewriting them on load.
-    {
-        let host = ProbeHost::new();
-        let mut component =
-            instantiate_probe(&host, 11, LaunchTarget::New, RestoreInput::None).unwrap();
-        let checkout = component.record().clone();
-        component.close();
-        let bytes = postcard::to_stdvec(&(
-            1u32,
-            APP,
-            DEVICE,
-            ROOM,
-            11u64,
-            checkout.id.as_str(),
-            checkout.kind.as_str(),
-            local_view(37.0, "caret=9"),
-        ))
-        .unwrap();
-        let path = host.view_path(11);
-        std::fs::write(&path, &bytes).unwrap();
-        let loaded = host.views.load(11).unwrap().unwrap();
-        assert_eq!(loaded.version, 2);
-        assert_eq!(loaded.view.scroll, vec![37.0]);
-        assert_eq!(std::fs::read(&path).unwrap(), bytes);
-        for invalid in [
-            bytes[..bytes.len() - 1].to_vec(),
-            [bytes.as_slice(), &[0]].concat(),
-        ] {
-            std::fs::write(&path, &invalid).unwrap();
-            assert!(host.views.load(11).is_err());
-            assert_eq!(std::fs::read(&path).unwrap(), invalid);
-        }
     }
 
     // Case `v2_application_envelope_roundtrips_and_default_hook_refuses_payload`.

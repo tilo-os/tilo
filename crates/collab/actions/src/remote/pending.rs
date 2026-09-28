@@ -7,6 +7,11 @@
 //! loop ([`Pending::poll_ready`]), await it (it is a [`Future`]), or attach a
 //! continuation ([`Pending::then`]). Answers available immediately are
 //! [`Pending::ready`].
+//!
+//! Work with an effect decides once whether it happens: the producer
+//! [`Completer::begin`]s it and a caller out of patience
+//! [`Pending::give_up`]s, and only one of the two wins, so a caller told the
+//! work did not start is never wrong about it.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -15,16 +20,32 @@ use std::task::{Context, Poll, Waker};
 use std::time::{Duration, Instant};
 
 type Continuation<T> = Box<dyn FnOnce(Option<T>) + Send>;
-/// Whether whoever a continuation hands the answer to still wants it.
-type Interest = Box<dyn Fn() -> bool + Send>;
+
+/// The far end a continuation only forwards the answer to: whether it still
+/// wants the answer, and beginning the work on its behalf.
+struct Forward {
+    wanted: Box<dyn Fn() -> bool + Send>,
+    begin: Box<dyn Fn() -> bool + Send>,
+}
+
+/// Who decided whether the work behind an answer happens.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Claim {
+    Open,
+    /// The producer began it; the caller waits for its answer.
+    Begun,
+    /// The caller stopped waiting before it began; it never will.
+    GivenUp,
+}
 
 enum State<T> {
     Waiting {
         waker: Option<Waker>,
         then: Option<Continuation<T>>,
         /// Set with a continuation that only forwards the answer, so that
-        /// abandoning the far end abandons this one too.
-        interest: Option<Interest>,
+        /// abandoning the far end abandons this one too, and beginning this
+        /// one begins the far end.
+        forward: Option<Forward>,
     },
     /// Completed (`Some`) or abandoned by its producer (`None`).
     Done(Option<T>),
@@ -32,6 +53,8 @@ enum State<T> {
 }
 
 struct Slot<T> {
+    /// Locked before `state` whenever both are.
+    claim: Mutex<Claim>,
     state: Mutex<State<T>>,
     settled: Condvar,
 }
@@ -63,6 +86,9 @@ impl<T> Slot<T> {
     /// Whether nobody can observe this answer any more. `own` is how many
     /// strong references the asking side itself holds.
     fn abandoned(slot: &Arc<Self>, own: usize) -> bool {
+        if *slot.claim.lock().unwrap_or_else(PoisonError::into_inner) == Claim::GivenUp {
+            return true;
+        }
         if Arc::strong_count(slot) > own {
             return false;
         }
@@ -70,11 +96,39 @@ impl<T> Slot<T> {
         match &*state {
             State::Waiting {
                 then: Some(_),
-                interest,
+                forward,
                 ..
-            } => interest.as_ref().is_some_and(|wanted| !wanted()),
+            } => forward.as_ref().is_some_and(|far| !(far.wanted)()),
             State::Waiting { then: None, .. } | State::Done(_) | State::Taken => true,
         }
+    }
+
+    /// Begin the work unless whoever waits for the answer gave up on it or
+    /// is gone. `own` is as for [`Self::abandoned`].
+    fn begin(slot: &Arc<Self>, own: usize) -> bool {
+        let mut claim = slot.claim.lock().unwrap_or_else(PoisonError::into_inner);
+        match *claim {
+            Claim::Begun => return true,
+            Claim::GivenUp => return false,
+            Claim::Open => {}
+        }
+        if Arc::strong_count(slot) <= own {
+            let state = slot.state.lock().unwrap_or_else(PoisonError::into_inner);
+            let wanted = match &*state {
+                State::Waiting {
+                    then: Some(_),
+                    forward,
+                    ..
+                } => forward.as_ref().is_none_or(|far| (far.begin)()),
+                State::Waiting { then: None, .. } | State::Done(_) | State::Taken => false,
+            };
+            drop(state);
+            if !wanted {
+                return false;
+            }
+        }
+        *claim = Claim::Begun;
+        true
     }
 }
 
@@ -93,10 +147,11 @@ pub struct Pending<T> {
 #[must_use]
 pub fn pending<T>() -> (Completer<T>, Pending<T>) {
     let slot = Arc::new(Slot {
+        claim: Mutex::new(Claim::Open),
         state: Mutex::new(State::Waiting {
             waker: None,
             then: None,
-            interest: None,
+            forward: None,
         }),
         settled: Condvar::new(),
     });
@@ -117,6 +172,15 @@ impl<T> Completer<T> {
         self.slot
             .as_ref()
             .is_none_or(|slot| Slot::abandoned(slot, 1))
+    }
+
+    /// Begin the work behind this answer, unless the caller already gave
+    /// up on it ([`Pending::give_up`]) or went away. Once this returns
+    /// `true` the caller can no longer give up, so it hears how the work
+    /// went; `false` means the work must not happen.
+    #[must_use]
+    pub fn begin(&self) -> bool {
+        self.slot.as_ref().is_some_and(|slot| Slot::begin(slot, 1))
     }
 
     /// Deliver the answer. A continuation attached with
@@ -151,10 +215,44 @@ impl<T> Pending<T> {
     pub fn ready(value: T) -> Self {
         Self {
             slot: Arc::new(Slot {
+                claim: Mutex::new(Claim::Open),
                 state: Mutex::new(State::Done(Some(value))),
                 settled: Condvar::new(),
             }),
         }
+    }
+
+    /// Stop waiting, promising the caller the work behind the answer never
+    /// happens — unless it already began or answered, in which case this
+    /// hands the answer back to be waited for: the caller then hears what
+    /// became of the work rather than guessing.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(self)` when the producer already began the work
+    /// ([`Completer::begin`]) or the answer is here.
+    pub fn give_up(self) -> Result<(), Self> {
+        let mut claim = self
+            .slot
+            .claim
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let answered = !matches!(
+            *self
+                .slot
+                .state
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+            State::Waiting { .. }
+        );
+        let decided = if *claim == Claim::Begun || answered {
+            Err(())
+        } else {
+            *claim = Claim::GivenUp;
+            Ok(())
+        };
+        drop(claim);
+        decided.map_err(|()| self)
     }
 
     /// Take the answer if it has arrived, without waiting.
@@ -218,7 +316,7 @@ impl<T> Pending<T> {
         self.then_while(then, None);
     }
 
-    fn then_while(self, then: impl FnOnce(Option<T>) + Send + 'static, interest: Option<Interest>) {
+    fn then_while(self, then: impl FnOnce(Option<T>) + Send + 'static, forward: Option<Forward>) {
         let mut state = self
             .slot
             .state
@@ -229,7 +327,7 @@ impl<T> Pending<T> {
                 *state = State::Waiting {
                     waker,
                     then: Some(Box::new(then)),
-                    interest,
+                    forward,
                 };
             }
             State::Done(value) => {
@@ -250,6 +348,7 @@ impl<T: Send + 'static> Pending<T> {
     pub fn map<U: Send + 'static>(self, map: impl FnOnce(T) -> U + Send + 'static) -> Pending<U> {
         let (completer, mapped) = pending();
         let far_end = completer.slot.as_ref().map(Arc::downgrade);
+        let begin_end = far_end.clone();
         // Upgrading adds one reference to the completer's own.
         let wanted = move || {
             far_end
@@ -257,13 +356,22 @@ impl<T: Send + 'static> Pending<T> {
                 .and_then(Weak::upgrade)
                 .is_some_and(|slot| !Slot::abandoned(&slot, 2))
         };
+        let begin = move || {
+            begin_end
+                .as_ref()
+                .and_then(Weak::upgrade)
+                .is_some_and(|slot| Slot::begin(&slot, 2))
+        };
         self.then_while(
             move |value| {
                 if let Some(value) = value {
                     completer.complete(map(value));
                 }
             },
-            Some(Box::new(wanted)),
+            Some(Forward {
+                wanted: Box::new(wanted),
+                begin: Box::new(begin),
+            }),
         );
         mapped
     }
@@ -283,11 +391,11 @@ impl<T> Future for Pending<T> {
         match std::mem::replace(&mut *state, State::Taken) {
             State::Done(value) => Poll::Ready(value),
             State::Taken => Poll::Ready(None),
-            State::Waiting { then, interest, .. } => {
+            State::Waiting { then, forward, .. } => {
                 *state = State::Waiting {
                     waker: Some(context.waker().clone()),
                     then,
-                    interest,
+                    forward,
                 };
                 Poll::Pending
             }
@@ -309,6 +417,41 @@ mod tests {
         dropping_a_mapped_answer_abandons_the_original();
         waiting_across_threads_sees_the_answer_or_times_out();
         a_ready_answer_resolves_as_a_future_without_a_runtime();
+        beginning_and_giving_up_decide_the_work_once();
+    }
+
+    /// Whichever of the producer beginning and the caller giving up comes
+    /// first decides, through a mapped answer too: work that began is waited
+    /// for, and work given up on never begins.
+    fn beginning_and_giving_up_decide_the_work_once() {
+        let (completer, answer) = pending::<u32>();
+        let mapped = answer.map(|value| value.saturating_add(1));
+        assert!(mapped.give_up().is_ok());
+        assert!(
+            !completer.begin(),
+            "work the caller gave up on never begins"
+        );
+        assert!(completer.is_abandoned());
+
+        let (completer, answer) = pending::<u32>();
+        let mapped = answer.map(|value| value.saturating_add(1));
+        assert!(completer.begin());
+        let mapped = mapped
+            .give_up()
+            .expect_err("the caller cannot give up on work that began");
+        completer.complete(1);
+        assert_eq!(mapped.wait_timeout(Duration::ZERO).ok(), Some(Some(2)));
+
+        let (completer, answer) = pending::<u32>();
+        completer.complete(5);
+        let answer = answer
+            .give_up()
+            .expect_err("an answer that is here is taken, not given up on");
+        assert_eq!(answer.wait_timeout(Duration::ZERO).ok(), Some(Some(5)));
+
+        let (completer, answer) = pending::<u32>();
+        drop(answer);
+        assert!(!completer.begin(), "nobody waits, so nothing begins");
     }
 
     #[allow(

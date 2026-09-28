@@ -16,7 +16,7 @@ use crate::model::{
     TransitMode, TravelMode,
 };
 
-const USER_AGENT: &str = "Tilo-Maps/0.1 (https://example.test; native maps app)";
+use crate::tiles::USER_AGENT;
 
 /// Ramer–Douglas–Peucker tolerance (metres) applied to fetched route and
 /// transit-leg geometry on the fetch worker, before it reaches the model. A few

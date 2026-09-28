@@ -9,8 +9,6 @@
 //! room removes the agent, the broker says so, and the agent stops.
 
 use std::collections::HashMap;
-use std::os::fd::IntoRawFd as _;
-use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -104,10 +102,10 @@ impl Participant {
     pub fn connect(cfg: Config, think: Box<dyn Think>, forge: Box<dyn Forge>) -> Result<Self> {
         let manager = match (&cfg.endpoint, cfg.identity) {
             (Some(path), Some(identity)) => {
-                let stream = UnixStream::connect(path)
+                let stream = runtime_portal::agent_transport::connect_endpoint(path)
                     .with_context(|| format!("connect to {}", path.display()))?;
                 CollaborationManager::for_agent_route_fd_with_identity(
-                    stream.into_raw_fd(),
+                    stream,
                     CHAT_APP,
                     cfg.room,
                     None,
@@ -116,10 +114,10 @@ impl Participant {
                 )
             }
             (Some(path), None) => {
-                let stream = UnixStream::connect(path)
+                let stream = runtime_portal::agent_transport::connect_endpoint(path)
                     .with_context(|| format!("connect to {}", path.display()))?;
                 CollaborationManager::for_agent_route_fd(
-                    stream.into_raw_fd(),
+                    stream,
                     CHAT_APP,
                     cfg.room,
                     None,

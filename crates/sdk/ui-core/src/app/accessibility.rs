@@ -469,6 +469,7 @@ impl App {
     /// text it stands in has synced, or the page it is on has opened. The
     /// tree is refreshed where it always is (reporting semantic changes,
     /// following, inspection); an unchanged tree is not tried again.
+    #[cfg(any(test, feature = "native"))]
     pub(super) fn retry_standing_where_followed(&mut self) {
         let Some(missed_at) = self.presence.stood_missed_at else {
             return;

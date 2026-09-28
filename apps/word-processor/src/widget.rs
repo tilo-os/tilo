@@ -14071,6 +14071,7 @@ mod tests;
 #[cfg(test)]
 mod canonical_scroll_tests {
     use super::*;
+    use ui::headless::Framed;
 
     #[test]
     fn primary_scroll_uses_drawn_geometry_without_document_mutation() {
@@ -14085,13 +14086,14 @@ mod canonical_scroll_tests {
                 .insert_str(&mut state.doc, "A retained paragraph.");
             widget.model_mut().enter(&mut state.doc);
         }
-        tests::pipeline_draw(&mut widget, &mut state, 1000, 400);
+        let mut framed_widget = tests::mount(state, widget, 1000, 400);
+        let (widget, state) = Framed::split(&mut framed_widget);
         let heads = state.doc.get_heads();
         let before = widget.primary_vertical_scroll().unwrap().metrics;
         assert!(before.max_scroll() > 0.0);
 
         widget.apply_primary_vertical_scroll(PrimaryScrollAction::End);
-        tests::pipeline_draw(&mut widget, &mut state, 1000, 400);
+        let (widget, state) = tests::pipeline_draw(&mut framed_widget, 1000, 400);
         let after = widget.primary_vertical_scroll().unwrap().metrics;
         assert!(after.offset > before.offset);
         assert_eq!(after.offset, after.max_scroll());

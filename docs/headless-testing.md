@@ -263,6 +263,12 @@ Each output gets its own `wl_output`; snapshots cover the combined extent.
 `shots --outputs <fixture|spec>` renders the shell chrome across the same
 arrangement, and `tests/multi_output.rs` reads what clients see of it.
 
+Nobody looks at a headless session's frames by default, so it lays them out
+and answers clients' frame callbacks but does not rasterize them; `snapshot`
+renders on demand. A viewer that streams frames attaches with
+`{"op":"watch","watching":true}` (`tilo-control watch on`), or starts the
+session with `TILO_HEADLESS_WATCH=1`.
+
 ## End-to-end recipe — "click, snapshot, look"
 
 **The fastest path: run the example script.**

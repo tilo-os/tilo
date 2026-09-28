@@ -8,8 +8,12 @@
 //!
 //! Only JSON responses are produced: no server-initiated stream is offered, so
 //! `GET` answers 405 as the specification allows.
+//!
+//! Beside `/mcp`, `POST /watch {"watching": bool}` holds the compositor's
+//! [`WatchLease`] for a dashboard showing this machine, under the same token.
 
 use crate::mcp::McpServer;
+use crate::watch::{WATCH_LEASE, WatchLease};
 use http_body_util::{BodyExt, Full, Limited};
 use hyper::{
     Method, Request, Response, StatusCode,
@@ -36,6 +40,7 @@ const MAX_BODY_BYTES: usize = crate::mcp_process::MAX_REQUEST_BYTES;
 const MAX_SESSIONS: usize = 256;
 const SESSION_IDLE: Duration = Duration::from_secs(6 * 60 * 60);
 const MAX_LABEL_CHARS: usize = 80;
+const VIEWER_PREFIX: &str = "/viewer/invitations";
 
 /// Where to listen and which bearer token, if any, callers must present.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -105,10 +110,21 @@ pub struct Endpoint<H> {
     actor: String,
     token: Option<String>,
     computer: Option<Arc<crate::computer::Computer>>,
+    viewer: Option<Arc<crate::viewer::Viewer>>,
+    /// Present exactly when a compositor is driven, which `/watch` then gates.
+    watch: Option<Arc<WatchLease>>,
     sessions: Mutex<HashMap<String, Session<H>>>,
 }
 
+/// The only body `POST /watch` accepts.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WatchRequest {
+    watching: bool,
+}
+
 impl<H: ActionHost + crate::mcp::InspectionSource + Clone + Send + Sync + 'static> Endpoint<H> {
+    /// [`Self::with_viewer`] without a partner-hosted viewer.
     #[must_use]
     pub fn new(
         host: H,
@@ -117,12 +133,44 @@ impl<H: ActionHost + crate::mcp::InspectionSource + Clone + Send + Sync + 'stati
         token: Option<String>,
         computer: Option<Arc<crate::computer::Computer>>,
     ) -> Arc<Self> {
+        Self::with_viewer(host, room, actor, token, computer, None)
+    }
+
+    /// Also answer `/viewer/invitations` for a partner-hosted viewer. A
+    /// `computer`, when present, is also the compositor `/watch` drives.
+    #[must_use]
+    pub fn with_viewer(
+        host: H,
+        room: String,
+        actor: String,
+        token: Option<String>,
+        computer: Option<Arc<crate::computer::Computer>>,
+        viewer: Option<Arc<crate::viewer::Viewer>>,
+    ) -> Arc<Self> {
+        let watch = computer.clone().map(|computer| {
+            let sink: Arc<dyn crate::watch::WatchSink> = computer;
+            WatchLease::new(sink, WATCH_LEASE)
+        });
+        Self::build(host, room, actor, token, computer, viewer, watch)
+    }
+
+    fn build(
+        host: H,
+        room: String,
+        actor: String,
+        token: Option<String>,
+        computer: Option<Arc<crate::computer::Computer>>,
+        viewer: Option<Arc<crate::viewer::Viewer>>,
+        watch: Option<Arc<WatchLease>>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             host,
             room,
             actor,
             token,
             computer,
+            viewer,
+            watch,
             sessions: Mutex::new(HashMap::new()),
         })
     }
@@ -154,7 +202,7 @@ impl<H: ActionHost + crate::mcp::InspectionSource + Clone + Send + Sync + 'stati
     ) -> Response<Full<Bytes>> {
         match (method, path) {
             (&Method::GET, "/health") => json_response(StatusCode::OK, &json!({"ok":true}), None),
-            (_, "/mcp") if !self.authorized(headers) => {
+            (_, "/mcp" | "/watch") if !self.authorized(headers) => {
                 plain(StatusCode::UNAUTHORIZED, "missing or wrong bearer token")
             }
             (&Method::POST, "/mcp") => self.post(headers, body).await,
@@ -164,7 +212,62 @@ impl<H: ActionHost + crate::mcp::InspectionSource + Clone + Send + Sync + 'stati
                 None => plain(StatusCode::BAD_REQUEST, "missing Mcp-Session-Id"),
             },
             (_, "/mcp") => plain(StatusCode::METHOD_NOT_ALLOWED, "POST or DELETE"),
+            (&Method::POST, "/watch") => match &self.watch {
+                Some(lease) => watch(lease, body).await,
+                None => plain(StatusCode::NOT_FOUND, "no compositor to watch"),
+            },
+            (_, "/watch") => plain(StatusCode::METHOD_NOT_ALLOWED, "POST"),
+            (_, path) if path.starts_with(VIEWER_PREFIX) => {
+                self.viewer_route(method, path, headers, body).await
+            }
             _ => plain(StatusCode::NOT_FOUND, "not found"),
+        }
+    }
+
+    /// `POST /viewer/invitations`, `DELETE /viewer/invitations/<id>`,
+    /// `POST /viewer/invitations/<id>/role` and `…/<id>/renew`.
+    async fn viewer_route(
+        &self,
+        method: &Method,
+        path: &str,
+        headers: &hyper::HeaderMap,
+        body: &[u8],
+    ) -> Response<Full<Bytes>> {
+        let Some(viewer) = self.viewer.clone() else {
+            return plain(StatusCode::NOT_FOUND, "not found");
+        };
+        if !self.authorized(headers) {
+            return plain(StatusCode::UNAUTHORIZED, "missing or wrong bearer token");
+        }
+        let rest = path.trim_start_matches(VIEWER_PREFIX);
+        let segments: Vec<&str> = rest.split('/').filter(|part| !part.is_empty()).collect();
+        let valid_id = |id: &str| id.len() == 64 && id.bytes().all(|byte| byte.is_ascii_hexdigit());
+        let call = match (method, segments.as_slice()) {
+            (&Method::POST, []) => ViewerCall::Issue,
+            (&Method::DELETE, [id]) if valid_id(id) => ViewerCall::Revoke((*id).to_owned()),
+            (&Method::POST, [id, "role"]) if valid_id(id) => ViewerCall::Role((*id).to_owned()),
+            (&Method::POST, [id, "renew"]) if valid_id(id) => ViewerCall::Renew((*id).to_owned()),
+            (_, [] | [_] | [_, "role" | "renew"]) => {
+                return plain(StatusCode::METHOD_NOT_ALLOWED, "method not allowed");
+            }
+            _ => return plain(StatusCode::NOT_FOUND, "not found"),
+        };
+        let body = body.to_vec();
+        let result = tokio::task::spawn_blocking(move || match call {
+            ViewerCall::Issue => viewer.issue(&body),
+            ViewerCall::Revoke(id) => viewer.revoke(&id),
+            ViewerCall::Role(id) => viewer.set_role(&id, &body),
+            ViewerCall::Renew(id) => viewer.renew(&id, &body, crate::viewer::now_ms()),
+        })
+        .await;
+        match result {
+            Ok(Ok(value)) => json_response(StatusCode::OK, &value, None),
+            Ok(Err(error)) => json_response(
+                StatusCode::from_u16(error.status).unwrap_or(StatusCode::SERVICE_UNAVAILABLE),
+                &json!({"error": error.message}),
+                None,
+            ),
+            Err(_) => plain(StatusCode::SERVICE_UNAVAILABLE, "viewer request failed"),
         }
     }
 
@@ -255,6 +358,38 @@ impl<H: ActionHost + crate::mcp::InspectionSource + Clone + Send + Sync + 'stati
             .lock()
             .is_ok_and(|mut sessions| sessions.remove(id).is_some())
     }
+}
+
+/// Start, renew or end the watch lease.
+async fn watch(lease: &Arc<WatchLease>, body: &[u8]) -> Response<Full<Bytes>> {
+    let Ok(WatchRequest { watching }) = serde_json::from_slice(body) else {
+        return plain(
+            StatusCode::BAD_REQUEST,
+            r#"the body must be {"watching": bool}"#,
+        );
+    };
+    match lease.apply(watching).await {
+        Ok(()) => json_response(
+            StatusCode::OK,
+            &json!({"watching": watching, "lease_seconds": lease.lease().as_secs()}),
+            None,
+        ),
+        Err(error) => {
+            tracing::warn!(%error, watching, "the compositor did not take the watch signal");
+            plain(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "the compositor did not take the watch signal",
+            )
+        }
+    }
+}
+
+/// One `/viewer/invitations` route, with its invitation id.
+enum ViewerCall {
+    Issue,
+    Revoke(String),
+    Role(String),
+    Renew(String),
 }
 
 /// The human label of an agent run: the client's declared name, bounded.

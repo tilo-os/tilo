@@ -271,7 +271,7 @@ fn supervise(
         .is_ok();
     loop {
         if !armed || stop.recv_timeout(Duration::from_millis(150)).is_ok() {
-            terminate_group(&mut child, pgid);
+            bounded_command::terminate_tree(&mut child, Duration::from_secs(1));
             break;
         }
         match child.try_wait() {
@@ -441,38 +441,6 @@ fn service_launch_command(socket: &Path) -> Result<crate::shell::launcher::Launc
         crate::compositor::render_node::resolved(),
         None,
     ))
-}
-
-fn terminate_group(child: &mut std::process::Child, pgid: libc::pid_t) {
-    // `pgid` is always the positive pid returned for the child we created with
-    // `process_group(0)`, so this never overflows; `checked_neg` still keeps the kill from
-    // firing on a garbage value instead of trusting the invariant blindly.
-    if let Some(target) = pgid.checked_neg() {
-        // SAFETY: `target` is the negation of the positive pid returned for the child we
-        // created with `process_group(0)`. A negative argument targets exactly that group.
-        unsafe {
-            libc::kill(target, libc::SIGTERM);
-        }
-    }
-    // A one-second deadline this close to `Instant`'s representable range is not a real
-    // possibility, but falling back to "now" (skip straight to SIGKILL) beats hanging.
-    let deadline = Instant::now()
-        .checked_add(Duration::from_secs(1))
-        .unwrap_or_else(Instant::now);
-    while Instant::now() < deadline {
-        if child.try_wait().ok().flatten().is_some() {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(25));
-    }
-    if let Some(target) = pgid.checked_neg() {
-        // SAFETY: same process group as above; bounded escalation prevents a
-        // wedged sandbox from retaining input authority indefinitely.
-        unsafe {
-            libc::kill(target, libc::SIGKILL);
-        }
-    }
-    let _ = child.wait();
 }
 
 /// Both trusted input methods of a session, their private displays, and the

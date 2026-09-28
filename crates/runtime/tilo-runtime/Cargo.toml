@@ -28,6 +28,7 @@ base64.workspace = true
 # Seals and opens the channel state this device keeps for its encrypted routes.
 channel-crypto = { path = "../../collab/channel-crypto" }
 blake3.workspace = true
+chrono = { workspace = true, features = ["std"] }
 collab-types = { path = "../../collab/collab-types" }
 ed25519-dalek.workspace = true
 # The random key sealing the channel state.
@@ -87,6 +88,8 @@ ed25519-dalek.workspace = true
 tempfile.workspace = true
 tilo-resource = { path = "../../sdk/tilo-resource" }
 tilo-test-env = { path = "../../dev/test-env" }
+# Paused time drives the watch lease's expiry.
+tokio = { workspace = true, features = ["test-util"] }
 # An ordinary SDK app, to prove the standalone session admits and publishes it.
 ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 

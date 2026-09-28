@@ -23,6 +23,14 @@ its unit tests, both of:
    placeholder and not a uniform fill, and that it *changed* vs. the pre-load
    frame.
 
+Pixel variety alone cannot tell imagery from a refusal. A provider that stops
+serving can still answer every request with a valid, colourful PNG: CARTO's
+"API KEY REQUIRED" tile arrived with HTTP 200 and `image/png`, and the maps lane
+stayed green while it was on screen. Assert on what the backend actually
+returned as well. The maps lane requires the tiles the worker cached for
+distinct city-centre coordinates to be distinct images, and the tile layer
+records error statuses and non-PNG answers as rejected failures, not as imagery.
+
 Both must remain runnable through a named, documented opt-in lane. Network tests
 must use `#[ignore]` rather than returning early: ordinary CI should report that
 it did not execute them, never count a no-assertion branch as a passing test.
@@ -58,6 +66,10 @@ MAPS_LIVE_OUT=apps/maps/live-out \
   tilo-build test -p maps --test live_maps -- \
   --ignored --nocapture --test-threads 1
 ```
+
+The lane loads about one viewport of OpenStreetMap Standard tiles per case,
+the interactive scale the OSMF tile policy permits. Do not widen it into
+area sweeps.
 
 Ordinary `tilo-build test -p maps` compiles these cases but reports them as
 ignored. The lane drives the whole app rather than duplicating a weaker raw
