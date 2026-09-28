@@ -29,6 +29,11 @@ tilo-desktop-model = { path = "../../session/desktop-model" }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 collab-types = { path = "../collab-types" }
 channel-crypto = { path = "../channel-crypto" }
+# The channel service's governance messages and wall clock.
+neighbour-wire = { path = "../neighbour-wire" }
+tilo-clock = { path = "../../system/tilo-clock" }
+# The identity service hands apps their route keys from the channel service.
+tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
 tilo-actions = { path = "../actions" }
 # Shortcuts: checking, running and describing them at the action door.
 tilo-automation = { path = "../automation" }
