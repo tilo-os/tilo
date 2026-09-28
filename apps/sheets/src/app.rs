@@ -8312,6 +8312,10 @@ mod tests {
 
     /// Resource operations reject wrong kinds; affordances dispatch the same encoded actions as their specs.
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
     fn affordances_and_resource_operations_match_action_specs() {
         // Case `resource_operations_reject_wrong_kinds_without_changing_state`.
         {
