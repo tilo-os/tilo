@@ -1535,7 +1535,7 @@ fn derive_input(params: &[ActionParam], build: &ArgsBuilder, placeholder: String
 /// from `tilo_resource::publish`. Do not hand-build a second
 /// `tilo_actions::Resource` tree for the same document state.
 #[deprecated(note = "use ResourceApp + tilo_resource::publish; do not hand-build Resource trees")]
-pub(crate) trait ResourceProvider {
+pub trait ResourceProvider {
     fn resources(&self, doc: &automerge::AutoCommit) -> Vec<Resource>;
 
     /// Resolve one stable resource id without requiring it to be present in

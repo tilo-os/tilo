@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 use tilo_automerge::ApplyIncoming;
 
 use automerge::AutoCommit;
-use tilo_actions::{ActionAddress, Resource, ResourceProvider};
+use tilo_actions::{ActionAddress, Resource};
 use tilo_agent::{Config, Session};
 use tilo_content::ContentStore;
 use ui::collaboration::{CollabEvent, CollabRequest, DocumentMutation};
