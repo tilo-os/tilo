@@ -10,7 +10,9 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use js_sys::{Function, Reflect, Uint8Array};
-use ui::application::{ComponentRunnerInputs, HostContext, LaunchTarget, RestoreInput};
+use ui::application::{
+    ComponentRunnerInputs, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
+};
 use ui::application_view::InstanceViewStore;
 use ui::headless::FrameHarness;
 use ui::permissions::{PermissionContext, UserId};
@@ -613,24 +615,28 @@ fn present_component(
     let context = match named_new {
         Some(id) => HostContext::prepare_new_record(
             definition,
-            record.clone(),
-            views,
-            config.device.clone(),
-            config.instance,
-            permissions,
-            UserId(config.author()),
-            tilo_actions::ActionContext::default(),
+            HostContextInputs {
+                records: record.clone(),
+                views,
+                device_id: config.device.clone(),
+                instance_id: config.instance,
+                permissions,
+                author: UserId(config.author()),
+                action_context: tilo_actions::ActionContext::default(),
+            },
             id,
         ),
         None => HostContext::prepare(
             definition,
-            record.clone(),
-            views,
-            config.device.clone(),
-            config.instance,
-            permissions,
-            UserId(config.author()),
-            tilo_actions::ActionContext::default(),
+            HostContextInputs {
+                records: record.clone(),
+                views,
+                device_id: config.device.clone(),
+                instance_id: config.instance,
+                permissions,
+                author: UserId(config.author()),
+                action_context: tilo_actions::ActionContext::default(),
+            },
             &target,
         ),
     }

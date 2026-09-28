@@ -229,7 +229,11 @@ pub(crate) const PROFILE_WORKSPACE: &str = "profile";
 #[wasm_bindgen]
 pub fn profile_value(profile: &str, device: &str, name: &str) -> Result<Option<Vec<u8>>, JsValue> {
     let stored = cached(profile, device)?
-        .read(&StorageKey::record(PAGE_VALUES_PACKAGE, PROFILE_WORKSPACE, name))
+        .read(&StorageKey::record(
+            PAGE_VALUES_PACKAGE,
+            PROFILE_WORKSPACE,
+            name,
+        ))
         .map_err(error)?;
     Ok(stored
         .map(|stored| stored.bytes)

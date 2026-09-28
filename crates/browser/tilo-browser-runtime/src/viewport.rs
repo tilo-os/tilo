@@ -170,7 +170,10 @@ mod tests {
         assert!(u64::from(bounded.width) * u64::from(bounded.height) <= MAX_SURFACE_PIXELS);
         assert!(bounded.width <= MAX_SURFACE_SIDE && bounded.height <= MAX_SURFACE_SIDE);
         let (lw, lh) = bounded.logical_size();
-        assert!(lw.abs_diff(3008) <= 1 && lh.abs_diff(1692) <= 1, "{lw}x{lh}");
+        assert!(
+            lw.abs_diff(3008) <= 1 && lh.abs_diff(1692) <= 1,
+            "{lw}x{lh}"
+        );
 
         let zoomed = Viewport {
             width: 2000,
@@ -205,7 +208,10 @@ mod tests {
         let (x, y) = state.map_pointer(4000.0, 2000.0);
         assert!((x / applied.dpr - 2000.0).abs() < 1.0, "{x}");
         assert!((y / applied.dpr - 1000.0).abs() < 1.0, "{y}");
-        assert!(!state.request(observed), "an unchanged extent is not a resize");
+        assert!(
+            !state.request(observed),
+            "an unchanged extent is not a resize"
+        );
     }
     const INITIAL: Viewport = Viewport {
         width: 800,

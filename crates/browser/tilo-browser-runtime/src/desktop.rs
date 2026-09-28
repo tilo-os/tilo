@@ -18,7 +18,7 @@ use tilo_desktop_model::{DesktopTree, IdMinter, Tab, TabId, TileContent, Workspa
 use tilo_desktop_surface::navigation::Application;
 use tilo_desktop_surface::{DesktopHandle, DesktopSurface, TileSource};
 use ui::application::{
-    AppComponent, ApplicationDefinition, HostContext, LaunchTarget, RestoreInput,
+    AppComponent, ApplicationDefinition, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
 };
 use ui::application_view::InstanceViewStore;
 use ui::permissions::{PermissionContext, UserId};
@@ -159,13 +159,15 @@ impl Tiles {
             .map_or(RestoreInput::None, RestoreInput::Local);
         let context = HostContext::prepare(
             definition,
-            store,
-            Rc::clone(&self.inputs.views),
-            self.inputs.device.clone(),
-            tab.id,
-            Rc::clone(&self.inputs.permissions),
-            UserId(self.inputs.author.clone()),
-            tilo_actions::ActionContext::default(),
+            HostContextInputs {
+                records: store,
+                views: Rc::clone(&self.inputs.views),
+                device_id: self.inputs.device.clone(),
+                instance_id: tab.id,
+                permissions: Rc::clone(&self.inputs.permissions),
+                author: UserId(self.inputs.author.clone()),
+                action_context: tilo_actions::ActionContext::default(),
+            },
             &target,
         )
         .map_err(|error| error.to_string())?;
