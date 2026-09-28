@@ -4078,9 +4078,7 @@ fn check_resource_action_surface(app_dir: &Path, checks: &mut Vec<DoctorCheck>) 
         || code.contains("ActionForm::new(")
         || code.contains("ui::widget::resource_actions::ActionForm::new(");
     let custom_catalogue = code.contains("fn resources(") && code.contains("ActionSpec::");
-    let custom_invocation = code.contains("fn start_operation(")
-        || code.contains("invoke_resource_operation")
-        || code.contains("start_resource_operation");
+    let custom_invocation = code.contains("fn start_operation(");
     let custom_operation =
         code.contains("OperationKind::Effect") || code.contains("OperationKind::View");
     let toolkit_surface = toolkit_host && toolkit_descriptor;

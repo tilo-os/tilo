@@ -4161,23 +4161,6 @@ impl Widget for InstallerApp {
             .map(|output| Some(ui::widget::ResourceOperationStart::Completed(output)))
     }
 
-    /// Legacy adapter: offered through [`Widget::start_operation`].
-    fn start_resource_operation_with_document(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        self.start_operation(
-            &ui::widget::ResourceOperation::local(invocation, kind, type_id, payload),
-            doc,
-            path,
-        )
-    }
-
     fn take_focus_reset(&mut self) -> bool {
         std::mem::take(&mut self.focus_reset)
     }
