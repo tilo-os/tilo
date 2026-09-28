@@ -2642,6 +2642,8 @@ fn first_change(model: &RepoModel) -> Option<(ChangeArea, usize)> {
 }
 
 impl Widget for GitClientApp {
+    ui::provides!(dyn ui::undo::CommittedActions);
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::GIT_CLIENT_OPERATION_TYPE]
     }
@@ -2931,13 +2933,6 @@ impl Widget for GitClientApp {
         <Self as tilo_actions::ResourceProvider>::resources(self, doc)
     }
 
-    /// Hand the host the document heads captured before an on-screen preference
-    /// control dispatched, so it records exactly one undo boundary bracketing
-    /// it — the same path a Ctrl+K palette dispatch takes.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
-    }
-
     fn start_operation(
         &mut self,
         op: &ui::widget::ResourceOperation<'_>,
@@ -3038,6 +3033,15 @@ impl Widget for GitClientApp {
         _permissions: &PermissionContext,
     ) {
         self.draw(scene, transform, tr, theme, presence);
+    }
+}
+
+impl ui::undo::CommittedActions for GitClientApp {
+    /// Hand the host the document heads captured before an on-screen preference
+    /// control dispatched, so it records exactly one undo boundary bracketing
+    /// it — the same path a Ctrl+K palette dispatch takes.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
     }
 }
 
@@ -3774,7 +3778,7 @@ mod tests {
         );
         // ...recorded exactly one undo boundary bracketing the toggle...
         assert!(
-            app.take_committed_action().is_some(),
+            ui::undo::take_committed_action(&mut app).is_some(),
             "one undo boundary recorded for the control's action"
         );
         // ...and dispatched the byte-identical action Ctrl+K would.

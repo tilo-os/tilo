@@ -57,14 +57,16 @@ containerfile="$repo/os/Containerfile"
 # /usr/lib/tilo/web-engine-entitled.conf, the image-owned list of packages
 # the launcher lets build a web engine's own renderer sandbox, and
 # /usr/lib/tilo/manages-machine.conf, the system apps it tells whether the
-# session owns the machine.
+# session owns the machine. The tilo-identity.service user unit (a one-shot
+# chain-v1 repair) is gone; the compositor verifies and repairs identity at
+# startup.
 # Sorting
 # intentionally ignores instruction order:
 # destinations are unique, and the source-stage/source/destination triple defines
 # each COPY's installed bytes and path. Modes remain source modes except at the
 # explicitly equivalent COPY --chmod=0755 sites checked below. COPY preserves
 # ownership, mtimes and symlinks through scratch stages; no RUN mutates them.
-expected_contract=169f6c9bc39b6f2ef0dfbdbf418b12e7c28e12fbd9efd3b032decc6a4fd87786
+expected_contract=9f92bf8bb51a1347e2f80d7d736bf3386a7564fa71738023ca29a1398b06b063
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

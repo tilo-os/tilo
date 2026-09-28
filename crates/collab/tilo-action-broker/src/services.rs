@@ -202,6 +202,21 @@ pub trait LauncherServices: Send + Sync {
         let _ = surface_id;
         None
     }
+    /// Whether [`Self::close`] can close applications on this host.
+    fn closes_applications(&self) -> bool {
+        false
+    }
+    /// Ask every window of `app` in `workspace` to close the way a person
+    /// closing it would. The next launch starts a fresh process, which picks
+    /// up permissions granted since the last one.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the host cannot close applications.
+    fn close(&self, app: &str, workspace: &Workspace) -> Result<(), String> {
+        let _ = (app, workspace);
+        Err("closing applications is unsupported on this host".into())
+    }
 }
 
 /// One launch the host supervises: the launched process, pinned by its

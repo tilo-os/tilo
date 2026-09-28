@@ -572,43 +572,6 @@ impl Widget for ResourceActionHost {
             .map(Some)
     }
 
-    /// Legacy adapter: apps not yet on [`Widget::start_operation`] still reach
-    /// this host through their read-only routing.
-    fn invoke_resource_operation_v2(
-        &mut self,
-        kind: OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<Option<ActionOutput>, String> {
-        if kind == OperationKind::Document || type_id != OPERATION_TYPE {
-            return Ok(None);
-        }
-        match &mut self.runner {
-            Runner::Immediate(run) => run(payload).map(Some),
-            Runner::Background(_) => Ok(None),
-        }
-    }
-
-    /// Legacy adapter; see [`Self::invoke_resource_operation_v2`].
-    fn start_resource_operation(
-        &mut self,
-        invocation: InvocationId,
-        kind: OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ResourceOperationStart>, String> {
-        if kind == OperationKind::Document || type_id != OPERATION_TYPE {
-            return self
-                .root
-                .start_resource_operation(invocation, kind, type_id, payload, doc, path);
-        }
-        self.run_operation(invocation, payload).map(Some)
-    }
-
     fn poll_resource_operation(
         &mut self,
         invocation: InvocationId,

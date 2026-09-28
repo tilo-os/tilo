@@ -416,6 +416,15 @@ impl LauncherServices for NativeLauncher {
     fn attest_process(&self, pid: u32, app: &str, room: &str) -> bool {
         super::launcher::attest_trusted_service_launch_for_pid(pid, app, room).is_some()
     }
+    fn closes_applications(&self) -> bool {
+        super::app_close::installed()
+    }
+    fn close(&self, app: &str, workspace: &tilo_desktop_model::Workspace) -> Result<(), String> {
+        super::app_close::request(super::app_close::AppCloseRequest {
+            app_id: app.to_string(),
+            room: workspace.room,
+        })
+    }
 }
 
 /// The workspace's shortcuts, stored in the shell's canonical workspace

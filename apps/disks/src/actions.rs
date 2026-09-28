@@ -72,7 +72,7 @@
 //! and an exact typed phrase for destructive formatting. Before an operation
 //! starts, `DisksApp` revalidates the resource leaf against its latest local
 //! probe and derives the filesystem type from that probe, rejecting stale or
-//! forged remote payloads. [`take_committed_action`](ui::widget::Widget::take_committed_action)
+//! forged remote payloads. [`take_committed_action`](ui::undo::CommittedActions::take_committed_action)
 //! remains `None` because none of these effects may be replayed as a CRDT
 //! mutation; the tests below prove both halves of that boundary.
 
@@ -380,7 +380,7 @@ mod tests {
                 "partition publishes the mount action appropriate to its state: {actions:?}",
             );
             assert!(
-                app.take_committed_action().is_none(),
+                ui::undo::take_committed_action(&mut app).is_none(),
                 "no action is dispatched, so no action-host undo boundary is recorded",
             );
         }

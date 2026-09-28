@@ -498,9 +498,7 @@ pub enum AgentRoute {
 pub struct AgentStep {
     /// A UUID minted when the dispatch is authored. Trace rows are keyed by
     /// this id in the CRDT, never by their display position, so concurrent
-    /// appends cannot overwrite each other. Empty only when deserialising a
-    /// pre-id legacy payload; action builders upgrade those before dispatch.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
+    /// appends cannot overwrite each other.
     pub id: String,
     /// The author's monotonic position in its trace. Concurrent appends may
     /// share a sequence; readers then tie-break by the stable [`Self::id`].
@@ -599,9 +597,9 @@ impl AgentWork {
         self
     }
 
-    /// Upgrade a legacy/in-process trace at the *authoring* boundary. This is
-    /// intentionally never invoked by CRDT replay: replay receives the ids
-    /// minted here as part of the action payload.
+    /// Mint ids for steps built in-process without one, at the *authoring*
+    /// boundary. This is intentionally never invoked by CRDT replay: replay
+    /// receives the ids minted here as part of the action payload.
     pub fn ensure_trace_ids(&mut self) {
         for (index, step) in self.trace.iter_mut().enumerate() {
             if step.id.is_empty() {
@@ -1006,16 +1004,6 @@ mod agent_record_tests {
                 json.contains("\"route\":\"model\""),
                 "route missing: {json}"
             );
-        }
-        // Phase: legacy_trace_step_without_an_id_remains_readable.
-        {
-            let step: AgentStep = serde_json::from_str(
-                r#"{"resource":"photo:1","label":"Crop","outcome":{"outcome":"asked"}}"#,
-            )
-            .expect("pre-id step still parses");
-            assert!(step.id.is_empty());
-            assert_eq!(step.sequence, 0);
-            assert_eq!(step.outcome, AgentStepOutcome::Asked);
         }
         // Phase: a_row_that_has_not_answered_yet_survives_the_wire.
         // A row that is still in flight survives the wire, and says so — what

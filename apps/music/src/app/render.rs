@@ -910,7 +910,7 @@ impl Continuable for MusicApp {
 }
 
 impl Widget for MusicApp {
-    ui::provides!(dyn ui::widget::Continuable);
+    ui::provides!(dyn ui::widget::Continuable, dyn ui::undo::CommittedActions);
 
     fn take_structure_dirty(&mut self) -> bool {
         self.open_file_layout_visible != Some(matches!(self.view, View::Home))
@@ -964,13 +964,6 @@ impl Widget for MusicApp {
     /// [`crate::actions`].
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
         <Self as tilo_actions::ResourceProvider>::resources(self, doc)
-    }
-
-    /// Hand the host the heads captured before an on-screen affordance dispatched
-    /// its music action, so it records one undo boundary for it (see
-    /// `MusicApp::perform_action`). Rising-edge: cleared on read.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
     }
 
     /// Fold the user's library into the unified Ctrl+K palette. The app retains
@@ -1917,6 +1910,15 @@ impl Widget for MusicApp {
 
     fn mark_drawn(&mut self) {
         self.dirty = false;
+    }
+}
+
+impl ui::undo::CommittedActions for MusicApp {
+    /// Hand the host the heads captured before an on-screen affordance dispatched
+    /// its music action, so it records one undo boundary for it (see
+    /// `MusicApp::perform_action`). Rising-edge: cleared on read.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
     }
 }
 

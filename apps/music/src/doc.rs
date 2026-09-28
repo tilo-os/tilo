@@ -25,7 +25,7 @@
 //! ```
 
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
+use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
 use ui::doc::{read_bool, read_i64_coerced, read_str};
 
 use crate::model::{Album, Artist, Library, Playback, Playlist, Track};
@@ -65,36 +65,9 @@ fn library_entry_exists(doc: &AutoCommit, collection: &str, id: &str) -> bool {
             .is_some_and(|entries| doc.get(&entries, id).ok().flatten().is_some())
 }
 
-fn list_strings(doc: &AutoCommit, list: &ObjId) -> Vec<String> {
-    let n = doc.length(list);
-    let mut out = Vec::with_capacity(n);
-    for i in 0..n {
-        if let Ok(Some((Value::Scalar(v), _))) = doc.get(list, i)
-            && let ScalarValue::Str(s) = v.as_ref()
-        {
-            out.push(s.to_string());
-        }
-    }
-    out
-}
-
 fn membership_entries(doc: &AutoCommit, playlist: &ObjId) -> Vec<(String, i64)> {
     let Some(membership) = get_map(doc, playlist, "track_membership") else {
-        // Backward compatibility for documents written before stable keyed
-        // memberships: project their list order into sparse ranks. The next
-        // authored mutation writes the new representation.
-        return get_list(doc, playlist, "tracks")
-            .map(|list| {
-                list_strings(doc, &list)
-                    .into_iter()
-                    .enumerate()
-                    .map(|(index, id)| {
-                        let index = i64::try_from(index).unwrap_or(i64::MAX / ORDER_STEP);
-                        (id, index * ORDER_STEP)
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+        return Vec::new();
     };
     let order = get_map(doc, playlist, "track_order");
     let mut entries = doc
@@ -115,18 +88,10 @@ fn membership_entries(doc: &AutoCommit, playlist: &ObjId) -> Vec<(String, i64)> 
 
 fn ensure_membership_maps(doc: &mut AutoCommit, playlist: &ObjId) -> Option<(ObjId, ObjId)> {
     if get_map(doc, playlist, "track_membership").is_none() {
-        let legacy = get_list(doc, playlist, "tracks")
-            .map(|list| list_strings(doc, &list))
-            .unwrap_or_default();
         let membership = doc
             .put_object(playlist, "track_membership", ObjType::Map)
             .ok()?;
         let order = doc.put_object(playlist, "track_order", ObjType::Map).ok()?;
-        for (index, id) in legacy.iter().enumerate() {
-            let index = i64::try_from(index).unwrap_or(i64::MAX / ORDER_STEP);
-            let _ = doc.put(&membership, id.as_str(), true);
-            let _ = doc.put(&order, id.as_str(), index * ORDER_STEP);
-        }
         return Some((membership, order));
     }
     let membership = get_map(doc, playlist, "track_membership")?;
@@ -530,26 +495,17 @@ fn ensure_bool_map(doc: &mut AutoCommit, key: &str) -> Option<ObjId> {
     if let Some(map) = get_map(doc, &ROOT, key) {
         return Some(map);
     }
-    let legacy = get_list(doc, &ROOT, key)
-        .map(|list| list_strings(doc, &list))
-        .unwrap_or_default();
-    let map = doc.put_object(&ROOT, key, ObjType::Map).ok()?;
-    for id in legacy {
-        let _ = doc.put(&map, id, true);
-    }
-    Some(map)
+    doc.put_object(&ROOT, key, ObjType::Map).ok()
 }
 
 fn load_bool_set(doc: &AutoCommit, key: &str) -> std::collections::BTreeSet<String> {
-    if let Some(map) = get_map(doc, &ROOT, key) {
-        doc.keys(&map)
-            .filter(|id| read_bool(doc, &map, id).unwrap_or(false))
-            .collect()
-    } else {
-        get_list(doc, &ROOT, key)
-            .map(|list| list_strings(doc, &list).into_iter().collect())
-            .unwrap_or_default()
-    }
+    get_map(doc, &ROOT, key)
+        .map(|map| {
+            doc.keys(&map)
+                .filter(|id| read_bool(doc, &map, id).unwrap_or(false))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Toggle a track's membership in "Liked Songs". Returns the new liked state.
@@ -820,7 +776,7 @@ mod tests {
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
-    fn playlist_edits_round_trip_merge_and_migrate() {
+    fn playlist_edits_round_trip_and_merge() {
         // Phase `add_track_to_playlist_appends_once`.
         {
             let mut doc = AutoCommit::new();
@@ -881,19 +837,6 @@ mod tests {
                     .iter()
                     .all(|playlist| playlist.id != "pl_focus")
             );
-        }
-
-        // Phase `first_absolute_set_migrates_legacy_list_without_losing_members`.
-        {
-            let mut doc = seeded_doc();
-            let legacy = doc.put_object(&ROOT, "liked", ObjType::List).unwrap();
-            doc.insert(&legacy, 0, "tk_g1").unwrap();
-            doc.insert(&legacy, 1, "tk_p1").unwrap();
-            set_liked(&mut doc, "tk_v2", true);
-            let liked = load_library(&doc).liked;
-            assert!(liked.contains("tk_g1"));
-            assert!(liked.contains("tk_p1"));
-            assert!(liked.contains("tk_v2"));
         }
     }
 

@@ -14282,6 +14282,8 @@ impl PhotosApp {
 }
 
 impl Widget for PhotosApp {
+    ui::provides!(dyn ui::undo::CommittedActions);
+
     fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
         Some(&crate::framework_history::HISTORY)
     }
@@ -14307,10 +14309,6 @@ impl Widget for PhotosApp {
             crate::actions::PHOTOS_OPERATION_TYPE,
             RETAINED_CONTROL_OPERATION_TYPE,
         ]
-    }
-
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
     }
 
     fn start_operation(
@@ -16103,6 +16101,12 @@ impl Widget for PhotosApp {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+}
+
+impl ui::undo::CommittedActions for PhotosApp {
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
     }
 }
 

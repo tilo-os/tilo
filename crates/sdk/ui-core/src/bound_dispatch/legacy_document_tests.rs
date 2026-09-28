@@ -110,6 +110,8 @@ pub(crate) fn address() -> ActionAddress {
     ActionAddress::new("controlled.value", "set")
 }
 impl Widget for Probe {
+    crate::provides!(dyn crate::undo::CommittedActions);
+
     crate::testing::inert_widget_methods!(
         leaf_layout,
         apply_layout,
@@ -232,9 +234,6 @@ impl Widget for Probe {
             })
             .collect()
     }
-    fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
-        self.actions.borrow_mut().take_committed()
-    }
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.queue.borrow_mut().pop_front()
     }
@@ -247,6 +246,12 @@ impl Widget for Probe {
     ) {
         self.acks.set(self.acks.get() + 1);
         *self.ack_heads.borrow_mut() = before.to_vec();
+    }
+}
+
+impl crate::undo::CommittedActions for Probe {
+    fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
+        self.actions.borrow_mut().take_committed()
     }
 }
 crate::testing::test_app_widget!(

@@ -6019,6 +6019,8 @@ impl VideoEditorApp {
 }
 
 impl Widget for VideoEditorApp {
+    ui::provides!(dyn ui::undo::CommittedActions, dyn ui::undo::UndoControl);
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::VIDEO_EDITOR_OPERATION_TYPE]
     }
@@ -7111,24 +7113,6 @@ impl Widget for VideoEditorApp {
         )]
     }
 
-    /// Hand the host the document heads captured before an on-screen affordance
-    /// dispatched its timeline action, so it records exactly one undo boundary
-    /// bracketing it (Ctrl+Z reverts it OS-wide). Rising-edge: cleared on read.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
-    }
-
-    /// The host's reading of the history, which is what the strip's undo and
-    /// redo buttons are drawn from. Scoped to this author exactly as Ctrl+Z
-    /// is, so the buttons and the shortcut can never disagree about whether
-    /// there is anything to go back to.
-    fn set_undo_status(&mut self, status: &mut dyn FnMut() -> ui::UndoStatus) {
-        self.undo.publish(&status());
-    }
-
-    fn take_undo_request(&mut self) -> Option<ui::UndoRequest> {
-        self.undo.take_request()
-    }
     fn is_focusable(&self) -> bool {
         true
     }
@@ -7379,6 +7363,28 @@ impl Widget for VideoEditorApp {
         _permissions: &PermissionContext,
     ) {
         self.draw(scene, transform, tr, theme, presence);
+    }
+}
+
+impl ui::undo::UndoControl for VideoEditorApp {
+    /// The host's reading of the history, which is what the strip's undo and
+    /// redo buttons are drawn from. Scoped to this author exactly as Ctrl+Z
+    /// is, so the buttons and the shortcut can never disagree about whether
+    /// there is anything to go back to.
+    fn set_undo_status(&mut self, status: &mut dyn FnMut() -> ui::UndoStatus) {
+        self.undo.publish(&status());
+    }
+    fn take_undo_request(&mut self) -> Option<ui::UndoRequest> {
+        self.undo.take_request()
+    }
+}
+
+impl ui::undo::CommittedActions for VideoEditorApp {
+    /// Hand the host the document heads captured before an on-screen affordance
+    /// dispatched its timeline action, so it records exactly one undo boundary
+    /// bracketing it (Ctrl+Z reverts it OS-wide). Rising-edge: cleared on read.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
     }
 }
 

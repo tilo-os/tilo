@@ -65,8 +65,23 @@ RUN case "$(uname -m)" in x86_64) arch=amd64 ;; aarch64) arch=arm64 ;; *) exit 1
  && test -n "$sha" && test -n "$url" \
  && curl --proto '=https' --tlsv1.2 -fsSL --retry 5 -o /usr/local/bin/cosign "$url" \
  && echo "$sha  /usr/local/bin/cosign" | sha256sum --check --strict \
- && chmod 0755 /usr/local/bin/cosign \
- && rm -rf /tmp/tilo-cosign
+ && chmod 0755 /usr/local/bin/cosign
+
+# The web build's toolchain, as CI's builder image has it
+# (os/Containerfile.builder): wasm-opt, wasm-ld, Node.js, brotli, ar, and the
+# wasm-bindgen CLI Cargo.lock pins, from the checksum-pinned upstream release.
+RUN dnf install -y --setopt=install_weak_deps=False binaryen lld nodejs brotli binutils \
+ && dnf clean all && rm -rf /var/cache/dnf \
+ && name="wasm-bindgen-0.2.108-$(uname -m)-unknown-linux-musl.tar.gz" \
+ && sha=$(awk -F '\t' -v name="$name" '$1 !~ /^#/ && $2 == name {print $1}' /tmp/tilo-cosign/github-assets.tsv) \
+ && url=$(awk -F '\t' -v name="$name" '$1 !~ /^#/ && $2 == name {print $3}' /tmp/tilo-cosign/github-assets.tsv) \
+ && test -n "$sha" && test -n "$url" \
+ && curl --proto '=https' --tlsv1.2 -fsSL --retry 5 -o "/tmp/$name" "$url" \
+ && echo "$sha  /tmp/$name" | sha256sum --check --strict \
+ && tar -xzf "/tmp/$name" -C /tmp \
+ && install -m 0755 "/tmp/${name%.tar.gz}/wasm-bindgen" /usr/local/bin/wasm-bindgen \
+ && rm -rf "/tmp/$name" "/tmp/${name%.tar.gz}" /tmp/tilo-cosign \
+ && wasm-bindgen --version && wasm-opt --version && wasm-ld --version && node --version
 
 # Android NDK for the standalone Android app host (docs/android.md). The SHA-1
 # is Google's published digest in repository2-3.xml; the SHA-256 was taken

@@ -545,7 +545,11 @@ mod component_adapter {
             dyn crate::widget::CompleteContentProvider,
             dyn crate::widget::Continuable,
             dyn crate::widget::FloatingSurfaceProvider,
-            dyn crate::widget::AudiencePresentationProvider
+            dyn crate::widget::AudiencePresentationProvider,
+            dyn crate::collaboration::participants::Participants,
+            dyn crate::undo::CommittedActions,
+            dyn crate::undo::UndoControl,
+            dyn crate::undo::LocalUndo
         );
 
         // A component's diagnostic probe observes its own record, the
@@ -890,25 +894,6 @@ mod component_adapter {
             if let Some(root) = self.component.root.as_deref() {
                 visitor(root);
             }
-        }
-        /// Participant views (agent carets) live against the component's own
-        /// record document, the one `sync` hands the app, never the outer
-        /// App document: resolved against the outer document a Writer caret
-        /// finds no block, and no participant presence is produced at all.
-        fn participant_presence(
-            &self,
-            state: &AutoCommit,
-        ) -> Vec<crate::widget::ParticipantPresence> {
-            let binding = self.component.callback_binding();
-            binding
-                .read_document(state, |document, _record_root| {
-                    self.component
-                        .root
-                        .as_deref()
-                        .map(|root| root.participant_presence(document))
-                        .unwrap_or_default()
-                })
-                .unwrap_or_default()
         }
         fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
             self.component
@@ -1508,27 +1493,6 @@ mod component_adapter {
                 })
                 .unwrap_or(());
         }
-        fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-            // Consumed under the canonical record admission.
-            None
-        }
-        fn set_undo_status(&mut self, _: &mut dyn FnMut() -> crate::undo::UndoStatus) {
-            // Individual bound nodes receive their own record/instance status.
-        }
-        fn take_undo_request(&mut self) -> Option<crate::undo::UndoRequest> {
-            // The host captures the origin from its admitted node map.
-            None
-        }
-        fn handle_local_undo_request(&mut self, request: crate::undo::UndoRequest) -> bool {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return false;
-            };
-            let Some(root) = self.component.root.as_deref_mut() else {
-                return false;
-            };
-            root.handle_local_undo_request(request)
-        }
         fn apply_room_action(
             &mut self,
             doc: &mut AutoCommit,
@@ -1571,91 +1535,6 @@ mod component_adapter {
                 self.component.invocations.push(op.invocation());
             }
             result
-        }
-        // Legacy adapters for apps not yet on `Widget::start_operation`.
-        fn invoke_resource_operation(
-            &mut self,
-            kind: tilo_actions::OperationKind,
-            type_id: &str,
-            payload: &[u8],
-            doc: &AutoCommit,
-            _path: &ObjId,
-        ) -> Result<bool, String> {
-            let binding = self.component.callback_binding();
-            binding
-                .read_document(doc, |document, record_root| {
-                    let Some(root) = self.component.root.as_deref_mut() else {
-                        return Err("component callback refused".into());
-                    };
-                    root.invoke_resource_operation(kind, type_id, payload, document, record_root)
-                })
-                .unwrap_or_else(|_| Err("component callback refused".into()))
-        }
-        fn invoke_resource_operation_v2(
-            &mut self,
-            kind: tilo_actions::OperationKind,
-            type_id: &str,
-            payload: &[u8],
-            doc: &AutoCommit,
-            _path: &ObjId,
-        ) -> Result<Option<tilo_actions::ActionOutput>, String> {
-            let binding = self.component.callback_binding();
-            binding
-                .read_document(doc, |document, record_root| {
-                    let Some(root) = self.component.root.as_deref_mut() else {
-                        return Err("component callback refused".into());
-                    };
-                    root.invoke_resource_operation_v2(kind, type_id, payload, document, record_root)
-                })
-                .unwrap_or_else(|_| Err("component callback refused".into()))
-        }
-        fn start_resource_operation(
-            &mut self,
-            invocation: tilo_actions::InvocationId,
-            kind: tilo_actions::OperationKind,
-            type_id: &str,
-            payload: &[u8],
-            doc: &AutoCommit,
-            _path: &ObjId,
-        ) -> Result<Option<ResourceOperationStart>, String> {
-            let binding = self.component.callback_binding();
-            let result = binding
-                .read_document(doc, |document, record_root| {
-                    let Some(root) = self.component.root.as_deref_mut() else {
-                        return Err("component callback refused".into());
-                    };
-                    root.start_resource_operation(
-                        invocation,
-                        kind,
-                        type_id,
-                        payload,
-                        document,
-                        record_root,
-                    )
-                })
-                .unwrap_or_else(|_| Err("component callback refused".into()));
-            if matches!(result, Ok(Some(ResourceOperationStart::Accepted)))
-                && !self.component.invocations.contains(&invocation)
-            {
-                self.component.invocations.push(invocation);
-            }
-            result
-        }
-        /// Legacy adapter: offered through [`Widget::start_operation`].
-        fn start_resource_operation_with_document(
-            &mut self,
-            invocation: tilo_actions::InvocationId,
-            kind: tilo_actions::OperationKind,
-            type_id: &str,
-            payload: &[u8],
-            doc: &mut AutoCommit,
-            path: &ObjId,
-        ) -> Result<Option<ResourceOperationStart>, String> {
-            self.start_operation(
-                &crate::widget::ResourceOperation::local(invocation, kind, type_id, payload),
-                doc,
-                path,
-            )
         }
         fn poll_resource_operation(
             &mut self,
@@ -1869,6 +1748,80 @@ mod component_adapter {
                 return;
             };
             root.draw_overlay(scene, transform, text_renderer, theme, presence);
+        }
+    }
+
+    impl crate::undo::LocalUndo for BoundAppWidget {
+        fn handle_local_undo_request(&mut self, request: crate::undo::UndoRequest) -> bool {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return false;
+            };
+            let Some(root) = self.component.root.as_deref_mut() else {
+                return false;
+            };
+            crate::undo::handle_local_undo_request(root, request)
+        }
+    }
+
+    impl crate::undo::UndoControl for BoundAppWidget {
+        fn set_undo_status(&mut self, _: &mut dyn FnMut() -> crate::undo::UndoStatus) {
+            // Individual bound nodes receive their own record/instance status.
+        }
+        fn take_undo_request(&mut self) -> Option<crate::undo::UndoRequest> {
+            // The host captures the origin from its admitted node map.
+            None
+        }
+    }
+
+    impl crate::undo::CommittedActions for BoundAppWidget {
+        fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+            // Consumed under the canonical record admission.
+            None
+        }
+    }
+
+    impl crate::collaboration::participants::Participants for BoundAppWidget {
+        fn join_participant(&mut self, participant: &tilo_actions::ParticipantId) -> bool {
+            crate::collaboration::participants::join_participant_in_children(self, participant)
+        }
+        fn leave_participant(&mut self, participant: &tilo_actions::ParticipantId) {
+            crate::collaboration::participants::leave_participant_in_children(self, participant);
+        }
+        fn set_participant_label(
+            &mut self,
+            participant: &tilo_actions::ParticipantId,
+            label: &str,
+        ) {
+            crate::collaboration::participants::set_participant_label_in_children(
+                self,
+                participant,
+                label,
+            );
+        }
+        fn set_participant_host(&mut self, host: bool) {
+            crate::collaboration::participants::set_participant_host_in_children(self, host);
+        }
+        /// Participant views (agent carets) live against the component's own
+        /// record document, the one `sync` hands the app, never the outer
+        /// App document: resolved against the outer document a Writer caret
+        /// finds no block, and no participant presence is produced at all.
+        fn participant_presence(
+            &self,
+            state: &AutoCommit,
+        ) -> Vec<crate::widget::ParticipantPresence> {
+            let binding = self.component.callback_binding();
+            binding
+                .read_document(state, |document, _record_root| {
+                    self.component
+                        .root
+                        .as_deref()
+                        .map(|root| {
+                            crate::collaboration::participants::participant_presence(root, document)
+                        })
+                        .unwrap_or_default()
+                })
+                .unwrap_or_default()
         }
     }
     impl AppWidget for BoundAppWidget {
