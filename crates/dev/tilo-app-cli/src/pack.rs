@@ -54,8 +54,23 @@ pub fn pack_payload(
 ) -> Result<Packed> {
     let source = std::fs::read_to_string(manifest_path)
         .with_context(|| format!("reading {}", manifest_path.display()))?;
-    let mut manifest = Manifest::from_toml_str(&source)
+    let manifest = Manifest::from_toml_str(&source)
         .with_context(|| format!("parsing {}", manifest_path.display()))?;
+    pack_manifest(manifest, resource_kinds, payload, output, identity)
+}
+
+/// [`pack_payload`] for a manifest already in memory, such as a desktop build's.
+///
+/// # Errors
+///
+/// As [`pack_payload`].
+pub fn pack_manifest(
+    mut manifest: Manifest,
+    resource_kinds: Vec<String>,
+    payload: &Path,
+    output: &Path,
+    identity: &SigningIdentity,
+) -> Result<Packed> {
     manifest.publisher.identity = format!("ed25519:{}", hex::encode(identity.public_key_bytes()));
     manifest.resources.kinds = resource_kinds;
     let packed =
@@ -72,11 +87,10 @@ pub fn pack_payload(
     writer.flush().context("flushing package archive")?;
     drop(writer);
     let bytes = std::fs::metadata(output)?.len();
-    if !tilo_app_package::tapp_size_allowed(packed.meta.manifest.package.kind, bytes) {
-        bail!(
-            "the package is {bytes} bytes; the limit for an application is {} bytes",
-            tilo_app_package::MAX_APP_TAPP_BYTES
-        );
+    if let Some(limit) = tilo_app_package::app_size_limit(&packed.meta.manifest)
+        && bytes > limit
+    {
+        bail!("the package is {bytes} bytes; the limit for this application is {limit} bytes");
     }
 
     let reader = std::io::BufReader::new(std::fs::File::open(output)?);
