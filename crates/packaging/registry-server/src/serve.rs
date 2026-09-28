@@ -556,10 +556,24 @@ fn apply_change(
     state: &AppState,
     change: EntryChangeRequest,
 ) -> Result<Response<Full<Bytes>>, HandlerError> {
-    if change.action == EntryAction::Add && !publisher_may_add_new(state, &change.entry) {
+    let publisher = publisher_row(state, &change.entry);
+    if change.action == EntryAction::Add && !publisher.as_ref().is_some_and(|row| row.can_add_new) {
         return Ok(text_response(
             StatusCode::FORBIDDEN,
             "publisher not allowed to submit new entries",
+        ));
+    }
+    if change.action != EntryAction::Delete
+        && !publisher
+            .as_ref()
+            .is_some_and(|row| row.owns_package_id(&change.entry.package_id))
+    {
+        return Ok(text_response(
+            StatusCode::FORBIDDEN,
+            &format!(
+                "package id {} is outside this publisher's verified namespaces",
+                change.entry.package_id
+            ),
         ));
     }
     let submitted_at = SystemTime::now()
@@ -598,24 +612,18 @@ fn moderation_status(error: &ModerationError) -> Option<StatusCode> {
     }
 }
 
-/// Cheap async lookup: is this publisher allowed to POST a new
-/// entry (rather than only editing an existing one)?
-fn publisher_may_add_new(state: &AppState, entry: &RegistryEntry) -> bool {
-    let Ok(bytes) = hex::decode(&entry.publisher_pubkey_hex) else {
-        return false;
-    };
-    if bytes.len() != 32 {
-        return false;
-    }
-    let mut key = [0u8; 32];
-    key.copy_from_slice(&bytes);
+/// The allowlist row of the entry's publisher, if it has one.
+fn publisher_row(state: &AppState, entry: &RegistryEntry) -> Option<crate::PublisherRow> {
+    let key: [u8; 32] = hex::decode(&entry.publisher_pubkey_hex)
+        .ok()?
+        .try_into()
+        .ok()?;
     state
         .inner
         .storage
         .load_allowlist()
         .ok()
         .and_then(|allowlist| allowlist.get(&key).cloned())
-        .is_some_and(|row| row.can_add_new)
 }
 
 // ---- response helpers ------------------------------------------

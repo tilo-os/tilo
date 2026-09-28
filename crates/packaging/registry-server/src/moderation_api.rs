@@ -642,6 +642,7 @@ mod tests {
             pubkey_hex: entry.publisher_pubkey_hex,
             can_add_new: true,
             note: String::new(),
+            namespaces: vec![registry_types::namespace::TILO_NAMESPACE.to_owned()],
         });
         let identity = ServerIdentity {
             owner_pubkey_hex: hex::encode(reviewer.verifying_key().to_bytes()),

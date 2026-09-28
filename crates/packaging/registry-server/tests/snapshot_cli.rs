@@ -72,6 +72,7 @@ fn offline_command_publishes_a_verifiable_snapshot_without_server_private_key() 
                 pubkey_hex: publisher_hex.clone(),
                 can_add_new: true,
                 note: "not public".into(),
+                namespaces: vec![registry_types::namespace::TILO_NAMESPACE.to_owned()],
             }],
         })
         .unwrap();
