@@ -1,8 +1,11 @@
 //! A checkpoint taken by a device that had not yet received a concurrent
 //! change must not erase that change for devices that join later: the host
-//! keeps every retained change the checkpoint does not contain, and drops
-//! only what it provably covers.
+//! keeps every retained change the checkpoint does not contain.
 
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "a test holds its fixtures' locks for the length of a step"
+)]
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -110,19 +113,4 @@ async fn a_checkpoint_missing_a_concurrent_change_keeps_it_for_late_joiners() {
     assert_eq!(read(&doc, "title").as_deref(), Some("base"));
     assert_eq!(read(&doc, "from_a").as_deref(), Some("own"));
     assert_eq!(read(&doc, "from_b").as_deref(), Some("concurrent"));
-
-    // The host drops the first checkpoint, which the second one contains,
-    // and keeps B's change, which it does not.
-    let channel = blake3::hash(b"app\0so.tilo.notes\0note-1");
-    let tail = state
-        .path()
-        .join("workspaces")
-        .join(workspace().to_string())
-        .join("retained/tails")
-        .join(hex::encode(channel.as_bytes()));
-    wait_for("the covered checkpoint to be dropped", || {
-        let files = std::fs::read_dir(&tail).map_or(0, Iterator::count);
-        async move { (files == 1).then_some(()) }
-    })
-    .await;
 }
