@@ -144,7 +144,7 @@ fn click_at(
         // The live host resolves action-bound control intents immediately
         // after event delivery. Mirror that boundary here so AppShell's Back
         // `View` action reaches its retained button handler.
-        while let Some(intent) = app.take_control_invocation() {
+        while let Some(intent) = ui::widget::controls::take_control_invocation(app) {
             let control = intent
                 .address
                 .resource

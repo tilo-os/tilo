@@ -6019,7 +6019,11 @@ impl VideoEditorApp {
 }
 
 impl Widget for VideoEditorApp {
-    ui::provides!(dyn ui::undo::CommittedActions, dyn ui::undo::UndoControl);
+    ui::provides!(
+        dyn ui::undo::CommittedActions,
+        dyn ui::undo::UndoControl,
+        dyn ui::resources::PublishesResources
+    );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::VIDEO_EDITOR_OPERATION_TYPE]
@@ -7042,14 +7046,6 @@ impl Widget for VideoEditorApp {
         Some("video_editor_root")
     }
 
-    /// Publish the open project + its tracks and clips so the host's Ctrl+K
-    /// action palette scopes to them. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
-    /// [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
-    }
-
     fn start_operation(
         &mut self,
         op: &ui::widget::ResourceOperation<'_>,
@@ -7363,6 +7359,16 @@ impl Widget for VideoEditorApp {
         _permissions: &PermissionContext,
     ) {
         self.draw(scene, transform, tr, theme, presence);
+    }
+}
+
+impl ui::resources::PublishesResources for VideoEditorApp {
+    /// Publish the open project + its tracks and clips so the host's Ctrl+K
+    /// action palette scopes to them. Delegates to the
+    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
+    /// [`crate::actions`].
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
     }
 }
 

@@ -92,6 +92,38 @@ jobs:
             v4l2loopback-0.15.3-a7e4a4d.tar.gz
             sccache-v0.17.0-aarch64-unknown-linux-musl.tar.gz
 
+      # Development kernels are unsigned, so they compile through the shared
+      # compiler cache. Without a complete configuration they compile without it.
+      - name: Select the compiler cache
+        id: compiler-cache
+        env:
+          FALLBACK_AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_AWS_ACCESS_KEY_ID }}
+          FALLBACK_AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_AWS_SECRET_ACCESS_KEY }}
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          source tools/ci/compiler_cache_env.sh
+          for name in SCCACHE_BUCKET SCCACHE_ENDPOINT SCCACHE_REGION SCCACHE_S3_USE_SSL AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY; do
+            value="${!name:-}"
+            if [[ -z $value || $value == *$'\n'* ]]; then
+              printf '%s\n' mode=off required=0 bucket= endpoint= region=auto use_ssl=false secret-envs= >> "$GITHUB_OUTPUT"
+              echo '::notice::no compiler cache; compiling the kernel without it'
+              exit 0
+            fi
+          done
+          {
+            echo 'mode=shared'
+            echo 'required=1'
+            printf 'bucket=%s\n' "$SCCACHE_BUCKET"
+            printf 'endpoint=%s\n' "$SCCACHE_ENDPOINT"
+            printf 'region=%s\n' "$SCCACHE_REGION"
+            printf 'use_ssl=%s\n' "$SCCACHE_S3_USE_SSL"
+            echo 'secret-envs<<TILO_COMPILER_CACHE_SECRETS'
+            echo 'aws_access_key_id=AWS_ACCESS_KEY_ID'
+            echo 'aws_secret_access_key=AWS_SECRET_ACCESS_KEY'
+            echo 'TILO_COMPILER_CACHE_SECRETS'
+          } >> "$GITHUB_OUTPUT"
+
       - name: Set up bounded native BuildKit
         uses: ./.forgejo/actions/setup-buildx
         with:
@@ -117,10 +149,18 @@ jobs:
             RPMS_REF=${{ env.RPMS_REF }}
             KERNEL_BUILDROOT_REF=${{ env.KERNEL_BUILDROOT_REF }}
             KERNEL_BUILD_JOBS=${{ env.KERNEL_BUILD_JOBS }}
+            SCCACHE_BUCKET=${{ steps.compiler-cache.outputs.bucket }}
+            SCCACHE_ENDPOINT=${{ steps.compiler-cache.outputs.endpoint }}
+            SCCACHE_REGION=${{ steps.compiler-cache.outputs.region }}
+            SCCACHE_S3_USE_SSL=${{ steps.compiler-cache.outputs.use_ssl }}
+            TILO_COMPILER_CACHE=${{ steps.compiler-cache.outputs.mode }}
+            TILO_REQUIRE_COMPILER_CACHE=${{ steps.compiler-cache.outputs.required }}
+          secret-envs: ${{ steps.compiler-cache.outputs.secret-envs }}
           cache-from: |
-            type=registry,ref=registry.tilo.so/tilo/tilo-development-kernel-buildcache:aarch64
-            type=registry,ref=registry.tilo.so/tilo/tilo-kernel-buildcache:aarch64
-          cache-to: type=registry,ref=registry.tilo.so/tilo/tilo-development-kernel-buildcache:aarch64,mode=min
+            type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/tilo/tilo-development-kernel-buildcache:aarch64
+            type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/tilo/tilo-kernel-buildcache:aarch64
+          # mode=min: mode=max would export the multi-GiB kernel source tree.
+          cache-to: type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/tilo/tilo-development-kernel-buildcache:aarch64,mode=min,ignore-error=true
           provenance: false
 
       - name: Inspect packaged RPM without executing its payload

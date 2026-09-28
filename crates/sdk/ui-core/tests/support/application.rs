@@ -521,7 +521,10 @@ struct ProbeRoot {
     rect: vello::kurbo::Rect,
 }
 impl Widget for ProbeRoot {
-    tilo_ui::provides!(dyn tilo_ui::widget::NativeViewLifecycle);
+    tilo_ui::provides!(
+        dyn tilo_ui::widget::NativeViewLifecycle,
+        dyn tilo_ui::resources::PublishesResources
+    );
 
     fn set_motion_reduced(&mut self, reduced: bool) {
         PRESENTATION.with_borrow(|slot| {
@@ -546,135 +549,6 @@ impl Widget for ProbeRoot {
         ))
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one shared resource declares the runner action matrix"
-    )]
-    fn resources(&self, _: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        PRESENTATION.with_borrow(|slot| {
-            if let Some(observations) = slot {
-                observations
-                    .borrow_mut()
-                    .local_resource_reads
-                    .push(self.local_snapshot.clone());
-            }
-        });
-        if !self.operational {
-            return vec![];
-        }
-        vec![
-            tilo_actions::Resource::new("probe:shared", "probe", "Shared probe")
-                .with_action(
-                    tilo_actions::ActionSpec::immediate(
-                        "edit",
-                        "Edit",
-                        "probe.edit",
-                        &ProbeAction("edited".into()),
-                    )
-                    .unwrap()
-                    .with_description(self.local_snapshot.clone())
-                    .requiring(tilo_actions::PermissionRequirement::Write),
-                )
-                .with_action(
-                    tilo_actions::ActionSpec::operation(
-                        "view",
-                        "View",
-                        tilo_actions::OperationKind::View,
-                        "probe.view",
-                        &(),
-                    )
-                    .unwrap()
-                    .with_contract(tilo_actions::ActionContract::view()),
-                )
-                .with_action(
-                    tilo_actions::ActionSpec::operation(
-                        "effect",
-                        "Effect",
-                        tilo_actions::OperationKind::Effect,
-                        "probe.effect",
-                        &(),
-                    )
-                    .unwrap()
-                    .with_contract(tilo_actions::ActionContract::view()),
-                )
-                .with_action(
-                    tilo_actions::ActionSpec::operation(
-                        "pending",
-                        "Pending",
-                        tilo_actions::OperationKind::Effect,
-                        "probe.pending",
-                        &(),
-                    )
-                    .unwrap()
-                    .with_contract(tilo_actions::ActionContract {
-                        execution: tilo_actions::ExecutionMode::Background { cancellable: true },
-                        result: tilo_actions::ResultSpec::Job,
-                        ..tilo_actions::ActionContract::view()
-                    }),
-                )
-                .with_action(
-                    tilo_actions::ActionSpec::prompted(
-                        "prompt",
-                        "Prompt",
-                        "Value",
-                        "Value",
-                        tilo_actions::ExecutionLocus::ClientLocal,
-                        |value| {
-                            tilo_actions::EncodedAction::encode(
-                                "probe.edit",
-                                &ProbeAction(value.into()),
-                            )
-                            .unwrap()
-                        },
-                    )
-                    .requiring(tilo_actions::PermissionRequirement::Write),
-                )
-                .with_action(
-                    tilo_actions::ActionSpec::typed(
-                        "typed",
-                        "Typed",
-                        "Value",
-                        tilo_actions::ExecutionLocus::ClientLocal,
-                        vec![
-                            tilo_actions::ActionParam::required(
-                                "value",
-                                tilo_actions::ParamType::Text,
-                                "Value",
-                            ),
-                            tilo_actions::ActionParam::required(
-                                "enabled",
-                                tilo_actions::ParamType::Boolean,
-                                "Enabled",
-                            ),
-                        ],
-                        |args| {
-                            assert_eq!(args.boolean("enabled"), Some(true));
-                            tilo_actions::EncodedAction::encode(
-                                "probe.edit",
-                                &ProbeAction(args.text("value").unwrap().into()),
-                            )
-                            .unwrap()
-                        },
-                    )
-                    .requiring(tilo_actions::PermissionRequirement::Write),
-                )
-                .with_action(
-                    tilo_actions::ActionSpec::immediate(
-                        "confirm",
-                        "Confirm",
-                        "probe.edit",
-                        &ProbeAction("confirmed".into()),
-                    )
-                    .unwrap()
-                    .with_contract(tilo_actions::ActionContract {
-                        confirmation: tilo_actions::ConfirmationPolicy::Phrase {
-                            phrase: "JA".into(),
-                        },
-                        ..tilo_actions::ActionContract::default()
-                    }),
-                ),
-        ]
-    }
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &["probe.view", "probe.effect", "probe.pending"]
     }
@@ -818,6 +692,138 @@ impl Widget for ProbeRoot {
         if self.corrupt_restore {
             self.scroll = vec![f64::NAN];
         }
+    }
+}
+
+impl tilo_ui::resources::PublishesResources for ProbeRoot {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one shared resource declares the runner action matrix"
+    )]
+    fn resources(&self, _: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        PRESENTATION.with_borrow(|slot| {
+            if let Some(observations) = slot {
+                observations
+                    .borrow_mut()
+                    .local_resource_reads
+                    .push(self.local_snapshot.clone());
+            }
+        });
+        if !self.operational {
+            return vec![];
+        }
+        vec![
+            tilo_actions::Resource::new("probe:shared", "probe", "Shared probe")
+                .with_action(
+                    tilo_actions::ActionSpec::immediate(
+                        "edit",
+                        "Edit",
+                        "probe.edit",
+                        &ProbeAction("edited".into()),
+                    )
+                    .unwrap()
+                    .with_description(self.local_snapshot.clone())
+                    .requiring(tilo_actions::PermissionRequirement::Write),
+                )
+                .with_action(
+                    tilo_actions::ActionSpec::operation(
+                        "view",
+                        "View",
+                        tilo_actions::OperationKind::View,
+                        "probe.view",
+                        &(),
+                    )
+                    .unwrap()
+                    .with_contract(tilo_actions::ActionContract::view()),
+                )
+                .with_action(
+                    tilo_actions::ActionSpec::operation(
+                        "effect",
+                        "Effect",
+                        tilo_actions::OperationKind::Effect,
+                        "probe.effect",
+                        &(),
+                    )
+                    .unwrap()
+                    .with_contract(tilo_actions::ActionContract::view()),
+                )
+                .with_action(
+                    tilo_actions::ActionSpec::operation(
+                        "pending",
+                        "Pending",
+                        tilo_actions::OperationKind::Effect,
+                        "probe.pending",
+                        &(),
+                    )
+                    .unwrap()
+                    .with_contract(tilo_actions::ActionContract {
+                        execution: tilo_actions::ExecutionMode::Background { cancellable: true },
+                        result: tilo_actions::ResultSpec::Job,
+                        ..tilo_actions::ActionContract::view()
+                    }),
+                )
+                .with_action(
+                    tilo_actions::ActionSpec::prompted(
+                        "prompt",
+                        "Prompt",
+                        "Value",
+                        "Value",
+                        tilo_actions::ExecutionLocus::ClientLocal,
+                        |value| {
+                            tilo_actions::EncodedAction::encode(
+                                "probe.edit",
+                                &ProbeAction(value.into()),
+                            )
+                            .unwrap()
+                        },
+                    )
+                    .requiring(tilo_actions::PermissionRequirement::Write),
+                )
+                .with_action(
+                    tilo_actions::ActionSpec::typed(
+                        "typed",
+                        "Typed",
+                        "Value",
+                        tilo_actions::ExecutionLocus::ClientLocal,
+                        vec![
+                            tilo_actions::ActionParam::required(
+                                "value",
+                                tilo_actions::ParamType::Text,
+                                "Value",
+                            ),
+                            tilo_actions::ActionParam::required(
+                                "enabled",
+                                tilo_actions::ParamType::Boolean,
+                                "Enabled",
+                            ),
+                        ],
+                        |args| {
+                            assert_eq!(args.boolean("enabled"), Some(true));
+                            tilo_actions::EncodedAction::encode(
+                                "probe.edit",
+                                &ProbeAction(args.text("value").unwrap().into()),
+                            )
+                            .unwrap()
+                        },
+                    )
+                    .requiring(tilo_actions::PermissionRequirement::Write),
+                )
+                .with_action(
+                    tilo_actions::ActionSpec::immediate(
+                        "confirm",
+                        "Confirm",
+                        "probe.edit",
+                        &ProbeAction("confirmed".into()),
+                    )
+                    .unwrap()
+                    .with_contract(tilo_actions::ActionContract {
+                        confirmation: tilo_actions::ConfirmationPolicy::Phrase {
+                            phrase: "JA".into(),
+                        },
+                        ..tilo_actions::ActionContract::default()
+                    }),
+                ),
+        ]
     }
 }
 

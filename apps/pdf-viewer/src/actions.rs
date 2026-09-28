@@ -2259,7 +2259,7 @@ mod tests {
     )]
     fn document_resources_publish_the_nested_tree_with_bounded_stable_children() {
         let (app, state) = open_with_markup();
-        let resources = Widget::resources(&app, &state.doc);
+        let resources = ui::resources::resources(&app, &state.doc);
         assert_eq!(resources.len(), 1, "one open document");
         let document = &resources[0];
         assert_eq!(document.kind, "pdf.document");
@@ -2457,7 +2457,7 @@ mod tests {
         // The resource's typed signature is replayable and uses the prompted signer.
         let (app, mut state) = open_with_markup();
         let expected_page = app.pdf_resource_ctx().expect("open document").page;
-        let resources = Widget::resources(&app, &state.doc);
+        let resources = ui::resources::resources(&app, &state.doc);
         let action = resources[0]
             .actions
             .iter()

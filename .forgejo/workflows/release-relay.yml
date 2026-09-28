@@ -474,11 +474,8 @@ jobs:
             aws_access_key_id=AWS_ACCESS_KEY_ID
             aws_secret_access_key=AWS_SECRET_ACCESS_KEY
             aws_session_token=AWS_SESSION_TOKEN
-          # PR validation must be independent of the mutable publication cache:
-          # a partial/corrupt registry export must not prevent source validation,
-          # and untrusted heads must never mutate the shared `latest` cache.
-          cache-from: ${{ github.event_name != 'pull_request' && 'type=registry,ref=registry.tilo.so/tilo/tilo-relay-buildcache:latest' || '' }}
-          cache-to: ${{ github.event_name != 'pull_request' && 'type=registry,ref=registry.tilo.so/tilo/tilo-relay-buildcache:latest,mode=max' || '' }}
+          cache-from: type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/tilo/tilo-relay-buildcache:latest
+          cache-to: type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/tilo/tilo-relay-buildcache:latest,mode=max,ignore-error=true
           provenance: false
 
       # Optional signing reuses the same key as the OS image so `bootc

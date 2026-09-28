@@ -321,6 +321,8 @@ impl TimeZoneMap {
 }
 
 impl Widget for TimeZoneMap {
+    ui::provides!(dyn ui::widget::controls::ActionControls);
+
     fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
         let (state, root) = ui::doc::document(state, root);
         if self.action.is_some() {
@@ -360,12 +362,6 @@ impl Widget for TimeZoneMap {
 
     fn needs_commit(&self) -> bool {
         self.needs_commit
-    }
-
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.action
-            .as_mut()
-            .and_then(ui::widget::ActionEmitter::take)
     }
 
     fn on_commit(&mut self) {
@@ -609,6 +605,14 @@ impl Widget for TimeZoneMap {
             }
             _ => false,
         }
+    }
+}
+
+impl ui::widget::controls::ActionControls for TimeZoneMap {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.action
+            .as_mut()
+            .and_then(ui::widget::ActionEmitter::take)
     }
 }
 

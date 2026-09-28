@@ -421,7 +421,7 @@ mod tests {
         use ui::widget::Widget;
         let mut widget = crate::browser_widget::BrowserWidget::new_headless();
         widget.sync(&mut doc.clone(), &ROOT);
-        widget.resources(doc)
+        ui::resources::resources(&widget, doc)
     }
 
     fn removal(doc: &Doc, url: &str) -> BrowserAction {

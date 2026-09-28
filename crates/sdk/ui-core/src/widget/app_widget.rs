@@ -550,7 +550,9 @@ mod component_adapter {
             dyn crate::undo::CommittedActions,
             dyn crate::undo::UndoControl,
             dyn crate::undo::LocalUndo,
-            dyn crate::history_mode::capability::DocumentHistory
+            dyn crate::history_mode::capability::DocumentHistory,
+            dyn crate::widget::controls::ActionControls,
+            dyn crate::resources::PublishesResources
         );
 
         // A component's diagnostic probe observes its own record, the
@@ -583,20 +585,6 @@ mod component_adapter {
         fn finish_admitted_close(&mut self) -> Vec<crate::application::ComponentCloseReport> {
             self.component.finish_admitted_close();
             self.component.take_close_reports()
-        }
-
-        fn install_control_custody(
-            &mut self,
-            parent: &crate::ControlDomain,
-            attachment: crate::control_custody::CustodyAttachment,
-        ) {
-            let binding = self.component.callback_binding();
-            if let Some(domain) = binding.control_domain.upgrade() {
-                let _ = domain.attach_to(parent);
-                if let Some(root) = self.component.root.as_deref_mut() {
-                    root.install_control_custody(&domain, attachment);
-                }
-            }
         }
 
         fn primary_vertical_scroll(&self) -> Option<crate::widget::PrimaryScrollRegion> {
@@ -637,12 +625,6 @@ mod component_adapter {
         // Local feedback belongs to the emitting component. The host delivers
         // bound results through with_live_component; generic tree recursion
         // must neither cross into another record nor revive a closed owner.
-        fn on_control_invocation_result(
-            &mut self,
-            _: &tilo_actions::ActionAddress,
-            _: &Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError>,
-        ) {
-        }
         fn visit_components(
             &mut self,
             request: &mut crate::bound_dispatch::ComponentRequest<'_>,
@@ -1147,38 +1129,6 @@ mod component_adapter {
             // Consumed under the canonical record admission.
             None
         }
-        fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return None;
-            };
-            let root = self.component.root.as_deref_mut()?;
-            if let Some(intent) = root.take_control_invocation() {
-                let mut queued = binding.queued_controls.borrow_mut();
-                if queued.len() >= 64 {
-                    queued.pop_front();
-                }
-                queued.push_back(intent);
-            }
-            // The private host sweep consumes the queue with this captured owner.
-            None
-        }
-        fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return Vec::new();
-            };
-            let Some(root) = self.component.root.as_deref() else {
-                return Vec::new();
-            };
-            root.control_action_bindings()
-        }
-        fn refresh_control_action_availability(
-            &mut self,
-            _allowed: &HashSet<tilo_actions::ActionAddress>,
-        ) {
-            // The private host sweep supplies this component's own authority.
-        }
         fn on_commit(&mut self) {
             // Consumed under the canonical record admission.
         }
@@ -1358,110 +1308,7 @@ mod component_adapter {
             let root = self.component.root.as_deref()?;
             root.permission_scope()
         }
-        fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-            let binding = self.component.callback_binding();
-            binding
-                .read_document(doc, |document, _record_root| {
-                    let Some(root) = self.component.root.as_deref() else {
-                        return Vec::new();
-                    };
-                    root.resources(document)
-                })
-                .unwrap_or_else(|_| Vec::new())
-        }
-        fn action_directory_resource_page(
-            &self,
-            doc: &AutoCommit,
-            cursor: &[u8],
-            max_results: usize,
-        ) -> Option<ActionDirectoryResourcePage> {
-            let binding = self.component.callback_binding();
-            binding
-                .read_document(doc, |document, _record_root| {
-                    let root = self.component.root.as_deref()?;
-                    root.action_directory_resource_page(document, cursor, max_results)
-                })
-                .unwrap_or(None)
-        }
-        fn action_directory_revision(&self, doc: &AutoCommit) -> Option<String> {
-            let binding = self.component.callback_binding();
-            binding
-                .read_document(doc, |document, _record_root| {
-                    let root = self.component.root.as_deref()?;
-                    root.action_directory_revision(document)
-                })
-                .unwrap_or(None)
-        }
 
-        fn action_directory_invocation_domain(
-            &self,
-            doc: &AutoCommit,
-        ) -> crate::widget::ActionDirectoryInvocationDomain {
-            let binding = self.component.callback_binding();
-            binding
-                .read_document(doc, |document, _record_root| {
-                    self.component
-                        .root
-                        .as_deref()
-                        .map(|root| root.action_directory_invocation_domain(document))
-                        .unwrap_or_default()
-                })
-                .unwrap_or_default()
-        }
-        fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-            let binding = self.component.callback_binding();
-            binding
-                .read_document(doc, |document, _record_root| {
-                    let root = self.component.root.as_deref()?;
-                    root.resource(document, id)
-                })
-                .unwrap_or(None)
-        }
-        /// A participant's tree is built against the component's own record
-        /// document, like [`Self::resources`]; the default would fall back to
-        /// this boundary's own view (the published schema) on the outer doc.
-        fn resources_for(
-            &self,
-            participant: Option<&tilo_actions::ParticipantId>,
-            doc: &AutoCommit,
-        ) -> Vec<tilo_actions::Resource> {
-            let binding = self.component.callback_binding();
-            binding
-                .read_document(doc, |document, _record_root| {
-                    let Some(root) = self.component.root.as_deref() else {
-                        return Vec::new();
-                    };
-                    root.resources_for(participant, document)
-                })
-                .unwrap_or_else(|_| Vec::new())
-        }
-        fn resource_for(
-            &self,
-            participant: Option<&tilo_actions::ParticipantId>,
-            doc: &AutoCommit,
-            id: &str,
-        ) -> Option<tilo_actions::Resource> {
-            let binding = self.component.callback_binding();
-            binding
-                .read_document(doc, |document, _record_root| {
-                    let root = self.component.root.as_deref()?;
-                    root.resource_for(participant, document, id)
-                })
-                .unwrap_or(None)
-        }
-        fn action_directory_visibility(
-            &self,
-            doc: &AutoCommit,
-            resource_id: &str,
-        ) -> Option<tilo_actions::ActionAddress> {
-            let binding = self.component.callback_binding();
-            binding
-                .read_document(doc, |document, _record_root| {
-                    let root = self.component.root.as_deref()?;
-                    root.action_directory_visibility(document, resource_id)
-                })
-                .unwrap_or(None)
-        }
         fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
             self.component.search_providers()
         }
@@ -1737,6 +1584,173 @@ mod component_adapter {
                 return;
             };
             root.draw_overlay(scene, transform, text_renderer, theme, presence);
+        }
+    }
+
+    impl crate::resources::PublishesResources for BoundAppWidget {
+        fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+            let binding = self.component.callback_binding();
+            binding
+                .read_document(doc, |document, _record_root| {
+                    let Some(root) = self.component.root.as_deref() else {
+                        return Vec::new();
+                    };
+                    crate::resources::resources(root, document)
+                })
+                .unwrap_or_else(|_| Vec::new())
+        }
+        fn action_directory_resource_page(
+            &self,
+            doc: &AutoCommit,
+            cursor: &[u8],
+            max_results: usize,
+        ) -> Option<ActionDirectoryResourcePage> {
+            let binding = self.component.callback_binding();
+            binding
+                .read_document(doc, |document, _record_root| {
+                    let root = self.component.root.as_deref()?;
+                    crate::resources::action_directory_resource_page(
+                        root,
+                        document,
+                        cursor,
+                        max_results,
+                    )
+                })
+                .unwrap_or(None)
+        }
+        fn action_directory_revision(&self, doc: &AutoCommit) -> Option<String> {
+            let binding = self.component.callback_binding();
+            binding
+                .read_document(doc, |document, _record_root| {
+                    let root = self.component.root.as_deref()?;
+                    crate::resources::action_directory_revision(root, document)
+                })
+                .unwrap_or(None)
+        }
+        fn action_directory_invocation_domain(
+            &self,
+            doc: &AutoCommit,
+        ) -> crate::widget::ActionDirectoryInvocationDomain {
+            let binding = self.component.callback_binding();
+            binding
+                .read_document(doc, |document, _record_root| {
+                    self.component
+                        .root
+                        .as_deref()
+                        .map(|root| {
+                            crate::resources::action_directory_invocation_domain(root, document)
+                        })
+                        .unwrap_or_default()
+                })
+                .unwrap_or_default()
+        }
+        fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+            let binding = self.component.callback_binding();
+            binding
+                .read_document(doc, |document, _record_root| {
+                    let root = self.component.root.as_deref()?;
+                    crate::resources::resource(root, document, id)
+                })
+                .unwrap_or(None)
+        }
+        /// A participant's tree is built against the component's own record
+        /// document, like [`Self::resources`]; the default would fall back to
+        /// this boundary's own view (the published schema) on the outer doc.
+        fn resources_for(
+            &self,
+            participant: Option<&tilo_actions::ParticipantId>,
+            doc: &AutoCommit,
+        ) -> Vec<tilo_actions::Resource> {
+            let binding = self.component.callback_binding();
+            binding
+                .read_document(doc, |document, _record_root| {
+                    let Some(root) = self.component.root.as_deref() else {
+                        return Vec::new();
+                    };
+                    crate::resources::resources_for(root, participant, document)
+                })
+                .unwrap_or_else(|_| Vec::new())
+        }
+        fn resource_for(
+            &self,
+            participant: Option<&tilo_actions::ParticipantId>,
+            doc: &AutoCommit,
+            id: &str,
+        ) -> Option<tilo_actions::Resource> {
+            let binding = self.component.callback_binding();
+            binding
+                .read_document(doc, |document, _record_root| {
+                    let root = self.component.root.as_deref()?;
+                    crate::resources::resource_for(root, participant, document, id)
+                })
+                .unwrap_or(None)
+        }
+        fn action_directory_visibility(
+            &self,
+            doc: &AutoCommit,
+            resource_id: &str,
+        ) -> Option<tilo_actions::ActionAddress> {
+            let binding = self.component.callback_binding();
+            binding
+                .read_document(doc, |document, _record_root| {
+                    let root = self.component.root.as_deref()?;
+                    crate::resources::action_directory_visibility(root, document, resource_id)
+                })
+                .unwrap_or(None)
+        }
+    }
+
+    impl crate::widget::controls::ActionControls for BoundAppWidget {
+        fn install_control_custody(
+            &mut self,
+            parent: &crate::ControlDomain,
+            attachment: crate::control_custody::CustodyAttachment,
+        ) {
+            let binding = self.component.callback_binding();
+            if let Some(domain) = binding.control_domain.upgrade() {
+                let _ = domain.attach_to(parent);
+                if let Some(root) = self.component.root.as_deref_mut() {
+                    crate::widget::controls::install_control_custody(root, &domain, attachment);
+                }
+            }
+        }
+        fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return None;
+            };
+            let root = self.component.root.as_deref_mut()?;
+            if let Some(intent) = crate::widget::controls::take_control_invocation(root) {
+                let mut queued = binding.queued_controls.borrow_mut();
+                if queued.len() >= 64 {
+                    queued.pop_front();
+                }
+                queued.push_back(intent);
+            }
+            // The private host sweep consumes the queue with this captured owner.
+            None
+        }
+        fn on_control_invocation_result(
+            &mut self,
+            _: &tilo_actions::ActionAddress,
+            _: &Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError>,
+        ) {
+        }
+        fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return Vec::new();
+            };
+            let Some(root) = self.component.root.as_deref() else {
+                return Vec::new();
+            };
+            crate::widget::controls::control_action_bindings(root)
+        }
+        fn refresh_control_action_availability(
+            &mut self,
+            _allowed: &HashSet<tilo_actions::ActionAddress>,
+        ) {
+            // The private host sweep supplies this component's own authority.
         }
     }
 

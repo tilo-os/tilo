@@ -487,7 +487,7 @@ mod tests {
         // Phase: search_addresses_resolve_and_navigate_exactly.
         {
             let (mut app, mut doc) = seeded();
-            let resources = app.resources(&doc);
+            let resources = ui::resources::resources(&app, &doc);
             let providers = app.search_providers();
             let provider = &providers[0];
             let channel_hit = provider

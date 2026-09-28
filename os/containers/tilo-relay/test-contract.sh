@@ -124,8 +124,7 @@ need "$workflow" 'assets: sccache-v0.17.0-x86_64-unknown-linux-musl.tar.gz'
 need "$workflow" "driver-opts: network=host"
 # Publications never build on a builder whose state another job left behind.
 need "$workflow" "persistent: \${{ !(startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') }}"
-need "$workflow" "cache-from: \${{ github.event_name != 'pull_request' && 'type=registry,ref=registry.tilo.so/tilo/tilo-relay-buildcache:latest' || '' }}"
-need "$workflow" "cache-to: \${{ github.event_name != 'pull_request' && 'type=registry,ref=registry.tilo.so/tilo/tilo-relay-buildcache:latest,mode=max' || '' }}"
+need "$workflow" 'cache-to: type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/tilo/tilo-relay-buildcache:latest,mode=max,ignore-error=true'
 
 for excluded in .git .forgejo target os/output; do
   grep -qxF "$excluded" "$dockerignore" || fail "Docker build context includes $excluded"

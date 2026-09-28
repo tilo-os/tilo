@@ -6015,7 +6015,6 @@ mod tests {
     use super::*;
     use crate::panes;
     use tilo_actions::LocalTransport;
-    use ui::widget::Widget;
 
     fn registry() -> ActionRegistry {
         let mut r = ActionRegistry::new();
@@ -6047,7 +6046,7 @@ mod tests {
             let config = crate::prefs::test_env::ScratchConfig::new();
             let app = config.app();
             let doc = AutoCommit::new();
-            let resources = Widget::resources(&app, &doc);
+            let resources = ui::resources::resources(&app, &doc);
             assert_eq!(resources.len(), 1, "one configuration root");
             let root = &resources[0];
             assert_eq!(root.kind, "settings.root");

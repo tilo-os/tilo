@@ -1719,7 +1719,10 @@ fn valid_input_fraction(value: f64) -> Result<f64, String> {
 }
 
 impl Widget for SettingsApp {
-    ui::provides!(dyn ui::undo::CommittedActions);
+    ui::provides!(
+        dyn ui::undo::CommittedActions,
+        dyn ui::resources::PublishesResources
+    );
 
     fn native_input_snapshot(
         &self,
@@ -2032,23 +2035,6 @@ impl Widget for SettingsApp {
             .is_some_and(ui::Widget::layout_needs_measure)
     }
 
-    /// Publish the settings resource tree to the shell's one Ctrl+K palette,
-    /// delegating to the [`ResourceProvider`](tilo_actions::ResourceProvider) impl
-    /// in [`crate::actions`]. Level-triggered: recomputed each frame from the
-    /// shared document.
-    fn resources(&self, doc: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
-    }
-
-    /// Resolve canonical Settings resources at activation time as well as
-    /// publishing the eager palette snapshot above.  Search results retain
-    /// only stable action addresses, so this is the authoritative path that
-    /// re-checks an address against the current resource surface before the
-    /// action door opens it.
-    fn resource(&self, doc: &automerge::AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
-    }
-
     fn start_operation(
         &mut self,
         op: &ui::widget::ResourceOperation<'_>,
@@ -2176,6 +2162,24 @@ impl Widget for SettingsApp {
     /// the collaborative setting-change actions those resources own.
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
         vec![Box::new(self.search_provider.clone())]
+    }
+}
+
+impl ui::resources::PublishesResources for SettingsApp {
+    /// Publish the settings resource tree to the shell's one Ctrl+K palette,
+    /// delegating to the [`ResourceProvider`](tilo_actions::ResourceProvider) impl
+    /// in [`crate::actions`]. Level-triggered: recomputed each frame from the
+    /// shared document.
+    fn resources(&self, doc: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+    }
+    /// Resolve canonical Settings resources at activation time as well as
+    /// publishing the eager palette snapshot above.  Search results retain
+    /// only stable action addresses, so this is the authoritative path that
+    /// re-checks an address against the current resource surface before the
+    /// action door opens it.
+    fn resource(&self, doc: &automerge::AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
     }
 }
 

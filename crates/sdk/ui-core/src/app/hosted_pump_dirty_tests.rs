@@ -14,6 +14,8 @@ struct HostedPumpProbe {
     actions: usize,
 }
 impl Widget for HostedPumpProbe {
+    crate::provides!(dyn crate::resources::PublishesResources);
+
     crate::testing::inert_widget_methods!(
         unregistered_leaf_layout,
         apply_layout,
@@ -36,6 +38,9 @@ impl Widget for HostedPumpProbe {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[COUNTER_TYPE]
     }
+}
+
+impl crate::resources::PublishesResources for HostedPumpProbe {
     fn resources(&self, doc: &automerge::AutoCommit) -> Vec<Resource> {
         self.calls.set(self.calls.get() + 1);
         let count = if doc.get(ROOT, "more").unwrap().is_some() {

@@ -2219,8 +2219,7 @@ impl NotesApp {
             _ => None,
         };
         if let Some((resource_id, action_id)) = resource_action {
-            let resource = self
-                .resource(doc, &resource_id)
+            let resource = ui::resources::resource(self, doc, &resource_id)
                 .ok_or("page action resource no longer exists")?;
             ui::ActionHost::authorize_resource_action(doc, &resource, action_id)?;
         }
@@ -4337,16 +4336,11 @@ impl Widget for NotesApp {
         }));
     }
 
-    ui::provides!(dyn ui::undo::CommittedActions);
-
-    fn has_pending_control_invocation(&self) -> bool {
-        !self.adopted
-            || self.pending_markdown_source.is_some()
-            || self
-                .children()
-                .iter()
-                .any(|child| child.has_pending_control_invocation())
-    }
+    ui::provides!(
+        dyn ui::undo::CommittedActions,
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::resources::PublishesResources
+    );
 
     fn try_flush_owned_persistence(&mut self) -> Option<Result<(), String>> {
         self.legacy_fixture_storage.as_ref()?;
@@ -4360,50 +4354,6 @@ impl Widget for NotesApp {
         let bodies = legacy.page_saver.try_flush();
         let metadata = legacy.saver.try_flush();
         Some(bodies.and(metadata))
-    }
-
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        if !self.import_control_emitted
-            && let Some(resource) = self.pending_import_resource()
-            && let Some(spec) = resource.actions.first()
-            && let Ok(binding) =
-                tilo_actions::ActionBinding::new(&resource, spec, |()| serde_json::Map::new())
-            && let Ok(intent) = binding.invoke(())
-        {
-            self.import_control_emitted = true;
-            return Some(intent);
-        }
-        self.children_mut()
-            .into_iter()
-            .find_map(Widget::take_control_invocation)
-    }
-
-    fn on_control_invocation_result(
-        &mut self,
-        address: &tilo_actions::ActionAddress,
-        result: &Result<ui::widget::ResourceOperationStart, tilo_actions::DoorError>,
-    ) {
-        if address.resource == "notes.pending-import" && address.action == "finalize" {
-            match result {
-                Err(error) => {
-                    self.pending_markdown_source = None;
-                    self.import_control_emitted = false;
-                    self.transfer_toasts.push(
-                        format!("Import failed: {error}"),
-                        ui::widget::toast::ToastKind::Error,
-                    );
-                    self.complete_markdown_operation(Err(error.to_string()));
-                    self.self_dirty = true;
-                }
-                Ok(ui::widget::ResourceOperationStart::Completed(output)) => {
-                    self.complete_markdown_operation(Ok(output.clone()));
-                }
-                Ok(ui::widget::ResourceOperationStart::Accepted) => {}
-            }
-        }
-        for child in self.children_mut() {
-            child.on_control_invocation_result(address, result);
-        }
     }
 
     fn start_operation(
@@ -4600,30 +4550,6 @@ impl Widget for NotesApp {
         {
             self.pending_block_reveal = None;
         }
-    }
-
-    /// Publish the open notebook + its pages (nested by the tree) so the host's
-    /// Ctrl+K action palette scopes to them. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
-    /// [`crate::actions`].
-    fn action_directory_invocation_domain(
-        &self,
-        doc: &AutoCommit,
-    ) -> ui::widget::ActionDirectoryInvocationDomain {
-        self.notes_invocation_domain(doc)
-    }
-
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        let mut resources = <Self as tilo_actions::ResourceProvider>::resources(self, doc);
-        resources.extend(self.pending_import_resource());
-        resources
-    }
-
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        if id == "notes.pending-import" {
-            return self.pending_import_resource();
-        }
-        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
     }
 
     /// Fold the notebook into the unified Ctrl+K palette: a snapshot
@@ -5121,6 +5047,83 @@ impl Widget for NotesApp {
     ) {
         // The root rect is the whole window — always paint, never cull.
         self.draw(scene, transform, text_renderer, theme, presence);
+    }
+}
+
+impl ui::resources::PublishesResources for NotesApp {
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        let mut resources = <Self as tilo_actions::ResourceProvider>::resources(self, doc);
+        resources.extend(self.pending_import_resource());
+        resources
+    }
+    /// Publish the open notebook + its pages (nested by the tree) so the host's
+    /// Ctrl+K action palette scopes to them. Delegates to the
+    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
+    /// [`crate::actions`].
+    fn action_directory_invocation_domain(
+        &self,
+        doc: &AutoCommit,
+    ) -> ui::widget::ActionDirectoryInvocationDomain {
+        self.notes_invocation_domain(doc)
+    }
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        if id == "notes.pending-import" {
+            return self.pending_import_resource();
+        }
+        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
+    }
+}
+
+impl ui::widget::controls::ActionControls for NotesApp {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        if !self.import_control_emitted
+            && let Some(resource) = self.pending_import_resource()
+            && let Some(spec) = resource.actions.first()
+            && let Ok(binding) =
+                tilo_actions::ActionBinding::new(&resource, spec, |()| serde_json::Map::new())
+            && let Ok(intent) = binding.invoke(())
+        {
+            self.import_control_emitted = true;
+            return Some(intent);
+        }
+        self.children_mut()
+            .into_iter()
+            .find_map(ui::widget::controls::take_control_invocation)
+    }
+    fn on_control_invocation_result(
+        &mut self,
+        address: &tilo_actions::ActionAddress,
+        result: &Result<ui::widget::ResourceOperationStart, tilo_actions::DoorError>,
+    ) {
+        if address.resource == "notes.pending-import" && address.action == "finalize" {
+            match result {
+                Err(error) => {
+                    self.pending_markdown_source = None;
+                    self.import_control_emitted = false;
+                    self.transfer_toasts.push(
+                        format!("Import failed: {error}"),
+                        ui::widget::toast::ToastKind::Error,
+                    );
+                    self.complete_markdown_operation(Err(error.to_string()));
+                    self.self_dirty = true;
+                }
+                Ok(ui::widget::ResourceOperationStart::Completed(output)) => {
+                    self.complete_markdown_operation(Ok(output.clone()));
+                }
+                Ok(ui::widget::ResourceOperationStart::Accepted) => {}
+            }
+        }
+        for child in self.children_mut() {
+            ui::widget::controls::on_control_invocation_result(child, address, result);
+        }
+    }
+    fn has_pending_control_invocation(&self) -> bool {
+        !self.adopted
+            || self.pending_markdown_source.is_some()
+            || self
+                .children()
+                .iter()
+                .any(|child| ui::widget::controls::has_pending_control_invocation(*child))
     }
 }
 
@@ -5798,10 +5801,9 @@ mod tests {
     }
 
     fn admit_pending_import(app: &mut NotesApp, state: &mut ui::State) {
-        let intent = app
-            .take_control_invocation()
-            .expect("import emits a host intent");
-        let resource = Widget::resource(app, &state.doc, &intent.address.resource).unwrap();
+        let intent =
+            ui::widget::controls::take_control_invocation(app).expect("import emits a host intent");
+        let resource = ui::resources::resource(app, &state.doc, &intent.address.resource).unwrap();
         let spec = resource
             .actions
             .iter()
@@ -5836,7 +5838,7 @@ mod tests {
             started,
             ui::widget::ResourceOperationStart::Completed(_)
         ));
-        app.on_control_invocation_result(&intent.address, &Ok(started));
+        ui::widget::controls::on_control_invocation_result(app, &intent.address, &Ok(started));
         app.sync(&mut state.doc, &state.root);
     }
 
@@ -6468,7 +6470,7 @@ mod tests {
 
             // Palette side: the welcome page resource's delete spec (built before we
             // delete the page, while it still exists in the tree).
-            let resources = Widget::resources(&app, &state.doc);
+            let resources = ui::resources::resources(&app, &state.doc);
             let page = resources[0]
                 .children
                 .iter()
@@ -6799,8 +6801,7 @@ mod tests {
                 "a fresh navigation clears the old forward branch"
             );
 
-            let notebook = app
-                .resources(&state.doc)
+            let notebook = ui::resources::resources(&app, &state.doc)
                 .into_iter()
                 .find(|resource| resource.id.as_str() == "notes.notebook")
                 .expect("notebook resource");
@@ -7149,7 +7150,7 @@ mod tests {
             || ("notes.notebook".into(), "import-markdown"),
             |page| (format!("notes.page:{page}"), "export-markdown"),
         );
-        let resource = Widget::resource(app, &state.doc, &resource_id).unwrap();
+        let resource = ui::resources::resource(app, &state.doc, &resource_id).unwrap();
         let spec = resource
             .actions
             .iter()
@@ -7249,7 +7250,7 @@ mod tests {
                     .unwrap();
             }
             let resource =
-                Widget::resource(&app, &state.doc, &format!("notes.page:{page}")).unwrap();
+                ui::resources::resource(&app, &state.doc, &format!("notes.page:{page}")).unwrap();
             let spec = resource
                 .actions
                 .iter()
@@ -7427,10 +7428,11 @@ mod tests {
             app.sync(&mut state.doc, &state.root);
             settle_markdown_io(&mut app, &mut state.doc);
             app.sync(&mut state.doc, &state.root);
-            let intent = app.take_control_invocation().unwrap();
+            let intent = ui::widget::controls::take_control_invocation(&mut app).unwrap();
             // The separate FrameHarness revocation regression proves this host
             // refusal route. Here assert its original asynchronous receipt too.
-            app.on_control_invocation_result(
+            ui::widget::controls::on_control_invocation_result(
+                &mut app,
                 &intent.address,
                 &Err(tilo_actions::DoorError::Unavailable {
                     code: "permission_denied".into(),
@@ -7442,7 +7444,7 @@ mod tests {
                 tilo_actions::InvocationUpdate::Failed { .. }
             ));
             assert!(app.pending_markdown_source.is_none());
-            assert!(app.take_control_invocation().is_none());
+            assert!(ui::widget::controls::take_control_invocation(&mut app).is_none());
             assert_eq!(state.doc.get_heads(), before);
             assert_eq!(std::fs::read_to_string(source).unwrap(), "Private source");
         }
@@ -7650,7 +7652,7 @@ mod tests {
             .unwrap();
             app.sync(&mut state.doc, &state.root);
 
-            let resolved = Widget::resource(&app, &state.doc, &old_address.resource)
+            let resolved = ui::resources::resource(&app, &state.doc, &old_address.resource)
                 .expect("the original block's resource resolves lazily");
             assert_eq!(resolved.id.0, old_address.resource);
             assert!(

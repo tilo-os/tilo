@@ -2464,7 +2464,11 @@ impl LogsApp {
 }
 
 impl Widget for LogsApp {
-    ui::provides!(dyn ui::history_mode::capability::DocumentHistory);
+    ui::provides!(
+        dyn ui::history_mode::capability::DocumentHistory,
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::resources::PublishesResources
+    );
 
     fn measure(
         &mut self,
@@ -2481,16 +2485,6 @@ impl Widget for LogsApp {
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[actions::LOGS_OPERATION_TYPE]
-    }
-
-    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
-        self.pending_control_invocation
-            .take()
-            .or_else(|| self.search_input.take_control_invocation())
-    }
-
-    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
-        actions::resources(&self.entries, &self.filter, self.live_tail, self.allow_live)
     }
 
     fn start_operation(
@@ -2877,6 +2871,20 @@ impl Widget for LogsApp {
         // Keep pumping frames while the push slide eases into place, or
         // while live tail is on.
         self.push.is_animating() || (self.allow_live && self.live_tail) || self.export_rx.is_some()
+    }
+}
+
+impl ui::resources::PublishesResources for LogsApp {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
+        actions::resources(&self.entries, &self.filter, self.live_tail, self.allow_live)
+    }
+}
+
+impl ui::widget::controls::ActionControls for LogsApp {
+    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
+        self.pending_control_invocation
+            .take()
+            .or_else(|| self.search_input.take_control_invocation())
     }
 }
 
@@ -3621,8 +3629,7 @@ mod tests {
         {
             let mut app = LogsApp::new(sample_entries(), true);
             app.request_journal_operation("refresh");
-            let invocation = app
-                .take_control_invocation()
+            let invocation = ui::widget::controls::take_control_invocation(&mut app)
                 .expect("refresh queues an inert control invocation");
             assert_eq!(invocation.address.resource, actions::JOURNAL_RESOURCE_ID);
             assert_eq!(invocation.address.action, "refresh");

@@ -2489,21 +2489,26 @@ mod tests {
             app.sync(&mut doc, &ROOT);
             let sheet_id = SheetsDoc::sheet_resource_id(&doc, 0).expect("seeded sheet identity");
             let id = cell_resource_id(&sheet_id, 10, 100_000);
-            let lazy = Widget::resource(&app, &doc, &id).expect("valid omitted cell resolves");
+            let lazy =
+                ui::resources::resource(&app, &doc, &id).expect("valid omitted cell resolves");
             assert_eq!(lazy.id.0, id);
             assert!(
                 tilo_actions::door::resolve(&[lazy], &open_cell_address(&sheet_id, 10, 100_000))
                     .is_some()
             );
             assert!(
-                Widget::resource(&app, &doc, &cell_resource_id(&sheet_id, MAX_COLUMN + 1, 0))
-                    .is_none()
+                ui::resources::resource(
+                    &app,
+                    &doc,
+                    &cell_resource_id(&sheet_id, MAX_COLUMN + 1, 0)
+                )
+                .is_none()
             );
 
             dispatch(&mut doc, &delete_sheet_action(0, sheet_id));
             app.sync(&mut doc, &ROOT);
             assert!(
-                Widget::resource(&app, &doc, &id).is_none(),
+                ui::resources::resource(&app, &doc, &id).is_none(),
                 "a stale sheet id has no authority"
             );
         }

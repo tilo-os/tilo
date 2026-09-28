@@ -954,7 +954,8 @@ impl Widget for BrowserTabs {
     ui::provides!(
         dyn ui::widget::FullscreenProvider,
         dyn ui::widget::FloatingSurfaceProvider,
-        dyn ui::widget::Continuable
+        dyn ui::widget::Continuable,
+        dyn ui::widget::controls::ActionControls
     );
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
@@ -1525,19 +1526,6 @@ impl Widget for BrowserTabs {
             tab.widget.set_motion_reduced(reduced);
         }
     }
-    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
-        if let Some(recovery) = self.recovery.as_mut() {
-            return recovery.panel.take_control_invocation();
-        }
-        if let Some(invocation) = self
-            .exit_panel
-            .as_mut()
-            .and_then(|panel| panel.take_control_invocation())
-        {
-            return Some(invocation);
-        }
-        self.active_mut().take_control_invocation()
-    }
     fn modal_capture(&self) -> Option<Rect> {
         if let Some(panel) = self.exit_panel.as_ref() {
             Some(panel.get_rect())
@@ -1578,6 +1566,22 @@ impl Widget for BrowserTabs {
     }
     fn take_window_close_intent(&mut self) -> bool {
         std::mem::take(&mut self.close_intent)
+    }
+}
+
+impl ui::widget::controls::ActionControls for BrowserTabs {
+    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
+        if let Some(recovery) = self.recovery.as_mut() {
+            return ui::widget::controls::take_control_invocation(recovery.panel.as_mut());
+        }
+        if let Some(invocation) = self
+            .exit_panel
+            .as_mut()
+            .and_then(|panel| ui::widget::controls::take_control_invocation(panel.as_mut()))
+        {
+            return Some(invocation);
+        }
+        self.active_mut().take_control_invocation()
     }
 }
 
@@ -2172,8 +2176,7 @@ mod tests {
                             });
                         }
                     }
-                    let invocation = tabs
-                        .take_control_invocation()
+                    let invocation = ui::widget::controls::take_control_invocation(&mut tabs)
                         .expect("ordinary input must emit the button's canonical action");
                     assert_eq!(invocation.address.resource, format!("tilo.control:{id}"));
                     tabs.start_operation(
@@ -2620,8 +2623,7 @@ mod tests {
         assert!(unsafe {
             (&mut *button).perform_action(&ui::a11y::Action::Activate, doc, &automerge::ROOT)
         });
-        let invocation = tabs
-            .take_control_invocation()
+        let invocation = ui::widget::controls::take_control_invocation(tabs)
             .expect("exit choice must reach the root action broker");
         assert_eq!(invocation.address.resource, format!("tilo.control:{id}"));
         assert!(
@@ -2942,8 +2944,8 @@ mod tests {
         // Phase `resources_are_owned_only_by_the_page`.
         {
             let tabs = workspace();
-            assert!(tabs.resources(&AutoCommit::new()).is_empty());
-            assert!(!tabs.active().resources(&AutoCommit::new()).is_empty());
+            assert!(ui::resources::resources(&tabs, &AutoCommit::new()).is_empty());
+            assert!(!ui::resources::resources(tabs.active(), &AutoCommit::new()).is_empty());
         }
     }
     /// New tab typing, focus and stale layout nodes.
@@ -3001,7 +3003,7 @@ mod tests {
                 );
             }
             assert!(
-                tabs.active_mut().take_control_invocation().is_some(),
+                ui::widget::controls::take_control_invocation(tabs.active_mut()).is_some(),
                 "Enter must queue the complete address even before layout"
             );
             let mut new_tree = TaffyTree::new();
@@ -3082,7 +3084,7 @@ mod tests {
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
             tabs.sync(&mut doc, &root);
-            let resources = tabs.active().resources(&doc);
+            let resources = ui::resources::resources(tabs.active(), &doc);
             let page = resources[0]
                 .children
                 .iter()
@@ -3174,7 +3176,7 @@ mod tests {
             )
             .unwrap();
             tabs.active_mut().apply_layout(&tree, node, Point::ORIGIN);
-            let resources = tabs.active().resources(&doc);
+            let resources = ui::resources::resources(tabs.active(), &doc);
             let page = resources[0]
                 .children
                 .iter()

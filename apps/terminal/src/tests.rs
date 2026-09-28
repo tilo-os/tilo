@@ -1319,11 +1319,10 @@ fn clipboard_gestures_route_through_confirmed_actions() {
             /*shift=*/ true,
         );
 
-        let intent = widget
-            .take_control_invocation()
+        let intent = ui::widget::controls::take_control_invocation(&mut widget)
             .expect("copy shortcut queues a canonical action");
         assert_eq!(intent.address.action, "copy-selection");
-        let resources = widget.resources(&doc);
+        let resources = ui::resources::resources(&widget, &doc);
         let spec = ui::tilo_actions::door::resolve(&resources, &intent.address).unwrap();
         assert_eq!(spec.kind, ui::tilo_actions::OperationKind::Effect);
         assert_eq!(
@@ -1331,7 +1330,7 @@ fn clipboard_gestures_route_through_confirmed_actions() {
             ui::tilo_actions::ConfirmationPolicy::Confirm
         );
         assert!(
-            widget.take_control_invocation().is_none(),
+            ui::widget::controls::take_control_invocation(&mut widget).is_none(),
             "the gesture queues exactly one intent"
         );
     }
@@ -1356,11 +1355,10 @@ fn clipboard_gestures_route_through_confirmed_actions() {
                 drain_writes(&writes).is_empty(),
                 "shortcut cannot write before host admission"
             );
-            let intent = widget
-                .take_control_invocation()
+            let intent = ui::widget::controls::take_control_invocation(&mut widget)
                 .expect("paste shortcut queues a canonical action");
             assert_eq!(intent.address.action, "paste");
-            let resources = widget.resources(&doc);
+            let resources = ui::resources::resources(&widget, &doc);
             let spec = ui::tilo_actions::door::resolve(&resources, &intent.address).unwrap();
             assert_eq!(spec.params().len(), 1);
             assert_eq!(spec.params()[0].name.as_ref(), "text");
@@ -1387,7 +1385,10 @@ fn clipboard_gestures_route_through_confirmed_actions() {
             anchor: GridPos { row: 0, col: 0 },
             cursor: GridPos { row: 0, col: 11 },
         }));
-        widget.refresh_control_action_availability(&std::collections::HashSet::new());
+        ui::widget::controls::refresh_control_action_availability(
+            &mut widget,
+            &std::collections::HashSet::new(),
+        );
 
         send_key(
             &mut widget,
@@ -1406,7 +1407,7 @@ fn clipboard_gestures_route_through_confirmed_actions() {
         send_cursor_move(&mut widget, &mut doc, 100.0, 100.0);
         send_middle_press(&mut widget, &mut doc);
 
-        assert!(widget.take_control_invocation().is_none());
+        assert!(ui::widget::controls::take_control_invocation(&mut widget).is_none());
         assert!(
             drain_writes(&writes).is_empty(),
             "denied gestures produce neither an invocation nor a PTY effect"
@@ -1426,11 +1427,10 @@ fn clipboard_gestures_route_through_confirmed_actions() {
         send_cursor_move(&mut w, &mut doc, 100.0, 100.0);
         send_middle_press(&mut w, &mut doc);
         assert!(drain_writes(&write_rx).is_empty());
-        let intent = w
-            .take_control_invocation()
+        let intent = ui::widget::controls::take_control_invocation(&mut w)
             .expect("middle-click queues a canonical action");
         assert_eq!(intent.address.action, "paste-primary");
-        let resources = w.resources(&doc);
+        let resources = ui::resources::resources(&w, &doc);
         let spec = ui::tilo_actions::door::resolve(&resources, &intent.address).unwrap();
         assert_eq!(
             spec.contract.confirmation,
@@ -1987,7 +1987,7 @@ fn context_menu_is_keyboard_navigable_and_laid_out_in_view() {
             );
             assert!(widget.find_test_state().0);
             assert!(
-                widget.take_control_invocation().is_none(),
+                ui::widget::controls::take_control_invocation(&mut widget).is_none(),
                 "Find is local presentation"
             );
             assert!(drain_writes(&writes).is_empty());
@@ -2051,16 +2051,16 @@ fn context_menu_is_keyboard_navigable_and_laid_out_in_view() {
             widget.selection().is_none(),
             "menu selection waits for host admission"
         );
-        let intent = widget
-            .take_control_invocation()
+        let intent = ui::widget::controls::take_control_invocation(&mut widget)
             .expect("canonical select-all intent");
         assert_eq!(intent.address.action, "select-all");
         // Grant selection without clipboard publication: this keyboard test must
         // never write the real desktop clipboard on any platform.
-        widget.refresh_control_action_availability(&std::collections::HashSet::from([intent
-            .address
-            .clone()]));
-        let resources = widget.resources(&doc);
+        ui::widget::controls::refresh_control_action_availability(
+            &mut widget,
+            &std::collections::HashSet::from([intent.address.clone()]),
+        );
+        let resources = ui::resources::resources(&widget, &doc);
         let spec = ui::tilo_actions::door::resolve(&resources, &intent.address).unwrap();
         assert_eq!(spec.kind, ui::tilo_actions::OperationKind::Effect);
         assert_eq!(
@@ -2264,8 +2264,7 @@ fn menu_and_paste_actions_recheck_live_permissions() {
             &mut AutoCommit::new(),
             &ROOT,
         );
-        let intent = widget
-            .take_control_invocation()
+        let intent = ui::widget::controls::take_control_invocation(&mut widget)
             .expect("menu queues a canonical intent");
         assert_eq!(intent.address.action, "clear");
         assert!(drain_writes(&writes).is_empty());
@@ -2373,8 +2372,7 @@ fn menu_and_paste_actions_recheck_live_permissions() {
             true,
             true,
         );
-        let intent = widget
-            .take_control_invocation()
+        let intent = ui::widget::controls::take_control_invocation(&mut widget)
             .expect("shortcut queues the canonical paste action");
         assert_eq!(intent.address.action, "paste");
         assert!(drain_writes(&writes).is_empty());
@@ -2491,7 +2489,10 @@ fn menu_and_paste_actions_recheck_live_permissions() {
         let (mut widget, writes) = build_test_widget();
         let mut doc = AutoCommit::new();
         widget.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
-        widget.refresh_control_action_availability(&std::collections::HashSet::new());
+        ui::widget::controls::refresh_control_action_availability(
+            &mut widget,
+            &std::collections::HashSet::new(),
+        );
         widget.open_context_menu_at(vello::kurbo::Point::new(20.0, 20.0));
 
         let menu = widget
@@ -2534,7 +2535,7 @@ fn menu_and_paste_actions_recheck_live_permissions() {
             widget.find_test_state().0,
             "keyboard navigation skips denied effects and reaches local Find"
         );
-        assert!(widget.take_control_invocation().is_none());
+        assert!(ui::widget::controls::take_control_invocation(&mut widget).is_none());
         assert!(drain_writes(&writes).is_empty());
     }
 
@@ -2561,12 +2562,11 @@ fn menu_and_paste_actions_recheck_live_permissions() {
             .and_then(|node| node.action_target)
             .unwrap();
         assert!(widget.perform_semantic_action(&paste_target, &Action::Activate, &mut doc, &ROOT,));
-        let intent = widget
-            .take_control_invocation()
+        let intent = ui::widget::controls::take_control_invocation(&mut widget)
             .expect("menu paste queues its captured canonical intent");
 
         ui::clipboard_copy("menu substitution");
-        let resources = widget.resources(&doc);
+        let resources = ui::resources::resources(&widget, &doc);
         let spec = ui::tilo_actions::door::resolve(&resources, &intent.address).unwrap();
         let encoded = spec.build_json(&intent.arguments).unwrap();
         assert!(
@@ -3236,12 +3236,10 @@ fn ime_and_accessibility_expose_terminal_semantics() {
 fn terminal_resource_identity_convergence_and_presence() {
     // Case `terminal_resource_uses_the_shared_pane_identity`.
     {
-        use ui::widget::Widget;
-
         let (mut w, _writes) = build_test_widget();
         let mut doc = AutoCommit::new();
         w.init_crdt(&mut doc, &automerge::ROOT);
-        let resource = Widget::resources(&w, &doc)
+        let resource = ui::resources::resources(&w, &doc)
             .into_iter()
             .next()
             .expect("terminal session resource");
@@ -3249,13 +3247,13 @@ fn terminal_resource_identity_convergence_and_presence() {
         let mut peer_doc = AutoCommit::load(&saved).expect("load collaborator replica");
         let (mut peer, _writes) = build_test_widget();
         peer.init_crdt(&mut peer_doc, &automerge::ROOT);
-        let peer_resource = Widget::resources(&peer, &peer_doc)
+        let peer_resource = ui::resources::resources(&peer, &peer_doc)
             .into_iter()
             .next()
             .expect("peer terminal session resource");
         assert_eq!(resource.id, peer_resource.id);
         assert_eq!(
-            Widget::control_action_bindings(&w).len(),
+            ui::widget::controls::control_action_bindings(&w).len(),
             0,
             "resource actions are command-palette/agent operations, not phantom controls"
         );
@@ -3268,7 +3266,6 @@ fn terminal_resource_identity_convergence_and_presence() {
     // presence addresses would split despite the document converging.
     {
         use automerge::ActorId;
-        use ui::widget::Widget;
 
         let mut base = AutoCommit::new();
         let mut left_doc = base.fork().with_actor(ActorId::random());
@@ -3301,12 +3298,12 @@ fn terminal_resource_identity_convergence_and_presence() {
         // replicas without a conflict-cleanup write.
         left.init_crdt(&mut left_doc, &ROOT);
         right.init_crdt(&mut right_doc, &ROOT);
-        let left_id = Widget::resources(&left, &left_doc)
+        let left_id = ui::resources::resources(&left, &left_doc)
             .into_iter()
             .next()
             .expect("left terminal resource")
             .id;
-        let right_id = Widget::resources(&right, &right_doc)
+        let right_id = ui::resources::resources(&right, &right_doc)
             .into_iter()
             .next()
             .expect("right terminal resource")
@@ -3332,7 +3329,7 @@ fn terminal_resource_identity_convergence_and_presence() {
         );
         widget.sync(&mut doc, &ROOT);
 
-        let root = Widget::resources(&widget, &doc)
+        let root = ui::resources::resources(&widget, &doc)
             .into_iter()
             .next()
             .expect("session root");
@@ -3348,7 +3345,7 @@ fn terminal_resource_identity_convergence_and_presence() {
             .find(|resource| resource.kind == "terminal.link")
             .expect("visible OSC link child");
         assert_eq!(link.label, "https://example.test/docs");
-        assert!(Widget::resource(&widget, &doc, link.id.as_str()).is_some());
+        assert!(ui::resources::resource(&widget, &doc, link.id.as_str()).is_some());
         let semantics = Widget::accessibility(&widget).expect("terminal semantics");
         assert!(semantics.children.iter().any(|child| {
             child.role == ui::a11y::Role::Link
@@ -3356,8 +3353,8 @@ fn terminal_resource_identity_convergence_and_presence() {
                 && child.action_target.as_deref() == Some(link.id.as_str())
                 && child.state.focusable
         }));
-        let initial_revision =
-            Widget::action_directory_revision(&widget, &doc).expect("terminal directory revision");
+        let initial_revision = ui::resources::action_directory_revision(&widget, &doc)
+            .expect("terminal directory revision");
 
         let mut link_burst = Vec::new();
         for index in 0..40 {
@@ -3368,11 +3365,11 @@ fn terminal_resource_identity_convergence_and_presence() {
         widget.feed(&mut doc, &ROOT, &link_burst);
         widget.sync(&mut doc, &ROOT);
         assert_ne!(
-            Widget::action_directory_revision(&widget, &doc).as_deref(),
+            ui::resources::action_directory_revision(&widget, &doc).as_deref(),
             Some(initial_revision.as_str()),
             "new visible link resources invalidate the directory snapshot"
         );
-        let bounded = Widget::resources(&widget, &doc)
+        let bounded = ui::resources::resources(&widget, &doc)
             .into_iter()
             .next()
             .and_then(|root| {
@@ -3393,15 +3390,15 @@ fn terminal_resource_identity_convergence_and_presence() {
             .map(|(prefix, _)| prefix)
             .expect("link id suffix");
         assert!(
-            Widget::resource(&widget, &doc, &format!("{prefix}:41")).is_some(),
+            ui::resources::resource(&widget, &doc, &format!("{prefix}:41")).is_some(),
             "a link omitted from the contextual cap resolves lazily"
         );
 
-        let page = Widget::action_directory_resource_page(&widget, &doc, b"", 1)
+        let page = ui::resources::action_directory_resource_page(&widget, &doc, b"", 1)
             .expect("bounded directory page");
         assert_eq!(page.resources.len(), 1);
         assert!(page.exhausted && page.next_cursor.is_empty());
-        let exhausted = Widget::action_directory_resource_page(&widget, &doc, b"done", 1)
+        let exhausted = ui::resources::action_directory_resource_page(&widget, &doc, b"done", 1)
             .expect("terminal owns its empty tail page");
         assert!(exhausted.resources.is_empty() && exhausted.exhausted);
     }

@@ -14284,7 +14284,9 @@ impl PhotosApp {
 impl Widget for PhotosApp {
     ui::provides!(
         dyn ui::undo::CommittedActions,
-        dyn ui::history_mode::capability::DocumentHistory
+        dyn ui::history_mode::capability::DocumentHistory,
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::resources::PublishesResources
     );
 
     fn set_motion_reduced(&mut self, reduced: bool) {
@@ -16025,6 +16027,19 @@ impl Widget for PhotosApp {
         }
     }
 
+    /// Keep the palette projection derived from the same fresh document
+    /// resource tree as agents and assistive technology. The provider's
+    /// catalog gives Ctrl+K Unicode-safe, cursor-paged bounded queries.
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(self.search_provider.clone())]
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+}
+
+impl ui::resources::PublishesResources for PhotosApp {
     /// The open photograph and the edits it supports, published to whatever is
     /// hosting this widget.
     ///
@@ -16046,7 +16061,6 @@ impl Widget for PhotosApp {
         }
         resources
     }
-
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
         use tilo_actions::ResourceProvider;
         if id == "photos.search-status" {
@@ -16065,13 +16079,14 @@ impl Widget for PhotosApp {
             })
             .or_else(|| crate::actions::PhotosResources.resource(doc, id))
     }
+}
 
+impl ui::widget::controls::ActionControls for PhotosApp {
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.retained_buttons_mut()
             .into_iter()
-            .find_map(Widget::take_control_invocation)
+            .find_map(|button| ui::widget::controls::take_control_invocation(button))
     }
-
     fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
         // Photos projects its custom media surfaces and retained buttons into
         // one complete semantic tree above. Inventory that visible tree once:
@@ -16082,7 +16097,6 @@ impl Widget for PhotosApp {
         // and are dispatched through the same retained widgets.
         ui::widget::semantic_action_bindings(self.accessibility())
     }
-
     fn refresh_control_action_availability(
         &mut self,
         allowed: &HashSet<tilo_actions::ActionAddress>,
@@ -16090,17 +16104,6 @@ impl Widget for PhotosApp {
         for button in self.retained_buttons_mut() {
             button.refresh_control_action_availability(allowed);
         }
-    }
-
-    /// Keep the palette projection derived from the same fresh document
-    /// resource tree as agents and assistive technology. The provider's
-    /// catalog gives Ctrl+K Unicode-safe, cursor-paged bounded queries.
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(self.search_provider.clone())]
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 }
 

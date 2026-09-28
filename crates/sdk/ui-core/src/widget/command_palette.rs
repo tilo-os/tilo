@@ -2042,31 +2042,7 @@ const FILTER_STRIP_HEIGHT: f64 = 36.0;
 const FOOTER_HEIGHT: f64 = 28.0;
 
 impl Widget for CommandPalette {
-    fn install_control_custody(
-        &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
-    ) {
-        let _ = self.action_invocation.install(domain, attachment);
-    }
-    fn take_control_invocation(&mut self) -> Option<ControlInvocation> {
-        self.action_invocation.take()
-    }
-
-    fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
-        self.entries
-            .iter()
-            .filter_map(|entry| {
-                entry
-                    .action_address
-                    .clone()
-                    .map(|address| crate::widget::ControlBindingMetadata {
-                        control_id: entry.id.clone(),
-                        kind: crate::widget::ControlBindingKind::Action(address),
-                    })
-            })
-            .collect()
-    }
+    crate::provides!(dyn crate::widget::controls::ActionControls);
 
     fn set_platform_conventions(&mut self, conventions: PlatformConventions) {
         self.platform = conventions;
@@ -2532,6 +2508,33 @@ impl Widget for CommandPalette {
     }
 }
 
+impl crate::widget::controls::ActionControls for CommandPalette {
+    fn install_control_custody(
+        &mut self,
+        domain: &crate::ControlDomain,
+        attachment: crate::control_custody::CustodyAttachment,
+    ) {
+        let _ = self.action_invocation.install(domain, attachment);
+    }
+    fn take_control_invocation(&mut self) -> Option<ControlInvocation> {
+        self.action_invocation.take()
+    }
+    fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
+        self.entries
+            .iter()
+            .filter_map(|entry| {
+                entry
+                    .action_address
+                    .clone()
+                    .map(|address| crate::widget::ControlBindingMetadata {
+                        control_id: entry.id.clone(),
+                        kind: crate::widget::ControlBindingKind::Action(address),
+                    })
+            })
+            .collect()
+    }
+}
+
 impl CommandPalette {
     /// For hosts rendering the palette as a free-floating overlay.
     /// `handle_event` ignores the taffy tree + node id, so a throwaway
@@ -2939,7 +2942,8 @@ mod tests {
             palette.activate_selected(&mut AutoCommit::new(), &automerge::ROOT);
 
             assert!(palette.take_outcome().is_none());
-            let invocation = Widget::take_control_invocation(&mut palette).unwrap();
+            let invocation =
+                crate::widget::controls::take_control_invocation(&mut palette).unwrap();
             assert_eq!(invocation.address, ActionAddress::new("document:1", "save"));
             assert!(invocation.arguments.is_empty());
         }
@@ -2970,7 +2974,8 @@ mod tests {
             );
             assert!(handled);
             assert!(palette.take_outcome().is_none());
-            let invocation = Widget::take_control_invocation(&mut palette).unwrap();
+            let invocation =
+                crate::widget::controls::take_control_invocation(&mut palette).unwrap();
             assert_eq!(
                 invocation.address,
                 ActionAddress::new("document:1", "rename")

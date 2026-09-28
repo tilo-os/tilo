@@ -504,7 +504,11 @@ impl TileHost {
             }
             let attachment = self.custody_renewal.take().unwrap_or(attachment);
             if let TileContent::App(root) = &mut self.content {
-                root.install_control_custody(&domain, attachment);
+                crate::widget::controls::install_control_custody(
+                    root.as_mut(),
+                    &domain,
+                    attachment,
+                );
             }
             if let Some(history) = &mut self.history {
                 history.set_control_domain(&domain);
@@ -1588,7 +1592,8 @@ impl Widget for TileHost {
         dyn crate::widget::FloatingSurfaceProvider,
         dyn crate::widget::AudiencePresentationProvider,
         dyn crate::collaboration::participants::CollaborationTopology,
-        dyn crate::history_mode::capability::FrameworkHistoryTopology
+        dyn crate::history_mode::capability::FrameworkHistoryTopology,
+        dyn crate::widget::controls::ActionControls
     );
 
     fn try_flush_owned_persistence(&mut self) -> Option<Result<(), String>> {
@@ -1713,25 +1718,6 @@ impl Widget for TileHost {
             request.tile(owner.as_ref(), separate, interactive, live.as_mut())
         } else {
             Ok(())
-        }
-    }
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        if self.has_separate_document_owner() {
-            return None;
-        }
-        self.children_mut()
-            .into_iter()
-            .find_map(Widget::take_control_invocation)
-    }
-    fn refresh_control_action_availability(
-        &mut self,
-        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
-    ) {
-        if self.has_separate_document_owner() {
-            return;
-        }
-        for child in self.children_mut() {
-            child.refresh_control_action_availability(allowed);
         }
     }
 
@@ -1955,36 +1941,6 @@ impl Widget for TileHost {
         }
     }
 
-    fn install_control_custody(
-        &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
-    ) {
-        // An unbound tile inherits its surrounding owner exactly once. Moving
-        // within that incarnation is presentation reparenting; a different
-        // owner needs an explicit close/renew transition, never this hook.
-        if self.history_owner().is_none() && !self.has_separate_document_owner() {
-            if domain.closed() {
-                domain.unsafe_attachment();
-                return;
-            }
-            if let Some(previous) = self.custody_parent.as_ref() {
-                if domain.permits_renewal(previous, attachment) {
-                    self.history_lifetime.control_domain.close();
-                    self.history_lifetime.active.set(false);
-                    self.history_lifetime =
-                        crate::history_mode::owner::LegacyHistoryLifetime::new();
-                    self.custody_scope = None;
-                    self.custody_renewal = None;
-                } else if previous.closed() || !previous.same_owner_incarnation(domain) {
-                    domain.unsafe_attachment();
-                    return;
-                }
-            }
-        }
-        self.custody_parent = Some(domain.clone());
-        self.install_live_custody(attachment);
-    }
     fn close_components(&mut self) -> Vec<crate::application::ComponentCloseReport> {
         self.history_lifetime.control_domain.close();
         if self.history_lifetime.active.replace(false) {
@@ -2499,6 +2455,58 @@ impl Widget for TileHost {
         let opening_indicator =
             Widget::opening(self) && Widget::needs_animation_frame(&self.opening_spinner);
         self.spawn_in_flight() || self.handover_in_flight() || opening_indicator || inner
+    }
+}
+
+impl crate::widget::controls::ActionControls for TileHost {
+    fn install_control_custody(
+        &mut self,
+        domain: &crate::ControlDomain,
+        attachment: crate::control_custody::CustodyAttachment,
+    ) {
+        // An unbound tile inherits its surrounding owner exactly once. Moving
+        // within that incarnation is presentation reparenting; a different
+        // owner needs an explicit close/renew transition, never this hook.
+        if self.history_owner().is_none() && !self.has_separate_document_owner() {
+            if domain.closed() {
+                domain.unsafe_attachment();
+                return;
+            }
+            if let Some(previous) = self.custody_parent.as_ref() {
+                if domain.permits_renewal(previous, attachment) {
+                    self.history_lifetime.control_domain.close();
+                    self.history_lifetime.active.set(false);
+                    self.history_lifetime =
+                        crate::history_mode::owner::LegacyHistoryLifetime::new();
+                    self.custody_scope = None;
+                    self.custody_renewal = None;
+                } else if previous.closed() || !previous.same_owner_incarnation(domain) {
+                    domain.unsafe_attachment();
+                    return;
+                }
+            }
+        }
+        self.custody_parent = Some(domain.clone());
+        self.install_live_custody(attachment);
+    }
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        if self.has_separate_document_owner() {
+            return None;
+        }
+        self.children_mut()
+            .into_iter()
+            .find_map(crate::widget::controls::take_control_invocation)
+    }
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
+    ) {
+        if self.has_separate_document_owner() {
+            return;
+        }
+        for child in self.children_mut() {
+            crate::widget::controls::refresh_control_action_availability(child, allowed);
+        }
     }
 }
 

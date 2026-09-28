@@ -19,7 +19,7 @@ fn component_projection_never_seeds_or_marks_read() {
         app.sync(&mut doc, &ROOT);
     }
     assert_eq!((doc.base_heads(), doc.pending_ops()), before);
-    assert!(!app.resources(&doc).is_empty());
+    assert!(!ui::resources::resources(&app, &doc).is_empty());
 }
 #[test]
 fn canonical_chat_repaints_only_for_document_changes_and_consumed_input() {
@@ -863,7 +863,7 @@ fn a_hosted_chat_publishes_a_surface_that_passes_its_contract() {
     app.sync(&mut doc, &ROOT);
     let mut registry = tilo_actions::ActionRegistry::new();
     crate::actions::register(&mut registry);
-    let resources = app.resources(&doc);
+    let resources = ui::resources::PublishesResources::resources(&app, &doc);
     assert!(!resources.is_empty());
     // Requests to the workspace (message, invite) are forwarded by the App
     // host for every app, however mounted.

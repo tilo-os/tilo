@@ -112,6 +112,8 @@ impl DiskRow {
 }
 
 impl Widget for DiskRow {
+    ui::provides!(dyn ui::widget::controls::ActionControls);
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -310,13 +312,6 @@ impl Widget for DiskRow {
         !self.disabled()
     }
 
-    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
-        vec![ui::widget::ControlBindingMetadata {
-            control_id: self.select_path.clone(),
-            kind: ui::widget::ControlBindingKind::CollaborativeDocument(self.select_path.clone()),
-        }]
-    }
-
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
@@ -355,6 +350,15 @@ impl Widget for DiskRow {
                     ..Default::default()
                 }),
         )
+    }
+}
+
+impl ui::widget::controls::ActionControls for DiskRow {
+    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
+        vec![ui::widget::ControlBindingMetadata {
+            control_id: self.select_path.clone(),
+            kind: ui::widget::ControlBindingKind::CollaborativeDocument(self.select_path.clone()),
+        }]
     }
 }
 

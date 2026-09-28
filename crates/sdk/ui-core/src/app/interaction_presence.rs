@@ -295,8 +295,7 @@ impl App {
         };
         let Some(address) = self
             .inspect_node(widget, |widget| {
-                widget
-                    .control_action_bindings()
+                crate::widget::controls::control_action_bindings(widget)
                     .into_iter()
                     .find_map(|binding| match binding.kind {
                         crate::widget::ControlBindingKind::Action(address) => Some(address),

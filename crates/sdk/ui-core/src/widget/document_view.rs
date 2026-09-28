@@ -119,7 +119,8 @@ where
         self.child_domain = self.scope_domain.as_ref().map(crate::ControlDomain::child);
         self.child = (self.build)(&next, self.child_domain.as_ref());
         if let Some(domain) = &self.child_domain {
-            self.child.install_control_custody(
+            crate::widget::controls::install_control_custody(
+                self.child.as_mut(),
                 domain,
                 crate::control_custody::CustodyAttachment::Dynamic,
             );
@@ -195,31 +196,11 @@ where
 {
     crate::provides!(
         dyn crate::widget::FullscreenProvider,
-        dyn crate::undo::CommittedActions
+        dyn crate::undo::CommittedActions,
+        dyn crate::widget::controls::ActionControls,
+        dyn crate::resources::PublishesResources
     );
 
-    fn install_control_custody(
-        &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
-    ) {
-        if let Some(old) = &self.control_domain {
-            if !old.same(domain) {
-                if !domain.permits_renewal(old, attachment) {
-                    domain.unsafe_attachment();
-                    return;
-                }
-                if let Some(scope) = self.scope_domain.take() {
-                    scope.close();
-                }
-                self.child_domain = None;
-            }
-        }
-        self.control_domain = Some(domain.clone());
-        let scope = self.scope_domain.get_or_insert_with(|| domain.child());
-        let child_domain = self.child_domain.get_or_insert_with(|| scope.child());
-        self.child.install_control_custody(child_domain, attachment);
-    }
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         let (state, path) = crate::doc::document(state, path);
         self.reconcile(state, path);
@@ -374,10 +355,6 @@ where
         self.child.release_record_scope()
     }
 
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        self.child.resources(doc)
-    }
-
     fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
         self.child.search_providers()
     }
@@ -406,6 +383,47 @@ where
             theme,
             presence,
             permissions,
+        );
+    }
+}
+
+impl<K> crate::resources::PublishesResources for ModelView<K>
+where
+    K: PartialEq + 'static,
+{
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        crate::resources::resources(self.child.as_ref(), doc)
+    }
+}
+
+impl<K> crate::widget::controls::ActionControls for ModelView<K>
+where
+    K: PartialEq + 'static,
+{
+    fn install_control_custody(
+        &mut self,
+        domain: &crate::ControlDomain,
+        attachment: crate::control_custody::CustodyAttachment,
+    ) {
+        if let Some(old) = &self.control_domain {
+            if !old.same(domain) {
+                if !domain.permits_renewal(old, attachment) {
+                    domain.unsafe_attachment();
+                    return;
+                }
+                if let Some(scope) = self.scope_domain.take() {
+                    scope.close();
+                }
+                self.child_domain = None;
+            }
+        }
+        self.control_domain = Some(domain.clone());
+        let scope = self.scope_domain.get_or_insert_with(|| domain.child());
+        let child_domain = self.child_domain.get_or_insert_with(|| scope.child());
+        crate::widget::controls::install_control_custody(
+            self.child.as_mut(),
+            child_domain,
+            attachment,
         );
     }
 }

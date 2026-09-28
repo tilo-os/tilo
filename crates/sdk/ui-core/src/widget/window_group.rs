@@ -1678,7 +1678,8 @@ impl Widget for WindowGroup {
     crate::provides!(
         dyn crate::widget::FloatingSurfaceProvider,
         dyn crate::collaboration::participants::CollaborationTopology,
-        dyn crate::history_mode::capability::FrameworkHistoryTopology
+        dyn crate::history_mode::capability::FrameworkHistoryTopology,
+        dyn crate::widget::controls::ActionControls
     );
 
     fn keyboard_input_scope(&self) -> Option<crate::application::InstanceId> {
@@ -1719,11 +1720,6 @@ impl Widget for WindowGroup {
             .iter_mut()
             .flat_map(|(_, host)| host.finish_admitted_close())
             .collect()
-    }
-    fn has_pending_control_invocation(&self) -> bool {
-        self.hosts
-            .iter()
-            .any(|(_, host)| host.has_pending_control_invocation())
     }
     #[allow(
         private_interfaces,
@@ -2240,6 +2236,14 @@ impl Widget for WindowGroup {
     }
 }
 
+impl crate::widget::controls::ActionControls for WindowGroup {
+    fn has_pending_control_invocation(&self) -> bool {
+        self.hosts
+            .iter()
+            .any(|(_, host)| host.has_pending_control_invocation())
+    }
+}
+
 impl crate::history_mode::capability::FrameworkHistoryTopology for WindowGroup {
     fn visit_framework_history(
         &self,
@@ -2378,7 +2382,10 @@ mod tests {
     }
 
     impl Widget for RetainedTraversalProbe {
-        crate::provides!(dyn crate::history_mode::capability::FrameworkHistoryTopology);
+        crate::provides!(
+            dyn crate::history_mode::capability::FrameworkHistoryTopology,
+            dyn crate::widget::controls::ActionControls
+        );
 
         crate::testing::inert_widget_methods!(
             apply_layout,
@@ -2401,9 +2408,6 @@ mod tests {
             self.hits.finish.set(self.hits.finish.get() + 1);
             vec![]
         }
-        fn has_pending_control_invocation(&self) -> bool {
-            self.pending_control
-        }
         #[allow(
             private_interfaces,
             reason = "focused retained-owner traversal regression"
@@ -2424,6 +2428,12 @@ mod tests {
             _: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
             taffy.leaf_node(Style::default())
+        }
+    }
+
+    impl crate::widget::controls::ActionControls for RetainedTraversalProbe {
+        fn has_pending_control_invocation(&self) -> bool {
+            self.pending_control
         }
     }
 
@@ -2512,7 +2522,9 @@ mod tests {
         group.finish_admitted_close();
         crate::history_mode::capability::visit_framework_history(&group, &mut |_, _| {});
         crate::history_mode::capability::visit_framework_history_mut(&mut group, &mut |_, _| {});
-        assert!(group.has_pending_control_invocation());
+        assert!(crate::widget::controls::has_pending_control_invocation(
+            &group
+        ));
         group
             .visit_resource_owners_mut(
                 &mut crate::bound_dispatch::legacy_document::ResourceRequest::Discard,

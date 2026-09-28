@@ -1931,7 +1931,7 @@ mod tests {
         let mut app = ContactsApp::sample();
         let mut adopted = doc.clone();
         app.sync(&mut adopted, &ROOT);
-        Widget::resources(&app, doc)
+        ui::resources::resources(&app, doc)
     }
 
     /// The stored contact a `contacts.contact` resource addresses.
@@ -1996,7 +1996,7 @@ mod tests {
         // / favourite / export / delete. Drives the real resource hook.
         {
             let (app, doc) = seeded();
-            let resources = Widget::resources(&app, &doc);
+            let resources = ui::resources::resources(&app, &doc);
             assert_eq!(resources.len(), 1, "one book root");
             let book = &resources[0];
             assert_eq!(book.kind, "contacts.book");
@@ -2129,7 +2129,7 @@ mod tests {
 
             // The mutation side is live.
             assert!(
-                !Widget::resources(&app, &doc).is_empty(),
+                !ui::resources::resources(&app, &doc).is_empty(),
                 "resources are exported"
             );
 
@@ -2149,7 +2149,8 @@ mod tests {
             let address = hit.action_address().expect("search hit is canonical");
             assert_eq!(address, open_contact_address(id));
             assert!(
-                tilo_actions::door::resolve(&Widget::resources(&app, &doc), &address).is_some(),
+                tilo_actions::door::resolve(&ui::resources::resources(&app, &doc), &address)
+                    .is_some(),
                 "the address is exported to the palette, accessibility and agents"
             );
         }
@@ -2161,7 +2162,7 @@ mod tests {
         // disclose contact data outside the address book.
         {
             let (app, doc) = seeded();
-            let resources = Widget::resources(&app, &doc);
+            let resources = ui::resources::resources(&app, &doc);
             let (contact, export_spec) = ui::testing::action_contract::find_spec(
                 &resources,
                 "contacts.contact",
@@ -2502,7 +2503,7 @@ mod tests {
         // document with the committed name split into first/last.
         {
             let (app, mut doc) = seeded();
-            let resources = Widget::resources(&app, &doc);
+            let resources = ui::resources::resources(&app, &doc);
             let spec = resources[0]
                 .actions
                 .iter()

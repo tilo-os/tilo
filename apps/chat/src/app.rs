@@ -3827,6 +3827,54 @@ impl ChatApp {
     }
 }
 
+impl ui::widget::controls::ActionControls for ChatApp {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.feedback.controls.pop_front().or_else(|| {
+            self.hand
+                .as_ref()
+                .and_then(crate::hand::ChatHand::next_request)
+        })
+    }
+
+    fn has_pending_control_invocation(&self) -> bool {
+        !self.feedback.controls.is_empty()
+            || self
+                .hand
+                .as_ref()
+                .is_some_and(crate::hand::ChatHand::has_request)
+    }
+
+    fn on_control_invocation_result(
+        &mut self,
+        address: &tilo_actions::ActionAddress,
+        result: &Result<ui::widget::ResourceOperationStart, tilo_actions::DoorError>,
+    ) {
+        if let Err(error) = result
+            && !matches!(error, tilo_actions::DoorError::ConfirmationRequired)
+        {
+            // Sharing a posted record is this peer's own upkeep, asked on
+            // reload; one asked before the workspace is reachable is asked
+            // again once it is, rather than never.
+            if matches!(error, tilo_actions::DoorError::Unavailable { .. })
+                && let Some(message) = address.resource.strip_prefix("chat.attachment:")
+                && matches!(address.action.as_str(), "share" | "unshare")
+            {
+                self.feedback
+                    .shared
+                    .remove(&(message.to_owned(), address.action == "share"));
+                self.feedback.reshare_at =
+                    Some(std::time::Instant::now() + std::time::Duration::from_millis(750));
+                return;
+            }
+            if let Some(hand) = &self.hand {
+                hand.refused(address, error.to_string());
+            }
+            self.feedback.notice = Some(Self::request_notice(address, &error.to_string()));
+            self.relayout = true;
+        }
+    }
+}
+
 impl Widget for ChatApp {
     fn open_overlays(&self) -> Vec<ui::view::OverlayState> {
         self.menu_overlay().into_iter().collect()
@@ -3850,7 +3898,9 @@ impl Widget for ChatApp {
         dyn ui::widget::Continuable,
         dyn ui::widget::FloatingSurfaceProvider,
         dyn ui::collaboration::participants::Participants,
-        dyn ui::undo::CommittedActions
+        dyn ui::undo::CommittedActions,
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::resources::PublishesResources
     );
 
     fn semantic_readers(&self) -> &'static [ui::semantic_document_read::RegisteredSemanticReader] {
@@ -4338,46 +4388,6 @@ impl Widget for ChatApp {
         }
     }
 
-    /// The resource tree Chat currently has open — the active workspace, its
-    /// channels, and the open channel's messages — each exporting the actions
-    /// Ctrl+K offers. Delegates to the [`ResourceProvider`](tilo_actions::ResourceProvider)
-    /// impl in [`crate::actions`], the same builder the affordance covenant tests
-    /// drive. Recomputed each frame; empty until a workspace is selected.
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
-    }
-
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
-    }
-
-    /// The tree a delivered invocation resolves against for an agent task
-    /// participant: the same resources, authored as that participant (its
-    /// posts carry it as author and its display name). Chat keeps no other
-    /// per-participant view state.
-    fn resources_for(
-        &self,
-        participant: Option<&tilo_actions::ParticipantId>,
-        doc: &AutoCommit,
-    ) -> Vec<tilo_actions::Resource> {
-        match participant.and_then(|p| self.participant_ctx(p)) {
-            Some(ctx) => crate::actions::provide_resources(&ctx, doc),
-            None => Widget::resources(self, doc),
-        }
-    }
-
-    fn resource_for(
-        &self,
-        participant: Option<&tilo_actions::ParticipantId>,
-        doc: &AutoCommit,
-        id: &str,
-    ) -> Option<tilo_actions::Resource> {
-        match participant.and_then(|p| self.participant_ctx(p)) {
-            Some(ctx) => crate::actions::resolve_resource(&ctx, doc, id),
-            None => Widget::resource(self, doc, id),
-        }
-    }
-
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Role};
 
@@ -4637,14 +4647,6 @@ impl Widget for ChatApp {
         "ChatApp"
     }
 
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.feedback.controls.pop_front().or_else(|| {
-            self.hand
-                .as_ref()
-                .and_then(crate::hand::ChatHand::next_request)
-        })
-    }
-
     fn joined_records(&self) -> Option<&ui::record::JoinedRecords> {
         Some(self.comments.joined())
     }
@@ -4685,44 +4687,6 @@ impl Widget for ChatApp {
                 conversation.read_only()
             }
         })
-    }
-
-    fn has_pending_control_invocation(&self) -> bool {
-        !self.feedback.controls.is_empty()
-            || self
-                .hand
-                .as_ref()
-                .is_some_and(crate::hand::ChatHand::has_request)
-    }
-
-    fn on_control_invocation_result(
-        &mut self,
-        address: &tilo_actions::ActionAddress,
-        result: &Result<ui::widget::ResourceOperationStart, tilo_actions::DoorError>,
-    ) {
-        if let Err(error) = result
-            && !matches!(error, tilo_actions::DoorError::ConfirmationRequired)
-        {
-            // Sharing a posted record is this peer's own upkeep, asked on
-            // reload; one asked before the workspace is reachable is asked
-            // again once it is, rather than never.
-            if matches!(error, tilo_actions::DoorError::Unavailable { .. })
-                && let Some(message) = address.resource.strip_prefix("chat.attachment:")
-                && matches!(address.action.as_str(), "share" | "unshare")
-            {
-                self.feedback
-                    .shared
-                    .remove(&(message.to_owned(), address.action == "share"));
-                self.feedback.reshare_at =
-                    Some(std::time::Instant::now() + std::time::Duration::from_millis(750));
-                return;
-            }
-            if let Some(hand) = &self.hand {
-                hand.refused(address, error.to_string());
-            }
-            self.feedback.notice = Some(Self::request_notice(address, &error.to_string()));
-            self.relayout = true;
-        }
     }
 
     fn on_workspace_request_finished(
@@ -4800,6 +4764,45 @@ impl Widget for ChatApp {
         self.canonical_dirty = false;
         self.composer_main.mark_drawn();
         self.composer_thread.mark_drawn();
+    }
+}
+
+impl ui::resources::PublishesResources for ChatApp {
+    /// The resource tree Chat currently has open — the active workspace, its
+    /// channels, and the open channel's messages — each exporting the actions
+    /// Ctrl+K offers. Delegates to the [`ResourceProvider`](tilo_actions::ResourceProvider)
+    /// impl in [`crate::actions`], the same builder the affordance covenant tests
+    /// drive. Recomputed each frame; empty until a workspace is selected.
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+    }
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
+    }
+    /// The tree a delivered invocation resolves against for an agent task
+    /// participant: the same resources, authored as that participant (its
+    /// posts carry it as author and its display name). Chat keeps no other
+    /// per-participant view state.
+    fn resources_for(
+        &self,
+        participant: Option<&tilo_actions::ParticipantId>,
+        doc: &AutoCommit,
+    ) -> Vec<tilo_actions::Resource> {
+        match participant.and_then(|p| self.participant_ctx(p)) {
+            Some(ctx) => crate::actions::provide_resources(&ctx, doc),
+            None => ui::resources::resources(self, doc),
+        }
+    }
+    fn resource_for(
+        &self,
+        participant: Option<&tilo_actions::ParticipantId>,
+        doc: &AutoCommit,
+        id: &str,
+    ) -> Option<tilo_actions::Resource> {
+        match participant.and_then(|p| self.participant_ctx(p)) {
+            Some(ctx) => crate::actions::resolve_resource(&ctx, doc, id),
+            None => ui::resources::resource(self, doc, id),
+        }
     }
 }
 
@@ -5108,7 +5111,7 @@ mod agent_attribution_tests {
         ui::collaboration::participants::join_participant(&mut app, &agent);
         ui::collaboration::participants::set_participant_label(&mut app, &agent, "Tide");
 
-        let resources = Widget::resources_for(&app, Some(&agent), &doc);
+        let resources = ui::resources::resources_for(&app, Some(&agent), &doc);
         let encoded = post_via(&resources, "hello from the agent");
         let action: crate::actions::ChatAction = serde_json::from_slice(&encoded.payload).unwrap();
         assert!(
@@ -5117,7 +5120,7 @@ mod agent_attribution_tests {
         dispatch(&mut doc, encoded);
 
         // A person's post in the same tree shape is the plain send, as before.
-        let own = Widget::resources_for(&app, None, &doc);
+        let own = ui::resources::resources_for(&app, None, &doc);
         let encoded = post_via(&own, "hello from a person");
         let action: crate::actions::ChatAction = serde_json::from_slice(&encoded.payload).unwrap();
         assert!(matches!(
@@ -5279,7 +5282,7 @@ mod record_sharing {
     fn a_share_the_workspace_could_not_take_yet_is_asked_again() {
         let mut app = ChatApp::new_ephemeral();
         app.feedback.shared.insert(("m_1".to_string(), true));
-        Widget::on_control_invocation_result(
+        ui::widget::controls::ActionControls::on_control_invocation_result(
             &mut app,
             &tilo_actions::ActionAddress::new("chat.attachment:m_1", "share"),
             &Err(tilo_actions::DoorError::Unavailable {
@@ -5296,7 +5299,7 @@ mod record_sharing {
 
         // Any other refusal is the reader's to hear, and is not retried.
         app.feedback.shared.insert(("m_1".to_string(), true));
-        Widget::on_control_invocation_result(
+        ui::widget::controls::ActionControls::on_control_invocation_result(
             &mut app,
             &tilo_actions::ActionAddress::new("chat.attachment:m_1", "share"),
             &Err(tilo_actions::DoorError::Failed("refused".into())),

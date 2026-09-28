@@ -159,7 +159,11 @@ pub(super) fn assemble(mut assembly: AppAssemblyCustody) -> App {
             .clone()
             .unwrap_or_else(crate::control_custody::ControlDomain::outer),
     );
-    root.install_control_custody(control, crate::control_custody::CustodyAttachment::Initial);
+    crate::widget::controls::install_control_custody(
+        root.as_mut(),
+        control,
+        crate::control_custody::CustodyAttachment::Initial,
+    );
     control.finish_initial_installation();
     #[cfg(all(windows, feature = "native"))]
     {

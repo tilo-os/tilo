@@ -1617,7 +1617,7 @@ mod tests {
     }
 
     fn dispatch_view_actions(s: &mut AppShell, doc: &mut AutoCommit) {
-        while let Some(intent) = s.take_control_invocation() {
+        while let Some(intent) = crate::widget::controls::take_control_invocation(s) {
             let mut resources = Vec::new();
             crate::widget::collect_widget_resources(s, doc, &mut resources);
             let encoded =
