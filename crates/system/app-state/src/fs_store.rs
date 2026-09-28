@@ -692,8 +692,7 @@ fn open_owner(shared: &Shared, directory: &Path) -> Result<Owner, StoreError> {
 }
 
 /// Join a document's shared writers: the shared gate keeps exclusive owners
-/// out, and whoever wins the writer lock is primary. A path an older layout
-/// left as a file is recovered first (see [`ensure_state_dir`]).
+/// out, and whoever wins the writer lock is primary.
 fn open_shared_owner(directory: &Path) -> Result<Owner, StoreError> {
     ensure_state_dir(directory)?;
     let handle =
@@ -1082,21 +1081,6 @@ mod tests {
                 assert!(directory.join(LOCK_FILE).is_file());
                 assert_eq!(store.local_path(&key), Some(directory.join(DOCUMENT_FILE)));
             }
-        }
-        // Phase `a_stale_state_file_is_moved_aside_for_shared_writers_only`.
-        {
-            let tmp = TempDir::new().unwrap();
-            let store = FsStore::new(tmp.path());
-            let path = tmp.path().join("so.tilo.test");
-            fs::write(&path, b"old layout").unwrap();
-            let key = StorageKey::package("so.tilo.test");
-            assert!(store.lease(&key).is_err(), "exclusive owners never adopt");
-            let _shared = store.lease_shared(&key).unwrap();
-            assert!(path.is_dir());
-            assert_eq!(
-                fs::read(tmp.path().join("so.tilo.test.stale")).unwrap(),
-                b"old layout"
-            );
         }
         // Phase `record_writes_require_a_lease_and_invalid_keys_are_refused`.
         {
