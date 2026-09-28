@@ -3598,23 +3598,14 @@ impl Widget for DisksApp {
         if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
             return Ok(Some(started));
         }
-        if let Some(started) = self.admit_resource_operation(
+        self.admit_resource_operation(
             request.invocation,
             request.kind,
             request.type_id,
             request.payload,
             doc,
             path,
-        )? {
-            return Ok(Some(started));
-        }
-        Ok(self
-            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
-            .then(|| {
-                ui::widget::ResourceOperationStart::Completed(
-                    ui::tilo_actions::ActionOutput::default(),
-                )
-            }))
+        )
     }
 
     fn poll_resource_operation(
@@ -4349,20 +4340,6 @@ impl Widget for DisksApp {
 }
 
 impl DisksApp {
-    fn answer_resource_operation(
-        &mut self,
-        kind: OperationKind,
-        type_id: &str,
-        _payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        if kind != OperationKind::Effect || type_id != "disks.operation" {
-            return Ok(false);
-        }
-        Err("disk operations require the lifecycle-capable operation host".into())
-    }
-
     fn admit_resource_operation(
         &mut self,
         invocation: tilo_actions::InvocationId,
