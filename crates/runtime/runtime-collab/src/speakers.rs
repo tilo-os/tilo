@@ -35,22 +35,6 @@ pub enum SpeakerRoleSpec {
     },
 }
 
-impl SpeakerRoleSpec {
-    /// Short human description, as consent prompts phrase it.
-    #[must_use]
-    pub const fn describe(self) -> &'static str {
-        match self {
-            Self::Left => "left speaker",
-            Self::Right => "right speaker",
-            Self::Center => "centre speaker",
-            Self::Lfe => "subwoofer",
-            Self::SurroundLeft => "left surround speaker",
-            Self::SurroundRight => "right surround speaker",
-            Self::Room { .. } => "room speaker",
-        }
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SpeakerMemberSpec {
@@ -142,20 +126,6 @@ pub enum SpeakerMemberStatus {
     NotCertified,
 }
 
-impl SpeakerMemberStatus {
-    #[must_use]
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Ready => "Ready",
-            Self::AwaitingConsent => "Waiting for approval on that device",
-            Self::Offline => "Offline",
-            Self::OutputMissing => "Output unplugged",
-            Self::Unavailable => "Media continuity is off there",
-            Self::NotCertified => "Not one of your devices",
-        }
-    }
-}
-
 /// A member's calibration correction in display units.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -191,18 +161,6 @@ pub enum SpeakerPlaybackInfo {
     ClockFailed {
         reason: String,
     },
-}
-
-impl SpeakerPlaybackInfo {
-    #[must_use]
-    pub const fn label(&self) -> &'static str {
-        match self {
-            Self::Playing => "Playing",
-            Self::Connecting => "Connecting…",
-            Self::SyncingClocks => "Syncing clocks…",
-            Self::ClockFailed { .. } => "Can't play in time",
-        }
-    }
 }
 
 /// Whether one device's microphone can listen while a group is calibrated.
