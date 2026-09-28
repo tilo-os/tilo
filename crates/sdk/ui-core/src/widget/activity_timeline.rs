@@ -180,9 +180,6 @@ impl ChipKind {
     }
 }
 
-/// Below this width the row drops its author identity hash and the chip
-/// strip switches to [`ChipKind::short_label`].
-const COMPACT_WIDTH: f64 = 420.0;
 /// Below this width the trailing time + revert slots shrink so the summary
 /// keeps a usable share of the row.
 const NARROW_WIDTH: f64 = 340.0;
@@ -950,10 +947,6 @@ impl ActivityTimeline {
     }
 
     // ---------- geometry ----------
-
-    fn is_compact(&self) -> bool {
-        self.rect.width() < COMPACT_WIDTH
-    }
 
     /// Proportional to the pane with a floor so a name is never squeezed to
     /// nothing.
@@ -1939,7 +1932,8 @@ impl ActivityTimeline {
         }
     }
 
-    /// The author name, and its identity-hash suffix when there's room for it.
+    /// The author's name. Their identity is the dot's colour and, in full,
+    /// the provenance detail; a row is read by the name.
     fn draw_row_author(
         &self,
         ctx: &mut PaintCtx<'_>,
@@ -1960,35 +1954,13 @@ impl ActivityTimeline {
             author_slot_w,
             ..
         } = layout;
-        let compact = self.is_compact();
-        let mut x_cursor = dot_x + AVATAR_DIAM / 2.0 + 8.0;
-
-        let short_size = (text_size - 2.0).max(10.0);
-        let short = entry.author.identity_short.as_str();
+        let x = dot_x + AVATAR_DIAM / 2.0 + 8.0;
         let slot_end = row.x0 + author_slot_w - 6.0;
-        let full_name_w = f64::from(
-            text_renderer
-                .measure(entry.author.name.as_str(), text_size, None)
-                .0,
-        );
-        // The hash is shown out of whatever the name leaves over, and
-        // dropped rather than truncating the name.
-        let short_w = if compact || short.is_empty() {
-            0.0
-        } else {
-            let w = f64::from(text_renderer.measure(short, short_size, None).0) + 6.0;
-            if x_cursor + full_name_w + w <= slot_end {
-                w
-            } else {
-                0.0
-            }
-        };
-        let name_budget = (slot_end - x_cursor - short_w).max(24.0);
         let name = fit_text(
             text_renderer,
             entry.author.name.as_str(),
             text_size,
-            name_budget,
+            (slot_end - x).max(24.0),
         );
         let name_top = text_top(text_renderer, text_size, cy);
         text_renderer.draw_text(
@@ -1996,23 +1968,9 @@ impl ActivityTimeline {
             &name,
             text_size,
             theme.tokens.colors.text_primary,
-            translated(transform, (x_cursor, name_top)),
+            translated(transform, (x, name_top)),
             None,
         );
-        let (name_w, _) = text_renderer.measure(&name, text_size, None);
-        x_cursor += f64::from(name_w) + 6.0;
-
-        if short_w > 0.0 {
-            let short_top = text_top(text_renderer, short_size, cy);
-            text_renderer.draw_text(
-                scene,
-                short,
-                short_size,
-                theme.tokens.colors.text_dim,
-                translated(transform, (x_cursor, short_top)),
-                None,
-            );
-        }
     }
 
     /// The op-class glyph and the summary column, including the redaction

@@ -2027,6 +2027,9 @@ pub struct CallbackBinding {
         reason = "binding retains original authority for the following typed-action provenance task"
     )]
     pub(crate) operation_context: tilo_actions::ActionContext,
+    /// Edits commit as the author's own writer on the record
+    /// ([`crate::application::HostContext::write_as_author`]).
+    pub(crate) writes_as_author: bool,
 }
 
 /// Private retained traversal request. The public Widget trait cannot expose a
@@ -2146,6 +2149,9 @@ struct ActionFrame {
     state: RecordActionState,
     mutation: Option<ActiveMutation>,
     operations: Vec<OperationSpan>,
+    /// The record's own writer, which the document writes as outside a
+    /// per-author binding's segment and again when the loan ends.
+    writer: automerge::ActorId,
 }
 type FrameHandle = Rc<RefCell<Option<ActionFrame>>>;
 
@@ -2507,6 +2513,25 @@ impl ActionFrame {
         doc.get_heads()
     }
 
+    /// Write as `actor` from here on. What is pending was written as the
+    /// actor before, so it is committed first: `set_actor` would otherwise
+    /// commit it without a time.
+    fn switch_writer(&self, doc: &mut AutoCommit, actor: automerge::ActorId) {
+        if doc.get_actor() != &actor {
+            self.commit_physical(doc);
+            doc.set_actor(actor);
+        }
+    }
+
+    /// The writer `binding`'s edits commit as.
+    fn writer_of(&self, binding: &CallbackBinding) -> automerge::ActorId {
+        if binding.writes_as_author {
+            crate::record::author_writer(&self.writer, &binding.author.0)
+        } else {
+            self.writer.clone()
+        }
+    }
+
     fn finish_pending_at(&mut self, after: Vec<ChangeHash>, doc: &mut AutoCommit) {
         if let Some(pending) = self.state.pending.take() {
             let author = pending.author.clone();
@@ -2561,6 +2586,7 @@ impl ActionFrame {
             let heads = self.commit_physical(doc);
             Some(heads)
         };
+        self.switch_writer(doc, self.writer_of(binding));
         if self.state.pending.is_none() {
             self.state.pending = Some(PendingRecordAction::new(
                 binding,
@@ -2641,6 +2667,7 @@ pub(crate) fn with_owned_record_action<R>(
         permissions: Rc::new(RefCell::new(PermissionContext::permissive())),
         author,
         operation_context: context,
+        writes_as_author: false,
     };
     let mut outer_witness = AutoCommit::new();
     binding.with_document(&mut outer_witness, |document, root| {
@@ -2942,6 +2969,7 @@ impl CallbackBinding {
                 .generation
                 .and_then(|generation| generation.checked_add(1))
                 .ok_or(OwnedRestoreError::GenerationExhausted)?;
+            frame.switch_writer(doc, frame.writer_of(self));
             let receipt = OwnedContentAction::begin_clean(
                 doc,
                 &mut frame.history,
@@ -2988,6 +3016,7 @@ impl CallbackBinding {
                     state: std::mem::take(state),
                     mutation: None,
                     operations: Vec::new(),
+                    writer: document.get_actor().clone(),
                 })));
                 let _restore = RestoreFrame {
                     history,
@@ -3003,11 +3032,17 @@ impl CallbackBinding {
                     ));
                 });
                 let _active = ActiveEntry;
-                if mutation {
+                let result = if mutation {
                     self.mutate_in_frame(document, &frame, callback)
                 } else {
                     Ok(callback(document, &ROOT))
+                };
+                // Outside a loan the record writes as its own writer, which
+                // is what its store persists and other mounts note.
+                if let Some(frame) = frame.borrow().as_ref() {
+                    frame.switch_writer(document, frame.writer.clone());
                 }
+                result
             })
             .map_err(BoundDispatchError::Record)?
     }
@@ -3803,3 +3838,7 @@ pub(crate) mod legacy_document_tests;
 #[cfg(test)]
 #[path = "bound_dispatch/semantic_authority_tests.rs"]
 mod semantic_authority_tests;
+
+#[cfg(test)]
+#[path = "bound_dispatch/author_writer_tests.rs"]
+mod author_writer_tests;

@@ -17,7 +17,7 @@ use vello::{
     kurbo::{Affine, Point, Rect},
 };
 
-/// The admitted records' histories; each record's writer here writes for
+/// The admitted records' histories; the desktop's windows write them for
 /// `author`.
 pub(crate) fn capture_records(
     required: &[Requirement],
@@ -42,7 +42,7 @@ pub(crate) fn capture_records(
                     owner
                         .store
                         .read(&checkout.id, |doc| {
-                            crate::page_authors::note(doc.get_actor(), author, None);
+                            crate::page_authors::note_mount(Some(doc.get_actor()), author, None);
                             (doc.pending_ops() == 0).then(|| doc.clone())
                         })
                         .flatten()
