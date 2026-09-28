@@ -710,13 +710,15 @@ is left in place. `--json` carries the same breakdown under `size`.
 
 ```bash
 tilo-app package --arch aarch64                      # Tilo OS, thin
+tilo-app package --platform linux --arch x86_64      # dist/<pkg>-linux-x86_64.tapp
 tilo-app package --platform macos --arch aarch64     # dist/<pkg>-macos-aarch64.tapp
 tilo-app package --platform windows --arch x86_64    # dist/<pkg>-windows-x86_64.tapp
 ```
 
-Windows and macOS ship no Tilo toolkit, so a build for them is one static
-executable (`release` profile, `<arch>-pc-windows-msvc` or
-`<arch>-apple-darwin`) with the toolkit linked in, packed as `bin/<name>` (or
+Other Linux desktops, Windows and macOS ship no Tilo toolkit, so a build for
+them is one static executable (`release` profile, `<arch>-unknown-linux-gnu`,
+`<arch>-pc-windows-msvc` or `<arch>-apple-darwin`) with the toolkit linked in,
+packed as `bin/<name>` (or
 `bin/<name>.exe`). Its signed `[target]` names the platform, the architecture
 and the toolkit release it links, which is `[package].runtime`, so the
 manifest must declare one (`tilo-app new` does). Only the GUI entrypoint ships.
@@ -727,6 +729,22 @@ desktop limit instead. A static build of a starter app is about 40 MB.
 
 Build on the system you target, or with a cross toolchain Cargo can drive;
 `--target` overrides the triple (for example `x86_64-pc-windows-gnu`).
+
+`build`, `run`, `dev` and `check` take the same `--platform` and `--arch`:
+
+```bash
+tilo-app build --platform windows --arch aarch64 -o out  # compile, copy the .exe to out/
+tilo-app run --platform web                              # build once and serve the page
+tilo-app dev --platform linux                            # the reload loop, on this machine
+tilo-app check --platform all                            # lint every other target too
+```
+
+`build` compiles exactly what `package` would, without signing a package.
+`run` and `dev` refuse a platform or architecture this machine cannot execute
+and say where to build it instead. `check --platform` (repeatable, or `all`)
+adds, after the host's checks, Clippy for each other platform's target triple
+with warnings denied, and a full web build for `web`; the Rust target must be
+installed (`rustup target add`).
 
 A Tilo OS package declares only the architecture it was built for, at the
 level `[package.isa]` names for it (`tilo-app new` declares `v3` and
