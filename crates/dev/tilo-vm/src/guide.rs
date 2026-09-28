@@ -164,7 +164,7 @@ mod tests {
             }
             let troubleshooting = topic("troubleshooting").unwrap();
             assert!(troubleshooting.contains("cargo build -p tilo-vm"));
-            assert!(troubleshooting.contains("rcargo"));
+            assert!(troubleshooting.contains("target/debug/tilo-vm"));
             let swapping = topic("swapping").unwrap();
             assert!(swapping.contains("## Verify your swap"));
             assert!(swapping.contains("tilo-vm slot exec -- sha256sum"));

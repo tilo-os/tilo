@@ -159,7 +159,7 @@ impl DaemonError {
                 "the VM's image is older than this tilo-vm: tilo-vm vm upgrade".into()
             }
             Self::VersionMismatch { .. } => {
-                "this tilo-vm is older than the VM's image: rebuild it with cargo build -p tilo-vm   (rcargo works as a drop-in)"
+                "this tilo-vm is older than the VM's image: rebuild it with cargo build -p tilo-vm   (any cargo drop-in works)"
                     .into()
             }
             Self::HelloRequired => "connect through tilo-vm rather than speaking to tilo-vmd by hand".into(),
