@@ -91,17 +91,19 @@ fn main() {
             std::process::exit(2);
         }
     };
-    let doc = AutoCommit::new();
+    let mut doc = AutoCommit::new();
     let invocation = InvocationId::new();
     let payload =
         serde_json::to_vec(&vec![id.clone(), action_code.to_string()]).unwrap_or_default();
     if app
-        .start_resource_operation(
-            invocation,
-            OperationKind::Effect,
-            "store.app",
-            &payload,
-            &doc,
+        .start_operation(
+            &ui::widget::ResourceOperation::local(
+                invocation,
+                OperationKind::Effect,
+                "store.app",
+                &payload,
+            ),
+            &mut doc,
             &automerge::ROOT,
         )
         .is_err()

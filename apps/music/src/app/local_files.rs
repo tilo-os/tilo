@@ -259,16 +259,18 @@ mod tests {
         // Phase `raw_path_operation_is_not_remotely_decodable`.
         {
             let mut app = MusicApp::new_for_shot();
-            let doc = automerge::AutoCommit::new();
+            let mut doc = automerge::AutoCommit::new();
             let payload = br#"{"OpenLocalFile":{"source":"private.wav"}}"#;
             assert!(
-                app.start_resource_operation(
-                    tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::MUSIC_OPERATION_TYPE,
-                    payload,
-                    &doc,
-                    &automerge::ROOT,
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        tilo_actions::InvocationId::new(),
+                        tilo_actions::OperationKind::Effect,
+                        crate::actions::MUSIC_OPERATION_TYPE,
+                        payload
+                    ),
+                    &mut doc,
+                    &automerge::ROOT
                 )
                 .is_err()
             );
@@ -445,24 +447,28 @@ mod tests {
             let payload =
                 serde_json::to_vec(&crate::actions::MusicOperation::ChooseAudioFile).unwrap();
             assert_eq!(
-                app.start_resource_operation(
-                    invocation,
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::MUSIC_OPERATION_TYPE,
-                    &payload,
-                    &doc,
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        invocation,
+                        tilo_actions::OperationKind::Effect,
+                        crate::actions::MUSIC_OPERATION_TYPE,
+                        &payload
+                    ),
+                    &mut doc,
                     &automerge::ROOT
                 )
                 .unwrap(),
                 Some(ui::widget::ResourceOperationStart::Accepted)
             );
             assert!(
-                app.start_resource_operation(
-                    tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::MUSIC_OPERATION_TYPE,
-                    &payload,
-                    &doc,
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        tilo_actions::InvocationId::new(),
+                        tilo_actions::OperationKind::Effect,
+                        crate::actions::MUSIC_OPERATION_TYPE,
+                        &payload
+                    ),
+                    &mut doc,
                     &automerge::ROOT
                 )
                 .is_err()
@@ -510,7 +516,7 @@ mod tests {
             bytes[40..44].copy_from_slice(&16000u32.to_le_bytes());
             std::fs::write(&path, bytes).unwrap();
             let mut app = MusicApp::new_for_shot();
-            let doc = automerge::AutoCommit::new();
+            let mut doc = automerge::AutoCommit::new();
             app.open_local_file(path.to_str().unwrap()).unwrap();
             wait_for_audio(&mut app);
             let first_output = tilo_test_env::hang_deadline();
@@ -536,12 +542,14 @@ mod tests {
                     .unwrap();
             let invocation = tilo_actions::InvocationId::new();
             assert_eq!(
-                app.start_resource_operation(
-                    invocation,
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::MUSIC_OPERATION_TYPE,
-                    &payload,
-                    &doc,
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        invocation,
+                        tilo_actions::OperationKind::Effect,
+                        crate::actions::MUSIC_OPERATION_TYPE,
+                        &payload
+                    ),
+                    &mut doc,
                     &automerge::ROOT
                 )
                 .unwrap(),
@@ -648,12 +656,14 @@ mod tests {
                         let encoded = action.build_json(&serde_json::Map::new()).unwrap();
                         let request = tilo_actions::InvocationId::new();
                         assert_eq!(
-                            app.start_resource_operation(
-                                request,
-                                tilo_actions::OperationKind::Effect,
-                                &encoded.type_id,
-                                &encoded.payload,
-                                &doc,
+                            app.start_operation(
+                                &ui::widget::ResourceOperation::local(
+                                    request,
+                                    tilo_actions::OperationKind::Effect,
+                                    &encoded.type_id,
+                                    &encoded.payload
+                                ),
+                                &mut doc,
                                 &automerge::ROOT
                             )
                             .unwrap(),
@@ -718,12 +728,14 @@ mod tests {
         let encoded = action.build_json(&serde_json::Map::new()).unwrap();
         let invocation = tilo_actions::InvocationId::new();
         assert_eq!(
-            app.start_resource_operation(
-                invocation,
-                action.kind,
-                &encoded.type_id,
-                &encoded.payload,
-                &doc,
+            app.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    invocation,
+                    action.kind,
+                    &encoded.type_id,
+                    &encoded.payload
+                ),
+                &mut doc,
                 &automerge::ROOT
             )
             .unwrap(),
@@ -805,12 +817,14 @@ mod tests {
             })
             .unwrap();
             assert!(matches!(
-                app.start_resource_operation(
-                    tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::MUSIC_OPERATION_TYPE,
-                    &pause_payload,
-                    &doc,
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        tilo_actions::InvocationId::new(),
+                        tilo_actions::OperationKind::Effect,
+                        crate::actions::MUSIC_OPERATION_TYPE,
+                        &pause_payload
+                    ),
+                    &mut doc,
                     &automerge::ROOT
                 )
                 .unwrap(),
@@ -826,12 +840,14 @@ mod tests {
                 .unwrap();
         let invocation = tilo_actions::InvocationId::new();
         assert_eq!(
-            app.start_resource_operation(
-                invocation,
-                tilo_actions::OperationKind::Effect,
-                crate::actions::MUSIC_OPERATION_TYPE,
-                &payload,
-                &doc,
+            app.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    invocation,
+                    tilo_actions::OperationKind::Effect,
+                    crate::actions::MUSIC_OPERATION_TYPE,
+                    &payload
+                ),
+                &mut doc,
                 &automerge::ROOT
             )
             .unwrap(),
@@ -909,12 +925,14 @@ mod tests {
                 .unwrap();
             let encoded = remove.build_json(&serde_json::Map::new()).unwrap();
             assert!(matches!(
-                app.start_resource_operation(
-                    tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::Effect,
-                    &encoded.type_id,
-                    &encoded.payload,
-                    &doc,
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        tilo_actions::InvocationId::new(),
+                        tilo_actions::OperationKind::Effect,
+                        &encoded.type_id,
+                        &encoded.payload
+                    ),
+                    &mut doc,
                     &automerge::ROOT
                 )
                 .unwrap(),
@@ -943,12 +961,14 @@ mod tests {
         let encoded = play.build_json(&serde_json::Map::new()).unwrap();
         let invocation = tilo_actions::InvocationId::new();
         assert_eq!(
-            app.start_resource_operation(
-                invocation,
-                tilo_actions::OperationKind::Effect,
-                &encoded.type_id,
-                &encoded.payload,
-                &doc,
+            app.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    invocation,
+                    tilo_actions::OperationKind::Effect,
+                    &encoded.type_id,
+                    &encoded.payload
+                ),
+                &mut doc,
                 &automerge::ROOT
             )
             .unwrap(),
@@ -1100,12 +1120,14 @@ mod tests {
             let invocation = tilo_actions::InvocationId::new();
             let before = app.audio.frames_rendered();
             assert_eq!(
-                app.start_resource_operation(
-                    invocation,
-                    tilo_actions::OperationKind::Effect,
-                    &encoded.type_id,
-                    &encoded.payload,
-                    &doc,
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        invocation,
+                        tilo_actions::OperationKind::Effect,
+                        &encoded.type_id,
+                        &encoded.payload
+                    ),
+                    &mut doc,
                     &automerge::ROOT
                 )
                 .unwrap(),
@@ -1168,12 +1190,14 @@ mod tests {
             let encoded = action.build_json(&serde_json::Map::new()).unwrap();
             let payload = encoded.payload;
             assert_eq!(
-                app.start_resource_operation(
-                    invocation,
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::MUSIC_OPERATION_TYPE,
-                    &payload,
-                    &doc,
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        invocation,
+                        tilo_actions::OperationKind::Effect,
+                        crate::actions::MUSIC_OPERATION_TYPE,
+                        &payload
+                    ),
+                    &mut doc,
                     &automerge::ROOT
                 )
                 .unwrap(),
@@ -1246,12 +1270,14 @@ mod tests {
                     .unwrap();
                 let encoded = play.build_json(&serde_json::Map::new()).unwrap();
                 let invocation = tilo_actions::InvocationId::new();
-                let started = app.start_resource_operation(
-                    invocation,
-                    play.kind,
-                    &encoded.type_id,
-                    &encoded.payload,
-                    &doc,
+                let started = app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        invocation,
+                        play.kind,
+                        &encoded.type_id,
+                        &encoded.payload,
+                    ),
+                    &mut doc,
                     &automerge::ROOT,
                 );
                 if missing {
@@ -1316,12 +1342,14 @@ mod tests {
             let payload =
                 serde_json::to_vec(&crate::actions::MusicOperation::ChooseAudioFile).unwrap();
             assert_eq!(
-                app.start_resource_operation(
-                    invocation,
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::MUSIC_OPERATION_TYPE,
-                    &payload,
-                    &doc,
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        invocation,
+                        tilo_actions::OperationKind::Effect,
+                        crate::actions::MUSIC_OPERATION_TYPE,
+                        &payload
+                    ),
+                    &mut doc,
                     &automerge::ROOT
                 )
                 .unwrap(),

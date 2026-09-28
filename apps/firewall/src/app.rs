@@ -1867,54 +1867,29 @@ impl Widget for FirewallApp {
         resources
     }
 
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        _payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        if kind != tilo_actions::OperationKind::Effect {
-            return Ok(false);
-        }
-        match type_id {
-            "firewall.apply" | "firewall.set-enabled" | "firewall.set-panic" | "firewall.retry" => {
-                Err("firewall effects require the lifecycle-capable operation host".into())
-            }
-            _ => Ok(false),
-        }
-    }
-
-    fn start_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if kind != tilo_actions::OperationKind::Effect {
-            return Ok(None);
-        }
-        if self.pending_effect.is_some() {
-            return Err("another firewall operation is still running".into());
-        }
-        let effect = match type_id {
-            "firewall.retry" => FirewallEffect::Retry,
-            _ if !self.available => return Err("Firewall service is unavailable".into()),
-            "firewall.apply" => FirewallEffect::Apply,
-            "firewall.set-enabled" => FirewallEffect::SetEnabled(
-                serde_json::from_slice(payload).map_err(|error| error.to_string())?,
-            ),
-            "firewall.set-panic" => FirewallEffect::SetPanic(
-                serde_json::from_slice(payload).map_err(|error| error.to_string())?,
-            ),
-            _ => return Ok(None),
+        let Some(request) = op.unscoped() else {
+            return ui::widget::start_in_children(self, op, doc, path);
         };
-        self.pending_effect = Some(PendingFirewallEffect { invocation, effect });
-        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
+        }
+        if let Some(started) = self.admit_resource_operation(
+            request.invocation,
+            request.kind,
+            request.type_id,
+            request.payload,
+            doc,
+            path,
+        )? {
+            return Ok(Some(started));
+        }
+        Ok(None)
     }
 
     fn poll_resource_operation(
@@ -2036,6 +2011,39 @@ impl Widget for FirewallApp {
     /// `Self::perform_action`). Rising-edge: cleared on read.
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
         self.actions.take_committed()
+    }
+}
+
+impl FirewallApp {
+    fn admit_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if kind != tilo_actions::OperationKind::Effect {
+            return Ok(None);
+        }
+        if self.pending_effect.is_some() {
+            return Err("another firewall operation is still running".into());
+        }
+        let effect = match type_id {
+            "firewall.retry" => FirewallEffect::Retry,
+            _ if !self.available => return Err("Firewall service is unavailable".into()),
+            "firewall.apply" => FirewallEffect::Apply,
+            "firewall.set-enabled" => FirewallEffect::SetEnabled(
+                serde_json::from_slice(payload).map_err(|error| error.to_string())?,
+            ),
+            "firewall.set-panic" => FirewallEffect::SetPanic(
+                serde_json::from_slice(payload).map_err(|error| error.to_string())?,
+            ),
+            _ => return Ok(None),
+        };
+        self.pending_effect = Some(PendingFirewallEffect { invocation, effect });
+        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
     }
 }
 
@@ -4861,12 +4869,14 @@ mod tests {
             app.sync(&mut doc, &automerge::ROOT);
             let invocation = tilo_actions::InvocationId::new();
             let started = app
-                .start_resource_operation(
-                    invocation,
-                    tilo_actions::OperationKind::Effect,
-                    "firewall.apply",
-                    &serde_json::to_vec(&"").unwrap(),
-                    &doc,
+                .start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        invocation,
+                        tilo_actions::OperationKind::Effect,
+                        "firewall.apply",
+                        &serde_json::to_vec(&"").unwrap(),
+                    ),
+                    &mut doc,
                     &automerge::ROOT,
                 )
                 .unwrap();
@@ -4893,12 +4903,14 @@ mod tests {
             let mut doc = AutoCommit::new();
             app.sync(&mut doc, &automerge::ROOT);
             let invocation = tilo_actions::InvocationId::new();
-            app.start_resource_operation(
-                invocation,
-                tilo_actions::OperationKind::Effect,
-                "firewall.apply",
-                &serde_json::to_vec(&"").unwrap(),
-                &doc,
+            app.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    invocation,
+                    tilo_actions::OperationKind::Effect,
+                    "firewall.apply",
+                    &serde_json::to_vec(&"").unwrap(),
+                ),
+                &mut doc,
                 &automerge::ROOT,
             )
             .unwrap();

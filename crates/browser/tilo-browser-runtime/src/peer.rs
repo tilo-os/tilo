@@ -35,10 +35,12 @@ struct Enrollment {
     certificate: DeviceCert,
     root_public_key: [u8; 32],
     host_certificate: DeviceCert,
-    #[cfg_attr(not(test), expect(dead_code, reason = "read only by tests"))]
-    relay_address: iroh_base::EndpointAddr,
-    #[cfg_attr(not(test), expect(dead_code, reason = "read only by tests"))]
-    packet_relay: iroh_base::RelayUrl,
+    /// The native host's relay endpoint and packet relay. The browser peer
+    /// reaches its host only over HTTPS delivery and never dials them.
+    #[expect(dead_code, reason = "the browser peer never dials the native relay")]
+    relay_address: serde::de::IgnoredAny,
+    #[expect(dead_code, reason = "the browser peer never dials the native relay")]
+    packet_relay: serde::de::IgnoredAny,
     revocations: Vec<RevocationEntry>,
     bootstrap: Bootstrap,
 }

@@ -3006,7 +3006,7 @@ impl ContactsApp {
         let operation = crate::actions::export_contact_operation(id);
         let payload = serde_json::to_vec(&operation)
             .map_err(|error| format!("couldn't encode contact export: {error}"))?;
-        self.invoke_resource_operation(
+        self.answer_resource_operation(
             tilo_actions::OperationKind::Effect,
             crate::actions::CONTACTS_OPERATION_TYPE,
             &payload,
@@ -3028,7 +3028,7 @@ impl ContactsApp {
         let operation = crate::actions::open_duplicate_review_operation(candidate);
         let payload = serde_json::to_vec(&operation)
             .map_err(|error| format!("couldn't encode duplicate review: {error}"))?;
-        self.invoke_resource_operation(
+        self.answer_resource_operation(
             tilo_actions::OperationKind::View,
             crate::actions::CONTACTS_OPERATION_TYPE,
             &payload,
@@ -7082,220 +7082,35 @@ impl Widget for ContactsApp {
         self.actions.take_committed()
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "all admitted Contacts view operations are centralized so resource routes cannot drift"
-    )]
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        if type_id != crate::actions::CONTACTS_OPERATION_TYPE {
-            return Ok(false);
-        }
-        let operation: crate::actions::ContactsOperation =
-            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-        match (kind, operation) {
-            (tilo_actions::OperationKind::View, crate::actions::ContactsOperation::Open { id }) => {
-                let id =
-                    uuid::Uuid::parse_str(&id).map_err(|_| "invalid contact id".to_string())?;
-                if self.store.get(id).is_none() {
-                    return Err("contact no longer exists".into());
-                }
-                self.reveal_contact(id);
-            }
-            (
-                tilo_actions::OperationKind::View,
-                crate::actions::ContactsOperation::OpenGroup { name },
-            ) => self.reveal_group(&name)?,
-            (
-                tilo_actions::OperationKind::View,
-                crate::actions::ContactsOperation::OpenFavorites,
-            ) => {
-                self.set_group_filter(Some(FAVORITES_FILTER.into()));
-            }
-            (
-                tilo_actions::OperationKind::View,
-                crate::actions::ContactsOperation::OpenDuplicateReview {
-                    survivor_id,
-                    source_id,
-                },
-            ) => {
-                let survivor = uuid::Uuid::parse_str(&survivor_id)
-                    .map_err(|_| "invalid surviving contact id".to_string())?;
-                let source = uuid::Uuid::parse_str(&source_id)
-                    .map_err(|_| "invalid source contact id".to_string())?;
-                self.open_duplicate_review(survivor, source)?;
-            }
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::ContactsOperation::ImportVcard { path },
-            ) => {
-                if path.is_some() {
-                    return Err(
-                        "direct filesystem paths are not accepted; use the system file picker"
-                            .into(),
-                    );
-                }
-                if self.import_rx.is_some() || self.import_parse_rx.is_some() {
-                    return Err("a contact import is already in progress".into());
-                }
-                self.request_import();
-            }
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::ContactsOperation::ExportAllVcard { path },
-            ) => {
-                if path.is_some() {
-                    return Err(
-                        "direct filesystem paths are not accepted; use the system file picker"
-                            .into(),
-                    );
-                }
-                if self.export_rx.is_some() {
-                    return Err("a contact export is already in progress".into());
-                }
-                let ids = self
-                    .store
-                    .contacts
-                    .iter()
-                    .map(|contact| contact.id)
-                    .collect();
-                if !self.request_export(ids, crate::vcard::VCardVersion::V4) {
-                    return Err("there are no contacts to export".into());
-                }
-            }
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::ContactsOperation::ExportContactVcard { id, path },
-            ) => {
-                if path.is_some() {
-                    return Err(
-                        "direct filesystem paths are not accepted; use the system file picker"
-                            .into(),
-                    );
-                }
-                let id =
-                    uuid::Uuid::parse_str(&id).map_err(|_| "invalid contact id".to_string())?;
-                self.open_contact_export(id)?;
-            }
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::ContactsOperation::KeepImportConflict { token },
-            ) => {
-                if !self
-                    .import_conflicts
-                    .iter()
-                    .any(|conflict| conflict.token.to_string() == token)
-                {
-                    return Err("import conflict no longer exists".into());
-                }
-                self.pending_conflict_resolution = Some((token, false));
-            }
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::ContactsOperation::ImportConflictAsNew { token },
-            ) => {
-                if !self
-                    .import_conflicts
-                    .iter()
-                    .any(|conflict| conflict.token.to_string() == token)
-                {
-                    return Err("import conflict no longer exists".into());
-                }
-                self.pending_conflict_resolution = Some((token, true));
-            }
-            _ => return Err("operation kind does not match Contacts operation".into()),
-        }
-        Ok(true)
-    }
-
-    fn start_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if type_id != crate::actions::CONTACTS_OPERATION_TYPE {
-            return Ok(None);
+        let Some(request) = op.unscoped() else {
+            return ui::widget::start_in_children(self, op, doc, path);
+        };
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
         }
-        let operation: crate::actions::ContactsOperation =
-            serde_json::from_slice(payload).map_err(|e| e.to_string())?;
-        match operation {
-            crate::actions::ContactsOperation::ImportVcard { path: file } => {
-                if self.resource_invocation.is_some()
-                    || self.import_rx.is_some()
-                    || self.import_parse_rx.is_some()
-                {
-                    return Err("another contact file operation is running".into());
-                }
-                if file.is_some() {
-                    return Err(
-                        "direct filesystem paths are not accepted; use the system file picker"
-                            .into(),
-                    );
-                }
-                self.resource_invocation = Some(invocation);
-                self.request_import();
-                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
-            }
-            crate::actions::ContactsOperation::ExportAllVcard { path: file } => {
-                if self.store.contacts.is_empty() {
-                    return Err("there are no contacts to export".into());
-                }
-                if self.resource_invocation.is_some() {
-                    return Err("another contact file operation is running".into());
-                }
-                if file.is_some() {
-                    return Err(
-                        "direct filesystem paths are not accepted; use the system file picker"
-                            .into(),
-                    );
-                }
-                self.resource_invocation = Some(invocation);
-                let ids = self.store.contacts.iter().map(|c| c.id).collect();
-                if !self.request_export(ids, crate::vcard::VCardVersion::V4) {
-                    self.resource_invocation = None;
-                    return Err("contact export could not be started".into());
-                }
-                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
-            }
-            crate::actions::ContactsOperation::ExportContactVcard { .. } => {
-                // Decode/validate and open the exact same export dialog as a
-                // context-menu activation. This operation completes once the
-                // flow is shown; a portal job begins only after the person
-                // chooses a vCard version and destination in that flow.
-                self.invoke_resource_operation(kind, type_id, payload, doc, path)
-                    .map(|handled| {
-                        handled.then(|| {
-                            ui::widget::ResourceOperationStart::Completed(
-                                tilo_actions::ActionOutput::default(),
-                            )
-                        })
-                    })
-            }
-            crate::actions::ContactsOperation::Open { .. }
-            | crate::actions::ContactsOperation::OpenGroup { .. }
-            | crate::actions::ContactsOperation::OpenFavorites
-            | crate::actions::ContactsOperation::OpenDuplicateReview { .. }
-            | crate::actions::ContactsOperation::KeepImportConflict { .. }
-            | crate::actions::ContactsOperation::ImportConflictAsNew { .. } => self
-                .invoke_resource_operation(kind, type_id, payload, doc, path)
-                .map(|handled| {
-                    handled.then(|| {
-                        ui::widget::ResourceOperationStart::Completed(
-                            tilo_actions::ActionOutput::default(),
-                        )
-                    })
-                }),
+        if let Some(started) = self.admit_resource_operation(
+            request.invocation,
+            request.kind,
+            request.type_id,
+            request.payload,
+            doc,
+            path,
+        )? {
+            return Ok(Some(started));
         }
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
     }
 
     fn poll_resource_operation(
@@ -8470,6 +8285,224 @@ impl Widget for ContactsApp {
         _permissions: &PermissionContext,
     ) {
         self.render(scene, transform, tr, theme, presence);
+    }
+}
+
+impl ContactsApp {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "all admitted Contacts view operations are centralized so resource routes cannot drift"
+    )]
+    fn answer_resource_operation(
+        &mut self,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if type_id != crate::actions::CONTACTS_OPERATION_TYPE {
+            return Ok(false);
+        }
+        let operation: crate::actions::ContactsOperation =
+            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+        match (kind, operation) {
+            (tilo_actions::OperationKind::View, crate::actions::ContactsOperation::Open { id }) => {
+                let id =
+                    uuid::Uuid::parse_str(&id).map_err(|_| "invalid contact id".to_string())?;
+                if self.store.get(id).is_none() {
+                    return Err("contact no longer exists".into());
+                }
+                self.reveal_contact(id);
+            }
+            (
+                tilo_actions::OperationKind::View,
+                crate::actions::ContactsOperation::OpenGroup { name },
+            ) => self.reveal_group(&name)?,
+            (
+                tilo_actions::OperationKind::View,
+                crate::actions::ContactsOperation::OpenFavorites,
+            ) => {
+                self.set_group_filter(Some(FAVORITES_FILTER.into()));
+            }
+            (
+                tilo_actions::OperationKind::View,
+                crate::actions::ContactsOperation::OpenDuplicateReview {
+                    survivor_id,
+                    source_id,
+                },
+            ) => {
+                let survivor = uuid::Uuid::parse_str(&survivor_id)
+                    .map_err(|_| "invalid surviving contact id".to_string())?;
+                let source = uuid::Uuid::parse_str(&source_id)
+                    .map_err(|_| "invalid source contact id".to_string())?;
+                self.open_duplicate_review(survivor, source)?;
+            }
+            (
+                tilo_actions::OperationKind::Effect,
+                crate::actions::ContactsOperation::ImportVcard { path },
+            ) => {
+                if path.is_some() {
+                    return Err(
+                        "direct filesystem paths are not accepted; use the system file picker"
+                            .into(),
+                    );
+                }
+                if self.import_rx.is_some() || self.import_parse_rx.is_some() {
+                    return Err("a contact import is already in progress".into());
+                }
+                self.request_import();
+            }
+            (
+                tilo_actions::OperationKind::Effect,
+                crate::actions::ContactsOperation::ExportAllVcard { path },
+            ) => {
+                if path.is_some() {
+                    return Err(
+                        "direct filesystem paths are not accepted; use the system file picker"
+                            .into(),
+                    );
+                }
+                if self.export_rx.is_some() {
+                    return Err("a contact export is already in progress".into());
+                }
+                let ids = self
+                    .store
+                    .contacts
+                    .iter()
+                    .map(|contact| contact.id)
+                    .collect();
+                if !self.request_export(ids, crate::vcard::VCardVersion::V4) {
+                    return Err("there are no contacts to export".into());
+                }
+            }
+            (
+                tilo_actions::OperationKind::Effect,
+                crate::actions::ContactsOperation::ExportContactVcard { id, path },
+            ) => {
+                if path.is_some() {
+                    return Err(
+                        "direct filesystem paths are not accepted; use the system file picker"
+                            .into(),
+                    );
+                }
+                let id =
+                    uuid::Uuid::parse_str(&id).map_err(|_| "invalid contact id".to_string())?;
+                self.open_contact_export(id)?;
+            }
+            (
+                tilo_actions::OperationKind::Effect,
+                crate::actions::ContactsOperation::KeepImportConflict { token },
+            ) => {
+                if !self
+                    .import_conflicts
+                    .iter()
+                    .any(|conflict| conflict.token.to_string() == token)
+                {
+                    return Err("import conflict no longer exists".into());
+                }
+                self.pending_conflict_resolution = Some((token, false));
+            }
+            (
+                tilo_actions::OperationKind::Effect,
+                crate::actions::ContactsOperation::ImportConflictAsNew { token },
+            ) => {
+                if !self
+                    .import_conflicts
+                    .iter()
+                    .any(|conflict| conflict.token.to_string() == token)
+                {
+                    return Err("import conflict no longer exists".into());
+                }
+                self.pending_conflict_resolution = Some((token, true));
+            }
+            _ => return Err("operation kind does not match Contacts operation".into()),
+        }
+        Ok(true)
+    }
+
+    fn admit_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if type_id != crate::actions::CONTACTS_OPERATION_TYPE {
+            return Ok(None);
+        }
+        let operation: crate::actions::ContactsOperation =
+            serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+        match operation {
+            crate::actions::ContactsOperation::ImportVcard { path: file } => {
+                if self.resource_invocation.is_some()
+                    || self.import_rx.is_some()
+                    || self.import_parse_rx.is_some()
+                {
+                    return Err("another contact file operation is running".into());
+                }
+                if file.is_some() {
+                    return Err(
+                        "direct filesystem paths are not accepted; use the system file picker"
+                            .into(),
+                    );
+                }
+                self.resource_invocation = Some(invocation);
+                self.request_import();
+                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+            }
+            crate::actions::ContactsOperation::ExportAllVcard { path: file } => {
+                if self.store.contacts.is_empty() {
+                    return Err("there are no contacts to export".into());
+                }
+                if self.resource_invocation.is_some() {
+                    return Err("another contact file operation is running".into());
+                }
+                if file.is_some() {
+                    return Err(
+                        "direct filesystem paths are not accepted; use the system file picker"
+                            .into(),
+                    );
+                }
+                self.resource_invocation = Some(invocation);
+                let ids = self.store.contacts.iter().map(|c| c.id).collect();
+                if !self.request_export(ids, crate::vcard::VCardVersion::V4) {
+                    self.resource_invocation = None;
+                    return Err("contact export could not be started".into());
+                }
+                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+            }
+            crate::actions::ContactsOperation::ExportContactVcard { .. } => {
+                // Decode/validate and open the exact same export dialog as a
+                // context-menu activation. This operation completes once the
+                // flow is shown; a portal job begins only after the person
+                // chooses a vCard version and destination in that flow.
+                self.answer_resource_operation(kind, type_id, payload, doc, path)
+                    .map(|handled| {
+                        handled.then(|| {
+                            ui::widget::ResourceOperationStart::Completed(
+                                tilo_actions::ActionOutput::default(),
+                            )
+                        })
+                    })
+            }
+            crate::actions::ContactsOperation::Open { .. }
+            | crate::actions::ContactsOperation::OpenGroup { .. }
+            | crate::actions::ContactsOperation::OpenFavorites
+            | crate::actions::ContactsOperation::OpenDuplicateReview { .. }
+            | crate::actions::ContactsOperation::KeepImportConflict { .. }
+            | crate::actions::ContactsOperation::ImportConflictAsNew { .. } => self
+                .answer_resource_operation(kind, type_id, payload, doc, path)
+                .map(|handled| {
+                    handled.then(|| {
+                        ui::widget::ResourceOperationStart::Completed(
+                            tilo_actions::ActionOutput::default(),
+                        )
+                    })
+                }),
+        }
     }
 }
 

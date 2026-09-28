@@ -463,7 +463,7 @@ pub fn domain_xml_with_uuid(
     <input type='tablet' bus='usb'/>
     <input type='keyboard' bus='usb'/>
     <graphics type='spice' autoport='yes'/>
-    <video><model type='virtio'/></video>
+    <video>{video}</video>
     <rng model='virtio'><backend model='random'>/dev/urandom</backend></rng>
   </devices>
 </domain>
@@ -476,6 +476,7 @@ pub fn domain_xml_with_uuid(
         credential = e(&sshkey::smbios_credential(root_key)),
         disk = e(vm.disk()?),
         port = vm.ssh_port(),
+        video = video_model(vm.entry),
         disk_boot = if vm.entry.boot_esp.is_some() {
             "\n      <boot order='2'/>"
         } else {
@@ -496,6 +497,22 @@ pub fn domain_xml_with_uuid(
                 e(&d.cmdline)
             )),
     ))
+}
+
+/// libvirt's virtio-gpu: `heads` outputs, the first preferring `resolution`.
+fn video_model(entry: &VmEntry) -> String {
+    let heads = entry
+        .heads
+        .filter(|&n| n > 1)
+        .map_or_else(String::new, |n| format!(" heads='{n}'"));
+    match entry.resolution.as_deref().and_then(|r| r.split_once('x')) {
+        Some((x, y)) => format!(
+            "<model type='virtio'{heads}><resolution x='{}' y='{}'/></model>",
+            quick_xml::escape::escape(x),
+            quick_xml::escape::escape(y)
+        ),
+        None => format!("<model type='virtio'{heads}/>"),
+    }
 }
 
 impl CommandLine {
@@ -1936,5 +1953,40 @@ mod tests {
 
     fn entry_without_template() -> VmEntry {
         entry()
+    }
+
+    #[test]
+    fn libvirt_video_has_the_requested_heads_and_first_mode() {
+        let plain = domain_xml(
+            &Vm {
+                name: "dev",
+                entry: &entry(),
+            },
+            KEY,
+        )
+        .unwrap();
+        assert!(
+            plain.contains("<video><model type='virtio'/></video>"),
+            "{plain}"
+        );
+        let dual = VmEntry {
+            heads: Some(2),
+            resolution: Some("5120x2880".into()),
+            ..entry()
+        };
+        let xml = domain_xml(
+            &Vm {
+                name: "dev",
+                entry: &dual,
+            },
+            KEY,
+        )
+        .unwrap();
+        assert!(
+            xml.contains(
+                "<video><model type='virtio' heads='2'><resolution x='5120' y='2880'/></model></video>"
+            ),
+            "{xml}"
+        );
     }
 }

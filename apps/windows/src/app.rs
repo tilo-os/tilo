@@ -542,7 +542,7 @@ impl WindowsApp {
     /// Convert retained button signals into the same inert addresses used by
     /// search and agents. The application host re-resolves these against the
     /// fresh tree, applies permission/confirmation policy, records Effects in
-    /// history, and only then calls `invoke_resource_operation`.
+    /// history, and only then calls `start_operation`.
     fn queue_live_control_signal(&mut self) -> bool {
         if !self.provider.action_native_controls() {
             return false;
@@ -2902,64 +2902,35 @@ impl Widget for WindowsApp {
     fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
         actions::provide_resources(&self.catalogue)
     }
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        if kind != tilo_actions::OperationKind::Effect {
-            return Ok(false);
-        }
-        self.invoke_effect_operation(type_id, payload)
-    }
-
-    fn start_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if kind != tilo_actions::OperationKind::Effect {
-            return Ok(None);
+        let Some(request) = op.unscoped() else {
+            return ui::widget::start_in_children(self, op, doc, path);
+        };
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
         }
-        if self.resource_invocation.is_some() {
-            return Err("another Windows operation is still running".into());
+        if let Some(started) = self.admit_resource_operation(
+            request.invocation,
+            request.kind,
+            request.type_id,
+            request.payload,
+            doc,
+            path,
+        )? {
+            return Ok(Some(started));
         }
-        if !self.invoke_resource_operation(kind, type_id, payload, doc, path)? {
-            return Ok(None);
-        }
-        let deferred = self.portal_rx.is_some()
-            || self.document_portal_rx.is_some()
-            || self.iso_portal_rx.is_some()
-            || self.appliance_owner.busy()
-            || !self.provider.operations_complete_on_return();
-        if deferred {
-            self.resource_invocation = Some(invocation);
-            self.resource_waits_for_appliance = matches!(
-                type_id,
-                "windows.import-iso"
-                    | "windows.recovery"
-                    | "windows.start"
-                    | "windows.restart"
-                    | "windows.suspend"
-                    | "windows.resume"
-                    | "windows.shutdown"
-                    | "windows.temporary-network"
-                    | "windows.update-network"
-                    | "windows.revoke-network"
-            );
-            Ok(Some(ui::widget::ResourceOperationStart::Accepted))
-        } else {
-            Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                tilo_actions::ActionOutput::default(),
-            )))
-        }
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
     }
 
     fn poll_resource_operation(
@@ -3148,6 +3119,68 @@ impl Widget for WindowsApp {
         children.push(&mut self.update_windows_button);
         children.push(&mut self.revoke_windows_connection_button);
         children
+    }
+}
+
+impl WindowsApp {
+    fn answer_resource_operation(
+        &mut self,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind != tilo_actions::OperationKind::Effect {
+            return Ok(false);
+        }
+        self.invoke_effect_operation(type_id, payload)
+    }
+
+    fn admit_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if kind != tilo_actions::OperationKind::Effect {
+            return Ok(None);
+        }
+        if self.resource_invocation.is_some() {
+            return Err("another Windows operation is still running".into());
+        }
+        if !self.answer_resource_operation(kind, type_id, payload, doc, path)? {
+            return Ok(None);
+        }
+        let deferred = self.portal_rx.is_some()
+            || self.document_portal_rx.is_some()
+            || self.iso_portal_rx.is_some()
+            || self.appliance_owner.busy()
+            || !self.provider.operations_complete_on_return();
+        if deferred {
+            self.resource_invocation = Some(invocation);
+            self.resource_waits_for_appliance = matches!(
+                type_id,
+                "windows.import-iso"
+                    | "windows.recovery"
+                    | "windows.start"
+                    | "windows.restart"
+                    | "windows.suspend"
+                    | "windows.resume"
+                    | "windows.shutdown"
+                    | "windows.temporary-network"
+                    | "windows.update-network"
+                    | "windows.revoke-network"
+            );
+            Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+        } else {
+            Ok(Some(ui::widget::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            )))
+        }
     }
 }
 

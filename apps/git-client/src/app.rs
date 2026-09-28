@@ -3107,45 +3107,35 @@ impl Widget for GitClientApp {
         self.actions.take_committed()
     }
 
-    fn start_resource_operation(
+    fn start_operation(
         &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        use crate::actions::GitClientOperation;
-        if type_id != crate::actions::GIT_CLIENT_OPERATION_TYPE {
-            return Ok(None);
-        }
-        let operation: crate::actions::GitClientOperation =
-            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-        let remote = match (kind, operation) {
-            (tilo_actions::OperationKind::Effect, GitClientOperation::Fetch { remote }) => {
-                Some((RemoteAction::Fetch, remote))
-            }
-            (tilo_actions::OperationKind::Effect, GitClientOperation::Pull { remote }) => {
-                Some((RemoteAction::Pull, remote))
-            }
-            (tilo_actions::OperationKind::Effect, GitClientOperation::Push { remote }) => {
-                Some((RemoteAction::Push, remote))
-            }
-            _ => None,
+        let Some(request) = op.unscoped() else {
+            return ui::widget::start_in_children(self, op, doc, path);
         };
-        if let Some((action, remote)) = remote {
-            self.start_remote(action, Some(remote), Some(invocation))?;
-            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
         }
-        self.invoke_resource_operation(kind, type_id, payload, doc, path)
-            .map(|handled| {
-                handled.then(|| {
-                    ui::widget::ResourceOperationStart::Completed(
-                        tilo_actions::ActionOutput::default(),
-                    )
-                })
-            })
+        if let Some(started) = self.admit_resource_operation(
+            request.invocation,
+            request.kind,
+            request.type_id,
+            request.payload,
+            doc,
+            path,
+        )? {
+            return Ok(Some(started));
+        }
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
     }
 
     fn poll_resource_operation(
@@ -3194,11 +3184,79 @@ impl Widget for GitClientApp {
         None
     }
 
+    fn needs_animation_frame(&self) -> bool {
+        // Redraw while the flap animates, and while any embedded text field is
+        // focused so its caret keeps blinking.
+        self.flap.is_animating(self.layout_mode())
+            || self
+                .remote_job
+                .as_ref()
+                .is_some_and(|job| job.result.is_none())
+            || self.commit_input.needs_animation_frame()
+            || self.branch_input.needs_animation_frame()
+            || self.open_input.needs_animation_frame()
+    }
+
+    fn draw_with_presence(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        _permissions: &PermissionContext,
+    ) {
+        self.draw(scene, transform, tr, theme, presence);
+    }
+}
+
+impl GitClientApp {
+    fn admit_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        use crate::actions::GitClientOperation;
+        if type_id != crate::actions::GIT_CLIENT_OPERATION_TYPE {
+            return Ok(None);
+        }
+        let operation: crate::actions::GitClientOperation =
+            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+        let remote = match (kind, operation) {
+            (tilo_actions::OperationKind::Effect, GitClientOperation::Fetch { remote }) => {
+                Some((RemoteAction::Fetch, remote))
+            }
+            (tilo_actions::OperationKind::Effect, GitClientOperation::Pull { remote }) => {
+                Some((RemoteAction::Pull, remote))
+            }
+            (tilo_actions::OperationKind::Effect, GitClientOperation::Push { remote }) => {
+                Some((RemoteAction::Push, remote))
+            }
+            _ => None,
+        };
+        if let Some((action, remote)) = remote {
+            self.start_remote(action, Some(remote), Some(invocation))?;
+            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+        }
+        self.answer_resource_operation(kind, type_id, payload, doc, path)
+            .map(|handled| {
+                handled.then(|| {
+                    ui::widget::ResourceOperationStart::Completed(
+                        tilo_actions::ActionOutput::default(),
+                    )
+                })
+            })
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "one exhaustive typed protocol match keeps publication-to-handler coverage auditable"
     )]
-    fn invoke_resource_operation(
+    fn answer_resource_operation(
         &mut self,
         kind: tilo_actions::OperationKind,
         type_id: &str,
@@ -3397,31 +3455,6 @@ impl Widget for GitClientApp {
             return Err(error.clone());
         }
         Ok(true)
-    }
-
-    fn needs_animation_frame(&self) -> bool {
-        // Redraw while the flap animates, and while any embedded text field is
-        // focused so its caret keeps blinking.
-        self.flap.is_animating(self.layout_mode())
-            || self
-                .remote_job
-                .as_ref()
-                .is_some_and(|job| job.result.is_none())
-            || self.commit_input.needs_animation_frame()
-            || self.branch_input.needs_animation_frame()
-            || self.open_input.needs_animation_frame()
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        _permissions: &PermissionContext,
-    ) {
-        self.draw(scene, transform, tr, theme, presence);
     }
 }
 

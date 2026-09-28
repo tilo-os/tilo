@@ -2741,6 +2741,7 @@ impl TaffyTreeExt for TaffyTree<()> {
 
 pub type Element = Box<dyn Widget>;
 
+pub mod binding;
 pub mod decorator;
 pub use decorator::Decorator;
 

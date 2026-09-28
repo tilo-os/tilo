@@ -271,7 +271,7 @@ fn resource_and_search_providers_bound_large_books() {
             .find(|contact| contact.display_name() == "Grace Hopper")
             .expect("Grace is seeded")
             .id;
-        let doc = AutoCommit::new();
+        let mut doc = AutoCommit::new();
         let mut palette = ui::ActionPalette::new();
         palette.load_open_resources(&Widget::resources(&app, &doc));
         palette.set_providers(Widget::search_providers(&app));
@@ -297,23 +297,27 @@ fn resource_and_search_providers_bound_large_books() {
             palette.take_navigation().is_none(),
             "legacy navigation was not used"
         );
-        assert!(
-            Widget::invoke_resource_operation(
+        assert!(matches!(
+            Widget::start_operation(
                 &mut app,
-                operation.kind,
-                &operation
-                    .encoded()
-                    .expect("test requires prepared encoding")
-                    .type_id,
-                &operation
-                    .encoded()
-                    .expect("test requires prepared encoding")
-                    .payload,
-                &doc,
-                &ROOT,
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    operation.kind,
+                    &operation
+                        .encoded()
+                        .expect("test requires prepared encoding")
+                        .type_id,
+                    &operation
+                        .encoded()
+                        .expect("test requires prepared encoding")
+                        .payload
+                ),
+                &mut doc,
+                &ROOT
             )
-            .expect("open operation succeeds")
-        );
+            .expect("open operation succeeds"),
+            Some(ui::widget::ResourceOperationStart::Completed(_))
+        ));
         assert_eq!(app.selected, Some(id), "the open action selected Grace");
     }
 
@@ -347,7 +351,7 @@ fn resource_and_search_providers_bound_large_books() {
             "the Friends group filter hides Grace before activation"
         );
 
-        let doc = AutoCommit::new();
+        let mut doc = AutoCommit::new();
         let resources = Widget::resources(&app, &doc);
         let address = crate::actions::open_contact_address(id);
         let spec = tilo_actions::door::resolve(&resources, &address)
@@ -359,17 +363,21 @@ fn resource_and_search_providers_bound_large_books() {
                 panic!("open takes no arguments")
             }
         };
-        assert!(
-            Widget::invoke_resource_operation(
+        assert!(matches!(
+            Widget::start_operation(
                 &mut app,
-                spec.kind,
-                &encoded.type_id,
-                &encoded.payload,
-                &doc,
-                &ROOT,
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    spec.kind,
+                    &encoded.type_id,
+                    &encoded.payload
+                ),
+                &mut doc,
+                &ROOT
             )
-            .expect("open operation succeeds")
-        );
+            .expect("open operation succeeds"),
+            Some(ui::widget::ResourceOperationStart::Completed(_))
+        ));
 
         assert_eq!(app.selected, Some(id), "activation selected Grace");
         assert!(
@@ -405,17 +413,21 @@ fn resource_and_search_providers_bound_large_books() {
         };
         let payload = serde_json::to_vec(&operation).expect("view operation serializes");
 
-        assert!(
-            Widget::invoke_resource_operation(
+        assert!(matches!(
+            Widget::start_operation(
                 &mut app,
-                tilo_actions::OperationKind::View,
-                crate::actions::CONTACTS_OPERATION_TYPE,
-                &payload,
-                &AutoCommit::new(),
-                &ROOT,
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::View,
+                    crate::actions::CONTACTS_OPERATION_TYPE,
+                    &payload
+                ),
+                &mut AutoCommit::new(),
+                &ROOT
             )
-            .expect("group open succeeds")
-        );
+            .expect("group open succeeds"),
+            Some(ui::widget::ResourceOperationStart::Completed(_))
+        ));
         assert_eq!(app.group_filter.as_deref(), Some(group.as_str()));
         assert!(
             app.search.value().is_empty(),
@@ -3561,12 +3573,14 @@ fn import_export_jobs_are_brokered_and_generation_fenced() {
         ] {
             let payload = serde_json::to_vec(&operation).unwrap();
             let error = app
-                .start_resource_operation(
-                    tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::CONTACTS_OPERATION_TYPE,
-                    &payload,
-                    &doc,
+                .start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        tilo_actions::InvocationId::new(),
+                        tilo_actions::OperationKind::Effect,
+                        crate::actions::CONTACTS_OPERATION_TYPE,
+                        &payload,
+                    ),
+                    &mut doc,
                     &ROOT,
                 )
                 .expect_err("a broker cannot bypass the system file picker");

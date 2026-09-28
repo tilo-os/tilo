@@ -2598,6 +2598,37 @@ fn line(scene: &mut Scene, t: Affine, x0: f64, y0: f64, x1: f64, y1: f64, c: Col
 // Widget impl
 // ===================================================================
 
+impl LogsApp {
+    fn answer_resource_operation(
+        &mut self,
+        kind: OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if !matches!(kind, OperationKind::Effect | OperationKind::View) {
+            return Ok(false);
+        }
+        let Some(operation) = actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
+        };
+        if kind == OperationKind::Effect && !self.allow_live {
+            return Err("live journal access is disabled".into());
+        }
+        // A resource-level entry selection is navigation, not merely a row
+        // highlight. Reveal the selected detail slab for an agent or palette
+        // invocation just as a pointer selection does on a narrow viewport.
+        let reveals_entry = matches!(operation, LogsOperation::SelectEntry { .. });
+        self.perform_effect(operation)?;
+        if reveals_entry && self.narrow_at(self.rect.width()) {
+            self.push.show_detail();
+            self.dirty = true;
+        }
+        Ok(true)
+    }
+}
+
 impl Widget for LogsApp {
     fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
         Some(&crate::framework_history::HISTORY)
@@ -2630,33 +2661,25 @@ impl Widget for LogsApp {
         actions::resources(&self.entries, &self.filter, self.live_tail, self.allow_live)
     }
 
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        if !matches!(kind, OperationKind::Effect | OperationKind::View) {
-            return Ok(false);
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
         }
-        let Some(operation) = actions::decode_operation(type_id, payload)? else {
-            return Ok(false);
+        let Some(request) = op.unscoped() else {
+            return Ok(None);
         };
-        if kind == OperationKind::Effect && !self.allow_live {
-            return Err("live journal access is disabled".into());
-        }
-        // A resource-level entry selection is navigation, not merely a row
-        // highlight. Reveal the selected detail slab for an agent or palette
-        // invocation just as a pointer selection does on a narrow viewport.
-        let reveals_entry = matches!(operation, LogsOperation::SelectEntry { .. });
-        self.perform_effect(operation)?;
-        if reveals_entry && self.narrow_at(self.rect.width()) {
-            self.push.show_detail();
-            self.dirty = true;
-        }
-        Ok(true)
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
     }
 
     fn sync(&mut self, doc: &mut AppModel, root: &ModelPath) {
@@ -3568,7 +3591,7 @@ mod tests {
         }
         // An agent filter view operation never changes the shared document.
         {
-            let (mut app, doc) = synced_app();
+            let (mut app, mut doc) = synced_app();
             let encoded = tilo_actions::EncodedAction::encode_operation(
                 actions::LOGS_OPERATION_TYPE,
                 &LogsOperation::SetUnit {
@@ -3578,13 +3601,17 @@ mod tests {
             .unwrap();
 
             assert!(
-                app.invoke_resource_operation(
-                    OperationKind::View,
-                    &encoded.type_id,
-                    &encoded.payload,
-                    &doc,
-                    &ROOT,
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        OperationKind::View,
+                        &encoded.type_id,
+                        &encoded.payload
+                    ),
+                    &mut doc,
+                    &ROOT
                 )
+                .map(|started| started.is_some())
                 .unwrap()
             );
             assert_eq!(app.filter.unit, "kernel");

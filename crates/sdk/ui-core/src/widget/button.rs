@@ -1579,7 +1579,27 @@ impl Widget for Button {
     }
 
     fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        self.native_resource.iter().cloned().collect()
+        let Some(mut resource) = self.native_resource.clone() else {
+            return Vec::new();
+        };
+        // The action directory refuses unnamed resources and actions, and
+        // an icon-only button learns its accessible name or tooltip after
+        // `on_effect` built the resource; publish the name it is announced by.
+        if resource.label.trim().is_empty()
+            && let Some(name) = self
+                .accessible_name
+                .as_ref()
+                .or(self.tooltip.as_ref())
+                .filter(|name| !name.trim().is_empty())
+        {
+            resource.label.clone_from(name);
+            for action in &mut resource.actions {
+                if action.label.trim().is_empty() {
+                    action.label.clone_from(name);
+                }
+            }
+        }
+        vec![resource]
     }
 
     fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
@@ -3514,9 +3534,33 @@ mod tests {
             assert_eq!(node.name.as_deref(), Some("View options"));
         }
 
+        fn icon_only_effect_publishes_its_spoken_name() {
+            let doc = AutoCommit::new();
+            let named = Button::new("private", "", None)
+                .with_icon(crate::icons::Icon::Shield)
+                .with_accessible_name("New Private Window")
+                .on_effect(|| {});
+            let tooltip_after = Button::new("search", "", None)
+                .with_icon(crate::icons::Icon::Search)
+                .on_effect(|| {})
+                .tooltip("Search");
+            for (button, name) in [(named, "New Private Window"), (tooltip_after, "Search")] {
+                let resources = Widget::resources(&button, &doc);
+                assert_eq!(resources.len(), 1);
+                assert_eq!(resources[0].label, name);
+                assert!(
+                    resources[0]
+                        .actions
+                        .iter()
+                        .all(|action| action.label == name)
+                );
+            }
+        }
+
         tooltip_is_exposed_to_the_host();
         compact_toolbar_presentation_round_trips_authored_semantics();
         icon_only_tooltip_doubles_as_accessible_name();
         explicit_accessible_name_wins_over_tooltip();
+        icon_only_effect_publishes_its_spoken_name();
     }
 }

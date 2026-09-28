@@ -22,6 +22,17 @@
 //! is link-time compatible, but glibc won't switch shadow stacks on without
 //! this opt-in, which scopes the protection instead of making it global and
 //! is inert (not an error) on a CPU without shadow-stack support.
+//!
+//! Inert only at startup: once shadow stacks are on, glibc refuses to
+//! `dlopen` any object without the SHSTK note, and a multithreaded process
+//! cannot drop them again (`glibc.cpu.x86_shstk=permissive` does not help).
+//! GPU drivers are dlopened, so every library in the pinned driver's closure
+//! must be marked. Fedora 44's libzstd is not (its decoder assembly carries no
+//! GNU property note) and Mesa's RADV needs it: on a shadow-stack CPU the
+//! Vulkan loader finds no driver, wgpu has no backend, and the app never draws
+//! a window. An image that launches these packages must ship a marked libzstd
+//! (zstd built with `ZSTD_DISABLE_ASM` and `-fcf-protection`; the hosted guest
+//! image does this) or otherwise check the closure of the drivers it ships.
 
 use std::path::{Path, PathBuf};
 

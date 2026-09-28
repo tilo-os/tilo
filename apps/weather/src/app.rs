@@ -625,88 +625,35 @@ impl Widget for WeatherApp {
         vec![root]
     }
 
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        if kind == OperationKind::View && type_id == crate::actions::OPEN_LOCATION_OPERATION {
-            let raw: String = serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-            let id = raw
-                .parse()
-                .map_err(|_| "Invalid weather location id".to_string())?;
-            if !self.core.borrow_mut().open_location(id) {
-                return Err("Weather location is no longer saved".into());
-            }
-            if let Some(NavIntent::ShowDetail) = self.core.borrow_mut().take_nav_request() {
-                self.nav.show_detail();
-            }
-            return Ok(true);
-        }
-        if kind != OperationKind::Effect
-            || !matches!(
-                type_id,
-                crate::actions::REFRESH_OPERATION | crate::actions::REFRESH_LOCATION_OPERATION
-            )
-        {
-            return Ok(false);
-        }
-        if !self.live {
-            return Err("network refresh is disabled for this weather view".into());
-        }
-        self.ensure_service();
-        if type_id == crate::actions::REFRESH_LOCATION_OPERATION {
-            let raw: String = serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-            let id = raw
-                .parse()
-                .map_err(|_| "Invalid weather location id".to_string())?;
-            if !self.core.borrow_mut().refresh_location_by_id(id) {
-                return Err("Weather location is no longer saved".into());
-            }
-        } else {
-            self.core.borrow_mut().refresh_all();
-        }
-        self.last_activity = Instant::now();
-        Ok(true)
-    }
-
-    fn start_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if kind != OperationKind::Effect
-            || !matches!(
-                type_id,
-                crate::actions::REFRESH_OPERATION | crate::actions::REFRESH_LOCATION_OPERATION
-            )
-        {
-            return Ok(None);
+        let Some(request) = op.unscoped() else {
+            return ui::widget::start_in_children(self, op, doc, path);
+        };
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
         }
-        if self.resource_refresh_invocation.is_some() || self.core.borrow().is_fetching() {
-            return Err("a weather refresh is already running".into());
+        if let Some(started) = self.admit_resource_operation(
+            request.invocation,
+            request.kind,
+            request.type_id,
+            request.payload,
+            doc,
+            path,
+        )? {
+            return Ok(Some(started));
         }
-        if self.core.borrow().model.locations.is_empty() {
-            return Err("save a weather location before refreshing".into());
-        }
-        // Startup refreshes are background work. Capture the ticket boundary
-        // after they are enqueued, immediately before this operation's enqueue.
-        self.ensure_service();
-        let marker = self.core.borrow().request_marker();
-        if !self.invoke_resource_operation(kind, type_id, payload, doc, path)? {
-            return Ok(None);
-        }
-        self.resource_refresh_invocation = Some(invocation);
-        self.resource_refresh_failure = None;
-        self.resource_refresh_tickets = self.core.borrow().queued_weather_tickets_after(marker);
-        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
     }
 
     fn poll_resource_operation(
@@ -943,6 +890,92 @@ impl Widget for WeatherApp {
 
     fn modal_capture(&self) -> Option<Rect> {
         self.nav.modal_capture()
+    }
+}
+
+impl WeatherApp {
+    fn answer_resource_operation(
+        &mut self,
+        kind: OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind == OperationKind::View && type_id == crate::actions::OPEN_LOCATION_OPERATION {
+            let raw: String = serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+            let id = raw
+                .parse()
+                .map_err(|_| "Invalid weather location id".to_string())?;
+            if !self.core.borrow_mut().open_location(id) {
+                return Err("Weather location is no longer saved".into());
+            }
+            if let Some(NavIntent::ShowDetail) = self.core.borrow_mut().take_nav_request() {
+                self.nav.show_detail();
+            }
+            return Ok(true);
+        }
+        if kind != OperationKind::Effect
+            || !matches!(
+                type_id,
+                crate::actions::REFRESH_OPERATION | crate::actions::REFRESH_LOCATION_OPERATION
+            )
+        {
+            return Ok(false);
+        }
+        if !self.live {
+            return Err("network refresh is disabled for this weather view".into());
+        }
+        self.ensure_service();
+        if type_id == crate::actions::REFRESH_LOCATION_OPERATION {
+            let raw: String = serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+            let id = raw
+                .parse()
+                .map_err(|_| "Invalid weather location id".to_string())?;
+            if !self.core.borrow_mut().refresh_location_by_id(id) {
+                return Err("Weather location is no longer saved".into());
+            }
+        } else {
+            self.core.borrow_mut().refresh_all();
+        }
+        self.last_activity = Instant::now();
+        Ok(true)
+    }
+
+    fn admit_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        kind: OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if kind != OperationKind::Effect
+            || !matches!(
+                type_id,
+                crate::actions::REFRESH_OPERATION | crate::actions::REFRESH_LOCATION_OPERATION
+            )
+        {
+            return Ok(None);
+        }
+        if self.resource_refresh_invocation.is_some() || self.core.borrow().is_fetching() {
+            return Err("a weather refresh is already running".into());
+        }
+        if self.core.borrow().model.locations.is_empty() {
+            return Err("save a weather location before refreshing".into());
+        }
+        // Startup refreshes are background work. Capture the ticket boundary
+        // after they are enqueued, immediately before this operation's enqueue.
+        self.ensure_service();
+        let marker = self.core.borrow().request_marker();
+        if !self.answer_resource_operation(kind, type_id, payload, doc, path)? {
+            return Ok(None);
+        }
+        self.resource_refresh_invocation = Some(invocation);
+        self.resource_refresh_failure = None;
+        self.resource_refresh_tickets = self.core.borrow().queued_weather_tickets_after(marker);
+        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
     }
 }
 
@@ -2198,12 +2231,14 @@ mod history_regressions {
                 app.live = true;
                 app.initial_fetch_done = true;
                 let invocation = tilo_actions::InvocationId::new();
-                app.start_resource_operation(
-                    invocation,
-                    OperationKind::Effect,
-                    crate::actions::REFRESH_OPERATION,
-                    b"",
-                    &d,
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        invocation,
+                        OperationKind::Effect,
+                        crate::actions::REFRESH_OPERATION,
+                        b"",
+                    ),
+                    &mut d,
                     &automerge::ROOT,
                 )
                 .unwrap();
@@ -2306,12 +2341,14 @@ mod history_regressions {
             app.live = true;
             app.initial_fetch_done = true;
             let invocation = tilo_actions::InvocationId::new();
-            app.start_resource_operation(
-                invocation,
-                OperationKind::Effect,
-                crate::actions::REFRESH_OPERATION,
-                b"",
-                &d,
+            app.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    invocation,
+                    OperationKind::Effect,
+                    crate::actions::REFRESH_OPERATION,
+                    b"",
+                ),
+                &mut d,
                 &automerge::ROOT,
             )
             .unwrap();
@@ -2345,12 +2382,14 @@ mod history_regressions {
             app.live = true;
             app.initial_fetch_done = true;
             let invocation = tilo_actions::InvocationId::new();
-            app.start_resource_operation(
-                invocation,
-                OperationKind::Effect,
-                crate::actions::REFRESH_OPERATION,
-                b"",
-                &d,
+            app.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    invocation,
+                    OperationKind::Effect,
+                    crate::actions::REFRESH_OPERATION,
+                    b"",
+                ),
+                &mut d,
                 &automerge::ROOT,
             )
             .unwrap();
@@ -2455,12 +2494,14 @@ mod history_round1_tests {
         let (mut app, mut doc, requests, responses) = fixture();
         app.initial_fetch_done = true;
         let invocation = tilo_actions::InvocationId::new();
-        app.start_resource_operation(
-            invocation,
-            OperationKind::Effect,
-            crate::actions::REFRESH_OPERATION,
-            b"",
-            &doc,
+        app.start_operation(
+            &ui::widget::ResourceOperation::local(
+                invocation,
+                OperationKind::Effect,
+                crate::actions::REFRESH_OPERATION,
+                b"",
+            ),
+            &mut doc,
             &ROOT,
         )
         .unwrap();
@@ -2516,15 +2557,17 @@ mod history_round1_tests {
         // Case `buffered_real_completions_survive_terminal_channel_close`.
         {
             for complete_all in [false, true] {
-                let (mut app, doc, requests, responses) = fixture();
+                let (mut app, mut doc, requests, responses) = fixture();
                 app.initial_fetch_done = true;
                 let invocation = tilo_actions::InvocationId::new();
-                app.start_resource_operation(
-                    invocation,
-                    OperationKind::Effect,
-                    crate::actions::REFRESH_OPERATION,
-                    b"",
-                    &doc,
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        invocation,
+                        OperationKind::Effect,
+                        crate::actions::REFRESH_OPERATION,
+                        b"",
+                    ),
+                    &mut doc,
                     &ROOT,
                 )
                 .unwrap();
@@ -2575,18 +2618,20 @@ mod history_round1_tests {
     }
 
     fn startup_ownership(background_failure: bool, own_failure: bool) {
-        let (mut app, doc, requests, responses) = fixture();
+        let (mut app, mut doc, requests, responses) = fixture();
         assert!(!app.initial_fetch_done);
         let target = app.core.borrow().model.locations[0].id;
         let other = app.core.borrow().model.locations[1].id;
         let payload = serde_json::to_vec(&target.to_string()).unwrap();
         let invocation = tilo_actions::InvocationId::new();
-        app.start_resource_operation(
-            invocation,
-            OperationKind::Effect,
-            crate::actions::REFRESH_LOCATION_OPERATION,
-            &payload,
-            &doc,
+        app.start_operation(
+            &ui::widget::ResourceOperation::local(
+                invocation,
+                OperationKind::Effect,
+                crate::actions::REFRESH_LOCATION_OPERATION,
+                &payload,
+            ),
+            &mut doc,
             &ROOT,
         )
         .unwrap();
