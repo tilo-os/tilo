@@ -813,8 +813,12 @@ impl RetainedGpuTarget {
     fn band_rows((width, height): (u32, u32)) -> Option<u32> {
         let bins_x = width.div_ceil(VELLO_BIN_PIXELS);
         let bins_y = height.div_ceil(VELLO_BIN_PIXELS);
-        (bins_x.saturating_mul(bins_y) > MAX_VELLO_BINS)
-            .then(|| (MAX_VELLO_BINS / bins_x).max(1) * VELLO_BIN_PIXELS)
+        if bins_x.saturating_mul(bins_y) <= MAX_VELLO_BINS {
+            return None;
+        }
+        // bins_x is at least 1 for any positive width; zero width never reaches banding.
+        let bins_per_band = MAX_VELLO_BINS.checked_div(bins_x).unwrap_or(1).max(1);
+        Some(bins_per_band.saturating_mul(VELLO_BIN_PIXELS))
     }
 
     fn band_target(&mut self, rows: u32) -> (wgpu::Texture, wgpu::TextureView) {
@@ -854,8 +858,8 @@ impl RetainedGpuTarget {
         let (band_texture, band_view) = self.band_target(rows);
         let mut top = 0;
         while top < height {
-            let band_height = rows.min(height - top);
-            let last = top + band_height >= height;
+            let band_height = rows.min(height.saturating_sub(top));
+            let last = top.saturating_add(band_height) >= height;
             let mut band_scene = Scene::new();
             band_scene.append(scene, Some(Affine::translate((0.0, -f64::from(top)))));
             let mut attempts = 0;
@@ -865,7 +869,7 @@ impl RetainedGpuTarget {
                         attempts: self.last_render_attempts,
                     });
                 }
-                attempts += 1;
+                attempts = attempts.saturating_add(1);
                 self.check_live(policy)?;
                 let submit_started = timing.as_ref().map(|_| Instant::now());
                 let params = RenderParams {
@@ -980,7 +984,7 @@ impl RetainedGpuTarget {
             if last {
                 return Ok((mapped, false));
             }
-            top += band_height;
+            top = top.saturating_add(band_height);
         }
         Err(BridgeError::InvalidSize(format!("{width}x{height}")))
     }

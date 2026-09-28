@@ -1248,6 +1248,8 @@ fn index_entries(entries: &[ApplicationEntry]) -> SearchIndex {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
     const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
 
@@ -1298,7 +1300,7 @@ mod tests {
         InstalledApp {
             package_id: package_id.to_string(),
             display_name: display_name.to_string(),
-            localized_names: Default::default(),
+            localized_names: BTreeMap::default(),
             category: category.map(str::to_string),
             version: "0.1.0".to_string(),
             manifest_path: PathBuf::from("/apps/x/manifest.toml"),

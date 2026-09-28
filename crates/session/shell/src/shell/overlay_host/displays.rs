@@ -698,8 +698,8 @@ impl ShellOverlayHost {
         let reorder = {
             let state = chrome.borrow();
             let tree = state.tree();
-            let partition = &tree.desktop.outputs;
-            let seam_slot = || {
+            let reorder = (|| {
+                let partition = &tree.desktop.outputs;
                 let strip_id = *tree.desktop.active_strip.get(&tree.desktop.active)?;
                 let group = tree.desktop.active_group_for(strip_id)?;
                 let display = partition.display_of(group)?;
@@ -719,14 +719,23 @@ impl ShellOverlayHost {
                 // `to` is the index after the group leaves its old slot.
                 let to = if direction > 0 {
                     let first = neighbours.next()?;
-                    if first > current { first - 1 } else { first }
+                    if first > current {
+                        first.saturating_sub(1)
+                    } else {
+                        first
+                    }
                 } else {
-                    let last = neighbours.last()?;
-                    if last < current { last + 1 } else { last }
+                    let last = neighbours.next_back()?;
+                    if last < current {
+                        last.saturating_add(1)
+                    } else {
+                        last
+                    }
                 };
                 (to != current).then_some((strip_id, group, to))
-            };
-            seam_slot()
+            })();
+            drop(tree);
+            reorder
         };
         if let Some((strip, group, to)) = reorder {
             let reorder = tilo_desktop::intents::SessionIntent::ReorderGroup { strip, group, to };
