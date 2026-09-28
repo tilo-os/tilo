@@ -3071,8 +3071,8 @@ impl WordProcessorWidget {
         self.format = Some(format);
     }
 
-    /// Fetch the bytes of every image the document references that is not fetched yet: from the
-    /// content store, or from the document itself if an older version carried them inline.
+    /// Fetch the bytes of every image the document references that is not fetched yet from the
+    /// content store.
     /// Content that is not here stays absent, which is what draws a placeholder.
     fn refresh_images(
         blobs: &mut std::collections::BTreeMap<String, Vec<u8>>,
@@ -3085,10 +3085,7 @@ impl WordProcessorWidget {
             if blobs.contains_key(&hash) {
                 continue;
             }
-            let bytes = content
-                .read(&hash)
-                .or_else(|| qdoc::model::inline_content(state, c, &hash));
-            if let Some(bytes) = bytes {
+            if let Some(bytes) = content.read(&hash) {
                 // A cached "not decodable yet" result must not outlive the bytes' arrival.
                 image_cache.remove(&hash);
                 blobs.insert(hash, bytes);
