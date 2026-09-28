@@ -14747,8 +14747,6 @@ dependencies = [
  "ed25519-dalek 3.0.0",
  "futures",
  "hex",
- "iroh",
- "iroh-base",
  "js-sys",
  "notes",
  "postcard",
