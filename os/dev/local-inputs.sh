@@ -112,7 +112,7 @@ else
     if [ -n "$KERNEL_RPMS_REF" ]; then
       _li_kernel_note="the newest CI-built $_li_arch kernel whose signed provenance binds a signed build environment"
     else
-      [ -n "$_li_buildroot" ] || die "no $_li_buildroot_var in os/kernel-buildroot-snapshot.env to build a local kernel on; run the snapshot-kernel-buildroot workflow"
+      [ -n "$_li_buildroot" ] || die "no $_li_buildroot_var in os/kernel-buildroot-snapshot.env to build a local kernel on; run the build-buildroots workflow"
       _li_kernel_hash="$( { printf '%s\n' "$_li_buildroot"; git -C "$TILO_REPO" ls-files -s -- os/kernel os/external-assets/github-assets.tsv; } | sha256sum | cut -c1-16)"
       KERNEL_RPMS_REF="localhost/tilo-kernel:$_li_arch-$_li_kernel_hash"
       if podman image exists "$KERNEL_RPMS_REF"; then
