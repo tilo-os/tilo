@@ -129,16 +129,18 @@ fn fixture_with_extra_calculators(
         pending: 0,
     };
     let (root, handle) = DesktopRoot::new(
-        admission,
-        cache.clone(),
+        DesktopSources {
+            admission,
+            storage: cache.clone(),
+            permissions,
+            content: None,
+            local: None,
+        },
         &room,
         "device",
         "author",
         1,
-        permissions,
         Arc::new(|| {}),
-        None,
-        None,
     )
     .unwrap();
     assert!(
