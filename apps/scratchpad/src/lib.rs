@@ -34,11 +34,6 @@ impl Note {
 /// The app.
 pub struct Scratchpad;
 
-/// The app as every host mounts it.
-pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::framework::definition::<Scratchpad>()
-}
-
 impl ResourceApp for Scratchpad {
     type Resource = Note;
     const ID: &'static str = "so.tilo.scratchpad";
