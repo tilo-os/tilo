@@ -921,13 +921,9 @@ impl DisplayPane {
             if !resolved.enabled {
                 continue;
             }
-            let mode = resolved.mode.or(output.current_mode).unwrap_or(OutputMode {
-                width: 1920,
-                height: 1080,
-                refresh_mhz: 60_000,
-            });
-            let (width, height) =
-                settings_store::display_mode::output_extent(mode, resolved.transform);
+            // Drawn at the logical size the pointer moves through, so a
+            // 2x panel beside a 1x monitor looks, and snaps, as it behaves.
+            let (width, height) = logical_extent_of(output, &resolved);
             // An output with no saved position has never been arranged: put
             // it after the others rather than on top of them.
             let (x, y) = if entry.is_some() {
@@ -3353,6 +3349,58 @@ mod tests {
             monitor.placement,
             super::super::display_arrangement::placement::Placement::new(1920, 0, 2560, 1440)
         );
+    }
+
+    #[test]
+    fn the_arrangement_draws_mixed_dpi_displays_at_their_logical_size() {
+        use super::super::display_arrangement::placement::{Placement, settle};
+        // A 2x panel of 2560x1600 is 1280x800 on the desktop the pointer
+        // moves through; a 1x monitor beside it starts at x = 1280.
+        let panel_mode = OutputMode {
+            width: 2560,
+            height: 1600,
+            refresh_mhz: 60_000,
+        };
+        let monitor_mode = OutputMode {
+            width: 1920,
+            height: 1080,
+            refresh_mhz: 60_000,
+        };
+        let rec = Arc::new(RecordingDispatcher::default());
+        let mut pane = DisplayPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, 0.5)
+            .with_outputs(vec![
+                display_with_modes("eDP-1", "Built-in display", true, vec![panel_mode]),
+                display_with_modes("HDMI-A-1", "Desk monitor", false, vec![monitor_mode]),
+            ]);
+        pane.output_config.outputs.insert(
+            "eDP-1".into(),
+            OutputConfig {
+                primary: true,
+                scale: 2.0,
+                ..Default::default()
+            },
+        );
+        pane.output_config.outputs.insert(
+            "HDMI-A-1".into(),
+            OutputConfig {
+                x: 1280,
+                ..Default::default()
+            },
+        );
+        let connected = pane.connected_outputs();
+        let displays = pane.arranged_displays(&connected);
+        let panel = displays.iter().find(|d| d.connector == "eDP-1").unwrap();
+        let monitor = displays.iter().find(|d| d.connector == "HDMI-A-1").unwrap();
+        assert_eq!(panel.placement, Placement::new(0, 0, 1280, 800));
+        assert_eq!(monitor.placement, Placement::new(1280, 0, 1920, 1080));
+        assert!(
+            panel.placement.touches(monitor.placement),
+            "the canvas shows the edge the pointer crosses"
+        );
+        // Dropping the monitor near the panel's right edge snaps it onto
+        // that logical edge, never onto the panel's mode width.
+        let dropped = settle(monitor.placement.at(1300, 12), &[panel.placement], 24);
+        assert_eq!((dropped.x, dropped.y), (1280, 0));
     }
 
     #[test]
