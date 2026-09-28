@@ -814,11 +814,18 @@ ENV RUNTIME_VERSION=${RUNTIME_VERSION}
 # scripts' SOURCE_DATE_EPOCH, not the fixed one the compile above ran with.
 ARG SOURCE_DATE_EPOCH=0
 ENV SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}
-RUN if [ "${TILO_PREBUILT_APPS}" = 1 ]; then \
+# libstd is not on the system loader path and ldd reports it "not found", so
+# the dependency loop below never picks it up: it is included by name. The
+# closure check then loads every bundled object and thin app the way the
+# launcher does, with only the bundle's lib/ on LD_LIBRARY_PATH.
+RUN --mount=type=bind,source=os/scripts/verify-runtime-bundle-closure.sh,target=/usr/local/libexec/tilo-verify-runtime-bundle-closure.sh,ro \
+    if [ "${TILO_PREBUILT_APPS}" = 1 ]; then \
       test -s /out/runtime-bundle-publisher.hex \
       && /out/tilo-runtime-bundle verify \
         "/usr/lib/tilo-runtime/${RUNTIME_VERSION}" \
-        --require-publisher "$(cat /out/runtime-bundle-publisher.hex)"; \
+        --require-publisher "$(cat /out/runtime-bundle-publisher.hex)" \
+      && bash /usr/local/libexec/tilo-verify-runtime-bundle-closure.sh \
+        "/usr/lib/tilo-runtime/${RUNTIME_VERSION}"; \
     else \
       /out/tilo-runtime-bundle key generate --out /out/runtime-bundle-identity.json \
       && RUST_LIBSTD="$(find /out -maxdepth 1 -name 'libstd-*.so' -print -quit)" \
@@ -827,19 +834,22 @@ RUN if [ "${TILO_PREBUILT_APPS}" = 1 ]; then \
         args=(/out/tilo-runtime-bundle build \
           --version "${RUNTIME_VERSION}" --arch "$(uname -m)" --from / \
           --include /out/libruntime_dylib.so \
+          --include "$1" \
           --identity /out/runtime-bundle-identity.json \
           --out "/usr/lib/tilo-runtime/${RUNTIME_VERSION}"); \
         while IFS= read -r dependency; do args+=(--include "$dependency"); done \
           < <(ldd /out/libruntime_dylib.so \
               | awk '\''{ for (i=1; i<=NF; i++) if ($i ~ /^\//) print $i }'\'' \
               | sort -u); \
-        "${args[@]}"' \
+        "${args[@]}"' bundle "${RUST_LIBSTD}" \
       && /out/tilo-runtime-bundle key pubkey \
         --identity /out/runtime-bundle-identity.json \
         > /out/runtime-bundle-publisher.hex \
       && /out/tilo-runtime-bundle verify \
         "/usr/lib/tilo-runtime/${RUNTIME_VERSION}" \
         --require-publisher "$(cat /out/runtime-bundle-publisher.hex)" \
+      && bash /usr/local/libexec/tilo-verify-runtime-bundle-closure.sh \
+        "/usr/lib/tilo-runtime/${RUNTIME_VERSION}" /out/thin-apps/* \
       && rm -f /out/runtime-bundle-identity.json; \
     fi
 
