@@ -3111,6 +3111,42 @@ impl ui::resources::PublishesResources for ImageEditorApp {
 }
 
 impl ui::widget::controls::ActionControls for ImageEditorApp {
+    /// The toolbar's retained buttons are not all laid-out children.
+    fn install_control_custody(
+        &mut self,
+        domain: &ui::ControlDomain,
+        attachment: ui::control_custody::CustodyAttachment,
+    ) {
+        for button in self.retained_buttons_mut() {
+            ui::widget::controls::install_control_custody(button, domain, attachment);
+        }
+        for child in self.children_mut() {
+            ui::widget::controls::install_control_custody(child, domain, attachment);
+        }
+    }
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        if let Some(invocation) = self
+            .retained_buttons_mut()
+            .into_iter()
+            .find_map(|button| ui::widget::controls::take_control_invocation(button))
+        {
+            return Some(invocation);
+        }
+        self.children_mut()
+            .into_iter()
+            .find_map(ui::widget::controls::take_control_invocation)
+    }
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
+    ) {
+        for button in self.retained_buttons_mut() {
+            ui::widget::controls::refresh_control_action_availability(button, allowed);
+        }
+        for child in self.children_mut() {
+            ui::widget::controls::refresh_control_action_availability(child, allowed);
+        }
+    }
     fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
         let mut bindings = ui::widget::semantic_action_bindings(self.accessibility());
         for (_, button) in &self.toolbar {
