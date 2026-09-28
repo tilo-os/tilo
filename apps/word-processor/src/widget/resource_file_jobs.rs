@@ -15,7 +15,14 @@ impl WordProcessorWidget {
         scope: Option<&ResourceInvocationScope>,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
         use crate::actions::WordProcessorOperation;
-        if cfg!(target_arch = "wasm32") && kind == tilo_actions::OperationKind::Effect {
+        // File effects name native paths; a host without them (a browser page)
+        // has no file or asset transport.
+        if kind == tilo_actions::OperationKind::Effect
+            && !matches!(
+                tilo_files::availability(tilo_files::Feature::NativePaths),
+                tilo_files::Availability::Available
+            )
+        {
             return Err("file operation unsupported: no browser file/asset transport".into());
         }
 
