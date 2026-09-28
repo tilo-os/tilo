@@ -3,6 +3,10 @@
 //! same address; a peer that joins afterwards receives them from the host.
 
 #![allow(
+    clippy::significant_drop_tightening,
+    reason = "a test holds its fixtures' locks for the length of a step"
+)]
+#![allow(
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::indexing_slicing,

@@ -1,8 +1,12 @@
-//! SessionHealth recovery against a real host: refreshing the shared state
+//! `SessionHealth` recovery against a real host: refreshing the shared state
 //! re-requests the room's checkpoints (also after the host restarted), and
 //! failures the page reports for its store, surfaces and assets are scoped
 //! and cleared.
 
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "a test holds its fixtures' locks for the length of a step"
+)]
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,

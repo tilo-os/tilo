@@ -100,6 +100,10 @@ impl Relay {
     ///
     /// Returns [`RelayError::Iroh`] (the transport error kind) when the
     /// certificate cannot be loaded or an address cannot be bound.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the guard only lives for the lookup; the value kept is a clone"
+    )]
     pub async fn serve_web(&self, config: WebConfig) -> Result<WebHandle, RelayError> {
         let failed = |message: String| RelayError::Iroh(format!("web listener: {message}"));
         let identity = tls::Identity::load(&config.tls).map_err(failed)?;
@@ -182,6 +186,10 @@ const BROWSER_PRESENCE_BACKLOG: usize = 1024;
 /// [`Envelope::Live`](crate::Envelope::Live) frames — the other half of the
 /// iroh-to-browser bridge installed as `live_bridge`. Frames the host
 /// injected are never tapped, so nothing loops.
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the guard only lives for the lookup; the value kept is a clone"
+)]
 fn bridge_browser_presence(
     live: &LiveRelay,
     grants: &Arc<live::LiveGrants>,
@@ -319,6 +327,10 @@ fn fallback_status(error: FallbackError) -> Response<Body> {
     }
 }
 
+#[allow(
+    clippy::result_large_err,
+    reason = "the error is the response the handler sends as it is"
+)]
 fn decode<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, Response<Body>> {
     postcard::from_bytes(bytes).map_err(|_| status(StatusCode::BAD_REQUEST, "malformed body"))
 }
@@ -416,6 +428,10 @@ async fn route(
     let (_, bytes) = body(request, limit).await?;
     let sessions = &web.sessions;
     let certification = &sessions.context().certification;
+    #[allow(
+        clippy::result_large_err,
+        reason = "the error is the response the handler sends as it is"
+    )]
     let authed = || {
         session
             .ok_or_else(|| status(StatusCode::UNAUTHORIZED, "no session"))

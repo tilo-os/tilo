@@ -139,6 +139,10 @@ impl Sessions {
     }
 
     /// First handshake step: the relay's `accept_hello` and `HelloAck`.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the guard only lives for the lookup; the value kept is a clone"
+    )]
     pub(crate) fn hello(&self, hello: &Hello) -> Result<SessionChallenge, SessionError> {
         let relay = &self.web.relay;
         let revocations = relay
@@ -236,8 +240,10 @@ impl Sessions {
             let closed = async move {
                 let _ = ended.wait_for(|ended| *ended).await;
             };
-            if let Err(error) =
-                crate::peer::run_peer_until(peer, closed, host_read, host_write, context).await
+            if let Err(error) = Box::pin(crate::peer::run_peer_until(
+                peer, closed, host_read, host_write, context,
+            ))
+            .await
             {
                 tracing::debug!("browser session ended: {error}");
             }

@@ -13,6 +13,10 @@
 //! once, or start a test browser with `--ignore-certificate-errors`);
 //! WebTransport pins it by hash.
 #![allow(
+    clippy::significant_drop_tightening,
+    reason = "a test holds its fixtures' locks for the length of a step"
+)]
+#![allow(
     clippy::print_stdout,
     clippy::expect_used,
     clippy::unwrap_used,
