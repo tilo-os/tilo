@@ -282,6 +282,18 @@ loopback address (`http://127.0.0.1:<port>`, `http://localhost:<port>`,
 its URL. `tools/web/local-registry.sh` runs the whole flow against a
 throwaway local registry (see [Web apps in the browser](#web-apps-in-the-browser)).
 
+A publisher without its own artifact hosting uploads the file to the registry
+instead: `PUT /uploads/<blake3>.tapp` with the exact bytes, its public key in
+`Tilo-Publisher` and, in `Tilo-Signature`, its Ed25519 signature over
+`"tilo-registry-upload-v1\0"` followed by the lowercase BLAKE3 hex
+(`registry_types::upload`). The registry accepts only an allowlisted
+publisher's upload of a package that publisher signed, within the package's
+size limit, and answers `201` with `{"blake3", "url"}`. The URL is
+`https://apps.tilo.so/artifacts/<blake3>.tapp`, or the loopback prefix on a
+local registry. Uploads stay private: review reads them from storage instead of
+fetching the URL (`review_entry_bytes`), and `review approve` imports the
+approved bytes as the artifact the URL then serves.
+
 Presentation metadata is a signed part of the entry. Localized fields use one
 consistent language-tag map, and every non-empty localized map must contain an
 English (`en`) fallback. Language tags are canonical BCP 47 spellings (for
