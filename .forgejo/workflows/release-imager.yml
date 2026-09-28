@@ -551,8 +551,7 @@ jobs:
 
   # USB-free installation VM round trip on the x86_64 medium this run just
   # built and boot-tested (design spec §9). Opt-in with the same repository
-  # variable as the bundle export. The same os/dev/ci-internal-install-cycle.sh
-  # backs the manual internal-install-cycle.yml workflow.
+  # variable as the bundle export.
   internal-install-cycle:
     timeout-minutes: 480
     needs: medium
