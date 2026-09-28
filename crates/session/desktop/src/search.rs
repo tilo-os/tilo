@@ -195,7 +195,7 @@ pub fn window_rows(tree: &DesktopTree, rank: impl Fn(&[&str]) -> Option<i32>) ->
         for (index, group) in strip.window_groups.iter().enumerate() {
             let group_id = group.id;
             // Ids are 64-bit handles; people count groups from the left.
-            let position = index + 1;
+            let position = index.saturating_add(1);
             let group_title = group
                 .tabs
                 .iter()
