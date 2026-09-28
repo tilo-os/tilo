@@ -2988,7 +2988,7 @@ impl BooksApp {
 
     fn on_copy_selection(&self) {
         // Selection stays put so the reader can also highlight or note it.
-        let text = self.selection_text();
+        let text = self.selection_clipboard_text();
         if !text.is_empty() {
             ui::clipboard_copy(&text);
         }
@@ -3887,6 +3887,17 @@ impl BooksApp {
     /// The full plain text currently selected, paragraph-joined with a
     /// space, not truncated (unlike [`Self::selection_excerpt`]).
     fn selection_text(&self) -> String {
+        self.selected_text_joined(false)
+    }
+
+    /// The selected text as it goes on the clipboard: verse lines and
+    /// `<br/>`s stay on their own lines, and blocks are separated by a blank
+    /// line.
+    fn selection_clipboard_text(&self) -> String {
+        self.selected_text_joined(true)
+    }
+
+    fn selected_text_joined(&self, keep_lines: bool) -> String {
         let Some(sel) = self.sel else {
             return String::new();
         };
@@ -3909,9 +3920,17 @@ impl BooksApp {
             let hi = hi.min(b.char_len);
             if lo < hi {
                 if !out.is_empty() {
-                    out.push(' ');
+                    out.push_str(if keep_lines { "\n\n" } else { " " });
                 }
-                out.extend(b.text.chars().skip(lo).take(hi - lo));
+                out.extend(b.text.chars().enumerate().skip(lo).take(hi - lo).map(
+                    |(index, character)| {
+                        if keep_lines && b.hard_breaks.binary_search(&index).is_ok() {
+                            '\n'
+                        } else {
+                            character
+                        }
+                    },
+                ));
             }
         }
         out
@@ -4619,6 +4638,7 @@ impl BooksApp {
             || chapter.blocks.len().saturating_sub(1),
             |position| position.block,
         );
+        let mut page_bounds: Option<Rect> = None;
         let children = chapter
             .blocks
             .iter()
@@ -4629,18 +4649,38 @@ impl BooksApp {
                     crate::model::Block::Heading { level, .. } => Role::Heading { level: *level },
                     _ => Role::Paragraph,
                 };
-                AccessNode::new(role)
+                let node = AccessNode::new(role)
                     .with_name(block.plain_text())
-                    .with_hashed_key((self.chapter, index))
+                    .with_hashed_key((self.chapter, index));
+                match self.painted_block_bounds(index) {
+                    Some(bounds) => {
+                        page_bounds = Some(page_bounds.map_or(bounds, |page| page.union(bounds)));
+                        node.with_bounds(bounds)
+                    }
+                    None => node,
+                }
             })
             .collect();
-        Some(
-            AccessNode::new(Role::Document)
-                .with_name(chapter.title.clone())
-                .with_description("Current reading page")
-                .with_state(AccessState::new().read_only(true))
-                .with_children(children),
-        )
+        let document = AccessNode::new(Role::Document)
+            .with_name(chapter.title.clone())
+            .with_description("Current reading page")
+            .with_state(AccessState::new().read_only(true))
+            .with_children(children);
+        Some(match page_bounds {
+            Some(bounds) => document.with_bounds(bounds),
+            None => document,
+        })
+    }
+
+    /// Screen bounds of the part of block `index` painted in the last frame:
+    /// the union of its on-page selection runs. A block continued from or on
+    /// another page reports only its visible lines.
+    fn painted_block_bounds(&self, index: usize) -> Option<Rect> {
+        self.sel_runs
+            .iter()
+            .filter(|run| run.block == index)
+            .map(|run| Rect::new(run.x0, run.y0, run.x1, run.y1))
+            .reduce(|bounds, run| bounds.union(run))
     }
 
     fn draw_load_toast(
