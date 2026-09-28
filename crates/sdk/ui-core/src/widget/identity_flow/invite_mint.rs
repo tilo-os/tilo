@@ -23,6 +23,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
+use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::text_selection::clipboard_copy;
@@ -449,10 +450,7 @@ impl InviteMintScreen {
         }
         if let Some(rect) = plan.link_label {
             paint_text(
-                scene,
-                transform,
-                text_renderer,
-                theme,
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 rect,
                 LINK_LABEL,
                 Role::Label,
@@ -462,10 +460,7 @@ impl InviteMintScreen {
         }
         for (line, rect) in &plan.link_lines {
             paint_text(
-                scene,
-                transform,
-                text_renderer,
-                theme,
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 *rect,
                 line,
                 Role::Value,
@@ -534,10 +529,7 @@ impl Widget for InviteMintScreen {
         sheet.paint_frame(scene, transform, text_renderer, theme, &spec);
         sheet.clip_body(scene, transform);
         paint_text(
-            scene,
-            transform,
-            text_renderer,
-            theme,
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
             plan.expiry_label,
             EXPIRY_LABEL,
             Role::Label,
@@ -562,10 +554,7 @@ impl Widget for InviteMintScreen {
         self.draw_minted(scene, transform, text_renderer, theme, plan);
         if let Some(rect) = plan.hint {
             paint_text(
-                scene,
-                transform,
-                text_renderer,
-                theme,
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 rect,
                 EMPTY_HINT,
                 Role::Caption,
@@ -575,10 +564,7 @@ impl Widget for InviteMintScreen {
         }
         if let (Some(rect), Some(msg)) = (plan.clipboard, self.clipboard_msg.as_deref()) {
             paint_text(
-                scene,
-                transform,
-                text_renderer,
-                theme,
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 rect,
                 msg,
                 Role::Caption,
@@ -588,10 +574,7 @@ impl Widget for InviteMintScreen {
         }
         if let (Some(rect), Some(err)) = (plan.error, self.error.as_deref()) {
             paint_text(
-                scene,
-                transform,
-                text_renderer,
-                theme,
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 rect,
                 err,
                 Role::Error,

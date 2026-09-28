@@ -66,6 +66,22 @@ pub enum PushOutcome {
     DecodeFailed,
 }
 
+/// A peer's announcement that one of its surfaces is streaming: which
+/// surface, which app's tab shows it, how it is encoded, and where input on
+/// the local view goes back to.
+#[derive(Clone)]
+pub struct PeerStreamStart {
+    pub source_peer: u64,
+    pub surface: u64,
+    pub local_peer: u64,
+    pub app_id: String,
+    pub codec: String,
+    /// The size the sender announced; decoded pictures are cropped to it.
+    pub display_size: Option<(u32, u32)>,
+    pub hdr_static_metadata: Option<crate::collab::hdr_metadata::Hdr10Metadata>,
+    pub input_sink: Arc<dyn Fn(InputEvent) + Send + Sync>,
+}
+
 /// Peer-side widget rendering one shared surface: the decoder, the latest
 /// decoded frame as a peniko image, and the pending-input queue.
 pub struct PeerView {

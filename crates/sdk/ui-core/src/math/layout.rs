@@ -1007,10 +1007,6 @@ fn layout_sqrt(
     }
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "a delimited row carries its delimiters, its place in the edit path and the shared text renderer and size, like the other layout_* helpers"
-)]
 fn layout_delimited(
     body: &Row,
     open: Option<char>,

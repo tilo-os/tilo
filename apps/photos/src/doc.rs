@@ -119,6 +119,40 @@ fn metadata_resource_id(prefix: &str, label: &str) -> String {
     format!("{prefix}{}", tilo_content::hash_bytes(label.as_bytes()))
 }
 
+/// The per-field column maps a photo's metadata is split across, one map
+/// per field keyed by photo id.
+struct PhotoColumns {
+    core: ObjId,
+    favorite: ObjId,
+    folder: ObjId,
+    people: ObjId,
+    tags: ObjId,
+    captured: ObjId,
+    analysis: ObjId,
+    analysis_ocr: ObjId,
+    analysis_vision: ObjId,
+    location: ObjId,
+}
+
+impl PhotoColumns {
+    /// Open (creating as needed) every column map under `root`, in schema
+    /// order.
+    fn open(doc: &mut AutoCommit, root: &ObjId) -> Option<Self> {
+        Some(Self {
+            core: PhotosDoc::map_or_make(doc, root, "photo_core")?,
+            favorite: PhotosDoc::map_or_make(doc, root, "photo_favorite")?,
+            folder: PhotosDoc::map_or_make(doc, root, "photo_folder")?,
+            people: PhotosDoc::map_or_make(doc, root, "photo_people")?,
+            tags: PhotosDoc::map_or_make(doc, root, "photo_tags")?,
+            captured: PhotosDoc::map_or_make(doc, root, "photo_captured_at")?,
+            analysis: PhotosDoc::map_or_make(doc, root, "photo_analysis")?,
+            analysis_ocr: PhotosDoc::map_or_make(doc, root, PHOTO_ANALYSIS_OCR_KEY)?,
+            analysis_vision: PhotosDoc::map_or_make(doc, root, PHOTO_ANALYSIS_VISION_KEY)?,
+            location: PhotosDoc::map_or_make(doc, root, "photo_location")?,
+        })
+    }
+}
+
 impl PhotosDoc {
     /// True when the document has never been written to.
     pub fn is_empty(doc: &AutoCommit) -> bool {
@@ -914,35 +948,7 @@ impl PhotosDoc {
         before: &PhotoLibrary,
         after: &PhotoLibrary,
     ) {
-        let Some(photo_core) = Self::map_or_make(doc, root, "photo_core") else {
-            return;
-        };
-        let Some(photo_favorite) = Self::map_or_make(doc, root, "photo_favorite") else {
-            return;
-        };
-        let Some(photo_folder) = Self::map_or_make(doc, root, "photo_folder") else {
-            return;
-        };
-        let Some(photo_people) = Self::map_or_make(doc, root, "photo_people") else {
-            return;
-        };
-        let Some(photo_tags) = Self::map_or_make(doc, root, "photo_tags") else {
-            return;
-        };
-        let Some(photo_captured_at) = Self::map_or_make(doc, root, "photo_captured_at") else {
-            return;
-        };
-        let Some(photo_analysis) = Self::map_or_make(doc, root, "photo_analysis") else {
-            return;
-        };
-        let Some(photo_analysis_ocr) = Self::map_or_make(doc, root, PHOTO_ANALYSIS_OCR_KEY) else {
-            return;
-        };
-        let Some(photo_analysis_vision) = Self::map_or_make(doc, root, PHOTO_ANALYSIS_VISION_KEY)
-        else {
-            return;
-        };
-        let Some(photo_location) = Self::map_or_make(doc, root, "photo_location") else {
+        let Some(columns) = PhotoColumns::open(doc, root) else {
             return;
         };
         let Some(albums) = Self::map_or_make(doc, root, "albums") else {
@@ -966,21 +972,7 @@ impl PhotosDoc {
         // transaction and turns a 3k import into thousands of commits.
         if before.photos.is_empty() && after.albums.is_empty() {
             for photo in &after.photos {
-                Self::write_columnar_photo_delta(
-                    doc,
-                    &photo_core,
-                    &photo_favorite,
-                    &photo_folder,
-                    &photo_people,
-                    &photo_tags,
-                    &photo_captured_at,
-                    &photo_analysis,
-                    &photo_analysis_ocr,
-                    &photo_analysis_vision,
-                    &photo_location,
-                    None,
-                    photo,
-                );
+                Self::write_columnar_photo_delta(doc, &columns, None, photo);
             }
             let order_values: Vec<_> = after
                 .photos
@@ -1009,21 +1001,7 @@ impl PhotosDoc {
             if old.is_none() {
                 let _ = doc.delete(&removed_photos, &photo.id);
             }
-            Self::write_columnar_photo_delta(
-                doc,
-                &photo_core,
-                &photo_favorite,
-                &photo_folder,
-                &photo_people,
-                &photo_tags,
-                &photo_captured_at,
-                &photo_analysis,
-                &photo_analysis_ocr,
-                &photo_analysis_vision,
-                &photo_location,
-                old,
-                photo,
-            );
+            Self::write_columnar_photo_delta(doc, &columns, old, photo);
             if ordered_photos.insert(photo.id.clone()) {
                 let _ = doc.insert(&photo_order, doc.length(&photo_order), &photo.id);
             }
@@ -1128,25 +1106,24 @@ impl PhotosDoc {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one delta writes every columnar map of a photo row; each is a separate CRDT object"
-    )]
     fn write_columnar_photo_delta(
         doc: &mut AutoCommit,
-        core: &ObjId,
-        favorite: &ObjId,
-        folder: &ObjId,
-        people: &ObjId,
-        tags: &ObjId,
-        captured: &ObjId,
-        analysis: &ObjId,
-        analysis_ocr: &ObjId,
-        analysis_vision: &ObjId,
-        location: &ObjId,
+        columns: &PhotoColumns,
         old: Option<&LibraryPhoto>,
         photo: &LibraryPhoto,
     ) {
+        let PhotoColumns {
+            core,
+            favorite,
+            folder,
+            people,
+            tags,
+            captured,
+            analysis,
+            analysis_ocr,
+            analysis_vision,
+            location,
+        } = columns;
         if old.is_none_or(|value| value.image != photo.image) {
             Self::write_json_at(doc, core, &photo.id, &photo.image);
         }

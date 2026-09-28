@@ -173,7 +173,7 @@ impl Bound {
     fn sync(&mut self, state: &mut ui::State) {
         let surface = self.panel.body_editor_mut();
         surface.sync(&mut state.doc, &automerge::ROOT);
-        if let Some(before) = surface.take_committed_action() {
+        if let Some(before) = ui::undo::take_committed_action(surface) {
             state.record_committed_action(before, None, None);
         }
         self.paint();

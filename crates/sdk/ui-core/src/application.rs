@@ -52,6 +52,18 @@ pub enum RestoreInput {
     Local(SavedInstanceView),
 }
 
+/// Host-supplied storage, identity and authority for one instance, checked by
+/// [`HostContext::prepare`] before any factory runs.
+pub struct HostContextInputs {
+    pub records: RecordStore,
+    pub views: Rc<InstanceViewStore>,
+    pub device_id: String,
+    pub instance_id: InstanceId,
+    pub permissions: Rc<RefCell<PermissionContext>>,
+    pub author: UserId,
+    pub action_context: tilo_actions::ActionContext,
+}
+
 /// Explicit identity, authority and storage. Apps receive no ambient profile resolver.
 pub struct HostContext {
     /// The app's package id, matching both its definition and its record namespace.
@@ -128,33 +140,12 @@ impl HostContext {
     ///
     /// # Errors
     /// Rejects denied authority, invalid/foreign namespaces and unavailable records.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "host inputs are explicit rather than resolved from ambient state"
-    )]
     pub fn prepare(
         definition: &ApplicationDefinition,
-        records: RecordStore,
-        views: Rc<InstanceViewStore>,
-        device_id: String,
-        instance_id: InstanceId,
-        permissions: Rc<RefCell<PermissionContext>>,
-        author: UserId,
-        action_context: tilo_actions::ActionContext,
+        inputs: HostContextInputs,
         target: &LaunchTarget,
     ) -> Result<Self, LaunchError> {
-        Self::prepare_scoped(
-            definition,
-            records,
-            views,
-            device_id,
-            instance_id,
-            permissions,
-            author,
-            action_context,
-            target,
-            None,
-        )
+        Self::prepare_scoped(definition, inputs, target, None)
     }
 
     /// Reserve a host-named new record through the same checked construction
@@ -164,23 +155,21 @@ impl HostContext {
     ///
     /// # Errors
     /// Rejects foreign namespaces, denied authority and occupied identities.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "explicit authenticated host inputs"
-    )]
     pub fn prepare_new_record(
         definition: &ApplicationDefinition,
-        records: RecordStore,
-        views: Rc<InstanceViewStore>,
-        device_id: String,
-        instance_id: InstanceId,
-        permissions: Rc<RefCell<PermissionContext>>,
-        author: UserId,
-        action_context: tilo_actions::ActionContext,
+        inputs: HostContextInputs,
         record_id: RecordId,
     ) -> Result<Self, LaunchError> {
-        Self::prepare_scoped(
-            definition,
+        Self::prepare_scoped(definition, inputs, &LaunchTarget::New, Some(record_id))
+    }
+
+    fn prepare_scoped(
+        definition: &ApplicationDefinition,
+        inputs: HostContextInputs,
+        target: &LaunchTarget,
+        new_record_id: Option<RecordId>,
+    ) -> Result<Self, LaunchError> {
+        let HostContextInputs {
             records,
             views,
             device_id,
@@ -188,27 +177,7 @@ impl HostContext {
             permissions,
             author,
             action_context,
-            &LaunchTarget::New,
-            Some(record_id),
-        )
-    }
-
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one validation path for minted and host-named records"
-    )]
-    fn prepare_scoped(
-        definition: &ApplicationDefinition,
-        records: RecordStore,
-        views: Rc<InstanceViewStore>,
-        device_id: String,
-        instance_id: InstanceId,
-        permissions: Rc<RefCell<PermissionContext>>,
-        author: UserId,
-        action_context: tilo_actions::ActionContext,
-        target: &LaunchTarget,
-        new_record_id: Option<RecordId>,
-    ) -> Result<Self, LaunchError> {
+        } = inputs;
         validate_identity(definition.app_id).map_err(LaunchError::Restore)?;
         validate_identity(definition.record_kind.as_str()).map_err(LaunchError::Restore)?;
         validate_identity(&device_id).map_err(LaunchError::Restore)?;
@@ -1439,13 +1408,15 @@ mod bound_lifetime_tests {
         let prepare = |target, supplied| {
             HostContext::prepare_scoped(
                 &definition,
-                records.clone(),
-                views.clone(),
-                "D".into(),
-                7,
-                Rc::new(RefCell::new(PermissionContext::permissive())),
-                UserId("probe-author".into()),
-                tilo_actions::ActionContext::default(),
+                HostContextInputs {
+                    records: records.clone(),
+                    views: views.clone(),
+                    device_id: "D".into(),
+                    instance_id: 7,
+                    permissions: Rc::new(RefCell::new(PermissionContext::permissive())),
+                    author: UserId("probe-author".into()),
+                    action_context: tilo_actions::ActionContext::default(),
+                },
                 target,
                 supplied,
             )
@@ -1482,13 +1453,15 @@ mod bound_lifetime_tests {
         let prepare = |checkout| {
             HostContext::prepare(
                 &definition,
-                records.clone(),
-                views.clone(),
-                "D".into(),
-                7,
-                Rc::new(RefCell::new(PermissionContext::permissive())),
-                UserId("probe-author".into()),
-                tilo_actions::ActionContext::default(),
+                HostContextInputs {
+                    records: records.clone(),
+                    views: views.clone(),
+                    device_id: "D".into(),
+                    instance_id: 7,
+                    permissions: Rc::new(RefCell::new(PermissionContext::permissive())),
+                    author: UserId("probe-author".into()),
+                    action_context: tilo_actions::ActionContext::default(),
+                },
                 &LaunchTarget::Record {
                     checkout,
                     reveal: None,
@@ -1540,13 +1513,15 @@ mod bound_lifetime_tests {
             let prepare = |target: &LaunchTarget| {
                 HostContext::prepare(
                     &definition,
-                    records.clone(),
-                    views.clone(),
-                    "D".into(),
-                    7,
-                    Rc::new(RefCell::new(PermissionContext::permissive())),
-                    UserId("probe-author".into()),
-                    tilo_actions::ActionContext::default(),
+                    HostContextInputs {
+                        records: records.clone(),
+                        views: views.clone(),
+                        device_id: "D".into(),
+                        instance_id: 7,
+                        permissions: Rc::new(RefCell::new(PermissionContext::permissive())),
+                        author: UserId("probe-author".into()),
+                        action_context: tilo_actions::ActionContext::default(),
+                    },
                     target,
                 )
                 .unwrap()
@@ -1624,13 +1599,15 @@ mod bound_lifetime_tests {
             };
             let context = HostContext::prepare(
                 &definition,
-                records,
-                views,
-                "D".into(),
-                7,
-                Rc::new(RefCell::new(PermissionContext::permissive())),
-                UserId("probe-author".into()),
-                tilo_actions::ActionContext::default(),
+                HostContextInputs {
+                    records,
+                    views,
+                    device_id: "D".into(),
+                    instance_id: 7,
+                    permissions: Rc::new(RefCell::new(PermissionContext::permissive())),
+                    author: UserId("probe-author".into()),
+                    action_context: tilo_actions::ActionContext::default(),
+                },
                 &LaunchTarget::New,
             )
             .unwrap();
@@ -1677,13 +1654,15 @@ mod portable_tests {
         let prepare = |views, permissions| {
             HostContext::prepare(
                 &definition,
-                records.clone(),
-                views,
-                probe::DEVICE.into(),
-                7,
-                permissions,
-                probe::author(),
-                probe::provenance(),
+                HostContextInputs {
+                    records: records.clone(),
+                    views,
+                    device_id: probe::DEVICE.into(),
+                    instance_id: 7,
+                    permissions,
+                    author: probe::author(),
+                    action_context: probe::provenance(),
+                },
                 &LaunchTarget::New,
             )
         };
@@ -1717,14 +1696,16 @@ mod portable_tests {
         assert!(matches!(
             HostContext::prepare(
                 &denied,
-                records,
-                views,
-                probe::DEVICE.into(),
-                8,
-                probe::permissions(),
-                probe::author(),
-                probe::provenance(),
-                &LaunchTarget::New
+                HostContextInputs {
+                    records,
+                    views,
+                    device_id: probe::DEVICE.into(),
+                    instance_id: 8,
+                    permissions: probe::permissions(),
+                    author: probe::author(),
+                    action_context: probe::provenance()
+                },
+                &LaunchTarget::New,
             ),
             Err(LaunchError::CapabilityDenied(_))
         ));

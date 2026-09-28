@@ -25,7 +25,9 @@ use serde::{Deserialize, Serialize};
 use tilo_clock::unix_now_ms;
 use tokio::sync::mpsc;
 
-use crate::network::actor::{Actor, HostIdentity, NetCmd, NetEvent, PersonalMediaTransferStatus};
+use crate::network::actor::{
+    Actor, HostIdentity, NearbyTransferCheckpoint, NetCmd, NetEvent, PersonalMediaTransferStatus,
+};
 use crate::network::actor::{
     PERSONAL_MEDIA_CHUNK_BYTES, PersonalFabricPayload, PersonalMediaTransferFrame,
     WorkspaceControlRoute,
@@ -2866,7 +2868,6 @@ impl ShellNetwork {
                 })
                 .unwrap_or_default();
             let device_cert = selected_device_cert(ws.room, &self.keypair)?;
-            let signed_invitee = recipient_user_public_key.and(invitee);
             let token = crate::network::invite::make_invite_token_with_recipient(
                 &self.keypair,
                 &ws,
@@ -2874,10 +2875,16 @@ impl ShellNetwork {
                 &hosts,
                 &pins,
                 Some(device_cert),
-                role,
-                recipient_user_public_key,
-                signed_invitee,
-                expiry_seconds_from_now,
+                crate::network::invite::InviteTerms {
+                    role,
+                    recipient: recipient_user_public_key.map(|user_public_key| {
+                        crate::network::invite::InviteRecipient {
+                            user_public_key,
+                            name: invitee,
+                        }
+                    }),
+                    expiry_seconds_from_now,
+                },
             )
             .map_err(|e| e.to_string())?;
             (token, ws.room)
@@ -3518,19 +3525,10 @@ impl ShellNetwork {
 
     /// Stream an immutable Nearby spool object from a receiver-confirmed
     /// checkpoint to one exact certified transport peer.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the transfer boundary keeps the certified target, request/transfer IDs, size, resume checkpoint, hashes and spool path explicit"
-    )]
     pub(crate) fn start_nearby_transfer(
         &self,
         target: &crate::shell::personal_continuity::DeviceId,
-        transfer_id: [u8; 16],
-        request_id: [u8; 16],
-        total_bytes: u64,
-        resume_offset: u64,
-        prefix_hash: [u8; 32],
-        content_hash: [u8; 32],
+        transfer: NearbyTransferCheckpoint,
         path: &Path,
     ) -> Result<(), String> {
         let user_public_key = self
@@ -3570,12 +3568,7 @@ impl ShellNetwork {
                 ws,
                 user_public_key,
                 target: transport_target,
-                transfer_id,
-                request_id,
-                total_bytes,
-                resume_offset,
-                prefix_hash,
-                content_hash,
+                transfer,
                 file,
             })
             .map_err(|error| error.to_string())
@@ -8892,7 +8885,7 @@ mod tests {
 
         fn accepting_a_pinned_home_host_invite_queues_exact_expectation_once() {
             use crate::network::invite::{
-                HomeHostPin, InviteRole, make_invite_token_with_recipient,
+                HomeHostPin, InviteRole, InviteTerms, make_invite_token_with_recipient,
             };
             use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
@@ -8932,10 +8925,11 @@ mod tests {
                 std::slice::from_ref(&host_addr),
                 std::slice::from_ref(&pin),
                 Some(owner_cert),
-                InviteRole::Editor,
-                None,
-                None,
-                3600,
+                InviteTerms {
+                    role: InviteRole::Editor,
+                    recipient: None,
+                    expiry_seconds_from_now: 3600,
+                },
             )
             .expect("Alice issues Bob a pinned invite");
 
@@ -9730,6 +9724,7 @@ mod tests {
                 &registry,
                 serde_json::to_vec(&serde_json::json!([
                     {
+                        "schema_version": tilo_relay_protocol::HomePeerRegistration::CURRENT_SCHEMA,
                         "device_node_id": hex::encode(device.as_bytes()),
                         "relay_service_node_id": hex::encode(service.as_bytes()),
                         "label": "Home server",
@@ -9737,6 +9732,7 @@ mod tests {
                         "relay_workspace_ids": [42],
                     },
                     {
+                        "schema_version": tilo_relay_protocol::HomePeerRegistration::CURRENT_SCHEMA,
                         "device_node_id": hex::encode(device.as_bytes()),
                         "relay_service_node_id": hex::encode(other_service.as_bytes()),
                         "label": "Other identity",
@@ -9744,6 +9740,7 @@ mod tests {
                         "relay_workspace_ids": [42],
                     },
                     {
+                        "schema_version": tilo_relay_protocol::HomePeerRegistration::CURRENT_SCHEMA,
                         "device_node_id": hex::encode(device.as_bytes()),
                         "relay_service_node_id": hex::encode(other_service.as_bytes()),
                         "label": "Other workspace",
@@ -9764,12 +9761,12 @@ mod tests {
             assert_eq!(first_boot[0].addr.id, service);
         }
 
-        fn home_peer_registry_prefers_persisted_endpoint_hints_and_keeps_legacy_fallback() {
+        fn home_peer_registry_prefers_persisted_endpoint_hints_and_falls_back_to_the_service_id() {
             let temp = tempfile::tempdir().expect("temp");
             let registry = temp.path().join("home-peers.json");
             let own_user = [0x71; 32];
             let hinted_service = iroh::SecretKey::from_bytes(&[0x72; 32]).public();
-            let legacy_service = iroh::SecretKey::from_bytes(&[0x73; 32]).public();
+            let unhinted_service = iroh::SecretKey::from_bytes(&[0x73; 32]).public();
             let device = iroh::SecretKey::from_bytes(&[0x74; 32]).public();
             let hint = iroh::EndpointAddr::new(hinted_service)
                 .with_ip_addr("127.0.0.1:47891".parse().expect("loopback address"));
@@ -9785,11 +9782,11 @@ mod tests {
                     relay_workspace_ids: vec![42],
                 },
                 tilo_relay_protocol::HomePeerRegistration {
-                    schema_version: 1,
+                    schema_version: tilo_relay_protocol::HomePeerRegistration::CURRENT_SCHEMA,
                     device_node_id: hex::encode(device.as_bytes()),
-                    relay_service_node_id: hex::encode(legacy_service.as_bytes()),
+                    relay_service_node_id: hex::encode(unhinted_service.as_bytes()),
                     relay_endpoint: None,
-                    label: "Legacy home peer".into(),
+                    label: "Unhinted home peer".into(),
                     user_public_key: hex::encode(own_user),
                     device_cert: None,
                     relay_workspace_ids: vec![42],
@@ -9809,7 +9806,7 @@ mod tests {
             assert!(
                 hosts
                     .iter()
-                    .any(|host| host.addr.id == legacy_service && host.addr.is_empty())
+                    .any(|host| host.addr.id == unhinted_service && host.addr.is_empty())
             );
         }
 
@@ -9843,6 +9840,7 @@ mod tests {
             std::fs::write(
                 &registry,
                 serde_json::to_vec(&serde_json::json!([{
+                    "schema_version": tilo_relay_protocol::HomePeerRegistration::CURRENT_SCHEMA,
                     "device_node_id": hex::encode(device.as_bytes()),
                     "relay_service_node_id": hex::encode(service.as_bytes()),
                     "label": "Home server",
@@ -9877,7 +9875,7 @@ mod tests {
 
         shell_network_spawns_with_default_keypair();
         home_peer_registry_survives_restart_and_only_admits_matching_identity_rooms();
-        home_peer_registry_prefers_persisted_endpoint_hints_and_keeps_legacy_fallback();
+        home_peer_registry_prefers_persisted_endpoint_hints_and_falls_back_to_the_service_id();
         home_peer_registry_defaults_to_the_active_identity_root();
         live_registry_refresh_connects_a_newly_approved_home_peer();
     }
@@ -9894,7 +9892,6 @@ mod tests {
         let tree = WorkspaceTree::bootstrap_demo().shared();
         let rooms: Vec<_> = {
             let mut t = tree.write();
-            t.adopt_roomless_workspaces();
             // `bootstrap_demo` leaves the owner `None`; `may_administer`
             // reads it, so an unset owner would refuse every name below
             // for the wrong reason.
@@ -9937,7 +9934,6 @@ mod tests {
             let room = tree.read().rooms()[0];
             {
                 let mut tree = tree.write();
-                tree.adopt_roomless_workspaces();
                 let local_user = crate::shell::state::local_user_id();
                 for workspace in &mut tree.desktop.workspaces {
                     workspace.set_owner(local_user.clone());

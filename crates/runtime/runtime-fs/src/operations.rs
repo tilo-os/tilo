@@ -591,13 +591,33 @@ fn perform(ctx: &mut Context<'_>, operation: &FsOperation) -> ItemOutcome {
             parent,
             name,
             conflict,
-        } => copy_publish(ctx, None, parent, name, *conflict, None, false),
+        } => copy_publish(
+            ctx,
+            PublishRequest {
+                source: None,
+                into: parent,
+                name,
+                policy: *conflict,
+                bytes: None,
+                moving: false,
+            },
+        ),
         FsOperation::CreateFile {
             parent,
             name,
             bytes,
             conflict,
-        } => copy_publish(ctx, None, parent, name, *conflict, Some(bytes), false),
+        } => copy_publish(
+            ctx,
+            PublishRequest {
+                source: None,
+                into: parent,
+                name,
+                policy: *conflict,
+                bytes: Some(bytes),
+                moving: false,
+            },
+        ),
         FsOperation::Copy {
             entries: _,
             into,
@@ -611,12 +631,14 @@ fn perform(ctx: &mut Context<'_>, operation: &FsOperation) -> ItemOutcome {
                 let name = source.name.clone();
                 copy_publish(
                     ctx,
-                    Some((entry, source)),
-                    into,
-                    &name,
-                    *conflict,
-                    None,
-                    false,
+                    PublishRequest {
+                        source: Some((entry, source)),
+                        into,
+                        name: &name,
+                        policy: *conflict,
+                        bytes: None,
+                        moving: false,
+                    },
                 )
             }
             Err(e) => Err(e),
@@ -816,13 +838,33 @@ fn move_entry(
                 if e.raw_os_error() == Some(rustix::io::Errno::XDEV.raw_os_error()) =>
             {
                 let name = source.name.clone();
-                return copy_publish(ctx, Some((entry, source)), into, &name, policy, None, true);
+                return copy_publish(
+                    ctx,
+                    PublishRequest {
+                        source: Some((entry, source)),
+                        into,
+                        name: &name,
+                        policy,
+                        bytes: None,
+                        moving: true,
+                    },
+                );
             }
             Err(FsError::Io(ref e)) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
             Err(e) => return Err(e),
         }
     }
     Err(FsError::Conflict)
+}
+/// One item to publish as `name` in `into`: a copy (or, `moving`, a move) of `source`, or
+/// without one a new file holding `bytes`, or a new directory when there are none.
+struct PublishRequest<'a> {
+    source: Option<(&'a GrantedEntry, MutationSource)>,
+    into: &'a DirectoryGrant,
+    name: &'a EntryName,
+    policy: ConflictPolicy,
+    bytes: Option<&'a Vec<u8>>,
+    moving: bool,
 }
 #[allow(
     clippy::too_many_lines,
@@ -831,38 +873,25 @@ fn move_entry(
 )]
 fn copy_publish(
     ctx: &mut Context<'_>,
-    source: Option<(&GrantedEntry, MutationSource)>,
-    into: &DirectoryGrant,
-    name: &EntryName,
-    policy: ConflictPolicy,
-    bytes: Option<&Vec<u8>>,
-    moving: bool,
+    request: PublishRequest<'_>,
 ) -> Result<ItemOutcome, FsError> {
+    let PublishRequest {
+        into, name, moving, ..
+    } = request;
     let destination = ctx.session().mutation_directory(into)?;
     let right = if moving { FsRight::Move } else { FsRight::Copy };
-    let auth = source.as_ref().map(|(entry, _)| (*entry, right));
-    if let Some((_, source)) = &source {
+    let auth = request.source.as_ref().map(|(entry, _)| (*entry, right));
+    if let Some((_, source)) = &request.source {
         ctx.effect(auth, Some(into), || reject_ancestry(source, &destination))?;
     }
     let stage_name =
         EntryName::new(format!(".tilo-stage-{}-{}", ctx.work.id.native(), ctx.item).into())?;
     let mut step = ctx.work.owner.step(&ctx.work.id, ctx.item)?;
-    step.source = source.as_ref().map(|(_, s)| s.locator.clone());
+    step.source = request.source.as_ref().map(|(_, s)| s.locator.clone());
     step.stage = Some(ctx.session().mutation_locator(into, &stage_name, None)?);
     step.destination = Some(ctx.session().mutation_locator(into, name, None)?);
     ctx.checkpoint(&mut step, "Admitted")?;
-    let result = copy_publish_staged(
-        ctx,
-        source,
-        into,
-        name,
-        policy,
-        bytes,
-        moving,
-        &destination,
-        &stage_name,
-        &mut step,
-    );
+    let result = copy_publish_staged(ctx, request, &destination, &stage_name, &mut step);
     match result {
         Err(error) if ctx.stage_created && !ctx.stage_published => {
             if let Some(stage) = step.stage.as_mut() {
@@ -909,38 +938,35 @@ fn copy_publish(
     }
 }
 #[allow(
-    clippy::too_many_arguments,
     clippy::too_many_lines,
     clippy::needless_pass_by_value,
     reason = "one owner encloses every post-creation exit while the inner scope tracks publication/removal"
 )]
 fn copy_publish_staged(
     ctx: &mut Context<'_>,
-    source: Option<(&GrantedEntry, MutationSource)>,
-    into: &DirectoryGrant,
-    name: &EntryName,
-    policy: ConflictPolicy,
-    bytes: Option<&Vec<u8>>,
-    moving: bool,
+    request: PublishRequest<'_>,
     destination: &Dir,
     stage_name: &EntryName,
     step: &mut Step,
 ) -> Result<ItemOutcome, FsError> {
+    let PublishRequest {
+        source,
+        into,
+        name,
+        policy,
+        bytes,
+        moving,
+    } = request;
     let right = if moving { FsRight::Move } else { FsRight::Copy };
     let auth = source.as_ref().map(|(entry, _)| (*entry, right));
     let copied = if let Some((_, source)) = &source {
-        let mut count = 0;
-        copy_object(
-            ctx,
-            auth,
+        TreeCopy {
+            ctx: &mut *ctx,
+            source: auth,
             into,
-            &source.parent,
-            &source.name,
-            destination,
-            stage_name,
-            0,
-            &mut count,
-        )
+            count: 0,
+        }
+        .object(&source.parent, &source.name, destination, stage_name, 0)
     } else if let Some(bytes) = bytes {
         create_bytes(ctx, auth, into, destination, stage_name, bytes)
     } else {
@@ -1216,153 +1242,156 @@ fn create_bytes(
         sync_dir(parent)
     })
 }
-#[allow(
-    clippy::too_many_arguments,
-    clippy::too_many_lines,
-    reason = "one bounded recursion frame owns each file, directory or link copy"
-)]
-fn copy_object(
-    ctx: &mut Context<'_>,
-    source: Option<(&GrantedEntry, FsRight)>,
-    into: &DirectoryGrant,
-    from: &Dir,
-    name: &EntryName,
-    to: &Dir,
-    target: &EntryName,
-    depth: usize,
-    count: &mut usize,
-) -> Result<(), FsError> {
-    if depth > MAX_DEPTH || *count == MAX_TREE_ENTRIES {
-        return Err(FsError::LimitExceeded);
-    }
-    *count = count.checked_add(1).ok_or(FsError::LimitExceeded)?;
-    let metadata = ctx.effect(source, Some(into), || {
-        from.symlink_metadata(name.as_os_str()).map_err(io_error)
-    })?;
-    let identity = NativeIdentity::of(&metadata);
-    if metadata.is_symlink() {
-        ctx.effect(source, Some(into), || {
-            let contents = from
-                .read_link_contents(name.as_os_str())
-                .map_err(io_error)?;
-            check_named(from, name, identity)?;
-            rustix::fs::symlinkat(contents.as_os_str(), to, target.as_os_str())
-                .map_err(|e| io_error(e.into()))?;
-            Ok(())
+/// One bounded recursive copy of an object tree, every effect authorised as `source` within
+/// `into`; `count` is the entries copied so far.
+struct TreeCopy<'c, 'a> {
+    ctx: &'c mut Context<'a>,
+    source: Option<(&'c GrantedEntry, FsRight)>,
+    into: &'c DirectoryGrant,
+    count: usize,
+}
+impl TreeCopy<'_, '_> {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one bounded recursion frame owns each file, directory or link copy"
+    )]
+    fn object(
+        &mut self,
+        from: &Dir,
+        name: &EntryName,
+        to: &Dir,
+        target: &EntryName,
+        depth: usize,
+    ) -> Result<(), FsError> {
+        if depth > MAX_DEPTH || self.count == MAX_TREE_ENTRIES {
+            return Err(FsError::LimitExceeded);
+        }
+        self.count = self.count.checked_add(1).ok_or(FsError::LimitExceeded)?;
+        let metadata = self.ctx.effect(self.source, Some(self.into), || {
+            from.symlink_metadata(name.as_os_str()).map_err(io_error)
         })?;
-        if depth == 0 {
-            ctx.stage_created = true;
-            ctx.staged_identity = Some(NativeIdentity::of(
-                &to.symlink_metadata(target.as_os_str()).map_err(io_error)?,
-            ));
-        }
-        ctx.effect(source, Some(into), || sync_dir(to))?;
-        ctx.progress("copy")?;
-        return Ok(());
-    }
-    if !metadata.is_file() && !metadata.is_dir() {
-        return Err(FsError::Unsupported("special file copy"));
-    }
-    let input = ctx.effect(source, Some(into), || {
-        let input = open_object(from, name, metadata.is_dir())?;
-        if NativeIdentity::of(&input.metadata().map_err(io_error)?) != identity {
-            return Err(FsError::StaleEntry);
-        }
-        Ok(input)
-    })?;
-    if metadata.is_dir() {
-        let input = Dir::from_std_file(input.into_std());
-        ctx.effect(source, Some(into), || {
-            rustix::fs::mkdirat(
-                to,
-                target.as_os_str(),
-                rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR | rustix::fs::Mode::XUSR,
-            )
-            .map_err(|e| io_error(e.into()))
-        })?;
-        if depth == 0 {
-            ctx.stage_created = true;
-        }
-        let output = ctx.effect(source, Some(into), || {
-            Ok(Dir::from_std_file(
-                open_object(to, target, true)?.into_std(),
-            ))
-        })?;
-        if depth == 0 {
-            ctx.staged_identity = Some(NativeIdentity::of(
-                &output.dir_metadata().map_err(io_error)?,
-            ));
-        }
-        let mut entries = ctx.effect(source, Some(into), || input.entries().map_err(io_error))?;
-        loop {
-            let next = ctx.effect(source, Some(into), || {
-                entries.next().transpose().map_err(io_error)
-            })?;
-            let Some(next) = next else { break };
-            let child = EntryName::new(next.file_name())?;
-            copy_object(
-                ctx,
-                source,
-                into,
-                &input,
-                &child,
-                &output,
-                &child,
-                depth.saturating_add(1),
-                count,
-            )?;
-        }
-        ctx.effect(source, Some(into), || {
-            check_named(from, name, identity)?;
-            sync_dir(&output)?;
-            sync_dir(to)
-        })?;
-    } else {
-        let output = ctx.effect(source, Some(into), || create_file(to, target))?;
-        if depth == 0 {
-            ctx.stage_created = true;
-            ctx.staged_identity = Some(NativeIdentity::of(&output.metadata().map_err(io_error)?));
-        }
-        let mut buffer = vec![0; COPY_CHUNK];
-        let mut offset = 0;
-        loop {
-            #[cfg(test)]
-            if offset > 0 && ctx.work.hooks.copy_eio {
-                return Err(FsError::Io(rustix::io::Errno::IO.into()));
-            }
-            let read = ctx.effect(source, Some(into), || {
+        let identity = NativeIdentity::of(&metadata);
+        if metadata.is_symlink() {
+            self.ctx.effect(self.source, Some(self.into), || {
+                let contents = from
+                    .read_link_contents(name.as_os_str())
+                    .map_err(io_error)?;
                 check_named(from, name, identity)?;
-                rustix::io::pread(&input, &mut buffer, offset).map_err(|e| io_error(e.into()))
+                rustix::fs::symlinkat(contents.as_os_str(), to, target.as_os_str())
+                    .map_err(|e| io_error(e.into()))?;
+                Ok(())
             })?;
-            if read == 0 {
-                break;
+            if depth == 0 {
+                self.ctx.stage_created = true;
+                self.ctx.staged_identity = Some(NativeIdentity::of(
+                    &to.symlink_metadata(target.as_os_str()).map_err(io_error)?,
+                ));
             }
-            ctx.effect(source, Some(into), || {
-                write_chunk(
-                    &output,
-                    buffer.get(..read).ok_or(FsError::LimitExceeded)?,
-                    offset,
-                )
-            })?;
-            offset = offset
-                .checked_add(read as u64)
-                .ok_or(FsError::LimitExceeded)?;
-            ctx.bytes = ctx
-                .bytes
-                .checked_add(read as u64)
-                .ok_or(FsError::LimitExceeded)?;
-            ctx.progress("copy")?;
-            #[cfg(test)]
-            if offset == COPY_CHUNK as u64 || offset == metadata.len() {
-                ctx.barrier("after-chunk");
-            }
+            self.ctx
+                .effect(self.source, Some(self.into), || sync_dir(to))?;
+            self.ctx.progress("copy")?;
+            return Ok(());
         }
-        ctx.effect(source, Some(into), || {
-            output.sync_all().map_err(io_error)?;
-            sync_dir(to)
+        if !metadata.is_file() && !metadata.is_dir() {
+            return Err(FsError::Unsupported("special file copy"));
+        }
+        let input = self.ctx.effect(self.source, Some(self.into), || {
+            let input = open_object(from, name, metadata.is_dir())?;
+            if NativeIdentity::of(&input.metadata().map_err(io_error)?) != identity {
+                return Err(FsError::StaleEntry);
+            }
+            Ok(input)
         })?;
+        if metadata.is_dir() {
+            let input = Dir::from_std_file(input.into_std());
+            self.ctx.effect(self.source, Some(self.into), || {
+                rustix::fs::mkdirat(
+                    to,
+                    target.as_os_str(),
+                    rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR | rustix::fs::Mode::XUSR,
+                )
+                .map_err(|e| io_error(e.into()))
+            })?;
+            if depth == 0 {
+                self.ctx.stage_created = true;
+            }
+            let output = self.ctx.effect(self.source, Some(self.into), || {
+                Ok(Dir::from_std_file(
+                    open_object(to, target, true)?.into_std(),
+                ))
+            })?;
+            if depth == 0 {
+                self.ctx.staged_identity = Some(NativeIdentity::of(
+                    &output.dir_metadata().map_err(io_error)?,
+                ));
+            }
+            let mut entries = self.ctx.effect(self.source, Some(self.into), || {
+                input.entries().map_err(io_error)
+            })?;
+            loop {
+                let next = self.ctx.effect(self.source, Some(self.into), || {
+                    entries.next().transpose().map_err(io_error)
+                })?;
+                let Some(next) = next else { break };
+                let child = EntryName::new(next.file_name())?;
+                self.object(&input, &child, &output, &child, depth.saturating_add(1))?;
+            }
+            self.ctx.effect(self.source, Some(self.into), || {
+                check_named(from, name, identity)?;
+                sync_dir(&output)?;
+                sync_dir(to)
+            })?;
+        } else {
+            let output = self
+                .ctx
+                .effect(self.source, Some(self.into), || create_file(to, target))?;
+            if depth == 0 {
+                self.ctx.stage_created = true;
+                self.ctx.staged_identity =
+                    Some(NativeIdentity::of(&output.metadata().map_err(io_error)?));
+            }
+            let mut buffer = vec![0; COPY_CHUNK];
+            let mut offset = 0;
+            loop {
+                #[cfg(test)]
+                if offset > 0 && self.ctx.work.hooks.copy_eio {
+                    return Err(FsError::Io(rustix::io::Errno::IO.into()));
+                }
+                let read = self.ctx.effect(self.source, Some(self.into), || {
+                    check_named(from, name, identity)?;
+                    rustix::io::pread(&input, &mut buffer, offset).map_err(|e| io_error(e.into()))
+                })?;
+                if read == 0 {
+                    break;
+                }
+                self.ctx.effect(self.source, Some(self.into), || {
+                    write_chunk(
+                        &output,
+                        buffer.get(..read).ok_or(FsError::LimitExceeded)?,
+                        offset,
+                    )
+                })?;
+                offset = offset
+                    .checked_add(read as u64)
+                    .ok_or(FsError::LimitExceeded)?;
+                self.ctx.bytes = self
+                    .ctx
+                    .bytes
+                    .checked_add(read as u64)
+                    .ok_or(FsError::LimitExceeded)?;
+                self.ctx.progress("copy")?;
+                #[cfg(test)]
+                if offset == COPY_CHUNK as u64 || offset == metadata.len() {
+                    self.ctx.barrier("after-chunk");
+                }
+            }
+            self.ctx.effect(self.source, Some(self.into), || {
+                output.sync_all().map_err(io_error)?;
+                sync_dir(to)
+            })?;
+        }
+        Ok(())
     }
-    Ok(())
 }
 fn remove_object(parent: &Dir, name: &EntryName) -> Result<(), FsError> {
     let metadata = parent
@@ -1381,10 +1410,6 @@ struct VerifiedRemoval {
     content: Option<Fingerprint>,
     children: Vec<(EntryName, Self)>,
 }
-#[allow(
-    clippy::too_many_arguments,
-    reason = "Source removal keeps pinned directories, grants, identity and transaction evidence together at the mutation boundary."
-)]
 fn remove_source_object(
     ctx: &Context<'_>,
     entry: &GrantedEntry,
@@ -1531,20 +1556,15 @@ fn fingerprint_with_tree(
     parent: &Dir,
     name: &EntryName,
 ) -> Result<(Fingerprint, VerifiedRemoval), FsError> {
-    let mut hasher = blake3::Hasher::new();
-    let mut length = 0;
-    let mut count = 0;
-    let verified = hash_object(
+    let mut walk = TreeFingerprint {
         ctx,
         source,
         into,
-        parent,
-        name,
-        &mut hasher,
-        &mut length,
-        0,
-        &mut count,
-    )?;
+        hash: blake3::Hasher::new(),
+        length: 0,
+        count: 0,
+    };
+    let verified = walk.object(parent, name, 0)?;
     let identity = NativeIdentity::of(
         &parent
             .symlink_metadata(name.as_os_str())
@@ -1556,163 +1576,171 @@ fn fingerprint_with_tree(
     Ok((
         Fingerprint {
             identity,
-            length,
-            digest: *hasher.finalize().as_bytes(),
+            length: walk.length,
+            digest: *walk.hash.finalize().as_bytes(),
         },
         verified,
     ))
 }
-#[allow(
-    clippy::too_many_arguments,
-    clippy::too_many_lines,
-    reason = "one bounded traversal produces both the content fingerprint and its exact removal set"
-)]
-fn hash_object(
-    ctx: &Context<'_>,
-    source: Option<(&GrantedEntry, FsRight)>,
-    into: &DirectoryGrant,
-    parent: &Dir,
-    name: &EntryName,
-    hash: &mut blake3::Hasher,
-    length: &mut u64,
-    depth: usize,
-    count: &mut usize,
-) -> Result<VerifiedRemoval, FsError> {
-    if depth > MAX_DEPTH || *count == MAX_TREE_ENTRIES {
-        return Err(FsError::LimitExceeded);
-    }
-    *count = count.checked_add(1).ok_or(FsError::LimitExceeded)?;
-    let metadata = ctx.effect(source, Some(into), || {
-        parent.symlink_metadata(name.as_os_str()).map_err(io_error)
-    })?;
-    let mut content = blake3::Hasher::new();
-    let initial_length = *length;
-    let mut children = Vec::new();
-    if metadata.is_symlink() {
-        let target = ctx.effect(source, Some(into), || {
-            parent
-                .read_link_contents(name.as_os_str())
-                .map_err(io_error)
+/// One bounded fingerprint walk over an object tree, every effect authorised as `source`
+/// within `into`: the whole-tree `hash`, the content `length` it covers, and the entries
+/// visited so far.
+struct TreeFingerprint<'c, 'a> {
+    ctx: &'c Context<'a>,
+    source: Option<(&'c GrantedEntry, FsRight)>,
+    into: &'c DirectoryGrant,
+    hash: blake3::Hasher,
+    length: u64,
+    count: usize,
+}
+impl TreeFingerprint<'_, '_> {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one bounded traversal produces both the content fingerprint and its exact removal set"
+    )]
+    fn object(
+        &mut self,
+        parent: &Dir,
+        name: &EntryName,
+        depth: usize,
+    ) -> Result<VerifiedRemoval, FsError> {
+        if depth > MAX_DEPTH || self.count == MAX_TREE_ENTRIES {
+            return Err(FsError::LimitExceeded);
+        }
+        self.count = self.count.checked_add(1).ok_or(FsError::LimitExceeded)?;
+        let metadata = self.ctx.effect(self.source, Some(self.into), || {
+            parent.symlink_metadata(name.as_os_str()).map_err(io_error)
         })?;
-        hash.update(b"link");
-        content.update(b"link");
-        hash.update(&(target.as_os_str().as_bytes().len() as u64).to_le_bytes());
-        content.update(&(target.as_os_str().as_bytes().len() as u64).to_le_bytes());
-        hash.update(target.as_os_str().as_bytes());
-        content.update(target.as_os_str().as_bytes());
-        *length = length
-            .checked_add(target.as_os_str().as_bytes().len() as u64)
-            .ok_or(FsError::LimitExceeded)?;
-    } else if metadata.is_file() {
-        hash.update(b"file");
-        content.update(b"file");
-        hash.update(&metadata.len().to_le_bytes());
-        content.update(&metadata.len().to_le_bytes());
-        let file = ctx.effect(source, Some(into), || {
-            let file = open_object(parent, name, false)?;
-            if NativeIdentity::of(&file.metadata().map_err(io_error)?)
-                != NativeIdentity::of(&metadata)
-            {
-                return Err(FsError::StaleEntry);
-            }
-            Ok(file)
-        })?;
-        let mut buffer = vec![0; COPY_CHUNK];
-        let mut offset = 0;
-        while offset < metadata.len() {
-            let len = usize::try_from(metadata.len().saturating_sub(offset).min(COPY_CHUNK as u64))
-                .map_err(|_| FsError::LimitExceeded)?;
-            let n = ctx.effect(source, Some(into), || {
-                rustix::io::pread(
-                    &file,
-                    buffer.get_mut(..len).ok_or(FsError::LimitExceeded)?,
-                    offset,
-                )
-                .map_err(|e| io_error(e.into()))
+        let mut content = blake3::Hasher::new();
+        let initial_length = self.length;
+        let mut children = Vec::new();
+        if metadata.is_symlink() {
+            let target = self.ctx.effect(self.source, Some(self.into), || {
+                parent
+                    .read_link_contents(name.as_os_str())
+                    .map_err(io_error)
             })?;
-            if n == 0 {
-                return Err(FsError::StaleEntry);
-            }
-            hash.update(buffer.get(..n).ok_or(FsError::LimitExceeded)?);
-            content.update(buffer.get(..n).ok_or(FsError::LimitExceeded)?);
-            offset = offset.checked_add(n as u64).ok_or(FsError::LimitExceeded)?;
-            *length = length.checked_add(n as u64).ok_or(FsError::LimitExceeded)?;
-        }
-        ctx.effect(source, Some(into), || {
-            let observed = file.metadata().map_err(io_error)?;
-            if observed.len() != metadata.len()
-                || observed.mtime() != metadata.mtime()
-                || observed.mtime_nsec() != metadata.mtime_nsec()
-            {
-                return Err(FsError::StaleEntry);
-            }
-            Ok(())
-        })?;
-    } else if metadata.is_dir() {
-        hash.update(b"dir");
-        let dir = ctx.effect(source, Some(into), || {
-            let dir = Dir::from_std_file(open_object(parent, name, true)?.into_std());
-            if NativeIdentity::of(&dir.dir_metadata().map_err(io_error)?)
-                != NativeIdentity::of(&metadata)
-            {
-                return Err(FsError::StaleEntry);
-            }
-            Ok(dir)
-        })?;
-        let mut entries = ctx.effect(source, Some(into), || dir.entries().map_err(io_error))?;
-        let mut names = Vec::new();
-        loop {
-            let next = ctx.effect(source, Some(into), || {
-                entries.next().transpose().map_err(io_error)
+            self.hash.update(b"link");
+            content.update(b"link");
+            self.hash
+                .update(&(target.as_os_str().as_bytes().len() as u64).to_le_bytes());
+            content.update(&(target.as_os_str().as_bytes().len() as u64).to_le_bytes());
+            self.hash.update(target.as_os_str().as_bytes());
+            content.update(target.as_os_str().as_bytes());
+            self.length = self
+                .length
+                .checked_add(target.as_os_str().as_bytes().len() as u64)
+                .ok_or(FsError::LimitExceeded)?;
+        } else if metadata.is_file() {
+            self.hash.update(b"file");
+            content.update(b"file");
+            self.hash.update(&metadata.len().to_le_bytes());
+            content.update(&metadata.len().to_le_bytes());
+            let file = self.ctx.effect(self.source, Some(self.into), || {
+                let file = open_object(parent, name, false)?;
+                if NativeIdentity::of(&file.metadata().map_err(io_error)?)
+                    != NativeIdentity::of(&metadata)
+                {
+                    return Err(FsError::StaleEntry);
+                }
+                Ok(file)
             })?;
-            let Some(next) = next else { break };
-            if names.len() >= MAX_TREE_ENTRIES.saturating_sub(*count) {
-                return Err(FsError::LimitExceeded);
+            let mut buffer = vec![0; COPY_CHUNK];
+            let mut offset = 0;
+            while offset < metadata.len() {
+                let len =
+                    usize::try_from(metadata.len().saturating_sub(offset).min(COPY_CHUNK as u64))
+                        .map_err(|_| FsError::LimitExceeded)?;
+                let n = self.ctx.effect(self.source, Some(self.into), || {
+                    rustix::io::pread(
+                        &file,
+                        buffer.get_mut(..len).ok_or(FsError::LimitExceeded)?,
+                        offset,
+                    )
+                    .map_err(|e| io_error(e.into()))
+                })?;
+                if n == 0 {
+                    return Err(FsError::StaleEntry);
+                }
+                self.hash
+                    .update(buffer.get(..n).ok_or(FsError::LimitExceeded)?);
+                content.update(buffer.get(..n).ok_or(FsError::LimitExceeded)?);
+                offset = offset.checked_add(n as u64).ok_or(FsError::LimitExceeded)?;
+                self.length = self
+                    .length
+                    .checked_add(n as u64)
+                    .ok_or(FsError::LimitExceeded)?;
             }
-            names.push(next.file_name());
-        }
-        names.sort();
-        for native in names {
-            hash.update(&(native.as_bytes().len() as u64).to_le_bytes());
-            hash.update(native.as_bytes());
-            let child = EntryName::new(native)?;
-            let verified = hash_object(
-                ctx,
-                source,
-                into,
-                &dir,
-                &child,
-                hash,
-                length,
-                depth.saturating_add(1),
-                count,
-            )?;
-            children.push((child, verified));
-        }
-        hash.update(b"end");
-    } else {
-        return Err(FsError::Unsupported("special staged object"));
-    }
-    ctx.effect(source, Some(into), || {
-        check_named(parent, name, NativeIdentity::of(&metadata))
-    })?;
-    Ok(VerifiedRemoval {
-        identity: NativeIdentity::of(&metadata),
-        length: metadata.len(),
-        modified: (metadata.mtime(), metadata.mtime_nsec()),
-        content: if metadata.is_dir() {
-            None
+            self.ctx.effect(self.source, Some(self.into), || {
+                let observed = file.metadata().map_err(io_error)?;
+                if observed.len() != metadata.len()
+                    || observed.mtime() != metadata.mtime()
+                    || observed.mtime_nsec() != metadata.mtime_nsec()
+                {
+                    return Err(FsError::StaleEntry);
+                }
+                Ok(())
+            })?;
+        } else if metadata.is_dir() {
+            self.hash.update(b"dir");
+            let dir = self.ctx.effect(self.source, Some(self.into), || {
+                let dir = Dir::from_std_file(open_object(parent, name, true)?.into_std());
+                if NativeIdentity::of(&dir.dir_metadata().map_err(io_error)?)
+                    != NativeIdentity::of(&metadata)
+                {
+                    return Err(FsError::StaleEntry);
+                }
+                Ok(dir)
+            })?;
+            let mut entries = self.ctx.effect(self.source, Some(self.into), || {
+                dir.entries().map_err(io_error)
+            })?;
+            let mut names = Vec::new();
+            loop {
+                let next = self.ctx.effect(self.source, Some(self.into), || {
+                    entries.next().transpose().map_err(io_error)
+                })?;
+                let Some(next) = next else { break };
+                if names.len() >= MAX_TREE_ENTRIES.saturating_sub(self.count) {
+                    return Err(FsError::LimitExceeded);
+                }
+                names.push(next.file_name());
+            }
+            names.sort();
+            for native in names {
+                self.hash
+                    .update(&(native.as_bytes().len() as u64).to_le_bytes());
+                self.hash.update(native.as_bytes());
+                let child = EntryName::new(native)?;
+                let verified = self.object(&dir, &child, depth.saturating_add(1))?;
+                children.push((child, verified));
+            }
+            self.hash.update(b"end");
         } else {
-            Some(Fingerprint {
-                identity: NativeIdentity::of(&metadata),
-                length: length
-                    .checked_sub(initial_length)
-                    .ok_or(FsError::LimitExceeded)?,
-                digest: *content.finalize().as_bytes(),
-            })
-        },
-        children,
-    })
+            return Err(FsError::Unsupported("special staged object"));
+        }
+        self.ctx.effect(self.source, Some(self.into), || {
+            check_named(parent, name, NativeIdentity::of(&metadata))
+        })?;
+        Ok(VerifiedRemoval {
+            identity: NativeIdentity::of(&metadata),
+            length: metadata.len(),
+            modified: (metadata.mtime(), metadata.mtime_nsec()),
+            content: if metadata.is_dir() {
+                None
+            } else {
+                Some(Fingerprint {
+                    identity: NativeIdentity::of(&metadata),
+                    length: self
+                        .length
+                        .checked_sub(initial_length)
+                        .ok_or(FsError::LimitExceeded)?,
+                    digest: *content.finalize().as_bytes(),
+                })
+            },
+            children,
+        })
+    }
 }
 fn restore(
     ctx: &Context<'_>,

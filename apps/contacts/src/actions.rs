@@ -710,9 +710,6 @@ pub enum ContactsAction {
         source_id: String,
         patch: Box<ContactPatch>,
     },
-    /// Give legacy list rows stable ids. Idempotent: rows that already have ids
-    /// are left alone.
-    MigrateLegacyRows,
 }
 
 /// Durable, browseable history metadata for an address-book mutation.
@@ -744,9 +741,6 @@ pub fn history_context(action: &ContactsAction) -> tilo_actions::ActionContext {
             survivor_id.as_str(),
             "Contact".into(),
         ),
-        ContactsAction::MigrateLegacyRows => {
-            ("Repair address book rows", "book", "Contacts".into())
-        }
     };
     context.action_label = label.to_string();
     context.resource = Some(tilo_actions::ActionResource {
@@ -795,7 +789,6 @@ impl Action for ContactsAction {
                 source_id,
                 patch,
             } => apply_merge(doc, survivor_id, source_id, patch)?,
-            ContactsAction::MigrateLegacyRows => ContactsDoc::migrate_legacy_rows(doc),
         }
         Ok(())
     }

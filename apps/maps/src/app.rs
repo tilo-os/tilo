@@ -24,9 +24,10 @@ use winit::keyboard::{Key, NamedKey};
 
 use ui::chrome::{SelectionState, selection_tier};
 use ui::format::bytes as format_bytes;
+use ui::paint::PaintCtx;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use ui::tilo_actions::{
     ActionContract, ActionFailure, ActionOutput, ActionSpec, Availability, DiscoveryScope,
@@ -40,7 +41,7 @@ use ui::widget::{Button, ButtonFace, ContextMenu, MenuItem};
 use ui::widget::{FloatingSurfaceProvider, ResourceOperationStart, Widget};
 
 use crate::actions::{MAPS_ACTION_TYPE, MapsAction};
-use crate::canvas::{self, MapPalette};
+use crate::canvas::{self, MapPalette, MapView};
 use crate::doc::MapsDoc;
 use crate::draw;
 use crate::endpoint_editor::{Endpoint, EndpointEditor, EndpointEffect, EndpointFrame};
@@ -510,16 +511,12 @@ impl MapsApp {
         self.navigation_end_rect = end;
         let handle = Rect::new(rect.x0, rect.y0, end.x0 - 4.0, rect.y0 + 34.0);
         self.navigation_drag_handle = handle;
-        draw::text_w(
-            scene,
-            tr,
-            visual,
+        PaintCtx::new(scene, visual, tr, theme).text(
             "Navigation",
-            rect.x0 + pad,
-            rect.y0 + 10.0,
-            text_sm(),
+            &TextStyle::new(text_sm()).with_weight(TextWeight::Medium),
             theme.text_dim,
-            TextWeight::Medium,
+            Point::new(rect.x0 + pad, rect.y0 + 10.0),
+            None,
         );
         ui::surface::floating_drag_grip(scene, visual, rect, theme.text_dim);
 
@@ -564,16 +561,15 @@ impl MapsApp {
             1.5,
             end_text,
         );
-        draw::text_w(
-            scene,
-            tr,
-            visual,
+        PaintCtx::new(scene, visual, tr, theme).text(
             "End",
-            end.x0 + 19.0,
-            text_vmid(end.y0, end.height(), NAV_END_TEXT, end_scale),
-            NAV_END_TEXT,
+            &TextStyle::new(NAV_END_TEXT).with_weight(TextWeight::Medium),
             end_text,
-            TextWeight::Medium,
+            Point::new(
+                end.x0 + 19.0,
+                text_vmid(end.y0, end.height(), NAV_END_TEXT, end_scale),
+            ),
+            None,
         );
 
         let instruction = route.steps.first();
@@ -597,13 +593,9 @@ impl MapsApp {
             draw::alpha(theme.accent_primary, 0.18),
         );
         draw::text_center(
-            scene,
-            tr,
-            visual,
+            &mut PaintCtx::new(scene, visual, tr, theme),
             glyph,
-            badge.x0,
-            badge.x1,
-            badge.y0 + 8.0,
+            Point::new(badge.center().x, badge.y0 + 8.0),
             17.0,
             theme.accent_primary,
         );
@@ -619,12 +611,9 @@ impl MapsApp {
         let rule_y = (dist_y + dist_h + 12.0).max(rect.y0 + 98.0 + title_growth);
         let shift = rule_y - (rect.y0 + 98.0);
         draw::text_clip(
-            scene,
-            tr,
-            visual,
+            &mut PaintCtx::new(scene, visual, tr, theme),
             text,
-            rect.x0 + 64.0,
-            instr_y,
+            Point::new(rect.x0 + 64.0, instr_y),
             15.0,
             theme.text_primary,
             rect.width() - 82.0,
@@ -651,16 +640,12 @@ impl MapsApp {
             rule_y,
             c.surfaces.raised,
         );
-        draw::text_w(
-            scene,
-            tr,
-            visual,
+        PaintCtx::new(scene, visual, tr, theme).text(
             &geo::fmt_duration(route.duration_s),
-            rect.x0 + pad,
-            rect.y0 + 114.0 + shift,
-            16.0,
+            &TextStyle::new(16.0).with_weight(TextWeight::Bold),
             theme.accent_primary,
-            TextWeight::Bold,
+            Point::new(rect.x0 + pad, rect.y0 + 114.0 + shift),
+            None,
         );
         draw::text_right(
             scene,
@@ -2648,7 +2633,13 @@ impl MapsApp {
             clip
         };
 
-        let painted_tiles = self.draw_map_layers(scene, t, tr, theme, &pal, proj, clip, map_clip);
+        let view = MapView {
+            proj: &proj,
+            pal: &pal,
+            clip,
+        };
+        let painted_tiles =
+            self.draw_map_layers(&mut PaintCtx::new(scene, t, tr, theme), view, map_clip);
         self.draw_panel_and_scale(scene, t, tr, theme, overlay, clip, painted_tiles);
         self.draw_chrome(scene, t, tr, theme);
     }
@@ -2656,29 +2647,21 @@ impl MapsApp {
     /// Map layers only: real tiles or their vector/grid fallback, traffic,
     /// route, transit, POIs and markers. Returns whether real imagery painted,
     /// which the caller needs to decide whether the offline/loading hint is due.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the frame's shared draw context (scene/transform/theme/palette/projection/clip \
-                  rects), computed once in draw_app and threaded through unchanged"
-    )]
     fn draw_map_layers(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        pal: &MapPalette,
-        proj: Projection,
-        clip: Rect,
+        ctx: &mut PaintCtx<'_>,
+        view: MapView<'_>,
         map_clip: Rect,
     ) -> bool {
+        let MapView { proj, pal, clip } = view;
+        let theme = ctx.theme;
         // Map layers. Real OSM raster tiles paint first (non-blocking); the
         // stylised vector basemap is the fallback shown only until imagery is
         // available (headless `--shots`, or the very first offline frame).
         let view_center = self.view_center();
         let painted_tiles = canvas::draw_tiles(
-            scene,
-            t,
+            ctx.scene,
+            ctx.transform,
             clip,
             &mut self.tiles,
             &self.model,
@@ -2690,9 +2673,16 @@ impl MapsApp {
                 // Live first-run / offline gap: no imagery and no vector
                 // cartography yet. Draw a reference grid so the map reads as a
                 // map rather than a black void, with a loading affordance.
-                canvas::draw_grid_substrate(scene, t, clip, &self.model, view_center, pal);
+                canvas::draw_grid_substrate(
+                    ctx.scene,
+                    ctx.transform,
+                    clip,
+                    &self.model,
+                    view_center,
+                    pal,
+                );
             } else {
-                canvas::draw_basemap(scene, t, clip, &proj, &self.basemap, pal);
+                canvas::draw_basemap(ctx.scene, ctx.transform, clip, proj, &self.basemap, pal);
             }
         }
         // Traffic overlay: coloured congestion over the roads, under the active
@@ -2700,10 +2690,10 @@ impl MapsApp {
         // nothing here — the honest "No traffic data" pill is drawn with the
         // chrome below.
         if self.map_controls.traffic_enabled() {
-            canvas::draw_traffic(scene, t, &proj, &self.traffic, pal);
+            canvas::draw_traffic(ctx.scene, ctx.transform, proj, &self.traffic, pal);
         }
         if let Some(route) = &self.model.route {
-            canvas::draw_route(scene, t, &proj, route, pal);
+            canvas::draw_route(ctx.scene, ctx.transform, proj, route, pal);
         }
         // Public-transport itinerary: the selected journey's legs draw on the
         // map (mode-coloured lines + transfer pucks) when Transit is the active
@@ -2711,35 +2701,37 @@ impl MapsApp {
         if self.model.mode.is_transit()
             && let Some(j) = self.model.transit.get(self.model.transit_choice)
         {
-            canvas::draw_transit(scene, t, &proj, j, theme, pal, clip);
+            canvas::draw_transit(ctx.scene, ctx.transform, proj, j, theme, pal, clip);
         }
         // Live POI marker layer (Overpass) — our own themed category markers
         // over the basemap, decluttered and under the user's saved/selected
         // pins.
         let visible_pois = self.visible_poi_indices();
         canvas::draw_pois(
-            scene,
-            t,
-            tr,
-            &proj,
+            ctx,
+            MapView {
+                clip: map_clip,
+                ..view
+            },
             &self.pois,
             &visible_pois,
             self.selected_poi.as_deref(),
+        );
+        canvas::draw_markers(
+            ctx.scene,
+            ctx.transform,
+            ctx.text,
+            proj,
+            &self.model,
             theme,
             pal,
             map_clip,
         );
-        canvas::draw_markers(scene, t, tr, &proj, &self.model, theme, pal, map_clip);
         painted_tiles
     }
 
     /// Side panel (docked or overlay drawer + scrim), the scale bar, and the
     /// offline/loading hint that only shows while no real imagery has painted.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the frame's shared draw context plus the two map-layer outcomes \
-                  (`overlay`, `painted_tiles`) this section's branches depend on"
-    )]
     fn draw_panel_and_scale(
         &mut self,
         scene: &mut Scene,
@@ -3075,28 +3067,20 @@ impl MapsApp {
             card.y0 + s2 + close_edge,
         );
         draw::text_center(
-            scene,
-            tr,
-            t,
+            &mut PaintCtx::new(scene, t, tr, theme),
             "✕",
-            close.x0,
-            close.x1,
-            self.vmid(close.y0, close_edge, 14.0),
+            Point::new(close.center().x, self.vmid(close.y0, close_edge, 14.0)),
             14.0,
             theme.text_dim,
         );
         self.click_targets.push((close, Hit::ClosePoi));
         let name = tr.elide_to_width(&poi.name, 18.0, ui::num::f32_of_f64(close.x0 - s2 - x));
-        draw::text_w(
-            scene,
-            tr,
-            t,
+        PaintCtx::new(scene, t, tr, theme).text(
             &name,
-            x,
-            y,
-            18.0,
+            &TextStyle::new(18.0).with_weight(TextWeight::Bold),
             theme.text_primary,
-            TextWeight::Bold,
+            Point::new(x, y),
+            None,
         );
         y += title_h + s1;
         draw::text(
@@ -3112,12 +3096,9 @@ impl MapsApp {
         if let Some(k) = &poi.kind {
             let cw = draw::measure_w(tr, poi.category.label(), 12.0);
             draw::text_clip(
-                scene,
-                tr,
-                t,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 &format!("· {k}"),
-                x + cw + 10.0,
-                y,
+                Point::new(x + cw + 10.0, y),
                 12.0,
                 theme.text_dim,
                 right - x - cw - 10.0,
@@ -3132,7 +3113,14 @@ impl MapsApp {
             } else {
                 theme.text_primary
             };
-            draw::text_clip(scene, tr, t, text, x + 20.0, y, 12.0, col, right - x - 20.0);
+            draw::text_clip(
+                &mut PaintCtx::new(scene, t, tr, theme),
+                text,
+                Point::new(x + 20.0, y),
+                12.0,
+                col,
+                right - x - 20.0,
+            );
             y += row_line;
         }
         y += s3;
@@ -3238,26 +3226,19 @@ impl MapsApp {
 
         let x = card.x0 + pad;
         let mut y = card.y0 + pad;
-        draw::text_w(
-            scene,
-            tr,
-            t,
+        PaintCtx::new(scene, t, tr, theme).text(
             "Traffic",
-            x,
-            y,
-            title_fs,
+            &TextStyle::new(title_fs).with_weight(TextWeight::Semibold),
             c.text_primary,
-            TextWeight::Semibold,
+            Point::new(x, y),
+            None,
         );
         if let Some(src) = &self.traffic.source {
             let tw = draw::measure_w(tr, "Traffic", title_fs) + 8.0;
             draw::text_clip(
-                scene,
-                tr,
-                t,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 &format!("· {src}"),
-                x + tw,
-                y,
+                Point::new(x + tw, y),
                 10.0,
                 c.text_dim,
                 card.x1 - pad - (x + tw),
@@ -3419,16 +3400,12 @@ impl MapsApp {
             draw::card(scene, t, bar, 14.0, c.surfaces.raised);
             self.click_targets.push((bar, Hit::Consume));
             let by = self.vmid(bar.y0 + inset, self.panel_header_h(), 15.0);
-            draw::text_w(
-                scene,
-                tr,
-                t,
+            PaintCtx::new(scene, t, tr, theme).text(
                 "Places",
-                bar.x0 + inset + s1,
-                by,
-                15.0,
+                &TextStyle::new(15.0).with_weight(TextWeight::Semibold),
                 theme.text_primary,
-                TextWeight::Semibold,
+                Point::new(bar.x0 + inset + s1, by),
+                None,
             );
             let btn = Rect::new(
                 bar.x1 - inset - self.panel_header_h(),
@@ -3487,16 +3464,12 @@ impl MapsApp {
             hx = back.x1 + f64::from(self.spacing.s2);
         }
         let title = if directions { "Directions" } else { "Places" };
-        draw::text_w(
-            scene,
-            tr,
-            t,
+        PaintCtx::new(scene, t, tr, theme).text(
             title,
-            hx,
-            self.vmid(header.y0, header.height(), 16.0),
-            16.0,
+            &TextStyle::new(16.0).with_weight(TextWeight::Bold),
             theme.text_primary,
-            TextWeight::Bold,
+            Point::new(hx, self.vmid(header.y0, header.height(), 16.0)),
+            None,
         );
         if docked {
             let btn = Rect::new(
@@ -3576,16 +3549,12 @@ impl MapsApp {
             && self.pois.is_empty();
         if empty {
             let (title_h, body_h) = (line(16.0), line(13.0));
-            draw::text_w(
-                scene,
-                tr,
-                t,
+            PaintCtx::new(scene, t, tr, theme).text(
                 "Find your way",
-                x,
-                y,
-                16.0,
+                &TextStyle::new(16.0).with_weight(TextWeight::Bold),
                 theme.text_primary,
-                TextWeight::Bold,
+                Point::new(x, y),
+                None,
             );
             let body_y = y + title_h + s2;
             draw::text(
@@ -3635,16 +3604,12 @@ impl MapsApp {
             );
             let name =
                 tr.elide_to_width(&sel.name, 18.0, ui::num::f32_of_f64(right - x - 2.0 * s4));
-            draw::text_w(
-                scene,
-                tr,
-                t,
+            PaintCtx::new(scene, t, tr, theme).text(
                 &name,
-                x + s4,
-                name_y,
-                18.0,
+                &TextStyle::new(18.0).with_weight(TextWeight::Bold),
                 theme.text_primary,
-                TextWeight::Bold,
+                Point::new(x + s4, name_y),
+                None,
             );
             draw::text(
                 scene,
@@ -3657,12 +3622,9 @@ impl MapsApp {
                 theme.accent_primary,
             );
             draw::text_clip(
-                scene,
-                tr,
-                t,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 &sel.address,
-                x + s4,
-                addr_y,
+                Point::new(x + s4, addr_y),
                 12.0,
                 theme.text_dim,
                 right - x - 2.0 * s4,
@@ -3698,13 +3660,9 @@ impl MapsApp {
                         draw::stroke_rrect(scene, t, br, 8.0, 1.0, border);
                     }
                     draw::text_center(
-                        scene,
-                        tr,
-                        t,
+                        &mut PaintCtx::new(scene, t, tr, theme),
                         label,
-                        br.x0,
-                        br.x1,
-                        self.vmid(br.y0, bh, 12.0),
+                        Point::new(br.center().x, self.vmid(br.y0, bh, 12.0)),
                         12.0,
                         theme.text_primary,
                     );
@@ -3717,16 +3675,12 @@ impl MapsApp {
         // Results / recents / saved sections.
         let results = self.model.results.clone();
         if !results.is_empty() {
-            draw::text_w(
-                scene,
-                tr,
-                t,
+            PaintCtx::new(scene, t, tr, theme).text(
                 "RESULTS",
-                x,
-                y,
-                11.0,
+                &TextStyle::new(11.0).with_weight(TextWeight::Semibold),
                 theme.text_dim,
-                TextWeight::Semibold,
+                Point::new(x, y),
+                None,
             );
             y += label_advance;
             for p in &results {
@@ -3740,21 +3694,23 @@ impl MapsApp {
         // opens the POI's info card, and the selected marker highlights its row.
         let nearby = self.nearby_pois();
         if !nearby.is_empty() {
-            draw::text_w(
-                scene,
-                tr,
-                t,
+            PaintCtx::new(scene, t, tr, theme).text(
                 "NEARBY",
-                x,
-                y,
-                11.0,
+                &TextStyle::new(11.0).with_weight(TextWeight::Semibold),
                 theme.text_dim,
-                TextWeight::Semibold,
+                Point::new(x, y),
+                None,
             );
             y += label_advance;
             let anchor = self.search_anchor();
             for poi in &nearby {
-                y = self.draw_poi_row(scene, t, tr, theme, content, y, poi, anchor);
+                y = self.draw_poi_row(
+                    &mut PaintCtx::new(scene, t, tr, theme),
+                    content,
+                    y,
+                    poi,
+                    anchor,
+                );
             }
             y += s2;
         }
@@ -3766,16 +3722,12 @@ impl MapsApp {
             .cloned()
             .collect::<Vec<_>>();
         if !saved.is_empty() {
-            draw::text_w(
-                scene,
-                tr,
-                t,
+            PaintCtx::new(scene, t, tr, theme).text(
                 "SAVED",
-                x,
-                y,
-                11.0,
+                &TextStyle::new(11.0).with_weight(TextWeight::Semibold),
                 theme.text_dim,
-                TextWeight::Semibold,
+                Point::new(x, y),
+                None,
             );
             y += label_advance;
             for p in &saved {
@@ -3788,16 +3740,12 @@ impl MapsApp {
             let clear_label = "Clear";
             let clear_w = draw::measure_w(tr, clear_label, 11.0) + 12.0;
             let clear = Rect::new(right - clear_w, y - 5.0, right, y + 15.0);
-            draw::text_w(
-                scene,
-                tr,
-                t,
+            PaintCtx::new(scene, t, tr, theme).text(
                 "RECENT SEARCHES",
-                x,
-                y,
-                11.0,
+                &TextStyle::new(11.0).with_weight(TextWeight::Semibold),
                 theme.text_dim,
-                TextWeight::Semibold,
+                Point::new(x, y),
+                None,
             );
             draw::text_right(
                 scene,
@@ -3841,12 +3789,6 @@ impl MapsApp {
     }
 
     #[allow(
-        clippy::too_many_arguments,
-        reason = "shares the standard (scene, t, tr, theme) drawing-context params with every \
-                  other draw_* method in this file; bundling them into a context struct is a \
-                  file-wide refactor out of scope here"
-    )]
-    #[allow(
         clippy::many_single_char_names,
         reason = "conventional short names for the shared drawing context (scene, t: transform, \
               tr: text renderer, c: theme colours, r: rect) used consistently across every \
@@ -3888,24 +3830,18 @@ impl MapsApp {
         let name_y = r.y0 + (r.height() - name_h - sub_h) / 2.0;
         let tx = r.x0 + 36.0;
         draw::text_clip(
-            scene,
-            tr,
-            t,
+            &mut PaintCtx::new(scene, t, tr, theme),
             &p.name,
-            tx,
-            name_y,
+            Point::new(tx, name_y),
             13.0,
             theme.text_primary,
             r.x1 - tx - 50.0,
         );
         let sub = format!("{} · {}", p.category.label(), p.address);
         draw::text_clip(
-            scene,
-            tr,
-            t,
+            &mut PaintCtx::new(scene, t, tr, theme),
             &sub,
-            tx,
-            name_y + name_h,
+            Point::new(tx, name_y + name_h),
             11.0,
             theme.text_dim,
             r.x1 - tx - 50.0,
@@ -3930,48 +3866,47 @@ impl MapsApp {
     /// matching the map markers), the name, a "Category · detail" subtitle, and a
     /// trailing distance chip. The whole row selects the POI (centre + info card)
     /// and highlights while its marker is the open one.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "POI row painting needs the shared render inputs plus row and map geometry"
-    )]
     fn draw_poi_row(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         content: Rect,
         y: f64,
         poi: &crate::model::Poi,
         anchor: LatLon,
     ) -> f64 {
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let s2 = f64::from(self.spacing.s2);
         let r = Rect::new(content.x0, y, content.x1, y + ROW_H - s2);
         let selected = self.selected_poi.as_deref() == Some(poi.id.as_str());
         if selected {
-            draw::selected_row(scene, t, r, 8.0, theme);
+            draw::selected_row(ctx.scene, ctx.transform, r, 8.0, theme);
         }
         // The pictogram, category label and map marker already identify this
         // POI. Keeping list decoration neutral makes distance and selection
         // easier to scan across mixed categories.
         let marker = draw::mix(theme.accent_primary, c.surfaces.base, 0.78);
         let cc = Point::new(r.x0 + 18.0, r.center().y);
-        draw::fill_circle(scene, t, cc, 11.0, marker);
-        canvas::draw_category_icon(scene, t, cc, 11.0, poi.category, theme.text_primary, marker);
+        draw::fill_circle(ctx.scene, ctx.transform, cc, 11.0, marker);
+        canvas::draw_category_icon(
+            ctx.scene,
+            ctx.transform,
+            cc,
+            11.0,
+            poi.category,
+            theme.text_primary,
+            marker,
+        );
 
         let dist = geo::fmt_distance(geo::haversine_m(poi.pos, anchor));
-        let dw = draw::measure_w(tr, &dist, 11.0) + 10.0;
+        let dw = draw::measure_w(ctx.text, &dist, 11.0) + 10.0;
         let (name_h, sub_h) = (line_h(13.0, self.text_scale), line_h(11.0, self.text_scale));
         let name_y = r.y0 + (r.height() - name_h - sub_h) / 2.0;
         let tx = r.x0 + 38.0;
         draw::text_clip(
-            scene,
-            tr,
-            t,
+            ctx,
             &poi.name,
-            tx,
-            name_y,
+            Point::new(tx, name_y),
             13.0,
             theme.text_primary,
             r.x1 - tx - dw,
@@ -3984,21 +3919,18 @@ impl MapsApp {
             poi.category.label().to_string()
         };
         draw::text_clip(
-            scene,
-            tr,
-            t,
+            ctx,
             &sub,
-            tx,
-            name_y + name_h,
+            Point::new(tx, name_y + name_h),
             11.0,
             theme.text_dim,
             r.x1 - tx - dw,
         );
         // The distance chip sits on the name line's centre.
         draw::text_right(
-            scene,
-            tr,
-            t,
+            ctx.scene,
+            ctx.text,
+            ctx.transform,
             &dist,
             r.x1 - s2,
             name_y + (name_h - sub_h) / 2.0,
@@ -4151,13 +4083,9 @@ impl MapsApp {
             }
             let fg = if active { active_fg } else { theme.text_dim };
             draw::text_center(
-                scene,
-                tr,
-                t,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 m.label(),
-                seg.x0,
-                seg.x1,
-                self.vmid(seg.y0, seg.height(), 12.0),
+                Point::new(seg.center().x, self.vmid(seg.y0, seg.height(), 12.0)),
                 12.0,
                 fg,
             );
@@ -4180,16 +4108,12 @@ impl MapsApp {
         // Route summary + steps for the road modes.
         if let Some(route) = self.model.route.clone() {
             let big = geo::fmt_duration(route.duration_s);
-            draw::text_w(
-                scene,
-                tr,
-                t,
+            PaintCtx::new(scene, t, tr, theme).text(
                 &big,
-                x,
-                y,
-                26.0,
+                &TextStyle::new(26.0).with_weight(TextWeight::Bold),
                 theme.accent_primary,
-                TextWeight::Bold,
+                Point::new(x, y),
+                None,
             );
             // The distance and the Clear link sit on the duration's line box,
             // each centred from its own measured height; the row then advances
@@ -4228,41 +4152,29 @@ impl MapsApp {
             // the full pair only shows once a specific departure/arrival is set.
             let (dep_label, arr_label) = self.road_trip_clock(route.duration_s);
             if self.model.transit_time.is_now() {
-                draw::text_w(
-                    scene,
-                    tr,
-                    t,
+                PaintCtx::new(scene, t, tr, theme).text(
                     &arr_label,
-                    x,
-                    y,
-                    13.0,
+                    &TextStyle::new(13.0).with_weight(TextWeight::Medium),
                     theme.text_dim,
-                    TextWeight::Medium,
+                    Point::new(x, y),
+                    None,
                 );
             } else {
-                draw::text_w(
-                    scene,
-                    tr,
-                    t,
+                PaintCtx::new(scene, t, tr, theme).text(
                     &dep_label,
-                    x,
-                    y,
-                    13.0,
+                    &TextStyle::new(13.0).with_weight(TextWeight::Medium),
                     theme.text_primary,
-                    TextWeight::Medium,
+                    Point::new(x, y),
+                    None,
                 );
                 let dep_w = draw::measure_w(tr, &dep_label, 13.0);
                 draw::text(scene, tr, t, "→", x + dep_w + 10.0, y, 13.0, theme.text_dim);
-                draw::text_w(
-                    scene,
-                    tr,
-                    t,
+                PaintCtx::new(scene, t, tr, theme).text(
                     &arr_label,
-                    x + dep_w + 30.0,
-                    y,
-                    13.0,
+                    &TextStyle::new(13.0).with_weight(TextWeight::Medium),
                     theme.text_primary,
-                    TextWeight::Medium,
+                    Point::new(x + dep_w + 30.0, y),
+                    None,
                 );
             }
             y += authored_h(28.0, &[13.0], tr.text_scale());
@@ -4281,23 +4193,16 @@ impl MapsApp {
                 let bc = Point::new(x + 16.0, y + instr_h / 2.0 + 2.0);
                 draw::fill_circle(scene, t, bc, 13.0, draw::alpha(theme.accent_primary, 0.16));
                 draw::text_center(
-                    scene,
-                    tr,
-                    t,
+                    &mut PaintCtx::new(scene, t, tr, theme),
                     step.maneuver.glyph(),
-                    bc.x - 13.0,
-                    bc.x + 13.0,
-                    self.vmid(bc.y - 13.0, 26.0, 15.0),
+                    Point::new(bc.x, self.vmid(bc.y - 13.0, 26.0, 15.0)),
                     15.0,
                     theme.accent_primary,
                 );
                 draw::text_clip(
-                    scene,
-                    tr,
-                    t,
+                    &mut PaintCtx::new(scene, t, tr, theme),
                     &step.instruction,
-                    x + 38.0,
-                    y,
+                    Point::new(x + 38.0, y),
                     13.0,
                     theme.text_primary,
                     right - x - 38.0,
@@ -4438,13 +4343,9 @@ impl MapsApp {
                 theme.text_dim
             };
             draw::text_center(
-                scene,
-                tr,
-                t,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 label,
-                seg.x0,
-                seg.x1,
-                self.vmid(seg.y0, seg.height(), 12.0),
+                Point::new(seg.center().x, self.vmid(seg.y0, seg.height(), 12.0)),
                 12.0,
                 fg,
             );
@@ -4473,13 +4374,9 @@ impl MapsApp {
             target.format("%H:%M").to_string()
         };
         draw::text_center(
-            scene,
-            tr,
-            t,
+            &mut PaintCtx::new(scene, t, tr, theme),
             &label,
-            minus.x1,
-            plus.x0,
-            self.vmid(y, row_h, 15.0),
+            Point::new((minus.x1 + plus.x0) / 2.0, self.vmid(y, row_h, 15.0)),
             15.0,
             theme.accent_primary,
         );
@@ -4549,16 +4446,12 @@ impl MapsApp {
             f64::from(self.spacing.s2),
             f64::from(self.spacing.s3),
         );
-        draw::text_w(
-            scene,
-            tr,
-            t,
+        PaintCtx::new(scene, t, tr, theme).text(
             &format!("Departures to {to}"),
-            x,
-            y,
-            14.0,
+            &TextStyle::new(14.0).with_weight(TextWeight::Semibold),
             theme.text_primary,
-            TextWeight::Semibold,
+            Point::new(x, y),
+            None,
         );
         y += line_h(14.0, self.text_scale) + s2;
 
@@ -4598,16 +4491,12 @@ impl MapsApp {
                 draw::edged(scene, t, jr, 10.0, c.surfaces.base);
             }
             // Header: dep–arr  ·  duration  ·  transfers.
-            draw::text_w(
-                scene,
-                tr,
-                t,
+            PaintCtx::new(scene, t, tr, theme).text(
                 &format!("{} – {}", j.dep, j.arr),
-                x + 12.0,
-                y + 10.0,
-                15.0,
+                &TextStyle::new(15.0).with_weight(TextWeight::Bold),
                 theme.text_primary,
-                TextWeight::Bold,
+                Point::new(x + 12.0, y + 10.0),
+                None,
             );
             draw::text_right(
                 scene,
@@ -4669,13 +4558,9 @@ impl MapsApp {
                     let pill = Rect::new(px, py, px + w, py + 22.0);
                     draw::fill_round(scene, t, pill, 6.0, col);
                     draw::text_center(
-                        scene,
-                        tr,
-                        t,
+                        &mut PaintCtx::new(scene, t, tr, theme),
                         &lbl,
-                        pill.x0,
-                        pill.x1,
-                        self.vmid(pill.y0, 22.0, 12.0),
+                        Point::new(pill.center().x, self.vmid(pill.y0, 22.0, 12.0)),
                         12.0,
                         fg,
                     );
@@ -4709,12 +4594,9 @@ impl MapsApp {
                     };
                     let head = head.trim().to_string();
                     draw::text_clip(
-                        scene,
-                        tr,
-                        t,
+                        &mut PaintCtx::new(scene, t, tr, theme),
                         &head,
-                        x + 32.0,
-                        y,
+                        Point::new(x + 32.0, y),
                         12.0,
                         theme.text_primary,
                         right - x - 120.0,
@@ -4750,12 +4632,9 @@ impl MapsApp {
                         )
                     };
                     draw::text_clip(
-                        scene,
-                        tr,
-                        t,
+                        &mut PaintCtx::new(scene, t, tr, theme),
                         &sub,
-                        x + 32.0,
-                        y + 16.0,
+                        Point::new(x + 32.0, y + 16.0),
                         11.0,
                         theme.text_dim,
                         right - x - 90.0,
@@ -4802,7 +4681,14 @@ impl MapsApp {
         };
         draw::separator(scene, t, x, right, y, c.surfaces.raised);
         y += s3;
-        draw::text_clip(scene, tr, t, &src, x, y, 10.0, theme.text_dim, right - x);
+        draw::text_clip(
+            &mut PaintCtx::new(scene, t, tr, theme),
+            &src,
+            Point::new(x, y),
+            10.0,
+            theme.text_dim,
+            right - x,
+        );
         y += line_h(10.0, self.text_scale) + s2;
         y
     }
@@ -5196,7 +5082,10 @@ impl FloatingSurfaceProvider for MapsApp {
 }
 
 impl Widget for MapsApp {
-    ui::provides!(dyn ui::widget::FloatingSurfaceProvider);
+    ui::provides!(
+        dyn ui::widget::FloatingSurfaceProvider,
+        dyn ui::undo::CommittedActions
+    );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[
@@ -5749,13 +5638,6 @@ impl Widget for MapsApp {
         Some(terminal)
     }
 
-    /// Drain the undo boundary the [`ActionHost`](ui::ActionHost) bracketed for
-    /// this event so the shell records exactly one undo point per dispatched
-    /// action — the same path a Ctrl+K palette dispatch takes.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
-    }
-
     fn test_id(&self) -> Option<&str> {
         Some("maps_app")
     }
@@ -5932,6 +5814,15 @@ impl Widget for MapsApp {
     ) {
         // Root fills the window — never cull.
         self.draw(scene, transform, text_renderer, theme, presence);
+    }
+}
+
+impl ui::undo::CommittedActions for MapsApp {
+    /// Drain the undo boundary the [`ActionHost`](ui::ActionHost) bracketed for
+    /// this event so the shell records exactly one undo point per dispatched
+    /// action — the same path a Ctrl+K palette dispatch takes.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
     }
 }
 

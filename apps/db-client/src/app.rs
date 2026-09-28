@@ -35,6 +35,7 @@ use winit::keyboard::{Key, NamedKey};
 use uuid::Uuid;
 
 use tilo_actions::{ActionSpec, EncodedAction, ExecutionMode, OperationKind, Resource, ResultSpec};
+use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -1888,6 +1889,8 @@ fn csv_field(value: &str) -> String {
 }
 
 impl Widget for DbClientApp {
+    ui::provides!(dyn ui::undo::CommittedActions);
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[DB_OPERATION_TYPE]
     }
@@ -2556,12 +2559,6 @@ impl Widget for DbClientApp {
             || self.status_bubble.needs_frame(Instant::now())
     }
 
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        // Hand the action model's undo bracket to the host so saved-connection
-        // CRUD becomes a single undo boundary and replicates to peers.
-        self.actions.take_committed()
-    }
-
     fn draw_overlay(
         &mut self,
         scene: &mut Scene,
@@ -2744,6 +2741,14 @@ impl Widget for DbClientApp {
         (self.session.tab == MainTab::Query)
             .then(|| self.editor.text_review())
             .flatten()
+    }
+}
+
+impl ui::undo::CommittedActions for DbClientApp {
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        // Hand the action model's undo bracket to the host so saved-connection
+        // CRUD becomes a single undo boundary and replicates to peers.
+        self.actions.take_committed()
     }
 }
 
@@ -3438,10 +3443,9 @@ impl DbClientApp {
         self.conn_rects.clear();
         self.conn_delete_rects.clear();
         let mut y = r.y0 + 32.0;
-        let active = self.session.active;
         let connections = self.session.connections.clone();
         for (idx, conn) in connections.iter().enumerate() {
-            self.draw_connection_row(scene, t, tr, theme, idx, conn, active, y);
+            self.draw_connection_row(&mut PaintCtx::new(scene, t, tr, theme), idx, conn, y);
             y += 44.0;
         }
 
@@ -3452,26 +3456,24 @@ impl DbClientApp {
             .draw(scene, t, tr, theme, &ui::presence::PresenceCtx::empty());
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one row's full draw context: canvas + theme + which row + its data + its y"
-    )]
     fn draw_connection_row(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         idx: usize,
         conn: &crate::model::ConnectionProfile,
-        active: usize,
         y: f64,
     ) {
+        let PaintCtx {
+            scene,
+            transform: t,
+            text: tr,
+            theme,
+        } = ctx.reborrow();
         let p = theme.db();
         let r = self.sidebar_rect;
         let row = Rect::new(r.x0 + SIDEBAR_INSET, y, r.x1 - SIDEBAR_INSET, y + 40.0);
         self.conn_rects.push((idx, row));
-        let is_active = idx == active;
+        let is_active = idx == self.session.active;
         if is_active {
             scene.fill(
                 Fill::NonZero,
@@ -5343,7 +5345,7 @@ mod behavior_tests {
             assert_eq!(conns.len(), 1, "the connection was written to the document");
             assert_eq!(conns[0].name, "Prod");
             assert!(
-                app.take_committed_action().is_some(),
+                ui::undo::take_committed_action(&mut app).is_some(),
                 "the action host recorded an undo boundary for the CRUD"
             );
             assert_eq!(

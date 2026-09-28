@@ -11,6 +11,7 @@
 //! History that is no longer retained, a rotated store or a changed policy
 //! still answers SnapshotRequired. Expired and orphaned sidecars are swept.
 use super::*;
+use crate::delivery_http::revalidation::RequestEvidence;
 use crate::{
     delivery_http::snapshot::{SnapshotStream, pair::ManifestPair},
     owner::delivery::{
@@ -157,10 +158,6 @@ impl Snapshots {
     }
 
     /// Rebuild a transfer from its durable signed pair after a restart.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "explicit protocol inputs stay separate parameters"
-    )]
     fn recover(
         &mut self,
         owner: &mut SessionOwner,
@@ -168,10 +165,10 @@ impl Snapshots {
         budget: &HostBytes,
         checker: &mut crate::delivery_http::revalidation::OperationRevalidation<'_>,
         session: &auth::VerifiedSession,
-        device: [u8; 32],
         pin: [u8; 16],
         requested: &Digest,
     ) -> Result<Option<usize>> {
+        let device = session.device_certificate().device_public_key;
         let directory = owner.snapshot_directory(&self.work)?;
         let Some(sidecar) = directory
             .open_existing(pin)
@@ -326,9 +323,11 @@ impl Snapshots {
             current,
             budget,
             OwnerDataOperation::SnapshotPrepare,
-            &proof,
-            &exact,
-            request,
+            RequestEvidence {
+                proof: &proof,
+                exact: &exact,
+                original: request,
+            },
         )?;
         let session = admitted.session();
         let device = session.device_certificate().device_public_key;
@@ -361,7 +360,6 @@ impl Snapshots {
                         budget,
                         &mut checker,
                         session,
-                        device,
                         pin,
                         &manifest_digest,
                     ) {
@@ -516,9 +514,11 @@ impl Snapshots {
             current,
             budget,
             OwnerDataOperation::SnapshotPrepare,
-            &proof,
-            &exact,
-            request,
+            RequestEvidence {
+                proof: &proof,
+                exact: &exact,
+                original: request,
+            },
         )?;
         let session = admitted.session();
         let device = session.device_certificate().device_public_key;

@@ -28,6 +28,7 @@ use std::time::{Duration, Instant};
 use tilo_automerge::ApplyIncoming;
 
 use automerge::AutoCommit;
+use tilo_actions::ActionAddress;
 use tilo_agent::{Config, Session};
 use tilo_content::ContentStore;
 use ui::collaboration::{CollabEvent, CollabRequest, DocumentMutation};
@@ -201,12 +202,13 @@ fn drive_peer_and_type(
                     replica,
                     &resources,
                     word_processor::actions::register,
-                    id,
-                    resource,
-                    action,
-                    argument.as_deref(),
-                    &actor,
-                    context.as_deref(),
+                    typed_peer::DocumentInvocation {
+                        id,
+                        address: ActionAddress::new(resource, action),
+                        argument: argument.as_deref(),
+                        actor: &actor,
+                        context: context.as_deref(),
+                    },
                 );
 
                 // Land a human edit while the broker invocation is still in

@@ -1681,10 +1681,12 @@ impl AppHandler {
             let user = crate::permissions::UserId(interaction.actor.id);
             let label = app.presence_ctx.display_name(&user);
             app.presence_ctx.draw_peer_outline_labeled(
-                &mut scene,
-                &app.theme,
-                &mut app.text_renderer,
-                transform,
+                &mut crate::paint::PaintCtx::new(
+                    &mut scene,
+                    transform,
+                    &mut app.text_renderer,
+                    &app.theme,
+                ),
                 &user,
                 &label,
                 rect,
@@ -2126,7 +2128,7 @@ impl AppHandler {
             let shift = app.input.modifiers.state().shift_key();
             let history_request = crate::undo::shortcut(c, true, shift);
             if let Some(request) = history_request {
-                if app.root_widget.handle_local_undo_request(request) {
+                if crate::undo::handle_local_undo_request(app.root_widget.as_mut(), request) {
                     app.needs_sync = true;
                     window.request_redraw();
                 } else {

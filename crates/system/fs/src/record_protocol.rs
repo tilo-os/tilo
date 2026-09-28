@@ -270,10 +270,6 @@ impl RecordProtocol {
     /// # Errors
     ///
     /// Returns an error when the endpoint does not match the certified device.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Protocol construction binds endpoint identity, credentials/revocations, workspace and share authority, live certification, access registry, and repository."
-    )]
     pub fn new(
         endpoint: Endpoint,
         credentials: PeerCredentials,

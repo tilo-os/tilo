@@ -3487,6 +3487,8 @@ fn find_char_span(text: &str, needle: &str) -> Option<(usize, usize, usize)> {
 }
 
 impl Widget for CodeApp {
+    ui::provides!(dyn ui::undo::CommittedActions);
+
     fn native_input_snapshot(&self, doc: &AppModel, path: &ModelPath) -> Option<serde_json::Value> {
         fn rect(rect: Rect) -> [f64; 4] {
             [rect.x0, rect.y0, rect.x1, rect.y1]
@@ -4192,13 +4194,6 @@ impl Widget for CodeApp {
         Self::publish_resource(self, doc, id)
     }
 
-    /// Hand the host the heads captured before an on-screen affordance dispatched
-    /// its action, so it records one undo boundary bracketing it (see
-    /// `Self::apply_command`). Rising-edge: cleared on read.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
-    }
-
     fn start_operation(
         &mut self,
         op: &ui::widget::ResourceOperation<'_>,
@@ -4337,6 +4332,15 @@ impl Widget for CodeApp {
         self.editor.mark_drawn();
         self.panel.mark_drawn();
         self.find.mark_drawn();
+    }
+}
+
+impl ui::undo::CommittedActions for CodeApp {
+    /// Hand the host the heads captured before an on-screen affordance dispatched
+    /// its action, so it records one undo boundary bracketing it (see
+    /// `Self::apply_command`). Rising-edge: cleared on read.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
     }
 }
 

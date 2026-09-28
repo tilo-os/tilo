@@ -45,8 +45,8 @@ UI controls, scripts and agents invoke the same typed operation:
    discovery, result, and typed parameters (including nested child resources).
 2. CRDT mutations are the resource's serializable `Action`, registered under
    `Resource::ACTION_TYPE`. Views and effects are serializable operations
-   handled only by `invoke_resource_operation`/`start_resource_operation`; every
-   operation type is declared by `local_resource_operation_handlers`.
+   handled only by `Widget::start_operation`; every operation type is declared
+   by `local_resource_operation_handlers`.
 3. Inputs needed by a headless caller are parameters, not hidden UI state. A
    file action may offer a portal when a person omits `path`, but agents and
    scripts must be able to provide the path explicitly. Saving into the shared

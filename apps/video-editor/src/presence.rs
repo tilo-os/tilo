@@ -78,6 +78,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 
 use ui::PresencePayload;
+use ui::paint::PaintCtx;
 use ui::permissions::UserId;
 use ui::presence::{PathSegment, PresenceCtx, PresenceKey};
 use ui::text_render::TextRenderer;
@@ -393,10 +394,7 @@ const CHIP_STEP: f64 = 16.0;
 /// and presence snapshot. Grouping them makes that invariant explicit and
 /// keeps new overlay geometry from growing another long positional API.
 pub struct PeerPaintCtx<'a> {
-    scene: &'a mut Scene,
-    transform: Affine,
-    text_renderer: &'a mut TextRenderer,
-    theme: &'a Theme,
+    paint: PaintCtx<'a>,
     presence: &'a PresenceCtx,
 }
 
@@ -409,10 +407,7 @@ impl<'a> PeerPaintCtx<'a> {
         presence: &'a PresenceCtx,
     ) -> Self {
         Self {
-            scene,
-            transform,
-            text_renderer,
-            theme,
+            paint: PaintCtx::new(scene, transform, text_renderer, theme),
             presence,
         }
     }
@@ -444,10 +439,10 @@ pub fn draw_peer_playheads(
         let top = lanes.y0 + CHIP_STEP * (i % 3) as f64;
         let bar = Rect::new(x - 1.0, top, x + 1.0, bottom);
         ctx.presence.draw_peer_caret_labeled(
-            ctx.scene,
-            ctx.theme,
-            ctx.text_renderer,
-            ctx.transform,
+            ctx.paint.scene,
+            ctx.paint.theme,
+            ctx.paint.text,
+            ctx.paint.transform,
             &peer.user,
             &ctx.presence.display_name(&peer.user),
             bar,
@@ -473,10 +468,7 @@ pub fn draw_peer_clips(ctx: &mut PeerPaintCtx<'_>, visible: &[(ClipId, Rect)], a
             continue;
         };
         ctx.presence.draw_peer_outline_labeled_within(
-            ctx.scene,
-            ctx.theme,
-            ctx.text_renderer,
-            ctx.transform,
+            &mut ctx.paint,
             &peer.user,
             &ctx.presence.display_name(&peer.user),
             *rect,
@@ -504,10 +496,10 @@ pub fn draw_peer_field_carets(
 ) {
     for (user, byte) in peer_field_carets(ctx.presence, field, subject) {
         ctx.presence.draw_peer_caret_labeled(
-            ctx.scene,
-            ctx.theme,
-            ctx.text_renderer,
-            ctx.transform,
+            ctx.paint.scene,
+            ctx.paint.theme,
+            ctx.paint.text,
+            ctx.paint.transform,
             &user,
             &ctx.presence.display_name(&user),
             caret_rect(byte),

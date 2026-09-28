@@ -222,10 +222,6 @@ impl MembershipChallenge {
     ///
     /// Returns an error if a certificate does not verify at `now_ns` or the challenge has
     /// already expired.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "explicit protocol inputs stay separate parameters"
-    )]
     pub fn new(
         room: &str,
         workspace_id: u64,
@@ -406,10 +402,6 @@ pub enum JoinTransportResponse {
 ///
 /// Returns an error if the delegation is malformed or `authority_key` does not match
 /// `authority`.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "explicit protocol inputs stay separate parameters"
-)]
 pub fn sign_workspace_delegation(
     room: impl Into<String>,
     workspace_id: u64,

@@ -3025,7 +3025,7 @@ fn first_run_is_empty_and_actionable() {
     }
 }
 
-/// The on-disk book persists creations and deletions, merges with a diverged replica, and imports legacy books and real VCF files.
+/// The on-disk book persists creations and deletions, merges with a diverged replica, and imports real VCF files.
 #[allow(
     clippy::too_many_lines,
     reason = "merged scenario test: each labelled phase is one original case, kept verbatim"

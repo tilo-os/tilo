@@ -243,14 +243,6 @@ impl StyleSheet {
         }
         out
     }
-
-    pub fn to_json(&self) -> String {
-        serde_json::to_string(self).unwrap_or_default()
-    }
-
-    pub fn from_json(s: &str) -> Option<Self> {
-        serde_json::from_str(s).ok()
-    }
 }
 
 /// The localized, user-facing display name for a style. Built-in styles carry
@@ -332,14 +324,6 @@ mod tests {
             );
             // explicit override wins
             assert_eq!(style_key_for("paragraph", None, Some("quote")), "quote");
-        }
-
-        // Phase: json_round_trips.
-        {
-            let sheet = StyleSheet::default();
-            let back = StyleSheet::from_json(&sheet.to_json()).unwrap();
-            assert_eq!(back.get("body"), sheet.get("body"));
-            assert_eq!(back.get("quote").italic, sheet.get("quote").italic);
         }
 
         // Phase: display_name_localizes_builtins_and_passes_custom_through.

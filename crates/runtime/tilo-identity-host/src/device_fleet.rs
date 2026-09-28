@@ -24,7 +24,7 @@ pub struct DeviceFleet {
     pub certificates: Vec<DeviceCert>,
     pub revocations: Vec<RevocationEntry>,
     /// Successfully redeemed enrollment nonces retained permanently so wall
-    /// clock rollback cannot revive a token. Missing in schema-v1 files.
+    /// clock rollback cannot revive a token. Omitted while empty.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     consumed_enrollments: Vec<ConsumedEnrollment>,
 }
@@ -33,10 +33,6 @@ pub struct DeviceFleet {
 #[serde(deny_unknown_fields)]
 struct ConsumedEnrollment {
     nonce: [u8; 16],
-    /// Read records written before tombstones became permanent, but never
-    /// write or use their wall-clock expiry again.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    expires_at_ns: Option<u64>,
 }
 
 impl DeviceFleet {
@@ -273,10 +269,9 @@ impl DeviceFleetStore {
             .certificates
             .retain(|existing| existing.device_public_key != cert.device_public_key);
         fleet.certificates.push(cert.clone());
-        fleet.consumed_enrollments.push(ConsumedEnrollment {
-            nonce: token.nonce,
-            expires_at_ns: None,
-        });
+        fleet
+            .consumed_enrollments
+            .push(ConsumedEnrollment { nonce: token.nonce });
         // Persist nonce and certificate in one durable replacement before the
         // caller receives the root-signed certificate.
         self.save(&fleet)?;
@@ -454,8 +449,8 @@ mod tests {
         clippy::too_many_lines,
         reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
     )]
-    fn fleet_enrollment_migrates_revokes_and_resists_clock_rollback() {
-        // Phase `schema_v1_fleets_without_replay_state_migrate_empty`.
+    fn fleet_enrollment_loads_revokes_and_resists_clock_rollback() {
+        // Phase `a_fleet_without_consumed_enrollments_loads_empty`.
         {
             let fleet: DeviceFleet = serde_json::from_value(serde_json::json!({
                 "schema_version": 1,
@@ -463,7 +458,7 @@ mod tests {
                 "certificates": [],
                 "revocations": []
             }))
-            .expect("legacy fleet");
+            .expect("fleet without consumed enrollments");
             assert!(fleet.consumed_enrollments.is_empty());
         }
         // Phase `enroll_list_and_revoke_a_secondary_device`.

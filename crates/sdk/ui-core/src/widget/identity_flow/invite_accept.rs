@@ -24,6 +24,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -523,10 +524,7 @@ impl Widget for InviteAcceptScreen {
         sheet.paint_frame(scene, transform, text_renderer, theme, &spec);
         sheet.clip_body(scene, transform);
         paint_text(
-            scene,
-            transform,
-            text_renderer,
-            theme,
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
             plan.link_label,
             LINK_LABEL,
             Role::Label,
@@ -538,10 +536,7 @@ impl Widget for InviteAcceptScreen {
         if let Some((banner, expires)) = self.banner_text() {
             if let Some(rect) = plan.banner {
                 paint_text(
-                    scene,
-                    transform,
-                    text_renderer,
-                    theme,
+                    &mut PaintCtx::new(scene, transform, text_renderer, theme),
                     rect,
                     &banner,
                     Role::Value,
@@ -551,10 +546,7 @@ impl Widget for InviteAcceptScreen {
             }
             if let Some(rect) = plan.expires {
                 paint_text(
-                    scene,
-                    transform,
-                    text_renderer,
-                    theme,
+                    &mut PaintCtx::new(scene, transform, text_renderer, theme),
                     rect,
                     &expires,
                     Role::Caption,
@@ -564,10 +556,7 @@ impl Widget for InviteAcceptScreen {
             }
         } else if let (Some(rect), Some((text, role))) = (plan.status, self.status_text()) {
             paint_text(
-                scene,
-                transform,
-                text_renderer,
-                theme,
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 rect,
                 &text,
                 role,
@@ -577,10 +566,7 @@ impl Widget for InviteAcceptScreen {
         }
         if let (Some(rect), Some(err)) = (plan.error, self.accept_error.as_deref()) {
             paint_text(
-                scene,
-                transform,
-                text_renderer,
-                theme,
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 rect,
                 err,
                 Role::Error,

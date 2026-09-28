@@ -2,6 +2,7 @@ use ui::ColorCompat;
 use ui::widget::{AppModel, ModelPath};
 use ui::{
     Theme,
+    paint::PaintCtx,
     text_render::{FontChoice, TextRenderer, TextStyle, TextWeight},
     widget::{PressOutcome, ScrollMetrics, Scrollbar, TextInput, Widget},
 };
@@ -2902,33 +2903,10 @@ impl Widget for TerminalWidget {
             visible_rows,
         );
 
-        self.draw_cell_rows(
-            scene,
-            transform,
-            text_renderer,
-            font_size,
-            palette,
-            &mono,
-            grid_rect,
-            padding_x,
-            start_y,
-            visible_rows,
-        );
-
-        self.draw_block_cursor(
-            scene,
-            transform,
-            text_renderer,
-            font_size,
-            palette,
-            &mono,
-            grid_rect,
-            padding_x,
-            start_y,
-            visible_rows,
-            scroll,
-            cursor_color,
-        );
+        let cell_style = TextStyle::new(font_size).with_family(mono);
+        let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
+        self.draw_cell_rows(&mut ctx, &cell_style, start_y, visible_rows);
+        self.draw_block_cursor(&mut ctx, &cell_style, start_y, visible_rows);
 
         // A themed scrollbar indicator in the reserved right gutter, shown only
         // when the buffer overflows the viewport.
@@ -4007,10 +3985,6 @@ impl TerminalWidget {
     /// row only paints when it falls inside the current viewport window
     /// `[start_y, start_y + visible_rows)`, translated to an on-screen row.
     /// Helper for [`Widget::draw`].
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one drawing pass, geometry threaded through explicitly"
-    )]
     fn draw_selection_highlight(
         &self,
         scene: &mut Scene,
@@ -4041,10 +4015,6 @@ impl TerminalWidget {
     /// Paint only the active find match. The index remains local and the
     /// overlay never serializes query/match information into the shared
     /// transcript; this is a visual locator over already-rendered cells.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "The terminal grid's shared paint metrics keep selection and find-match overlays pixel-aligned"
-    )]
     fn draw_find_match_highlight(
         &self,
         scene: &mut Scene,
@@ -4354,25 +4324,17 @@ impl TerminalWidget {
     }
 
     /// Paint every visible row's cell text as colour runs (consecutive cells
-    /// sharing one [`Attr`] drawn in a single [`Self::draw_run`] call).
-    /// Helper for [`Widget::draw`].
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one drawing pass, geometry threaded through explicitly"
-    )]
+    /// sharing one [`Attr`] drawn in a single [`Self::draw_run`] call), in
+    /// `cell_style`'s size and monospace family. Helper for [`Widget::draw`].
     fn draw_cell_rows(
         &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        font_size: f32,
-        palette: &ui::tokens::TerminalPalette,
-        mono: &FontChoice,
-        grid_rect: Rect,
-        padding_x: f64,
+        ctx: &mut PaintCtx<'_>,
+        cell_style: &TextStyle,
         start_y: usize,
         visible_rows: usize,
     ) {
+        let grid_rect = self.grid_rect;
+        let padding_x = self.last_padding_x;
         for (y, line_text) in self
             .grid
             .iter()
@@ -4403,16 +4365,11 @@ impl TerminalWidget {
                         && let Some(prev_attr) = current_attr
                     {
                         self.draw_run(
-                            scene,
+                            ctx,
+                            cell_style,
                             &current_run,
                             prev_attr,
-                            py,
-                            run_start_cell_idx as f64 * self.char_w + padding_x,
-                            text_renderer,
-                            transform,
-                            font_size,
-                            palette,
-                            mono,
+                            Point::new(run_start_cell_idx as f64 * self.char_w + padding_x, py),
                         );
                     }
                     current_run.clear();
@@ -4426,16 +4383,11 @@ impl TerminalWidget {
                 && let Some(prev_attr) = current_attr
             {
                 self.draw_run(
-                    scene,
+                    ctx,
+                    cell_style,
                     &current_run,
                     prev_attr,
-                    py,
-                    run_start_cell_idx as f64 * self.char_w + padding_x,
-                    text_renderer,
-                    transform,
-                    font_size,
-                    palette,
-                    mono,
+                    Point::new(run_start_cell_idx as f64 * self.char_w + padding_x, py),
                 );
             }
         }
@@ -4445,25 +4397,24 @@ impl TerminalWidget {
     /// has scrolled back into history it hides (matching xterm/kitty), so
     /// it doesn't imply the caret is somewhere on an old line. Helper for
     /// [`Widget::draw`].
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one drawing pass, geometry threaded through explicitly"
-    )]
     fn draw_block_cursor(
         &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        font_size: f32,
-        palette: &ui::tokens::TerminalPalette,
-        mono: &FontChoice,
-        grid_rect: Rect,
-        padding_x: f64,
+        ctx: &mut PaintCtx<'_>,
+        cell_style: &TextStyle,
         start_y: usize,
         visible_rows: usize,
-        scroll: usize,
-        cursor_color: Color,
     ) {
+        let PaintCtx {
+            scene,
+            transform,
+            text: text_renderer,
+            theme,
+        } = ctx.reborrow();
+        let palette = &theme.tokens.terminal_palette;
+        let grid_rect = self.grid_rect;
+        let padding_x = self.last_padding_x;
+        let scroll = self.scroll_offset;
+        let cursor_color = self.last_cursor_color;
         // Absolute grid row of the cursor → visible row (may be scrolled off).
         let cursor_abs = self.grid.len().saturating_sub(self.height) + self.cursor_y;
         let scrolled_back = !self.alt_active && scroll > 0;
@@ -4494,38 +4445,36 @@ impl TerminalWidget {
                 .and_then(|line| cell_char_at(line, self.cursor_x))
                 && !ch.is_whitespace()
             {
-                text_renderer.draw_text_font(
+                text_renderer.draw_style(
                     scene,
                     &ch.to_string(),
-                    font_size,
                     palette.bg_default,
                     transform * Affine::translate((cx, cy)),
                     None,
-                    TextWeight::Regular,
-                    false,
-                    mono,
+                    cell_style,
                 );
             }
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one terminal run draw needs each independent scene, text, style, and clip input"
-    )]
+    /// Paint one run of cells sharing `attr`, starting `at.x` into the grid
+    /// on the row whose top is `at.y`.
     fn draw_run(
         &self,
-        scene: &mut Scene,
+        ctx: &mut PaintCtx<'_>,
+        cell_style: &TextStyle,
         text: &str,
         attr: Attr,
-        py: f64,
-        rx: f64,
-        text_renderer: &mut TextRenderer,
-        transform: Affine,
-        font_size: f32,
-        palette: &ui::tokens::TerminalPalette,
-        font: &FontChoice,
+        at: Point,
     ) {
+        let PaintCtx {
+            scene,
+            transform,
+            text: text_renderer,
+            theme,
+        } = ctx.reborrow();
+        let palette = &theme.tokens.terminal_palette;
+        let (rx, py) = (at.x, at.y);
         let (mut fg, bg_opt) = resolve_pair(attr, palette);
         // SGR 2 (faint): blend the foreground toward the background so it
         // reads as dimmed, matching xterm/kitty. Applied after reverse so a
@@ -4564,16 +4513,17 @@ impl TerminalWidget {
         } else {
             TextWeight::Regular
         };
-        text_renderer.draw_text_font(
+        text_renderer.draw_style(
             scene,
             text,
-            font_size,
             fg,
             transform * Affine::translate((tx, py)),
             None,
-            weight,
-            attr.italic,
-            font, // the OS's monospace face — a terminal must render fixed-width
+            // The OS's monospace face — a terminal must render fixed-width.
+            &cell_style
+                .clone()
+                .with_weight(weight)
+                .with_italic(attr.italic),
         );
 
         if attr.underline || is_link {

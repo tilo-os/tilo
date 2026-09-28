@@ -15,7 +15,7 @@ use chat::{
     model::{AgentRoute, AgentStepOutcome, AgentWorkState},
 };
 use std::time::{Duration, Instant};
-use tilo_actions::Action;
+use tilo_actions::{Action, ActionAddress};
 use tilo_agent::{Config, Session};
 use tilo_automerge::ApplyIncoming as _;
 use typed_peer::{TypedPeer, send};
@@ -122,7 +122,6 @@ fn scenario_resources(doc: &AutoCommit, outcome: OwnerOutcome) -> Vec<tilo_actio
 }
 
 #[allow(
-    clippy::too_many_arguments,
     clippy::fn_params_excessive_bools,
     clippy::too_many_lines,
     reason = "one real typed endpoint scenario owns seed, action, disconnect, and restart assertions"
@@ -278,12 +277,13 @@ fn scenario_outcome(
                             &mut document,
                             &tree,
                             word_processor::actions::register,
-                            id,
-                            resource,
-                            action,
-                            argument.as_deref(),
-                            &actor,
-                            context.as_deref(),
+                            typed_peer::DocumentInvocation {
+                                id,
+                                address: ActionAddress::new(resource, action),
+                                argument: argument.as_deref(),
+                                actor: &actor,
+                                context: context.as_deref(),
+                            },
                         );
                         assert!(
                             document

@@ -25,8 +25,9 @@ use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use tilo_actions::EncodedAction;
 use ui::color_compat::ColorCompat;
 use ui::icons::Icon;
+use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use ui::tokens::{Metrics, Spacing};
 use ui::widget::toggle_group::Segment;
@@ -440,7 +441,7 @@ impl ThemesApp {
     /// replays byte-identically on peers), exactly as the palette does. The
     /// document heads captured just before the first action of the batch are
     /// stashed so the host records **one** undo boundary bracketing it
-    /// ([`Widget::take_committed_action`]); Ctrl+Z then reverts it.
+    /// ([`CommittedActions::take_committed_action`](ui::undo::CommittedActions::take_committed_action)); Ctrl+Z then reverts it.
     fn perform_action(&mut self, state: &mut AutoCommit, action: &crate::actions::ThemesAction) {
         self.actions.dispatch_with_context(
             state,
@@ -613,9 +614,9 @@ impl ThemesApp {
     /// theme (so a capture shows real editing); the live install focuses the
     /// first preset.
     fn seed_document_if_needed(&mut self, state: &mut AutoCommit, path: &ObjId) {
-        // Persisted libraries are read-only at startup, including legacy Text
-        // and a restored version with no catalog roots. Explicit edits create
-        // only their addressed native override inside the canonical action.
+        // Persisted libraries are read-only at startup, including a restored
+        // version with no catalog roots. Explicit edits touch only their
+        // addressed record inside the canonical action.
         if !self.selected.is_empty() {
             return;
         }
@@ -1420,6 +1421,8 @@ impl ThemesApp {
 }
 
 impl Widget for ThemesApp {
+    ui::provides!(dyn ui::undo::CommittedActions);
+
     fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
         Some(&crate::framework_history::HISTORY)
     }
@@ -1494,13 +1497,6 @@ impl Widget for ThemesApp {
             return self.completed_apply.take();
         }
         None
-    }
-
-    /// Hand the host the heads captured before an on-screen affordance dispatched
-    /// its Themes action, so it records one undo boundary for it (see
-    /// `Self::perform_action`). Rising-edge: cleared on read.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
     }
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
@@ -1751,19 +1747,13 @@ impl Widget for ThemesApp {
             let fill = theme.tokens.colors.semantic.success;
             draw::fill_rrect(scene, t, pill, 13.0, fill);
             draw::text_center(
-                tr,
-                scene,
-                t,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 &self.status,
-                12.0,
+                &TextStyle::new(12.0).with_weight(TextWeight::Semibold),
                 // Ink measured against the pill, not a literal white: a light
                 // preset's success green needs dark ink to stay legible.
                 theme.on_surface(fill).ink,
-                pill.x0,
-                pill.x1,
-                pill.y0,
-                pill.y1,
-                TextWeight::Semibold,
+                pill,
             );
         }
     }
@@ -1944,6 +1934,15 @@ impl Widget for ThemesApp {
         _permissions: &ui::permissions::PermissionContext,
     ) {
         self.draw(scene, transform, text_renderer, theme, presence);
+    }
+}
+
+impl ui::undo::CommittedActions for ThemesApp {
+    /// Hand the host the heads captured before an on-screen affordance dispatched
+    /// its Themes action, so it records one undo boundary for it (see
+    /// `Self::perform_action`). Rising-edge: cleared on read.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
     }
 }
 
@@ -2718,7 +2717,7 @@ mod tests {
                 "attributed to the local user, so their Ctrl+Z can reach it"
             );
             assert!(
-                app.take_committed_action().is_none(),
+                ui::undo::take_committed_action(&mut app).is_none(),
                 "rising-edge: the boundary is consumed once"
             );
 

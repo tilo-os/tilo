@@ -3,7 +3,7 @@ use automerge::{AutoCommit, ObjId, ROOT, ReadDoc, transaction::Transactable};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use tilo_ui::application::{
-    AppComponent, ApplicationDefinition, HostContext, LaunchTarget, RestoreInput,
+    AppComponent, ApplicationDefinition, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
 };
 use tilo_ui::application_view::InstanceViewStore;
 use tilo_ui::launch::LaunchError;
@@ -324,13 +324,15 @@ impl ProbeHost {
     ) -> Result<HostContext, LaunchError> {
         HostContext::prepare(
             definition,
-            self.records.clone(),
-            self.views.clone(),
-            DEVICE.into(),
-            instance,
-            permissions,
-            author(),
-            provenance(),
+            HostContextInputs {
+                records: self.records.clone(),
+                views: self.views.clone(),
+                device_id: DEVICE.into(),
+                instance_id: instance,
+                permissions,
+                author: author(),
+                action_context: provenance(),
+            },
             target,
         )
     }

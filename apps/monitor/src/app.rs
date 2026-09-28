@@ -21,7 +21,7 @@ use ui::widget::{AppModel, ModelPath};
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, BezPath, Line, Point, Rect, Stroke};
+use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, Stroke};
 use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
@@ -30,6 +30,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 use ui::format::bytes as format_bytes;
 use ui::icons::{self, Icon};
+use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
@@ -52,8 +53,8 @@ use crate::prefs::Prefs;
 use crate::sampler::{Sampler, StopKind};
 use crate::tree::{FlattenOpts, Forest, Row, SumMode};
 use ui::charts::{
-    BarGauge, Chart, ChartLabels, ChartStyle, GaugeStyle, RingGauge, RollingSeries, Series,
-    Sparkline, TrendRange,
+    BarGauge, Chart, ChartLabels, ChartStyle, GaugeReading, GaugeStyle, RingGauge, RollingSeries,
+    Series, Sparkline, TrendRange,
 };
 use ui::widget::{PushNav, PushPane};
 
@@ -156,6 +157,22 @@ enum SignalConfirmation {
 pub enum Tab {
     Processes,
     Resources,
+}
+
+impl Tab {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Processes => "Processes",
+            Self::Resources => "Resources",
+        }
+    }
+
+    fn icon(self) -> Icon {
+        match self {
+            Self::Processes => Icon::Layers,
+            Self::Resources => Icon::BarChart,
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -564,8 +581,10 @@ struct ScrollBarHit {
 /// Process table layout geometry, computed once per frame so the header,
 /// rows and scrollbar passes each take one struct instead of a long, mostly
 /// duplicated parameter list.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct TableGeom {
+    /// The visible columns, in content space and scaled by the text scale.
+    columns: Vec<layout::Column>,
     /// The card's full inner rect (post-panel padding).
     ti: Rect,
     /// The padded column band — header text and row cells clip to this so an
@@ -1177,7 +1196,7 @@ impl MonitorApp {
     /// Queue the exact resource address every visible process control uses.
     /// The host re-resolves it against a fresh catalogue and enforces the
     /// published permission, confirmation, and retry contract before calling
-    /// [`Self::invoke_resource_operation`].
+    /// [`Self::answer_resource_operation`].
     fn request_process_control(&mut self, pid: u32, action: &'static str) {
         if let Some(process) = self
             .model
@@ -1864,8 +1883,8 @@ impl MonitorApp {
         // 96 px pair. Both grow by exactly the labels' measured growth over
         // their 1× width, so the 1× thresholds are untouched and a 200 % bar
         // still seats `Processes` / `Resources` before it folds.
-        let (pw, _) = tr.measure_weighted("Processes", sm, None, TextWeight::Semibold);
-        let (rw, _) = tr.measure_weighted("Resources", sm, None, TextWeight::Semibold);
+        let (pw, _) = tr.measure_weighted(Tab::Processes.label(), sm, None, TextWeight::Semibold);
+        let (rw, _) = tr.measure_weighted(Tab::Resources.label(), sm, None, TextWeight::Semibold);
         let label_w = f64::from(pw.max(rw));
         let label_growth = (label_w - label_w / self.density.text_k).max(0.0);
         let want_seg_w = 124.0 + label_growth;
@@ -1881,28 +1900,9 @@ impl MonitorApp {
         let cx = (centre - pair_w / 2.0).clamp(gap_l, (gap_r - pair_w).max(gap_l));
         let proc_r = Rect::new(cx, cy, cx + seg_w, cy + seg_h);
         let res_r = Rect::new(cx + seg_w + 6.0, cy, cx + 2.0 * seg_w + 6.0, cy + seg_h);
-        Self::draw_tab_pill_ex(
-            scene,
-            t,
-            tr,
-            theme,
-            proc_r,
-            Icon::Layers,
-            "Processes",
-            self.tab == Tab::Processes,
-            compact,
-        );
-        Self::draw_tab_pill_ex(
-            scene,
-            t,
-            tr,
-            theme,
-            res_r,
-            Icon::BarChart,
-            "Resources",
-            self.tab == Tab::Resources,
-            compact,
-        );
+        let mut ctx = PaintCtx::new(scene, t, tr, theme);
+        self.draw_tab_pill(&mut ctx, proc_r, Tab::Processes, compact);
+        self.draw_tab_pill(&mut ctx, res_r, Tab::Resources, compact);
         self.hit.tab_proc = proc_r;
         self.hit.tab_res = res_r;
 
@@ -2020,23 +2020,17 @@ impl MonitorApp {
         self.hit.auto_refresh = auto_refresh_r;
     }
 
-    /// Draw a tab pill. `compact` draws an icon-only pill (the label is
-    /// dropped) so the tab control still fits when the header is narrow.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "tab pills combine paint context and bounds with icon, label, active state and compact layout"
-    )]
-    fn draw_tab_pill_ex(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        r: Rect,
-        icon: Icon,
-        label: &str,
-        active: bool,
-        compact: bool,
-    ) {
+    /// Draw `tab`'s pill in `r`, filled when it is the open tab. `compact`
+    /// draws an icon-only pill (the label is dropped) so the tab control still
+    /// fits when the header is narrow.
+    fn draw_tab_pill(&self, ctx: &mut PaintCtx<'_>, r: Rect, tab: Tab, compact: bool) {
+        let PaintCtx {
+            scene,
+            transform: t,
+            text: tr,
+            theme,
+        } = ctx.reborrow();
+        let (icon, label, active) = (tab.icon(), tab.label(), self.tab == tab);
         let c = &theme.tokens.colors;
         let radius = r.height() / 2.0;
         if active {
@@ -2239,17 +2233,15 @@ impl MonitorApp {
         overall: f32,
     ) {
         RingGauge::draw_styled(
-            scene,
-            t,
-            tr,
-            center,
-            44.0 * scale,
+            &mut PaintCtx::new(scene, t, tr, theme),
+            Circle::new(center, 44.0 * scale),
             9.0 * scale,
-            overall / 100.0,
-            paint::load_color(theme, overall / 100.0),
-            theme,
-            &format!("{overall:.0}%"),
-            "CPU LOAD",
+            &GaugeReading {
+                frac: overall / 100.0,
+                color: paint::load_color(theme, overall / 100.0),
+                label: "CPU LOAD",
+                value: &format!("{overall:.0}%"),
+            },
             &GAUGE,
         );
     }
@@ -2380,15 +2372,14 @@ impl MonitorApp {
             format_bytes(m.mem_total)
         );
         BarGauge::draw_styled(
-            scene,
-            t,
-            tr,
+            &mut PaintCtx::new(scene, t, tr, theme),
             Rect::new(mi.x0, ram_y, mi.x1, ram_y + gauge_h),
-            theme,
-            m.mem_frac(),
-            paint::load_color(theme, m.mem_frac()),
-            "RAM",
-            &ram_label,
+            &GaugeReading {
+                frac: m.mem_frac(),
+                color: paint::load_color(theme, m.mem_frac()),
+                label: "RAM",
+                value: &ram_label,
+            },
             &GAUGE,
         );
         let swap_label = format!(
@@ -2397,20 +2388,19 @@ impl MonitorApp {
             format_bytes(m.swap_total)
         );
         BarGauge::draw_styled(
-            scene,
-            t,
-            tr,
+            &mut PaintCtx::new(scene, t, tr, theme),
             Rect::new(
                 mi.x0,
                 ram_y + gauge_h + 10.0 * scale,
                 mi.x1,
                 ram_y + 2.0 * gauge_h + 10.0 * scale,
             ),
-            theme,
-            m.swap_frac(),
-            c.accent[5],
-            "Swap",
-            &swap_label,
+            &GaugeReading {
+                frac: m.swap_frac(),
+                color: c.accent[5],
+                label: "Swap",
+                value: &swap_label,
+            },
             &GAUGE,
         );
         // A memory sparkline fills the remaining height on the taller (abreast
@@ -2518,15 +2508,14 @@ impl MonitorApp {
             let x0 = ci.x0 + col as f64 * (cell_w + layout::CORE_GAP);
             let y0 = grid_top + rowi as f64 * (layout::CORE_ROW_STRIDE + self.density.core_extra);
             BarGauge::draw_styled(
-                scene,
-                t,
-                tr,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 Rect::new(x0, y0, x0 + cell_w, y0 + 22.0 * scale),
-                theme,
-                usage / 100.0,
-                paint::load_color(theme, usage / 100.0),
-                &format!("C{i}"),
-                &format!("{usage:.0}%"),
+                &GaugeReading {
+                    frac: usage / 100.0,
+                    color: paint::load_color(theme, usage / 100.0),
+                    label: &format!("C{i}"),
+                    value: &format!("{usage:.0}%"),
+                },
                 &GAUGE,
             );
         }
@@ -2666,6 +2655,7 @@ impl MonitorApp {
         // Rows region (above any horizontal scrollbar).
         let view = Rect::new(ti.x0, hdr.y1, ti.x1, ti.y1 - hbar_h);
         let geom = TableGeom {
+            columns,
             ti,
             band,
             hdr,
@@ -2678,8 +2668,8 @@ impl MonitorApp {
             h_overflow,
         };
 
-        self.draw_table_header(scene, t, tr, theme, &columns, &geom);
-        let rows_len = self.draw_table_rows(scene, t, tr, theme, &columns, &geom);
+        self.draw_table_header(scene, t, tr, theme, &geom);
+        let rows_len = self.draw_table_rows(scene, t, tr, theme, &geom);
         self.draw_table_scrollbars(scene, t, theme, &geom, rows_len);
     }
 
@@ -2689,7 +2679,6 @@ impl MonitorApp {
         t: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
-        columns: &[layout::Column],
         geom: &TableGeom,
     ) {
         let c = &theme.tokens.colors;
@@ -2706,7 +2695,7 @@ impl MonitorApp {
         self.hit.sort_headers.clear();
         let hdr_clip = Rect::new(geom.band.x0, hdr.y0, geom.band.x1, hdr.y1);
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &hdr_clip);
-        for col in columns {
+        for col in &geom.columns {
             let x0 = geom.cols_left + col.x0 - geom.sx;
             let active = self.sort_key == col.key;
             let color = if active { c.text_primary } else { c.text_dim };
@@ -2767,7 +2756,6 @@ impl MonitorApp {
         t: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
-        columns: &[layout::Column],
         geom: &TableGeom,
     ) -> usize {
         self.rows_per_page = (geom.view.height() / self.density.row_h).floor().max(1.0) as usize;
@@ -2898,7 +2886,13 @@ impl MonitorApp {
                 geom.view.x1,
                 y0 + self.density.row_h - inset,
             );
-            self.draw_table_row(scene, t, tr, theme, columns, geom, p, row, idx % 2 == 1);
+            self.draw_table_row(
+                &mut PaintCtx::new(scene, t, tr, theme),
+                geom,
+                p,
+                row,
+                idx % 2 == 1,
+            );
         }
         scene.pop_layer();
         rows.len()
@@ -2915,22 +2909,23 @@ impl MonitorApp {
     /// Draw one process row: selection/zebra background, the NAME column's
     /// tree indent + twisty, and every other visible column's cell.
     #[allow(
-        clippy::too_many_arguments,
         clippy::many_single_char_names,
-        reason = "threads the render context (scene/transform/text/theme) plus this row's geometry and data through a single draw call, mirroring charts.rs's gauge/chart primitives; t/c/p/x/s/k are this file's established short names for transform/colors/row/coordinate/string/key"
+        reason = "t/c/p/x/s/k are this file's established short names for transform/colors/row/coordinate/string/key"
     )]
     fn draw_table_row(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        columns: &[layout::Column],
+        ctx: &mut PaintCtx<'_>,
         geom: &TableGeom,
         p: &Row,
         row: Rect,
         alt: bool,
     ) {
+        let PaintCtx {
+            scene,
+            transform: t,
+            text: tr,
+            theme,
+        } = ctx.reborrow();
         let c = &theme.tokens.colors;
         let selected = self.selected_pid == Some(p.pid);
         if selected {
@@ -2981,7 +2976,7 @@ impl MonitorApp {
         // Look a column up by key — the set is now width-dependent (USER is
         // dropped at narrow widths), so cells are addressed by identity, not
         // a fixed index.
-        let column = |k: SortKey| columns.iter().find(|col| col.key == k);
+        let column = |k: SortKey| geom.columns.iter().find(|col| col.key == k);
         // CPU% coloured by load. A collapsed parent's summed total can exceed
         // 100% (multi-core); colour against a single core's scale but clamp
         // the hue so a hot subtree reads as fully loaded.
@@ -3020,7 +3015,7 @@ impl MonitorApp {
         }
 
         // NAME column: tree indent + twisty + name, all in the NAME band.
-        self.draw_table_row_name(scene, t, tr, theme, columns, geom, p, row, selected);
+        self.draw_table_row_name(ctx, geom, p, row);
 
         self.hit.rows.push((p.pid, row));
     }
@@ -3029,25 +3024,23 @@ impl MonitorApp {
     /// `layout::process_columns` always includes NAME; if a future layout
     /// change ever dropped it, this is a no-op rather than a panic — the
     /// row's other cells and hit rect still render regardless.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "threads the render context plus this row's geometry and data through a single draw call, mirroring charts.rs's gauge/chart primitives"
-    )]
     fn draw_table_row_name(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        columns: &[layout::Column],
+        ctx: &mut PaintCtx<'_>,
         geom: &TableGeom,
         p: &Row,
         row: Rect,
-        selected: bool,
     ) {
-        let Some(name_col) = columns.iter().find(|col| col.key == SortKey::Name) else {
+        let Some(name_col) = geom.columns.iter().find(|col| col.key == SortKey::Name) else {
             return;
         };
+        let PaintCtx {
+            scene,
+            transform: t,
+            text: tr,
+            theme,
+        } = ctx.reborrow();
+        let selected = self.selected_pid == Some(p.pid);
         let c = &theme.tokens.colors;
         let fs = ts(tr, theme.tokens.typography.scale.sm);
         let ty = Self::row_text_top(tr, row, fs);
@@ -3553,10 +3546,6 @@ impl MonitorApp {
     /// at a comfortable preferred width), so the box and the pills can never
     /// overlap however narrow the window. Returns its rect, for the count
     /// label.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "threads the render context plus this toolbar row's layout state through a single draw call"
-    )]
     fn draw_toolbar_search_box(
         &mut self,
         scene: &mut Scene,
@@ -3614,10 +3603,6 @@ impl MonitorApp {
     /// Count label centred in the slack between the search box and the pill
     /// cluster — only drawn when it genuinely fits, so it never overlaps a
     /// pill (the caller only calls this on a single, unstacked row).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "threads the render context plus this toolbar row's layout state through a single draw call"
-    )]
     fn draw_toolbar_count_label(
         &self,
         scene: &mut Scene,
@@ -3863,10 +3848,6 @@ impl MonitorApp {
     /// whatever vertical slack remains above the stat grid so a tall pane
     /// fills top-to-bottom cleanly instead of leaving gaps. Returns the y
     /// position for the stat grid.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "process sparklines combine paint context, content bounds and vertical position with the selected process sample"
-    )]
     fn draw_detail_sparkline(
         &self,
         scene: &mut Scene,
@@ -3942,10 +3923,6 @@ impl MonitorApp {
     #[allow(
         clippy::many_single_char_names,
         reason = "t/y/c/p/v are the standard graphics convention: transform, position, colour tokens, and this row's process/value"
-    )]
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the stat grid combines paint context and content rect with the process, its origin and the measured row height"
     )]
     fn draw_detail_stat_grid(
         scene: &mut Scene,
@@ -4266,39 +4243,24 @@ impl MonitorApp {
 
     /// One rolling chart on a raised card: a semibold title, and a faint grid
     /// that stays inside the card instead of competing with its edge.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "a chart card combines paint context and bounds with title, series, numeric ceiling and formatted axis labels"
-    )]
     fn area_chart(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
+        ctx: &mut PaintCtx<'_>,
         rect: Rect,
-        theme: &Theme,
-        title: &str,
         series: &[Series],
         max: f32,
-        axis_hi: &str,
-        axis_lo: &str,
+        labels: ChartLabels<'_>,
     ) {
-        let inner = paint::panel(scene, t, rect, theme, 12.0);
+        let theme = ctx.theme;
+        let inner = paint::panel(ctx.scene, ctx.transform, rect, theme, 12.0);
         let style = ChartStyle::default()
             .with_grid(4, Some(paint::inner_rule(theme, 26)))
             .with_title_weight(TextWeight::Semibold);
         Chart::draw_styled(
-            scene,
-            t,
-            tr,
+            ctx,
             inner,
-            theme,
             series,
             TrendRange::up_to(f64::from(max)),
-            ChartLabels {
-                title,
-                axis_hi,
-                axis_lo,
-            },
+            labels,
             &style,
         );
     }
@@ -4333,35 +4295,33 @@ impl MonitorApp {
         let metrics = &self.model.metrics;
         // CPU%.
         Self::area_chart(
-            scene,
-            t,
-            tr,
+            &mut PaintCtx::new(scene, t, tr, theme),
             cell(0),
-            theme,
-            "CPU",
             &[
                 Series::new(metrics.cpu_hist.as_slice().to_vec(), c.accent[5])
                     .with_legend(format!("{:.0}%", metrics.cpu_overall())),
             ],
             100.0,
-            "100%",
-            "0%",
+            ChartLabels {
+                title: "CPU",
+                axis_hi: "100%",
+                axis_lo: "0%",
+            },
         );
         // Memory%.
         Self::area_chart(
-            scene,
-            t,
-            tr,
+            &mut PaintCtx::new(scene, t, tr, theme),
             cell(1),
-            theme,
-            "Memory",
             &[
                 Series::new(metrics.mem_hist.as_slice().to_vec(), c.semantic.success)
                     .with_legend(format_bytes(metrics.mem_used)),
             ],
             1.0,
-            "100%",
-            "0%",
+            ChartLabels {
+                title: "Memory",
+                axis_hi: "100%",
+                axis_lo: "0%",
+            },
         );
         self.draw_resources_net_disk_charts(scene, t, tr, theme, cell(2), cell(3));
     }
@@ -4385,12 +4345,8 @@ impl MonitorApp {
             .max(1.0)
             * 1.2;
         Self::area_chart(
-            scene,
-            t,
-            tr,
+            &mut PaintCtx::new(scene, t, tr, theme),
             net_cell,
-            theme,
-            "Network",
             &[
                 Series::new(metrics.net_rx_hist.as_slice().to_vec(), c.semantic.info)
                     .with_legend(format!("↓ {}", fmt_rate(metrics.net_rx))),
@@ -4398,8 +4354,11 @@ impl MonitorApp {
                     .with_legend(format!("↑ {}", fmt_rate(metrics.net_tx))),
             ],
             net_max,
-            &fmt_rate(net_max),
-            "0",
+            ChartLabels {
+                title: "Network",
+                axis_hi: &fmt_rate(net_max),
+                axis_lo: "0",
+            },
         );
         let disk_max = metrics
             .disk_read_hist
@@ -4408,12 +4367,8 @@ impl MonitorApp {
             .max(1.0)
             * 1.2;
         Self::area_chart(
-            scene,
-            t,
-            tr,
+            &mut PaintCtx::new(scene, t, tr, theme),
             disk_cell,
-            theme,
-            "Disk I/O",
             &[
                 Series::new(
                     metrics.disk_read_hist.as_slice().to_vec(),
@@ -4427,8 +4382,11 @@ impl MonitorApp {
                 .with_legend(format!("W {}", fmt_rate(metrics.disk_write))),
             ],
             disk_max,
-            &fmt_rate(disk_max),
-            "0",
+            ChartLabels {
+                title: "Disk I/O",
+                axis_hi: &fmt_rate(disk_max),
+                axis_lo: "0",
+            },
         );
     }
 
@@ -6037,10 +5995,6 @@ impl MonitorApp {
 
     /// Page scrollbar down the right edge of the body viewport — a
     /// draggable thumb over a page-able track.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "threads the render context plus this frame's scroll geometry through a single draw call"
-    )]
     fn draw_page_scrollbar(
         &mut self,
         scene: &mut Scene,

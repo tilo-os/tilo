@@ -140,6 +140,10 @@ async fn serve(
     Ok(())
 }
 
+// The unit tests below open documents through the isolated Automerge
+// worker; the test harness serves it in place of `main`.
+tilo_automerge_isolate::test_worker!();
+
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() -> Result<()> {
     let mut args = std::env::args_os().skip(1);

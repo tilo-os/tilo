@@ -1500,7 +1500,7 @@ pub struct WordProcessorWidget {
     file_choice_domain: Option<ui::ControlDomain>,
     pending_file_choice: Option<(tilo_actions::InvocationId, u64, bool)>,
     /// A resource-invoked revision to focus after the next mutable sync has
-    /// refreshed the history model. `invoke_resource_operation` only receives
+    /// refreshed the history model. `apply_operation` only receives
     /// an immutable document, so deferring avoids a second, stale timeline.
     pending_history_revision: Option<usize>,
     // ---- paragraph-style context menu -------------------------------------
@@ -3071,8 +3071,8 @@ impl WordProcessorWidget {
         self.format = Some(format);
     }
 
-    /// Fetch the bytes of every image the document references that is not fetched yet: from the
-    /// content store, or from the document itself if an older version carried them inline.
+    /// Fetch the bytes of every image the document references that is not fetched yet from the
+    /// content store.
     /// Content that is not here stays absent, which is what draws a placeholder.
     fn refresh_images(
         blobs: &mut std::collections::BTreeMap<String, Vec<u8>>,
@@ -3085,10 +3085,7 @@ impl WordProcessorWidget {
             if blobs.contains_key(&hash) {
                 continue;
             }
-            let bytes = content
-                .read(&hash)
-                .or_else(|| tilo_doc::model::inline_content(state, c, &hash));
-            if let Some(bytes) = bytes {
+            if let Some(bytes) = content.read(&hash) {
                 // A cached "not decodable yet" result must not outlive the bytes' arrival.
                 image_cache.remove(&hash);
                 blobs.insert(hash, bytes);
@@ -4147,17 +4144,14 @@ impl WordProcessorWidget {
                 running_head_runs(b, page_no)
             };
             let align = block_align(b, TextAlign::Left);
-            let layout = RichTextLayout::shape(
+            let layout = RichTextLayout::shape_styled(
                 &mut tr.font_system,
                 &runs,
-                false,
-                size,
-                wrap_w,
+                &RichTextLayout::block_style(false, size, FontFamily::Sans, 1.0),
+                Some(wrap_w),
                 align,
-                FontFamily::Sans,
                 vec![],
                 vec![],
-                1.0,
             );
             total_h += f64::from(layout.height());
             shaped.push(layout);
@@ -5581,10 +5575,6 @@ impl WordProcessorWidget {
         self.panel_hits.push((right_wrap, PanelHit::ImageWrapRight));
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "flip toggles combine the paint context with the inspector column geometry and button width"
-    )]
     fn draw_panel_image_flip(
         &mut self,
         scene: &mut Scene,
@@ -7169,17 +7159,14 @@ impl WordProcessorWidget {
                         }
                         _ => {
                             self.dbg_layout_misses += 1;
-                            RichTextLayout::shape(
+                            RichTextLayout::shape_styled(
                                 &mut layout.text_renderer.font_system,
                                 &runs,
-                                false,
-                                16.0,
-                                wrap_w,
+                                &RichTextLayout::block_style(false, 16.0, FontFamily::Sans, 1.0),
+                                Some(wrap_w),
                                 align,
-                                FontFamily::Sans,
                                 underlines,
                                 strikes,
-                                1.0,
                             )
                         }
                     };
@@ -7242,17 +7229,14 @@ impl WordProcessorWidget {
         // Image blocks carry a trivial empty layout (used only so pointer
         // hit-testing resolves to offset 0); it is cheap, so just re-shape
         // it every frame rather than caching it incrementally.
-        let empty = RichTextLayout::shape(
+        let empty = RichTextLayout::shape_styled(
             &mut text_renderer.font_system,
             &[RichSpan::new("")],
-            false,
-            16.0,
-            fg.content_w,
+            &RichTextLayout::block_style(false, 16.0, FontFamily::Sans, 1.0),
+            Some(fg.content_w),
             TextAlign::Left,
-            FontFamily::Sans,
             vec![],
             vec![],
-            1.0,
         );
         new_cache.insert(b.id.clone(), (0, empty));
         ResolvedImage {
@@ -7499,17 +7483,14 @@ impl WordProcessorWidget {
                 // An edited block keeps the shaped lines it did not change
                 // (its other paragraphs, or the untouched chunks of a huge
                 // paragraph); any style or width change reshapes it all.
-                RichTextLayout::shape_reusing(
+                RichTextLayout::shape_styled_reusing(
                     &mut text_renderer.font_system,
                     &runs,
-                    base_bold,
-                    size,
-                    wrap_w,
+                    &RichTextLayout::block_style(base_bold, size, family, line_mult),
+                    Some(wrap_w),
                     align,
-                    family,
                     underlines,
                     strikes,
-                    line_mult,
                     previous.map(|(_, layout)| layout),
                 )
             }
@@ -8806,10 +8787,7 @@ impl WordProcessorWidget {
             {
                 let label = presence.display_name(&user);
                 presence.draw_peer_outline_labeled(
-                    scene,
-                    theme,
-                    text_renderer,
-                    ctf,
+                    &mut ui::paint::PaintCtx::new(scene, ctf, text_renderer, theme),
                     &user,
                     &label,
                     bounds,
@@ -10192,6 +10170,12 @@ impl WordProcessorWidget {
 }
 
 impl Widget for WordProcessorWidget {
+    ui::provides!(
+        dyn ui::collaboration::participants::Participants,
+        dyn ui::undo::CommittedActions,
+        dyn ui::undo::LocalUndo
+    );
+
     fn action_directory_invocation_domain(
         &self,
         _doc: &AutoCommit,
@@ -10625,15 +10609,6 @@ impl Widget for WordProcessorWidget {
         // Status is persistent bottom chrome, so it has no independent fade
         // lifecycle to animate while the editor is otherwise idle.
         false
-    }
-
-    fn handle_local_undo_request(&mut self, _request: ui::undo::UndoRequest) -> bool {
-        // The host resolves Undo before dispatching keyboard events to us.
-        // An open menu must capture that path as well as ordinary editing keys.
-        self.context_menu.is_open()
-            || self.style_menu.is_open()
-            || self.template_picker.is_open()
-            || self.pending_replacement.is_some()
     }
 
     fn wants_tab_input(&self) -> bool {
@@ -11434,14 +11409,6 @@ impl Widget for WordProcessorWidget {
         self.lifecycle.needs_commit = false;
         self.save_status = DocumentSaveStatus::Modified;
     }
-    /// Hand the host the heads captured before an on-screen affordance dispatched
-    /// a [`RichTextAction`](crate::actions) through
-    /// `Self::perform_action`, so it records one undo boundary bracketing the
-    /// affordance's change (the button-driven twin of the Ctrl+K palette).
-    /// Rising-edge: cleared on read.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
-    }
     fn take_action_palette_request(&mut self) -> Option<tilo_actions::ActionAddress> {
         self.action_palette_request.take()
     }
@@ -11506,6 +11473,43 @@ impl Widget for WordProcessorWidget {
         };
         find(self.participant_resources(Some(participant), doc), id)
     }
+    fn needs_redraw(&self) -> bool {
+        self.lifecycle.dirty
+    }
+    fn mark_drawn(&mut self) {
+        self.lifecycle.dirty = false;
+    }
+    /// One self-drawn taffy leaf filling its tile: its size follows the
+    /// parent alone, so only the first layout is a size change. Pages,
+    /// toolbars and panels are positioned inside `self.rect` by hand.
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == Rect::ZERO
+    }
+}
+
+impl ui::undo::LocalUndo for WordProcessorWidget {
+    fn handle_local_undo_request(&mut self, _request: ui::undo::UndoRequest) -> bool {
+        // The host resolves Undo before dispatching keyboard events to us.
+        // An open menu must capture that path as well as ordinary editing keys.
+        self.context_menu.is_open()
+            || self.style_menu.is_open()
+            || self.template_picker.is_open()
+            || self.pending_replacement.is_some()
+    }
+}
+
+impl ui::undo::CommittedActions for WordProcessorWidget {
+    /// Hand the host the heads captured before an on-screen affordance dispatched
+    /// a [`RichTextAction`](crate::actions) through
+    /// `Self::perform_action`, so it records one undo boundary bracketing the
+    /// affordance's change (the button-driven twin of the Ctrl+K palette).
+    /// Rising-edge: cleared on read.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
+    }
+}
+
+impl ui::collaboration::participants::Participants for WordProcessorWidget {
     /// An agent task joined: its view is placed at the document end on the
     /// next sync (no document here) and published as presence from then on.
     fn join_participant(&mut self, participant: &tilo_actions::ParticipantId) -> bool {
@@ -11519,26 +11523,14 @@ impl Widget for WordProcessorWidget {
         self.participants.remove(participant);
         self.lifecycle.dirty = true;
     }
-    fn set_participant_host(&mut self, host: bool) {
-        self.participant_host = host;
-    }
     fn set_participant_label(&mut self, participant: &tilo_actions::ParticipantId, label: &str) {
         WordProcessorWidget::set_participant_label(self, participant, label);
     }
     fn participant_presence(&self, doc: &AutoCommit) -> Vec<ui::ParticipantPresence> {
         WordProcessorWidget::participant_presence(self, doc)
     }
-    fn needs_redraw(&self) -> bool {
-        self.lifecycle.dirty
-    }
-    fn mark_drawn(&mut self) {
-        self.lifecycle.dirty = false;
-    }
-    /// One self-drawn taffy leaf filling its tile: its size follows the
-    /// parent alone, so only the first layout is a size change. Pages,
-    /// toolbars and panels are positioned inside `self.rect` by hand.
-    fn is_layout_dirty(&self) -> bool {
-        self.rect == Rect::ZERO
+    fn set_participant_host(&mut self, host: bool) {
+        self.participant_host = host;
     }
 }
 
@@ -11678,17 +11670,14 @@ impl WordProcessorWidget {
             .map(|block| block.text.as_str())
             .collect::<Vec<_>>()
             .join(" ");
-        let root_layout = RichTextLayout::shape(
+        let root_layout = RichTextLayout::shape_styled(
             &mut tr.font_system,
             &[RichSpan::new(format!("{}  {}", comment.author, root))],
-            false,
-            THREAD_ROOT_FONT,
-            num::f32_of_f64(width - 2.0 * pad),
+            &RichTextLayout::block_style(false, THREAD_ROOT_FONT, FontFamily::Sans, 1.0),
+            Some(num::f32_of_f64(width - 2.0 * pad)),
             TextAlign::Left,
-            FontFamily::Sans,
             vec![],
             vec![],
-            1.0,
         );
         tr.draw_rich(
             scene,
@@ -14099,10 +14088,6 @@ fn is_dnd_spool_path(path: &std::path::Path) -> bool {
 #[path = "widget/mark_boundary_tests.rs"]
 mod mark_boundary_tests;
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "legacy buttons take the paint context, chrome colours, rect, label and two independent style flags"
-)]
 fn draw_legacy_btn(
     scene: &mut Scene,
     transform: Affine,

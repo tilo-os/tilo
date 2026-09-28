@@ -8,14 +8,15 @@
 use std::ops::Range;
 use std::sync::Arc;
 
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Point, Rect};
 use vello::peniko::Color;
 use winit::event::{ElementState, Ime, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use crate::color_compat::ColorCompat;
+use crate::paint::PaintCtx;
 use crate::richtext::RichTextLayout;
-use crate::text_render::{TextRenderer, TextStyle};
+use crate::text_render::TextStyle;
 use crate::text_selection::{
     Selection, clipboard_copy, clipboard_paste, next_char_boundary, next_word_boundary,
     prev_char_boundary, prev_word_boundary,
@@ -39,6 +40,38 @@ pub enum QueryEventChange {
     Ignored,
     Display,
     Edited,
+}
+
+/// The query a [`QueryComposition`] paints: the committed text and its
+/// selection, the placeholder shown while it is empty, and whether the caret
+/// is visible.
+#[derive(Clone, Copy, Debug)]
+pub struct QueryView<'a> {
+    pub text: &'a str,
+    pub selection: &'a Selection,
+    pub placeholder: &'a str,
+    pub show_caret: bool,
+}
+
+/// The colours a [`QueryComposition`] paints with.
+#[derive(Clone, Copy, Debug)]
+pub struct QueryInk {
+    pub text: Color,
+    pub placeholder: Color,
+    pub selection: Color,
+    pub caret: Color,
+}
+
+impl QueryInk {
+    /// Caret in `accent`, selection bands in `accent` at 30% alpha.
+    pub fn accented(text: Color, placeholder: Color, accent: Color) -> Self {
+        Self {
+            text,
+            placeholder,
+            selection: accent.with_alpha_factor(0.3),
+            caret: accent,
+        }
+    }
 }
 
 /// Retained shaping and IME state for an inline query editor.
@@ -303,26 +336,23 @@ impl QueryComposition {
     /// Paint an unwrapped query into a clipped viewport. The shaped caret is
     /// kept visible by horizontal scrolling; placeholder, selection and
     /// preedit use the same layout and baseline.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Query text, selection, viewport and paint colors share one shaped layout and baseline."
-    )]
     pub fn draw(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        renderer: &mut TextRenderer,
-        text: &str,
-        selection: &Selection,
-        placeholder: &str,
+        ctx: &mut PaintCtx<'_>,
+        query: QueryView<'_>,
         rect: Rect,
         style: &TextStyle,
-        ink: Color,
-        dim_ink: Color,
-        selection_color: Color,
-        caret_color: Color,
-        show_caret: bool,
+        ink: QueryInk,
     ) {
+        let QueryView {
+            text,
+            selection,
+            placeholder,
+            show_caret,
+        } = query;
+        let transform = ctx.transform;
+        let scene = &mut *ctx.scene;
+        let renderer = &mut *ctx.text;
         let composing = !self.preedit.is_empty();
         let shows_placeholder = text.is_empty() && !composing;
         let display = if shows_placeholder {
@@ -401,7 +431,7 @@ impl QueryComposition {
                     scene.fill(
                         vello::peniko::Fill::NonZero,
                         transform,
-                        selection_color,
+                        ink.selection,
                         None,
                         &band,
                     );
@@ -412,13 +442,17 @@ impl QueryComposition {
             scene,
             layout,
             transform.pre_translate(origin.to_vec2()),
-            if shows_placeholder { dim_ink } else { ink },
+            if shows_placeholder {
+                ink.placeholder
+            } else {
+                ink.text
+            },
         );
         if show_caret {
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
-                caret_color,
+                ink.caret,
                 None,
                 &caret,
             );
@@ -561,7 +595,9 @@ fn handle_command_shortcut(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::text_render::FontChoice;
+    use crate::text_render::{FontChoice, TextRenderer};
+    use vello::Scene;
+    use vello::kurbo::Affine;
 
     fn key(logical_key: Key, text: Option<&str>) -> WindowEvent {
         let mut event: KeyEvent = unsafe { std::mem::zeroed() };
@@ -693,19 +729,26 @@ mod tests {
             let mut scene = Scene::new();
             let rect = Rect::new(10.0, 10.0, 210.0, 42.0);
             composition.draw(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut renderer,
-                &text,
-                &selection,
-                "Search…",
+                &mut PaintCtx::new(
+                    &mut scene,
+                    Affine::IDENTITY,
+                    &mut renderer,
+                    &crate::theme::Theme::dark(),
+                ),
+                QueryView {
+                    text: &text,
+                    selection: &selection,
+                    placeholder: "Search…",
+                    show_caret: true,
+                },
                 rect,
                 &TextStyle::new(16.0).with_family(FontChoice::SansSerif),
-                Color::WHITE,
-                Color::from_rgb8(128, 128, 128),
-                Color::from_rgba8(80, 100, 255, 100),
-                Color::WHITE,
-                true,
+                QueryInk {
+                    text: Color::WHITE,
+                    placeholder: Color::from_rgb8(128, 128, 128),
+                    selection: Color::from_rgba8(80, 100, 255, 100),
+                    caret: Color::WHITE,
+                },
             );
             assert!(rect.contains(composition.ime_cursor_rect().unwrap().center()));
             assert_eq!(text, "ab");
@@ -729,19 +772,26 @@ mod tests {
                         text: &str,
                         selection: &Selection| {
                 composition.draw(
-                    scene,
-                    Affine::IDENTITY,
-                    renderer,
-                    text,
-                    selection,
-                    "Search…",
+                    &mut PaintCtx::new(
+                        scene,
+                        Affine::IDENTITY,
+                        renderer,
+                        &crate::theme::Theme::dark(),
+                    ),
+                    QueryView {
+                        text,
+                        selection,
+                        placeholder: "Search…",
+                        show_caret: true,
+                    },
                     rect,
                     &style,
-                    Color::WHITE,
-                    Color::from_rgb8(128, 128, 128),
-                    Color::from_rgba8(80, 100, 255, 100),
-                    Color::WHITE,
-                    true,
+                    QueryInk {
+                        text: Color::WHITE,
+                        placeholder: Color::from_rgb8(128, 128, 128),
+                        selection: Color::from_rgba8(80, 100, 255, 100),
+                        caret: Color::WHITE,
+                    },
                 );
             };
 
@@ -785,19 +835,26 @@ mod tests {
         let style = TextStyle::new(16.0).with_family(FontChoice::SansSerif);
         let mut draw = |composition: &mut QueryComposition, renderer: &mut TextRenderer| {
             composition.draw(
-                &mut scene,
-                Affine::IDENTITY,
-                renderer,
-                &text,
-                &selection,
-                "",
+                &mut PaintCtx::new(
+                    &mut scene,
+                    Affine::IDENTITY,
+                    renderer,
+                    &crate::theme::Theme::dark(),
+                ),
+                QueryView {
+                    text: &text,
+                    selection: &selection,
+                    placeholder: "",
+                    show_caret: true,
+                },
                 Rect::new(0.0, 0.0, 220.0, 36.0),
                 &style,
-                Color::WHITE,
-                Color::WHITE,
-                Color::WHITE,
-                Color::WHITE,
-                true,
+                QueryInk {
+                    text: Color::WHITE,
+                    placeholder: Color::WHITE,
+                    selection: Color::WHITE,
+                    caret: Color::WHITE,
+                },
             );
         };
         draw(&mut composition, &mut renderer);

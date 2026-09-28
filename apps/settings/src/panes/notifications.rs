@@ -219,7 +219,7 @@ pub struct NotificationsPane {
     composed: Option<Box<dyn Widget>>,
     rect: Rect,
     /// Framework-owned action dispatch: brackets the undo boundary (bubbled up by
-    /// `SettingsApp` via [`Widget::take_committed_action`], so the host records
+    /// `SettingsApp` via [`CommittedActions::take_committed_action`](ui::undo::CommittedActions::take_committed_action), so the host records
     /// exactly one boundary per event), encodes and dispatches each settings
     /// action, and remembers the last one so a test can prove an on-screen toggle
     /// builds the same [`EncodedAction`] the palette does.
@@ -862,6 +862,8 @@ pub fn build() -> Box<dyn Widget> {
 }
 
 impl Widget for NotificationsPane {
+    ui::provides!(dyn ui::undo::CommittedActions);
+
     fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
         let (state, root) = ui::doc::document(state, root);
         self.seed_if_needed(state, root);
@@ -965,7 +967,9 @@ impl Widget for NotificationsPane {
     fn get_rect(&self) -> Rect {
         self.rect
     }
+}
 
+impl ui::undo::CommittedActions for NotificationsPane {
     /// Hand the host the heads captured before an on-screen toggle dispatched its
     /// settings action, so it records one undo boundary for it (bubbled up to the
     /// root by `SettingsApp`). Rising-edge: cleared on read.
@@ -1245,7 +1249,7 @@ mod tests {
                 "attributed to the local user, so their Ctrl+Z can reach it"
             );
             assert!(
-                pane.take_committed_action().is_none(),
+                ui::undo::take_committed_action(&mut pane).is_none(),
                 "the bracket is rising-edge"
             );
 
@@ -1268,7 +1272,7 @@ mod tests {
                 "the toggle's scratch mirrors the reverted value"
             );
             assert!(
-                pane.take_committed_action().is_none(),
+                ui::undo::take_committed_action(&mut pane).is_none(),
                 "mirroring the revert dispatches nothing"
             );
         }

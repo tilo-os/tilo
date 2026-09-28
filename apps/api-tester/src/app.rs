@@ -49,7 +49,7 @@ use ui::icons::Icon;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::richtext::{RichSpan, RichTextLayout, TextAlign};
-use ui::text_render::{TextRenderer, TextStyle, TextWeight};
+use ui::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
@@ -2935,16 +2935,13 @@ impl ApiTesterApp {
                 let mut cx = text_x0;
                 for tok in &line.tokens {
                     let col = token_color(theme, tok.kind);
-                    tr.draw_text_styled(
+                    tr.draw_style(
                         scene,
                         &tok.text,
-                        size,
                         col,
                         t * Affine::translate((cx, screen_y + 3.0)),
                         None,
-                        TextWeight::Regular,
-                        false,
-                        true,
+                        &TextStyle::new(size).with_family(FontChoice::Monospace),
                     );
                     let (w, _) =
                         tr.measure_styled(&tok.text, size, None, TextWeight::Regular, false, true);
@@ -2997,16 +2994,13 @@ impl ApiTesterApp {
         let mut y = area.y0 + 8.0 - self.body_scroll;
         for line in body.lines() {
             if y + line_h >= area.y0 && y <= area.y1 {
-                tr.draw_text_styled(
+                tr.draw_style(
                     scene,
                     line,
-                    size,
                     c.text_primary,
                     t * Affine::translate((area.x0 + PAD, y + 3.0)),
                     None,
-                    TextWeight::Regular,
-                    false,
-                    true,
+                    &TextStyle::new(size).with_family(FontChoice::Monospace),
                 );
             }
             y += line_h;
@@ -3414,6 +3408,8 @@ fn draw_fold_caret(scene: &mut Scene, t: Affine, center: Point, color: Color, ex
 // ===========================================================================
 
 impl Widget for ApiTesterApp {
+    ui::provides!(dyn ui::undo::CommittedActions);
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::API_TESTER_OPERATION_TYPE]
     }
@@ -3942,13 +3938,6 @@ impl Widget for ApiTesterApp {
         vec![Box::new(self.search_provider.clone())]
     }
 
-    /// Drain the undo boundary the [`ActionHost`](ui::ActionHost) bracketed for
-    /// this event so the shell records exactly one undo point per dispatched
-    /// action — the same path a Ctrl+K palette dispatch takes.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
-    }
-
     fn start_operation(
         &mut self,
         op: &ui::widget::ResourceOperation<'_>,
@@ -4042,6 +4031,15 @@ impl Widget for ApiTesterApp {
 
     fn needs_idle_sync(&self) -> bool {
         self.sending || !self.pending_history.is_empty() || !self.adopted
+    }
+}
+
+impl ui::undo::CommittedActions for ApiTesterApp {
+    /// Drain the undo boundary the [`ActionHost`](ui::ActionHost) bracketed for
+    /// this event so the shell records exactly one undo point per dispatched
+    /// action — the same path a Ctrl+K palette dispatch takes.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
     }
 }
 

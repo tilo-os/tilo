@@ -1,5 +1,6 @@
 //! The native system-search filter strip: paint, hit targets and accessibility.
 use super::{ResourceKind, SearchScope};
+use crate::paint::PaintCtx;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use vello::Scene;
@@ -101,6 +102,15 @@ impl Default for FilterText {
         }
     }
 }
+/// The band a palette host reserves for the filter strip: where it sits, the
+/// height of one chip row, and how many rows the current layout allows for.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FilterStripSlot {
+    pub band: Rect,
+    pub row_height: f64,
+    pub reserved_rows: usize,
+}
+
 #[derive(Clone)]
 pub struct SearchFilters {
     pub search_chip_rects: Vec<Rect>,
@@ -166,26 +176,17 @@ impl SearchFilters {
         self.kinds.iter().map(|chip| &chip.kind)
     }
     /// Paint into the CommandPalette host strip. Return the row reservation for the next layout.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "The draw operation receives the shared renderer, geometry, theme and current filter state."
-    )]
     pub fn draw(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        renderer: &mut TextRenderer,
-        theme: &Theme,
-        band: Rect,
-        row_height: f64,
-        reserved_rows: usize,
+        ctx: &mut PaintCtx<'_>,
+        slot: FilterStripSlot,
         hover: Option<Point>,
     ) -> usize {
-        self.band = band;
-        self.row_height = row_height;
-        self.reserved_rows = reserved_rows;
+        self.band = slot.band;
+        self.row_height = slot.row_height;
+        self.reserved_rows = slot.reserved_rows;
         self.last_cursor = hover;
-        self.draw_search_banner(scene, transform, renderer, theme);
+        self.draw_search_banner(ctx.scene, ctx.transform, ctx.text, ctx.theme);
         self.search_chip_rows
     }
     pub fn search_banner_rect(&self) -> Rect {
@@ -959,10 +960,6 @@ pub fn share_row(natural: &[f64], available: f64, gap: f64) -> Vec<f64> {
 /// that tier painted, so it stays legible on every preset. Until
 /// 2026-09-17 the chosen chip wore `accent[5]` (§9.4 reserves accent for
 /// live state) and the idle one a `lift(0.35)` wash of its own.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "immediate-mode paint helper: scene, transform, renderer, theme and this chip's own content"
-)]
 pub fn draw_filter_chip(
     scene: &mut Scene,
     transform: Affine,

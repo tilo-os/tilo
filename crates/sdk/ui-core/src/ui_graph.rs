@@ -429,71 +429,22 @@ fn reconcile_node(
                 children: old_children,
                 ..
             },
-            UiNode::Column {
-                id,
-                children: new_children,
-                gap,
-                no_padding,
-                intrinsic_height,
-                fill_remaining_height,
-            },
-        ) => reconcile_column(
-            old,
-            old_children,
-            id,
-            new_children,
-            *gap,
-            *no_padding,
-            *intrinsic_height,
-            *fill_remaining_height,
-            context,
-        ),
+            UiNode::Column { .. },
+        ) => reconcile_column(old, old_children, new_node, context),
         (
             UiNode::Row {
                 children: old_children,
                 ..
             },
-            UiNode::Row {
-                id,
-                children: new_children,
-                no_wrap,
-                fill_remaining_height,
-            },
-        ) => reconcile_row(
-            old,
-            old_children,
-            id,
-            new_children,
-            *no_wrap,
-            *fill_remaining_height,
-            context,
-        ),
+            UiNode::Row { .. },
+        ) => reconcile_row(old, old_children, new_node, context),
         (
             UiNode::Container {
                 child: old_child_node,
                 ..
             },
-            UiNode::Container {
-                id,
-                child: new_child_node,
-                background,
-                no_padding,
-                fill_height,
-                width,
-                height,
-            },
-        ) => reconcile_container(
-            old,
-            old_child_node,
-            id,
-            new_child_node,
-            *background,
-            *no_padding,
-            *fill_height,
-            *width,
-            *height,
-            context,
-        ),
+            UiNode::Container { .. },
+        ) => reconcile_container(old, old_child_node, new_node, context),
         _ => {
             let snapshot = widget_state_snapshot(old.as_ref());
             let focused = focused_widget_snapshot(old.as_ref());
@@ -507,119 +458,104 @@ fn reconcile_node(
     }
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "column graph props are applied together during one reconcile step"
-)]
+/// Rebuilding `new_node` from scratch is the fallback whenever the retained
+/// widget is not the matching kind.
 fn reconcile_column(
     mut old: Element,
     old_children: &[UiNode],
-    id: &str,
-    new_children: &[UiNode],
-    gap: Option<f32>,
-    no_padding: bool,
-    intrinsic_height: bool,
-    fill_remaining_height: bool,
+    new_node: &UiNode,
     context: &UiBuildContext,
 ) -> Result<(Element, bool), UiGraphError> {
-    let Some(column) = old
-        .as_any_mut()
-        .and_then(|any| any.downcast_mut::<Column>())
+    let (
+        UiNode::Column {
+            id,
+            children: new_children,
+            gap,
+            no_padding,
+            intrinsic_height,
+            fill_remaining_height,
+        },
+        Some(column),
+    ) = (
+        new_node,
+        old.as_any_mut()
+            .and_then(|any| any.downcast_mut::<Column>()),
+    )
     else {
-        return Ok((
-            build_node(
-                &UiNode::Column {
-                    id: id.to_owned(),
-                    children: new_children.to_vec(),
-                    gap,
-                    no_padding,
-                    intrinsic_height,
-                    fill_remaining_height,
-                },
-                context,
-            )?,
-            true,
-        ));
+        return Ok((build_node(new_node, context)?, true));
     };
     let previous = column.take_children();
     let (next, topology) = reconcile_child_list(previous, old_children, new_children, context)?;
     column.set_children(next);
-    column.apply_graph_props(id, gap, no_padding, intrinsic_height, fill_remaining_height);
+    column.apply_graph_props(
+        id,
+        *gap,
+        *no_padding,
+        *intrinsic_height,
+        *fill_remaining_height,
+    );
     Ok((old, topology))
 }
 
 fn reconcile_row(
     mut old: Element,
     old_children: &[UiNode],
-    id: &str,
-    new_children: &[UiNode],
-    no_wrap: bool,
-    fill_remaining_height: bool,
+    new_node: &UiNode,
     context: &UiBuildContext,
 ) -> Result<(Element, bool), UiGraphError> {
-    let Some(row) = old.as_any_mut().and_then(|any| any.downcast_mut::<Row>()) else {
-        return Ok((
-            build_node(
-                &UiNode::Row {
-                    id: id.to_owned(),
-                    children: new_children.to_vec(),
-                    no_wrap,
-                    fill_remaining_height,
-                },
-                context,
-            )?,
-            true,
-        ));
+    let (
+        UiNode::Row {
+            id,
+            children: new_children,
+            no_wrap,
+            fill_remaining_height,
+        },
+        Some(row),
+    ) = (
+        new_node,
+        old.as_any_mut().and_then(|any| any.downcast_mut::<Row>()),
+    )
+    else {
+        return Ok((build_node(new_node, context)?, true));
     };
     let previous = row.take_children();
     let (next, topology) = reconcile_child_list(previous, old_children, new_children, context)?;
     row.set_children(next);
-    row.apply_graph_props(id, no_wrap, fill_remaining_height);
+    row.apply_graph_props(id, *no_wrap, *fill_remaining_height);
     Ok((old, topology))
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "container graph props are applied together during one reconcile step"
-)]
 fn reconcile_container(
     mut old: Element,
     old_child_node: &UiNode,
-    id: &str,
-    new_child_node: &UiNode,
-    background: bool,
-    no_padding: bool,
-    fill_height: bool,
-    width: Option<f32>,
-    height: Option<f32>,
+    new_node: &UiNode,
     context: &UiBuildContext,
 ) -> Result<(Element, bool), UiGraphError> {
-    let Some(container) = old
-        .as_any_mut()
-        .and_then(|any| any.downcast_mut::<Container>())
+    let (
+        UiNode::Container {
+            id,
+            child: new_child_node,
+            background,
+            no_padding,
+            fill_height,
+            width,
+            height,
+        },
+        Some(container),
+    ) = (
+        new_node,
+        old.as_any_mut()
+            .and_then(|any| any.downcast_mut::<Container>()),
+    )
     else {
-        return Ok((
-            build_node(
-                &UiNode::Container {
-                    id: id.to_owned(),
-                    child: Box::new(new_child_node.clone()),
-                    background,
-                    no_padding,
-                    fill_height,
-                    width,
-                    height,
-                },
-                context,
-            )?,
-            true,
-        ));
+        return Ok((build_node(new_node, context)?, true));
     };
     let previous = container
         .take_child()
         .unwrap_or_else(|| Box::new(Spacer::new()));
     let (child, topology) = reconcile_node(previous, old_child_node, new_child_node, context)?;
     container.set_child(child);
-    container.apply_graph_props(id, background, no_padding, fill_height, width, height);
+    container.apply_graph_props(id, *background, *no_padding, *fill_height, *width, *height);
     Ok((old, topology))
 }
 
@@ -1571,26 +1507,6 @@ impl Widget for LiveUi {
         };
         self.invoke_graph_operation(request.type_id, request.payload)
             .map(|output| Some(crate::widget::ResourceOperationStart::Completed(output)))
-    }
-
-    /// Legacy adapter: apps not yet on [`Widget::start_operation`] still reach
-    /// the live graph through their read-only routing.
-    fn invoke_resource_operation_v2(
-        &mut self,
-        kind: crate::tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<crate::tilo_actions::ActionOutput>, String> {
-        if type_id.starts_with(LIVE_GRAPH_OPERATION) {
-            if kind == crate::tilo_actions::OperationKind::Document {
-                return Ok(None);
-            }
-            return self.invoke_graph_operation(type_id, payload).map(Some);
-        }
-        self.child
-            .invoke_resource_operation_v2(kind, type_id, payload, doc, path)
     }
 
     fn draw_with_presence(
@@ -3112,6 +3028,8 @@ fn delete_button(
 }
 
 impl Widget for UiGraphEditor {
+    crate::provides!(dyn crate::undo::LocalUndo);
+
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.rebuild_if_changed();
         self.child.sync(state, path);
@@ -3225,6 +3143,27 @@ impl Widget for UiGraphEditor {
             || self.child.needs_idle_sync()
     }
 
+    fn draw_with_presence(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut crate::text_render::TextRenderer,
+        theme: &Theme,
+        presence: &crate::presence::PresenceCtx,
+        permissions: &crate::permissions::PermissionContext,
+    ) {
+        self.child.draw_with_presence(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            presence,
+            permissions,
+        );
+    }
+}
+
+impl crate::undo::LocalUndo for UiGraphEditor {
     fn handle_local_undo_request(&mut self, request: crate::undo::UndoRequest) -> bool {
         if !widget_tree_has_focus(self.child.as_ref()) {
             return false;
@@ -3245,25 +3184,6 @@ impl Widget for UiGraphEditor {
             (_, Err(error)) => status.set(format!("History action failed: {error}")),
         }
         true
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut crate::text_render::TextRenderer,
-        theme: &Theme,
-        presence: &crate::presence::PresenceCtx,
-        permissions: &crate::permissions::PermissionContext,
-    ) {
-        self.child.draw_with_presence(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-            permissions,
-        );
     }
 }
 

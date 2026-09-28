@@ -819,13 +819,13 @@ fn toolbar_and_palette_actions_dispatch_through_their_specs() {
             before,
             "the affordance mutated the document"
         );
-        let bracket = Widget::take_committed_action(&mut wp).expect("an undo bracket was armed");
+        let bracket = ui::undo::take_committed_action(&mut wp).expect("an undo bracket was armed");
         assert_eq!(
             bracket, before,
             "the boundary brackets the pre-affordance heads"
         );
         assert!(
-            Widget::take_committed_action(&mut wp).is_none(),
+            ui::undo::take_committed_action(&mut wp).is_none(),
             "the bracket is rising-edge (cleared on read)"
         );
 

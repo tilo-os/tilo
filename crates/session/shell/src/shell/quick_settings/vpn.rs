@@ -272,11 +272,6 @@ impl QuickSettingsVpnPane {
         VpnPaneOutcome::Reconcile
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one positional argument per painted value, matching the sibling \
-                  wifi/bluetooth drill-in panes this is called alongside"
-    )]
     pub fn draw(
         &mut self,
         scene: &mut Scene,

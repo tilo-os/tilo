@@ -304,19 +304,16 @@ impl MailDoc {
     }
 
     /// Whether an id is currently a valid, materialised message target.
-    /// Explicit tombstones fail closed. A legacy flags entry remains accepted
-    /// so documents created before this registry was introduced retain their
-    /// existing action history rather than becoming read-only after upgrade.
+    /// Explicit tombstones and unregistered ids fail closed.
     pub fn is_present_message(doc: &AutoCommit, id: &str) -> bool {
-        if let Ok(Some((Value::Object(ObjType::Map), messages))) = doc.get(&ROOT, "messages")
-            && let Ok(Some((Value::Object(ObjType::Map), entry))) = doc.get(&messages, id)
-        {
-            if read_bool(doc, &entry, "purged") == Some(true) {
-                return false;
-            }
-            return read_bool(doc, &entry, "present").unwrap_or(false);
-        }
-        Self::flag_entry_ref(doc, id).is_some()
+        let Ok(Some((Value::Object(ObjType::Map), messages))) = doc.get(&ROOT, "messages") else {
+            return false;
+        };
+        let Ok(Some((Value::Object(ObjType::Map), entry))) = doc.get(&messages, id) else {
+            return false;
+        };
+        read_bool(doc, &entry, "purged") != Some(true)
+            && read_bool(doc, &entry, "present").unwrap_or(false)
     }
 
     /// Record a permanent local purge. Unlike a missing registry entry this is

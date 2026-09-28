@@ -27,7 +27,7 @@ use crate::actions::{self, DiffmergeAction, HunkChoice, MergeResourceCtx};
 use crate::doc::MergeDoc;
 use crate::highlight;
 use crate::model::{MergeHunk, MergeModel, Resolution};
-use ui::paint::with_alpha;
+use ui::paint::{PaintCtx, with_alpha};
 use ui::widget::code_editor::Span;
 
 /// Minimum code-line pitch; the measured line height of `FONT_SIZE` wins
@@ -672,22 +672,15 @@ impl MergeView {
     /// chips. Populates `self.action_hits` for the next click hit-test.
     /// Hunk tint per side plus the active-hunk highlight ring (part of
     /// [`Self::draw_hunks`]).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each argument is an independently-meaningful draw input; a params struct would just be destructured back apart immediately"
-    )]
     fn draw_hunk_tint(
-        scene: &mut Scene,
-        transform: Affine,
-        theme: &Theme,
-        r: Rect,
-        col_w: f64,
+        ctx: &mut PaintCtx<'_>,
+        block: Rect,
         compact_source: Option<SourcePane>,
-        y: f64,
-        block_h: f64,
         h: &MergeHunk,
         is_active: bool,
     ) {
+        let col_w = block.width() / 3.0;
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         // Hunk tint per side.
         let (ours_tint, theirs_tint) = match h.resolution {
@@ -715,61 +708,87 @@ impl MergeView {
                 SourcePane::Theirs => theirs_tint,
             };
             if let Some(t) = tint {
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    t,
-                    None,
-                    &Rect::new(r.x0, y, r.x1, y + block_h),
-                );
+                ctx.fill_rect(block, t);
             }
         } else {
             if let Some(t) = ours_tint {
-                let rect = Rect::new(r.x0 + col_w, y, r.x0 + 2.0 * col_w, y + block_h);
-                scene.fill(Fill::NonZero, transform, t, None, &rect);
+                let rect = Rect::new(block.x0 + col_w, block.y0, block.x0 + 2.0 * col_w, block.y1);
+                ctx.fill_rect(rect, t);
             }
             if let Some(t) = theirs_tint {
-                let rect = Rect::new(r.x0 + 2.0 * col_w, y, r.x1, y + block_h);
-                scene.fill(Fill::NonZero, transform, t, None, &rect);
+                let rect = Rect::new(block.x0 + 2.0 * col_w, block.y0, block.x1, block.y1);
+                ctx.fill_rect(rect, t);
             }
         }
 
         // Active hunk highlight ring.
         if is_active && h.is_change {
-            let ring = RoundedRect::new(r.x0 + 1.0, y - 1.0, r.x1 - 1.0, y + block_h + 1.0, 3.0);
-            scene.stroke(&Stroke::new(1.5), transform, c.accent[5], None, &ring);
+            let ring = Rect::new(
+                block.x0 + 1.0,
+                block.y0 - 1.0,
+                block.x1 - 1.0,
+                block.y1 + 1.0,
+            );
+            ctx.stroke_round(ring, 3.0, c.accent[5], 1.5);
         }
     }
 
-    /// The resolution status label + take-ours/theirs/both chips for a
-    /// change hunk (part of [`Self::draw_hunks`]). `action_hits` is passed
-    /// explicitly (rather than through `&mut self`) so the caller can keep
-    /// its own `&self.model.hunks` borrow alive across the call.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each argument is an independently-meaningful draw input; a params struct would just be destructured back apart immediately"
-    )]
-    #[expect(
-        clippy::many_single_char_names,
-        reason = "c/m/y/r/h follow this file's graphics convention (colour tokens, metrics, position, rect, hunk)"
-    )]
-    fn draw_hunk_action_chips(
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        r: Rect,
-        col_w: f64,
-        y: f64,
-        block_h: f64,
-        hi: usize,
+    /// The resolution status label + take-ours/theirs/both chips painted
+    /// under hunk `hi`'s `block` (part of [`Self::draw_hunks`]). Returns the
+    /// chips' hit targets.
+    /// Hunk `h`'s resolution status label, under `block` on the left. On a
+    /// phone, keep this semantically distinct from the source switcher and the
+    /// mutation chips: it says whether the hunk still needs a resolution, while
+    /// every chip says what it will do. Returns the label's right edge.
+    fn draw_hunk_status(
+        ctx: &mut PaintCtx<'_>,
+        block: Rect,
         h: &MergeHunk,
-        action_hits: &mut Vec<ActionHit>,
         compact: bool,
         m: Metrics,
-    ) {
+    ) -> f64 {
+        let ay = block.y1 + 2.0;
+        let status = resolution_label(h.resolution);
+        let status_label = if compact {
+            compact_status_label(h.resolution)
+        } else {
+            status.0
+        };
+        let status_x = if compact {
+            block.x0 + PAD_X
+        } else {
+            block.x0 + block.width() / 3.0 + PAD_X
+        };
+        let (status_w, status_h) = ctx.text.measure(status_label, CHIP_FONT_SIZE, None);
+        ctx.text.draw_text(
+            ctx.scene,
+            status_label,
+            CHIP_FONT_SIZE,
+            status.1.color(&ctx.theme.tokens.colors),
+            ctx.transform
+                * Affine::translate((status_x, ay + (m.chip_h - f64::from(status_h)) / 2.0)),
+            None,
+        );
+        status_x + f64::from(status_w)
+    }
+
+    fn draw_hunk_action_chips(
+        ctx: &mut PaintCtx<'_>,
+        block: Rect,
+        (hi, h): (usize, &MergeHunk),
+        compact: bool,
+        m: Metrics,
+    ) -> Vec<ActionHit> {
+        let PaintCtx {
+            scene,
+            transform,
+            text: tr,
+            theme,
+        } = ctx.reborrow();
+        let (r, col_w) = (block, block.width() / 3.0);
+        let mut action_hits = Vec::with_capacity(3);
         let c = &theme.tokens.colors;
-        let ay = y + block_h + 2.0;
+        let ay = block.y1 + 2.0;
         // Chip hues track the theme so a palette / high-contrast swap
         // keeps the resolution controls coherent: ours = success (green),
         // theirs = info (blue), both = the neutral dim tone — mirroring
@@ -786,28 +805,12 @@ impl MergeView {
             (CHIP_PAD_X, f64::from(sp.s2))
         };
 
-        // Status label on the left. On a phone, keep this semantically distinct
-        // from the source switcher and the mutation chips: it says whether the
-        // hunk still needs a resolution, while every chip says what it will do.
-        let status = resolution_label(h.resolution);
-        let status_label = if compact {
-            compact_status_label(h.resolution)
-        } else {
-            status.0
-        };
-        let status_x = if compact {
-            r.x0 + PAD_X
-        } else {
-            r.x0 + col_w + PAD_X
-        };
-        let (status_w, status_h) = tr.measure(status_label, CHIP_FONT_SIZE, None);
-        tr.draw_text(
-            scene,
-            status_label,
-            CHIP_FONT_SIZE,
-            status.1.color(c),
-            transform * Affine::translate((status_x, ay + (m.chip_h - f64::from(status_h)) / 2.0)),
-            None,
+        let status_x1 = Self::draw_hunk_status(
+            &mut PaintCtx::new(scene, transform, tr, theme),
+            block,
+            h,
+            compact,
+            m,
         );
 
         // Chips live in the theirs column (wide) or after the status label
@@ -815,7 +818,7 @@ impl MergeView {
         // in; when the explicit verb form cannot fit the pane the short form is
         // used, so no chip ever paints past the pane edge.
         let chips_x0 = if compact {
-            (r.x0 + COMPACT_CHIPS_X).max(status_x + f64::from(status_w) + PAD_X)
+            (r.x0 + COMPACT_CHIPS_X).max(status_x1 + PAD_X)
         } else {
             r.x0 + 2.0 * col_w + PAD_X
         };
@@ -882,6 +885,7 @@ impl MergeView {
             });
             cx += w + gap;
         }
+        action_hits
     }
 
     fn draw_hunks(
@@ -898,6 +902,7 @@ impl MergeView {
         let band_top = r.y0 + m.header_h;
         let band_bot = band_top + self.source_band_height();
 
+        let mut ctx = PaintCtx::new(scene, transform, tr, theme);
         for (hi, h) in self.model.hunks.iter().enumerate() {
             // `hunk_spans` is rebuilt one-for-one with `model.hunks` in
             // `recompute_spans`; skip drawing rather than panic if that ever
@@ -914,15 +919,11 @@ impl MergeView {
                 continue;
             }
 
+            let block = Rect::new(r.x0, y, r.x1, y + block_h);
             Self::draw_hunk_tint(
-                scene,
-                transform,
-                theme,
-                r,
-                col_w,
+                &mut ctx,
+                block,
                 compact_source,
-                y,
-                block_h,
                 h,
                 Some(hi) == self.active_hunk,
             );
@@ -938,33 +939,20 @@ impl MergeView {
             );
             match compact_source {
                 Some(SourcePane::Base) => {
-                    draw_lines(scene, transform, tr, theme, r.x0 + PAD_X, y, base, m);
+                    draw_lines(&mut ctx, Point::new(r.x0 + PAD_X, y), base, m);
                 }
                 Some(SourcePane::Ours) => {
-                    draw_lines(scene, transform, tr, theme, r.x0 + PAD_X, y, ours, m);
+                    draw_lines(&mut ctx, Point::new(r.x0 + PAD_X, y), ours, m);
                 }
                 Some(SourcePane::Theirs) => {
-                    draw_lines(scene, transform, tr, theme, r.x0 + PAD_X, y, theirs, m);
+                    draw_lines(&mut ctx, Point::new(r.x0 + PAD_X, y), theirs, m);
                 }
                 None => {
-                    draw_lines(scene, transform, tr, theme, r.x0 + PAD_X, y, base, m);
+                    draw_lines(&mut ctx, Point::new(r.x0 + PAD_X, y), base, m);
+                    draw_lines(&mut ctx, Point::new(r.x0 + col_w + PAD_X, y), ours, m);
                     draw_lines(
-                        scene,
-                        transform,
-                        tr,
-                        theme,
-                        r.x0 + col_w + PAD_X,
-                        y,
-                        ours,
-                        m,
-                    );
-                    draw_lines(
-                        scene,
-                        transform,
-                        tr,
-                        theme,
-                        r.x0 + 2.0 * col_w + PAD_X,
-                        y,
+                        &mut ctx,
+                        Point::new(r.x0 + 2.0 * col_w + PAD_X, y),
                         theirs,
                         m,
                     );
@@ -973,21 +961,14 @@ impl MergeView {
 
             // Action chips for change hunks.
             if h.is_change {
-                Self::draw_hunk_action_chips(
-                    scene,
-                    transform,
-                    tr,
-                    theme,
-                    r,
-                    col_w,
-                    y,
-                    block_h,
-                    hi,
-                    h,
-                    &mut self.action_hits,
+                let hits = Self::draw_hunk_action_chips(
+                    &mut ctx,
+                    block,
+                    (hi, h),
                     compact_source.is_some(),
                     m,
                 );
+                self.action_hits.extend(hits);
             }
         }
     }
@@ -1550,27 +1531,17 @@ impl HunkSpans {
     }
 }
 
-/// Draw a list of code lines starting at `(x0, y)`, highlighted, one per
+/// Draw a list of code lines starting at `origin`, highlighted, one per
 /// measured row pitch. `source` pairs the lines with their syntax spans.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "code-line painting combines paint context, column origin, source lines and measured row pitch"
-)]
 fn draw_lines(
-    scene: &mut Scene,
-    transform: Affine,
-    tr: &mut TextRenderer,
-    theme: &Theme,
-    x0: f64,
-    y0: f64,
+    ctx: &mut PaintCtx<'_>,
+    origin: Point,
     (lines, spans): (&Vec<String>, &[Vec<Span>]),
     m: Metrics,
 ) {
     for (i, line) in lines.iter().enumerate() {
-        let y = y0 + i as f64 * m.row_h + m.text_dy;
+        let y = origin.y + i as f64 * m.row_h + m.text_dy;
         let line_spans = spans.get(i).map_or(&[][..], Vec::as_slice);
-        highlight::draw_line(
-            scene, transform, tr, theme, x0, y, line, line_spans, FONT_SIZE,
-        );
+        highlight::draw_line(ctx, Point::new(origin.x, y), line, line_spans, FONT_SIZE);
     }
 }

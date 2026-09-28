@@ -120,10 +120,6 @@ pub fn proximity_of(
 /// Query the retained tab/body projection, best match first.  Cursors carry
 /// only the number of hits already shown and the Chrome revision; a changed
 /// tree invalidates rather than skipping a concurrent insert or edit.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the shared helper preserves one explicit provider contract for each text-app source without an allocation-only parameter object"
-)]
 pub fn query_text_app_page(
     cache: &TextSearchCache,
     ctx: &SearchContext<'_>,

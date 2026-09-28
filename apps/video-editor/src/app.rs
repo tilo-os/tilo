@@ -26,6 +26,7 @@ use winit::keyboard::{Key, NamedKey};
 
 use ui::ColorCompat;
 use ui::a11y::{AccessNode, AccessState, Role};
+use ui::paint::PaintCtx;
 use ui::permissions::PermissionContext;
 use ui::presence::{PresenceCtx, PresenceKey};
 use ui::text_render::{TextRenderer, TextStyle, TextWeight};
@@ -4372,7 +4373,6 @@ impl VideoEditorApp {
             VIDEO_EDITOR_ACTION_TYPE,
             &VideoEditorAction::AddEffect {
                 clip: id.to_string(),
-                expected_stack: Vec::new(),
                 ordinal,
                 effect,
             },
@@ -6019,6 +6019,8 @@ impl VideoEditorApp {
 }
 
 impl Widget for VideoEditorApp {
+    ui::provides!(dyn ui::undo::CommittedActions, dyn ui::undo::UndoControl);
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::VIDEO_EDITOR_OPERATION_TYPE]
     }
@@ -7114,24 +7116,6 @@ impl Widget for VideoEditorApp {
         )]
     }
 
-    /// Hand the host the document heads captured before an on-screen affordance
-    /// dispatched its timeline action, so it records exactly one undo boundary
-    /// bracketing it (Ctrl+Z reverts it OS-wide). Rising-edge: cleared on read.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
-    }
-
-    /// The host's reading of the history, which is what the strip's undo and
-    /// redo buttons are drawn from. Scoped to this author exactly as Ctrl+Z
-    /// is, so the buttons and the shortcut can never disagree about whether
-    /// there is anything to go back to.
-    fn set_undo_status(&mut self, status: &mut dyn FnMut() -> ui::UndoStatus) {
-        self.undo.publish(&status());
-    }
-
-    fn take_undo_request(&mut self) -> Option<ui::UndoRequest> {
-        self.undo.take_request()
-    }
     fn is_focusable(&self) -> bool {
         true
     }
@@ -7382,6 +7366,28 @@ impl Widget for VideoEditorApp {
         _permissions: &PermissionContext,
     ) {
         self.draw(scene, transform, tr, theme, presence);
+    }
+}
+
+impl ui::undo::UndoControl for VideoEditorApp {
+    /// The host's reading of the history, which is what the strip's undo and
+    /// redo buttons are drawn from. Scoped to this author exactly as Ctrl+Z
+    /// is, so the buttons and the shortcut can never disagree about whether
+    /// there is anything to go back to.
+    fn set_undo_status(&mut self, status: &mut dyn FnMut() -> ui::UndoStatus) {
+        self.undo.publish(&status());
+    }
+    fn take_undo_request(&mut self) -> Option<ui::UndoRequest> {
+        self.undo.take_request()
+    }
+}
+
+impl ui::undo::CommittedActions for VideoEditorApp {
+    /// Hand the host the document heads captured before an on-screen affordance
+    /// dispatched its timeline action, so it records exactly one undo boundary
+    /// bracketing it (Ctrl+Z reverts it OS-wide). Rising-edge: cleared on read.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
     }
 }
 
@@ -8318,11 +8324,9 @@ impl VideoEditorApp {
             tr,
             tf,
             hint,
-            15.0,
+            &TextStyle::new(15.0).with_weight(TextWeight::Semibold),
             c.accent[5],
-            plate.x0 + 18.0,
-            baseline,
-            TextWeight::Semibold,
+            Point::new(plate.x0 + 18.0, baseline),
         );
     }
 
@@ -8688,11 +8692,9 @@ impl VideoEditorApp {
                 tr,
                 tf,
                 group,
-                ty.xs,
+                &TextStyle::new(ty.xs).with_weight(TextWeight::Bold),
                 dim,
-                g.heading.x0,
-                g.heading.y0,
-                TextWeight::Bold,
+                Point::new(g.heading.x0, g.heading.y0),
             );
             for ((combo, what), row) in rows.iter().zip(&g.rows) {
                 text_w(
@@ -8700,11 +8702,9 @@ impl VideoEditorApp {
                     tr,
                     tf,
                     combo,
-                    ty.sm,
+                    &TextStyle::new(ty.sm).with_weight(TextWeight::Bold),
                     c.accent[6],
-                    row.x0,
-                    row.y0,
-                    TextWeight::Bold,
+                    Point::new(row.x0, row.y0),
                 );
                 let shown = elide_at(what, (row.width() - l.what_dx) as f32, ty.sm, tr);
                 text(
@@ -8801,11 +8801,9 @@ impl VideoEditorApp {
             tr,
             tf,
             shown,
-            ty.xl,
+            &TextStyle::new(ty.xl).with_weight(TextWeight::Bold),
             col,
-            x,
-            l.entry_top,
-            TextWeight::Bold,
+            Point::new(x, l.entry_top),
         );
         // A caret, so an empty field reads as "type here" rather than as a
         // placeholder someone forgot to remove. Measured at the weight the
@@ -8926,7 +8924,12 @@ impl VideoEditorApp {
                 .position(|(_, _, on)| *on)
                 .unwrap_or(usize::MAX);
             draw_segmented_sized(
-                scene, tf, tr, theme, &rects, &labels, selected, cursor, ty.sm,
+                &mut PaintCtx::new(scene, tf, tr, theme),
+                &rects,
+                &labels,
+                selected,
+                cursor,
+                ty.sm,
             );
         };
         let res: Vec<_> = l

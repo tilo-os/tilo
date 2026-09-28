@@ -32,8 +32,11 @@ pub mod framework;
 /// owns the windows.
 ///
 /// Invoke it once at the root of the app library, naming the [`framework::ResourceApp`]
-/// type. It compiles only for a `thin` build, the build that links one shared
-/// `ui` so the new view is the same type as the windows already on screen.
+/// type. The reload symbols compile only for a `thin` build, the build that
+/// links one shared `ui` so the new view is the same type as the windows
+/// already on screen. On every target it also defines the library's
+/// `definition()`, the entry a web build registers with the browser's toolkit
+/// core, as component apps define theirs.
 #[macro_export]
 macro_rules! dev_reload_entry {
     ($app:ty) => {
@@ -67,6 +70,12 @@ macro_rules! dev_reload_entry {
         pub extern "C" fn tilo_dev_publish_root() -> i32 {
             $crate::framework::dev_reload::publish_root::<$app>()
         }
+
+        /// The app's toolkit definition, which the web build registers.
+        #[must_use]
+        pub fn definition() -> &'static $crate::prelude::ApplicationDefinition {
+            $crate::framework::definition::<$app>()
+        }
     };
 }
 
@@ -95,7 +104,7 @@ pub mod prelude {
 
     pub use ui_core::application::{
         AppComponent, ApplicationCatalog, ApplicationDefinition, ComponentRunnerInputs,
-        HostContext, LaunchTarget, PreparedComponentInputs, RestoreInput,
+        HostContext, HostContextInputs, LaunchTarget, PreparedComponentInputs, RestoreInput,
     };
     pub use ui_core::application_view::{InstanceViewStore, SavedInstanceView};
     pub use ui_core::launch::ComponentHostPreparer;

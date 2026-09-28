@@ -7,9 +7,7 @@
 
 use crate::input_context::InputContext;
 use chrono::{NaiveDate, Timelike};
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
-use vello::Scene;
+use ui::paint::PaintCtx;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
@@ -48,6 +46,17 @@ pub(crate) struct PopoverAnchors {
     pub start_time: Rect,
     pub end_time: Rect,
     pub calendar: Rect,
+    /// The panel every popover is kept inside; a click on it outside the
+    /// open popover dismisses it.
+    pub panel: Rect,
+}
+
+/// The calendars the calendar popover offers, and the id of the one the
+/// edited event belongs to (`None` for the local calendar).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CalendarChoices<'a> {
+    pub options: &'a [(CalTarget, String)],
+    pub current: Option<&'a str>,
 }
 
 #[derive(Clone, Debug)]
@@ -279,23 +288,17 @@ impl EventPopovers {
         *handled = true;
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "popover painting combines the shared render context with panel anchors, pointer state and calendar choices"
-    )]
     pub fn draw(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         presence: &PresenceCtx,
-        panel: Rect,
         anchors: PopoverAnchors,
         pointer: Point,
-        calendar_options: &[(CalTarget, String)],
-        current_calendar: Option<&str>,
+        calendars: CalendarChoices<'_>,
     ) {
+        let (scene, transform, text, theme) =
+            (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
+        let panel = anchors.panel;
         self.hits.clear();
         let kind = self.active;
         let anchor = match kind {
@@ -307,7 +310,6 @@ impl EventPopovers {
             PopoverKind::Calendar => anchors.calendar,
         };
         self.hits.push((panel, Hit::Dismiss));
-        let colors = &theme.tokens.colors;
         let panel_radius = f64::from(theme.tokens.radii.lg);
 
         match kind {
@@ -343,61 +345,77 @@ impl EventPopovers {
             }
             PopoverKind::Calendar => {
                 let row_h = 34.0;
-                let height = row_h * calendar_options.len() as f64 + 8.0;
+                let height = row_h * calendars.options.len() as f64 + 8.0;
                 let y = (anchor.y1 + 6.0).min(panel.y1 - height - 8.0);
                 let rect = Rect::new(anchor.x0, y, anchor.x1, y + height);
                 paint_panel(scene, transform, theme, rect, panel_radius);
                 self.hits.push((rect, Hit::Guard));
-                // Rows keep the `s1` inset from the panel edge; the painted
-                // pill is inset half of that top and bottom so two neighbours
-                // (a hovered row beside the chosen one) keep an `s1` gap.
-                let row_inset = f64::from(theme.tokens.spacing.s1);
-                for (index, (target, label)) in calendar_options.iter().enumerate() {
-                    let row_y = rect.y0 + row_inset + index as f64 * row_h;
-                    let row = Rect::new(
-                        rect.x0 + row_inset,
-                        row_y,
-                        rect.x1 - row_inset,
-                        row_y + row_h,
-                    );
-                    let selected = match target {
-                        CalTarget::Local => current_calendar.is_none(),
-                        CalTarget::Remote(id) => current_calendar == Some(id.as_str()),
-                    };
-                    selected_row(
-                        scene,
-                        transform,
-                        theme,
-                        ui::chrome::panel_ground(theme),
-                        row.inflate(0.0, -row_inset / 2.0),
-                        f64::from(theme.tokens.radii.md),
-                        selected,
-                        row.contains(pointer),
-                    );
-                    text.draw_text(
-                        scene,
-                        label,
-                        13.0,
-                        colors.text_primary,
-                        transform * Affine::translate((row.x0 + 12.0, row.center().y - 7.0)),
-                        Some((row.width() - 40.0) as f32),
-                    );
-                    if selected {
-                        draw_check(
-                            scene,
-                            transform,
-                            colors.accent[5],
-                            Rect::new(
-                                row.x1 - 24.0,
-                                row.center().y - 7.0,
-                                row.x1 - 10.0,
-                                row.center().y + 7.0,
-                            ),
-                        );
-                    }
-                    self.hits.push((row, Hit::Calendar(target.clone())));
-                }
+                self.draw_calendar_rows(ctx, rect, row_h, pointer, calendars);
             }
+        }
+    }
+
+    /// The calendar menu's `row_h`-tall rows inside `menu`, the chosen one
+    /// checked.
+    fn draw_calendar_rows(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        menu: Rect,
+        row_h: f64,
+        pointer: Point,
+        calendars: CalendarChoices<'_>,
+    ) {
+        let (scene, transform, text, theme) =
+            (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
+        let colors = &theme.tokens.colors;
+        // Rows keep the `s1` inset from the panel edge; the painted
+        // pill is inset half of that top and bottom so two neighbours
+        // (a hovered row beside the chosen one) keep an `s1` gap.
+        let row_inset = f64::from(theme.tokens.spacing.s1);
+        for (index, (target, label)) in calendars.options.iter().enumerate() {
+            let row_y = menu.y0 + row_inset + index as f64 * row_h;
+            let row = Rect::new(
+                menu.x0 + row_inset,
+                row_y,
+                menu.x1 - row_inset,
+                row_y + row_h,
+            );
+            let selected = match target {
+                CalTarget::Local => calendars.current.is_none(),
+                CalTarget::Remote(id) => calendars.current == Some(id.as_str()),
+            };
+            selected_row(
+                scene,
+                transform,
+                theme,
+                ui::chrome::panel_ground(theme),
+                row.inflate(0.0, -row_inset / 2.0),
+                f64::from(theme.tokens.radii.md),
+                selected,
+                row.contains(pointer),
+            );
+            text.draw_text(
+                scene,
+                label,
+                13.0,
+                colors.text_primary,
+                transform * Affine::translate((row.x0 + 12.0, row.center().y - 7.0)),
+                Some((row.width() - 40.0) as f32),
+            );
+            if selected {
+                draw_check(
+                    scene,
+                    transform,
+                    colors.accent[5],
+                    Rect::new(
+                        row.x1 - 24.0,
+                        row.center().y - 7.0,
+                        row.x1 - 10.0,
+                        row.center().y + 7.0,
+                    ),
+                );
+            }
+            self.hits.push((row, Hit::Calendar(target.clone())));
         }
     }
 }

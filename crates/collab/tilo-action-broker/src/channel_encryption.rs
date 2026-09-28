@@ -36,6 +36,7 @@ use channel_crypto::{
 };
 use collab_types::{
     ChannelId, Ed25519PublicKey, MlsAccessRequestV1, MlsGovernanceAckV1, MlsGovernanceFrameV1,
+    SignedOp,
 };
 use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
@@ -669,6 +670,26 @@ impl ChannelKeyAccess {
                 let access = service.access(room, channel, Instant::now());
                 (access, service.generation())
             })
+    }
+
+    /// Open `envelope`, a new sealed write to one of `room`'s channels, for
+    /// the durable owner that holds the channel's keys. Only under the
+    /// channel's current epoch, and only while this device reads the
+    /// channel; anything else is refused. Call it only once the envelope's
+    /// author, role, route and signature were verified.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the write is not sealed, this device holds no
+    /// current key for its channel, or the payload does not open.
+    pub fn open_new_write(&self, room: RoomId, envelope: &SignedOp) -> Result<Vec<u8>, String> {
+        let metadata = envelope.encryption.ok_or("the write is not sealed")?;
+        let (ChannelAccess::Ready(keys), _) = self.access(room, metadata.channel) else {
+            return Err("this device holds no key for the write's channel".into());
+        };
+        keys.open_current_content(envelope.artifact, &metadata, &envelope.payload)
+            .map(|plaintext| plaintext.to_vec())
+            .map_err(|error| error.to_string())
     }
 
     /// See [`ChannelEncryption::pump`].

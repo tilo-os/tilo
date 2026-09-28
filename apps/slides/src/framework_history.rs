@@ -370,15 +370,14 @@ impl HistoryPreview for DeckPreview {
         );
         if let (Some(deck), Some(slide)) = (&self.deck, self.selected()) {
             crate::render::draw_slide(
-                scene,
-                transform,
-                tr,
-                theme,
-                &Palette::resolve(deck.palette, theme),
+                &mut ui::paint::PaintCtx::new(scene, transform, tr, theme),
+                crate::render::DeckAssets {
+                    palette: &Palette::resolve(deck.palette, theme),
+                    images: &self.images,
+                },
                 slide,
                 self.slide_rect,
                 8.,
-                &self.images,
             );
             tr.draw_text(
                 scene,

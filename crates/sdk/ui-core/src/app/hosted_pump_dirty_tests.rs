@@ -356,7 +356,9 @@ fn hosted_pump_policy_change_and_expiry_refresh() {
 
 #[test]
 fn hosted_pump_host_owner_permission_replacement_refreshes() {
-    use crate::application::{ApplicationDefinition, HostContext, LaunchTarget, RestoreInput};
+    use crate::application::{
+        ApplicationDefinition, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
+    };
     let temp = tempfile::tempdir().unwrap();
     let mut owners = crate::record::RecordOwners::new(temp.path().into());
     let records = owners
@@ -385,13 +387,15 @@ fn hosted_pump_host_owner_permission_replacement_refreshes() {
     ));
     let context = HostContext::prepare(
         &definition,
-        records,
-        views,
-        "D".into(),
-        82,
-        permissions.clone(),
-        crate::permissions::UserId("fixture-user".into()),
-        tilo_actions::ActionContext::default(),
+        HostContextInputs {
+            records,
+            views,
+            device_id: "D".into(),
+            instance_id: 82,
+            permissions: permissions.clone(),
+            author: crate::permissions::UserId("fixture-user".into()),
+            action_context: tilo_actions::ActionContext::default(),
+        },
         &LaunchTarget::New,
     )
     .unwrap();

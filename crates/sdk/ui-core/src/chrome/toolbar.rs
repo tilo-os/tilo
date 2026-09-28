@@ -281,10 +281,6 @@ pub fn draw(
 
 /// [`draw`] with an explicit width model — for a host that lays its rows
 /// out with the same [`ToolbarMetrics`] it hands in here.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the shared paint context plus the row, its items and its metrics"
-)]
 pub fn draw_with_metrics(
     scene: &mut Scene,
     transform: Affine,

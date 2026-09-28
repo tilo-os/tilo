@@ -18,6 +18,7 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 #[cfg(test)]
 use winit::keyboard::{Key, NamedKey};
 
+use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::text_selection::clipboard_copy;
@@ -368,10 +369,7 @@ impl RecoveryShareScreen {
         for (i, word) in self.words().iter().take(WORD_COUNT).enumerate() {
             let (ordinal, cell) = grid.cell(i, theme);
             paint_text(
-                scene,
-                transform,
-                text_renderer,
-                theme,
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 ordinal,
                 &format!("{}.", i.saturating_add(1)),
                 Role::Label,
@@ -379,10 +377,7 @@ impl RecoveryShareScreen {
                 false,
             );
             paint_text(
-                scene,
-                transform,
-                text_renderer,
-                theme,
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 cell,
                 word,
                 Role::Value,
@@ -451,10 +446,7 @@ impl Widget for RecoveryShareScreen {
         sheet.paint_frame(scene, transform, text_renderer, theme, &spec);
         sheet.clip_body(scene, transform);
         paint_text(
-            scene,
-            transform,
-            text_renderer,
-            theme,
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
             plan.explanation,
             self.explanation(),
             Role::Body,
@@ -477,10 +469,7 @@ impl Widget for RecoveryShareScreen {
         );
         if let (Some(rect), Some(msg)) = (plan.clipboard, self.clipboard_message.as_deref()) {
             paint_text(
-                scene,
-                transform,
-                text_renderer,
-                theme,
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 rect,
                 msg,
                 Role::Caption,

@@ -26,18 +26,26 @@ pub struct DynamicLauncherBackend {
     ctx: PortalContext,
     lifecycle: PortalLifecycle,
     dialogs: PortalDialogQueue,
+    connection: zbus::Connection,
 }
 #[cfg(target_os = "linux")]
 impl DynamicLauncherBackend {
-    pub fn new(ctx: PortalContext) -> Self {
-        Self::with_lifecycle(ctx, PortalLifecycle::new())
+    /// `connection` is the bus this backend is served on; its request objects
+    /// are registered there.
+    pub fn new(ctx: PortalContext, connection: zbus::Connection) -> Self {
+        Self::with_lifecycle(ctx, PortalLifecycle::new(), connection)
     }
 
-    pub fn with_lifecycle(ctx: PortalContext, lifecycle: PortalLifecycle) -> Self {
+    pub fn with_lifecycle(
+        ctx: PortalContext,
+        lifecycle: PortalLifecycle,
+        connection: zbus::Connection,
+    ) -> Self {
         Self {
             ctx,
             lifecycle,
             dialogs: PortalDialogQueue::global(),
+            connection,
         }
     }
 }
@@ -128,7 +136,6 @@ impl DynamicLauncherBackend {
     async fn prepare_install(
         &self,
         #[zbus(header)] hdr: zbus::message::Header<'_>,
-        #[zbus(connection)] connection: &zbus::Connection,
         handle: ObjectPath<'_>,
         app_id: String,
         parent_window: String,
@@ -177,7 +184,7 @@ impl DynamicLauncherBackend {
         };
         if !matches!(
             self.lifecycle
-                .register_request(connection, &path, entry, move |_| {
+                .register_request(&self.connection, &path, entry, move |_| {
                     let _ = dialogs.cancel(&cancel_path);
                 })
                 .await,
@@ -212,13 +219,13 @@ impl DynamicLauncherBackend {
             },
         }) else {
             self.lifecycle
-                .complete_request_object(connection, &path)
+                .complete_request_object(&self.connection, &path)
                 .await;
             return (2, HashMap::new());
         };
         let Ok(decision) = review.await else {
             self.lifecycle
-                .complete_request_object(connection, &path)
+                .complete_request_object(&self.connection, &path)
                 .await;
             return (1, HashMap::new());
         };
@@ -229,7 +236,7 @@ impl DynamicLauncherBackend {
             || decision.name.chars().any(char::is_control)
         {
             self.lifecycle
-                .complete_request_object(connection, &path)
+                .complete_request_object(&self.connection, &path)
                 .await;
             return (1, HashMap::new());
         }
@@ -264,7 +271,7 @@ impl DynamicLauncherBackend {
                     icon_bytes: selected_icon_bytes,
                 });
         self.lifecycle
-            .complete_request_object(connection, &path)
+            .complete_request_object(&self.connection, &path)
             .await;
         let PortalResult::Success(choice) = result else {
             return (result.response_code(), HashMap::new());

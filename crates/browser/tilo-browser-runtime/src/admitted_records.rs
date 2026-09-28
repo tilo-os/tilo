@@ -391,7 +391,9 @@ mod capture_tests {
     use super::*;
     use std::{cell::RefCell, rc::Rc};
     use ui::{
-        application::{ComponentRunnerInputs, HostContext, LaunchTarget, RestoreInput},
+        application::{
+            ComponentRunnerInputs, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
+        },
         application_view::InstanceViewStore,
         permissions::{Actor, PermissionContext, Role, UserId},
     };
@@ -409,13 +411,15 @@ mod capture_tests {
         )));
         let context = HostContext::prepare(
             definition,
-            records.clone(),
-            views,
-            "actor".into(),
-            1,
-            permissions,
-            UserId("author".into()),
-            tilo_actions::ActionContext::default(),
+            HostContextInputs {
+                records: records.clone(),
+                views,
+                device_id: "actor".into(),
+                instance_id: 1,
+                permissions,
+                author: UserId("author".into()),
+                action_context: tilo_actions::ActionContext::default(),
+            },
             &LaunchTarget::PrimaryNew,
         )
         .unwrap();

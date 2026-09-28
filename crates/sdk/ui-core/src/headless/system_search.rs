@@ -5,8 +5,9 @@ use super::{
     PresenceCtx, Rect, TaffyTree, Theme, Widget, WindowEvent,
 };
 use crate::CommandPalette;
+use crate::paint::PaintCtx;
 use crate::search::system::filters::{
-    FilterAction, FilterText, KindChip, ScopeSegment, SearchFilters, toggle_kind,
+    FilterAction, FilterStripSlot, FilterText, KindChip, ScopeSegment, SearchFilters, toggle_kind,
 };
 use crate::search::system::{
     self, Provider, Query, ResourceKind, SearchBudget, SearchCursor, SearchPage, SearchRow,
@@ -177,13 +178,12 @@ impl Widget for Overlay {
     ) {
         self.palette.draw(scene, transform, text, theme, presence);
         self.filters.draw(
-            scene,
-            transform,
-            text,
-            theme,
-            self.palette.filter_strip_rect(),
-            self.palette.filter_strip_row_height(),
-            self.palette.host_filter_strip_rows(),
+            &mut PaintCtx::new(scene, transform, text, theme),
+            FilterStripSlot {
+                band: self.palette.filter_strip_rect(),
+                row_height: self.palette.filter_strip_row_height(),
+                reserved_rows: self.palette.host_filter_strip_rows(),
+            },
             self.hover,
         );
         let rect = self.palette.get_rect();
@@ -863,13 +863,12 @@ impl FrameHarness {
                 &self.presence,
             );
             let rows = overlay.filters.draw(
-                &mut scratch,
-                Affine::IDENTITY,
-                &mut self.text,
-                &self.theme,
-                overlay.palette.filter_strip_rect(),
-                overlay.palette.filter_strip_row_height(),
-                overlay.palette.host_filter_strip_rows(),
+                &mut PaintCtx::new(&mut scratch, Affine::IDENTITY, &mut self.text, &self.theme),
+                FilterStripSlot {
+                    band: overlay.palette.filter_strip_rect(),
+                    row_height: overlay.palette.filter_strip_row_height(),
+                    reserved_rows: overlay.palette.host_filter_strip_rows(),
+                },
                 overlay.hover,
             );
             if !overlay.palette.set_host_filter_strip_rows(rows) {

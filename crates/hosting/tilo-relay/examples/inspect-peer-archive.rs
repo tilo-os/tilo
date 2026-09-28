@@ -819,6 +819,10 @@ fn run(arguments: Arguments) -> Result<(PathBuf, bool, usize)> {
     std::fs::File::open(&out)?.sync_all()?;
     Ok((out, complete, count))
 }
+// The unit tests below open documents through the isolated Automerge
+// worker; the test harness serves it in place of `main`.
+tilo_automerge_isolate::test_worker!();
+
 fn main() -> Result<()> {
     use clap::Parser;
     let (out, complete, count) = run(Arguments::parse())?;

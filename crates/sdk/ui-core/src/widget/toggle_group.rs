@@ -996,21 +996,6 @@ impl Widget for ToggleGroup {
             }))
     }
 
-    /// Legacy adapter: apps not yet on [`Widget::start_operation`] still reach
-    /// a shared segmented control through their read-only routing.
-    fn invoke_resource_operation_v2(
-        &mut self,
-        kind: crate::tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<Option<crate::tilo_actions::ActionOutput>, String> {
-        Ok(self
-            .select_segment_operation(kind, type_id, payload)?
-            .then(crate::tilo_actions::ActionOutput::default))
-    }
-
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
         // Segment labels are runtime strings (host-provided), not FTL

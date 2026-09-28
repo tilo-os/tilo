@@ -386,10 +386,6 @@ impl PadMap {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the painter keeps scene, renderer, theme, metrics and geometry explicit"
-    )]
     fn draw_layout(
         &self,
         scene: &mut Scene,
@@ -562,10 +558,6 @@ fn row_width(
         + label_width(entry, text_renderer, metrics)
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the painter keeps scene, renderer, theme, metrics and geometry explicit"
-)]
 fn draw_row(
     scene: &mut Scene,
     transform: Affine,

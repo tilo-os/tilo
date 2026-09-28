@@ -255,10 +255,6 @@ struct ButtonVisualState {
 // Standard immediate-mode paint-helper signature for this vello renderer
 // (scene + transform + text_renderer + theme, plus this draw's own
 // content); every parameter is independently load-bearing.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "permission buttons combine scene resources and theme with bounds, label and hover/disabled/primary/focus state"
-)]
 fn draw_button(
     scene: &mut Scene,
     transform: Affine,

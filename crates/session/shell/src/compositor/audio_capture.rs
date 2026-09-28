@@ -159,15 +159,7 @@ impl AudioCapture {
 
 impl Drop for AudioCapture {
     fn drop(&mut self) {
-        if let Ok(pid) = i32::try_from(self.child.id())
-            && let Some(group) = pid.checked_neg()
-        {
-            // SAFETY: `start` places the recorder in its own pid-named process
-            // group, so the negative pid cannot target the compositor group.
-            unsafe { libc::kill(group, libc::SIGKILL) };
-        }
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        bounded_command::terminate_tree(&mut self.child, std::time::Duration::ZERO);
         if let Some(reader) = self.reader.take() {
             let _ = reader.join();
         }

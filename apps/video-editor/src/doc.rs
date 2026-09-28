@@ -514,11 +514,9 @@ impl VideoDoc {
         read_bool(doc, &tombstones, id.to_string()).unwrap_or(false)
     }
 
-    fn read_markers(doc: &AutoCommit, parent: &ObjId, legacy: Option<&str>) -> Vec<Marker> {
+    fn read_markers(doc: &AutoCommit, parent: &ObjId) -> Vec<Marker> {
         let Ok(Some((Value::Object(ObjType::Map), marker_map))) = doc.get(parent, "markers") else {
-            return legacy
-                .and_then(|value| serde_json::from_str(value).ok())
-                .unwrap_or_default();
+            return Vec::new();
         };
         let mut markers: Vec<Marker> = doc
             .keys(&marker_map)
@@ -545,11 +543,9 @@ impl VideoDoc {
         markers
     }
 
-    fn read_effects(doc: &AutoCommit, parent: &ObjId, legacy: Option<&str>) -> Vec<ClipEffect> {
+    fn read_effects(doc: &AutoCommit, parent: &ObjId) -> Vec<ClipEffect> {
         let Ok(Some((Value::Object(ObjType::Map), effect_map))) = doc.get(parent, "effects") else {
-            return legacy
-                .and_then(|value| serde_json::from_str(value).ok())
-                .unwrap_or_default();
+            return Vec::new();
         };
         let mut effects: Vec<(i64, ClipEffect)> = doc
             .keys(&effect_map)
@@ -596,11 +592,9 @@ impl VideoDoc {
         }
     }
 
-    fn read_transform(doc: &AutoCommit, parent: &ObjId, legacy: Option<&str>) -> Transform {
+    fn read_transform(doc: &AutoCommit, parent: &ObjId) -> Transform {
         let Ok(Some((Value::Object(ObjType::Map), map))) = doc.get(parent, "transform") else {
-            return legacy
-                .and_then(|value| serde_json::from_str(value).ok())
-                .unwrap_or_default();
+            return Transform::default();
         };
         let default = Transform::default();
         Transform {
@@ -629,11 +623,9 @@ impl VideoDoc {
         let _ = doc.put(&map, "spill", value.spill);
     }
 
-    fn read_key(doc: &AutoCommit, parent: &ObjId, legacy: Option<&str>) -> ChromaKey {
+    fn read_key(doc: &AutoCommit, parent: &ObjId) -> ChromaKey {
         let Ok(Some((Value::Object(ObjType::Map), map))) = doc.get(parent, "key") else {
-            return legacy
-                .and_then(|value| serde_json::from_str(value).ok())
-                .unwrap_or_default();
+            return ChromaKey::default();
         };
         let default = ChromaKey::default();
         ChromaKey {
@@ -665,11 +657,9 @@ impl VideoDoc {
         let _ = doc.put(&map, "invert", value.invert);
     }
 
-    fn read_mask(doc: &AutoCommit, parent: &ObjId, legacy: Option<&str>) -> Mask {
+    fn read_mask(doc: &AutoCommit, parent: &ObjId) -> Mask {
         let Ok(Some((Value::Object(ObjType::Map), map))) = doc.get(parent, "mask") else {
-            return legacy
-                .and_then(|value| serde_json::from_str(value).ok())
-                .unwrap_or_default();
+            return Mask::default();
         };
         let default = Mask::default();
         Mask {
@@ -742,11 +732,9 @@ impl VideoDoc {
             Self::write_spline(doc, &child, value.spline(channel));
         }
     }
-    fn read_curves(doc: &AutoCommit, parent: &ObjId, legacy: Option<&str>) -> Curve {
+    fn read_curves(doc: &AutoCommit, parent: &ObjId) -> Curve {
         let Ok(Some((Value::Object(ObjType::Map), map))) = doc.get(parent, "curves") else {
-            return legacy
-                .and_then(|value| serde_json::from_str(value).ok())
-                .unwrap_or_default();
+            return Curve::default();
         };
         Curve {
             master: doc
@@ -816,11 +804,9 @@ impl VideoDoc {
             }
         }
     }
-    fn read_animation(doc: &AutoCommit, parent: &ObjId, legacy: Option<&str>) -> ClipAnimation {
+    fn read_animation(doc: &AutoCommit, parent: &ObjId) -> ClipAnimation {
         let Ok(Some((Value::Object(ObjType::Map), tracks))) = doc.get(parent, "anim") else {
-            return legacy
-                .and_then(|value| serde_json::from_str(value).ok())
-                .unwrap_or_default();
+            return ClipAnimation::default();
         };
         let mut out = Vec::new();
         for name in doc.keys(&tracks) {
@@ -903,9 +889,7 @@ impl VideoDoc {
         doc.put(&clip, key, value).is_ok()
     }
 
-    /// Compatibility boundary for actions authored by an older app. The wire
-    /// payload is still JSON, but applying it immediately expands it into the
-    /// current keyed schema; no new document ever stores one opaque blob.
+    /// Replace one existing clip text scalar.
     pub fn set_existing_clip_text(doc: &mut AutoCommit, id: Uuid, key: &str, value: &str) -> bool {
         let Ok(Some((Value::Object(ObjType::Map), clips))) = doc.get(&ROOT, "clips") else {
             return false;
@@ -913,33 +897,10 @@ impl VideoDoc {
         let Ok(Some((Value::Object(ObjType::Map), clip))) = doc.get(&clips, id.to_string()) else {
             return false;
         };
-        match key {
-            "transform" => serde_json::from_str(value)
-                .map(|value| Self::write_transform(doc, &clip, value))
-                .is_ok(),
-            "curves" => serde_json::from_str(value)
-                .map(|value| Self::write_curves(doc, &clip, &value))
-                .is_ok(),
-            "key" => serde_json::from_str(value)
-                .map(|value| Self::write_key(doc, &clip, value))
-                .is_ok(),
-            "mask" => serde_json::from_str(value)
-                .map(|value| Self::write_mask(doc, &clip, value))
-                .is_ok(),
-            "anim" => serde_json::from_str(value)
-                .map(|value| Self::write_animation(doc, &clip, &value))
-                .is_ok(),
-            // `markers` is only retained for decoding legacy payloads. New
-            // marker actions use individual UUID entries.
-            "markers" => serde_json::from_str::<Vec<Marker>>(value)
-                .map(|value| Self::write_markers(doc, &clip, &value))
-                .is_ok(),
-            _ => doc.put(&clip, key, value).is_ok(),
-        }
+        doc.put(&clip, key, value).is_ok()
     }
 
-    /// Typed compound writes used by current actions. The legacy text method
-    /// above only decodes historic JSON action payloads; neither path stores
+    /// Typed compound writes used by current actions. None of them stores
     /// JSON in the document.
     pub fn set_existing_clip_transform(doc: &mut AutoCommit, id: Uuid, value: Transform) -> bool {
         let Some(clip) = Self::existing_clip(doc, id) else {
@@ -1122,7 +1083,7 @@ impl VideoDoc {
             p.format_explicit = read_bool(doc, &proj, "format_explicit").unwrap_or(false);
             p.mark_in = read_number(doc, &proj, "mark_in");
             p.mark_out = read_number(doc, &proj, "mark_out");
-            p.markers = Self::read_markers(doc, &proj, read_str(doc, &proj, "markers").as_deref());
+            p.markers = Self::read_markers(doc, &proj);
         }
         Self::read_media_into(doc, &mut p);
         Self::read_tracks_into(doc, &mut p);
@@ -1218,7 +1179,7 @@ impl VideoDoc {
                 let (Some(track), Some(media)) = (track, media) else {
                     continue;
                 };
-                let mut clip = Clip {
+                let clip = Clip {
                     id,
                     track,
                     media,
@@ -1242,33 +1203,21 @@ impl VideoDoc {
                     // (see Clip::transition_len), not "instant cut".
                     transition_duration: read_number(doc, &obj, "transition_duration")
                         .unwrap_or(0.0),
-                    effects: Self::read_effects(
-                        doc,
-                        &obj,
-                        read_str(doc, &obj, "effects").as_deref(),
-                    ),
+                    effects: Self::read_effects(doc, &obj),
                     // Each of these is absent in a document written before it
                     // existed, and each default restores the old behaviour:
                     // identity geometry, normal speed, no key, no mask, no
                     // curves, no markers.
-                    transform: Self::read_transform(
-                        doc,
-                        &obj,
-                        read_str(doc, &obj, "transform").as_deref(),
-                    ),
+                    transform: Self::read_transform(doc, &obj),
                     speed: crate::model::Speed {
                         rate: read_number(doc, &obj, "speed_rate").unwrap_or(1.0),
                         reverse: read_bool(doc, &obj, "speed_reverse").unwrap_or(false),
                     },
-                    curves: Self::read_curves(doc, &obj, read_str(doc, &obj, "curves").as_deref()),
-                    key: Self::read_key(doc, &obj, read_str(doc, &obj, "key").as_deref()),
-                    mask: Self::read_mask(doc, &obj, read_str(doc, &obj, "mask").as_deref()),
-                    anim: Self::read_animation(doc, &obj, read_str(doc, &obj, "anim").as_deref()),
-                    markers: Self::read_markers(
-                        doc,
-                        &obj,
-                        read_str(doc, &obj, "markers").as_deref(),
-                    ),
+                    curves: Self::read_curves(doc, &obj),
+                    key: Self::read_key(doc, &obj),
+                    mask: Self::read_mask(doc, &obj),
+                    anim: Self::read_animation(doc, &obj),
+                    markers: Self::read_markers(doc, &obj),
                     // Absent in every document written before links existed,
                     // which reads as "not linked" -- the independent clip that
                     // peer is already editing.
@@ -1282,11 +1231,6 @@ impl VideoDoc {
                     // at all was linked when it was written.
                     link_follows: read_bool(doc, &obj, "link_follows").unwrap_or(true),
                 };
-                // Projects written before effect instances had ids receive
-                // deterministic compatibility ids in the projection. A later
-                // normal clip write persists them; loading alone remains a
-                // pure read and therefore cannot surprise a collaborator.
-                clip.ensure_effect_ids();
                 p.clips.push(clip);
             }
         }
@@ -1921,7 +1865,7 @@ mod tests {
         clippy::float_cmp,
         reason = "a round trip through the document stores the same f64 bits it was given"
     )]
-    fn legacy_and_empty_documents_load_and_classify_correctly() {
+    fn sparse_and_empty_documents_load_and_classify_correctly() {
         // Case `a_document_written_before_any_of_this_still_loads_unchanged`.
         {
             // The compatibility contract: every new key is absent in an older
@@ -2076,64 +2020,6 @@ mod tests {
             assert_eq!(effects[0].kind, EffectKind::Sepia);
             assert!((effects[0].amount - 0.6).abs() < 1e-9);
             assert_eq!(effects[1].kind, EffectKind::Invert);
-        }
-        // Case `legacy_effect_stack_gets_deterministic_ids_and_a_normal_write_persists_them`.
-        {
-            let mut doc = AutoCommit::new();
-            VideoDoc::seed_sample(&mut doc);
-            let clip_id = VideoDoc::load_project(&doc).clips[0].id;
-            let clips = VideoDoc::map(&mut doc, "clips");
-            let Some((Value::Object(ObjType::Map), clip)) =
-                doc.get(&clips, clip_id.to_string()).expect("read clip")
-            else {
-                panic!("fixture clip is a map");
-            };
-            doc.put(
-                &clip,
-                "effects",
-                r#"[{"kind":"Sepia","amount":0.6},{"kind":"Sepia","amount":0.8}]"#,
-            )
-            .expect("write legacy effects");
-
-            let first = VideoDoc::load_project(&doc);
-            let second = VideoDoc::load_project(&doc);
-            let ids = first
-                .clip(clip_id)
-                .expect("loaded clip")
-                .effects
-                .iter()
-                .map(|effect| effect.id)
-                .collect::<Vec<_>>();
-            assert_eq!(ids.len(), 2);
-            assert!(ids.iter().all(|id| !id.is_nil()));
-            assert_ne!(ids[0], ids[1]);
-            assert_eq!(
-                second
-                    .clip(clip_id)
-                    .expect("same legacy clip")
-                    .effects
-                    .iter()
-                    .map(|effect| effect.id)
-                    .collect::<Vec<_>>(),
-                ids,
-                "read-only migration is deterministic across peers",
-            );
-
-            VideoDoc::upsert_clip(&mut doc, first.clip(clip_id).expect("migrated clip"));
-            let Some((Value::Object(ObjType::Map), saved)) =
-                doc.get(&clip, "effects").expect("stored effects")
-            else {
-                panic!("a normal edit migrates effects to a keyed map");
-            };
-            assert_eq!(doc.length(&saved), 2, "both durable effect ids are keyed");
-            for id in ids {
-                assert!(
-                    doc.get(&saved, id.to_string())
-                        .expect("read effect")
-                        .is_some(),
-                    "the migrated map is keyed by the durable instance id"
-                );
-            }
         }
     }
 

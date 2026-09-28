@@ -402,127 +402,145 @@ fn heading_from_name(id: &str, name: Option<&str>) -> (bool, Option<i64>) {
     (false, None)
 }
 
-/// Clear every per-style property accumulator (everything but `style_id`/`style_type`/
-/// `in_ppr`/`in_rpr`, which the caller manages itself) for a fresh `<w:style>`.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "one accumulator field per OOXML style property; mirrors finish_style's shape"
-)]
-fn reset_style_accum(
-    name_disp: &mut Option<String>,
-    parent: &mut Option<String>,
-    align: &mut Option<String>,
-    outline: &mut Option<i64>,
-    text: &mut Vec<(String, MarkValue)>,
-    size: &mut Option<f64>,
-    bold: &mut Option<bool>,
-    italic: &mut Option<bool>,
-    color: &mut Option<String>,
-    font: &mut Option<String>,
-    space_before: &mut Option<f64>,
-    space_after: &mut Option<f64>,
-    indent: &mut Option<f64>,
-    line_spacing: &mut Option<f64>,
-) {
-    *name_disp = None;
-    *parent = None;
-    *align = None;
-    *outline = None;
-    text.clear();
-    *size = None;
-    *bold = None;
-    *italic = None;
-    *color = None;
-    *font = None;
-    *space_before = None;
-    *space_after = None;
-    *indent = None;
-    *line_spacing = None;
+/// Properties collected for the `<w:style>` being parsed.
+#[derive(Default)]
+struct StyleAccum {
+    id: Option<String>,
+    /// `w:type`: `paragraph`, `character`, ….
+    kind: Option<String>,
+    display_name: Option<String>,
+    parent: Option<String>,
+    align: Option<String>,
+    outline: Option<i64>,
+    text: Vec<(String, MarkValue)>,
+    size: Option<f64>,
+    bold: Option<bool>,
+    italic: Option<bool>,
+    color: Option<String>,
+    font: Option<String>,
+    space_before: Option<f64>,
+    space_after: Option<f64>,
+    indent: Option<f64>,
+    line_spacing: Option<f64>,
 }
 
-/// On `</w:style>`: if a style id was captured, register it (`character` → text marks by id,
-/// `paragraph` → a resolved [`ParaStyle`]), then clear every per-style accumulator for the next `<w:style>`.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "one accumulator field per OOXML style property; mirrors the flat locals parse_styles threads through its prop! macro"
-)]
-fn finish_style(
-    reg: &mut StyleRegistry,
-    style_id: &mut Option<String>,
-    style_type: &mut Option<String>,
-    name_disp: &mut Option<String>,
-    parent: &mut Option<String>,
-    align: &mut Option<String>,
-    outline: &mut Option<i64>,
-    text: &mut Vec<(String, MarkValue)>,
-    size: &mut Option<f64>,
-    bold: &mut Option<bool>,
-    italic: &mut Option<bool>,
-    color: &mut Option<String>,
-    font: &mut Option<String>,
-    space_before: &mut Option<f64>,
-    space_after: &mut Option<f64>,
-    indent: &mut Option<f64>,
-    line_spacing: &mut Option<f64>,
-) {
-    if let Some(id) = style_id.take() {
-        match style_type.as_deref() {
+impl StyleAccum {
+    /// A fresh accumulator for `<w:style>` element `e`.
+    fn begin(e: &BytesStart) -> Self {
+        Self {
+            id: attr_val(e, b"w:styleId"),
+            kind: attr_val(e, b"w:type"),
+            ..Self::default()
+        }
+    }
+
+    /// Apply one property element (works for both Empty and Start forms).
+    #[allow(
+        clippy::similar_names,
+        reason = "in_ppr/in_rpr mirror the OOXML element names w:pPr (paragraph properties) and w:rPr (run properties) verbatim"
+    )]
+    fn apply(&mut self, e: &BytesStart, in_ppr: bool, in_rpr: bool) {
+        match e.name().as_ref() {
+            b"w:name" => self.display_name = attr_val(e, b"w:val"),
+            b"w:basedOn" => self.parent = attr_val(e, b"w:val"),
+            b"w:jc" if in_ppr => self.align = attr_val(e, b"w:val").map(|v| map_jc(&v)),
+            b"w:outlineLvl" if in_ppr => {
+                self.outline = attr_val(e, b"w:val")
+                    .and_then(|v| v.parse::<i64>().ok())
+                    .map(|n| n.saturating_add(1));
+            }
+            // Paragraph spacing (twips) → px space_before/space_after; an auto-rule `w:line` → the unitless line_spacing multiple.
+            b"w:spacing" if in_ppr => {
+                if let Some(v) = attr_val(e, b"w:before") {
+                    self.space_before = twips_to_px(&v);
+                }
+                if let Some(v) = attr_val(e, b"w:after") {
+                    self.space_after = twips_to_px(&v);
+                }
+                if let Some(ls) = line_spacing_from_spacing(e) {
+                    self.line_spacing = Some(ls);
+                }
+            }
+            // Left indent (twips, `w:left`/`w:start`) → px indent.
+            b"w:ind" if in_ppr => {
+                if let Some(v) = attr_val(e, b"w:left").or_else(|| attr_val(e, b"w:start")) {
+                    self.indent = twips_to_px(&v);
+                }
+            }
+            _ if in_rpr => {
+                match e.name().as_ref() {
+                    b"w:b" | b"w:bCs" => self.bold = Some(toggle_on(e)),
+                    b"w:i" | b"w:iCs" => self.italic = Some(toggle_on(e)),
+                    b"w:sz" => {
+                        if let Some(hp) = attr_val(e, b"w:val").and_then(|v| v.parse::<f64>().ok())
+                        {
+                            self.size = Some(hp / 2.0);
+                        }
+                    }
+                    b"w:color" => {
+                        if let Some(c) = attr_val(e, b"w:val").and_then(|v| normalize_color(&v)) {
+                            self.color = Some(c);
+                        }
+                    }
+                    b"w:rFonts" => {
+                        if let Some(f) = attr_val(e, b"w:ascii").or_else(|| attr_val(e, b"w:hAnsi"))
+                        {
+                            self.font = Some(generic_font(&f));
+                        }
+                    }
+                    _ => {}
+                }
+                if let Some((k, v)) = mark_from_rpr_child(e) {
+                    self.text.retain(|(k2, _)| k2 != &k);
+                    self.text.push((k, v));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// On `</w:style>`: if a style id was captured, register it (`character` → text marks by
+    /// id, `paragraph` → a resolved [`ParaStyle`]).
+    fn finish(self, reg: &mut StyleRegistry) {
+        let Some(id) = self.id else {
+            return;
+        };
+        match self.kind.as_deref() {
             Some("character") => {
-                if !text.is_empty() {
-                    reg.text.insert(id, std::mem::take(text));
+                if !self.text.is_empty() {
+                    reg.text.insert(id, self.text);
                 }
             }
             Some("paragraph") => {
-                let (h, l) = heading_from_name(&id, name_disp.as_deref());
+                let (h, l) = heading_from_name(&id, self.display_name.as_deref());
                 reg.para.insert(
                     id,
                     ParaStyle {
-                        parent: parent.take(),
-                        align: align.take(),
-                        outline_level: outline.take(),
+                        parent: self.parent,
+                        align: self.align,
+                        outline_level: self.outline,
                         heading_name: h,
                         name_level: l,
-                        text: std::mem::take(text),
-                        display_name: name_disp.take(),
+                        text: self.text,
+                        display_name: self.display_name,
                         named: true,
-                        size: size.take(),
-                        bold: bold.take(),
-                        italic: italic.take(),
-                        color: color.take(),
-                        font: font.take(),
-                        space_before: space_before.take(),
-                        space_after: space_after.take(),
-                        indent: indent.take(),
-                        line_spacing: line_spacing.take(),
+                        size: self.size,
+                        bold: self.bold,
+                        italic: self.italic,
+                        color: self.color,
+                        font: self.font,
+                        space_before: self.space_before,
+                        space_after: self.space_after,
+                        indent: self.indent,
+                        line_spacing: self.line_spacing,
                     },
                 );
             }
             _ => {}
         }
     }
-    *style_type = None;
-    reset_style_accum(
-        name_disp,
-        parent,
-        align,
-        outline,
-        text,
-        size,
-        bold,
-        italic,
-        color,
-        font,
-        space_before,
-        space_after,
-        indent,
-        line_spacing,
-    );
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "the per-style registration and reset logic is already extracted into finish_style/reset_style_accum above; what's left is a local prop! macro that applies one XML property to ~14 flat accumulator locals by name — moving it out would need either a closure (which would hold a standing &mut borrow on those same locals the surrounding match also writes directly, a borrow-checker conflict) or bundling them into an accumulator struct, neither safe to introduce without compiling"
-)]
 #[allow(
     clippy::similar_names,
     reason = "in_ppr/in_rpr mirror the OOXML element names w:pPr (paragraph properties) and w:rPr (run properties) verbatim"
@@ -533,109 +551,15 @@ pub(super) fn parse_styles(xml: &[u8], reg: &mut StyleRegistry) {
     };
     let mut reader = Reader::from_str(s);
 
-    let mut style_id: Option<String> = None;
-    let mut style_type: Option<String> = None;
-    let mut name_disp: Option<String> = None;
-    let mut parent: Option<String> = None;
-    let mut align: Option<String> = None;
-    let mut outline: Option<i64> = None;
-    let mut text: Vec<(String, MarkValue)> = Vec::new();
-    let mut size: Option<f64> = None;
-    let mut bold: Option<bool> = None;
-    let mut italic: Option<bool> = None;
-    let mut color: Option<String> = None;
-    let mut font: Option<String> = None;
-    let mut space_before: Option<f64> = None;
-    let mut space_after: Option<f64> = None;
-    let mut indent_px: Option<f64> = None;
-    let mut line_spacing: Option<f64> = None;
+    let mut style = StyleAccum::default();
     let mut in_ppr = false;
     let mut in_rpr = false;
-
-    // Apply a property element (works for both Empty and Start forms).
-    macro_rules! prop {
-        ($e:expr) => {{
-            let e = $e;
-            match e.name().as_ref() {
-                b"w:name" => name_disp = attr_val(&e, b"w:val"),
-                b"w:basedOn" => parent = attr_val(&e, b"w:val"),
-                b"w:jc" if in_ppr => align = attr_val(&e, b"w:val").map(|v| map_jc(&v)),
-                b"w:outlineLvl" if in_ppr => {
-                    outline = attr_val(&e, b"w:val")
-                        .and_then(|v| v.parse::<i64>().ok())
-                        .map(|n| n.saturating_add(1))
-                }
-                // Paragraph spacing (twips) → px space_before/space_after; an auto-rule `w:line` → the unitless line_spacing multiple.
-                b"w:spacing" if in_ppr => {
-                    if let Some(v) = attr_val(&e, b"w:before") {
-                        space_before = twips_to_px(&v);
-                    }
-                    if let Some(v) = attr_val(&e, b"w:after") {
-                        space_after = twips_to_px(&v);
-                    }
-                    if let Some(ls) = line_spacing_from_spacing(&e) {
-                        line_spacing = Some(ls);
-                    }
-                }
-                // Left indent (twips, `w:left`/`w:start`) → px indent.
-                b"w:ind" if in_ppr => {
-                    if let Some(v) = attr_val(&e, b"w:left").or_else(|| attr_val(&e, b"w:start")) {
-                        indent_px = twips_to_px(&v);
-                    }
-                }
-                _ if in_rpr => {
-                    match e.name().as_ref() {
-                        b"w:b" | b"w:bCs" => bold = Some(toggle_on(&e)),
-                        b"w:i" | b"w:iCs" => italic = Some(toggle_on(&e)),
-                        b"w:sz" => {
-                            if let Some(hp) = attr_val(&e, b"w:val").and_then(|v| v.parse::<f64>().ok()) {
-                                size = Some(hp / 2.0);
-                            }
-                        }
-                        b"w:color" => {
-                            if let Some(c) = attr_val(&e, b"w:val").and_then(|v| normalize_color(&v)) {
-                                color = Some(c);
-                            }
-                        }
-                        b"w:rFonts" => {
-                            if let Some(f) = attr_val(&e, b"w:ascii").or_else(|| attr_val(&e, b"w:hAnsi")) {
-                                font = Some(generic_font(&f));
-                            }
-                        }
-                        _ => {}
-                    }
-                    if let Some((k, v)) = mark_from_rpr_child(&e) {
-                        text.retain(|(k2, _)| k2 != &k);
-                        text.push((k, v));
-                    }
-                }
-                _ => {}
-            }
-        }};
-    }
 
     while let Ok(ev) = reader.read_event() {
         match ev {
             Event::Start(e) => match e.name().as_ref() {
                 b"w:style" => {
-                    style_id = attr_val(&e, b"w:styleId");
-                    style_type = attr_val(&e, b"w:type");
-                    reset_style_accum(
-                        &mut name_disp,
-                        &mut parent,
-                        &mut align,
-                        &mut outline,
-                        &mut text,
-                        &mut size,
-                        &mut bold,
-                        &mut italic,
-                        &mut color,
-                        &mut font,
-                        &mut space_before,
-                        &mut space_after,
-                        &mut indent_px,
-                        &mut line_spacing,
-                    );
+                    style = StyleAccum::begin(&e);
                     in_ppr = false;
                     in_rpr = false;
                 }
@@ -645,31 +569,13 @@ pub(super) fn parse_styles(xml: &[u8], reg: &mut StyleRegistry) {
                         in_rpr = true;
                     }
                 }
-                _ => prop!(e),
+                _ => style.apply(&e, in_ppr, in_rpr),
             },
-            Event::Empty(e) => prop!(e),
+            Event::Empty(e) => style.apply(&e, in_ppr, in_rpr),
             Event::End(e) => match e.name().as_ref() {
                 b"w:pPr" => in_ppr = false,
                 b"w:rPr" => in_rpr = false,
-                b"w:style" => finish_style(
-                    reg,
-                    &mut style_id,
-                    &mut style_type,
-                    &mut name_disp,
-                    &mut parent,
-                    &mut align,
-                    &mut outline,
-                    &mut text,
-                    &mut size,
-                    &mut bold,
-                    &mut italic,
-                    &mut color,
-                    &mut font,
-                    &mut space_before,
-                    &mut space_after,
-                    &mut indent_px,
-                    &mut line_spacing,
-                ),
+                b"w:style" => std::mem::take(&mut style).finish(reg),
                 _ => {}
             },
             Event::Eof => break,

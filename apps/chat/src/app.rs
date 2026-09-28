@@ -770,7 +770,6 @@ pub struct ChatApp {
     /// The latest call/media problem to show in the call chrome (a refused
     /// control, a native voice issue, or no connected media transport).
     pub(crate) media_error: Option<String>,
-    legacy_migration_attempted: bool,
     pub(crate) canonical: bool,
     canonical_dirty: bool,
     /// Document heads and pending-operation count at the last canonical reload,
@@ -979,7 +978,6 @@ impl ChatApp {
             remote_frames: HashMap::new(),
             remote_screens: HashMap::new(),
             media_error: None,
-            legacy_migration_attempted: false,
             canonical: false,
             canonical_dirty: true,
             synced: None,
@@ -1984,12 +1982,9 @@ impl ChatApp {
         self.set_composer_focus();
     }
 
-    /// Bring both composers up to date with their drafts, moving drafts out
-    /// of the first format once. `--shots` stages its mid-compose draft here.
+    /// Bring both composers up to date with their drafts. `--shots` stages
+    /// its mid-compose draft here.
     pub(crate) fn sync_composers(&mut self, doc: &mut AutoCommit) {
-        if ChatDoc::needs_draft_upgrade(doc) && self.can_participate() {
-            ChatDoc::upgrade_drafts(doc);
-        }
         if let Some(draft) = self.shot_composer_draft.take() {
             ChatDoc::set_draft(doc, &self.active_channel, &draft);
         }
@@ -3144,7 +3139,9 @@ impl Widget for ChatApp {
     ui::provides!(
         dyn ui::widget::Collaborative,
         dyn ui::widget::Continuable,
-        dyn ui::widget::FloatingSurfaceProvider
+        dyn ui::widget::FloatingSurfaceProvider,
+        dyn ui::collaboration::participants::Participants,
+        dyn ui::undo::CommittedActions
     );
 
     fn semantic_readers(&self) -> &'static [ui::semantic_document_read::RegisteredSemanticReader] {
@@ -3265,14 +3262,6 @@ impl Widget for ChatApp {
         } else if !self.canonical {
             // Ephemeral `--shots`/test instance: the rich demo workspace.
             ChatDoc::seed_if_empty(doc);
-        }
-        if !self.canonical && !self.legacy_migration_attempted {
-            if self.actions.is_hosted() {
-                self.perform_action(doc, &actions::ChatAction::MigrateLegacyAttachments);
-            } else {
-                ChatDoc::migrate_legacy_attachment_paths(doc);
-            }
-            self.legacy_migration_attempted = true;
         }
         self.settle_attachment_picker();
         self.settle_attachment_import(doc);
@@ -3470,7 +3459,7 @@ impl Widget for ChatApp {
         let msg_area = self.messages_rect(tr);
         crate::paint::push_clip(scene, tf, msg_area);
         self.draw_messages(
-            crate::paint::PaintContext::new(scene, tf, tr, theme),
+            ui::paint::PaintCtx::new(scene, tf, tr, theme),
             presence,
             msg_area,
             &mut hits,
@@ -3673,32 +3662,6 @@ impl Widget for ChatApp {
         match participant.and_then(|p| self.participant_ctx(p)) {
             Some(ctx) => crate::actions::resolve_resource(&ctx, doc, id),
             None => Widget::resource(self, doc, id),
-        }
-    }
-
-    fn join_participant(&mut self, participant: &tilo_actions::ParticipantId) -> bool {
-        if participant.agent_task().is_some() {
-            self.participant_labels
-                .entry(participant.as_str().to_owned())
-                .or_default();
-        }
-        false
-    }
-
-    fn leave_participant(&mut self, participant: &tilo_actions::ParticipantId) {
-        self.participant_labels.remove(participant.as_str());
-    }
-
-    fn set_participant_label(&mut self, participant: &tilo_actions::ParticipantId, label: &str) {
-        if participant.agent_task().is_some() {
-            let label = label.trim();
-            self.participant_labels
-                .insert(participant.as_str().to_owned(), label.to_owned());
-            // A host acting as this agent: it is also the local participant.
-            if participant.as_str() == self.me.id && !label.is_empty() {
-                label.clone_into(&mut self.me.name);
-                self.me.initials = crate::identity::initials_for(label);
-            }
         }
     }
 
@@ -3926,13 +3889,6 @@ impl Widget for ChatApp {
         })
     }
 
-    /// Hand the host the heads captured before an on-screen affordance dispatched
-    /// its action, so it records exactly one undo boundary bracketing the event —
-    /// the same path a Ctrl+K palette dispatch takes.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
-    }
-
     /// Fold conversations, full-text messages, and people into global search.
     /// Every result names an exported `View` action; there is no app-private
     /// activation path.
@@ -4024,6 +3980,41 @@ impl Widget for ChatApp {
         self.canonical_dirty = false;
         self.composer_main.mark_drawn();
         self.composer_thread.mark_drawn();
+    }
+}
+
+impl ui::undo::CommittedActions for ChatApp {
+    /// Hand the host the heads captured before an on-screen affordance dispatched
+    /// its action, so it records exactly one undo boundary bracketing the event —
+    /// the same path a Ctrl+K palette dispatch takes.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
+    }
+}
+
+impl ui::collaboration::participants::Participants for ChatApp {
+    fn join_participant(&mut self, participant: &tilo_actions::ParticipantId) -> bool {
+        if participant.agent_task().is_some() {
+            self.participant_labels
+                .entry(participant.as_str().to_owned())
+                .or_default();
+        }
+        false
+    }
+    fn leave_participant(&mut self, participant: &tilo_actions::ParticipantId) {
+        self.participant_labels.remove(participant.as_str());
+    }
+    fn set_participant_label(&mut self, participant: &tilo_actions::ParticipantId, label: &str) {
+        if participant.agent_task().is_some() {
+            let label = label.trim();
+            self.participant_labels
+                .insert(participant.as_str().to_owned(), label.to_owned());
+            // A host acting as this agent: it is also the local participant.
+            if participant.as_str() == self.me.id && !label.is_empty() {
+                label.clone_into(&mut self.me.name);
+                self.me.initials = crate::identity::initials_for(label);
+            }
+        }
     }
 }
 
@@ -4294,8 +4285,8 @@ mod agent_attribution_tests {
         crate::doc::ChatDoc::seed_if_empty(&mut doc);
         app.sync(&mut doc, &ROOT);
         let agent = ParticipantId::for_agent_task("11111111-1111-4111-8111-111111111111").unwrap();
-        Widget::join_participant(&mut app, &agent);
-        Widget::set_participant_label(&mut app, &agent, "Tide");
+        ui::collaboration::participants::join_participant(&mut app, &agent);
+        ui::collaboration::participants::set_participant_label(&mut app, &agent, "Tide");
 
         let resources = Widget::resources_for(&app, Some(&agent), &doc);
         let encoded = post_via(&resources, "hello from the agent");

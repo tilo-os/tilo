@@ -320,17 +320,20 @@ fn comment_index(snap: &DocSnapshot) -> CommentIndex<'_> {
     snap.comments.iter().map(|c| (c.id.clone(), c)).collect()
 }
 
+/// What inline rendering reads and accumulates across the whole body.
+struct InlineCtx<'a> {
+    /// Generated span styles referenced so far (see [`span_styles`]).
+    used: BTreeMap<String, String>,
+    notes: NoteIndex<'a>,
+    /// Inline notes emitted so far, numbering them in document order.
+    note_ctr: usize,
+    comments: CommentIndex<'a>,
+}
+
 /// Render a block's text with `text:a` hyperlinks (outer) and `text:span` style wrappers
 /// (inner), closing and re-opening each whenever it changes so output stays well-nested even
 /// for overlapping marks; a `note-ref` placeholder emits the referenced inline `text:note`.
-fn render_inline(
-    text: &str,
-    marks: &[MarkSpan],
-    used: &mut std::collections::BTreeMap<String, String>,
-    notes: &NoteIndex,
-    note_ctr: &mut usize,
-    comments: &CommentIndex,
-) -> String {
+fn render_inline(text: &str, marks: &[MarkSpan], ctx: &mut InlineCtx<'_>) -> String {
     let plan = InlinePlan::new(text, marks);
     let text_len = text.chars().count();
     let mut out = String::new();
@@ -360,12 +363,12 @@ fn render_inline(
             // opening an adjacent one; the shared plan supplies the stable,
             // format-neutral ordering.
             for id in &boundary.comments.ends {
-                if let Some(comment) = comments.get(*id) {
+                if let Some(comment) = ctx.comments.get(*id) {
                     out.push_str(&super::comments::render_annotation_end(comment));
                 }
             }
             for id in &boundary.comments.starts {
-                if let Some(comment) = comments.get(*id) {
+                if let Some(comment) = ctx.comments.get(*id) {
                     out.push_str(&super::comments::render_annotation_start(comment));
                 }
             }
@@ -407,7 +410,7 @@ fn render_inline(
             }
             cur_link = link;
         }
-        let want = span_styles(run, used);
+        let want = span_styles(run, &mut ctx.used);
         if want != open {
             close_spans(&mut out, &mut open);
             for name in &want {
@@ -416,12 +419,12 @@ fn render_inline(
             }
         }
         if let Some(note_id) = run.note_reference {
-            if let Some(note) = notes.get(note_id) {
+            if let Some(note) = ctx.notes.get(note_id) {
                 // A per-document note counter; bounded by how many notes
                 // one document has, nowhere near `usize::MAX` (or the
                 // note-counter's actual integer type's max).
-                *note_ctr = note_ctr.saturating_add(1);
-                out.push_str(&super::notes::render_inline_note(note, *note_ctr));
+                ctx.note_ctr = ctx.note_ctr.saturating_add(1);
+                out.push_str(&super::notes::render_inline_note(note, ctx.note_ctr));
             }
             after_space = false;
             continue;
@@ -1095,14 +1098,16 @@ fn build_content_xml(
     head: &ContentHead,
 ) -> String {
     let mut body = String::new();
-    let mut used: BTreeMap<String, String> = BTreeMap::new();
     let mut pstyles: Vec<ParaStyleEntry> = Vec::new();
     let mut named_refs: BTreeSet<String> = BTreeSet::new();
     let mut list_styles: Vec<ListStyle> = Vec::new();
     let mut graphic_styles: Vec<(String, String)> = Vec::new();
-    let notes = note_index(snap);
-    let mut note_ctr = 0usize;
-    let comments = comment_index(snap);
+    let mut inline = InlineCtx {
+        used: BTreeMap::new(),
+        notes: note_index(snap),
+        note_ctr: 0,
+        comments: comment_index(snap),
+    };
     let (split, tracked_changes) = super::changes::split_tracked_changes(snap);
     let snap = &snap.with_snapshot(split.as_ref());
     let mut style_attr = |b: &BlockView| -> String {
@@ -1112,15 +1117,7 @@ fn build_content_xml(
     while let Some(b) = snap.blocks.get(i) {
         match b.kind.as_str() {
             "heading" => {
-                render_heading(
-                    b,
-                    &mut body,
-                    &mut style_attr,
-                    &mut used,
-                    &notes,
-                    &mut note_ctr,
-                    &comments,
-                );
+                render_heading(b, &mut body, &mut style_attr, &mut inline);
                 i = i.saturating_add(1);
             }
             "list_item" => {
@@ -1131,10 +1128,7 @@ fn build_content_xml(
                     head,
                     &mut list_styles,
                     &mut style_attr,
-                    &mut used,
-                    &notes,
-                    &mut note_ctr,
-                    &comments,
+                    &mut inline,
                 );
             }
             "image" => {
@@ -1153,27 +1147,10 @@ fn build_content_xml(
                 i = i.saturating_add(1);
             }
             "cell" => {
-                render_table_run(
-                    snap,
-                    &mut i,
-                    &mut body,
-                    &mut style_attr,
-                    &mut used,
-                    &notes,
-                    &mut note_ctr,
-                    &comments,
-                );
+                render_table_run(snap, &mut i, &mut body, &mut style_attr, &mut inline);
             }
             _ => {
-                render_paragraph(
-                    b,
-                    &mut body,
-                    &mut style_attr,
-                    &mut used,
-                    &notes,
-                    &mut note_ctr,
-                    &comments,
-                );
+                render_paragraph(b, &mut body, &mut style_attr, &mut inline);
                 i = i.saturating_add(1);
             }
         }
@@ -1182,7 +1159,7 @@ fn build_content_xml(
     let styles = render_automatic_styles(
         snap,
         existing_style_names,
-        &used,
+        &inline.used,
         &named_refs,
         &pstyles,
         &list_styles,
@@ -1202,18 +1179,11 @@ fn build_content_xml(
 }
 
 /// Renders a `heading` block as `text:h`, with its outline level clamped to `1..=6`.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "threads the same per-document render state build_content_xml's other block handlers share"
-)]
 fn render_heading(
     b: &BlockView,
     body: &mut String,
     style_attr: &mut impl FnMut(&BlockView) -> String,
-    used: &mut BTreeMap<String, String>,
-    notes: &NoteIndex,
-    note_ctr: &mut usize,
-    comments: &CommentIndex,
+    inline: &mut InlineCtx<'_>,
 ) {
     let level = match b.attrs.get("level") {
         Some(AttrVal::Int(n)) => (*n).clamp(1, 6),
@@ -1223,29 +1193,22 @@ fn render_heading(
     let _ = write!(
         body,
         r#"<text:h text:outline-level="{level}"{sa}>{}</text:h>"#,
-        render_inline(&b.text, &b.marks, used, notes, note_ctr, comments)
+        render_inline(&b.text, &b.marks, inline)
     );
 }
 
 /// Renders any block that isn't one of the other recognised kinds as a plain `text:p`.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "threads the same per-document render state build_content_xml's other block handlers share"
-)]
 fn render_paragraph(
     b: &BlockView,
     body: &mut String,
     style_attr: &mut impl FnMut(&BlockView) -> String,
-    used: &mut BTreeMap<String, String>,
-    notes: &NoteIndex,
-    note_ctr: &mut usize,
-    comments: &CommentIndex,
+    inline: &mut InlineCtx<'_>,
 ) {
     let sa = style_attr(b);
     let _ = write!(
         body,
         r"<text:p{sa}>{}</text:p>",
-        render_inline(&b.text, &b.marks, used, notes, note_ctr, comments)
+        render_inline(&b.text, &b.marks, inline)
     );
 }
 
@@ -1253,10 +1216,6 @@ fn render_paragraph(
 /// lists, reconstructing the `text:list`/`text:list-item` nesting from each item's 0-based
 /// `level`. A nested list lives inside its parent item, so items stay open until we know
 /// whether the next item is deeper; advances `*i` past the run.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "threads the same per-document render state build_content_xml's other block handlers share"
-)]
 fn render_list_run(
     snap: &Resolved<'_>,
     i: &mut usize,
@@ -1264,10 +1223,7 @@ fn render_list_run(
     head: &ContentHead,
     list_styles: &mut Vec<ListStyle>,
     style_attr: &mut impl FnMut(&BlockView) -> String,
-    used: &mut BTreeMap<String, String>,
-    notes: &NoteIndex,
-    note_ctr: &mut usize,
-    comments: &CommentIndex,
+    inline: &mut InlineCtx<'_>,
 ) {
     let mut depth: i64 = 0; // number of <text:list> currently open
     let mut item_open = false; // a <text:list-item> awaiting its close
@@ -1310,7 +1266,7 @@ fn render_list_run(
         let _ = write!(
             body,
             r"<text:list-item><text:p{sa}>{}</text:p>",
-            render_inline(&li.text, &li.marks, used, notes, note_ctr, comments)
+            render_inline(&li.text, &li.marks, inline)
         );
         item_open = true;
         *i = i.saturating_add(1);
@@ -1334,19 +1290,12 @@ fn close_lists(body: &mut String, depth: &mut i64, item_open: &mut bool) {
 
 /// Renders a run of consecutive `cell` blocks belonging to the same table (starting at `*i`)
 /// as an ODF `table:table`; advances `*i` past the run.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "threads the same per-document render state build_content_xml's other block handlers share"
-)]
 fn render_table_run(
     snap: &Resolved<'_>,
     i: &mut usize,
     body: &mut String,
     style_attr: &mut impl FnMut(&BlockView) -> String,
-    used: &mut BTreeMap<String, String>,
-    notes: &NoteIndex,
-    note_ctr: &mut usize,
-    comments: &CommentIndex,
+    inline: &mut InlineCtx<'_>,
 ) {
     let Some(first) = snap.blocks.get(*i) else {
         return;
@@ -1405,7 +1354,7 @@ fn render_table_run(
             let (sa, inner, mut spans) = match cell {
                 Some(cl) => (
                     style_attr(cl),
-                    render_inline(&cl.text, &cl.marks, used, notes, note_ctr, comments),
+                    render_inline(&cl.text, &cl.marks, inline),
                     cell_spans_xml(cl),
                 ),
                 None => (String::new(), String::new(), String::new()),
@@ -1532,10 +1481,6 @@ impl<'a> CellGrid<'a> {
 /// Builds the `office:automatic-styles` body: run marks used inline, common named styles
 /// referenced by a block's `style` attr (skipped if already declared in a preserved
 /// `styles.xml`), per-paragraph resolved styles, list styles, and image-wrap graphic styles.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "one style-source parameter per style kind build_content_xml collected; splitting further would just move the coupling"
-)]
 fn render_automatic_styles(
     snap: &Resolved<'_>,
     existing_style_names: &BTreeSet<String>,

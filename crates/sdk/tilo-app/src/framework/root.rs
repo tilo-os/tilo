@@ -22,7 +22,7 @@ use ui_core::{LocalState, Theme};
 use super::dispatch::Dispatcher;
 use super::live::Live;
 use super::stage::Stages;
-use super::view::Updaters;
+use super::view::{Updaters, ViewCx};
 
 pub(crate) struct ResourceRoot<R: Resource> {
     title: &'static str,
@@ -50,35 +50,29 @@ pub(crate) struct ResourceRoot<R: Resource> {
 }
 
 impl<R: Resource> ResourceRoot<R> {
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "assembled once by the framework from parts it already owns"
-    )]
+    /// A root over `content`, the view built in `cx`, whose handles the root
+    /// keeps; `alive` is the scope `cx`'s bindings are tied to.
     pub(crate) fn new(
         title: &'static str,
         icon: IconDescriptor,
         label: String,
-        live: Live<R>,
-        updaters: Updaters<R>,
+        cx: ViewCx<R>,
         alive: Rc<()>,
-        dispatch: Dispatcher<R>,
-        saved: LocalState<RecordSaveStatus>,
-        stages: Stages,
         content: Element,
     ) -> Self {
         Self {
             title,
             icon,
             label,
-            live,
-            updaters,
+            live: cx.live,
+            updaters: cx.updaters,
             followed: std::cell::Cell::new(0),
             _alive: alive,
-            dispatch,
-            saved,
+            dispatch: cx.dispatch,
+            saved: cx.saved,
             permissions: None,
             write: None,
-            stages,
+            stages: cx.stages,
             content,
             presentation: Vec::new(),
             search: std::cell::RefCell::new(None),
@@ -201,6 +195,8 @@ impl SearchProvider for ResourceSearch {
 // Everything else — layout, input, traversal, operation admission — is the
 // view's own, forwarded by the decorator.
 impl<R: Resource> Decorator for ResourceRoot<R> {
+    ui_core::provides!(dyn ui_core::undo::CommittedActions; inner = content);
+
     type Inner = dyn Widget;
 
     fn inner(&self) -> &(dyn Widget + 'static) {
@@ -296,9 +292,6 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
 
     // The undo boundary of a surface's immediate actions this event; the
     // host records one step per event and author.
-    fn take_committed_action(&mut self) -> Option<Vec<ui_core::automerge::ChangeHash>> {
-        self.dispatch.take_committed()
-    }
 
     fn take_action_revert(
         &mut self,
@@ -308,9 +301,6 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
 
     // A surface's step stays open for the actions that continue it (the
     // letters of a word), which report no boundary of their own.
-    fn keeps_undo_step_open(&self) -> bool {
-        self.dispatch.keeps_step_open()
-    }
 
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.dispatch
@@ -356,6 +346,15 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
         })];
         providers.extend(self.content.search_providers());
         providers
+    }
+}
+
+impl<R: Resource> ui_core::undo::CommittedActions for ResourceRoot<R> {
+    fn take_committed_action(&mut self) -> Option<Vec<ui_core::automerge::ChangeHash>> {
+        self.dispatch.take_committed()
+    }
+    fn keeps_undo_step_open(&self) -> bool {
+        self.dispatch.keeps_step_open()
     }
 }
 

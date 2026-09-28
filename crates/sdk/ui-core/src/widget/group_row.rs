@@ -15,6 +15,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 
+use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -725,21 +726,23 @@ impl GroupRow {
     /// layout and pixels. This method deliberately calls the owning group
     /// directly, preserving its real app draw path and geometry while omitting
     /// only the output clip.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "capture painting mirrors the Widget draw context plus target selection"
-    )]
     pub fn draw_capture_targets(
         &mut self,
-        target_ids: &[String],
-        extent: crate::widget::CaptureExtent,
-        complete_semantic_content: bool,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
+        capture: &crate::widget::LiveCapture<'_>,
+        ctx: &mut PaintCtx<'_>,
         presence: &PresenceCtx,
     ) -> Vec<Rect> {
+        let crate::widget::LiveCapture {
+            target_ids,
+            extent,
+            complete_semantic_content,
+        } = *capture;
+        let PaintCtx {
+            scene,
+            transform,
+            text: text_renderer,
+            theme,
+        } = ctx.reborrow();
         let mut rects = Vec::new();
         for group in &mut self.groups {
             let active = group.active_tab_id();
@@ -2402,7 +2405,10 @@ impl FloatingSurfaceProvider for GroupRow {
 }
 
 impl Widget for GroupRow {
-    crate::provides!(dyn crate::widget::FloatingSurfaceProvider);
+    crate::provides!(
+        dyn crate::widget::FloatingSurfaceProvider,
+        dyn crate::collaboration::participants::CollaborationTopology
+    );
 
     // Modal capture and presentation polling follow visible content, never inactive tabs.
     fn modal_capture(&self) -> Option<Rect> {
@@ -2509,12 +2515,6 @@ impl Widget for GroupRow {
             reports.extend(child.take_component_close_reports());
         }
         reports
-    }
-    fn collaboration_children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.groups
-            .iter_mut()
-            .map(|group| group as &mut dyn Widget)
-            .collect()
     }
 
     fn as_any(&self) -> Option<&dyn std::any::Any> {
@@ -3224,6 +3224,15 @@ impl Widget for GroupRow {
             .map(super::Widget::take_structure_dirty)
             .fold(false, |acc, d| acc || d);
         own || children
+    }
+}
+
+impl crate::collaboration::participants::CollaborationTopology for GroupRow {
+    fn collaboration_children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        self.groups
+            .iter_mut()
+            .map(|group| group as &mut dyn Widget)
+            .collect()
     }
 }
 
@@ -6511,10 +6520,6 @@ mod tests {
     /// Shared `row.handle_event` shape for the drag-handle tests below
     /// (fixed scale factor, a caller-owned scratch `handled` flag).
     /// Returns whether the event was claimed.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "mirrors Widget::handle_event's own shape 1:1 for a test dispatcher"
-    )]
     fn dispatch_row(
         row: &mut GroupRow,
         event: &winit::event::WindowEvent,

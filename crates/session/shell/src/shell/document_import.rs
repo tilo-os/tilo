@@ -166,7 +166,7 @@ impl HostedRooms for NativeHostedRooms {
                 import::APP_ID,
                 import::RESOURCE,
                 import::PROPOSE,
-                argument,
+                Some(argument),
             )
             .map(move |answer| answer.map(|_| id))
     }
@@ -259,7 +259,13 @@ impl HostedRooms for NativeHostedRooms {
             import::DECLINE
         };
         self.0
-            .invoke_governor(room, import::APP_ID, import::RESOURCE, action, argument)
+            .invoke_governor(
+                room,
+                import::APP_ID,
+                import::RESOURCE,
+                action,
+                Some(argument),
+            )
             .map(|answer| answer.map(drop))
     }
 }

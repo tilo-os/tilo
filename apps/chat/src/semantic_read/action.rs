@@ -108,7 +108,7 @@ fn project(
     heads: &[automerge::ChangeHash],
     payload: &[u8],
 ) -> Result<ReadPage, SemanticReadError> {
-    use qdoc::semantic_read::ReadError;
+    use tilo_doc::semantic_read::ReadError;
     let request: Request =
         serde_json::from_slice(payload).map_err(|_| SemanticReadError::InvalidRequest)?;
     let cursor = request
@@ -117,9 +117,9 @@ fn project(
         .map(serde_json::from_str::<super::Cursor>)
         .transpose()
         .map_err(|_| SemanticReadError::InvalidRequest)?;
-    let limits = qdoc::semantic_read::Limits {
+    let limits = tilo_doc::semantic_read::Limits {
         items: usize::from(request.page_size),
-        ..qdoc::semantic_read::Limits::default()
+        ..tilo_doc::semantic_read::Limits::default()
     };
     let page = super::read_messages(document, heads, &request.channel, cursor.as_ref(), limits)
         .map_err(|error| match error {

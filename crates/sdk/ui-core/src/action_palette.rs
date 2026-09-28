@@ -1917,17 +1917,7 @@ impl ActionPalette {
             .measure
             .take()
             .expect("host-text palette requires layout_with_text");
-        Self::layout_field(
-            &mut self.field,
-            &mut self.results,
-            &mut self.field_taffy,
-            &mut self.field_node,
-            &mut self.rect,
-            theme,
-            origin,
-            width,
-            &mut text,
-        );
+        self.layout_field(theme, origin, width, &mut text);
         self.layout_controls(theme, &mut text);
         self.measure = Some(text);
     }
@@ -1940,41 +1930,20 @@ impl ActionPalette {
         text: &mut TextRenderer,
     ) {
         assert!(self.measure.is_none(), "owned-text palette requires layout");
-        Self::layout_field(
-            &mut self.field,
-            &mut self.results,
-            &mut self.field_taffy,
-            &mut self.field_node,
-            &mut self.rect,
-            theme,
-            origin,
-            width,
-            text,
-        );
+        self.layout_field(theme, origin, width, text);
         self.layout_controls(theme, text);
     }
 
     #[allow(
-        clippy::too_many_arguments,
         clippy::cast_possible_truncation,
-        reason = "disjoint palette state borrows share one bounded logical-pixel layout algorithm"
+        reason = "width and FIELD_H are logical-pixel layout dimensions, far inside f32's range"
     )]
-    fn layout_field(
-        field: &mut SearchField,
-        results: &mut SearchResultsView,
-        field_taffy: &mut TaffyTree<()>,
-        field_node: &mut Option<NodeId>,
-        rect: &mut Rect,
-        theme: &Theme,
-        origin: Point,
-        width: f64,
-        tr: &mut TextRenderer,
-    ) {
+    fn layout_field(&mut self, theme: &Theme, origin: Point, width: f64, tr: &mut TextRenderer) {
         // Field: build a fresh 2-node tree so `handle_event` can resolve the
         // inner text input's node, then place it at the top of the card.
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let node = field.build_layout(&mut taffy, theme, &mut node_map);
+        let node = self.field.build_layout(&mut taffy, theme, &mut node_map);
 
         let Ok(()) = taffy.compute_layout_with_measure(
             node,
@@ -1993,15 +1962,16 @@ impl ActionPalette {
             // rather than panicking the app.
             return;
         };
-        field.apply_layout(&taffy, node, origin);
-        *field_taffy = taffy;
-        *field_node = Some(node);
+        self.field.apply_layout(&taffy, node, origin);
+        self.field_taffy = taffy;
+        self.field_node = Some(node);
 
         // Results overlay directly under the field.
         let top = origin.y + FIELD_H + GAP;
-        let h = results.desired_height();
-        results.set_rect(Rect::new(origin.x, top, origin.x + width, top + h));
-        *rect = Rect::new(origin.x, origin.y, origin.x + width, top + h);
+        let h = self.results.desired_height();
+        self.results
+            .set_rect(Rect::new(origin.x, top, origin.x + width, top + h));
+        self.rect = Rect::new(origin.x, origin.y, origin.x + width, top + h);
     }
 
     fn layout_controls(&mut self, theme: &Theme, text: &mut TextRenderer) {
