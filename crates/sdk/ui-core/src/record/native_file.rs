@@ -79,7 +79,7 @@ impl FileHistoryReader {
         let Some(bridge) = &self.bridge else {
             return Ok(None);
         };
-        let capture = bridge.record(&self.package_id, &self.home, &want.id)?;
+        let capture = bridge.record(&self.package_id, &self.home, want)?;
         let document = capture.with_mutation(|mutation| {
             let collab_types::DocumentMutation::Snapshot(bytes) = mutation else {
                 return Err("initial file history is not a snapshot".to_string());

@@ -365,12 +365,14 @@ impl CollabClient {
         identity: &[u8],
         participant_handle: &str,
     ) -> Result<ChannelHandle, NotAvailable> {
-        self.join_channel_as_kind(channel_id, identity, participant_handle, "person")
+        self.join_channel_as_kind(channel_id, identity, participant_handle, "person", "")
             .await
     }
 
     /// Join as an explicitly typed participant. The broker validates an
     /// agent request against the workspace; this is not a display-name hint.
+    /// `record_kind` names the resource kind of the record the channel
+    /// carries, or is empty.
     ///
     /// # Errors
     ///
@@ -382,6 +384,7 @@ impl CollabClient {
         identity: &[u8],
         participant_handle: &str,
         participant_kind: &str,
+        record_kind: &str,
     ) -> Result<ChannelHandle, NotAvailable> {
         let mut req = self.inner.join_channel_request();
         {
@@ -390,6 +393,7 @@ impl CollabClient {
             builder.set_identity(identity);
             builder.set_participant_handle(participant_handle);
             builder.set_participant_kind(participant_kind);
+            builder.set_record_kind(record_kind);
         }
         let reply = req.send().promise.await?;
         let handle = reply.get()?.get_handle()?;

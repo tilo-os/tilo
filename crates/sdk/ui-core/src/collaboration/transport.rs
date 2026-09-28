@@ -230,10 +230,15 @@ pub trait CollabTransport: Send {
         false
     }
 
-    /// Join `route` through the existing worker when committed custody needs
-    /// it, returning the original committed history once it is available.
-    fn prepare_committed_document(&mut self, route: RouteSpec) -> Option<super::CommittedDocument> {
-        let _ = route;
+    /// Join `route`, whose record holds `record_kind`, through the existing
+    /// worker when committed custody needs it, returning the original
+    /// committed history once it is available.
+    fn prepare_committed_document(
+        &mut self,
+        route: RouteSpec,
+        record_kind: &str,
+    ) -> Option<super::CommittedDocument> {
+        let _ = (route, record_kind);
         None
     }
 }
