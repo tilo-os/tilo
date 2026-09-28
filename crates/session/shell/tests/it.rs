@@ -191,6 +191,8 @@ mod shell_state_test;
 mod sidebar_wheel_disc_snapshot;
 #[path = "speaker_clock_policy.rs"]
 mod speaker_clock_policy;
+#[path = "speaker_calibration_fabric.rs"]
+mod speaker_calibration_fabric;
 #[path = "state_file_format.rs"]
 mod state_file_format;
 #[path = "strip_navigation.rs"]
