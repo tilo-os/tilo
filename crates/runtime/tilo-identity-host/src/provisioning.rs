@@ -756,28 +756,6 @@ mod tests {
     use std::sync::{Arc, Barrier};
 
     /// Minimal tempdir helper (avoids pulling `tempfile` as a dev-dep — the only test in `quick-shell` that needs one).
-    struct TmpDir(PathBuf);
-    impl TmpDir {
-        fn new(name: &str) -> Self {
-            let base = std::env::temp_dir();
-            let pid = std::process::id();
-            let nonce = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |d| d.as_nanos());
-            let path = base.join(format!("tilo-desktop-firstboot-{name}-{pid}-{nonce}"));
-            std::fs::create_dir_all(&path).expect("create tmpdir");
-            TmpDir(path)
-        }
-        fn path(&self) -> &Path {
-            &self.0
-        }
-    }
-    impl Drop for TmpDir {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-
     #[cfg(unix)]
     #[test]
     fn identity_files_are_private_and_refuse_symlinks() {
@@ -785,7 +763,7 @@ mod tests {
         {
             use std::os::unix::fs::symlink;
 
-            let tmp = TmpDir::new("identity-dir-symlink");
+            let tmp = tempfile::tempdir().expect("tempdir");
             let target = tmp.path().join("target");
             fs::create_dir(&target).unwrap();
             let linked = tmp.path().join("linked");
@@ -794,7 +772,7 @@ mod tests {
         }
         // Phase `collaboration_verifier_rejects_a_permissive_primary_secret`.
         {
-            let tmp = TmpDir::new("collaboration-identity-permissions");
+            let tmp = tempfile::tempdir().expect("tempdir");
             let personal = tmp.path().join("config/tilo/identity");
             let paths = IdentityPaths::under(tmp.path().join("system"));
             ensure_collaboration_identity(&personal, &paths).unwrap();
@@ -807,7 +785,7 @@ mod tests {
         }
         // Phase `ensure_primary_identity_writes_a_private_file`.
         {
-            let tmp = TmpDir::new("mode");
+            let tmp = tempfile::tempdir().expect("tempdir");
             let identity_dir = tmp.path().join("tilo").join("identity");
             ensure_primary_identity(&identity_dir).expect("provision identity");
             let identity_file = identity_dir.join(PRIMARY_IDENTITY_FILE);
@@ -821,7 +799,7 @@ mod tests {
     fn primary_identity_is_created_once_and_legacy_hosts_are_associated_not_relabelled() {
         // Phase `ensure_primary_identity_reports_existing_vs_created`.
         {
-            let tmp = TmpDir::new("outcome");
+            let tmp = tempfile::tempdir().expect("tempdir");
             let dir = tmp.path().join("tilo").join("identity");
             // Fresh run creates.
             match ensure_primary_identity(&dir).expect("provision ok") {
@@ -847,7 +825,7 @@ mod tests {
         }
         // Phase `legacy_linux_host_associates_a_fresh_identity_with_the_unix_account`.
         {
-            let tmp = TmpDir::new("legacy-host-account");
+            let tmp = tempfile::tempdir().expect("tempdir");
             let personal = tmp.path().join("config/tilo/identity");
             let paths = IdentityPaths::under(tmp.path().join("system"));
 
@@ -862,7 +840,7 @@ mod tests {
         }
         // Phase `legacy_linux_host_does_not_relabel_or_migrate_an_existing_identity`.
         {
-            let tmp = TmpDir::new("legacy-host-existing");
+            let tmp = tempfile::tempdir().expect("tempdir");
             let personal = tmp.path().join("config/tilo/identity");
             let paths = IdentityPaths::under(tmp.path().join("system"));
             ensure_primary_identity(&personal).expect("seed existing identity");
@@ -887,7 +865,7 @@ mod tests {
     fn legacy_host_resumes_partial_identity_beneath_atomic_fedora_home_link() {
         use std::os::unix::fs::symlink;
 
-        let tmp = TmpDir::new("legacy-host-fedora-home");
+        let tmp = tempfile::tempdir().expect("tempdir");
         let real_home = tmp.path().join("var/home/alice");
         let personal = real_home.join(".config/tilo/identity");
         let identity_root = real_home.join(".local/share/tilo");
@@ -937,7 +915,7 @@ mod tests {
 
     #[test]
     fn the_shell_issues_native_certificates_and_the_runtime_foreign_ones() {
-        let tmp = TmpDir::new("device-class");
+        let tmp = tempfile::tempdir().expect("tempdir");
         let personal = tmp.path().join("config/tilo/identity");
         let paths = IdentityPaths::under(tmp.path().join("system"));
         ensure_collaboration_identity(&personal, &paths).unwrap();
@@ -968,7 +946,7 @@ mod tests {
             foreign_bytes
         );
 
-        let fresh = TmpDir::new("device-class-fresh");
+        let fresh = tempfile::tempdir().expect("tempdir");
         let personal = fresh.path().join("config/tilo/identity");
         let paths = IdentityPaths::under(fresh.path().join("system"));
         super::ensure_foreign_collaboration_identity(&personal, &paths, FILES).unwrap();
@@ -981,7 +959,7 @@ mod tests {
     fn collaboration_setup_builds_and_verifies_one_identity_chain() {
         // Phase `collaboration_setup_creates_one_verified_identity_chain`.
         {
-            let tmp = TmpDir::new("collaboration-identity");
+            let tmp = tempfile::tempdir().expect("tempdir");
             let personal = tmp.path().join("config/tilo/identity");
             let paths = IdentityPaths::under(tmp.path().join("system"));
 
@@ -1023,7 +1001,7 @@ mod tests {
         }
         // Phase `collaboration_verifier_rejects_a_mismatched_personal_root`.
         {
-            let tmp = TmpDir::new("collaboration-identity-mismatch");
+            let tmp = tempfile::tempdir().expect("tempdir");
             let personal = tmp.path().join("config/tilo/identity");
             let other_personal = tmp.path().join("other/tilo/identity");
             let paths = IdentityPaths::under(tmp.path().join("system"));
@@ -1041,7 +1019,7 @@ mod tests {
         }
         // Phase `collaboration_setup_repairs_the_active_import_without_minting_primary`.
         {
-            let tmp = TmpDir::new("active-import");
+            let tmp = tempfile::tempdir().expect("tempdir");
             let personal = tmp.path().join("config/tilo/identity");
             let paths = IdentityPaths::under(tmp.path().join("system"));
             ensure_primary_identity(&personal).expect("seed exported identity");
@@ -1077,7 +1055,7 @@ mod tests {
     fn concurrent_and_multi_user_provisioning_keeps_one_device_owner() {
         // Phase `multiple_os_users_share_one_device_without_replacing_its_owner`.
         {
-            let tmp = TmpDir::new("multi-user-device");
+            let tmp = tempfile::tempdir().expect("tempdir");
             let paths = IdentityPaths::under(tmp.path().join("system"));
             let alice = tmp.path().join("alice/tilo/identity");
             let bob = tmp.path().join("bob/tilo/identity");
@@ -1109,7 +1087,7 @@ mod tests {
         }
         // Phase `simultaneous_user_provisioning_builds_one_consistent_device_chain`.
         {
-            let tmp = TmpDir::new("simultaneous-user-provisioning");
+            let tmp = tempfile::tempdir().expect("tempdir");
             let paths = IdentityPaths::under(tmp.path().join("system"));
             let alice = tmp.path().join("alice/tilo/identity");
             let bob = tmp.path().join("bob/tilo/identity");
@@ -1166,7 +1144,7 @@ mod tests {
         }
         // Phase `simultaneous_owner_claims_elect_one_valid_winner_without_clobbering`.
         {
-            let tmp = TmpDir::new("simultaneous-owner-election");
+            let tmp = tempfile::tempdir().expect("tempdir");
             let path = tmp.path().join("system/user-identity/pubkey.bin");
             std::fs::create_dir_all(path.parent().expect("claim parent")).expect("claim parent");
 
