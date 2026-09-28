@@ -8,9 +8,14 @@
 //!
 //! [`OverlayStack`] owns the decisions every overlay otherwise re-derives:
 //! the stacking order ([`LayerId`]), which open layer an event is offered to
-//! first, the release a consumed press still owes, which layer Escape
-//! dismisses, the order assistive technology reads open layers in, and
-//! whether any of them still needs animation frames.
+//! first, who a press's release belongs to, which layer Escape dismisses,
+//! the order assistive technology reads open layers in, and whether any of
+//! them still needs frames.
+//!
+//! Input reaches the stack in [`Band`]s, because shell surfaces that are not
+//! overlays — a pairing question, first-login onboarding, a portal dialog —
+//! sit between them: a display change's Keep/Revert answer comes before
+//! onboarding, a tab menu after it. Within a band, [`LayerId`] order decides.
 //!
 //! [`LayerId`] names every shell overlay, including those the host still
 //! routes itself; [`OverlayStack::layer`] answers `None` for those.
@@ -26,8 +31,12 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, WindowEvent};
 
+use settings_store::hardware::ShortcutAction;
+use tilo_desktop::emoji_picker::EmojiPicker;
+
 use super::tab_menu::{TabMenuLayer, TabMenuTarget};
 use crate::shell::TabMenuAction;
+use crate::shell::display_confirm::DisplayConfirmPrompt;
 use crate::shell::power_menu::PowerMenu;
 
 /// Every shell overlay, topmost first. Declaration order *is* the stacking
@@ -80,6 +89,57 @@ impl LayerId {
         Self::NowPlaying,
         Self::ShortcutHelp,
     ];
+
+    /// Where a stacked layer's input is routed; `None` while the host still
+    /// routes the overlay itself. Never decreases down [`Self::ALL`].
+    pub(crate) const fn band(self) -> Option<Band> {
+        match self {
+            Self::DisplayConfirmation => Some(Band::Session),
+            Self::EmojiPicker => Some(Band::Modal),
+            Self::TabContextMenu | Self::PowerMenu => Some(Band::Popover),
+            _ => None,
+        }
+    }
+}
+
+/// A point in the host's dispatch where the stack is offered input, topmost
+/// first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Band {
+    /// Answers the whole session waits on, above onboarding, the personal
+    /// display and every desktop surface.
+    Session,
+    /// Modal pickers, below portal dialogs and the file chooser.
+    Modal,
+    /// Menus and flyouts, just above the windows.
+    Popover,
+}
+
+/// Where layers may place themselves, in desktop coordinates.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct LayerGeometry<'a> {
+    /// The host's bounds.
+    pub viewport: Rect,
+    /// Every display; the viewport alone before the host knows of any.
+    pub outputs: &'a [Rect],
+    /// The display with focus on a partitioned desktop.
+    pub focused_output: Option<Rect>,
+}
+
+impl LayerGeometry<'_> {
+    /// The display a popup anchored at `anchor` belongs on: the one holding
+    /// it, else the focused one, else the whole viewport.
+    pub(crate) fn display_for(&self, anchor: Option<Rect>) -> Rect {
+        anchor
+            .and_then(|anchor| {
+                self.outputs
+                    .iter()
+                    .copied()
+                    .find(|display| display.contains(anchor.center()))
+            })
+            .or(self.focused_output)
+            .unwrap_or(self.viewport)
+    }
 }
 
 /// Whether a layer resolved an event.
@@ -105,26 +165,41 @@ pub(crate) enum LayerIntent {
     /// Start a session lifecycle action through the one session executor
     /// that the typed `session.*` actions also reach.
     Session(os_actions::SessionAction),
+    /// The layer changed what it shows outside a frame the host already
+    /// schedules.
+    Repaint,
 }
 
 /// What a layer may read and ask for while handling one event.
 pub(crate) struct LayerCx<'a, 'e> {
-    /// The host's bounds, which every layer places itself within.
-    pub viewport: Rect,
+    pub geometry: LayerGeometry<'a>,
     /// Last known pointer position; `MouseInput` carries none.
     pub cursor: Option<Point>,
+    /// The configured shortcut a key press is bound to; `None` for every
+    /// other event.
+    pub shortcut: Option<ShortcutAction>,
     pub event: &'a mut EventCtx<'e>,
     intents: Vec<LayerIntent>,
 }
 
 impl<'a, 'e> LayerCx<'a, 'e> {
-    pub(crate) fn new(viewport: Rect, cursor: Option<Point>, event: &'a mut EventCtx<'e>) -> Self {
+    pub(crate) fn new(
+        geometry: LayerGeometry<'a>,
+        cursor: Option<Point>,
+        event: &'a mut EventCtx<'e>,
+    ) -> Self {
         Self {
-            viewport,
+            geometry,
             cursor,
+            shortcut: None,
             event,
             intents: Vec::new(),
         }
+    }
+
+    pub(crate) fn with_shortcut(mut self, shortcut: Option<ShortcutAction>) -> Self {
+        self.shortcut = shortcut;
+        self
     }
 
     pub(crate) fn request(&mut self, intent: LayerIntent) {
@@ -143,7 +218,7 @@ pub(crate) struct LayerPaint<'a> {
     pub text_renderer: &'a mut TextRenderer,
     pub theme: &'a Theme,
     pub presence: &'a PresenceCtx,
-    pub viewport: Rect,
+    pub geometry: LayerGeometry<'a>,
 }
 
 /// One self-contained shell overlay.
@@ -152,8 +227,9 @@ pub(crate) trait ShellLayer {
 
     fn is_open(&self) -> bool;
 
-    /// Only called while open. A layer that consumes a press does not see
-    /// its release: the stack absorbs that on the layer's behalf.
+    /// Only called while open. A layer that consumes a press owns its
+    /// release: it receives it while still open, and the stack absorbs it
+    /// when the press closed the layer.
     fn handle_event(&mut self, event: &WindowEvent, cx: &mut LayerCx<'_, '_>) -> Routed;
 
     /// Called every frame, open or not, so a closing layer can animate out.
@@ -162,9 +238,9 @@ pub(crate) trait ShellLayer {
     /// The layer's subtree while open; its children's indices are the
     /// semantic paths [`Self::accessibility_rect`] and
     /// [`Self::focus_accessibility`] receive.
-    fn accessibility(&self, viewport: Rect) -> Option<AccessNode>;
+    fn accessibility(&self, geometry: LayerGeometry<'_>) -> Option<AccessNode>;
 
-    fn accessibility_rect(&self, viewport: Rect, path: &[usize]) -> Option<Rect>;
+    fn accessibility_rect(&self, geometry: LayerGeometry<'_>, path: &[usize]) -> Option<Rect>;
 
     fn focus_accessibility(&mut self, path: &[usize]) -> bool;
 
@@ -180,25 +256,43 @@ pub(crate) trait ShellLayer {
     fn is_animating(&self, _now: Instant) -> bool {
         false
     }
+
+    /// Advance state that moves with time rather than input, once per
+    /// frame; `true` when that changed what the layer shows.
+    fn tick(&mut self, _now: Instant) -> bool {
+        false
+    }
 }
 
 /// The overlays that have joined the stack, and the arbitration they share.
 #[derive(Default)]
 pub(crate) struct OverlayStack {
+    pub(crate) display_confirm: DisplayConfirmPrompt,
+    pub(crate) emoji_picker: EmojiPicker,
     pub(crate) tab_menu: TabMenuLayer,
     pub(crate) power_menu: PowerMenu,
-    /// A layer consumed a press whose release has not arrived yet.
-    owed_release: bool,
+    /// The layer that consumed a press whose release has not arrived yet.
+    release_owner: Option<LayerId>,
 }
 
 impl OverlayStack {
     /// Topmost first; must follow [`LayerId`]'s order.
-    fn layers(&self) -> [&dyn ShellLayer; 2] {
-        [&self.tab_menu, &self.power_menu]
+    fn layers(&self) -> [&dyn ShellLayer; 4] {
+        [
+            &self.display_confirm,
+            &self.emoji_picker,
+            &self.tab_menu,
+            &self.power_menu,
+        ]
     }
 
-    fn layers_mut(&mut self) -> [&mut dyn ShellLayer; 2] {
-        [&mut self.tab_menu, &mut self.power_menu]
+    fn layers_mut(&mut self) -> [&mut dyn ShellLayer; 4] {
+        [
+            &mut self.display_confirm,
+            &mut self.emoji_picker,
+            &mut self.tab_menu,
+            &mut self.power_menu,
+        ]
     }
 
     /// The stacked layer for `id`, or `None` while the host still routes it.
@@ -210,27 +304,55 @@ impl OverlayStack {
         self.layers_mut().into_iter().find(|layer| layer.id() == id)
     }
 
-    /// Offer `event` to the open layers, topmost first. `true` when one of
-    /// them resolved it; `cx.event.handled` is then set.
-    pub(crate) fn route(&mut self, event: &WindowEvent, cx: &mut LayerCx<'_, '_>) -> bool {
+    /// Whether [`Self::route`] could resolve anything in `band`: a layer in
+    /// it is open or still owed a release.
+    pub(crate) fn listens(&self, band: Band) -> bool {
+        self.release_owner.and_then(LayerId::band) == Some(band)
+            || self
+                .layers()
+                .into_iter()
+                .any(|layer| layer.id().band() == Some(band) && layer.is_open())
+    }
+
+    /// Offer `event` to the open layers in `band`, topmost first. `true`
+    /// when one of them resolved it; `cx.event.handled` is then set.
+    pub(crate) fn route(
+        &mut self,
+        band: Band,
+        event: &WindowEvent,
+        cx: &mut LayerCx<'_, '_>,
+    ) -> bool {
         let button = match event {
             WindowEvent::MouseInput { state, .. } => Some(*state),
             _ => None,
         };
-        if button == Some(ElementState::Released) && std::mem::take(&mut self.owed_release) {
+        if button == Some(ElementState::Released)
+            && let Some(owner) = self
+                .release_owner
+                .filter(|owner| owner.band() == Some(band))
+        {
+            self.release_owner = None;
+            if let Some(layer) = self.layer_mut(owner).filter(|layer| layer.is_open()) {
+                layer.handle_event(event, cx);
+            }
             *cx.event.handled = true;
             return true;
         }
-        let consumed = self
+        let consumer = self
             .layers_mut()
             .into_iter()
-            .filter(|layer| layer.is_open())
-            .any(|layer| layer.handle_event(event, cx) == Routed::Consumed);
-        if consumed {
-            self.owed_release |= button == Some(ElementState::Pressed);
-            *cx.event.handled = true;
+            .filter(|layer| layer.id().band() == Some(band) && layer.is_open())
+            .find_map(|layer| {
+                (layer.handle_event(event, cx) == Routed::Consumed).then(|| layer.id())
+            });
+        let Some(consumer) = consumer else {
+            return false;
+        };
+        if button == Some(ElementState::Pressed) {
+            self.release_owner = Some(consumer);
         }
-        consumed
+        *cx.event.handled = true;
+        true
     }
 
     pub(crate) fn draw(&mut self, id: LayerId, cx: &mut LayerPaint<'_>) {
@@ -260,6 +382,13 @@ impl OverlayStack {
             .into_iter()
             .any(|layer| layer.is_animating(now))
     }
+
+    /// Advance every layer's clock; `true` when any of them changed.
+    pub(crate) fn tick(&mut self, now: Instant) -> bool {
+        self.layers_mut()
+            .into_iter()
+            .fold(false, |changed, layer| layer.tick(now) | changed)
+    }
 }
 
 #[cfg(test)]
@@ -271,6 +400,14 @@ mod tests {
 
     const VIEWPORT: Rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
 
+    fn geometry() -> LayerGeometry<'static> {
+        LayerGeometry {
+            viewport: VIEWPORT,
+            outputs: &[VIEWPORT],
+            focused_output: None,
+        }
+    }
+
     fn button(state: ElementState) -> WindowEvent {
         WindowEvent::MouseInput {
             device_id: DeviceId::dummy(),
@@ -279,8 +416,14 @@ mod tests {
         }
     }
 
-    /// Route `event` with the pointer at `cursor`; `(consumed, handled)`.
-    fn route(stack: &mut OverlayStack, event: &WindowEvent, cursor: Point) -> (bool, bool) {
+    /// Route `event` to `band` with the pointer at `cursor`;
+    /// `(consumed, handled)`.
+    fn route_band(
+        stack: &mut OverlayStack,
+        band: Band,
+        event: &WindowEvent,
+        cursor: Point,
+    ) -> (bool, bool) {
         let mut doc = AutoCommit::new();
         let mut taffy = TaffyTree::<()>::new();
         let node = taffy.new_leaf(taffy::Style::default()).expect("leaf");
@@ -297,13 +440,17 @@ mod tests {
             node_id: node,
             taffy: &taffy,
         };
-        let mut cx = LayerCx::new(VIEWPORT, Some(cursor), &mut event_cx);
-        let consumed = stack.route(event, &mut cx);
+        let mut cx = LayerCx::new(geometry(), Some(cursor), &mut event_cx);
+        let consumed = stack.route(band, event, &mut cx);
         assert!(
             cx.into_intents().is_empty(),
             "a dismissal asks nothing of the host"
         );
         (consumed, handled)
+    }
+
+    fn route(stack: &mut OverlayStack, event: &WindowEvent, cursor: Point) -> (bool, bool) {
+        route_band(stack, Band::Popover, event, cursor)
     }
 
     #[test]
@@ -315,6 +462,67 @@ mod tests {
             assert_eq!(stack.layer(*id).map(ShellLayer::id), Some(*id));
         }
         assert!(stack.layer(LayerId::CommandPalette).is_none());
+    }
+
+    #[test]
+    fn a_layer_is_routed_in_a_band_exactly_when_it_is_stacked() {
+        let stack = OverlayStack::default();
+        for id in LayerId::ALL {
+            assert_eq!(id.band().is_some(), stack.layer(id).is_some(), "{id:?}");
+        }
+        let bands: Vec<Band> = LayerId::ALL.iter().filter_map(|id| id.band()).collect();
+        assert!(
+            bands.windows(2).all(|pair| pair[0] <= pair[1]),
+            "a layer higher in the stack is never offered input after a lower one: {bands:?}"
+        );
+    }
+
+    #[test]
+    fn a_release_is_owed_only_in_the_band_that_took_its_press() {
+        let mut stack = OverlayStack::default();
+        stack.power_menu.open();
+        let outside = Point::new(VIEWPORT.x0 + 4.0, VIEWPORT.y1 - 4.0);
+        assert_eq!(
+            route(&mut stack, &button(ElementState::Pressed), outside),
+            (true, true)
+        );
+        assert!(
+            !stack.power_menu.is_open(),
+            "the press dismissed the flyout"
+        );
+        assert!(stack.listens(Band::Popover), "its release is still owed");
+        for band in [Band::Session, Band::Modal] {
+            assert!(!stack.listens(band), "{band:?}");
+            assert_eq!(
+                route_band(&mut stack, band, &button(ElementState::Released), outside),
+                (false, false),
+                "{band:?} sits above the surfaces between it and the flyout"
+            );
+        }
+        assert_eq!(
+            route(&mut stack, &button(ElementState::Released), outside),
+            (true, true)
+        );
+        assert!(!stack.listens(Band::Popover), "nothing is open or owed");
+    }
+
+    #[test]
+    fn a_popup_is_placed_on_the_display_holding_its_anchor() {
+        let left = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        let right = Rect::new(1280.0, 0.0, 3840.0, 1440.0);
+        let viewport = left.union(right);
+        let caret = |x: f64| Some(Rect::new(x, 100.0, x + 2.0, 120.0));
+        let mut geometry = LayerGeometry {
+            viewport,
+            outputs: &[left, right],
+            focused_output: None,
+        };
+        assert_eq!(geometry.display_for(caret(2000.0)), right);
+        assert_eq!(geometry.display_for(None), viewport);
+        geometry.focused_output = Some(right);
+        assert_eq!(geometry.display_for(caret(10.0)), left);
+        assert_eq!(geometry.display_for(caret(9000.0)), right);
+        assert_eq!(geometry.display_for(None), right);
     }
 
     #[test]
