@@ -5628,7 +5628,9 @@ impl Widget for SheetsApp {
     ui::provides!(
         dyn ui::undo::CommittedActions,
         dyn ui::widget::controls::ActionControls,
-        dyn ui::resources::PublishesResources
+        dyn ui::resources::PublishesResources,
+        dyn ui::search::capability::SearchSource,
+        dyn ui::presence::capability::PublishesPresence
     );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
@@ -5893,23 +5895,6 @@ impl Widget for SheetsApp {
         // went ("Alice is on Q2"). Painted after the chrome so it reads on
         // top of the tab surface.
         self.draw_sheet_tab_presence(scene, transform, theme, presence);
-    }
-
-    /// Announce which sheet the local user is viewing, so peers can flag
-    /// that tab. Keyed by sheet name (the same key
-    /// `Self::draw_sheet_tab_presence` reads on the receiving side).
-    fn presence_payload(&self) -> Option<(PresenceKey, PresencePayload)> {
-        let name = self.sheet_names.get(self.active_sheet)?;
-        Some((
-            PresenceKey::Tab { id: name.clone() },
-            PresencePayload::Arrived,
-        ))
-    }
-
-    /// Fold sheets and populated cells into unified search. Every hit names an
-    /// exported resource View action; no app-owned activation callback exists.
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(self.search_provider.clone())]
     }
 
     fn handle_event(&mut self, event: &WindowEvent, event_ctx: &mut ui::widget::EventCtx<'_>) {
@@ -6383,6 +6368,27 @@ impl Widget for SheetsApp {
 
     fn on_commit(&mut self) {
         self.pending.commit = false;
+    }
+}
+
+impl ui::presence::capability::PublishesPresence for SheetsApp {
+    /// Announce which sheet the local user is viewing, so peers can flag
+    /// that tab. Keyed by sheet name (the same key
+    /// `Self::draw_sheet_tab_presence` reads on the receiving side).
+    fn presence_payload(&self) -> Option<(PresenceKey, PresencePayload)> {
+        let name = self.sheet_names.get(self.active_sheet)?;
+        Some((
+            PresenceKey::Tab { id: name.clone() },
+            PresencePayload::Arrived,
+        ))
+    }
+}
+
+impl ui::search::capability::SearchSource for SheetsApp {
+    /// Fold sheets and populated cells into unified search. Every hit names an
+    /// exported resource View action; no app-owned activation callback exists.
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(self.search_provider.clone())]
     }
 }
 
@@ -8620,7 +8626,7 @@ mod tests {
             assert!(!app.sheet_names.is_empty(), "seeded app has sheets");
 
             let (key, payload) =
-                ui::widget::Widget::presence_payload(&app).expect("a sheet is active");
+                ui::presence::capability::presence_payload(&app).expect("a sheet is active");
             assert_eq!(
                 key,
                 PresenceKey::Tab {
@@ -8634,7 +8640,8 @@ mod tests {
             if app.sheet_names.len() > 1 {
                 let other = (app.active_sheet + 1) % app.sheet_names.len();
                 app.active_sheet = other;
-                let (key2, _) = ui::widget::Widget::presence_payload(&app).expect("still active");
+                let (key2, _) =
+                    ui::presence::capability::presence_payload(&app).expect("still active");
                 assert_eq!(
                     key2,
                     PresenceKey::Tab {

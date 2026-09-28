@@ -186,7 +186,7 @@ impl SearchProvider for ResourceSearch {
 // Everything else — layout, input, traversal, operation admission — is the
 // view's own, forwarded by the decorator.
 impl<R: Resource> Decorator for ResourceRoot<R> {
-    ui_core::provides!(dyn ui_core::undo::CommittedActions, dyn ui_core::widget::controls::ActionControls, dyn ui_core::resources::PublishesResources; inner = content);
+    ui_core::provides!(dyn ui_core::undo::CommittedActions, dyn ui_core::widget::controls::ActionControls, dyn ui_core::resources::PublishesResources, dyn ui_core::search::capability::SearchSource; inner = content);
 
     type Inner = dyn Widget;
 
@@ -257,7 +257,9 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
 
     // A surface's step stays open for the actions that continue it (the
     // letters of a word), which report no boundary of their own.
+}
 
+impl<R: Resource> ui_core::search::capability::SearchSource for ResourceRoot<R> {
     fn search_providers(&self) -> Vec<Box<dyn SearchProvider>> {
         let revision = self.live.revision();
         let indexed = {
@@ -275,7 +277,9 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
             name: R::LABEL,
             indexed,
         })];
-        providers.extend(self.content.search_providers());
+        providers.extend(ui_core::search::capability::search_providers(
+            self.content.as_ref(),
+        ));
         providers
     }
 }

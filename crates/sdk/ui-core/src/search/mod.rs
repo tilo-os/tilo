@@ -26,6 +26,7 @@
 //! ```
 
 mod body;
+pub mod capability;
 mod provider;
 pub mod rank;
 mod registry;

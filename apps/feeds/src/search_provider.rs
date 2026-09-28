@@ -322,7 +322,7 @@ mod tests {
             let resources = ui::resources::resources(&app, &doc);
             let tag_count = crate::sample::store().tags().len();
             let total = app.store_article_ids().len() + app.store_feed_ids().len() + tag_count;
-            let hits = app.search_providers()[0].search_limited("", total);
+            let hits = ui::search::capability::search_providers(&app)[0].search_limited("", total);
             assert!(hits.iter().all(|hit| {
                 hit.action_address().is_some_and(|address| {
                     tilo_actions::door::resolve(&resources, &address)
@@ -364,8 +364,7 @@ mod tests {
                 .expect("article resource id")
                 .parse()
                 .expect("article id is a UUID");
-            let provider = app
-                .search_providers()
+            let provider = ui::search::capability::search_providers(&app)
                 .pop()
                 .expect("Feeds exposes its article provider");
             let hit = provider
@@ -403,7 +402,7 @@ mod tests {
             app.sync(&mut doc, &ROOT);
 
             let target = app.store_article_ids()[0];
-            let providers = app.search_providers();
+            let providers = ui::search::capability::search_providers(&app);
             let target_title = providers[0]
                 .search("")
                 .into_iter()

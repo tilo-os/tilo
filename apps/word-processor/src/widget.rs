@@ -10175,7 +10175,8 @@ impl Widget for WordProcessorWidget {
         dyn ui::undo::LocalUndo,
         dyn ui::history_mode::capability::DocumentHistory,
         dyn ui::widget::controls::ActionControls,
-        dyn ui::resources::PublishesResources
+        dyn ui::resources::PublishesResources,
+        dyn ui::presence::capability::PublishesPresence
     );
 
     fn semantic_readers(&self) -> &'static [ui::semantic_document_read::RegisteredSemanticReader] {
@@ -11083,48 +11084,6 @@ impl Widget for WordProcessorWidget {
         }
     }
 
-    /// Outbound collaboration presence: while focused, broadcast the local caret
-    /// (or selection range) keyed to its block. Polled by the App after each event
-    /// and fanned out as `CollabEvent::RemotePresenceUpdate`. Offsets are bytes, so
-    /// the receiver feeds them straight into `RichTextLayout::caret_geometry`/
-    /// `selection_rects`.
-    fn presence_payload(&self) -> Option<(PresenceKey, ui::PresencePayload)> {
-        if !self.lifecycle.focused {
-            return None;
-        }
-        let caret_block = &self.inner.caret.block;
-        if caret_block.is_empty() {
-            return None;
-        }
-        let key = block_presence_key(self.hosted(), caret_block);
-        // A selection within the caret's block takes priority over the bare
-        // caret. (v1 collab presence reports the caret-block portion of a
-        // multi-block selection, mirroring how the caret block is what the
-        // peer's caret lands in.)
-        if self.inner.has_selection()
-            && let Some((_, s, e)) = self
-                .selection_blocks_cached()
-                .into_iter()
-                .find(|(b, _, _)| b == caret_block)
-            && let Some(block) = self.blocks.iter().find(|b| &b.id == caret_block)
-            && s < e
-        {
-            let start = char_to_byte(&block.text, s);
-            let end = char_to_byte(&block.text, e);
-            return Some((key, ui::PresencePayload::Selection { start, end }));
-        }
-        // Bare caret: convert the char offset to a byte offset against the
-        // caret block's text so it maps directly through the layout geometry.
-        let pos = self
-            .blocks
-            .iter()
-            .find(|b| &b.id == caret_block)
-            .map_or(self.inner.caret.offset, |b| {
-                char_to_byte(&b.text, self.inner.caret.offset)
-            });
-        Some((key, ui::PresencePayload::Caret { pos }))
-    }
-
     fn name(&self) -> &'static str {
         "WordProcessor"
     }
@@ -11366,6 +11325,50 @@ impl Widget for WordProcessorWidget {
     /// toolbars and panels are positioned inside `self.rect` by hand.
     fn is_layout_dirty(&self) -> bool {
         self.rect == Rect::ZERO
+    }
+}
+
+impl ui::presence::capability::PublishesPresence for WordProcessorWidget {
+    /// Outbound collaboration presence: while focused, broadcast the local caret
+    /// (or selection range) keyed to its block. Polled by the App after each event
+    /// and fanned out as `CollabEvent::RemotePresenceUpdate`. Offsets are bytes, so
+    /// the receiver feeds them straight into `RichTextLayout::caret_geometry`/
+    /// `selection_rects`.
+    fn presence_payload(&self) -> Option<(PresenceKey, ui::PresencePayload)> {
+        if !self.lifecycle.focused {
+            return None;
+        }
+        let caret_block = &self.inner.caret.block;
+        if caret_block.is_empty() {
+            return None;
+        }
+        let key = block_presence_key(self.hosted(), caret_block);
+        // A selection within the caret's block takes priority over the bare
+        // caret. (v1 collab presence reports the caret-block portion of a
+        // multi-block selection, mirroring how the caret block is what the
+        // peer's caret lands in.)
+        if self.inner.has_selection()
+            && let Some((_, s, e)) = self
+                .selection_blocks_cached()
+                .into_iter()
+                .find(|(b, _, _)| b == caret_block)
+            && let Some(block) = self.blocks.iter().find(|b| &b.id == caret_block)
+            && s < e
+        {
+            let start = char_to_byte(&block.text, s);
+            let end = char_to_byte(&block.text, e);
+            return Some((key, ui::PresencePayload::Selection { start, end }));
+        }
+        // Bare caret: convert the char offset to a byte offset against the
+        // caret block's text so it maps directly through the layout geometry.
+        let pos = self
+            .blocks
+            .iter()
+            .find(|b| &b.id == caret_block)
+            .map_or(self.inner.caret.offset, |b| {
+                char_to_byte(&b.text, self.inner.caret.offset)
+            });
+        Some((key, ui::PresencePayload::Caret { pos }))
     }
 }
 

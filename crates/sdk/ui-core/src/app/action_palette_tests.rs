@@ -96,7 +96,10 @@ impl Widget for ConsumingKeyboardRoot {
     }
 }
 impl Widget for Publisher {
-    crate::provides!(dyn crate::resources::PublishesResources);
+    crate::provides!(
+        dyn crate::resources::PublishesResources,
+        dyn crate::search::capability::SearchSource
+    );
 
     fn build_layout(
         &mut self,
@@ -124,6 +127,9 @@ impl Widget for Publisher {
     fn get_rect(&self) -> KurboRect {
         KurboRect::ZERO
     }
+}
+
+impl crate::search::capability::SearchSource for Publisher {
     fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
         vec![Box::new(PeopleProvider), Box::new(LazyProvider)]
     }

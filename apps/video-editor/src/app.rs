@@ -6022,7 +6022,9 @@ impl Widget for VideoEditorApp {
     ui::provides!(
         dyn ui::undo::CommittedActions,
         dyn ui::undo::UndoControl,
-        dyn ui::resources::PublishesResources
+        dyn ui::resources::PublishesResources,
+        dyn ui::search::capability::SearchSource,
+        dyn ui::presence::capability::PublishesPresence
     );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
@@ -7008,37 +7010,6 @@ impl Widget for VideoEditorApp {
         Some(CursorIcon::Default)
     }
 
-    /// This editor publishes about the timeline it holds.
-    fn presence_key(&self) -> Option<PresenceKey> {
-        Some(crate::presence::timeline_key())
-    }
-
-    /// Where this participant is, for the room to draw.
-    ///
-    /// Two facts -- the playhead and the selected clip -- through a hook that
-    /// carries one at a time, so [`crate::presence::LocalPresence`] hands over
-    /// whichever has moved since it was last sent. Both survive on the
-    /// receiving side because the caret store and the selection store are
-    /// separate; see [`crate::presence`].
-    ///
-    /// None of this is an action and none of it reaches the document. A
-    /// playhead is view state: replaying someone else's is meaningless, and
-    /// putting it on an undo stack would be worse than meaningless.
-    fn presence_payload(&self) -> Option<(PresenceKey, ui::PresencePayload)> {
-        let editing = self
-            .title_edit
-            .as_ref()
-            .map(|(mid, field)| (crate::presence::FIELD_TITLE_WORDS, *mid, field.cursor_pos()));
-        let selected = self
-            .selected()
-            .and_then(|id| self.project.clip(id))
-            .map(|c| (c.id, c.start, c.end()));
-        self.local_presence.next([
-            crate::presence::point_frame(editing, self.playhead),
-            crate::presence::range_frame(selected),
-        ])
-    }
-
     fn name(&self) -> &'static str {
         "VideoEditorApp"
     }
@@ -7095,18 +7066,6 @@ impl Widget for VideoEditorApp {
         } else {
             None
         }
-    }
-
-    /// Fold the open project into Tilo global search: every marker, title and
-    /// bin source becomes a findable *place*, and choosing one seeks there.
-    ///
-    /// A snapshot rather than a borrow, because the host queries the provider
-    /// off the paint path — see
-    /// [`ProjectSearchProvider`](crate::search_provider::ProjectSearchProvider).
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(
-            crate::search_provider::ProjectSearchProvider::new(&self.project),
-        )]
     }
 
     fn is_focusable(&self) -> bool {
@@ -7359,6 +7318,52 @@ impl Widget for VideoEditorApp {
         _permissions: &PermissionContext,
     ) {
         self.draw(scene, transform, tr, theme, presence);
+    }
+}
+
+impl ui::presence::capability::PublishesPresence for VideoEditorApp {
+    /// This editor publishes about the timeline it holds.
+    fn presence_key(&self) -> Option<PresenceKey> {
+        Some(crate::presence::timeline_key())
+    }
+    /// Where this participant is, for the room to draw.
+    ///
+    /// Two facts -- the playhead and the selected clip -- through a hook that
+    /// carries one at a time, so [`crate::presence::LocalPresence`] hands over
+    /// whichever has moved since it was last sent. Both survive on the
+    /// receiving side because the caret store and the selection store are
+    /// separate; see [`crate::presence`].
+    ///
+    /// None of this is an action and none of it reaches the document. A
+    /// playhead is view state: replaying someone else's is meaningless, and
+    /// putting it on an undo stack would be worse than meaningless.
+    fn presence_payload(&self) -> Option<(PresenceKey, ui::PresencePayload)> {
+        let editing = self
+            .title_edit
+            .as_ref()
+            .map(|(mid, field)| (crate::presence::FIELD_TITLE_WORDS, *mid, field.cursor_pos()));
+        let selected = self
+            .selected()
+            .and_then(|id| self.project.clip(id))
+            .map(|c| (c.id, c.start, c.end()));
+        self.local_presence.next([
+            crate::presence::point_frame(editing, self.playhead),
+            crate::presence::range_frame(selected),
+        ])
+    }
+}
+
+impl ui::search::capability::SearchSource for VideoEditorApp {
+    /// Fold the open project into Tilo global search: every marker, title and
+    /// bin source becomes a findable *place*, and choosing one seeks there.
+    ///
+    /// A snapshot rather than a borrow, because the host queries the provider
+    /// off the paint path — see
+    /// [`ProjectSearchProvider`](crate::search_provider::ProjectSearchProvider).
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(
+            crate::search_provider::ProjectSearchProvider::new(&self.project),
+        )]
     }
 }
 
