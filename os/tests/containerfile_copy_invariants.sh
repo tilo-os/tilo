@@ -55,14 +55,16 @@ containerfile="$repo/os/Containerfile"
 # joycond's binary, unit and modules-load snippet (through desktop-binaries)
 # and its Joy-Con-scoped udev rule are deliberate additions. So is
 # /usr/lib/tilo/web-engine-entitled.conf, the image-owned list of packages
-# the launcher lets build a web engine's own renderer sandbox.
+# the launcher lets build a web engine's own renderer sandbox, and
+# /usr/lib/tilo/manages-machine.conf, the system apps it tells whether the
+# session owns the machine.
 # Sorting
 # intentionally ignores instruction order:
 # destinations are unique, and the source-stage/source/destination triple defines
 # each COPY's installed bytes and path. Modes remain source modes except at the
 # explicitly equivalent COPY --chmod=0755 sites checked below. COPY preserves
 # ownership, mtimes and symlinks through scratch stages; no RUN mutates them.
-expected_contract=611c169dee65937945d96c8f1959b9753fc81e5ef823575ae40918b9738f208a
+expected_contract=169f6c9bc39b6f2ef0dfbdbf418b12e7c28e12fbd9efd3b032decc6a4fd87786
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
@@ -99,9 +101,11 @@ instructions="$(containerfile_instructions "$containerfile" | awk '
 # A build-only resolver placeholder and a final COPY restore the runtime
 # symlink outside the cleanup RUN, keeping BuildKit's DNS mount out of /run.
 # The fixed-clock build adds an ARG, four COPYs, and an early path assertion.
-# Keep the current 149-instruction bound exact and reviewed.
-[ "$instructions" -le 149 ] || {
-  echo "rootfs layer budget exceeded: $instructions instructions (maximum 149)" >&2
+# The shipped community config adds its COPY, the ARG that requires it and the
+# RUN that checks it.
+# Keep the current 152-instruction bound exact and reviewed.
+[ "$instructions" -le 152 ] || {
+  echo "rootfs layer budget exceeded: $instructions instructions (maximum 152)" >&2
   exit 1
 }
 

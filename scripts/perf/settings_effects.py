@@ -12,9 +12,9 @@ import re
 
 ALL_CATEGORIES = ('network','bluetooth','devices_sync','sound','speakers','displays','mouse_keyboard',
     'keyboard_shortcuts','printers','appearance','accessibility','notifications','default-apps',
-    'storage','power','time_date','users','region_formats','external_accounts','agent_models',
+    'storage','power','time_date','users','region_formats','external_accounts','ai',
     'permissions','updates','about')
-Z_CATEGORIES = ('appearance','accessibility','time_date')
+Z_CATEGORIES = ('appearance','accessibility','time_date','ai')
 _STABLE = ('app','search_id','ready','search_rect','root_rect','selected_category','narrow',
            'sidebar_open','document_root','document_actor','document_witness_kind','effective_document_heads')
 
