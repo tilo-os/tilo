@@ -4767,157 +4767,35 @@ impl Widget for BooksApp {
         &[crate::actions::EBOOK_OPERATION_TYPE]
     }
 
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        use crate::actions::EbookOperation;
-
-        if kind == tilo_actions::OperationKind::Document {
-            return Ok(false);
-        }
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(false);
-        };
-        let expected = crate::actions::operation_kind(&operation);
-        if kind != expected {
-            return Err(format!(
-                "operation kind {kind:?} does not match ebook operation kind {expected:?}"
-            ));
-        }
-        match operation {
-            EbookOperation::PreviousPage => self.on_prev_page(),
-            EbookOperation::NextPage => self.on_next_page(),
-            EbookOperation::ToggleContents => self.on_toggle_toc(),
-            EbookOperation::ToggleNotes => self.on_toggle_notes(),
-            EbookOperation::OpenSettings => self.on_open_settings(),
-            EbookOperation::Reveal {
-                book_id,
-                chapter,
-                page,
-                block,
-            } => {
-                let Some(index) = self.library.iter().position(|book| book.id == book_id) else {
-                    return Err("book is no longer in the library".into());
-                };
-                let Some(book) = self.library.get(index) else {
-                    return Err("book is no longer in the library".into());
-                };
-                // A resource address is an authority-bearing snapshot. Do not
-                // silently clamp a chapter or annotation target from an old
-                // search/resource row: a peer may have replaced the EPUB, and
-                // opening a nearby passage would be materially misleading.
-                if book.chapters.is_empty() {
-                    if chapter != 0 || block.is_some() {
-                        return Err("book no longer contains the requested reading target".into());
-                    }
-                } else {
-                    let Some(chapter_item) = book.chapters.get(chapter) else {
-                        return Err("chapter is no longer available in this book".into());
-                    };
-                    if let Some(block) = block
-                        && block >= chapter_item.blocks.len()
-                    {
-                        return Err(
-                            "annotation target is no longer available in this chapter".into()
-                        );
-                    }
-                }
-                self.book_idx = index;
-                self.view = View::Reader;
-                self.chapter = chapter;
-                self.page = page;
-                self.pending_jump_block = block;
-                self.clear_selection();
-                self.composing = None;
-                self.note_composer.close();
-                self.comment_overlay.close();
-                // Explicit, like `select_passage`: persisted, never re-adopted.
-                self.layout = None;
-                self.dirty = true;
-            }
-            EbookOperation::SelectPassage {
-                book_id,
-                chapter,
-                start_block,
-                start_char,
-                end_block,
-                end_char,
-            } => self.select_passage(
-                &book_id,
-                chapter,
-                (start_block, start_char),
-                (end_block, end_char),
-            )?,
-            EbookOperation::OpenBook => {
-                return Err("book open requires the lifecycle-capable operation host".into());
-            }
-            EbookOperation::ShareBook { .. } | EbookOperation::HydrateSharedBook { .. } => {
-                return Err("book sharing requires the lifecycle-capable operation host".into());
-            }
-        }
-        Ok(true)
-    }
-
-    fn start_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(None);
+        let Some(request) = op.unscoped() else {
+            return ui::widget::start_in_children(self, op, doc, path);
         };
-        let expected = crate::actions::operation_kind(&operation);
-        if kind != expected {
-            return Err(format!(
-                "operation kind {kind:?} does not match ebook operation kind {expected:?}"
-            ));
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
         }
-        match operation {
-            crate::actions::EbookOperation::OpenBook => {
-                if self.resource_invocation.is_some() {
-                    return Err("another book open is in progress".into());
-                }
-                self.resource_invocation = Some(invocation);
-                self.resource_lifecycle = Some(ResourceLifecycle::Open);
-                self.request_open_via_portal();
-                if self.portal_rx.is_none() {
-                    self.resource_invocation = None;
-                    self.resource_lifecycle = None;
-                    return Err("book picker could not be started".into());
-                }
-                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
-            }
-            crate::actions::EbookOperation::ShareBook { book_id } => {
-                self.begin_share_book(&book_id)?;
-                self.resource_invocation = Some(invocation);
-                self.resource_lifecycle = Some(ResourceLifecycle::Share);
-                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
-            }
-            crate::actions::EbookOperation::HydrateSharedBook { book_id } => {
-                self.begin_hydrate_shared_book(&book_id, doc)?;
-                self.resource_invocation = Some(invocation);
-                self.resource_lifecycle = Some(ResourceLifecycle::Hydrate);
-                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
-            }
-            _ => self
-                .invoke_resource_operation(kind, type_id, payload, doc, path)
-                .map(|handled| {
-                    handled.then(|| {
-                        ui::widget::ResourceOperationStart::Completed(
-                            tilo_actions::ActionOutput::default(),
-                        )
-                    })
-                }),
+        if let Some(started) = self.admit_resource_operation(
+            request.invocation,
+            request.kind,
+            request.type_id,
+            request.payload,
+            doc,
+            path,
+        )? {
+            return Ok(Some(started));
         }
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
     }
 
     fn poll_resource_operation(
@@ -5896,6 +5774,161 @@ impl Widget for BooksApp {
 
     fn is_layout_dirty(&self) -> bool {
         self.rect == Rect::ZERO
+    }
+}
+
+impl BooksApp {
+    fn answer_resource_operation(
+        &mut self,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        use crate::actions::EbookOperation;
+
+        if kind == tilo_actions::OperationKind::Document {
+            return Ok(false);
+        }
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
+        };
+        let expected = crate::actions::operation_kind(&operation);
+        if kind != expected {
+            return Err(format!(
+                "operation kind {kind:?} does not match ebook operation kind {expected:?}"
+            ));
+        }
+        match operation {
+            EbookOperation::PreviousPage => self.on_prev_page(),
+            EbookOperation::NextPage => self.on_next_page(),
+            EbookOperation::ToggleContents => self.on_toggle_toc(),
+            EbookOperation::ToggleNotes => self.on_toggle_notes(),
+            EbookOperation::OpenSettings => self.on_open_settings(),
+            EbookOperation::Reveal {
+                book_id,
+                chapter,
+                page,
+                block,
+            } => {
+                let Some(index) = self.library.iter().position(|book| book.id == book_id) else {
+                    return Err("book is no longer in the library".into());
+                };
+                let Some(book) = self.library.get(index) else {
+                    return Err("book is no longer in the library".into());
+                };
+                // A resource address is an authority-bearing snapshot. Do not
+                // silently clamp a chapter or annotation target from an old
+                // search/resource row: a peer may have replaced the EPUB, and
+                // opening a nearby passage would be materially misleading.
+                if book.chapters.is_empty() {
+                    if chapter != 0 || block.is_some() {
+                        return Err("book no longer contains the requested reading target".into());
+                    }
+                } else {
+                    let Some(chapter_item) = book.chapters.get(chapter) else {
+                        return Err("chapter is no longer available in this book".into());
+                    };
+                    if let Some(block) = block
+                        && block >= chapter_item.blocks.len()
+                    {
+                        return Err(
+                            "annotation target is no longer available in this chapter".into()
+                        );
+                    }
+                }
+                self.book_idx = index;
+                self.view = View::Reader;
+                self.chapter = chapter;
+                self.page = page;
+                self.pending_jump_block = block;
+                self.clear_selection();
+                self.composing = None;
+                self.note_composer.close();
+                self.comment_overlay.close();
+                // Explicit, like `select_passage`: persisted, never re-adopted.
+                self.layout = None;
+                self.dirty = true;
+            }
+            EbookOperation::SelectPassage {
+                book_id,
+                chapter,
+                start_block,
+                start_char,
+                end_block,
+                end_char,
+            } => self.select_passage(
+                &book_id,
+                chapter,
+                (start_block, start_char),
+                (end_block, end_char),
+            )?,
+            EbookOperation::OpenBook => {
+                return Err("book open requires the lifecycle-capable operation host".into());
+            }
+            EbookOperation::ShareBook { .. } | EbookOperation::HydrateSharedBook { .. } => {
+                return Err("book sharing requires the lifecycle-capable operation host".into());
+            }
+        }
+        Ok(true)
+    }
+
+    fn admit_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(None);
+        };
+        let expected = crate::actions::operation_kind(&operation);
+        if kind != expected {
+            return Err(format!(
+                "operation kind {kind:?} does not match ebook operation kind {expected:?}"
+            ));
+        }
+        match operation {
+            crate::actions::EbookOperation::OpenBook => {
+                if self.resource_invocation.is_some() {
+                    return Err("another book open is in progress".into());
+                }
+                self.resource_invocation = Some(invocation);
+                self.resource_lifecycle = Some(ResourceLifecycle::Open);
+                self.request_open_via_portal();
+                if self.portal_rx.is_none() {
+                    self.resource_invocation = None;
+                    self.resource_lifecycle = None;
+                    return Err("book picker could not be started".into());
+                }
+                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+            }
+            crate::actions::EbookOperation::ShareBook { book_id } => {
+                self.begin_share_book(&book_id)?;
+                self.resource_invocation = Some(invocation);
+                self.resource_lifecycle = Some(ResourceLifecycle::Share);
+                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+            }
+            crate::actions::EbookOperation::HydrateSharedBook { book_id } => {
+                self.begin_hydrate_shared_book(&book_id, doc)?;
+                self.resource_invocation = Some(invocation);
+                self.resource_lifecycle = Some(ResourceLifecycle::Hydrate);
+                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+            }
+            _ => self
+                .answer_resource_operation(kind, type_id, payload, doc, path)
+                .map(|handled| {
+                    handled.then(|| {
+                        ui::widget::ResourceOperationStart::Completed(
+                            tilo_actions::ActionOutput::default(),
+                        )
+                    })
+                }),
+        }
     }
 }
 
