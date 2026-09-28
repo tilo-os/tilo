@@ -2453,35 +2453,6 @@ impl WorkspaceTree {
         adopted.into_iter().map(|(id, _)| id).collect()
     }
 
-    /// Mint a durable [`RoomId`] for every workspace that has none, and
-    /// write it down — minting without persisting would be worse than
-    /// leaving it nil, since the next boot would mint a different one.
-    /// The caller must have set [`Self::persist_path`] first. Returns
-    /// the ids minted for.
-    pub fn adopt_roomless_workspaces(&mut self) -> Vec<WorkspaceId> {
-        let mut adopted = Vec::new();
-        for ws in &mut self.desktop.workspaces {
-            if ws.room.is_nil() {
-                ws.room = RoomId::new();
-                adopted.push(ws.id);
-            }
-        }
-        for id in &adopted {
-            let room = self
-                .desktop
-                .workspaces
-                .iter()
-                .find(|w| w.id == *id)
-                .map(|w| w.room)
-                .unwrap_or_default();
-            self.doc_set_room(*id, room);
-        }
-        if !adopted.is_empty() {
-            self.flush_to_disk();
-        }
-        adopted
-    }
-
     /// The durable room identity of `workspace_id`. What the launch path
     /// needs to turn a local handle into the value the wire speaks.
     pub fn room_of(&self, workspace_id: WorkspaceId) -> Option<RoomId> {
