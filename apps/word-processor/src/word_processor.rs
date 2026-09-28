@@ -81,15 +81,6 @@ pub struct Heading {
     pub text: String,
 }
 
-/// One line of a generated table of contents: a heading's outline `level`, its
-/// `text`, and the `page` it falls on (1-based) when pagination is known.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TocEntry {
-    pub level: i64,
-    pub text: String,
-    pub page: Option<usize>,
-}
-
 /// True when a materialized block was generated as part of the table of contents
 /// (carries a truthy `toc` attr). Used to find the old TOC for replacement and to
 /// keep TOC lines out of the heading outline.
@@ -111,18 +102,6 @@ pub(crate) fn parse_tab_stops(raw: &str) -> Vec<f64> {
     v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     v.dedup_by(|a, b| (*a - *b).abs() < 0.5);
     v
-}
-
-/// Render one TOC entry to its line text: a per-level indent, the heading text,
-/// then a dotted leader and the page number when known. Levels deeper than 1 are
-/// indented by two spaces each. An entry with no page just shows the text.
-fn toc_line(e: &TocEntry) -> String {
-    let indent = "  ".repeat(num::usize_of_i64(e.level.max(1) - 1));
-    let title = e.text.trim();
-    match e.page {
-        Some(p) => format!("{indent}{title} .......... {p}"),
-        None => format!("{indent}{title}"),
-    }
 }
 
 /// The editing core. `bind` resolves/initialises the document; the edit ops
@@ -651,18 +630,11 @@ impl WordProcessor {
             )
             .map(|b| b.id.clone())
             .collect();
-        if let Some(ids) = self.ids.as_mut() {
-            let mut dm = DocMut {
-                doc: state,
-                c: &containers,
-                ids,
-            };
-            for id in &orphans {
-                dm.set_attr(id, "style", "");
-            }
-            dm.remove_style(style_id);
-        }
-        true
+        let action = crate::actions::RichTextAction::DeleteStyle {
+            style: style_id.to_string(),
+            fallback_blocks: orphans,
+        };
+        self.apply_rich(state, action)
     }
 
     /// Duplicate the paragraph style `style_id` under a fresh `customN` id,
@@ -763,58 +735,53 @@ impl WordProcessor {
     /// Insert a rich fragment at the caret (replacing the selection), preserving
     /// marks + paragraph styles.
     pub fn insert_rich(&mut self, state: &mut AutoCommit, blocks: &[ClipBlock]) {
-        self.delete_selection(state);
-        let Some(containers) = self.containers.clone() else {
+        if blocks.is_empty() {
+            self.delete_selection(state);
+            return;
+        }
+        let (start, end) = self.selection_span(state).unwrap_or_else(|| {
+            let caret = self.caret.clone();
+            (caret.clone(), caret)
+        });
+        let len = self.block_len(state, &start.block);
+        let was_empty = if start.block == end.block {
+            start.offset == 0 && end.offset >= len
+        } else {
+            start.offset == 0
+        };
+        let adopt_first = was_empty && blocks[0].kind != "cell" && blocks[0].kind != "fidelity";
+        let action = crate::actions::paste_fragment_action(
+            self.action_region(),
+            crate::actions::SelectionTarget {
+                start_block: start.block.clone(),
+                start: start.offset,
+                end_block: end.block,
+                end: end.offset,
+            },
+            blocks.to_vec(),
+            adopt_first,
+        );
+        if !self.apply_rich(state, action) {
+            return;
+        }
+        let order = self.ordered_blocks(state);
+        let Some(pos) = order.iter().position(|id| id == &start.block) else {
             return;
         };
-        for (i, blk) in blocks.iter().enumerate() {
-            if i > 0 {
-                self.enter(state);
-            }
-            let block_id = self.caret.block.clone();
-            let base = self.caret.offset;
-            let was_empty = self.block_len(state, &block_id) == 0;
-            let added = blk.text.chars().count();
-            // Adopt the source block's paragraph style when starting a fresh block
-            // (a new block from Enter, or pasting into an empty one); never turn a
-            // table cell into something else.
-            let adopt_style = (i > 0 || was_empty) && blk.kind != "cell" && blk.kind != "fidelity";
-            if let Some(ids) = self.ids.as_mut() {
-                let mut dm = DocMut {
-                    doc: state,
-                    c: &containers,
-                    ids,
-                };
-                dm.splice_text(&block_id, base, 0, &blk.text);
-                for m in &blk.marks {
-                    let (s, e) = (base + m.start, base + m.end);
-                    match &m.value {
-                        tilo_doc::document::MarkValue::Bool(v) => {
-                            dm.add_mark(&block_id, s, e, &m.name, *v);
-                        }
-                        tilo_doc::document::MarkValue::Int(n) => {
-                            dm.add_mark(&block_id, s, e, &m.name, *n);
-                        }
-                        tilo_doc::document::MarkValue::Str(st) => {
-                            dm.add_mark(&block_id, s, e, &m.name, st.as_str());
-                        }
-                    }
-                }
-                if adopt_style {
-                    dm.set_kind(&block_id, &blk.kind);
-                    if let Some(l) = blk.level {
-                        dm.set_attr(&block_id, "level", l);
-                    }
-                    if let Some(o) = blk.ordered {
-                        dm.set_attr(&block_id, "ordered", o);
-                    }
-                    if let Some(a) = &blk.align {
-                        dm.set_attr(&block_id, "align", a.as_str());
-                    }
-                }
-            }
-            self.caret.offset = base + added;
-        }
+        let last = pos + blocks.len() - 1;
+        let Some(block) = order.get(last) else {
+            return;
+        };
+        let added = blocks.last().map_or(0, |block| block.text.chars().count());
+        self.caret = Caret {
+            block: block.clone(),
+            offset: if blocks.len() == 1 {
+                start.offset + added
+            } else {
+                added
+            },
+        };
+        self.selection_anchor = None;
     }
 
     fn selected_block_ids(&self, state: &AutoCommit) -> Vec<String> {
@@ -2287,37 +2254,32 @@ impl WordProcessor {
         end: usize,
         name: &str,
     ) {
-        let region = self.region;
-        let Some(containers) = self.containers.clone() else {
+        if start >= end {
             return;
-        };
-        if let Some(ids) = self.ids.as_mut() {
-            let mut dm = DocMut {
-                doc: state,
-                c: &containers,
-                ids,
-            };
-            dm.remove_mark_in(region, block, start, end, name);
         }
+        let action = crate::actions::RichTextAction::SetMark {
+            region: self.action_region(),
+            spans: vec![crate::actions::Span {
+                block: block.to_string(),
+                start,
+                end,
+            }],
+            name: name.to_string(),
+            value: None,
+            also_clear: Vec::new(),
+        };
+        let _ = self.apply_rich(state, action);
     }
 
     /// Insert a page-number field at the caret in the active region. Works in the
     /// body too (renders as a `field` mark; the body renderer substitutes it).
     pub fn insert_page_number(&mut self, state: &mut AutoCommit) {
         self.delete_selection(state);
-        let Some(containers) = self.containers.clone() else {
-            return;
-        };
         let block = self.caret.block.clone();
         let idx = self.caret.offset;
-        let region = self.region;
-        if let Some(ids) = self.ids.as_mut() {
-            let mut dm = DocMut {
-                doc: state,
-                c: &containers,
-                ids,
-            };
-            dm.insert_page_number_field(region, &block, idx);
+        let action = crate::actions::insert_page_number_action(self.action_region(), &block, idx);
+        if !self.apply_rich(state, action) {
+            return;
         }
         // The placeholder occupies one character.
         self.caret.offset = idx + 1;
@@ -2387,48 +2349,30 @@ impl WordProcessor {
     /// `  Background .......... 3`. Caret stays put unless it pointed at a
     /// removed TOC block, then falls back to the first surviving block. Returns
     /// the inserted TOC block ids (top-to-bottom).
-    pub fn generate_toc(&mut self, state: &mut AutoCommit, entries: &[TocEntry]) -> Vec<String> {
+    pub fn generate_toc(
+        &mut self,
+        state: &mut AutoCommit,
+        entries: &[crate::actions::TocTarget],
+    ) -> Vec<String> {
         let Some(containers) = self.containers.clone() else {
             return vec![];
         };
-        // Collect the existing TOC block ids (document order) before mutating.
-        let old: Vec<String> = {
-            let snap = tilo_doc::model::materialize(state, &containers);
-            snap.blocks
-                .iter()
-                .filter(|b| block_is_toc(b))
-                .map(|b| b.id.clone())
-                .collect()
-        };
+        let old: Vec<String> = tilo_doc::model::materialize(state, &containers)
+            .blocks
+            .iter()
+            .filter(|block| block_is_toc(block))
+            .map(|block| block.id.clone())
+            .collect();
         let caret_in_old = old.contains(&self.caret.block);
-
-        let mut inserted = Vec::with_capacity(entries.len());
-        if let Some(ids) = self.ids.as_mut() {
-            let mut dm = DocMut {
-                doc: state,
-                c: &containers,
-                ids,
-            };
-            // Drop the previous TOC first so the new one starts at a clean top.
-            for id in &old {
-                dm.remove_block(id);
-            }
-            // Insert each entry at the top, threading `prev` so the lines stay in
-            // order (first entry on top). `None` targets the document head.
-            let mut prev: Option<String> = None;
-            for e in entries {
-                let id = dm.insert_block(prev.as_deref(), "paragraph");
-                dm.set_attr(&id, "toc", true);
-                // Record the level so the line keeps its outline depth on reload.
-                dm.set_attr(&id, "toc_level", e.level.max(1));
-                let line = toc_line(e);
-                if !line.is_empty() {
-                    dm.splice_text(&id, 0, 0, &line);
-                }
-                prev = Some(id.clone());
-                inserted.push(id);
-            }
+        if !self.apply_rich(state, crate::actions::generate_toc_action(entries.to_vec())) {
+            return vec![];
         }
+        let inserted: Vec<String> = tilo_doc::model::materialize(state, &containers)
+            .blocks
+            .iter()
+            .filter(|block| block_is_toc(block))
+            .map(|block| block.id.clone())
+            .collect();
         // If the caret sat in a removed TOC block, re-home it so later edits don't
         // target a deleted block.
         if caret_in_old {
@@ -2485,21 +2429,26 @@ impl WordProcessor {
             "###" => ("heading", Some(3), None),
             _ => return false,
         };
-        let plen = num::isize_of_usize(prefix.chars().count());
-        if let Some(ids) = self.ids.as_mut() {
-            let mut dm = DocMut {
-                doc: state,
-                c: &c,
-                ids,
-            };
-            dm.splice_text(&block, 0, plen, "");
-            dm.set_kind(&block, kind);
-            if let Some(l) = level {
-                dm.set_attr(&block, "level", l);
-            }
-            if let Some(o) = ordered {
-                dm.set_attr(&block, "ordered", o);
-            }
+        let prefix_len = prefix.chars().count();
+        let cleared = crate::actions::RichTextAction::SpliceText {
+            region: self.action_region(),
+            block: block.clone(),
+            at: 0,
+            del: prefix_len,
+            ins: String::new(),
+        };
+        if !self.apply_rich(state, cleared) {
+            return false;
+        }
+        let styled = crate::actions::RichTextAction::SetParagraphStyle {
+            region: self.action_region(),
+            blocks: vec![block],
+            kind: kind.to_string(),
+            level,
+            ordered,
+        };
+        if !self.apply_rich(state, styled) {
+            return false;
         }
         self.caret.offset = 0;
         true
@@ -4182,10 +4131,11 @@ mod tests {
         // Phase: generate_toc_inserts_one_block_per_heading_at_top.
         {
             let (mut wp, mut state) = doc_with_headings();
-            let entries: Vec<TocEntry> = wp
+            let entries: Vec<crate::actions::TocTarget> = wp
                 .headings(&state)
                 .iter()
-                .map(|h| TocEntry {
+                .map(|h| crate::actions::TocTarget {
+                    heading: h.id.clone(),
                     level: h.level,
                     text: h.text.clone(),
                     page: Some(1),
@@ -4216,10 +4166,11 @@ mod tests {
         // Phase: regenerating_toc_replaces_without_duplicating.
         {
             let (mut wp, mut state) = doc_with_headings();
-            let entries: Vec<TocEntry> = wp
+            let entries: Vec<crate::actions::TocTarget> = wp
                 .headings(&state)
                 .iter()
-                .map(|h| TocEntry {
+                .map(|h| crate::actions::TocTarget {
+                    heading: h.id.clone(),
                     level: h.level,
                     text: h.text.clone(),
                     page: Some(2),
@@ -4228,10 +4179,11 @@ mod tests {
             wp.generate_toc(&mut state, &entries);
             // Regenerate from the (now TOC-prefixed) document: headings() excludes the
             // TOC's own lines, so the entry set is unchanged.
-            let entries2: Vec<TocEntry> = wp
+            let entries2: Vec<crate::actions::TocTarget> = wp
                 .headings(&state)
                 .iter()
-                .map(|h| TocEntry {
+                .map(|h| crate::actions::TocTarget {
+                    heading: h.id.clone(),
                     level: h.level,
                     text: h.text.clone(),
                     page: Some(2),
