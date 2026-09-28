@@ -68,6 +68,8 @@
     )
 )]
 
+#[cfg(feature = "agents")]
+pub mod agents;
 pub mod antientropy;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod app_serving;
@@ -95,6 +97,8 @@ pub mod metrics;
 pub mod peer;
 #[cfg(not(target_arch = "wasm32"))]
 mod persistence;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod room_records;
 mod session_carrier;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod store;

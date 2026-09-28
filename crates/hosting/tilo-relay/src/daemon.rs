@@ -1012,6 +1012,18 @@ impl Relay {
     pub fn own_user_public_key(&self) -> [u8; 32] {
         self.own_user_public_key
     }
+
+    /// In-process access to the records of the workspaces this relay hosts,
+    /// for a service embedded in the host process.
+    #[must_use]
+    pub fn room_records(&self) -> crate::room_records::RoomRecords {
+        crate::room_records::RoomRecords::new(
+            self.workspaces.clone(),
+            self.own_cert.device_public_key,
+            self.own_user_public_key,
+            self.own_signing_key.clone(),
+        )
+    }
 }
 
 /// Import full-workspace residency from the same bundle the filesystem worker
