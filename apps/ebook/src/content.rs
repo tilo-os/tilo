@@ -378,10 +378,6 @@ pub fn load_library_with_content<S: BuildHasher>(
     local_books: &HashMap<String, PathBuf, S>,
     content: Option<&tilo_content::ContentStore>,
 ) -> Vec<LoadedBook> {
-    // A path used to be replicated alongside this metadata. Remove it before
-    // doing any local discovery: source locations are capabilities, not
-    // collaborative data.
-    BooksDoc::strip_legacy_library_paths(doc);
     // 1. Pull in anything new from the folders the reader watches (and the env
     //    override the OS/tests use to point at a synced library).
     let watched = scan_watched(watched_folders);
