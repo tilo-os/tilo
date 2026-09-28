@@ -511,6 +511,63 @@ pub enum PackagePlatform {
 }
 
 impl PackagePlatform {
+    /// Every platform, in the order `check --platform all` visits them.
+    pub const ALL: [Self; 5] = [
+        Self::Tilo,
+        Self::Linux,
+        Self::Windows,
+        Self::Macos,
+        Self::Web,
+    ];
+
+    /// The platform's name on the command line.
+    #[must_use]
+    pub const fn cli_name(self) -> &'static str {
+        match self {
+            Self::Tilo => "tilo",
+            Self::Linux => "linux",
+            Self::Windows => "windows",
+            Self::Macos => "macos",
+            Self::Web => "web",
+        }
+    }
+
+    /// Refuse a build this machine cannot execute: one for another operating
+    /// system, or for an architecture other than the host's. A web build runs
+    /// in a browser anywhere.
+    ///
+    /// # Errors
+    ///
+    /// Names what to run instead.
+    pub fn ensure_runs_here(self, arch: Option<PackageArch>) -> Result<()> {
+        let os = match self {
+            Self::Web => return Ok(()),
+            Self::Tilo | Self::Linux => "linux",
+            Self::Windows => "windows",
+            Self::Macos => "macos",
+        };
+        let name = self.cli_name();
+        if std::env::consts::OS != os {
+            bail!(
+                "a {name} build does not run on {}; build it with \
+                 `tilo-app build --platform {name}` and run it on {os}",
+                std::env::consts::OS
+            );
+        }
+        if let Some(arch) = arch
+            && Some(arch) != PackageArch::host()
+        {
+            bail!(
+                "this machine is {}, so it cannot run an {} build; build it with \
+                 `tilo-app build --platform {name} --arch {}` and run it there",
+                std::env::consts::ARCH,
+                arch.as_str(),
+                arch.as_str()
+            );
+        }
+        Ok(())
+    }
+
     /// The registry's name for the platform family.
     #[must_use]
     pub const fn registry_name(self) -> &'static str {
@@ -4238,6 +4295,54 @@ pub fn plan_app_task(start: &Path, task: AppTask, forwarded: &[OsString]) -> Res
     })
 }
 
+/// The Clippy run `check --platform` adds for a native platform: the app's
+/// code compiled for that platform's target triple, warnings denied. `None`
+/// when that is the host build the rest of `check` already lints.
+///
+/// # Errors
+///
+/// Returns an error for the web platform, which `check` proves with a web
+/// build instead, when the architecture cannot be told, or when the app
+/// cannot be resolved.
+pub fn plan_platform_clippy(
+    start: &Path,
+    platform: PackagePlatform,
+    arch: Option<PackageArch>,
+) -> Result<Option<CargoPlan>> {
+    if platform == PackagePlatform::Web {
+        bail!("the web platform is checked by building it");
+    }
+    let Some(arch) = arch.or_else(PackageArch::host) else {
+        bail!(
+            "cannot tell which architecture to check on {}; pass --arch",
+            std::env::consts::ARCH
+        );
+    };
+    if platform.ensure_runs_here(Some(arch)).is_ok() {
+        return Ok(None);
+    }
+    let app_dir = resolve_app_dir(start)?;
+    let manifest = app_dir.join("Cargo.toml");
+    let package = cargo_package_name(&manifest)?;
+    Ok(Some(CargoPlan {
+        app_dir,
+        program: std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo")),
+        args: vec![
+            OsString::from("clippy"),
+            OsString::from("--manifest-path"),
+            manifest.into_os_string(),
+            OsString::from("--package"),
+            OsString::from(package),
+            OsString::from("--target"),
+            OsString::from(platform.triple(arch)),
+            OsString::from("--no-deps"),
+            OsString::from("--"),
+            OsString::from("-D"),
+            OsString::from("warnings"),
+        ],
+    }))
+}
+
 /// Resolve an app and construct its package-scoped format, lint, and test
 /// commands. `format_mode` controls whether formatting drift is rejected or
 /// repaired. Clippy checks every app target with warnings denied while
@@ -4608,21 +4713,14 @@ pub fn package_app(start: &Path, request: &PackageRequest) -> Result<PackageOutc
     if request.platform == PackagePlatform::Web {
         return web::package_web(start, request);
     }
-    let app_dir = resolve_app_dir(start)?;
-    let report = doctor_resolved_app(app_dir.clone());
-    if !report.is_ready() {
-        bail!("app preflight failed\n\n{}", report.summary());
-    }
-    let spec = load_app_package_spec(app_dir)?;
-    let desktop = request.platform != PackagePlatform::Tilo;
-    if !desktop && !request.static_link && !spec.thin_feature {
-        bail!(
-            "{} has no `thin` feature, so it cannot link against the toolkit the OS ships; \
-             add `thin = [\"dep:runtime-dylib\"]` to [features] (as `tilo-app new` does) or pass --static",
-            spec.app_dir.join("Cargo.toml").display()
-        );
-    }
-    let profile = package_profile(request)?;
+    let NativeTarget {
+        spec,
+        desktop,
+        desktop_arch,
+        profile,
+        shipped,
+        triple,
+    } = NativeTarget::resolve(start, request)?;
     let manifest_source = std::fs::read_to_string(&spec.manifest_path)
         .with_context(|| format!("reading {}", spec.manifest_path.display()))?;
     // `[budget]` bounds the thin Tilo OS build; a desktop build carries the
@@ -4633,24 +4731,10 @@ pub fn package_app(start: &Path, request: &PackageRequest) -> Result<PackageOutc
         size::Budget::from_manifest(&manifest_source)
             .with_context(|| format!("reading [budget] from {}", spec.manifest_path.display()))?
     };
-    let desktop_arch = match (desktop, request.arch.or_else(PackageArch::host)) {
-        (false, _) => None,
-        (true, Some(arch)) => Some(arch),
-        (true, None) => bail!(
-            "cannot tell which architecture to build for on {}; pass --arch",
-            std::env::consts::ARCH
-        ),
-    };
     let output = package_output(&spec, request, desktop_arch)?;
     let output_parent = output
         .parent()
         .ok_or_else(|| anyhow::anyhow!("package output has no parent: {}", output.display()))?;
-    let shipped = shipped_binaries(&spec, request, desktop)?;
-    let triple = request.target.clone().or_else(|| {
-        desktop_arch
-            .or(request.arch)
-            .map(|arch| request.platform.triple(arch))
-    });
     let built = build_entrypoints(
         &spec,
         &BuildPlan {
@@ -4705,6 +4789,137 @@ pub fn package_app(start: &Path, request: &PackageRequest) -> Result<PackageOutc
         output,
         entrypoints,
         size,
+    })
+}
+
+/// What a native `package` or `build` compiles, for which triple, and how.
+struct NativeTarget {
+    spec: AppPackageSpec,
+    /// A self-contained executable for a system other than Tilo OS.
+    desktop: bool,
+    /// The architecture a desktop build is for; `None` for Tilo OS.
+    desktop_arch: Option<PackageArch>,
+    profile: String,
+    /// The Cargo binaries to build and their payload paths.
+    shipped: Vec<(String, PathBuf)>,
+    /// `None` builds for the host.
+    triple: Option<String>,
+}
+
+impl NativeTarget {
+    fn resolve(start: &Path, request: &PackageRequest) -> Result<Self> {
+        let app_dir = resolve_app_dir(start)?;
+        let report = doctor_resolved_app(app_dir.clone());
+        if !report.is_ready() {
+            bail!("app preflight failed\n\n{}", report.summary());
+        }
+        let spec = load_app_package_spec(app_dir)?;
+        let desktop = request.platform != PackagePlatform::Tilo;
+        if !desktop && !request.static_link && !spec.thin_feature {
+            bail!(
+                "{} has no `thin` feature, so it cannot link against the toolkit the OS ships; \
+                 add `thin = [\"dep:runtime-dylib\"]` to [features] (as `tilo-app new` does) or pass --static",
+                spec.app_dir.join("Cargo.toml").display()
+            );
+        }
+        let profile = package_profile(request)?;
+        let desktop_arch = match (desktop, request.arch.or_else(PackageArch::host)) {
+            (false, _) => None,
+            (true, Some(arch)) => Some(arch),
+            (true, None) => bail!(
+                "cannot tell which architecture to build for on {}; pass --arch",
+                std::env::consts::ARCH
+            ),
+        };
+        let shipped = shipped_binaries(&spec, request, desktop)?;
+        let triple = request.target.clone().or_else(|| {
+            desktop_arch
+                .or(request.arch)
+                .map(|arch| request.platform.triple(arch))
+        });
+        Ok(Self {
+            spec,
+            desktop,
+            desktop_arch,
+            profile,
+            shipped,
+            triple,
+        })
+    }
+}
+
+/// A native build `tilo-app build` left in Cargo's target directory.
+#[derive(Debug)]
+pub struct NativeBuild {
+    pub app_dir: PathBuf,
+    pub platform: PackagePlatform,
+    /// `None` built for the host.
+    pub triple: Option<String>,
+    pub profile: String,
+    /// Each Cargo binary built and where Cargo left it.
+    pub executables: Vec<(String, PathBuf)>,
+    pub elapsed: Duration,
+}
+
+impl NativeBuild {
+    #[must_use]
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "app_dir": self.app_dir,
+            "platform": self.platform.cli_name(),
+            "target": self.triple,
+            "profile": self.profile,
+            "executables": self
+                .executables
+                .iter()
+                .map(|(bin, path)| serde_json::json!({"bin": bin, "path": path}))
+                .collect::<Vec<_>>(),
+            "elapsed_ms": u64::try_from(self.elapsed.as_millis()).unwrap_or(u64::MAX),
+        })
+    }
+}
+
+/// Compile an app's entrypoints for a native platform exactly as
+/// [`package_app`] does, without assembling or signing a package: thin for
+/// Tilo OS unless `static_link`, one self-contained executable otherwise.
+///
+/// # Errors
+///
+/// Returns an error for the web platform (see [`web::build_web`]), when
+/// preflight fails, or when Cargo does.
+pub fn build_native(start: &Path, request: &PackageRequest) -> Result<NativeBuild> {
+    if request.platform == PackagePlatform::Web {
+        bail!("a web build is `tilo-app build --platform web`, not a native build");
+    }
+    let started = Instant::now();
+    let target = NativeTarget::resolve(start, request)?;
+    let built = build_entrypoints(
+        &target.spec,
+        &BuildPlan {
+            bins: &target.shipped,
+            triple: target.triple.as_deref(),
+            thin: !target.desktop && !request.static_link,
+            profile: &target.profile,
+        },
+        request,
+    )?;
+    let executables = target
+        .shipped
+        .iter()
+        .map(|(bin, _)| {
+            built
+                .get(bin)
+                .map(|path| (bin.clone(), path.clone()))
+                .ok_or_else(|| anyhow::anyhow!("Cargo did not report binary {bin}"))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(NativeBuild {
+        app_dir: target.spec.app_dir,
+        platform: request.platform,
+        triple: target.triple,
+        profile: target.profile,
+        executables,
+        elapsed: started.elapsed(),
     })
 }
 
