@@ -1027,6 +1027,10 @@ pub fn parse_command(line: &str) -> Result<Command, Response> {
     })
 }
 
+/// Protocol error for a command an agent-control connection may not send.
+pub const AGENT_CONTROL_NOT_PERMITTED: &str =
+    "the agent-control socket serves input and screenshots only";
+
 impl Command {
     /// Whether an agent-control connection may send this command: pointer,
     /// keyboard and clipboard input, screenshots and read-only frame and
