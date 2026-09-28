@@ -51,11 +51,17 @@ impl ShellOverlayHost {
         let preferred = self.now_playing_preferred.as_deref();
         let active = crate::shell::now_playing::active_index(&players, preferred)?;
         let bus = players.get(active).map(|player| player.bus_name.clone());
-        let outputs = self
-            .device_fabric_call(DeviceFabricUiAction::Snapshot)
-            .map(|view| output_targets(&view, bus.as_deref(), &controller_of))
+        let fabric = self.device_fabric_call(DeviceFabricUiAction::Snapshot);
+        let outputs = fabric
+            .as_ref()
+            .map(|view| output_targets(view, bus.as_deref(), &controller_of))
             .unwrap_or_default();
+        let speakers = fabric
+            .as_ref()
+            .ok()
+            .and_then(crate::shell::now_playing::SpeakerPlayback::from_view);
         NowPlayingView::new(players, preferred, outputs, Instant::now())
+            .map(|view| view.with_speakers(speakers))
     }
 
     /// Where the card sits: under the popover when it fits, else beside it,

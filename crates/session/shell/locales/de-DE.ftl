@@ -867,6 +867,11 @@ qs-devices-speakers-playing = { $count ->
         [one] { $count } Lautsprecher spielt · auswählen zum Beenden
        *[other] { $count } Lautsprecher spielen · auswählen zum Beenden
     }
+qs-devices-speaker-syncing = { $playing } spielen, { $syncing } gleichen die Uhr ab… · auswählen zum Beenden
+qs-devices-speaker-clock-failed = { $count ->
+        [one] { $count } Lautsprecher kann nicht synchron spielen: { $reason } · auswählen zum Beenden
+       *[other] { $count } Lautsprecher können nicht synchron spielen: { $reason } · auswählen zum Beenden
+    }
 qs-devices-speaker-setup-note = Stereopaar oder Raumlautsprecher · öffnet Einstellungen → Lautsprecher
 qs-devices-speaker-membership-note = eingerichtet auf { $leader } · auswählen zum Austreten
 qs-devices-another-certified = Ein anderes zertifiziertes Gerät
@@ -877,6 +882,8 @@ qs-devices-certified-device = zertifiziertes Gerät
 qs-devices-audio-awaiting = wartet auf Freigabe mit { $peer } · auswählen zum Beenden
 qs-devices-audio-streaming = streamt mit { $peer } · auswählen zum Beenden
 qs-devices-audio-interrupted = unterbrochen mit { $peer } · auswählen zum Verwerfen
+qs-devices-audio-syncing = gleicht die Uhr mit { $peer } ab… · auswählen zum Beenden
+qs-devices-audio-clock-failed = kann mit { $peer } nicht synchron spielen: { $reason } · auswählen zum Beenden
 qs-devices-capture-share = { $input } dieses Geräts teilen
 qs-devices-capture-requested = { $source } hat das für { $app } angefragt · einmal erlauben oder ablehnen
 qs-devices-capture-use-remote = Entfernte Eingabe verwenden: { $input }
@@ -2088,6 +2095,13 @@ speaker-calibration-reason-microphone-gone = dieses Mikrofon ist nicht mehr verb
 speaker-calibration-reason-output-gone = der Ausgang dieses Lautsprechers ist nicht mehr verbunden
 speaker-calibration-reason-play-failed = das Messsignal konnte nicht abgespielt werden: { $error }
 speaker-calibration-reason-listen-failed = die Aufnahme konnte nicht gestartet werden: { $error }
+speaker-calibration-reason-clock = die Uhr dieses Lautsprechers konnte nicht abgeglichen werden: { $reason }
+clock-sync-failure-media-disabled = die Medien-Übergabe ist auf diesem Gerät ausgeschaltet
+clock-sync-failure-no-reply = das andere Gerät hat auf den Uhrabgleich nicht geantwortet
+now-playing-speakers-playing = Spielt auf { $group }
+now-playing-speakers-connecting = { $group }: verbindet…
+now-playing-speakers-syncing = { $group }: Uhren werden abgeglichen…
+now-playing-speakers-clock-failed = { $group }: kann nicht synchron spielen – { $reason }
 speaker-calibration-failed = { $speaker } konnte nicht gemessen werden: { $reason }
 speaker-calibration-cancelled = Die Kalibrierung wurde abgebrochen
 

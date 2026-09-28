@@ -200,7 +200,7 @@ fn a_new_group_asks_only_remote_members_and_the_member_sees_one_prompt() {
         ]
     );
     shelf.handle(&fabric, &invites[0], "desk", now);
-    let view = shelf.core.view(&fabric, &shelf.id());
+    let view = shelf.core.view(&fabric, &shelf.id(), &|_| None);
     assert_eq!(view.consents.len(), 1);
     let consent = &view.consents[0];
     assert_eq!(consent.name, "Living room");
@@ -218,7 +218,13 @@ fn approving_authors_a_membership_that_makes_the_member_ready() {
         fabric.speaker_member_states(fabric.speaker_group(group).unwrap()),
         vec![SpeakerMemberState::Ready, SpeakerMemberState::Ready]
     );
-    assert!(shelf.core.view(&fabric, &shelf.id()).consents.is_empty());
+    assert!(
+        shelf
+            .core
+            .view(&fabric, &shelf.id(), &|_| None)
+            .consents
+            .is_empty()
+    );
     // A consented member is not asked again.
     assert!(
         desk.core
@@ -242,7 +248,13 @@ fn a_forged_invite_that_the_leader_never_published_cannot_be_approved() {
         },
     );
     shelf.handle(&fabric, &forged, "desk", now);
-    assert!(shelf.core.view(&fabric, &shelf.id()).consents.is_empty());
+    assert!(
+        shelf
+            .core
+            .view(&fabric, &shelf.id(), &|_| None)
+            .consents
+            .is_empty()
+    );
     assert!(
         shelf
             .core
