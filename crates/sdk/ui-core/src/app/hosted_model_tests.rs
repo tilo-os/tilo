@@ -660,3 +660,123 @@ fn hosted_directory_hidden_target_change_with_notification_cannot_restore() {
     );
     assert_ne!(app.action_directory_revision(), page.revision);
 }
+
+/// A focusable field that holds its caret at a fixed position.
+struct HostedCaretField;
+
+impl Widget for HostedCaretField {
+    fn build_layout(
+        &mut self,
+        taffy: &mut taffy::TaffyTree<()>,
+        _theme: &crate::Theme,
+        node_map: &mut HashMap<taffy::NodeId, *mut dyn Widget>,
+    ) -> taffy::NodeId {
+        let node = taffy.new_leaf(taffy::Style::default()).unwrap();
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        node
+    }
+    fn apply_layout(&mut self, _: &taffy::TaffyTree<()>, _: taffy::NodeId, _: vello::kurbo::Point) {
+    }
+    fn draw(
+        &mut self,
+        _: &mut vello::Scene,
+        _: vello::kurbo::Affine,
+        _: &mut crate::TextRenderer,
+        _: &crate::Theme,
+        _: &crate::PresenceCtx,
+    ) {
+    }
+    fn name(&self) -> &'static str {
+        "hosted-caret-field"
+    }
+    fn get_rect(&self) -> vello::kurbo::Rect {
+        vello::kurbo::Rect::new(0.0, 0.0, 200.0, 24.0)
+    }
+    fn is_focusable(&self) -> bool {
+        true
+    }
+    fn presence_payload(&self) -> Option<(PresenceKey, PresencePayload)> {
+        Some((
+            PresenceKey::Resource {
+                app: "notes".into(),
+                id: "block:1".into(),
+                kind: "block".into(),
+            },
+            PresencePayload::Caret { pos: 14 },
+        ))
+    }
+}
+
+struct HostedPresenceTransport {
+    sent: Rc<RefCell<Vec<CollabRequest>>>,
+    inbound: Rc<RefCell<Vec<CollabEvent>>>,
+}
+impl crate::collaboration::PeerTransport for HostedPresenceTransport {
+    fn is_connected(&self) -> bool {
+        true
+    }
+    fn send(&mut self, request: CollabRequest) -> Result<(), String> {
+        self.sent.borrow_mut().push(request);
+        Ok(())
+    }
+    fn poll(&mut self) -> Vec<CollabEvent> {
+        std::mem::take(&mut *self.inbound.borrow_mut())
+    }
+    fn publish_action_directory(&mut self, _: String) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+#[test]
+fn a_worker_hosted_app_shows_its_caret_and_answers_a_late_arrival_with_it() {
+    let mut app = App::new(State::new(), Box::new(HostedCaretField));
+    app.init_layout();
+    let sent = Rc::new(RefCell::new(vec![]));
+    let inbound = Rc::new(RefCell::new(vec![]));
+    app.collaboration.manager =
+        CollaborationManager::with_peer_transport(HostedPresenceTransport {
+            sent: sent.clone(),
+            inbound: inbound.clone(),
+        });
+    let field = app
+        .layout
+        .node_map
+        .keys()
+        .copied()
+        .next()
+        .expect("the field is laid out");
+    app.set_focused_node(Some(field));
+    let carets = |sent: &Rc<RefCell<Vec<CollabRequest>>>| {
+        sent.borrow()
+            .iter()
+            .filter(|request| {
+                matches!(
+                    request,
+                    CollabRequest::Presence {
+                        payload: PresencePayload::Caret { pos: 14 },
+                        ..
+                    }
+                )
+            })
+            .count()
+    };
+
+    app.pump_hosted_model();
+    let shown = carets(&sent);
+    assert!(shown > 0, "the worker's pump publishes the caret");
+    app.pump_hosted_model();
+    assert_eq!(carets(&sent), shown, "an unchanged caret is not sent again");
+
+    inbound
+        .borrow_mut()
+        .push(CollabEvent::RemotePresenceUpdate {
+            user_id: "recorder".into(),
+            key: PresenceKey::Workspace { id: "room".into() },
+            payload: PresencePayload::Arrived,
+        });
+    app.pump_hosted_model();
+    assert!(
+        carets(&sent) > shown,
+        "a participant arriving later is answered with the caret"
+    );
+}

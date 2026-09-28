@@ -278,7 +278,6 @@ impl App {
         self.note_document_send(&result);
     }
 
-    #[cfg(feature = "native")]
     fn broadcast_focus_presence(&mut self) {
         use crate::collaboration::PresencePayload;
         let current = self.focused_node.and_then(|id| {
@@ -323,17 +322,22 @@ impl App {
         self.presence.last_focus = None;
         self.presence.last_location = None;
         self.presence.last_view = None;
-        #[cfg(feature = "native")]
-        {
-            self.broadcast_focus_presence();
-            self.broadcast_location_presence();
-            self.broadcast_view_presence();
-        }
+        self.publish_presence();
+    }
+
+    /// Publish what changed of this app's caret or selection, location and
+    /// view since the last pass. Every host's frame pump runs it — the
+    /// native runner and a worker's model pump alike — so what a participant
+    /// shows reaches the room, and an arrival is answered, the same way
+    /// wherever the app runs.
+    pub(super) fn publish_presence(&mut self) {
+        self.broadcast_focus_presence();
+        self.broadcast_location_presence();
+        self.broadcast_view_presence();
     }
 
     /// Unlike focus presence, this is polled on the root regardless of
     /// focus.
-    #[cfg(feature = "native")]
     fn broadcast_location_presence(&mut self) {
         let current = self.root_widget.presence_payload();
         if current != self.presence.last_location {
@@ -349,7 +353,6 @@ impl App {
     /// [`PresenceKey::view`](crate::presence::PresenceKey::view) key with an
     /// inert paired payload; the receiver recognises the key and decodes the
     /// subset instead.
-    #[cfg(feature = "native")]
     fn broadcast_view_presence(&mut self) {
         if !self.collaboration.manager.is_connected() && self.presence.broadcast_sink.is_none() {
             return;
