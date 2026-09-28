@@ -76,7 +76,9 @@ fn inspected(node: &SemanticNode, audience: Audience) -> InspectedNode {
         visible: node.visible_bounds().map(surface_rect),
         // A canvas paints what no node describes, so its pixels are not
         // accounted for by the tree.
-        pixels: if matches!(node.role, Role::Canvas | Role::Unknown) {
+        pixels: if node.transient {
+            Pixels::Transient
+        } else if matches!(node.role, Role::Canvas | Role::Unknown) {
             Pixels::Undescribed
         } else {
             Pixels::Described

@@ -349,6 +349,10 @@ pub struct ElementRegion {
     /// view or an embedded foreign surface is a node whose content is not:
     /// its pixels are unexplained.
     pub described: bool,
+    /// The node paints feedback of the recording device's own clock and
+    /// state, which no replay reproduces: a frame comparison leaves these
+    /// pixels out. See [`Pixels::Transient`].
+    pub transient: bool,
 }
 
 impl ElementRegion {
@@ -360,7 +364,8 @@ impl ElementRegion {
             id: node.id.clone(),
             bounds: node.visible?,
             masked: node.sensitivity != Sensitivity::Public,
-            described: node.pixels == Pixels::Described,
+            described: node.pixels != Pixels::Undescribed,
+            transient: node.pixels == Pixels::Transient,
         })
     }
 }
@@ -832,7 +837,9 @@ pub(crate) fn answer(regions: &[ElementRegion]) -> tilo_reference::inspect::Insp
             content: tilo_reference::inspect::Content::Label,
             bounds: Some(region.bounds),
             visible: Some(region.bounds),
-            pixels: if region.described {
+            pixels: if region.transient {
+                Pixels::Transient
+            } else if region.described {
                 Pixels::Described
             } else {
                 Pixels::Undescribed

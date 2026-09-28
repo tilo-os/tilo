@@ -208,7 +208,15 @@ pub fn compare_frame(
     {
         fill(&mut replayed, rect, MASK_RGBA);
     }
-    let differs = difference(&captured, &replayed, tolerance);
+    // What the recording device painted on its own clock and from its own
+    // state is left out on both sides: no replay reproduces it, so it
+    // neither diverges nor matches.
+    let mut compared = captured.clone();
+    for rect in transient_rects(regions, stored.scale, bounds) {
+        fill(&mut compared, &rect, MASK_RGBA);
+        fill(&mut replayed, &rect, MASK_RGBA);
+    }
+    let differs = difference(&compared, &replayed, tolerance);
     for rect in &stored.unexplained {
         step.regions.push(DivergentRegion {
             element: None,
@@ -223,7 +231,7 @@ pub fn compare_frame(
     // diverging children do not account for.
     let mut elements: Vec<(&ElementRegion, PixelRect)> = regions
         .iter()
-        .filter(|region| region.described && !region.masked)
+        .filter(|region| region.described && !region.masked && !region.transient)
         .map(|region| {
             (
                 region,
@@ -249,6 +257,17 @@ pub fn compare_frame(
         });
     }
     Ok(step)
+}
+
+/// The pixel rectangles of every node in `regions` that paints transient
+/// feedback (see [`ElementRegion::transient`]).
+fn transient_rects(regions: &[ElementRegion], scale: f64, bounds: PixelRect) -> Vec<PixelRect> {
+    regions
+        .iter()
+        .filter(|region| region.transient)
+        .map(|region| PixelRect::covering(&region.bounds, scale, bounds))
+        .filter(|rect| !rect.is_empty())
+        .collect()
 }
 
 fn threshold(rect: &PixelRect, tolerance: &Tolerance) -> u64 {
@@ -486,6 +505,7 @@ mod tests {
             bounds,
             masked: false,
             described: true,
+            transient: false,
         };
         vec![
             node("root", edges(0.0, 0.0, f64::from(W), f64::from(H))),
@@ -615,6 +635,7 @@ mod tests {
             bounds: edges(0.0, 0.0, f64::from(W), 40.0),
             masked: false,
             described: true,
+            transient: false,
         }];
         let trace = trace_with(&only_title);
         let strip = strip_of(&trace, vec![at(blank(), 100)]);
@@ -644,6 +665,7 @@ mod tests {
             bounds: edges(8.0, 44.0, 80.0, 56.0),
             masked: true,
             described: true,
+            transient: false,
         });
         let trace = trace_with(&layout);
         let captured = with_bar(blank(), 10.0, 60.0, 20);
@@ -658,5 +680,37 @@ mod tests {
         let mut replay = Replay(vec![at(replayed, 100)], Vec::new());
         let report = check(&trace, &strip, &mut replay, &Tolerance::default()).unwrap();
         assert_eq!(report.layer, SessionLayer::Logic, "{:?}", report.steps);
+    }
+
+    #[test]
+    fn transient_feedback_is_left_out_on_both_sides() {
+        let mut layout = regions();
+        layout.push(ElementRegion {
+            id: "save-status".into(),
+            bounds: edges(8.0, 44.0, 80.0, 56.0),
+            masked: false,
+            described: true,
+            transient: true,
+        });
+        let trace = trace_with(&layout);
+        // The recording caught the pill fading; the replay shows it solid.
+        let captured = with_bar(blank(), 10.0, 60.0, 20);
+        let mut replayed = captured.clone();
+        fill(
+            &mut replayed,
+            &PixelRect::new(10, 46, 40, 8),
+            [0, 0, 0, 255],
+        );
+        let strip = strip_of(&trace, vec![at(captured.clone(), 100)]);
+        let mut replay = Replay(vec![at(replayed.clone(), 100)], Vec::new());
+        let report = check(&trace, &strip, &mut replay, &Tolerance::default()).unwrap();
+        assert_eq!(report.layer, SessionLayer::Logic, "{:?}", report.steps);
+
+        // Outside it the same difference still diverges.
+        let trace = trace_with(&regions());
+        let strip = strip_of(&trace, vec![at(captured, 100)]);
+        let mut replay = Replay(vec![at(replayed, 100)], Vec::new());
+        let report = check(&trace, &strip, &mut replay, &Tolerance::default()).unwrap();
+        assert_eq!(report.layer, SessionLayer::BelowToolkit);
     }
 }
