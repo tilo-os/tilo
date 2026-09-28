@@ -239,6 +239,8 @@ pub struct FeedbackUi {
     /// Records this session has already asked the room to reference (`true`)
     /// or to drop (`false`), by message id, so each is asked once.
     pub shared: std::collections::HashSet<(String, bool)>,
+    /// When to ask again for shares the workspace could not take yet.
+    pub reshare_at: Option<std::time::Instant>,
     /// Comment operations invoked through the resource surface, performed on
     /// the next sync.
     pub pending: std::collections::VecDeque<crate::actions::ChatAction>,
