@@ -11,8 +11,15 @@ use crate::{
         state::WorkspaceId,
     },
 };
+use std::time::SystemTime;
+use tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1;
+use tilo_joined_room::PendingEnrollmentId;
+use tilo_peer_state::join::{
+    self, JoinCompleteRequest, JoinTransportRequest, TRANSPORT_IROH_WORKSPACE_HOST_ENDPOINT_ADDR_V1,
+};
 use tilo_peer_state::join::{JoinChallengeRequest, JoinTransportResponse};
 use tilo_relay::workspace_join::WorkspaceJoinClient;
+use tilo_user_identity::RevocationList;
 
 fn current(identity: &HostIdentity, topic: u64, expected: &DeviceCert) -> Result<(), String> {
     let (certificate, _) = identity.current_native_material(topic)?;
@@ -76,7 +83,7 @@ pub(crate) async fn prepare_and_complete(
         }
         // Reuse the recorded proof even when its original challenge has expired.
         // The issuing host alone resolves durable Complete idempotency/current membership.
-        let id = owner.prepare_enrollment_into(&intent, local, SystemTime::now())?;
+        let id = owner.prepare_enrollment_into(&intent, Some(local), SystemTime::now())?;
         if &id != pending.id() {
             return Err("native retry changed pending generation".into());
         }
@@ -165,7 +172,7 @@ pub(crate) async fn prepare_and_complete(
             hint,
             prepared,
         )?;
-        let id = owner.prepare_enrollment_into(&intent, local, prepared)?;
+        let id = owner.prepare_enrollment_into(&intent, Some(local), prepared)?;
         (intent, id)
     };
     current(&identity, identity_topic, &device)?;
@@ -191,6 +198,15 @@ pub(crate) async fn prepare_and_complete(
         // Generic transport/protocol errors are not proof that remote admission did not happen.
         _ => Err("native Complete was not acknowledged; exact signed proof retained".into()),
     }
+}
+
+fn now_ns(now: SystemTime) -> Result<u64, String> {
+    u64::try_from(
+        now.duration_since(SystemTime::UNIX_EPOCH)
+            .map_err(|e| e.to_string())?
+            .as_nanos(),
+    )
+    .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

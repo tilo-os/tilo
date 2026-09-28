@@ -4,7 +4,9 @@
 )]
 use super::*;
 use std::sync::{Arc, Mutex};
-use tilo_delivery_protocol::workspace_join::{WORKSPACE_JOIN_ALPN, WorkspaceJoinService};
+use tilo_delivery_protocol::workspace_join::{
+    WORKSPACE_JOIN_ALPN, WorkspaceHostMode, WorkspaceJoinService,
+};
 use tilo_peer_state::NeighbourMsg;
 use tilo_peer_state::join::{JoinTransportResponse, MemberRole};
 use tilo_relay::workspace_join::WorkspaceJoinProtocol;
@@ -179,7 +181,7 @@ async fn actual_exchange(restart: bool) {
     let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
     let local = tree.desktop.active;
     tree.persist_path = Some(directory.path().join("state.json"));
-    let receiving_owner = NativeWorkspaceOwner::open(tree.shared()).unwrap();
+    let receiving_owner = crate::shell::native_workspace_owner::open(tree.shared()).unwrap();
     let saw = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let actual = ActualService {
         authority: Arc::new(Mutex::new(Some((remote_owner, service)))),

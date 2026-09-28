@@ -1,5 +1,5 @@
 //! Closed evidence from canonical, identity-pinned native enrollment.
-use crate::shell::{native_workspace_owner::PendingEnrollmentId, state::RoomId};
+use crate::{PendingEnrollmentId, RoomId};
 use serde::{Deserialize, Serialize};
 use std::time::SystemTime;
 use tilo_delivery_protocol::workspace_join::{
@@ -23,7 +23,7 @@ struct IntentRecord {
 }
 /// Historical signed proof custody, not current workspace or media authority.
 #[derive(Clone)]
-pub(crate) struct VerifiedNativeEnrollmentIntent {
+pub struct VerifiedNativeEnrollmentIntent {
     record: IntentRecord,
     join: VerifiedJoin,
     delivery_locator: Option<TransportHint>,
@@ -36,46 +36,60 @@ impl std::fmt::Debug for VerifiedNativeEnrollmentIntent {
     }
 }
 impl VerifiedNativeEnrollmentIntent {
-    pub(crate) fn verified_join(&self) -> &VerifiedJoin {
+    #[must_use]
+    pub fn verified_join(&self) -> &VerifiedJoin {
         &self.join
     }
-    pub(crate) fn local_device(&self) -> &DeviceCert {
+    #[must_use]
+    pub fn local_device(&self) -> &DeviceCert {
         &self.record.local_device
     }
     #[allow(
         clippy::indexing_slicing,
         reason = "`validate` rejects an out-of-range `hint_index` before an intent exists"
     )]
-    pub(crate) fn transport_hint(&self) -> &TransportHint {
+    #[must_use]
+    pub fn transport_hint(&self) -> &TransportHint {
         &self.join.grant().transport[self.record.hint_index as usize]
     }
     #[allow(
         clippy::expect_used,
         reason = "`validate` rejects a noncanonical grant room before an intent exists"
     )]
-    pub(crate) fn room(&self) -> RoomId {
+    /// # Panics
+    /// Never: `validate` rejects a noncanonical grant room.
+    #[must_use]
+    pub fn room(&self) -> RoomId {
         RoomId::parse(&self.join.grant().room).expect("checked canonical room")
     }
-    pub(crate) fn complete_bytes(&self) -> &[u8] {
+    #[must_use]
+    pub fn complete_bytes(&self) -> &[u8] {
         &self.record.complete
     }
-    pub(crate) fn proof_digest(&self) -> [u8; 32] {
+    #[must_use]
+    pub fn proof_digest(&self) -> [u8; 32] {
         *blake3::hash(self.complete_bytes()).as_bytes()
     }
-    pub(crate) fn delivery_host(&self) -> Option<&DeviceCert> {
+    #[must_use]
+    pub fn delivery_host(&self) -> Option<&DeviceCert> {
         self.delivery_locator.as_ref().map(|hint| &hint.host)
     }
-    pub(crate) fn delivery_locator(&self) -> Option<&TransportHint> {
+    #[must_use]
+    pub fn delivery_locator(&self) -> Option<&TransportHint> {
         self.delivery_locator.as_ref()
     }
-    pub(crate) fn durable_bytes(&self) -> Result<Vec<u8>, String> {
+    /// # Errors
+    /// The intent exceeds its bound.
+    pub fn durable_bytes(&self) -> Result<Vec<u8>, String> {
         let bytes = postcard::to_stdvec(&self.record).map_err(|e| e.to_string())?;
         if bytes.len() > MAX_INTENT_BYTES {
             return Err("native enrollment intent exceeds bound".into());
         }
         Ok(bytes)
     }
-    pub(crate) fn restore(bytes: &[u8]) -> Result<Self, String> {
+    /// # Errors
+    /// `bytes` are not a canonical, valid intent.
+    pub fn restore(bytes: &[u8]) -> Result<Self, String> {
         if bytes.len() > MAX_INTENT_BYTES {
             return Err("native enrollment intent exceeds bound".into());
         }
@@ -154,7 +168,13 @@ impl VerifiedNativeEnrollmentIntent {
         clippy::needless_pass_by_value,
         reason = "the exchange hands over the proof inputs it produced; none outlive the intent"
     )]
-    fn from_proof(
+    /// The intent to complete `join` with `complete`, the proof signed for
+    /// the challenge the host issued over `hint`.
+    ///
+    /// # Errors
+    /// `hint` was not appointed by the invitation, or the proof does not
+    /// verify for it.
+    pub fn from_proof(
         join: VerifiedJoin,
         complete: JoinCompleteRequest,
         local_device: DeviceCert,
@@ -189,16 +209,6 @@ impl VerifiedNativeEnrollmentIntent {
         intent.durable_bytes()?;
         Ok(intent)
     }
-    #[cfg(test)]
-    pub(crate) fn from_test_proof(
-        join: VerifiedJoin,
-        complete: JoinCompleteRequest,
-        local_device: DeviceCert,
-        hint: TransportHint,
-        prepared_at: SystemTime,
-    ) -> Result<Self, String> {
-        Self::from_proof(join, complete, local_device, hint, prepared_at)
-    }
 }
 // Recovery verifies the historical hint at its preparation time. Live dialing
 // additionally uses authenticate_transport_hint, which verifies current certificates.
@@ -216,7 +226,7 @@ fn validate_historical_iroh(
     if value.version != 1
         || value.room != join.grant().room
         || value.workspace_id != join.grant().workspace_id
-        || !tilo_relay::room_workspace_id_matches(&value.room, value.workspace_id)
+        || !tilo_relay_protocol::room_workspace_id_matches(&value.room, value.workspace_id)
         || RoomId::parse(&value.room).is_none()
         || value.governing_authority != join.grant().authority
         || value.host_device_certificate != hint.host
@@ -257,39 +267,50 @@ fn now_ns(now: SystemTime) -> Result<u64, String> {
 
 /// Constructed only after an authenticated Complete response and a persisted intent.
 #[derive(Clone, Debug)]
-pub(crate) struct VerifiedNativeEnrollment {
+pub struct VerifiedNativeEnrollment {
     intent: VerifiedNativeEnrollmentIntent,
     pending_id: PendingEnrollmentId,
     bootstrap: JoinBootstrap,
 }
 impl VerifiedNativeEnrollment {
-    pub(crate) fn verified_join(&self) -> &VerifiedJoin {
+    #[must_use]
+    pub fn verified_join(&self) -> &VerifiedJoin {
         self.intent.verified_join()
     }
-    pub(crate) fn bootstrap(&self) -> &JoinBootstrap {
+    #[must_use]
+    pub fn bootstrap(&self) -> &JoinBootstrap {
         &self.bootstrap
     }
-    pub(crate) fn local_device(&self) -> &DeviceCert {
+    #[must_use]
+    pub fn local_device(&self) -> &DeviceCert {
         self.intent.local_device()
     }
-    pub(crate) fn transport_hint(&self) -> &TransportHint {
+    #[must_use]
+    pub fn transport_hint(&self) -> &TransportHint {
         self.intent.transport_hint()
     }
     #[allow(
         clippy::unused_self,
         reason = "an accessor on the enrolled value; native enrollment carries no separate delivery hint"
     )]
-    pub(crate) fn delivery_hint(&self) -> Option<&TransportHint> {
+    #[must_use]
+    pub fn delivery_hint(&self) -> Option<&TransportHint> {
         None
     }
-    pub(crate) fn pending_id(&self) -> &PendingEnrollmentId {
+    #[must_use]
+    pub fn pending_id(&self) -> &PendingEnrollmentId {
         &self.pending_id
     }
     #[allow(
         clippy::suspicious_operation_groupings,
         reason = "a pending id's `digest` is the intent's proof digest"
     )]
-    fn finalize(
+    /// The enrollment `bootstrap` completes. Only the Complete response of
+    /// the pinned host that issued `intent`'s challenge may be passed here.
+    ///
+    /// # Errors
+    /// `bootstrap` does not match the persisted proof and its exact scope.
+    pub fn finalize(
         intent: VerifiedNativeEnrollmentIntent,
         pending_id: PendingEnrollmentId,
         bootstrap: JoinBootstrap,
@@ -338,18 +359,7 @@ impl VerifiedNativeEnrollment {
             bootstrap,
         })
     }
-    #[cfg(test)]
-    pub(crate) fn finalize_test(
-        intent: VerifiedNativeEnrollmentIntent,
-        pending_id: PendingEnrollmentId,
-        bootstrap: JoinBootstrap,
-    ) -> Result<Self, String> {
-        Self::finalize(intent, pending_id, bootstrap)
-    }
 }
 #[cfg(test)]
 #[path = "certified_tests.rs"]
 mod tests;
-
-#[path = "native_exchange.rs"]
-pub(crate) mod exchange;

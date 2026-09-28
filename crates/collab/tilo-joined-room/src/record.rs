@@ -1,27 +1,40 @@
-use super::super::state::{RoomId, WorkspaceId};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use tilo_desktop_model::{RoomId, WorkspaceId};
 use tilo_peer_state::join::TransportHint;
 use tilo_user_identity::DeviceCert;
 
 /// Native-only state-file envelope. Its fields cannot be authored by UI callers.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct NativeAuthorityStorage {
-    pub(super) revision: u64,
-    pub(super) rooms: BTreeMap<RoomId, StoredRoom>,
-    pub(super) pending: BTreeMap<RoomId, StoredPendingEnrollment>,
+    pub(crate) revision: u64,
+    pub(crate) rooms: BTreeMap<RoomId, StoredRoom>,
+    pub(crate) pending: BTreeMap<RoomId, StoredPendingEnrollment>,
 }
 impl NativeAuthorityStorage {
-    pub(crate) fn requires(&self, room: RoomId) -> bool {
+    #[must_use]
+    pub fn requires(&self, room: RoomId) -> bool {
         self.rooms.contains_key(&room) || self.pending.contains_key(&room)
     }
-    pub(crate) fn is_empty(&self) -> bool {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
         self.rooms.is_empty() && self.pending.is_empty()
+    }
+    /// Rooms that are enrolled or have an enrollment in flight.
+    pub fn rooms(&self) -> impl Iterator<Item = RoomId> + '_ {
+        self.rooms.keys().chain(self.pending.keys()).copied()
+    }
+    /// Whether every pending enrollment names the local slot it binds.
+    #[must_use]
+    pub fn every_pending_has_slot(&self) -> bool {
+        self.pending
+            .values()
+            .all(|pending| pending.target.is_some())
     }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub(super) struct StoredRoom {
+pub(crate) struct StoredRoom {
     pub version: u32,
     pub room: RoomId,
     pub workspace: u64,
@@ -40,64 +53,72 @@ pub(super) struct StoredRoom {
     pub floor: Option<DescriptorFloor>,
     /// Outgoing publication state; required on every committed room record.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub publication: Option<super::publication::StoredPublication>,
+    pub publication: Option<crate::publication::StoredPublication>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub(super) struct DescriptorFloor {
+pub(crate) struct DescriptorFloor {
     pub generation: u64,
     pub digest: [u8; 32],
 }
 
 /// Only a successful state-file publication creates an enrollment handle.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct PendingEnrollmentId {
+pub struct PendingEnrollmentId {
     room: RoomId,
     generation: u64,
     digest: [u8; 32],
 }
 impl PendingEnrollmentId {
-    pub(super) fn new(room: RoomId, generation: u64, digest: [u8; 32]) -> Self {
+    pub(crate) fn new(room: RoomId, generation: u64, digest: [u8; 32]) -> Self {
         Self {
             room,
             generation,
             digest,
         }
     }
-    pub(crate) fn room(&self) -> RoomId {
+    #[must_use]
+    pub fn room(&self) -> RoomId {
         self.room
     }
-    pub(crate) fn generation(&self) -> u64 {
+    #[must_use]
+    pub fn generation(&self) -> u64 {
         self.generation
     }
-    pub(crate) fn digest(&self) -> [u8; 32] {
+    #[must_use]
+    pub fn digest(&self) -> [u8; 32] {
         self.digest
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum PendingEnrollmentStatus {
+pub enum PendingEnrollmentStatus {
     Active,
     Cancelled,
 }
+/// The local workspace slot an enrollment rebinds, and the room it showed.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub(super) struct EnrollmentTarget {
+pub struct EnrollmentTarget {
     pub workspace: WorkspaceId,
     pub prior_room: RoomId,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct StoredPendingEnrollment {
-    pub(super) target: EnrollmentTarget,
-    pub(super) id: PendingEnrollmentId,
-    pub(super) intent: Vec<u8>,
-    pub(super) status: PendingEnrollmentStatus,
+pub struct StoredPendingEnrollment {
+    /// `None` where the host has no local slots to bind.
+    pub(crate) target: Option<EnrollmentTarget>,
+    pub(crate) id: PendingEnrollmentId,
+    pub(crate) intent: Vec<u8>,
+    pub(crate) status: PendingEnrollmentStatus,
 }
 impl StoredPendingEnrollment {
-    pub(crate) fn id(&self) -> &PendingEnrollmentId {
+    #[must_use]
+    pub fn id(&self) -> &PendingEnrollmentId {
         &self.id
     }
-    pub(crate) fn intent_bytes(&self) -> &[u8] {
+    #[must_use]
+    pub fn intent_bytes(&self) -> &[u8] {
         &self.intent
     }
-    pub(crate) fn status(&self) -> PendingEnrollmentStatus {
+    #[must_use]
+    pub fn status(&self) -> PendingEnrollmentStatus {
         self.status
     }
 }

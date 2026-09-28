@@ -41,7 +41,7 @@ impl NativeDocumentReads for NativeOwnerCommitService {
         known_revision: Option<[u8; 32]>,
         maximum: usize,
     ) -> Result<NativeDocumentRead, String> {
-        use super::super::native_workspace_owner::document_read::DocumentRead;
+        use super::super::native_workspace_owner::DocumentRead;
         self.authorize(context)?;
         let route = context.route();
         let room = super::super::state::RoomId::parse(&route.cluster_id)

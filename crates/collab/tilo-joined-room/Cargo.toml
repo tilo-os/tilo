@@ -1,0 +1,42 @@
+[package]
+name = "tilo-joined-room"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "A device's enrolled replicas of rooms governed by a remote durable host: enrollment, admission, outgoing custody and their durable record."
+
+[features]
+# Fixtures and internals the desktop session's own owner tests assert on.
+test-support = ["dep:iroh-base", "dep:uuid"]
+
+[dependencies]
+# Writes the file-backed store: owner-only, crash-safe replacement.
+atomic-file = { path = "../../system/atomic-file" }
+automerge.workspace = true
+blake3.workspace = true
+collab-types = { path = "../collab-types" }
+ed25519-dalek.workspace = true
+parking_lot.workspace = true
+postcard = { workspace = true, features = ["alloc"] }
+serde.workspace = true
+serde_json.workspace = true
+tilo-delivery-protocol = { path = "../../hosting/tilo-delivery-protocol" }
+tilo-desktop-model = { path = "../../session/desktop-model" }
+tilo-peer-state = { path = "../tilo-peer-state" }
+tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
+tilo-user-identity = { path = "../tilo-user-identity" }
+iroh-base = { workspace = true, features = ["key"], optional = true }
+uuid = { workspace = true, optional = true }
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+# Admits untrusted automerge bytes in isolated workers, as in production.
+tilo-automerge-isolate.workspace = true
+atomic-file = { path = "../../system/atomic-file", features = ["test-support"] }
+iroh-base = { workspace = true, features = ["key"] }
+tempfile.workspace = true
+uuid.workspace = true
+
+[lints]
+workspace = true

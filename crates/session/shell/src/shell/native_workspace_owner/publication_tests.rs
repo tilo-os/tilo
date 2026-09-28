@@ -2,10 +2,16 @@
     clippy::significant_drop_tightening,
     reason = "test fixtures transitively own long-lived permits and lock guards by design"
 )]
+use super::tests::tree_of;
 use super::*;
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
+use ed25519_dalek::SigningKey;
+use parking_lot::RwLock;
+use std::{sync::Arc, time::SystemTime};
 use tilo_automerge::ApplyIncoming as _;
+use tilo_joined_room::testing as internals;
 use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
+use tilo_peer_state::{NeighbourMsg, StatePeer, TransportOrigin};
 
 fn edit(
     owner: &NativeWorkspaceOwner,
@@ -58,7 +64,7 @@ fn edit(
 
 #[test]
 fn native_outgoing_offline_commit_preserves_exact_bytes_and_retry_across_restart() {
-    let (directory, owner, room, now, key) = super::super::tests::test_enrolled_owner();
+    let (directory, owner, room, now, key) = super::tests::test_enrolled_owner();
     let (request, expected) = edit(&owner, room, &key, now, 1);
     owner.commit_document(request.clone(), now).unwrap();
     let bytes = owner
@@ -85,7 +91,7 @@ fn native_outgoing_offline_commit_preserves_exact_bytes_and_retry_across_restart
     drop(owner);
     let mut tree = persist::load_tree_from(&path).unwrap();
     tree.persist_path = Some(path);
-    let owner = NativeWorkspaceOwner::open(Arc::new(RwLock::new(tree))).unwrap();
+    let owner = open(Arc::new(RwLock::new(tree))).unwrap();
     let bytes = owner
         .with_outgoing(room, now, |_, outgoing| {
             Ok(outgoing
@@ -100,7 +106,7 @@ fn native_outgoing_offline_commit_preserves_exact_bytes_and_retry_across_restart
 
 #[test]
 fn native_outgoing_failed_barrier_cannot_return_success_or_publish_a_frame() {
-    let (directory, owner, room, now, key) = super::super::tests::test_enrolled_owner();
+    let (directory, owner, room, now, key) = super::tests::test_enrolled_owner();
     let path = directory.path().join("state.json");
     let before = std::fs::read(&path).unwrap();
     let (request, _) = edit(&owner, room, &key, now, 2);
@@ -188,7 +194,7 @@ fn snapshot_request(
 #[test]
 fn native_outgoing_expired_incremental_and_snapshot_keep_original_until_real_durable_ack() {
     for snapshot in [false, true] {
-        let (directory, owner, room, now, key) = super::super::tests::test_enrolled_owner();
+        let (directory, owner, room, now, key) = super::tests::test_enrolled_owner();
         let mut remote = governor(&owner, room);
         let (request, original) = if snapshot {
             snapshot_request(&owner, room, &key, now)
@@ -210,10 +216,7 @@ fn native_outgoing_expired_incremental_and_snapshot_keep_original_until_real_dur
         owner
             .with_current(room, |view| {
                 assert!(
-                    state(view)?
-                        .entries
-                        .iter()
-                        .any(|entry| entry.bytes == original),
+                    internals::entries(view)?.contains(&original),
                     "renewal cannot rewrite or discard the original signed bytes"
                 );
                 Ok(())
@@ -305,9 +308,9 @@ fn native_outgoing_expired_incremental_and_snapshot_keep_original_until_real_dur
 
 #[test]
 fn native_outgoing_capacity_refuses_new_success_and_inbound_ack_can_release_space() {
-    let (directory, owner, room, now, key) = super::super::tests::test_enrolled_owner();
+    let (directory, owner, room, now, key) = super::tests::test_enrolled_owner();
     let mut remote = governor(&owner, room);
-    for value in 0..MAX_ENTRIES {
+    for value in 0..internals::MAX_OUTGOING_ENTRIES {
         let (request, _) = edit(&owner, room, &key, now, value as u64);
         owner.commit_document(request, now).unwrap();
     }
@@ -347,7 +350,7 @@ fn native_outgoing_capacity_refuses_new_success_and_inbound_ack_can_release_spac
         .unwrap();
     assert_eq!(
         owner.outgoing_status(room, now).unwrap().pending,
-        MAX_ENTRIES,
+        internals::MAX_OUTGOING_ENTRIES,
         "full outgoing custody must not suppress actual incoming revocation"
     );
     let frames = owner
@@ -377,7 +380,7 @@ fn native_outgoing_capacity_refuses_new_success_and_inbound_ack_can_release_spac
 fn native_outgoing_uncertain_append_fences_and_reopens_exact_committed_bytes() {
     use atomic_file::test_support::{Checkpoint, with_failure};
     for point in [Checkpoint::AfterPublish, Checkpoint::BeforeCommit] {
-        let (directory, owner, room, now, key) = super::super::tests::test_enrolled_owner();
+        let (directory, owner, room, now, key) = super::tests::test_enrolled_owner();
         let (request, expected) = edit(&owner, room, &key, now, 51);
         assert!(with_failure(point, || owner.commit_document(request, now)).is_err());
         assert!(owner.with_outgoing(room, now, |_, _| Ok(())).is_err());
@@ -386,7 +389,7 @@ fn native_outgoing_uncertain_append_fences_and_reopens_exact_committed_bytes() {
         let path = directory.path().join("state.json");
         let mut tree = persist::load_tree_from(&path).unwrap();
         tree.persist_path = Some(path);
-        let owner = NativeWorkspaceOwner::open(Arc::new(RwLock::new(tree))).unwrap();
+        let owner = open(Arc::new(RwLock::new(tree))).unwrap();
         assert_eq!(
             owner
                 .with_outgoing(room, now, |_, outgoing| Ok(outgoing
@@ -401,12 +404,12 @@ fn native_outgoing_uncertain_append_fences_and_reopens_exact_committed_bytes() {
 
 #[test]
 fn native_outgoing_full_offline_queue_must_recover_after_expiry() {
-    let (_directory, owner, room, now, key) = super::super::tests::test_enrolled_owner();
+    let (_directory, owner, room, now, key) = super::tests::test_enrolled_owner();
     let mut remote = governor(&owner, room);
     let mut accepted = 0;
     // A capacity refusal is honest; every edit for which we did return success
     // must still have a recovery path when the connection returns after expiry.
-    for value in 0..MAX_ENTRIES {
+    for value in 0..internals::MAX_OUTGOING_ENTRIES {
         let (request, _) = edit(&owner, room, &key, now, value as u64 + 100);
         if owner.commit_document(request, now).is_err() {
             break;
@@ -424,7 +427,7 @@ fn native_outgoing_full_offline_queue_must_recover_after_expiry() {
     owner
         .reconcile_outgoing(room, &key, later)
         .expect("accepted offline edits must retain bounded capacity for authorized recovery");
-    for turn in 0..MAX_ENTRIES {
+    for turn in 0..internals::MAX_OUTGOING_ENTRIES {
         let frames = owner
             .with_outgoing(room, later, |_, outgoing| {
                 Ok(outgoing
@@ -465,7 +468,7 @@ fn visible(owner: &NativeWorkspaceOwner, room: RoomId, now: SystemTime) -> Vec<V
 
 #[test]
 fn native_outgoing_replaces_repeated_expiry_without_new_originals_or_exact_admissions() {
-    let (directory, mut owner, room, now, key) = super::super::tests::test_enrolled_owner();
+    let (directory, mut owner, room, now, key) = super::tests::test_enrolled_owner();
     let mut remote = governor(&owner, room);
     let base = governor(&owner, room);
     let (request, original) = edit(&owner, room, &key, now, 321);
@@ -484,11 +487,11 @@ fn native_outgoing_replaces_repeated_expiry_without_new_originals_or_exact_admis
         previous = Some(frames[0].clone());
         owner
             .with_current(room, |view| {
-                assert_eq!(state(view)?.entries.len(), 1);
-                assert_eq!(state(view)?.entries[0].bytes, original);
-                assert_eq!(state(view)?.projection.len(), 1);
+                assert_eq!(internals::entries(view)?.len(), 1);
+                assert_eq!(internals::entries(view)?[0], original);
+                assert_eq!(internals::projection(view)?.len(), 1);
                 assert_eq!(
-                    view.peer
+                    view.peer()
                         .admissions_since(&base)
                         .map_err(|error| error.to_string())?
                         .iter()
@@ -499,7 +502,7 @@ fn native_outgoing_replaces_repeated_expiry_without_new_originals_or_exact_admis
                 );
                 let projected: NeighbourMsg = postcard::from_bytes(&frames[0]).unwrap();
                 assert!(
-                    view.peer
+                    view.peer()
                         .lookup_retained_local_document(&projected, key.verifying_key().to_bytes())
                         .unwrap()
                         .is_none()
@@ -508,23 +511,23 @@ fn native_outgoing_replaces_repeated_expiry_without_new_originals_or_exact_admis
             })
             .unwrap();
         let retained_peer = owner
-            .with_current(room, |view| Ok(view.peer.clone()))
+            .with_current(room, |view| Ok(view.peer().clone()))
             .unwrap();
         drop(owner);
         let mut tree = persist::load_tree_from(&path).unwrap();
         tree.persist_path = Some(path.clone());
-        owner = NativeWorkspaceOwner::open(Arc::new(RwLock::new(tree))).unwrap();
+        owner = open(Arc::new(RwLock::new(tree))).unwrap();
         owner
             .with_current(room, |view| {
                 // Durable watermarks originate in a HashMap. Restoring may
                 // change their serialized order without changing any floor.
                 assert_eq!(
-                    view.peer.replay_floors(),
+                    view.peer().replay_floors(),
                     retained_peer.replay_floors(),
                     "restart must preserve every exact reserved sequence floor"
                 );
                 assert!(
-                    view.peer
+                    view.peer()
                         .admissions_since(&retained_peer)
                         .map_err(|error| error.to_string())?
                         .is_empty(),
@@ -532,20 +535,13 @@ fn native_outgoing_replaces_repeated_expiry_without_new_originals_or_exact_admis
                 );
                 assert!(
                     retained_peer
-                        .admissions_since(&view.peer)
+                        .admissions_since(view.peer())
                         .map_err(|error| error.to_string())?
                         .is_empty(),
                     "restart must preserve exact admission evidence in both directions"
                 );
-                assert_eq!(state(view)?.entries[0].bytes, original);
-                assert_eq!(
-                    state(view)?
-                        .projection
-                        .iter()
-                        .map(|entry| entry.bytes.clone())
-                        .collect::<Vec<_>>(),
-                    frames
-                );
+                assert_eq!(internals::entries(view)?[0], original);
+                assert_eq!(internals::projection(view)?, frames);
                 Ok(())
             })
             .unwrap();
@@ -565,7 +561,7 @@ fn native_outgoing_replaces_repeated_expiry_without_new_originals_or_exact_admis
 #[test]
 fn native_outgoing_projection_replacement_barrier_and_late_echo_preserve_custody() {
     use atomic_file::test_support::{Checkpoint, with_failure};
-    let (directory, owner, room, now, key) = super::super::tests::test_enrolled_owner();
+    let (directory, owner, room, now, key) = super::tests::test_enrolled_owner();
     let mut remote = governor(&owner, room);
     let (request, original) = edit(&owner, room, &key, now, 400);
     owner.commit_document(request, now).unwrap();
@@ -578,7 +574,7 @@ fn native_outgoing_projection_replacement_barrier_and_late_echo_preserve_custody
     let path = directory.path().join("state.json");
     let before = std::fs::read(&path).unwrap();
     let peer_before = owner
-        .with_current(room, |view| view.peer.durable())
+        .with_current(room, |view| view.peer().durable())
         .unwrap();
     assert!(
         with_failure(Checkpoint::BeforePublish, || owner
@@ -588,14 +584,14 @@ fn native_outgoing_projection_replacement_barrier_and_late_echo_preserve_custody
     assert_eq!(std::fs::read(&path).unwrap(), before);
     assert_eq!(
         owner
-            .with_current(room, |view| view.peer.durable())
+            .with_current(room, |view| view.peer().durable())
             .unwrap(),
         peer_before
     );
     owner
         .with_current(room, |view| {
-            assert_eq!(state(view)?.projection[0].bytes, old);
-            assert_eq!(state(view)?.entries[0].bytes, original);
+            assert_eq!(internals::projection(view)?[0], old);
+            assert_eq!(internals::entries(view)?[0], original);
             Ok(())
         })
         .unwrap();
@@ -603,7 +599,7 @@ fn native_outgoing_projection_replacement_barrier_and_late_echo_preserve_custody
     let fresh = visible(&owner, room, later)[0].clone();
     assert_ne!(old, fresh);
     let before_echo = owner
-        .with_current(room, |view| view.peer.durable())
+        .with_current(room, |view| view.peer().durable())
         .unwrap();
     for bytes in [&old, &fresh] {
         let result = owner.receive(
@@ -627,7 +623,7 @@ fn native_outgoing_projection_replacement_barrier_and_late_echo_preserve_custody
         }
         assert_eq!(
             owner
-                .with_current(room, |view| view.peer.durable())
+                .with_current(room, |view| view.peer().durable())
                 .unwrap(),
             before_echo,
             "strict late echo must not grow peer, pending data or exact evidence"
@@ -663,7 +659,7 @@ fn native_outgoing_projection_replacement_barrier_and_late_echo_preserve_custody
             receiver.document_heads("so.tilo.chat", ""),
             owner
                 .with_current(room, |view| Ok(view
-                    .peer
+                    .peer()
                     .document_heads("so.tilo.chat", "")))
                 .unwrap()
         );
@@ -673,14 +669,7 @@ fn native_outgoing_projection_replacement_barrier_and_late_echo_preserve_custody
     owner.commit_document(request, later).unwrap();
     owner
         .with_current(room, |view| {
-            assert_eq!(
-                state(view)?
-                    .entries
-                    .iter()
-                    .map(|entry| entry.bytes.clone())
-                    .collect::<Vec<_>>(),
-                vec![original, next_original]
-            );
+            assert_eq!(internals::entries(view)?, vec![original, next_original]);
             Ok(())
         })
         .unwrap();
@@ -690,7 +679,7 @@ fn native_outgoing_projection_replacement_barrier_and_late_echo_preserve_custody
 fn native_outgoing_uncertain_projection_reopens_published_floor_and_reserve_tamper_refuses() {
     use atomic_file::test_support::{Checkpoint, with_failure};
     for point in [Checkpoint::AfterPublish, Checkpoint::BeforeCommit] {
-        let (directory, owner, room, now, key) = super::super::tests::test_enrolled_owner();
+        let (directory, owner, room, now, key) = super::tests::test_enrolled_owner();
         let mut remote = governor(&owner, room);
         let (request, original) = edit(&owner, room, &key, now, 451);
         owner.commit_document(request, now).unwrap();
@@ -702,7 +691,7 @@ fn native_outgoing_uncertain_projection_reopens_published_floor_and_reserve_tamp
         drop(owner);
         let path = directory.path().join("state.json");
         let mut tree = persist::load_tree_from(&path).unwrap();
-        let published = tree.native_authority.rooms.get(&room).unwrap();
+        let published = internals::stored(&tree.native_authority, room).unwrap();
         let durable_peer = published.peer.clone();
         let retained_peer = StatePeer::restore(
             &durable_peer,
@@ -713,11 +702,9 @@ fn native_outgoing_uncertain_projection_reopens_published_floor_and_reserve_tamp
             later,
         )
         .unwrap();
-        let projection = published.publication.as_ref().unwrap().projection[0]
-            .bytes
-            .clone();
+        let projection = published.projection[0].clone();
         tree.persist_path = Some(path.clone());
-        let owner = NativeWorkspaceOwner::open(Arc::new(RwLock::new(tree))).unwrap();
+        let owner = open(Arc::new(RwLock::new(tree))).unwrap();
         assert!(
             visible(&owner, room, later).is_empty(),
             "uncertain publication preserves custody, not transient governor freshness"
@@ -727,23 +714,23 @@ fn native_outgoing_uncertain_projection_reopens_published_floor_and_reserve_tamp
             .with_current(room, |view| {
                 // The stored authority bytes stay exact; reconstructed
                 // HashMap watermark ordering is not a durable invariant.
-                assert_eq!(view.record.peer, durable_peer);
-                assert_eq!(view.peer.replay_floors(), retained_peer.replay_floors());
+                assert_eq!(internals::durable_peer(view), durable_peer);
+                assert_eq!(view.peer().replay_floors(), retained_peer.replay_floors());
                 assert!(
-                    view.peer
+                    view.peer()
                         .admissions_since(&retained_peer)
                         .map_err(|error| error.to_string())?
                         .is_empty()
                 );
                 assert!(
                     retained_peer
-                        .admissions_since(&view.peer)
+                        .admissions_since(view.peer())
                         .map_err(|error| error.to_string())?
                         .is_empty()
                 );
-                assert_eq!(state(view)?.entries[0].bytes, original);
-                assert_eq!(state(view)?.projection.len(), 1);
-                assert_eq!(state(view)?.projection[0].bytes, projection);
+                assert_eq!(internals::entries(view)?[0], original);
+                assert_eq!(internals::projection(view)?.len(), 1);
+                assert_eq!(internals::projection(view)?[0], projection);
                 Ok(())
             })
             .unwrap();
@@ -757,7 +744,7 @@ fn native_outgoing_uncertain_projection_reopens_published_floor_and_reserve_tamp
         let mut tree = persist::load_tree_from(&path).unwrap();
         tree.persist_path = Some(path);
         assert!(
-            NativeWorkspaceOwner::open(Arc::new(RwLock::new(tree))).is_err(),
+            open(Arc::new(RwLock::new(tree))).is_err(),
             "restore must derive capacity proof from actual obligations"
         );
     }
@@ -765,7 +752,7 @@ fn native_outgoing_uncertain_projection_reopens_published_floor_and_reserve_tamp
 
 #[test]
 fn native_outgoing_projection_history_substitution_cannot_restore() {
-    let (directory, owner, room, now, key) = super::super::tests::test_enrolled_owner();
+    let (directory, owner, room, now, key) = super::tests::test_enrolled_owner();
     let mut remote = governor(&owner, room);
     let (request, _) = edit(&owner, room, &key, now, 470);
     owner.commit_document(request, now).unwrap();
@@ -786,9 +773,9 @@ fn native_outgoing_projection_history_substitution_cannot_restore() {
     };
     envelope.seq = old_envelope.seq;
     collab_types::sign_op(envelope, &key).unwrap();
-    let bytes = prepare(&request).unwrap();
+    let bytes = internals::prepare(&request).unwrap();
     let message = postcard::from_bytes(&bytes).unwrap();
-    let (timestamp, channel, incremental) = metadata(&message).unwrap();
+    let (timestamp, channel, incremental) = internals::metadata(&message).unwrap();
     drop(owner);
     let path = directory.path().join("state.json");
     let mut encoded: serde_json::Value =
@@ -805,28 +792,29 @@ fn native_outgoing_projection_history_substitution_cannot_restore() {
     let mut tree = persist::load_tree_from(&path).unwrap();
     tree.persist_path = Some(path);
     assert!(
-        NativeWorkspaceOwner::open(Arc::new(RwLock::new(tree))).is_err(),
+        open(Arc::new(RwLock::new(tree))).is_err(),
         "valid local signature and reserved sequence cannot substitute uncommitted history"
     );
 }
 
 #[test]
 fn native_outgoing_admission_reserves_actual_encoded_replacement_before_receipt() {
-    let (_directory, owner, room, now, key) = super::super::tests::test_enrolled_owner();
+    let (_directory, owner, room, now, key) = super::tests::test_enrolled_owner();
     let mut remote = governor(&owner, room);
     let (request, _) = snapshot_request(&owner, room, &key, now);
     owner.commit_document(request, now).unwrap();
-    let reserved = reservation::required_tree_bytes(&owner.0.tree.read()).unwrap();
+    let reserved = publication::required_tree_bytes(&tree_of(&owner).read()).unwrap();
     let later = now + std::time::Duration::from_secs(301);
     checkpoint(&owner, room, &mut remote, later, 800);
     // Governor input is a separate real state change; measure its committed reserve.
-    let reserved_after_checkpoint = reservation::required_tree_bytes(&owner.0.tree.read()).unwrap();
+    let reserved_after_checkpoint =
+        publication::required_tree_bytes(&tree_of(&owner).read()).unwrap();
     assert!(reserved > 0 && reserved_after_checkpoint <= store::MAX_STATE_BYTES);
     owner.reconcile_outgoing(room, &key, later).unwrap();
     owner
-        .with_current(room, reservation::check_actual_projection_bound)
+        .with_current(room, internals::check_actual_projection_bound)
         .unwrap();
-    let actual = serde_json::to_vec_pretty(&*owner.0.tree.read())
+    let actual = serde_json::to_vec_pretty(&*tree_of(&owner).read())
         .unwrap()
         .len();
     assert!(
@@ -837,7 +825,7 @@ fn native_outgoing_admission_reserves_actual_encoded_replacement_before_receipt(
 
 #[test]
 fn native_outgoing_encoded_recovery_reserve_refuses_before_original_success() {
-    let (directory, owner, room, now, key) = super::super::tests::test_enrolled_owner();
+    let (directory, owner, room, now, key) = super::tests::test_enrolled_owner();
     // Incompressible text makes the actual native history large while staying
     // inside the original wire cap. The candidate itself fits; its mandatory
     // future recovery representation does not fit the authority envelope.
@@ -854,11 +842,11 @@ fn native_outgoing_encoded_recovery_reserve_refuses_before_original_success() {
     let message = owner
         .with_current(room, |view| {
             let mut doc =
-                AutoCommit::load(&view.peer.document("so.tilo.chat", "").unwrap()).unwrap();
+                AutoCommit::load(&view.peer().document("so.tilo.chat", "").unwrap()).unwrap();
             let heads = doc.get_heads();
             doc.put(ROOT, "large-offline", text).unwrap();
             doc.commit();
-            view.peer.clone().publish_incremental(
+            view.peer().clone().publish_incremental(
                 "so.tilo.chat",
                 "",
                 doc.save_after(&heads),
@@ -867,9 +855,9 @@ fn native_outgoing_encoded_recovery_reserve_refuses_before_original_success() {
             )
         })
         .unwrap();
-    let request = request(&message).unwrap();
-    let outgoing = prepare(&request).unwrap();
-    assert!(outgoing.len() < MAX_BYTES);
+    let request = internals::request(&message).unwrap();
+    let outgoing = internals::prepare(&request).unwrap();
+    assert!(outgoing.len() < internals::MAX_OUTGOING_BYTES);
     let mut candidate = owner.with_current(room, |view| Ok(view.clone())).unwrap();
     let CommitOperation::Document {
         app,
@@ -879,20 +867,16 @@ fn native_outgoing_encoded_recovery_reserve_refuses_before_original_success() {
     else {
         unreachable!()
     };
-    candidate
-        .peer
+    internals::peer_mut(&mut candidate)
         .admit_local_app_document(&app, &record, *envelope, now)
         .unwrap();
-    append_local(&mut candidate, outgoing).unwrap();
-    candidate.record.peer = candidate.peer.durable().unwrap();
-    let mut prospective = owner.0.tree.read().clone();
-    prospective
-        .native_authority
-        .rooms
-        .insert(room, candidate.record);
+    internals::append_local(&mut candidate, outgoing).unwrap();
+    internals::seal(&mut candidate).unwrap();
+    let mut prospective = tree_of(&owner).read().clone();
+    internals::insert_room(&mut prospective.native_authority, room, candidate);
     store::preflight(&prospective.native_authority, store::MAX_AUTHORITY_BYTES).unwrap();
     assert!(
-        preflight_storage(&prospective.native_authority).is_err(),
+        tilo_joined_room::preflight_storage(&prospective.native_authority).is_err(),
         "the refusal must come from the required recovery reserve"
     );
     let path = directory.path().join("state.json");
@@ -906,7 +890,7 @@ fn native_outgoing_encoded_recovery_reserve_refuses_before_original_success() {
 fn native_outgoing_sanitized_foreign_title_cannot_consume_recovery_reserve() {
     use crate::shell::state::{Tab, TileContent, WindowGroup, WindowWidth};
     use std::{cell::Cell, rc::Rc};
-    let (directory, owner, room, now, key) = super::super::tests::test_enrolled_owner();
+    let (directory, owner, room, now, key) = super::tests::test_enrolled_owner();
     let (request, _) = edit(&owner, room, &key, now, 911);
     let mut candidate = owner.with_current(room, |view| Ok(view.clone())).unwrap();
     let CommitOperation::Document {
@@ -917,15 +901,15 @@ fn native_outgoing_sanitized_foreign_title_cannot_consume_recovery_reserve() {
     else {
         unreachable!()
     };
-    candidate
-        .peer
+    internals::peer_mut(&mut candidate)
         .admit_local_app_document(&app, &record, *envelope, now)
         .unwrap();
-    append_local(&mut candidate, prepare(&request).unwrap()).unwrap();
-    candidate.record.peer = candidate.peer.durable().unwrap();
-    candidate.record.generation += 1;
+    internals::append_local(&mut candidate, internals::prepare(&request).unwrap()).unwrap();
+    internals::seal(&mut candidate).unwrap();
+    internals::bump_generation(&mut candidate);
     let group_index = {
-        let mut tree = owner.0.tree.write();
+        let handle = tree_of(&owner);
+        let mut tree = handle.write();
         let groups = &mut tree.desktop.workspaces[0].strips[0].window_groups;
         let index = groups.len();
         groups.push(WindowGroup {
@@ -944,17 +928,14 @@ fn native_outgoing_sanitized_foreign_title_cannot_consume_recovery_reserve() {
         });
         index
     };
-    let mut prospective = owner.0.tree.read().clone();
-    prospective
-        .native_authority
-        .rooms
-        .insert(room, candidate.record);
-    prospective.native_authority.revision += 1;
+    let mut prospective = tree_of(&owner).read().clone();
+    internals::insert_room(&mut prospective.native_authority, room, candidate);
+    internals::bump_revision(&mut prospective.native_authority);
     // Use the actual sanitizer/serializer on the small tree to derive this
     // fixture. Adding ASCII title text changes only title and durable label.
     let small = persist::encode_tree(&prospective).unwrap();
     let sanitized: crate::shell::state::WorkspaceTree = serde_json::from_slice(&small).unwrap();
-    let reserved = reservation::required_tree_bytes(&sanitized).unwrap() - small.len();
+    let reserved = publication::required_tree_bytes(&sanitized).unwrap() - small.len();
     assert!(reserved > 2);
     let title_len = (store::MAX_STATE_BYTES - small.len() - reserved / 2) / 2;
     let final_encoded_len = small.len() + 2 * title_len;
@@ -963,9 +944,10 @@ fn native_outgoing_sanitized_foreign_title_cannot_consume_recovery_reserve() {
     let title = "t".repeat(title_len);
     prospective.desktop.workspaces[0].strips[0].window_groups[group_index].tabs[0].title =
         title.clone();
-    owner.0.tree.write().desktop.workspaces[0].strips[0].window_groups[group_index].tabs[0].title =
-        title;
-    preflight_tree(&prospective).expect("the live Foreign shape still has promised spare space");
+    tree_of(&owner).write().desktop.workspaces[0].strips[0].window_groups[group_index].tabs[0]
+        .title = title;
+    publication::preflight_tree(&prospective)
+        .expect("the live Foreign shape still has promised spare space");
     assert!(
         persist::encode_tree(&prospective).is_err(),
         "the old final full-file cap accepted sanitized bytes that consumed the recovery reserve"

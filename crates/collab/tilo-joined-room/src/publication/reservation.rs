@@ -1,20 +1,21 @@
 //! Count the actual future native representation before an original gets a receipt.
 use super::{
     CommitBinding, Deserialize, MAX_BYTES, MAX_ENTRIES, NativeCommittedView, NeighbourMsg,
-    Serialize, decode_entries, record, state, store,
+    Serialize, decode_entries, state,
 };
+use crate::{limits as store, record};
 use serde::ser::{SerializeSeq, SerializeStruct};
 use std::io::{self, Write};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub(super) struct StoredReservation {
+pub(crate) struct StoredReservation {
     entries: usize,
     wire_bytes: usize,
     authority_bytes: usize,
     state_bytes: usize,
 }
 impl StoredReservation {
-    pub(super) fn bounds(&self) -> Result<(), String> {
+    pub(crate) fn bounds(&self) -> Result<(), String> {
         if self.entries > MAX_ENTRIES
             || self.wire_bytes > MAX_BYTES
             || self.authority_bytes > store::MAX_AUTHORITY_BYTES
@@ -171,7 +172,7 @@ fn proof(
     result.bounds()?;
     Ok(result)
 }
-pub(super) fn refresh(view: &mut NativeCommittedView) -> Result<(), String> {
+pub(crate) fn refresh(view: &mut NativeCommittedView) -> Result<(), String> {
     let publication = state(view)?;
     let originals = decode_entries(&publication.entries)?;
     let next = proof(view, &originals)?;
@@ -189,7 +190,7 @@ pub(super) fn refresh(view: &mut NativeCommittedView) -> Result<(), String> {
     }
     Ok(())
 }
-pub(super) fn validate(
+pub(crate) fn validate(
     view: &NativeCommittedView,
     originals: &[NeighbourMsg],
 ) -> Result<(), String> {
@@ -247,32 +248,27 @@ fn extra(storage: &record::NativeAuthorityStorage, file: bool) -> Result<usize, 
     Ok(total)
 }
 
-pub(crate) fn preflight_storage(storage: &record::NativeAuthorityStorage) -> Result<(), String> {
+/// Refuse a record that leaves no room for the recovery its rooms reserved.
+///
+/// # Errors
+/// `storage` does not fit its cap together with its reserve.
+pub fn preflight_storage(storage: &record::NativeAuthorityStorage) -> Result<(), String> {
     let limit = store::MAX_AUTHORITY_BYTES
         .checked_sub(extra(storage, false)?)
         .ok_or("native authority recovery reserve exceeds capacity")?;
     store::preflight(storage, limit).map_err(|e| e.to_string())
 }
-pub(crate) fn preflight_tree(
-    tree: &super::super::super::state::WorkspaceTree,
-) -> Result<(), String> {
-    preflight_storage(&tree.native_authority)?;
-    let limit = store::MAX_STATE_BYTES
-        .checked_sub(extra(&tree.native_authority, true)?)
-        .ok_or("native state recovery reserve exceeds capacity")?;
-    store::preflight(tree, limit).map_err(|e| e.to_string())
+/// Bytes a host file that embeds `storage` one level deeper than the record
+/// itself (the desktop session's state file) must keep free for the
+/// recovery its rooms reserved.
+///
+/// # Errors
+/// A room's reserve is out of bounds.
+pub fn reserved_file_bytes(storage: &record::NativeAuthorityStorage) -> Result<usize, String> {
+    extra(storage, true)
 }
-
-#[cfg(test)]
-pub(super) fn required_tree_bytes(
-    tree: &super::super::super::state::WorkspaceTree,
-) -> Result<usize, String> {
-    count(tree, 0, store::MAX_STATE_BYTES)?
-        .checked_add(extra(&tree.native_authority, true)?)
-        .ok_or_else(|| "native test encoded reserve overflow".into())
-}
-#[cfg(test)]
-pub(super) fn check_actual_projection_bound(view: &NativeCommittedView) -> Result<(), String> {
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) fn check_actual_projection_bound(view: &NativeCommittedView) -> Result<(), String> {
     let state = state(view)?;
     let projection = count(&state.projection, 5, store::MAX_STATE_BYTES)?;
     if projection > state.reservation.state_bytes {

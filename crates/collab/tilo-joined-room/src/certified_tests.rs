@@ -65,15 +65,15 @@ fn actual_redemption_at(
         "Joining device",
     );
     let room = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-    let workspace_id = tilo_relay::room_workspace_id(room).unwrap();
+    let workspace_id = tilo_relay_protocol::room_workspace_id(room).unwrap();
     let hint = IrohWorkspaceHostHintV1 {
         version: 1,
         mode: WorkspaceHostMode::NativeInteractiveWorkspaceOwner,
         room: room.into(),
         workspace_id,
         governing_authority: governor.clone(),
-        endpoint_addr: iroh::EndpointAddr::new(
-            iroh::EndpointId::from_bytes(&governor.device_public_key).unwrap(),
+        endpoint_addr: iroh_base::EndpointAddr::new(
+            iroh_base::EndpointId::from_bytes(&governor.device_public_key).unwrap(),
         ),
         host_user_public_key: governor.user_public_key,
         host_device_certificate: governor.clone(),
@@ -165,7 +165,7 @@ fn actual_redemption_at(
 #[test]
 fn native_enrollment_retains_actual_verified_redemption_and_governance() {
     let (join, complete, bootstrap, device, hint, now) = actual_redemption();
-    let intent = VerifiedNativeEnrollmentIntent::from_test_proof(
+    let intent = VerifiedNativeEnrollmentIntent::from_proof(
         join.clone(),
         complete,
         device.clone(),
@@ -173,9 +173,9 @@ fn native_enrollment_retains_actual_verified_redemption_and_governance() {
         now,
     )
     .unwrap();
-    let (_directory, owner) = pending_owner(intent.room());
-    let id = owner.prepare_enrollment(&intent, now).unwrap();
-    let enrolled = VerifiedNativeEnrollment::finalize_test(intent, id, bootstrap.clone()).unwrap();
+    let (_directory, owner) = pending_owner();
+    let id = owner.prepare_enrollment_into(&intent, None, now).unwrap();
+    let enrolled = VerifiedNativeEnrollment::finalize(intent, id, bootstrap.clone()).unwrap();
     assert_eq!(enrolled.verified_join(), &join);
     assert_eq!(enrolled.bootstrap(), &bootstrap);
     assert_eq!(enrolled.local_device(), &device);
@@ -199,27 +199,16 @@ fn native_enrollment_refuses_bootstrap_scope_and_identity_substitution() {
             _ => bootstrap.generation = 0,
         }
         let intent =
-            VerifiedNativeEnrollmentIntent::from_test_proof(join, complete, device, hint, now)
-                .unwrap();
-        let (_directory, owner) = pending_owner(intent.room());
-        let id = owner.prepare_enrollment(&intent, now).unwrap();
-        assert!(VerifiedNativeEnrollment::finalize_test(intent, id, bootstrap).is_err());
+            VerifiedNativeEnrollmentIntent::from_proof(join, complete, device, hint, now).unwrap();
+        let (_directory, owner) = pending_owner();
+        let id = owner.prepare_enrollment_into(&intent, None, now).unwrap();
+        assert!(VerifiedNativeEnrollment::finalize(intent, id, bootstrap).is_err());
     }
 }
 
-fn pending_owner(
-    room: RoomId,
-) -> (
-    tempfile::TempDir,
-    crate::shell::native_workspace_owner::NativeWorkspaceOwner,
-) {
+fn pending_owner() -> (tempfile::TempDir, crate::NativeWorkspaceOwner) {
     let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
-    let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
-    let local = tree.desktop.active;
-    assert!(tree.set_room(local, room));
-    tree.persist_path = Some(directory.path().join("state.json"));
-    let owner =
-        crate::shell::native_workspace_owner::NativeWorkspaceOwner::open(tree.shared()).unwrap();
+    let owner = crate::open_file(&directory.path().join("joined-rooms.json")).unwrap();
     (directory, owner)
 }
 
@@ -228,13 +217,13 @@ fn native_enrollment_retains_exact_complete_bytes_and_rejects_tampering() {
     let (join, complete, _, device, hint, now) = actual_redemption();
     let exact = postcard::to_stdvec(&JoinTransportRequest::Complete(complete.clone())).unwrap();
     let intent =
-        VerifiedNativeEnrollmentIntent::from_test_proof(join, complete, device, hint, now).unwrap();
+        VerifiedNativeEnrollmentIntent::from_proof(join, complete, device, hint, now).unwrap();
     let saved = intent.durable_bytes().unwrap();
     let restored = VerifiedNativeEnrollmentIntent::restore(&saved).unwrap();
     assert_eq!(restored.complete_bytes(), exact);
     assert_eq!(restored.proof_digest(), intent.proof_digest());
-    let (_directory, owner) = pending_owner(intent.room());
-    let id = owner.prepare_enrollment(&intent, now).unwrap();
+    let (_directory, owner) = pending_owner();
+    let id = owner.prepare_enrollment_into(&intent, None, now).unwrap();
     let stored = owner.pending_enrollment(intent.room()).unwrap().unwrap();
     assert_eq!(stored.id(), &id);
     assert_eq!(stored.intent_bytes(), saved);
@@ -255,8 +244,7 @@ fn native_enrollment_uncertain_complete_survives_challenge_expiry_exactly() {
     let (join, complete, _, device, hint, _) = actual_redemption_at(prepared);
     assert!(complete.proof.challenge.expires_at_ns < now_ns(SystemTime::now()).unwrap());
     let intent =
-        VerifiedNativeEnrollmentIntent::from_test_proof(join, complete, device, hint, prepared)
-            .unwrap();
+        VerifiedNativeEnrollmentIntent::from_proof(join, complete, device, hint, prepared).unwrap();
     let saved = intent.durable_bytes().unwrap();
     let restored = VerifiedNativeEnrollmentIntent::restore(&saved).unwrap();
     assert_eq!(restored.complete_bytes(), intent.complete_bytes());
