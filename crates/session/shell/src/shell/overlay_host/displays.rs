@@ -35,20 +35,15 @@ fn own_top_band() -> f64 {
     f64::from(TOPBAR_HEIGHT_PX) + f64::from(ui::tokens::Spacing::BASE.s3)
 }
 
-/// The outputs that are displays of their own, primary (`OutputId(0)`)
-/// first. The backend lays a mirror over the rectangle of the output it
-/// copies, while outputs that extend the desktop tile edge to edge and never
-/// overlap; so an output overlapping one already taken shows that one's
-/// image and is not another display. The lowest id of a mirror set stands
-/// for it.
+/// The outputs that are displays of their own, in the backend's order: the
+/// primary chosen in Settings first. The backend lays a mirror over the
+/// rectangle of the output it copies, while outputs that extend the desktop
+/// tile edge to edge and never overlap; so an output overlapping one already
+/// taken shows that one's image and is not another display. The first
+/// output of a mirror set stands for it.
 fn distinct_outputs(outputs: &[OutputGeometry]) -> Vec<&OutputGeometry> {
-    let mut sorted: Vec<&OutputGeometry> = outputs
-        .iter()
-        .filter(|o| o.width > 0.0 && o.height > 0.0)
-        .collect();
-    sorted.sort_by_key(|o| o.id);
-    let mut distinct: Vec<&OutputGeometry> = Vec::with_capacity(sorted.len());
-    for output in sorted {
+    let mut distinct: Vec<&OutputGeometry> = Vec::with_capacity(outputs.len());
+    for output in outputs.iter().filter(|o| o.width > 0.0 && o.height > 0.0) {
         let copies = |kept: &&OutputGeometry| {
             let shared = kept.rect().intersect(output.rect());
             kept.id == output.id || (shared.width() > 0.0 && shared.height() > 0.0)
@@ -60,8 +55,8 @@ fn distinct_outputs(outputs: &[OutputGeometry]) -> Vec<&OutputGeometry> {
     distinct
 }
 
-/// The displays as the partition knows them, primary (`OutputId(0)`) first,
-/// a mirror set as one (see [`distinct_outputs`]). An output whose monitor
+/// The displays as the partition knows them, primary first, a mirror set as
+/// one (see [`distinct_outputs`]). An output whose monitor
 /// the backend can't name is known by its id.
 fn displays_of(outputs: &[OutputGeometry]) -> Vec<Display> {
     distinct_outputs(outputs)
@@ -170,9 +165,12 @@ impl ShellOverlayHost {
                 .is_some_and(|c| c.borrow().tree().desktop.outputs.displays.len() >= 2)
     }
 
-    /// The display the wheel disc and the full top bar live on.
+    /// The display the wheel disc and the full top bar live on: the first
+    /// the backend lists, which is the primary chosen in Settings.
     pub(super) fn primary_output(&self) -> Option<OutputGeometry> {
-        self.outputs.iter().min_by_key(|o| o.id).cloned()
+        distinct_outputs(&self.outputs)
+            .first()
+            .map(|o| (*o).clone())
     }
 
     /// Wheel-disc slot plus its gap, sized for the display it sits on.
