@@ -16748,7 +16748,7 @@ mod history_reconcile_tests {
     #[test]
     fn history_accepts_label_and_album_formats_and_rejects_malformed_conflicts() {
         eprintln!(
-            "phase history_accepts_current_and_legacy_labels_and_rejects_all_malformed_conflicts"
+            "phase history_accepts_membership_map_labels_and_rejects_all_malformed_conflicts"
         );
         {
             use automerge::{ObjType, ReadDoc, transaction::Transactable};
@@ -16764,15 +16764,15 @@ mod history_reconcile_tests {
                 let row = doc.get(&column, id.as_str()).unwrap().unwrap().1;
                 doc.put(&row, "Removed", false).unwrap();
                 crate::framework_history::validate(&doc).unwrap();
-                let mut legacy = doc.clone();
-                legacy
-                    .put(&column, id.as_str(), "[\"Legacy label\"]")
+                let mut array = doc.clone();
+                array
+                    .put(&column, id.as_str(), "[\"Array label\"]")
                     .unwrap();
-                crate::framework_history::validate(&legacy).unwrap();
+                assert!(crate::framework_history::validate(&array).is_err());
 
-                // Two replicas can create different maps while migrating one JSON array.
-                let mut left = legacy.fork();
-                let mut right = legacy.fork();
+                // Two replicas can create different membership maps for one photo.
+                let mut left = doc.fork();
+                let mut right = doc.fork();
                 let left_row = left.put_object(&column, id.as_str(), ObjType::Map).unwrap();
                 let right_row = right
                     .put_object(&column, id.as_str(), ObjType::Map)
@@ -16814,45 +16814,34 @@ mod history_reconcile_tests {
                 .unwrap()
                 .unwrap()
                 .1;
-            let mut legacy = doc.clone();
-            let members = legacy.put_object(&row, "photo_ids", ObjType::List).unwrap();
-            legacy.insert(&members, 0, ids[0].as_str()).unwrap();
-            crate::framework_history::validate(&legacy).unwrap();
-            assert_eq!(
-                PhotosDoc::library(&legacy).albums[0].photo_ids,
-                vec![ids[0].clone()]
-            );
+            let mut list = doc.clone();
+            let members = list.put_object(&row, "photo_ids", ObjType::List).unwrap();
+            list.insert(&members, 0, ids[0].as_str()).unwrap();
+            assert!(crate::framework_history::validate(&list).is_err());
 
-            // Concurrent migration can retain both legacy and current values.
-            // Neither malformed representation may hide behind a valid sibling.
-            for (invalid_json, invalid_list) in [(false, false), (true, false), (false, true)] {
-                let mut left = legacy.fork();
-                let mut right = legacy.fork();
+            // Concurrent replacements retain both values; a malformed one may
+            // not hide behind a valid sibling.
+            for invalid_json in [false, true] {
+                let mut left = doc.fork();
+                let mut right = doc.fork();
                 left.set_actor(automerge::ActorId::from([2; 16].as_slice()));
                 right.set_actor(automerge::ActorId::from([3; 16].as_slice()));
                 left.put(&row, "photo_ids", if invalid_json { "[7]" } else { "[]" })
                     .unwrap();
-                let conflicting = right.put_object(&row, "photo_ids", ObjType::List).unwrap();
-                if invalid_list {
-                    right.insert(&conflicting, 0, 7).unwrap();
-                } else {
-                    right.insert(&conflicting, 0, ids[0].as_str()).unwrap();
-                }
+                right
+                    .put(
+                        &row,
+                        "photo_ids",
+                        serde_json::to_string(&[ids[0].as_str()]).unwrap(),
+                    )
+                    .unwrap();
                 left.merge_incoming(&mut right).unwrap();
                 assert_eq!(left.get_all(&row, "photo_ids").unwrap().len(), 2);
                 assert_eq!(
                     crate::framework_history::validate(&left).is_err(),
-                    invalid_json || invalid_list
+                    invalid_json
                 );
             }
-
-            let mut left = legacy.fork();
-            let mut right = legacy.fork();
-            left.put(&members, 0, ids[3].as_str()).unwrap();
-            right.put(&members, 0, false).unwrap();
-            left.merge_incoming(&mut right).unwrap();
-            assert_eq!(left.get_all(&members, 0).unwrap().len(), 2);
-            assert!(crate::framework_history::validate(&left).is_err());
 
             for invalid_members in [vec!["x".repeat(65_537)], vec![ids[0].clone(); 10_001]] {
                 let mut invalid = doc.clone();
