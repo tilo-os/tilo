@@ -48,9 +48,6 @@ pub enum StorageKey {
     Package { package: String },
     /// The index of records one workspace holds for a package.
     RoomIndex { package: String, workspace: String },
-    /// A record from before records were scoped to a workspace. Kept as a
-    /// read source for importing it into one workspace.
-    PackageRecord { package: String, record: String },
     /// One application instance's local presentation on one device.
     View {
         device: String,
@@ -85,20 +82,12 @@ impl StorageKey {
         }
     }
 
-    pub fn package_record(package: impl Into<String>, record: impl Into<String>) -> Self {
-        Self::PackageRecord {
-            package: package.into(),
-            record: record.into(),
-        }
-    }
-
     /// The package owning this key's data, when it has one.
     pub fn package_id(&self) -> Option<&str> {
         match self {
             Self::Record { package, .. }
             | Self::Package { package }
-            | Self::RoomIndex { package, .. }
-            | Self::PackageRecord { package, .. } => Some(package),
+            | Self::RoomIndex { package, .. } => Some(package),
             Self::View { .. } => None,
         }
     }
@@ -122,9 +111,6 @@ impl fmt::Display for StorageKey {
             } => write!(f, "record {package}/{workspace}/{record}"),
             Self::Package { package } => write!(f, "package {package}"),
             Self::RoomIndex { package, workspace } => write!(f, "room {package}/{workspace}"),
-            Self::PackageRecord { package, record } => {
-                write!(f, "package record {package}/{record}")
-            }
             Self::View {
                 device,
                 workspace,
@@ -291,9 +277,8 @@ pub trait DurableStore {
 
     /// Grant custody of `key` to exactly one `claimant`, durably: the first
     /// claim wins, and the same claimant may claim again (to resume after a
-    /// crash). Used to import a retained source into exactly one workspace,
-    /// and to let exactly one successor adopt a room record under a new
-    /// identity.
+    /// crash). Used to let exactly one successor adopt a room record under a
+    /// new identity.
     /// `true` when `claimant` holds custody.
     ///
     /// # Errors
@@ -348,10 +333,6 @@ mod tests {
             assert_eq!(
                 StorageKey::room_index("pkg", "room").to_string(),
                 "room pkg/room"
-            );
-            assert_eq!(
-                StorageKey::package_record("pkg", "rec").to_string(),
-                "package record pkg/rec"
             );
         }
     }

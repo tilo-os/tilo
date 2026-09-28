@@ -1,6 +1,7 @@
-use super::tests::pipeline_draw;
+use super::tests::{mount, pipeline_draw};
 use super::*;
 use tilo_automerge::ApplyIncoming;
+use ui::headless::Framed;
 
 /// A full left click: move, press, release. The release matters — pressing
 /// on the scrubber's track latches the handle to the pointer, so a
@@ -66,7 +67,7 @@ fn body(state: &ui::State) -> String {
 /// An editor holding a document with three committed versions, authored by
 /// two identities — the second edit arrives from a peer, merged the way
 /// collaboration merges it.
-fn editor_with_history(w: u32, h: u32) -> (WordProcessorWidget, ui::State) {
+fn editor_with_history(w: u32, h: u32) -> Framed<WordProcessorWidget> {
     let mut state = ui::State::new();
     state
         .doc
@@ -106,8 +107,7 @@ fn editor_with_history(w: u32, h: u32) -> (WordProcessorWidget, ui::State) {
             .register(&actor, ui::HistoryAuthor::new(handle, hue, handle));
     }
 
-    pipeline_draw(&mut wp, &mut state, w, h);
-    (wp, state)
+    mount(state, wp, w, h)
 }
 
 /// The history strip shows this document's real versions, opening it reserves a band out of the
@@ -119,11 +119,12 @@ fn the_history_strip_lists_real_versions_in_its_own_band() {
     // document's own versions, attributed to the identities that made them.
     // No seeded demo data anywhere in this path.
     {
-        let (mut wp, mut state) = editor_with_history(1000, 700);
+        let mut framed = editor_with_history(1000, 700);
+        let (wp, state) = Framed::split(&mut framed);
         assert!(!wp.history.is_open(), "the strip starts closed");
 
         wp.apply_tool(&mut state.doc, ToolAction::ToggleHistory);
-        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        let (wp, _) = pipeline_draw(&mut framed, 1000, 700);
         assert!(wp.history.is_open(), "the toolbar action opens it");
 
         let entries = wp.history.entries();
@@ -154,9 +155,10 @@ fn the_history_strip_lists_real_versions_in_its_own_band() {
     // Phase: opening_the_strip_reserves_a_band_out_of_the_canvas.
     // Opening the strip shrinks the canvas rather than painting over the page.
     {
-        let (mut wp, mut state) = editor_with_history(1000, 700);
+        let mut framed = editor_with_history(1000, 700);
+        let (wp, state) = Framed::split(&mut framed);
         wp.apply_tool(&mut state.doc, ToolAction::ToggleHistory);
-        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        let (wp, state) = pipeline_draw(&mut framed, 1000, 700);
 
         let band = wp.history.band();
         assert!(band.height() > 100.0, "the strip has a real band: {band:?}");
@@ -178,14 +180,15 @@ fn the_history_strip_lists_real_versions_in_its_own_band() {
     // A click on the strip must not fall through to the page and move the
     // caret.
     {
-        let (mut wp, mut state) = editor_with_history(1000, 700);
+        let mut framed = editor_with_history(1000, 700);
+        let (wp, state) = Framed::split(&mut framed);
         wp.apply_tool(&mut state.doc, ToolAction::ToggleHistory);
-        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        let (wp, state) = pipeline_draw(&mut framed, 1000, 700);
 
         let caret_before = wp.model().caret().clone();
         let y = wp.history.track_center_y();
         let tick_pt = Point::new(wp.history.tick_x(0), y);
-        click(&mut wp, &mut state, tick_pt);
+        click(wp, state, tick_pt);
         assert_eq!(
             *wp.model().caret(),
             caret_before,
@@ -201,9 +204,10 @@ fn history_versions_preview_and_restore_without_editing() {
     // Phase: clicking_preview_shows_the_old_text_without_editing.
     // Preview reads the past and leaves the present alone.
     {
-        let (mut wp, mut state) = editor_with_history(1000, 700);
+        let mut framed = editor_with_history(1000, 700);
+        let (wp, state) = Framed::split(&mut framed);
         wp.apply_tool(&mut state.doc, ToolAction::ToggleHistory);
-        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        let (wp, state) = pipeline_draw(&mut framed, 1000, 700);
 
         let target = wp
             .history
@@ -213,12 +217,12 @@ fn history_versions_preview_and_restore_without_editing() {
             .expect("alice's edit is on the track");
         let y = wp.history.track_center_y();
         let tick_pt = Point::new(wp.history.tick_x(target), y);
-        click(&mut wp, &mut state, tick_pt);
+        click(wp, state, tick_pt);
         let preview_pt = wp.history.preview_button_rect().center();
-        click(&mut wp, &mut state, preview_pt);
+        click(wp, state, preview_pt);
 
         assert_eq!(wp.history.preview_text(), Some("first"));
-        assert_eq!(body(&state), "first and second", "previewing edits nothing");
+        assert_eq!(body(state), "first and second", "previewing edits nothing");
         assert!(!wp.needs_commit(), "previewing is not an edit");
     }
 
@@ -227,10 +231,11 @@ fn history_versions_preview_and_restore_without_editing() {
     // holds the earlier content — with the restore appended to history as a
     // new version rather than history being rewritten.
     {
-        let (mut wp, mut state) = editor_with_history(1000, 700);
+        let mut framed = editor_with_history(1000, 700);
+        let (wp, state) = Framed::split(&mut framed);
         wp.apply_tool(&mut state.doc, ToolAction::ToggleHistory);
-        pipeline_draw(&mut wp, &mut state, 1000, 700);
-        assert_eq!(body(&state), "first and second", "precondition");
+        let (wp, state) = pipeline_draw(&mut framed, 1000, 700);
+        assert_eq!(body(state), "first and second", "precondition");
 
         let before: Vec<_> = wp.history.entries().iter().map(|e| e.id).collect();
         // The tick for the version whose summary is alice's five characters.
@@ -245,7 +250,7 @@ fn history_versions_preview_and_restore_without_editing() {
         // production `handle_event`.
         let y = wp.history.track_center_y();
         let tick_pt = Point::new(wp.history.tick_x(target), y);
-        click(&mut wp, &mut state, tick_pt);
+        click(wp, state, tick_pt);
         assert_eq!(
             wp.history.current_tick(),
             target,
@@ -253,16 +258,16 @@ fn history_versions_preview_and_restore_without_editing() {
         );
 
         let rb = wp.history.restore_button_rect().center();
-        click(&mut wp, &mut state, rb);
+        click(wp, state, rb);
 
         assert!(wp.needs_commit(), "the restore asks the host to commit it");
         // This is what `App::commit_action` does on the next frame.
         state.commit_action(None, None);
         wp.on_commit();
 
-        assert_eq!(body(&state), "first", "the earlier content is back");
+        assert_eq!(body(state), "first", "the earlier content is back");
 
-        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        let (wp, _) = pipeline_draw(&mut framed, 1000, 700);
         let after: Vec<_> = wp.history.entries().iter().map(|e| e.id).collect();
         assert_eq!(
             after.len(),

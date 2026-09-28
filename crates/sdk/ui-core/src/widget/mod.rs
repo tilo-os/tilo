@@ -967,10 +967,12 @@ pub trait Widget {
         Ok(())
     }
 
-    /// Expose session collaboration only for widgets that own it.
-    fn collaborative_mut(&mut self) -> Option<&mut dyn Collaborative> {
-        None
-    }
+    /// Answer a request for a capability this widget takes part in (see
+    /// [`capability`]). Declare capabilities with [`crate::provides!`].
+    fn provide<'a>(&'a self, _request: &mut capability::Request<'a, '_>) {}
+
+    /// Exclusive counterpart to [`Widget::provide`].
+    fn provide_mut<'a>(&'a mut self, _request: &mut capability::RequestMut<'a, '_>) {}
 
     /// Retained session topology. Presentation children are the ordinary
     /// default; owners with hidden or inactive live sessions override this
@@ -980,18 +982,13 @@ pub trait Widget {
         self.children_mut()
     }
 
-    /// Expose platform-native child lifecycle only for widgets that own it.
-    fn native_view_lifecycle_mut(&mut self) -> Option<&mut dyn NativeViewLifecycle> {
-        None
-    }
-
     /// Attach native child views through this owner's retained lifecycle topology.
     ///
     /// Presentation containers with inactive or hidden live descendants override
     /// this traversal so lifecycle ownership remains independent of drawing and
     /// input visibility.
     fn mount_native_views(&mut self, host: &crate::widget::native_view::NativeViewHost<'_>) {
-        if let Some(lifecycle) = self.native_view_lifecycle_mut() {
+        if let Some(lifecycle) = capability::capability_mut::<dyn NativeViewLifecycle>(self) {
             lifecycle.mount_native_view(host);
         }
         for child in self.children_mut() {
@@ -1004,61 +1001,19 @@ pub trait Widget {
         for child in self.children_mut() {
             child.unmount_native_views();
         }
-        if let Some(lifecycle) = self.native_view_lifecycle_mut() {
+        if let Some(lifecycle) = capability::capability_mut::<dyn NativeViewLifecycle>(self) {
             lifecycle.unmount_native_view();
         }
     }
 
     /// Begin a native-view frame through this owner's retained lifecycle topology.
     fn native_view_frame_start(&mut self) {
-        if let Some(lifecycle) = self.native_view_lifecycle_mut() {
+        if let Some(lifecycle) = capability::capability_mut::<dyn NativeViewLifecycle>(self) {
             lifecycle.native_view_frame_start();
         }
         for child in self.children_mut() {
             child.native_view_frame_start();
         }
-    }
-
-    /// Expose detachable/capture surfaces only for widgets that own them.
-    fn floating_surface_provider(&self) -> Option<&dyn FloatingSurfaceProvider> {
-        None
-    }
-
-    /// Mutable counterpart to [`Widget::floating_surface_provider`].
-    fn floating_surface_provider_mut(&mut self) -> Option<&mut dyn FloatingSurfaceProvider> {
-        None
-    }
-
-    /// Expose second-output presentation only for app roots that own it.
-    fn audience_presentation_provider(&self) -> Option<&dyn AudiencePresentationProvider> {
-        None
-    }
-
-    /// Mutable counterpart to [`Widget::audience_presentation_provider`].
-    fn audience_presentation_provider_mut(
-        &mut self,
-    ) -> Option<&mut dyn AudiencePresentationProvider> {
-        None
-    }
-
-    /// Expose OS fullscreen behavior only for widgets that own or forward it.
-    fn fullscreen_provider(&self) -> Option<&dyn FullscreenProvider> {
-        None
-    }
-
-    /// Mutable counterpart to [`Widget::fullscreen_provider`].
-    fn fullscreen_provider_mut(&mut self) -> Option<&mut dyn FullscreenProvider> {
-        None
-    }
-
-    /// Expose full-content capture only for widgets that can reproduce it.
-    fn complete_content_provider(&self) -> Option<&dyn CompleteContentProvider> {
-        None
-    }
-
-    /// Mutable counterpart to [`Widget::complete_content_provider`].
-    fn complete_content_provider_mut(&mut self) -> Option<&mut dyn CompleteContentProvider> {
-        None
     }
 
     /// Receive host-selected platform conventions. The default propagates to
@@ -1087,16 +1042,6 @@ pub trait Widget {
         for child in self.children_mut() {
             child.sync(state, path);
         }
-    }
-
-    /// Expose cross-device continuation for app roots that support it.
-    fn continuable(&self) -> Option<&dyn Continuable> {
-        None
-    }
-
-    /// Mutable counterpart to [`Widget::continuable`].
-    fn continuable_mut(&mut self) -> Option<&mut dyn Continuable> {
-        None
     }
 
     fn update(&mut self, _state: &mut AppModel, _path: &ModelPath) -> bool {
@@ -2464,17 +2409,17 @@ impl<T: Widget + ?Sized> FloatingSurfaceWidgetExt for T {
     fn take_floating_surface_request(
         &mut self,
     ) -> Option<crate::floating_surface::FloatingSurfaceRequest> {
-        self.floating_surface_provider_mut()
+        capability::capability_mut::<dyn FloatingSurfaceProvider>(self)
             .and_then(FloatingSurfaceProvider::take_floating_surface_request)
     }
 
     fn take_capture_studio_request(&mut self) -> Option<CaptureMode> {
-        self.floating_surface_provider_mut()
+        capability::capability_mut::<dyn FloatingSurfaceProvider>(self)
             .and_then(FloatingSurfaceProvider::take_capture_studio_request)
     }
 
     fn take_floating_surface_source_updates(&mut self) -> Vec<(String, vello::kurbo::Rect)> {
-        self.floating_surface_provider_mut().map_or_else(
+        capability::capability_mut::<dyn FloatingSurfaceProvider>(self).map_or_else(
             Vec::new,
             FloatingSurfaceProvider::take_floating_surface_source_updates,
         )
@@ -2488,7 +2433,7 @@ impl<T: Widget + ?Sized> FloatingSurfaceWidgetExt for T {
         theme: &crate::theme::Theme,
         presence: &crate::presence::PresenceCtx,
     ) {
-        if let Some(provider) = self.floating_surface_provider_mut() {
+        if let Some(provider) = capability::capability_mut::<dyn FloatingSurfaceProvider>(self) {
             provider.draw_floating_surfaces(scene, transform, text_renderer, theme, presence);
         }
     }
@@ -2496,21 +2441,21 @@ impl<T: Widget + ?Sized> FloatingSurfaceWidgetExt for T {
     fn floating_surface_presentations(
         &self,
     ) -> Vec<crate::floating_surface::FloatingSurfacePresentation> {
-        self.floating_surface_provider().map_or_else(
+        capability::capability::<dyn FloatingSurfaceProvider>(self).map_or_else(
             Vec::new,
             FloatingSurfaceProvider::floating_surface_presentations,
         )
     }
 
     fn active_floating_surface_ids(&self) -> Vec<String> {
-        self.floating_surface_provider().map_or_else(
+        capability::capability::<dyn FloatingSurfaceProvider>(self).map_or_else(
             Vec::new,
             FloatingSurfaceProvider::active_floating_surface_ids,
         )
     }
 
     fn set_floating_surface_bounds(&mut self, bounds: vello::kurbo::Rect) {
-        if let Some(provider) = self.floating_surface_provider_mut() {
+        if let Some(provider) = capability::capability_mut::<dyn FloatingSurfaceProvider>(self) {
             provider.set_floating_surface_bounds(bounds);
         }
     }
@@ -2519,7 +2464,7 @@ impl<T: Widget + ?Sized> FloatingSurfaceWidgetExt for T {
         &mut self,
         message: &crate::floating_surface::FloatingSurfaceHostMessage,
     ) {
-        if let Some(provider) = self.floating_surface_provider_mut() {
+        if let Some(provider) = capability::capability_mut::<dyn FloatingSurfaceProvider>(self) {
             provider.on_floating_surface_host_message(message);
         }
     }
@@ -2552,12 +2497,13 @@ impl<T: Widget + ?Sized> AudiencePresentationWidgetExt for T {
     fn audience_presentation_request(
         &self,
     ) -> Option<crate::fullscreen::AudiencePresentationRequest> {
-        self.audience_presentation_provider()
+        capability::capability::<dyn AudiencePresentationProvider>(self)
             .and_then(AudiencePresentationProvider::audience_presentation_request)
     }
 
     fn on_audience_presentation_changed(&mut self, active: bool) {
-        if let Some(provider) = self.audience_presentation_provider_mut() {
+        if let Some(provider) = capability::capability_mut::<dyn AudiencePresentationProvider>(self)
+        {
             provider.on_audience_presentation_changed(active);
         }
     }
@@ -2570,10 +2516,11 @@ impl<T: Widget + ?Sized> AudiencePresentationWidgetExt for T {
         theme: &Theme,
         rect: vello::kurbo::Rect,
     ) -> bool {
-        self.audience_presentation_provider_mut()
-            .is_some_and(|provider| {
+        capability::capability_mut::<dyn AudiencePresentationProvider>(self).is_some_and(
+            |provider| {
                 provider.draw_audience_presentation(scene, transform, text_renderer, theme, rect)
-            })
+            },
+        )
     }
 
     fn handle_audience_presentation_event(
@@ -2582,12 +2529,13 @@ impl<T: Widget + ?Sized> AudiencePresentationWidgetExt for T {
         state: &mut AutoCommit,
         path: &ObjId,
     ) -> bool {
-        self.audience_presentation_provider_mut()
+        capability::capability_mut::<dyn AudiencePresentationProvider>(self)
             .is_some_and(|provider| provider.handle_audience_presentation_event(event, state, path))
     }
 
     fn on_audience_presentation_closed(&mut self) {
-        if let Some(provider) = self.audience_presentation_provider_mut() {
+        if let Some(provider) = capability::capability_mut::<dyn AudiencePresentationProvider>(self)
+        {
             provider.on_audience_presentation_closed();
         }
     }
@@ -2602,12 +2550,12 @@ pub trait FullscreenWidgetExt {
 
 impl<T: Widget + ?Sized> FullscreenWidgetExt for T {
     fn fullscreen_intent(&self) -> Option<bool> {
-        self.fullscreen_provider()
+        capability::capability::<dyn FullscreenProvider>(self)
             .and_then(FullscreenProvider::fullscreen_intent)
     }
 
     fn fullscreen_params(&self) -> crate::fullscreen::FullscreenRequest {
-        self.fullscreen_provider().map_or_else(
+        capability::capability::<dyn FullscreenProvider>(self).map_or_else(
             || {
                 crate::fullscreen::FullscreenRequest::mirror(
                     crate::fullscreen::FullscreenTarget::Largest,
@@ -2618,7 +2566,7 @@ impl<T: Widget + ?Sized> FullscreenWidgetExt for T {
     }
 
     fn on_fullscreen_changed(&mut self, active: bool) {
-        if let Some(provider) = self.fullscreen_provider_mut() {
+        if let Some(provider) = capability::capability_mut::<dyn FullscreenProvider>(self) {
             provider.on_fullscreen_changed(active);
         }
     }
@@ -2640,7 +2588,7 @@ pub trait CompleteContentWidgetExt {
 
 impl<T: Widget + ?Sized> CompleteContentWidgetExt for T {
     fn complete_content_size(&self) -> Option<vello::kurbo::Size> {
-        self.complete_content_provider()
+        capability::capability::<dyn CompleteContentProvider>(self)
             .and_then(CompleteContentProvider::complete_content_size)
     }
 
@@ -2653,17 +2601,9 @@ impl<T: Widget + ?Sized> CompleteContentWidgetExt for T {
         theme: &crate::theme::Theme,
         presence: &crate::presence::PresenceCtx,
     ) -> bool {
-        self.complete_content_provider_mut()
-            .is_some_and(|provider| {
-                provider.draw_complete_content(
-                    scene,
-                    bounds,
-                    transform,
-                    text_renderer,
-                    theme,
-                    presence,
-                )
-            })
+        capability::capability_mut::<dyn CompleteContentProvider>(self).is_some_and(|provider| {
+            provider.draw_complete_content(scene, bounds, transform, text_renderer, theme, presence)
+        })
     }
 }
 
@@ -2674,8 +2614,7 @@ pub(crate) fn take_collab_requests(
     let Ok(_entry) = crate::bound_dispatch::enter_widget(widget) else {
         return Vec::new();
     };
-    let mut requests = widget
-        .collaborative_mut()
+    let mut requests = capability::capability_mut::<dyn Collaborative>(&mut *widget)
         .map_or_else(Vec::new, Collaborative::take_collab_requests);
     for child in widget.collaboration_children_mut() {
         requests.extend(take_collab_requests(child));
@@ -2692,7 +2631,7 @@ pub(crate) fn handle_collab_event(
     let Ok(_entry) = crate::bound_dispatch::enter_widget(widget) else {
         return;
     };
-    if let Some(collaborative) = widget.collaborative_mut() {
+    if let Some(collaborative) = capability::capability_mut::<dyn Collaborative>(&mut *widget) {
         collaborative.handle_collab_event(event);
     }
     for child in widget.collaboration_children_mut() {
@@ -2753,6 +2692,7 @@ impl TaffyTreeExt for TaffyTree<()> {
 pub type Element = Box<dyn Widget>;
 
 pub mod binding;
+pub mod capability;
 pub mod decorator;
 pub use decorator::Decorator;
 
@@ -3178,19 +3118,7 @@ mod tests {
     }
 
     impl Widget for CollabProbe {
-        fn collaborative_mut(&mut self) -> Option<&mut dyn Collaborative> {
-            Some(self)
-        }
-
-        fn audience_presentation_provider(&self) -> Option<&dyn AudiencePresentationProvider> {
-            Some(self)
-        }
-
-        fn audience_presentation_provider_mut(
-            &mut self,
-        ) -> Option<&mut dyn AudiencePresentationProvider> {
-            Some(self)
-        }
+        crate::provides!(dyn Collaborative, dyn AudiencePresentationProvider);
 
         fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {}
 

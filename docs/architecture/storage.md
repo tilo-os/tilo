@@ -1016,9 +1016,7 @@ rule, and two physical backings:
   the repository directory) under a global position; records, stream
   cursors and history are rebuilt from it in log order. Envelopes are
   verified once, at ingest; reopening replays the log without verifying
-  signatures again. The per-record JSON files of earlier releases are
-  verified and imported into the log in one transaction on first start,
-  then moved aside (`imported-json/`).
+  signatures again.
 - The 16,384-record bound is gone. What bounds a device is the in-memory
   index (replica state and envelopes per record); the repository refuses
   more than 2^24 records, far past any tree one device holds.
@@ -2031,7 +2029,7 @@ stopped.
 | 10 | Residual cross-file window (§10) bites a program with an unusual update pattern | low / medium | Quiescence epochs, leases, Q8 |
 | 11 | Git index ping-pong (Q4) | high without a decision / low | Q4 option (a) |
 | 12 | History growth under retention | medium / medium | Thinning, quotas, reflinked versions share extents |
-| 13 | Migration of existing stores and app documents | certain / medium | v1 readers kept. `open_migrating` claim markers. Staged, reversible cut-overs |
+| 13 | Migration of existing stores and app documents | certain / medium | Pre-alpha: earlier stores and app documents are not migrated; each format has one reader. Staged, reversible cut-overs once there are users to carry |
 | 14 | Scope: this is a large rebuild of the data path | certain / high | Stages ship independently. Stage 0–2 fixes land before the data path changes |
 
 ---

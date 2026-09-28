@@ -5,6 +5,7 @@
 
 use crate::shell::state::WorkspaceAuthority as _;
 
+mod boot_join;
 mod governor_actions;
 mod native_enrollment;
 mod native_ingress;

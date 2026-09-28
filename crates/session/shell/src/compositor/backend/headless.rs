@@ -31,6 +31,13 @@ pub const HEADLESS_SIZE_ENV: &str = "TILO_HEADLESS_SIZE";
 /// [`HEADLESS_SIZE_ENV`], which only ever describes one output.
 pub const HEADLESS_OUTPUTS_ENV: &str = "TILO_HEADLESS_OUTPUTS";
 
+/// Env-var that starts a headless session watched (`1`): every frame is
+/// rasterized into the offscreen target, as a viewer streaming it needs.
+/// Unset, frames are laid out and handed to clients but not rasterized
+/// until the control socket's `watch` attaches a viewer; `snapshot`
+/// renders on demand either way.
+pub const HEADLESS_WATCH_ENV: &str = "TILO_HEADLESS_WATCH";
+
 /// Named output arrangements, shared by headless sessions, `shots
 /// --outputs` and the integration tests, so a layout bug reproduces with a
 /// name rather than a hand-typed spec.
@@ -279,11 +286,11 @@ pub const DEFAULT_HEIGHT: u32 = 900;
 
 /// Wgpu-offscreen [`Backend`] for display-free runs.
 ///
-/// Each [`Backend::submit_frame`] call renders the supplied scene into
-/// the offscreen texture and caches the RGBA bytes on `self.last_frame`,
-/// so the upcoming `snapshot` test-control command can write a PNG
-/// without re-rendering. See the module-level doc comment for design
-/// intent.
+/// While watched ([`HEADLESS_WATCH_ENV`], [`Backend::set_watched`]), each
+/// [`Backend::submit_frame`] call renders the supplied scene into the
+/// offscreen texture and caches the RGBA bytes on `self.last_frame`.
+/// Unwatched, it renders nothing. See the module-level doc comment for
+/// design intent.
 pub struct HeadlessBackend {
     renderer: OffscreenRenderer,
     outputs: Vec<Output>,
@@ -293,6 +300,10 @@ pub struct HeadlessBackend {
     last_frame: Vec<u8>,
     /// Whether the one startup `Redraw` has been handed over yet.
     emitted_first_redraw: bool,
+    /// Whether a viewer reads the rasterized frames. Nobody does by
+    /// default, and rasterizing is most of a frame's cost on the software
+    /// renderers hosted machines have.
+    watched: bool,
 }
 
 impl HeadlessBackend {
@@ -344,13 +355,14 @@ impl HeadlessBackend {
             events: Vec::new(),
             last_frame: Vec::new(),
             emitted_first_redraw: false,
+            watched: std::env::var(HEADLESS_WATCH_ENV).is_ok_and(|value| value.trim() == "1"),
         })
     }
 
     /// Read-only access to the most recently rendered frame, RGBA8888,
-    /// row-major. Used by `compositor::test_control` for the upcoming
-    /// `snapshot` command. Empty until the first
-    /// [`Backend::submit_frame`] call.
+    /// row-major. Empty until a frame is submitted while watched, and
+    /// again whenever a frame arrives while nobody watches, so it never
+    /// holds pixels older than the scene.
     pub fn last_frame(&self) -> &[u8] {
         &self.last_frame
     }
@@ -432,8 +444,22 @@ impl Backend for HeadlessBackend {
         // The clear colour matches `WinitBackend`'s `FALLBACK_BG` and
         // `Theme::dark().bg_app`, so a headless PNG and a winit host window
         // clear to identical pixels for a blank scene.
+        if !self.watched {
+            self.last_frame = Vec::new();
+            return;
+        }
         let bg = Color::from_rgb8(0x1A, 0x1B, 0x26);
         self.last_frame = self.renderer.render(scene, bg);
+    }
+
+    fn needs_idle_poll(&self) -> bool {
+        false
+    }
+
+    fn set_watched(&mut self, watched: bool) -> bool {
+        let attached = watched && !self.watched;
+        self.watched = watched;
+        attached
     }
 
     fn poll_events(&mut self, callback: &mut dyn FnMut(BackendEvent)) {
@@ -510,6 +536,16 @@ mod tests {
             let mut backend = HeadlessBackend::new(400, 300)
                 .expect("HeadlessBackend::new at 400x300 for submit_frame test");
             backend.submit_frame(&scene, OutputId(0));
+            assert!(
+                backend.last_frame().is_empty(),
+                "nobody watches a fresh headless backend, so nothing is rasterized"
+            );
+            assert!(
+                backend.set_watched(true),
+                "attaching a viewer asks for a fresh frame"
+            );
+            assert!(!backend.set_watched(true), "already watched");
+            backend.submit_frame(&scene, OutputId(0));
             let frame = backend.last_frame();
             assert_eq!(
                 frame.len(),
@@ -549,6 +585,13 @@ mod tests {
                 matches!(seen[0], BackendEvent::Redraw),
                 "headless poll_events emits Redraw to keep the loop warm; got {:?}",
                 seen[0]
+            );
+            seen.clear();
+            backend.poll_events(&mut |ev| seen.push(ev));
+            assert!(seen.is_empty(), "nothing arrives after startup");
+            assert!(
+                !backend.needs_idle_poll(),
+                "a backend that never has news must not keep an idle desktop polling"
             );
         }
     }

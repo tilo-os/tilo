@@ -895,6 +895,12 @@ impl BrowserTabs {
 }
 
 impl Widget for BrowserTabs {
+    ui::provides!(
+        dyn ui::widget::FullscreenProvider,
+        dyn ui::widget::FloatingSurfaceProvider,
+        dyn ui::widget::Continuable
+    );
+
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         if self.fullscreen_hint_deadline.is_some()
             && !fullscreen_hint_visible(self.fullscreen_hint_deadline, Instant::now())
@@ -1463,12 +1469,6 @@ impl Widget for BrowserTabs {
             tab.widget.set_motion_reduced(reduced);
         }
     }
-    fn fullscreen_provider(&self) -> Option<&dyn FullscreenProvider> {
-        Some(self)
-    }
-    fn fullscreen_provider_mut(&mut self) -> Option<&mut dyn FullscreenProvider> {
-        Some(self)
-    }
     fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
         if let Some(recovery) = self.recovery.as_mut() {
             return recovery.panel.take_control_invocation();
@@ -1482,12 +1482,6 @@ impl Widget for BrowserTabs {
         }
         self.active_mut().take_control_invocation()
     }
-    fn floating_surface_provider(&self) -> Option<&dyn FloatingSurfaceProvider> {
-        Some(self)
-    }
-    fn floating_surface_provider_mut(&mut self) -> Option<&mut dyn FloatingSurfaceProvider> {
-        Some(self)
-    }
     fn modal_capture(&self) -> Option<Rect> {
         if let Some(panel) = self.exit_panel.as_ref() {
             Some(panel.get_rect())
@@ -1499,12 +1493,6 @@ impl Widget for BrowserTabs {
     }
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
         self.active().cursor_shape(point)
-    }
-    fn continuable(&self) -> Option<&dyn Continuable> {
-        Some(self)
-    }
-    fn continuable_mut(&mut self) -> Option<&mut dyn Continuable> {
-        Some(self)
     }
     fn name(&self) -> &'static str {
         "BrowserTabs"

@@ -420,3 +420,85 @@ fn the_workspace_itself_is_addressable_for_installed_apps() {
     assert_eq!(invoked.len(), 1);
     assert_eq!(invoked[0].target.provider, "workspace:room");
 }
+
+struct IssuingHost;
+impl crate::viewer::HostOperator for IssuingHost {
+    fn call(
+        &self,
+        action: &str,
+        _params: Option<Value>,
+    ) -> Result<Value, crate::viewer::ViewerError> {
+        if action != "invitation.issue" {
+            return Err(crate::viewer::ViewerError {
+                status: 404,
+                message: action.into(),
+            });
+        }
+        Ok(json!({"invite":"signed","invite_id":"ab".repeat(32),"expires_at_ms":1_000_000}))
+    }
+}
+
+#[test]
+fn viewer_invitations_need_a_configured_viewer_and_the_bearer_token() {
+    let issue = br#"{"mode":"watch","ttl_seconds":300}"#;
+    let bare = endpoint(StubHost::default(), Some("secret"));
+    let response = run(bare.dispatch(
+        &Method::POST,
+        "/viewer/invitations",
+        &headers(&[("authorization", "Bearer secret")]),
+        issue,
+    ));
+    assert_eq!(
+        response.status(),
+        StatusCode::NOT_FOUND,
+        "no viewer: unsupported"
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let viewer = crate::viewer::Viewer::new(
+        "https://c1.viewer.example".into(),
+        Box::new(IssuingHost),
+        dir.path().join("ledger.json"),
+    )
+    .unwrap();
+    let served = Endpoint::with_viewer(
+        StubHost::default(),
+        "room".into(),
+        "owner".into(),
+        Some("secret".into()),
+        None,
+        Some(Arc::new(viewer)),
+    );
+    let response = run(served.dispatch(
+        &Method::POST,
+        "/viewer/invitations",
+        &HeaderMap::new(),
+        issue,
+    ));
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let authorized = headers(&[("authorization", "Bearer secret")]);
+    let response = run(served.dispatch(&Method::POST, "/viewer/invitations", &authorized, issue));
+    assert_eq!(response.status(), StatusCode::OK);
+    let reply = run(body(response));
+    assert_eq!(reply["origin"], "https://c1.viewer.example");
+    assert_eq!(reply["invitation"], "signed");
+    assert_eq!(reply["role"], "viewer");
+    let unknown = format!("/viewer/invitations/{}", "cd".repeat(32));
+    let response = run(served.dispatch(&Method::DELETE, &unknown, &authorized, b""));
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let response = run(served.dispatch(&Method::GET, "/viewer/invitations", &authorized, b""));
+    assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+    let response = run(served.dispatch(
+        &Method::DELETE,
+        "/viewer/invitations/not-hex",
+        &authorized,
+        b"",
+    ));
+    assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+    let response = run(served.dispatch(
+        &Method::POST,
+        "/viewer/invitations",
+        &authorized,
+        br#"{"mode":"watch"}"#,
+    ));
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}

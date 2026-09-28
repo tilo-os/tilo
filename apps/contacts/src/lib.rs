@@ -41,7 +41,6 @@ mod priority_contacts;
 pub mod resource;
 pub mod responsive;
 pub mod search_provider;
-pub mod storage;
 pub mod vcard;
 
 pub use app::ContactsApp;

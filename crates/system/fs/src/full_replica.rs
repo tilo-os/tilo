@@ -60,13 +60,6 @@ pub struct HomePeerBundle {
 mod relay_workspace_ids_serde {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum Encoded {
-        Decimal(String),
-        Legacy(u64),
-    }
-
     pub fn serialize<S>(ids: &[u64], serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -81,12 +74,9 @@ mod relay_workspace_ids_serde {
     where
         D: Deserializer<'de>,
     {
-        Vec::<Encoded>::deserialize(deserializer)?
+        Vec::<String>::deserialize(deserializer)?
             .into_iter()
-            .map(|encoded| match encoded {
-                Encoded::Decimal(value) => value.parse().map_err(serde::de::Error::custom),
-                Encoded::Legacy(value) => Ok(value),
-            })
+            .map(|value| value.parse().map_err(serde::de::Error::custom))
             .collect()
     }
 }
@@ -491,10 +481,13 @@ mod tests {
     async fn readiness_requires_manifest_chunks_and_thumbnail() {
         let store = Arc::new(ContentStore::memory());
         let chunk = store.ingest("payload").await.unwrap();
-        let manifest = Manifest::legacy(vec![ChunkRef {
-            hash: *chunk.as_bytes(),
-            len: 7,
-        }]);
+        let manifest = Manifest::new(
+            crate::content::ChunkTier::Small,
+            vec![ChunkRef {
+                hash: *chunk.as_bytes(),
+                len: 7,
+            }],
+        );
         let manifest = store.ingest(manifest.encode()).await.unwrap();
         let thumbnail = store.ingest("thumb").await.unwrap();
         let mut namespace = Namespace::new("replica-test").unwrap();
@@ -518,10 +511,13 @@ mod tests {
         let store = Arc::new(ContentStore::memory());
         let oversized = store
             .ingest(
-                Manifest::legacy(vec![ChunkRef {
-                    hash: [7; 32],
-                    len: MAX_REPLICA_CHUNK_BYTES.saturating_add(1),
-                }])
+                Manifest::new(
+                    crate::content::ChunkTier::Small,
+                    vec![ChunkRef {
+                        hash: [7; 32],
+                        len: MAX_REPLICA_CHUNK_BYTES.saturating_add(1),
+                    }],
+                )
                 .encode(),
             )
             .await
@@ -587,7 +583,7 @@ mod tests {
             };
             assert!(validate_home_peer_set(&many).is_err());
         }
-        // Phase `relay_workspace_ids_round_trip_high_bits_and_accept_legacy_integers`.
+        // Phase `relay_workspace_ids_round_trip_high_bits`.
         {
             let high = (i64::MAX as u64) + 42;
             let bundle = HomePeerSet {
@@ -606,12 +602,6 @@ mod tests {
             assert_eq!(
                 toml::from_str::<HomePeerSet>(&text).unwrap().workspaces[0].relay_workspace_ids,
                 vec![high]
-            );
-
-            let legacy = text.replace(&format!("\"{high}\""), "42");
-            assert_eq!(
-                toml::from_str::<HomePeerSet>(&legacy).unwrap().workspaces[0].relay_workspace_ids,
-                vec![42]
             );
         }
     }
@@ -673,10 +663,13 @@ mod tests {
         let chunk = store.ingest(bytes.to_vec()).await.unwrap();
         let manifest = store
             .ingest(
-                Manifest::legacy(vec![ChunkRef {
-                    hash: *chunk.as_bytes(),
-                    len: u32::try_from(bytes.len()).unwrap(),
-                }])
+                Manifest::new(
+                    crate::content::ChunkTier::Small,
+                    vec![ChunkRef {
+                        hash: *chunk.as_bytes(),
+                        len: u32::try_from(bytes.len()).unwrap(),
+                    }],
+                )
                 .encode(),
             )
             .await

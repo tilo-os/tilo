@@ -17,7 +17,6 @@ use thiserror::Error;
 
 /// On-disk schema written by [`AvailabilityRegistry`].
 pub const AVAILABILITY_SCHEMA_VERSION: u16 = 2;
-const LEGACY_AVAILABILITY_SCHEMA_VERSION: u16 = 1;
 pub const MAX_REPLICA_OBSERVATIONS_PER_RECORD: usize = 64;
 
 /// One cryptographically verified receipt from a distinct certified device.
@@ -200,9 +199,7 @@ pub struct RecordAvailability {
     pub transfer: TransferState,
     pub policy: AvailabilityPolicy,
     pub replicas: ReplicaEvidence,
-    /// Verified receipts keyed semantically by certified device. Legacy files
-    /// deserialize empty and therefore cannot authorize eviction.
-    #[serde(default)]
+    /// Verified receipts keyed semantically by certified device.
     pub replica_observations: Vec<ReplicaObservation>,
     pub freshness: Freshness,
     /// Historical versions intentionally retained only on this device. IDs,
@@ -348,10 +345,7 @@ impl AvailabilityRegistry {
         }
 
         let document: RegistryDocument = serde_json::from_slice(&fs::read(&path)?)?;
-        if !matches!(
-            document.schema_version,
-            LEGACY_AVAILABILITY_SCHEMA_VERSION | AVAILABILITY_SCHEMA_VERSION
-        ) {
+        if document.schema_version != AVAILABILITY_SCHEMA_VERSION {
             return Err(AvailabilityError::UnsupportedVersion(
                 document.schema_version,
             ));
@@ -863,45 +857,23 @@ mod tests {
             assert_eq!(reopened.get(id), Some(&record));
             assert_eq!(reopened.records().count(), 1);
         }
-        // Phase `legacy_aggregate_migrates_but_never_becomes_eviction_proof`.
+        // Phase `other_schema_versions_fail_registry_open`.
         {
             let temp = TempDir::new().unwrap();
             let path = temp.path().join("availability.json");
-            let id = FileRecordId::new();
-            let version = FileVersionId::new();
-            let mut record = file(id, version);
-            record.replicas = ReplicaEvidence {
-                reachable: 9,
-                durable: 9,
-                acknowledged_version: Some(version),
-            };
-            record.freshness.replicas_observed_at_ms = Some(10);
-            let mut value = serde_json::to_value(&record).unwrap();
-            value
-                .as_object_mut()
-                .unwrap()
-                .remove("replica_observations");
             atomic_file::write_creating_parent(
                 &path,
                 &serde_json::to_vec(&serde_json::json!({
-                    "schema_version": 1,
-                    "records": [value]
+                    "schema_version": AVAILABILITY_SCHEMA_VERSION - 1,
+                    "records": []
                 }))
                 .unwrap(),
             )
             .unwrap();
-            let mut registry = AvailabilityRegistry::open(&path).unwrap();
-            assert_eq!(
-                registry.eviction_decision(id, 10, EvictionRequirements::default(), false),
-                EvictionDecision::Denied(EvictionBlocker::ReplicaAcknowledgementMissing)
-            );
-            registry.put(registry.get(id).unwrap().clone()).unwrap();
-            let persisted: serde_json::Value =
-                serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
-            assert_eq!(
-                persisted["schema_version"],
-                serde_json::json!(AVAILABILITY_SCHEMA_VERSION)
-            );
+            assert!(matches!(
+                AvailabilityRegistry::open(path),
+                Err(AvailabilityError::UnsupportedVersion(1))
+            ));
         }
         // Phase `tampered_persisted_receipt_fails_registry_open`.
         {

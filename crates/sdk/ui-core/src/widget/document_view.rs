@@ -193,13 +193,8 @@ impl<K> Widget for ModelView<K>
 where
     K: PartialEq + 'static,
 {
-    fn fullscreen_provider(&self) -> Option<&dyn FullscreenProvider> {
-        Some(self)
-    }
+    crate::provides!(dyn crate::widget::FullscreenProvider);
 
-    fn fullscreen_provider_mut(&mut self) -> Option<&mut dyn FullscreenProvider> {
-        Some(self)
-    }
     fn install_control_custody(
         &mut self,
         domain: &crate::ControlDomain,
