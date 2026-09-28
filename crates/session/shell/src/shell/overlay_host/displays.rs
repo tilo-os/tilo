@@ -586,8 +586,8 @@ impl ShellOverlayHost {
     }
 
     /// Move the focused window group to the display `direction` places next
-    /// to its own (negative for the left). It keeps focus and lands after
-    /// the group last focused there.
+    /// to its own (negative for the left). It keeps focus and takes its
+    /// place in the strip's shared order among that display's groups.
     pub fn move_focused_group_to_display(&mut self, direction: i32) -> bool {
         if !self.is_partitioned() {
             return false;
