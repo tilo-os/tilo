@@ -101,14 +101,12 @@ const PNG_MAGIC: &[u8] = &[0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n'];
 #[ignore = "requires live tile services; run the explicit maps live lane"]
 fn live_tiles_fetch_decode_and_cache() {
     let cache = unique_cache();
-    let mut app = MapsApp::new_with_cache_dir(cache.clone());
-    let mut h = Harness::new(VP);
+    let mut app = Harness::new(MapsApp::new_with_cache_dir(cache.clone()), VP);
 
     // Pump the real frame cycle until the first tile is decoded & resident, or
     // 15s elapse. Each frame's draw issues real requests; the next frame's sync
     // drains decoded results. 150ms between frames lets the worker make headway.
     let stats = pump_frames_until(
-        &mut h,
         &mut app,
         Duration::from_secs(15),
         Duration::from_millis(150),
@@ -118,7 +116,6 @@ fn live_tiles_fetch_decode_and_cache() {
     // Give the worker a little longer to fill more of the viewport so the count
     // is representative (still bounded).
     let _ = pump_frames_until(
-        &mut h,
         &mut app,
         Duration::from_secs(6),
         Duration::from_millis(120),
@@ -184,14 +181,13 @@ fn live_render_shows_real_tiles_and_mid_zoom_never_blanks() {
     // (lavapipe is fine).
     {
         let cache = unique_cache();
-        let mut app = MapsApp::new_with_cache_dir(cache.clone());
-        let mut h = Harness::new(VP);
+        let mut app = Harness::new(MapsApp::new_with_cache_dir(cache.clone()), VP);
         let out = out_dir();
         let before_png = out.join("maps-live-before.png");
         let after_png = out.join("maps-live-after.png");
 
         // Frame 0: no tiles resident yet → the honest placeholder (grid substrate).
-        let before = render_live_to_png(&mut h, &mut app, &before_png);
+        let before = render_live_to_png(&mut app, &before_png);
         assert_eq!(
             app.tiles_mem_len(),
             0,
@@ -200,7 +196,6 @@ fn live_render_shows_real_tiles_and_mid_zoom_never_blanks() {
 
         // Pump until enough tiles cover the region, or 25s elapse.
         let stats = pump_frames_until(
-            &mut h,
             &mut app,
             Duration::from_secs(25),
             Duration::from_millis(150),
@@ -208,14 +203,13 @@ fn live_render_shows_real_tiles_and_mid_zoom_never_blanks() {
         );
         // A few settle frames so late arrivals fold in.
         let _ = pump_frames_until(
-            &mut h,
             &mut app,
             Duration::from_secs(3),
             Duration::from_millis(120),
             |a| !a.tiles_has_inflight() && a.tiles_mem_len() >= 8,
         );
 
-        let after = render_live_to_png(&mut h, &mut app, &after_png);
+        let after = render_live_to_png(&mut app, &after_png);
 
         let region = map_region();
         let before_colors = before.distinct_colors(region, 4);
@@ -283,15 +277,13 @@ fn live_render_shows_real_tiles_and_mid_zoom_never_blanks() {
     // exercising the real fetch→decode→draw path (only the base tiles ever load).
     {
         let cache = unique_cache();
-        let mut app = MapsApp::new_with_cache_dir(cache.clone());
-        let mut h = Harness::new(VP);
+        let mut app = Harness::new(MapsApp::new_with_cache_dir(cache.clone()), VP);
         let out = out_dir();
         let region = map_region();
         let base_zoom = app.zoom_for_verify();
 
         // Load the base-zoom imagery.
         let _ = pump_frames_until(
-            &mut h,
             &mut app,
             Duration::from_secs(25),
             Duration::from_millis(150),
@@ -307,7 +299,7 @@ fn live_render_shows_real_tiles_and_mid_zoom_never_blanks() {
         // must reuse the resident tiles as scaled descendants — never blank.
         app.set_zoom_for_verify(base_zoom - 1.0);
         let out_png = out.join("maps-mid-zoom-out.png");
-        let f_out = render_live_to_png(&mut h, &mut app, &out_png);
+        let f_out = render_live_to_png(&mut app, &out_png);
         let out_colors = f_out.distinct_colors(region, 4);
         eprintln!(
             "mid zoom-out: zoom={:.2} colors={out_colors} mem={} -> {}",
@@ -328,7 +320,6 @@ fn live_render_shows_real_tiles_and_mid_zoom_never_blanks() {
         // resident tiles as scaled ancestors — again, never blank.
         app.set_zoom_for_verify(base_zoom);
         let _ = pump_frames_until(
-            &mut h,
             &mut app,
             Duration::from_secs(15),
             Duration::from_millis(150),
@@ -336,7 +327,7 @@ fn live_render_shows_real_tiles_and_mid_zoom_never_blanks() {
         );
         app.set_zoom_for_verify(base_zoom + 1.0);
         let in_png = out.join("maps-mid-zoom-in.png");
-        let f_in = render_live_to_png(&mut h, &mut app, &in_png);
+        let f_in = render_live_to_png(&mut app, &in_png);
         let in_colors = f_in.distinct_colors(region, 4);
         eprintln!(
             "mid zoom-in: zoom={:.2} colors={in_colors} mem={} -> {}",
