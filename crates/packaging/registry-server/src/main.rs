@@ -36,7 +36,7 @@ use tracing_subscriber::EnvFilter;
 use registry_server::{
     AppState, InspectionPolicy, ModerationService, PromotionJournal, PublisherAllowlist,
     PublisherRow, ServerIdentity, StagedArtifact, StagedPromotion, Storage, default_data_dir,
-    fetch_version_bytes, inspect_bytes, inspect_entry, run_server,
+    inspect_bytes, run_server,
 };
 use registry_types::EntryAction;
 use registry_types::{
@@ -558,7 +558,8 @@ fn collect_submission_artifacts(
     }
     let mut artifacts = Vec::with_capacity(pending.change.entry.versions.len());
     for version in &pending.change.entry.versions {
-        let (inspection, bytes) = fetch_version_bytes(&pending.change.entry, version, policy)?;
+        let (inspection, bytes) =
+            registry_server::review_version_bytes(storage, &pending.change.entry, version, policy)?;
         let digest = blake3::hash(&bytes).to_hex().to_string();
         persist_distinct_artifact(storage, persisted_digests, &digest, &bytes)?;
         artifacts.push(StagedArtifact {
@@ -1244,7 +1245,10 @@ fn cmd_review(storage: &Storage, command: ReviewCommand) -> anyhow::Result<()> {
             allow_insecure_local,
         } => {
             let pending = require_pending(&moderation, &package_id)?;
-            let inspection = inspect_for_decision(&pending, allow_insecure_local)?;
+            let inspection: Vec<_> = fetch_for_decision(storage, &pending, allow_insecure_local)?
+                .into_iter()
+                .map(|(inspection, _bytes)| inspection)
+                .collect();
             if json {
                 println!(
                     "{}",
@@ -1279,13 +1283,18 @@ fn cmd_review(storage: &Storage, command: ReviewCommand) -> anyhow::Result<()> {
             allow_insecure_local,
         } => {
             let pending = require_pending(&moderation, &package_id)?;
-            let reviewed = fetch_for_decision(&pending, allow_insecure_local)?;
+            let reviewed = fetch_for_decision(storage, &pending, allow_insecure_local)?;
             let allowlist = storage.load_allowlist()?;
             let record = moderation.approve(&pending, reviewer, reason, unix_now(), &allowlist)?;
             // Serve the reviewed bytes as blobs and thin packages, so clients
             // fetch only what they lack.
+            // An approved upload becomes the artifact its version's URL names.
             for (_inspection, bytes) in &reviewed {
                 storage.save_payload_blobs(bytes)?;
+                let digest = blake3::hash(bytes).to_hex().to_string();
+                if storage.load_upload(&digest)?.is_some() {
+                    storage.import_artifact(bytes)?;
+                }
             }
             println!("{}", serde_json::to_string_pretty(&record)?);
         }
@@ -1333,21 +1342,8 @@ fn require_pending(
         .ok_or_else(|| anyhow::anyhow!("no pending submission for {package_id}"))
 }
 
-fn inspect_for_decision(
-    pending: &registry_server::PendingSubmission,
-    allow_insecure_local: bool,
-) -> anyhow::Result<Vec<registry_server::InspectedVersion>> {
-    if pending.change.action == EntryAction::Delete {
-        return Ok(Vec::new());
-    }
-    let policy = InspectionPolicy {
-        allow_insecure_local,
-        ..InspectionPolicy::default()
-    };
-    inspect_entry(&pending.change.entry, policy).map_err(Into::into)
-}
-
 fn fetch_for_decision(
+    storage: &Storage,
     pending: &registry_server::PendingSubmission,
     allow_insecure_local: bool,
 ) -> anyhow::Result<Vec<(registry_server::InspectedVersion, Vec<u8>)>> {
@@ -1358,7 +1354,7 @@ fn fetch_for_decision(
         allow_insecure_local,
         ..InspectionPolicy::default()
     };
-    registry_server::fetch_entry_bytes(&pending.change.entry, policy).map_err(Into::into)
+    registry_server::review_entry_bytes(storage, &pending.change.entry, policy).map_err(Into::into)
 }
 
 fn cmd_import_artifact(storage: &Storage, file: &std::path::Path) -> anyhow::Result<()> {
