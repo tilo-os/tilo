@@ -28,7 +28,5 @@ concurrency:
 
 jobs:
   image:
-    # Pull requests from forks get no registry credentials.
-    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     uses: ./.forgejo/workflows/build-image.yml
     secrets: inherit
