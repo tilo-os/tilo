@@ -7,6 +7,7 @@ publish.workspace = true
 [features]
 test-support = []
 [dependencies]
+xdg-paths = { path = "../../system/xdg-paths" }
 advisory-lock = { path = "../../system/advisory-lock" }
 # Saves the launchable action catalogue across restarts.
 atomic-file = { path = "../../system/atomic-file", features = ["json"] }

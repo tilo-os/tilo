@@ -72,9 +72,8 @@ fn save_widgets(widgets: &TopBarWidgets) {
 }
 
 fn publish_clock_command(command: &str, activity_id: Option<&str>) {
-    let Some(path) = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(std::path::PathBuf::from)
-        .map(|root| root.join("tilo/clocks-command.json"))
+    let Some(path) =
+        xdg_paths::xdg::runtime_dir().map(|root| root.join("tilo/clocks-command.json"))
     else {
         return;
     };
@@ -97,10 +96,7 @@ fn refresh_clock_activity(state: &mut chrome_state::ChromeState, poll: &mut Cloc
         return;
     }
     poll.checked = Some(now);
-    let Some(path) = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(std::path::PathBuf::from)
-        .map(|root| root.join("tilo/clocks.json"))
-    else {
+    let Some(path) = xdg_paths::xdg::runtime_dir().map(|root| root.join("tilo/clocks.json")) else {
         return;
     };
     let Ok(metadata) = std::fs::metadata(&path) else {

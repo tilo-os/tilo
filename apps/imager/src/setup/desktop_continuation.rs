@@ -448,9 +448,7 @@ pub(super) fn persist_review(choices: &[FolderChoice]) -> Result<(), String> {
 /// off-thread; a missing, unauthentic or incomplete session keeps work pending.
 #[cfg(target_os = "linux")]
 pub(super) fn trusted_identity_complete() -> Result<(), String> {
-    let runtime = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .ok_or("No Tilo session runtime directory")?;
+    let runtime = xdg_paths::xdg::runtime_dir().ok_or("No Tilo session runtime directory")?;
     let display = std::env::var_os("WAYLAND_DISPLAY")
         .ok_or("Open Add folders inside Tilo after identity setup")?;
     let executable = std::env::current_exe().map_err(|e| e.to_string())?;

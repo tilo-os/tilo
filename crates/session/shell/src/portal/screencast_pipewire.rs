@@ -433,13 +433,14 @@ fn ensure_pipewire_initialised() {
 
 #[cfg(target_os = "linux")]
 fn pipewire_socket() -> Result<UnixStream, ProvisioningError> {
-    let runtime = std::env::var_os("XDG_RUNTIME_DIR")
-        .ok_or_else(|| ProvisioningError::DaemonUnreachable("XDG_RUNTIME_DIR is unset".into()))?;
+    let runtime = xdg_paths::xdg::runtime_dir().ok_or_else(|| {
+        ProvisioningError::DaemonUnreachable("XDG_RUNTIME_DIR is unset or not absolute".into())
+    })?;
     let remote = std::env::var("PIPEWIRE_REMOTE").unwrap_or_else(|_| "pipewire-0".into());
     let path = if remote.starts_with('/') {
         std::path::PathBuf::from(remote)
     } else {
-        std::path::PathBuf::from(runtime).join(remote)
+        runtime.join(remote)
     };
     UnixStream::connect(&path).map_err(|error| {
         ProvisioningError::DaemonUnreachable(format!("connect {}: {error}", path.display()))

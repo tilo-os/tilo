@@ -32,9 +32,7 @@ pub fn default_path() -> Option<PathBuf> {
     if let Some(over) = std::env::var_os("TILO_CALENDAR_DATA") {
         return Some(PathBuf::from(over));
     }
-    let base = std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| Path::new(&h).join(".local/share")))?;
+    let base = xdg_paths::xdg::data_home()?;
     Some(
         base.join("tilo")
             .join("calendar")

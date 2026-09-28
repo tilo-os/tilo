@@ -210,10 +210,8 @@ fn cmd_serve(args: &[String]) -> anyhow::Result<i32> {
 /// `$XDG_RUNTIME_DIR/tilo/services/ush.sock` — the path `tilo-launcher` looks in
 /// for a `[sandbox.services]` entry named `ush`.
 fn default_service_socket() -> PathBuf {
-    let runtime = std::env::var_os("XDG_RUNTIME_DIR").map_or_else(
-        || PathBuf::from(format!("/run/user/{}", unsafe { libc::geteuid() })),
-        PathBuf::from,
-    );
+    let runtime = xdg_paths::xdg::runtime_dir()
+        .unwrap_or_else(|| PathBuf::from(format!("/run/user/{}", unsafe { libc::geteuid() })));
     runtime.join("tilo/services/ush.sock")
 }
 
