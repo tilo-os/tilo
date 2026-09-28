@@ -21,6 +21,7 @@ dmabuf-import = ["ui-core/dmabuf-import"]
 webview-wpe = ["ui-core/webview-wpe"]
 webview-adblock = ["ui-core/webview-adblock"]
 presentation-feedback = ["ui-core/presentation-feedback"]
+dx12-shader-cache = ["ui-core/dx12-shader-cache"]
 priority-contacts = ["ui-core/priority-contacts"]
 
 [dependencies]

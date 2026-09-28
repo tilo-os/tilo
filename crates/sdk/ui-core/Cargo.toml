@@ -50,6 +50,10 @@ test-support = ["tilo-host/test-support", "dep:tilo-test-env"]
 # can exercise the path.
 realtime-video = ["media/realtime"]
 presentation-feedback = ["dep:wgpu-hal"]
+# Persist DXC-compiled shaders between runs on Windows. It needs the patched
+# wgpu-hal (vendor/wgpu-hal), which crates.io does not have, so it stays off
+# for apps built on the published SDK.
+dx12-shader-cache = []
 # Brave/EasyList filter-list → WebKit content-blocker JSON compiler
 # (`webview::adblock`). Off by default: only the browser app (and any
 # other app embedding a WebView with built-in blocking) pays for the
