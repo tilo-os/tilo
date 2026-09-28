@@ -1449,6 +1449,7 @@ search-apps-group-work = Work
 search-apps-group-media = Media
 search-apps-group-system-tools = System tools
 search-apps-group-more-apps = More apps
+search-apps-group-developer-tools = Developer tools
 search-apps-detail-grouped = { $group } · { $detail }
 search-apps-open = Open { $app }
 search-apps-open-subtitle = { $target } · { $detail }

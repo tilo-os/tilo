@@ -44,7 +44,11 @@ const STORE_PACKAGE_ID: &str = "so.tilo.store";
 /// tinkerers without assuming they are developers. The group is a catalogue
 /// key, resolved where the subtitle is built.
 fn empty_palette_presentation(package_id: &str) -> (&'static str, i32) {
-    match package_id {
+    // A local build publishes the same apps under `dev.tilo.`.
+    let canonical = package_id
+        .strip_prefix("dev.tilo.")
+        .map(|name| format!("so.tilo.{name}"));
+    match canonical.as_deref().unwrap_or(package_id) {
         "so.tilo.browser" => ("search-apps-group-start-here", 90),
         "so.tilo.file-explorer" => ("search-apps-group-start-here", 89),
         "so.tilo.notes" => ("search-apps-group-start-here", 88),
@@ -78,6 +82,14 @@ fn empty_palette_presentation(package_id: &str) -> (&'static str, i32) {
         "so.tilo.monitor" | "so.tilo.disks" | "so.tilo.logs" | "so.tilo.firewall"
         | "so.tilo.vpn" | "so.tilo.remote" | "so.tilo.backups" | "so.tilo.imager"
         | "so.tilo.themes" => ("search-apps-group-system-tools", 25),
+        "so.tilo.api-tester"
+        | "so.tilo.snippets"
+        | "so.tilo.diffmerge"
+        | "so.tilo.db-client"
+        | "so.tilo.containers"
+        | "so.tilo.hex-editor"
+        | "so.tilo.git-client"
+        | "so.tilo.code-editor" => ("search-apps-group-developer-tools", 5),
         _ => ("search-apps-group-more-apps", 10),
     }
 }
@@ -1715,14 +1727,24 @@ mod tests {
                     app("so.tilo.browser", "Browser"),
                     app("so.tilo.notes", "Notes"),
                     app("so.tilo.hello", "Hello"),
+                    app("so.tilo.api-tester", "API Tester"),
+                    app("dev.tilo.file-explorer", "Files"),
                 ],
                 OpenTarget::Beside,
             );
-            assert_eq!(out.len(), 4);
+            assert_eq!(out.len(), 6);
             let score = |id: &str| out.iter().find(|row| row.id == id).unwrap().score;
             assert!(score("so.tilo.browser") > score("so.tilo.notes"));
             assert!(score("so.tilo.notes") > score("so.tilo.monitor"));
             assert!(score("so.tilo.monitor") > score("so.tilo.hello"));
+            assert!(
+                score("so.tilo.hello") > score("so.tilo.api-tester"),
+                "developer tools never lead a fresh palette"
+            );
+            assert!(
+                score("dev.tilo.file-explorer") > score("so.tilo.notes"),
+                "a local build's apps keep their place"
+            );
             assert!(
                 out.iter()
                     .find(|row| row.id == "so.tilo.browser")

@@ -101,6 +101,7 @@ fn move_rows(
     workspaces: &[Workspace],
     workspace: &Workspace,
     group: GroupId,
+    position: usize,
     tab: &Tab,
 ) {
     if matches!(
@@ -131,8 +132,7 @@ fn move_rows(
                 &[
                     ("app", app.into()),
                     ("workspace", workspace.name.as_str().into()),
-                    ("group", group.to_string().into()),
-                    ("tab", tab.id.to_string().into()),
+                    ("position", position.into()),
                 ],
             ),
             badge: t("search-badge-tab"),
@@ -168,8 +168,7 @@ fn move_rows(
                 &[
                     ("app", app.into()),
                     ("workspace", workspace.name.as_str().into()),
-                    ("group", group.to_string().into()),
-                    ("tab", tab.id.to_string().into()),
+                    ("position", position.into()),
                 ],
             ),
             badge: t("search-badge-tab"),
@@ -193,8 +192,10 @@ pub fn window_rows(tree: &DesktopTree, rank: impl Fn(&[&str]) -> Option<i32>) ->
     };
     let mut rows = Vec::new();
     for strip in &workspace.strips {
-        for group in &strip.window_groups {
+        for (index, group) in strip.window_groups.iter().enumerate() {
             let group_id = group.id;
+            // Ids are 64-bit handles; people count groups from the left.
+            let position = index + 1;
             let group_title = group
                 .tabs
                 .iter()
@@ -204,7 +205,7 @@ pub fn window_rows(tree: &DesktopTree, rank: impl Fn(&[&str]) -> Option<i32>) ->
                     || {
                         t_args(
                             "search-window-group-untitled",
-                            &[("group", group_id.to_string().into())],
+                            &[("position", position.into())],
                         )
                     },
                     |tab| tab.title.clone(),
@@ -223,7 +224,7 @@ pub fn window_rows(tree: &DesktopTree, rank: impl Fn(&[&str]) -> Option<i32>) ->
                         &[
                             ("workspace", workspace.name.as_str().into()),
                             ("strip", strip.name.as_str().into()),
-                            ("group", group_id.to_string().into()),
+                            ("position", position.into()),
                             ("count", group.tabs.len().into()),
                         ],
                     ),
@@ -249,8 +250,7 @@ pub fn window_rows(tree: &DesktopTree, rank: impl Fn(&[&str]) -> Option<i32>) ->
                                 ("app", app.into()),
                                 ("workspace", workspace.name.as_str().into()),
                                 ("strip", strip.name.as_str().into()),
-                                ("group", group_id.to_string().into()),
-                                ("tab", tab.id.to_string().into()),
+                                ("position", position.into()),
                             ],
                         ),
                         badge: t("search-badge-tab"),
@@ -261,7 +261,15 @@ pub fn window_rows(tree: &DesktopTree, rank: impl Fn(&[&str]) -> Option<i32>) ->
                         },
                     });
                 }
-                move_rows(&mut rows, &rank, &tree.workspaces, workspace, group_id, tab);
+                move_rows(
+                    &mut rows,
+                    &rank,
+                    &tree.workspaces,
+                    workspace,
+                    group_id,
+                    position,
+                    tab,
+                );
             }
         }
     }
