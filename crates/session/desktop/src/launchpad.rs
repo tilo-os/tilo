@@ -129,6 +129,9 @@ pub struct CollaborationLaunchpad {
     /// canvas of the given height.
     rail_clearance: fn(f64) -> f64,
     rect: Rect,
+    /// The display the launchpad presents on when the canvas spans several,
+    /// and whether the rail floats over that display.
+    presentation: Option<(Rect, bool)>,
     card_rects: [Rect; 6],
     last_cursor: Point,
     focused: bool,
@@ -159,6 +162,7 @@ impl CollaborationLaunchpad {
         Self {
             rail_clearance,
             rect: Rect::ZERO,
+            presentation: None,
             card_rects: [Rect::ZERO; 6],
             last_cursor: Point::ZERO,
             focused: false,
@@ -170,6 +174,46 @@ impl CollaborationLaunchpad {
             ),
             dirty: true,
         }
+    }
+
+    /// Centre on `display` (with the rail's clearance when `beside_rail`)
+    /// instead of the whole canvas, as on a desktop spanning several
+    /// displays. `None` returns to the whole canvas.
+    pub fn set_presentation_area(&mut self, display: Option<Rect>, beside_rail: bool) {
+        let presentation = display.map(|rect| (rect, beside_rail));
+        if presentation != self.presentation {
+            self.presentation = presentation;
+            self.card_rects = self.cards();
+            self.dirty = true;
+        }
+    }
+
+    /// The part of the canvas the grid centres in.
+    fn presentation_rect(&self) -> Rect {
+        match self.presentation {
+            Some((display, _)) => {
+                let area = display.intersect(self.rect);
+                if area.width() > 0.0 && area.height() > 0.0 {
+                    area
+                } else {
+                    self.rect
+                }
+            }
+            None => self.rect,
+        }
+    }
+
+    fn cards(&self) -> [Rect; 6] {
+        self.card_layout().0
+    }
+
+    fn card_layout(&self) -> ([Rect; 6], usize) {
+        let no_rail: fn(f64) -> f64 = |_| 0.0;
+        let clearance = match self.presentation {
+            Some((_, false)) => no_rail,
+            _ => self.rail_clearance,
+        };
+        Self::card_geometry(self.presentation_rect(), clearance)
     }
 
     fn fire(action: LaunchpadAction, state: &mut AutoCommit, path: &ObjId) {
@@ -321,7 +365,7 @@ impl CollaborationLaunchpad {
             WindowEvent::KeyboardInput { event, .. }
                 if self.focused && event.state == ElementState::Pressed =>
             {
-                let (_, columns) = Self::card_geometry(self.rect, self.rail_clearance);
+                let (_, columns) = self.card_layout();
                 let last_index = LaunchpadAction::ALL.len();
                 let next = match event.logical_key {
                     Key::Named(NamedKey::ArrowRight) => {
@@ -408,7 +452,7 @@ impl Widget for CollaborationLaunchpad {
             origin.x + f64::from(layout.location.x + layout.size.width),
             origin.y + f64::from(layout.location.y + layout.size.height),
         );
-        let (cards, _) = Self::card_geometry(self.rect, self.rail_clearance);
+        let cards = self.cards();
         if cards != self.card_rects {
             self.card_rects = cards;
             self.dirty = true;
@@ -452,13 +496,13 @@ impl Widget for CollaborationLaunchpad {
         let keyboard_hint = t("launchpad-keyboard-hint");
         let (_, hint_h) = text.measure(&keyboard_hint, caption, None);
         self.hint_line_h = f64::from(hint_h);
-        self.card_rects = Self::card_geometry(self.rect, self.rail_clearance).0;
+        self.card_rects = self.cards();
         // Leave the persistent help affordance its bottom band on laptops.
         // The grid is pushed up by the footer *band* (a fixed reservation),
         // not by where the button happens to sit inside it, so centring the
         // button on the hint's line cannot move the hint.
         let footer_bottom = self.footer_band().y1.max(self.app_button_rect().y1);
-        let overflow = (footer_bottom - (self.rect.y1 - 64.0)).max(0.0);
+        let overflow = (footer_bottom - (self.presentation_rect().y1 - 64.0)).max(0.0);
         for card in &mut self.card_rects {
             *card = *card + vello::kurbo::Vec2::new(0.0, -overflow);
         }
@@ -629,6 +673,14 @@ impl Widget for CollaborationLaunchpad {
 
     fn name(&self) -> &'static str {
         "CollaborationLaunchpad"
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
     }
 
     fn get_rect(&self) -> Rect {
@@ -827,7 +879,35 @@ mod tests {
             );
         }
 
+        fn a_canvas_across_two_displays_centres_on_the_presenting_one() {
+            let mut pad = CollaborationLaunchpad::new(test_rail);
+            pad.rect = Rect::new(0.0, 48.0, 2048.0, 768.0);
+            let right = Rect::new(1024.0, 0.0, 2048.0, 768.0);
+            pad.set_presentation_area(Some(right), false);
+            let cards = pad.cards();
+            let x0 = cards.iter().map(|c| c.x0).fold(f64::INFINITY, f64::min);
+            let x1 = cards.iter().map(|c| c.x1).fold(f64::NEG_INFINITY, f64::max);
+            assert!(
+                x0 >= right.x0 && x1 <= right.x1,
+                "no card may straddle the seam: {cards:?}"
+            );
+            assert!(
+                (f64::midpoint(x0, x1) - right.center().x).abs() < 1.0,
+                "the grid centres on its display: {x0}..{x1}"
+            );
+            let left = Rect::new(0.0, 0.0, 1024.0, 768.0);
+            pad.set_presentation_area(Some(left), true);
+            assert!(
+                pad.cards()
+                    .iter()
+                    .all(|c| c.x0 >= test_rail(720.0) && c.x1 <= left.x1),
+                "the rail's display keeps its clearance: {:?}",
+                pad.cards()
+            );
+        }
+
         launchpad_cards_keep_an_edge_on_every_palette();
+        a_canvas_across_two_displays_centres_on_the_presenting_one();
         compact_large_text_heading_stays_below_top_chrome();
         desktop_app_button_has_visible_bounds_in_compact_layouts();
         wide_and_narrow_layouts_keep_all_cards_actionable();
