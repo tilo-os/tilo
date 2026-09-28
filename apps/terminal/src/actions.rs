@@ -68,7 +68,7 @@
 //! ## Consequence
 //!
 //! The terminal publishes its live session with send/interrupt/clear effects;
-//! [`take_committed_action`](ui::widget::Widget::take_committed_action) stays
+//! [`take_committed_action`](ui::undo::CommittedActions::take_committed_action) stays
 //! `None` (both toolkit defaults, so no [`ui::ActionHost`] is embedded — there is
 //! nothing for it to dispatch, and `main.rs` registers no action decoder).
 //! The bounded resource tree still exposes the live session, its transcript and
@@ -424,7 +424,7 @@ mod tests {
                     .all(|action| action.kind == ui::tilo_actions::OperationKind::Effect)
             );
             assert!(
-                widget.take_committed_action().is_none(),
+                ui::undo::take_committed_action(&mut widget).is_none(),
                 "no action is dispatched, so no action-host undo boundary is recorded",
             );
             assert!(

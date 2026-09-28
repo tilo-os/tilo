@@ -3048,6 +3048,8 @@ fn delete_button(
 }
 
 impl Widget for UiGraphEditor {
+    crate::provides!(dyn crate::undo::LocalUndo);
+
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.rebuild_if_changed();
         self.child.sync(state, path);
@@ -3161,6 +3163,27 @@ impl Widget for UiGraphEditor {
             || self.child.needs_idle_sync()
     }
 
+    fn draw_with_presence(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut crate::text_render::TextRenderer,
+        theme: &Theme,
+        presence: &crate::presence::PresenceCtx,
+        permissions: &crate::permissions::PermissionContext,
+    ) {
+        self.child.draw_with_presence(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            presence,
+            permissions,
+        );
+    }
+}
+
+impl crate::undo::LocalUndo for UiGraphEditor {
     fn handle_local_undo_request(&mut self, request: crate::undo::UndoRequest) -> bool {
         if !widget_tree_has_focus(self.child.as_ref()) {
             return false;
@@ -3181,25 +3204,6 @@ impl Widget for UiGraphEditor {
             (_, Err(error)) => status.set(format!("History action failed: {error}")),
         }
         true
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut crate::text_render::TextRenderer,
-        theme: &Theme,
-        presence: &crate::presence::PresenceCtx,
-        permissions: &crate::permissions::PermissionContext,
-    ) {
-        self.child.draw_with_presence(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-            permissions,
-        );
     }
 }
 

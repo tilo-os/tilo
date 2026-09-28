@@ -340,7 +340,7 @@ mod tests {
                     && !action.contract.availability.is_available()
             }));
             assert!(
-                app.take_committed_action().is_none(),
+                ui::undo::take_committed_action(&mut app).is_none(),
                 "no action is dispatched, so no action-host undo boundary is recorded",
             );
         }

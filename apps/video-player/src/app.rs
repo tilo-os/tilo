@@ -3471,7 +3471,8 @@ impl FullscreenProvider for PlayerApp {
 impl Widget for PlayerApp {
     ui::provides!(
         dyn ui::widget::FullscreenProvider,
-        dyn ui::widget::FloatingSurfaceProvider
+        dyn ui::widget::FloatingSurfaceProvider,
+        dyn ui::undo::CommittedActions
     );
 
     fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
@@ -3725,10 +3726,6 @@ impl Widget for PlayerApp {
             .as_mut()
             .and_then(ActionEmitter::take)
             .or_else(|| self.library_control_invocations.pop_front())
-    }
-
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
     }
 
     fn refresh_control_action_availability(
@@ -4186,6 +4183,12 @@ impl Widget for PlayerApp {
         // A follower must keep syncing even with no local input so it applies
         // the host's incoming transport.
         self.collab.is_some()
+    }
+}
+
+impl ui::undo::CommittedActions for PlayerApp {
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
     }
 }
 

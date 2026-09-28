@@ -1246,7 +1246,7 @@ impl PdfApp {
     /// change, so it replays byte-identically on peers), exactly as the palette
     /// does. The doc heads captured just before the first action of the event
     /// are stashed so the host records **one** undo boundary bracketing it
-    /// ([`Widget::take_committed_action`]).
+    /// ([`CommittedActions::take_committed_action`](ui::undo::CommittedActions::take_committed_action)).
     pub(crate) fn perform_action(
         &mut self,
         state: &mut AutoCommit,
@@ -4894,6 +4894,8 @@ include!("app_draw.rs");
 include!("app_events.rs");
 
 impl Widget for PdfApp {
+    ui::provides!(dyn ui::undo::CommittedActions);
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::PDF_VIEWER_OPERATION_TYPE]
     }
@@ -5033,13 +5035,6 @@ impl Widget for PdfApp {
 
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
         <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
-    }
-
-    /// Hand the host the heads captured before an on-page affordance dispatched
-    /// its markup action, so it records one undo boundary for it (see
-    /// `Self::perform_action`). Rising-edge: cleared on read.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
     }
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
@@ -5955,6 +5950,15 @@ impl Widget for PdfApp {
         }
         // Root fills the whole window — never cull.
         self.draw(scene, transform, text_renderer, theme, presence);
+    }
+}
+
+impl ui::undo::CommittedActions for PdfApp {
+    /// Hand the host the heads captured before an on-page affordance dispatched
+    /// its markup action, so it records one undo boundary for it (see
+    /// `Self::perform_action`). Rising-edge: cleared on read.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
     }
 }
 
@@ -8071,7 +8075,7 @@ mod tests {
             assert_eq!(app.annotations.len(), a0 + 1);
             assert_eq!(app.comments.len(), c0 + 1);
             assert!(
-                app.take_committed_action().is_some(),
+                ui::undo::take_committed_action(&mut app).is_some(),
                 "creating a note dispatched an action and stashed one undo boundary"
             );
             assert_eq!(app.sidebar_tab as u8, SidebarTab::Comments as u8);
@@ -8265,7 +8269,7 @@ mod tests {
                 _ => unreachable!(),
             }
             assert!(
-                app.take_committed_action().is_some(),
+                ui::undo::take_committed_action(&mut app).is_some(),
                 "ink dispatched an action and stashed one undo boundary"
             );
             assert!(

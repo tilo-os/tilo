@@ -69,7 +69,7 @@ pub fn compose(
     // had actually done — the picture has to be of the real control, not of a
     // control the capture path starved.
     let status = state.undo_status(None);
-    widget.set_undo_status(&mut || status.clone());
+    ui::undo::set_undo_status(widget, &mut || status.clone());
 
     let child = widget.build_layout(&mut taffy, theme, &mut node_map);
     let root = taffy.new_with_children(

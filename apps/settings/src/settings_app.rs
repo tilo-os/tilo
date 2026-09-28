@@ -1700,6 +1700,8 @@ fn valid_input_fraction(value: f64) -> Result<f64, String> {
 }
 
 impl Widget for SettingsApp {
+    ui::provides!(dyn ui::undo::CommittedActions);
+
     fn native_input_snapshot(
         &self,
         state: &AppModel,
@@ -2148,7 +2150,9 @@ impl Widget for SettingsApp {
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
         vec![Box::new(self.search_provider.clone())]
     }
+}
 
+impl ui::undo::CommittedActions for SettingsApp {
     /// Bubble an on-screen control's dispatched-action undo bracket up from
     /// whichever pane produced it. A settings control lives deep under the shell
     /// (`AppShell → content → Scrollable → … → pane`), and the intermediate
@@ -2157,7 +2161,7 @@ impl Widget for SettingsApp {
     /// undo boundary from it, so Ctrl+Z reverts the setting change.
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
         fn walk(w: &mut dyn Widget) -> Option<Vec<automerge::ChangeHash>> {
-            if let Some(heads) = w.take_committed_action() {
+            if let Some(heads) = ui::undo::take_committed_action(w) {
                 return Some(heads);
             }
             for child in w.children_mut() {

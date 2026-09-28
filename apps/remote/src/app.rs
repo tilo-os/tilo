@@ -2354,7 +2354,10 @@ impl Collaborative for RemoteApp {
 }
 
 impl Widget for RemoteApp {
-    ui::provides!(dyn ui::widget::Collaborative);
+    ui::provides!(
+        dyn ui::widget::Collaborative,
+        dyn ui::undo::CommittedActions
+    );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::REMOTE_OPERATION_TYPE]
@@ -2384,13 +2387,6 @@ impl Widget for RemoteApp {
             }
         }
         resources
-    }
-
-    /// Hand the host the heads captured before an on-screen affordance dispatched
-    /// its Remote action, so it records one undo boundary bracketing it.
-    /// Rising-edge: cleared on read.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
     }
 
     fn start_operation(
@@ -3585,6 +3581,15 @@ impl Widget for RemoteApp {
         _permissions: &PermissionContext,
     ) {
         self.draw(scene, transform, text_renderer, theme, presence);
+    }
+}
+
+impl ui::undo::CommittedActions for RemoteApp {
+    /// Hand the host the heads captured before an on-screen affordance dispatched
+    /// its Remote action, so it records one undo boundary bracketing it.
+    /// Rising-edge: cleared on read.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
     }
 }
 
@@ -7997,7 +8002,7 @@ mod tests {
                 "the star and the Ctrl+K row build the byte-identical action",
             );
             assert!(
-                app.take_committed_action().is_some(),
+                ui::undo::take_committed_action(&mut app).is_some(),
                 "the dispatch armed exactly one undo boundary for the host to record",
             );
         }

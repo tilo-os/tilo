@@ -5629,6 +5629,8 @@ fn file_label(path: &std::path::Path) -> String {
 }
 
 impl Widget for SheetsApp {
+    ui::provides!(dyn ui::undo::CommittedActions);
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[actions::SHEETS_OPERATION_TYPE]
     }
@@ -5934,13 +5936,6 @@ impl Widget for SheetsApp {
 
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
         <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
-    }
-
-    /// Hand the host the heads captured before an on-screen affordance dispatched
-    /// its action, so it records one undo boundary bracketing it (see
-    /// `Self::perform_action`). Rising-edge: cleared on read.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
     }
 
     /// Fold sheets and populated cells into unified search. Every hit names an
@@ -6432,6 +6427,15 @@ impl Widget for SheetsApp {
 
     fn on_commit(&mut self) {
         self.pending.commit = false;
+    }
+}
+
+impl ui::undo::CommittedActions for SheetsApp {
+    /// Hand the host the heads captured before an on-screen affordance dispatched
+    /// its action, so it records one undo boundary bracketing it (see
+    /// `Self::perform_action`). Rising-edge: cleared on read.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
     }
 }
 

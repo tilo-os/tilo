@@ -6612,6 +6612,8 @@ impl Default for CalendarApp {
 }
 
 impl Widget for CalendarApp {
+    ui::provides!(dyn ui::undo::CommittedActions);
+
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         if !self.launch_import_emitted
             && let Some(resource) = self.pending_launch_resource()
@@ -6708,22 +6710,6 @@ impl Widget for CalendarApp {
             return self.pending_launch_resource();
         }
         <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
-    }
-
-    /// Hand the host the heads captured before an on-screen affordance dispatched
-    /// its calendar action, so it records one undo boundary for it (see
-    /// `Self::perform_action`). Rising-edge: cleared on read.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        // A notes edit dispatches through the editor's field; everything else
-        // through the calendar's own host. One event does one or the other.
-        let notes = self.notes_editor.take_committed_action();
-        let calendar = self.actions.take_committed();
-        notes.or(calendar)
-    }
-
-    /// Typing a word in the notes is one undo step.
-    fn keeps_undo_step_open(&self) -> bool {
-        self.notes_editor.keeps_undo_step_open()
     }
 
     fn poll_resource_operation(
@@ -7424,6 +7410,23 @@ impl Widget for CalendarApp {
         _permissions: &PermissionContext,
     ) {
         self.draw(scene, transform, text_renderer, theme, presence);
+    }
+}
+
+impl ui::undo::CommittedActions for CalendarApp {
+    /// Hand the host the heads captured before an on-screen affordance dispatched
+    /// its calendar action, so it records one undo boundary for it (see
+    /// `Self::perform_action`). Rising-edge: cleared on read.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        // A notes edit dispatches through the editor's field; everything else
+        // through the calendar's own host. One event does one or the other.
+        let notes = self.notes_editor.take_committed_action();
+        let calendar = self.actions.take_committed();
+        notes.or(calendar)
+    }
+    /// Typing a word in the notes is one undo step.
+    fn keeps_undo_step_open(&self) -> bool {
+        self.notes_editor.keeps_undo_step_open()
     }
 }
 

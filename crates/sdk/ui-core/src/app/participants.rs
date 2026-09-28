@@ -8,7 +8,10 @@ impl super::App {
     /// widgets create its own view (Writer: caret at the document end).
     /// Idempotent. Returns whether a view was newly created.
     pub fn join_participant(&mut self, participant: &tilo_actions::ParticipantId) -> bool {
-        let joined = self.root_widget.join_participant(participant);
+        let joined = crate::collaboration::participants::join_participant(
+            self.root_widget.as_mut(),
+            participant,
+        );
         if joined {
             self.invalidate_widget_resource_cache();
             self.needs_sync = true;
@@ -18,7 +21,10 @@ impl super::App {
 
     /// Drop a participant's view (its task ended). Idempotent.
     pub fn leave_participant(&mut self, participant: &tilo_actions::ParticipantId) {
-        self.root_widget.leave_participant(participant);
+        crate::collaboration::participants::leave_participant(
+            self.root_widget.as_mut(),
+            participant,
+        );
         self.invalidate_widget_resource_cache();
         self.needs_sync = true;
     }
@@ -27,7 +33,7 @@ impl super::App {
     /// multi-participant widgets publish their participant-independent
     /// catalogue schema instead of their own caret's snapshot.
     pub fn set_participant_host(&mut self, host: bool) {
-        self.root_widget.set_participant_host(host);
+        crate::collaboration::participants::set_participant_host(self.root_widget.as_mut(), host);
         self.invalidate_widget_resource_cache();
     }
 
@@ -37,11 +43,18 @@ impl super::App {
         participant: &tilo_actions::ParticipantId,
         label: &str,
     ) {
-        self.root_widget.set_participant_label(participant, label);
+        crate::collaboration::participants::set_participant_label(
+            self.root_widget.as_mut(),
+            participant,
+            label,
+        );
     }
 
     /// Current presence of every remote participant this app holds a view for.
     pub fn participant_presence(&self) -> Vec<crate::widget::ParticipantPresence> {
-        self.root_widget.participant_presence(&self.state.doc)
+        crate::collaboration::participants::participant_presence(
+            self.root_widget.as_ref(),
+            &self.state.doc,
+        )
     }
 }

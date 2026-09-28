@@ -1838,6 +1838,8 @@ fn csv_field(value: &str) -> String {
 }
 
 impl Widget for DbClientApp {
+    ui::provides!(dyn ui::undo::CommittedActions);
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[DB_OPERATION_TYPE]
     }
@@ -2506,12 +2508,6 @@ impl Widget for DbClientApp {
             || self.status_bubble.needs_frame(Instant::now())
     }
 
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        // Hand the action model's undo bracket to the host so saved-connection
-        // CRUD becomes a single undo boundary and replicates to peers.
-        self.actions.take_committed()
-    }
-
     fn draw_overlay(
         &mut self,
         scene: &mut Scene,
@@ -2694,6 +2690,14 @@ impl Widget for DbClientApp {
         (self.session.tab == MainTab::Query)
             .then(|| self.editor.text_review())
             .flatten()
+    }
+}
+
+impl ui::undo::CommittedActions for DbClientApp {
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        // Hand the action model's undo bracket to the host so saved-connection
+        // CRUD becomes a single undo boundary and replicates to peers.
+        self.actions.take_committed()
     }
 }
 
@@ -5290,7 +5294,7 @@ mod behavior_tests {
             assert_eq!(conns.len(), 1, "the connection was written to the document");
             assert_eq!(conns[0].name, "Prod");
             assert!(
-                app.take_committed_action().is_some(),
+                ui::undo::take_committed_action(&mut app).is_some(),
                 "the action host recorded an undo boundary for the CRUD"
             );
             assert_eq!(

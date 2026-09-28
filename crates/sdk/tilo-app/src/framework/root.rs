@@ -186,6 +186,8 @@ impl SearchProvider for ResourceSearch {
 // Everything else — layout, input, traversal, operation admission — is the
 // view's own, forwarded by the decorator.
 impl<R: Resource> Decorator for ResourceRoot<R> {
+    ui_core::provides!(dyn ui_core::undo::CommittedActions; inner = content);
+
     type Inner = dyn Widget;
 
     fn inner(&self) -> &(dyn Widget + 'static) {
@@ -269,15 +271,9 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
 
     // The undo boundary of a surface's immediate actions this event; the
     // host records one step per event and author.
-    fn take_committed_action(&mut self) -> Option<Vec<ui_core::automerge::ChangeHash>> {
-        self.dispatch.take_committed()
-    }
 
     // A surface's step stays open for the actions that continue it (the
     // letters of a word), which report no boundary of their own.
-    fn keeps_undo_step_open(&self) -> bool {
-        self.dispatch.keeps_step_open()
-    }
 
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.dispatch
@@ -323,6 +319,15 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
         })];
         providers.extend(self.content.search_providers());
         providers
+    }
+}
+
+impl<R: Resource> ui_core::undo::CommittedActions for ResourceRoot<R> {
+    fn take_committed_action(&mut self) -> Option<Vec<ui_core::automerge::ChangeHash>> {
+        self.dispatch.take_committed()
+    }
+    fn keeps_undo_step_open(&self) -> bool {
+        self.dispatch.keeps_step_open()
     }
 }
 
