@@ -27,7 +27,7 @@
 # ---- Kernel buildroot (build deps and the Fedora SRPM) ----------------------
 # Every build dependency and the signature-checked Fedora kernel SRPM come from
 # a digest-pinned, KMS-signed buildroot (os/Containerfile.kernel-buildroot,
-# published by .forgejo/workflows/snapshot-kernel-buildroot.yml and pinned per
+# published by .forgejo/workflows/build-buildroots.yml and pinned per
 # architecture in os/kernel-buildroot-snapshot.env). The buildroot carries no
 # package repository, so nothing below can resolve a package from the network.
 # The OS frozen RPM snapshot is not an input: OS package changes never

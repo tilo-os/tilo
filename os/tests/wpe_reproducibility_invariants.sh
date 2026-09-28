@@ -10,7 +10,8 @@ build_script="$repo/os/dev/build-wpe.sh"
 image_script="$repo/os/dev/build-image.sh"
 manifest="$repo/os/external-assets/github-assets.tsv"
 pins="$repo/os/wpe-buildroot-snapshot.env"
-snapshot_workflow="$repo/.forgejo/workflows/snapshot-wpe-buildroot.yml"
+snapshot_workflow="$repo/.forgejo/workflows/build-buildroots.yml"
+snapshot_script="$repo/os/dev/buildroot-snapshot.sh"
 arch_helper="$repo/os/dev/assert-native-arch.sh"
 image_workflow="$repo/.forgejo/workflows/build-image.yml"
 fail=0
@@ -80,11 +81,13 @@ has "$buildroot" '/usr/lib/tilo/wpe-buildroot-packages.txt' \
   'promoted WPE buildroot records its exact installed package set'
 
 published_pattern='^registry\.tilo\.so/tilo/tilo-wpe-buildroot@sha256:[0-9a-f]{64}$'
-for consumer in "$image_script" "$image_workflow" "$snapshot_workflow"; do
+for consumer in "$image_script" "$image_workflow"; do
   has "$consumer" "$published_pattern" 'WPE verifier accepts the namespace actually published by the snapshot'
 done
-has "$snapshot_workflow" 'ref="registry.tilo.so/tilo/tilo-wpe-buildroot@$DIGEST"' \
+has "$snapshot_script" 'image="registry.tilo.so/tilo/tilo-$1-buildroot"' \
   'WPE producer and verifiers share the same repository'
+has "$snapshot_workflow" 'tags: registry.tilo.so/tilo/tilo-${{ matrix.kind }}-buildroot:' \
+  'WPE producer publishes into the repository its verifiers accept'
 digest=$(printf 'a%.0s' {1..64})
 [[ "registry.tilo.so/tilo/tilo-wpe-buildroot@sha256:$digest" =~ $published_pattern ]] \
   && ok 'published immutable WPE reference is accepted' || bad 'published WPE reference is rejected'
@@ -103,14 +106,14 @@ for arch in X86_64 AARCH64; do
   fi
 done
 
-has "$snapshot_workflow" 'runner: runner-arm64' 'WPE snapshot builds on a native ARM64 runner'
-has "$snapshot_workflow" 'runner: runner' 'WPE snapshot builds on the native x86-64 runner'
+has "$snapshot_workflow" 'runner: "runner-arm64"' 'WPE snapshot builds on a native ARM64 runner'
+has "$snapshot_workflow" 'runner: "runner"' 'WPE snapshot builds on the native x86-64 runner'
 has "$snapshot_workflow" './os/dev/assert-native-arch.sh "${{ matrix.arch }}"' \
   'WPE snapshot fails early when a native runner label points at the wrong architecture'
 has "$snapshot_workflow" "if: github.ref == 'refs/heads/main'" \
   'WPE snapshot cannot publish from a feature branch'
 has "$snapshot_workflow" 'no-cache: true' 'WPE snapshot refresh cannot reuse a stale Fedora transaction layer'
-has "$snapshot_workflow" 'actual_arch="$(docker run --rm --entrypoint cat "$ref"' \
+has "$snapshot_script" 'actual_arch="$(docker run --rm --entrypoint cat "$ref"' \
   'WPE snapshot proves each image was built on its declared native architecture'
 has "$snapshot_workflow" 'enable-openid-connect: true' \
   'WPE snapshot signing jobs explicitly enable Forgejo OIDC for the KMS role'
@@ -118,11 +121,11 @@ has "$snapshot_workflow" 'run: os/dev/require-cosign-authority.sh' \
   'WPE snapshot refuses a KMS authority that differs from keys/cosign.pub'
 has "$snapshot_workflow" '. os/dev/configure-cosign-kms.sh' \
   'WPE snapshot signs through the shared KMS configuration'
-has "$snapshot_workflow" 'cosign sign --yes --key "$COSIGN_KEY_REF" "$TILO_WPE_REF"' \
+has "$snapshot_workflow" 'cosign sign --yes --key "$COSIGN_KEY_REF" "$TILO_BUILDROOT_REF"' \
   'WPE buildroots are signed with the non-exportable release key'
 has "$repo/os/dev/configure-cosign-kms.sh" 'gcpkms://*|awskms://*|azurekms://*|hashivault://*' \
   'WPE snapshot accepts only a KMS/HSM signing key reference'
-if grep -Eq 'COSIGN_PRIVATE_KEY|COSIGN_PASSWORD|WPE_SNAPSHOT_CREDENTIAL_BROKER' "$snapshot_workflow"; then
+if grep -Eq 'COSIGN_PRIVATE_KEY|COSIGN_PASSWORD|WPE_SNAPSHOT_CREDENTIAL_BROKER' "$snapshot_workflow" "$snapshot_script"; then
   bad 'WPE snapshot retains an exportable key or retired credential broker path'
 else
   ok 'WPE snapshot has no exportable signing key path'
@@ -133,47 +136,36 @@ has "$snapshot_workflow" 'token: ${{ github.token }}' \
   'WPE pin branch is pushed with the job-scoped Forgejo token'
 has "$snapshot_workflow" 'FORGEJO_TOKEN: ${{ secrets.RELEASE_TOKEN }}' \
   'WPE pin pull request is opened with the repository-scoped release token'
-has "$snapshot_workflow" 'branch="automation/wpe-buildroot-snapshot-${snapshot_digest:0:16}"' \
+has "$snapshot_script" 'branch="automation/$kind-buildroot-snapshot-${snapshot_digest:0:16}"' \
   'WPE pins land through a digest-named branch'
-has "$snapshot_workflow" 'python3 os/dev/open-snapshot-pr.py' \
+has "$snapshot_script" 'python3 os/dev/open-snapshot-pr.py' \
   'WPE pins land through a protected-main pull request'
-if grep -Fq 'git push origin HEAD:main' "$snapshot_workflow"; then
+if grep -Fq 'git push origin HEAD:main' "$snapshot_workflow" "$snapshot_script"; then
   bad 'WPE promotion still pushes directly to protected main'
 else
   ok 'WPE promotion never pushes directly to protected main'
 fi
-has "$snapshot_workflow" 'cosign verify --key keys/cosign.pub "$ref"' \
+has "$snapshot_script" 'cosign verify --key keys/cosign.pub "$ref"' \
   'WPE buildroot promotion verifies both signatures'
-has "$snapshot_workflow" 'WPE_BUILDROOT_X86_64_REF=' \
+has "$snapshot_script" "x86_64) printf '%s_X86_64_REF' \"\$key\" ;;" \
   'WPE snapshot promotes the x86-64 digest pin'
-has "$snapshot_workflow" 'WPE_BUILDROOT_AARCH64_REF=' \
+has "$snapshot_script" "aarch64) printf '%s_AARCH64_REF' \"\$key\" ;;" \
   'WPE snapshot promotes the ARM64 digest pin'
 
-snapshot_inputs=(
-  os/Containerfile.wpe-buildroot
-  os/base-snapshot.env
-  os/external-assets/github-assets.tsv
-  os/dev/assert-native-arch.sh
-  os/dev/cache-github-assets.sh
-  os/dev/install-cached-cosign.sh
-  os/dev/configure-cosign-kms.sh
-  os/dev/open-snapshot-pr.py
-  .forgejo/actions/install-cosign
-  keys/cosign.pub
-  .forgejo/workflows/snapshot-wpe-buildroot.yml
+# The script owns each buildroot's inputs: every one must trigger the workflow
+# and block a stale promotion.
+mapfile -t snapshot_inputs < <(
+  sed -n '/^common_inputs=(/,/^)/p; /^wpe_inputs=(/,/^)/p' "$snapshot_script" | grep -Ev '^[a-z_]+=\(|^\)$' | tr -d ' '
 )
+[ "${#snapshot_inputs[@]}" -ge 12 ] && ok 'WPE snapshot declares its inputs' || bad 'WPE snapshot input list is incomplete'
 trigger_block="$(sed -n '/^[[:space:]]*paths:/,/^$/p' "$snapshot_workflow")"
-input_block="$(sed -n '/^[[:space:]]*WPE_SNAPSHOT_INPUTS:/,/^[[:space:]]*steps:/p' "$snapshot_workflow")"
-has "$snapshot_workflow" "mapfile -t snapshot_inputs < <(printf '%s' \"\$WPE_SNAPSHOT_INPUTS\")" \
-  'WPE promotion parses the authoritative input list without an empty pathspec'
 for input in "${snapshot_inputs[@]}"; do
   grep -Fq -- "$input" <<< "$trigger_block" \
-    && grep -Fq -- "$input" <<< "$input_block" \
     && ok "$input triggers a snapshot and blocks stale promotion" \
-    || bad "$input is missing from the snapshot trigger or stale-promotion guard"
+    || bad "$input is missing from the snapshot trigger"
 done
-if grep -Fq 'git diff --quiet "$GITHUB_SHA..origin/main" -- "${snapshot_inputs[@]}"' "$snapshot_workflow" \
-   && grep -Fq 'git checkout --detach origin/main' "$snapshot_workflow"; then
+if grep -Fq 'git diff --quiet "$GITHUB_SHA..origin/main" -- "${inputs[@]}"' "$snapshot_script" \
+   && grep -Fq 'git checkout --detach origin/main' "$snapshot_script"; then
   ok 'WPE promotion refuses stale inputs and commits the pins on the checked main tip'
 else
   bad 'WPE promotion must refuse stale inputs and commit on the checked main tip'
@@ -201,9 +193,9 @@ else
 fi
 has "$image_script" 'cosign verify --key "$TILO_REPO/keys/cosign.pub"' \
   'release helper verifies the WPE buildroot signature'
-has "$snapshot_workflow" 'cmp -s pinned-packages.txt new-packages.txt' \
+has "$snapshot_script" 'cmp -s pinned-packages.txt new-packages.txt' \
   'a WPE buildroot refresh compares its package set with the pinned buildroot'
-has "$snapshot_workflow" "echo '::notice::both buildroots install exactly the pinned packages; keeping the pins and the WPE layer cache'" \
+has "$snapshot_script" 'echo "::notice::both buildroots install exactly the pinned packages; keeping the pins and the $label layer cache"' \
   'an unchanged WPE package set keeps the pins, so the engine layer cache stays valid'
 
 exit "$fail"
