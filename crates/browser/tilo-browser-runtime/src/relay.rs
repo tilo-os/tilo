@@ -916,6 +916,16 @@ impl WasmPeer {
         replication::has_record(self.id, app, record)
     }
 
+    /// The room's records this page holds, as JSON `[{app, record}]`.
+    #[wasm_bindgen(js_name = roomRecords)]
+    pub fn room_records(&self) -> String {
+        let records: Vec<JsRecord> = replication::records(self.id)
+            .into_iter()
+            .map(|(app, record)| JsRecord { app, record })
+            .collect();
+        serde_json::to_string(&records).unwrap_or_else(|_| "[]".into())
+    }
+
     /// Report the page store's durability of a record (`unknown`,
     /// `pending`, `committing`, `durable`, `failed`).
     #[wasm_bindgen(js_name = setLocalState)]
@@ -1011,4 +1021,3 @@ impl WasmPeer {
         replication::close(self.id);
     }
 }
-

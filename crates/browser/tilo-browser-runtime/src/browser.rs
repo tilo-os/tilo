@@ -173,7 +173,10 @@ struct Mount {
     peer_suspended: bool,
     peer: Option<u32>,
     /// The relay peer whose room this mount's records replicate through.
-    #[cfg_attr(not(feature = "relay"), allow(dead_code, reason = "read by the relay feature"))]
+    #[cfg_attr(
+        not(feature = "relay"),
+        allow(dead_code, reason = "read by the relay feature")
+    )]
     relay: Option<u32>,
     desktop: Option<crate::desktop_host::DesktopHandle>,
     record: Option<crate::desktop_host::OwnedRecord>,
@@ -1102,7 +1105,9 @@ fn attach_relay(config: &Config, storage: &PortableStorage) -> Result<(), JsValu
         #[cfg(not(feature = "relay"))]
         Some(_) => {
             let _ = storage;
-            Err(error("a relay mount requires a runtime built with the relay peer"))
+            Err(error(
+                "a relay mount requires a runtime built with the relay peer",
+            ))
         }
         None => Ok(()),
     }

@@ -123,6 +123,8 @@ export async function connectRelayPeer({
         check(snapshot);
       });
     },
+    /** The room's records this page holds, open in a mount or replicated: `[{app, record}]`. */
+    records: () => JSON.parse(peer.roomRecords()),
     /** Whether this page holds the room's record `record` of `app`. */
     hasRecord: (app, record) => peer.hasRecord(app, record),
     /** Resolves once the room's record `record` of `app` reached this page. */
