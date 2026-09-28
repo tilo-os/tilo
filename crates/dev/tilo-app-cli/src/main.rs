@@ -10,6 +10,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use serde_json::{Value, json};
 
 mod json_stdout;
+mod publishing;
 
 #[derive(Parser)]
 #[command(
@@ -62,6 +63,12 @@ enum Command {
     Ui(UiArgs),
     /// Build, assemble, sign, and verify an installable Tilo package.
     Package(PackageArgs),
+    /// Create or show the publisher key that signs packages and entries.
+    Keys(publishing::KeysArgs),
+    /// Ask a registry to let your key publish under namespaces you prove.
+    Apply(publishing::ApplyArgs),
+    /// Upload packages and ask the registry to list them.
+    Publish(publishing::PublishArgs),
 }
 
 #[derive(clap::Args)]
@@ -672,6 +679,9 @@ fn main() -> ExitCode {
         Command::Inspect(args) => run_inspect(args),
         Command::Ui(args) => run_ui(args),
         Command::Package(args) => run_package(args),
+        Command::Keys(args) => publishing::run_keys(args),
+        Command::Apply(args) => publishing::run_apply(args),
+        Command::Publish(args) => publishing::run_publish(args),
     };
     let code = match &result {
         Ok(_) => ExitCode::SUCCESS,
@@ -769,6 +779,9 @@ impl Command {
             Self::Inspect(_) => "inspect",
             Self::Ui(_) => "ui",
             Self::Package(_) => "package",
+            Self::Keys(_) => "keys",
+            Self::Apply(_) => "apply",
+            Self::Publish(_) => "publish",
         }
     }
 }

@@ -726,6 +726,15 @@ desktop limit instead. A static build of a starter app is about 40 MB.
 Build on the system you target, or with a cross toolchain Cargo can drive;
 `--target` overrides the triple (for example `x86_64-pc-windows-gnu`).
 
+A Tilo OS package declares only the architecture it was built for, at the
+level `[package.isa]` names for it (`tilo-app new` declares `v3` and
+`aarch64`).
+
+### Publishing
+
+`tilo-app keys new`, `tilo-app apply` and `tilo-app publish` take a package to
+the store; [Publish a Tilo app](publishing.md) walks through them.
+
 ## The app shape
 
 Keep the binary boring:

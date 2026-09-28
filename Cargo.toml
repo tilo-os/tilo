@@ -189,6 +189,7 @@ members = [
     "crates/packaging/package-store",
     "crates/packaging/tilo-app-package",
     "crates/packaging/tilo-app-package-cli",
+    "crates/packaging/registry-client",
     "crates/packaging/registry-server",
     "crates/packaging/registry-types",
     "crates/packaging/registry-web",

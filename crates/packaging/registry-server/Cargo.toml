@@ -59,6 +59,7 @@ tilo-net = { path = "../../system/tilo-net", features = ["blocking"] }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+registry-client = { path = "../registry-client" }
 getrandom.workspace = true
 tempfile.workspace = true
 
