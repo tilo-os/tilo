@@ -4,7 +4,6 @@ use std::{
     ffi::CString,
     fs::{DirBuilder, OpenOptions},
     io::{Read, Write},
-    os::fd::FromRawFd as _,
     os::unix::ffi::OsStrExt as _,
     os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
@@ -28,47 +27,13 @@ fn open_without_symlinks(
     flags: libc::c_int,
     mode: libc::mode_t,
 ) -> std::io::Result<std::fs::File> {
-    const RESOLVE_NO_MAGICLINKS: u64 = 0x02;
-    const RESOLVE_NO_SYMLINKS: u64 = 0x04;
-
-    #[repr(C)]
-    struct OpenHow {
-        flags: u64,
-        mode: u64,
-        resolve: u64,
-    }
-
     let path = CString::new(path.as_os_str().as_bytes()).map_err(|_| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             "artifact path contains an embedded NUL byte",
         )
     })?;
-    let flags = u64::try_from(flags)
-        .map_err(|_| std::io::Error::other("open flags are outside the Linux u64 ABI"))?;
-    let how = OpenHow {
-        flags,
-        mode: u64::from(mode),
-        resolve: RESOLVE_NO_MAGICLINKS | RESOLVE_NO_SYMLINKS,
-    };
-    // SAFETY: path and open_how remain live for this syscall. A successful
-    // descriptor is uniquely transferred into File below.
-    let descriptor = unsafe {
-        libc::syscall(
-            libc::SYS_openat2,
-            libc::AT_FDCWD,
-            path.as_ptr(),
-            &raw const how,
-            std::mem::size_of::<OpenHow>(),
-        )
-    };
-    if descriptor < 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    let descriptor = i32::try_from(descriptor)
-        .map_err(|_| std::io::Error::other("openat2 returned an invalid descriptor"))?;
-    // SAFETY: openat2 returned this owned descriptor and no other File owns it.
-    Ok(unsafe { std::fs::File::from_raw_fd(descriptor) })
+    tilo_user_identity::nofollow::open(None, &path, flags, mode, false)
 }
 
 fn open_readonly_without_symlinks(path: &Path) -> std::io::Result<std::fs::File> {

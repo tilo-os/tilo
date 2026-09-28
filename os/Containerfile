@@ -814,11 +814,18 @@ ENV RUNTIME_VERSION=${RUNTIME_VERSION}
 # scripts' SOURCE_DATE_EPOCH, not the fixed one the compile above ran with.
 ARG SOURCE_DATE_EPOCH=0
 ENV SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}
-RUN if [ "${TILO_PREBUILT_APPS}" = 1 ]; then \
+# libstd is not on the system loader path and ldd reports it "not found", so
+# the dependency loop below never picks it up: it is included by name. The
+# closure check then loads every bundled object and thin app the way the
+# launcher does, with only the bundle's lib/ on LD_LIBRARY_PATH.
+RUN --mount=type=bind,source=os/scripts/verify-runtime-bundle-closure.sh,target=/usr/local/libexec/tilo-verify-runtime-bundle-closure.sh,ro \
+    if [ "${TILO_PREBUILT_APPS}" = 1 ]; then \
       test -s /out/runtime-bundle-publisher.hex \
       && /out/tilo-runtime-bundle verify \
         "/usr/lib/tilo-runtime/${RUNTIME_VERSION}" \
-        --require-publisher "$(cat /out/runtime-bundle-publisher.hex)"; \
+        --require-publisher "$(cat /out/runtime-bundle-publisher.hex)" \
+      && bash /usr/local/libexec/tilo-verify-runtime-bundle-closure.sh \
+        "/usr/lib/tilo-runtime/${RUNTIME_VERSION}"; \
     else \
       /out/tilo-runtime-bundle key generate --out /out/runtime-bundle-identity.json \
       && RUST_LIBSTD="$(find /out -maxdepth 1 -name 'libstd-*.so' -print -quit)" \
@@ -827,19 +834,22 @@ RUN if [ "${TILO_PREBUILT_APPS}" = 1 ]; then \
         args=(/out/tilo-runtime-bundle build \
           --version "${RUNTIME_VERSION}" --arch "$(uname -m)" --from / \
           --include /out/libruntime_dylib.so \
+          --include "$1" \
           --identity /out/runtime-bundle-identity.json \
           --out "/usr/lib/tilo-runtime/${RUNTIME_VERSION}"); \
         while IFS= read -r dependency; do args+=(--include "$dependency"); done \
           < <(ldd /out/libruntime_dylib.so \
               | awk '\''{ for (i=1; i<=NF; i++) if ($i ~ /^\//) print $i }'\'' \
               | sort -u); \
-        "${args[@]}"' \
+        "${args[@]}"' bundle "${RUST_LIBSTD}" \
       && /out/tilo-runtime-bundle key pubkey \
         --identity /out/runtime-bundle-identity.json \
         > /out/runtime-bundle-publisher.hex \
       && /out/tilo-runtime-bundle verify \
         "/usr/lib/tilo-runtime/${RUNTIME_VERSION}" \
         --require-publisher "$(cat /out/runtime-bundle-publisher.hex)" \
+      && bash /usr/local/libexec/tilo-verify-runtime-bundle-closure.sh \
+        "/usr/lib/tilo-runtime/${RUNTIME_VERSION}" /out/thin-apps/* \
       && rm -f /out/runtime-bundle-identity.json; \
     fi
 
@@ -984,6 +994,10 @@ COPY --from=fluxcast-builder /src/src /usr/libexec/tilo-fluxcast-src
 COPY --from=joycond-builder /out/usr/bin/joycond /usr/bin/joycond
 COPY --from=joycond-builder /out/usr/lib/systemd/system/joycond.service /usr/lib/systemd/system/joycond.service
 COPY --from=joycond-builder /out/usr/lib/modules-load.d/joycond.conf /usr/lib/modules-load.d/joycond.conf
+# tilo-session records each login through the flight recorder; the report
+# summarises those records. The host package installs the same two files.
+COPY dist/session/tilo-flight-recorder.py /usr/libexec/tilo-flight-recorder
+COPY dist/session/tilo-session-report.py /usr/libexec/tilo-session-report
 
 FROM scratch AS remote-capture-files
 COPY os/etc/tilo/desktop.toml /etc/tilo/desktop.toml
@@ -2837,6 +2851,7 @@ RUN case "${TILO_GENERATION}" in \
 # layer. Its current RUN may still mount DNS under /run; the next one will not.
 RUN rm -f /etc/resolv.conf && printf '# build-only resolver placeholder\n' > /etc/resolv.conf
 RUN --mount=type=bind,source=os/scripts/clean-bootc-transient-state.py,target=/usr/local/libexec/tilo-clean-bootc-transient-state.py,ro \
+    --mount=type=bind,source=os/scripts/verify-boot-ordering.sh,target=/usr/local/libexec/tilo-verify-boot-ordering.sh,ro \
     find /usr/lib /usr/lib64 \
       \( -path '*/ossl-modules/legacy.so' -o -path '*/engines-3/*.so' \
          -o -name 'libshout.so*' \
@@ -2867,6 +2882,7 @@ RUN --mount=type=bind,source=os/scripts/clean-bootc-transient-state.py,target=/u
     && rm -f /usr/local/bin/verify-runtime-crypto-packages.sh /usr/local/bin/verify-no-ui-toolkits.sh \
              /usr/local/bin/dnf /usr/local/bin/rpm /usr/libexec/tilo/build-clock.so \
     && python3 /usr/local/libexec/tilo-clean-bootc-transient-state.py \
+    && bash /usr/local/libexec/tilo-verify-boot-ordering.sh \
     && bootc container lint
 
 # COPY is a separate build operation, with no DNS mount in /run. Copy the
