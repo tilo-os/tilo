@@ -2434,7 +2434,8 @@ impl ShellNetwork {
                     caller: tilo_actions::remote::Caller::authenticated(
                         identity.user_pubkey,
                         identity.device_pubkey,
-                    ),
+                    )
+                    .from_foreign_device(identity.capabilities.foreign),
                     message: frame.message,
                 });
             }
