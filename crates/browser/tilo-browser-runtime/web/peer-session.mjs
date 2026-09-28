@@ -675,7 +675,8 @@ return async function connectPeer(options={}){
         if(snapshot.phase!=='ready')throw Error('Certified record hydration is incomplete');
         const sessionDesktop=snapshot.desktop?.version===1&&snapshot.desktop.mode==='session'&&!mountOptions.app;
         const app=sessionDesktop?'desktop':(mountOptions.app??'writer');
-        const record=sessionDesktop?undefined:snapshot.records.find(row=>row.app_id===(app==='writer'?'so.tilo.word-processor':'so.tilo.chat'));
+        const appId=app==='writer'?'so.tilo.word-processor':app==='chat'?'so.tilo.chat':app;
+        const record=sessionDesktop?undefined:snapshot.records.find(row=>row.app_id===appId&&(mountOptions.record==null||row.record_id===mountOptions.record));
         if(!sessionDesktop&&!record)throw Error('Canonical record missing');
         surfaceAttempts.get(surfaceTargets.get(target))?.cancel();
         const controller=new AbortController();mountControllers.add(controller);

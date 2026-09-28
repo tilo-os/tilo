@@ -22,6 +22,7 @@ name = "runtime_identity"
 path = "src/lib.rs"
 
 [dependencies]
+xdg-paths = { path = "../../system/xdg-paths" }
 advisory-lock = { path = "../../system/advisory-lock" }
 getrandom.workspace = true
 atomic-file = { path = "../../system/atomic-file" }

@@ -540,13 +540,7 @@ impl PeopleScanProgress {
     }
 
     fn path() -> Option<std::path::PathBuf> {
-        let base = std::env::var_os("XDG_STATE_HOME")
-            .map(std::path::PathBuf::from)
-            .or_else(|| {
-                std::env::var_os("HOME")
-                    .map(std::path::PathBuf::from)
-                    .map(|home| home.join(".local/state"))
-            })?;
+        let base = xdg_paths::xdg::state_home()?;
         Some(base.join("tilo/photos/people-scan.json"))
     }
 }

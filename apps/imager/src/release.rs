@@ -460,10 +460,7 @@ fn validate_digest(digest: &str) -> Result<(), String> {
 }
 
 fn cache_root() -> PathBuf {
-    std::env::var_os("XDG_CACHE_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("LOCALAPPDATA").map(PathBuf::from))
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
+    xdg_paths::cache_dir()
         .unwrap_or_else(std::env::temp_dir)
         .join("tilo-imager")
 }
