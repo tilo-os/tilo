@@ -322,6 +322,23 @@ fn lock_animation_park_deadline(now: Instant, deadline: Option<Instant>) -> Opti
     deadline.filter(|deadline| *deadline > now)
 }
 
+/// The lock backdrop animates only while it can be seen. Behind a blanked
+/// panel the backend drops every frame, so building them would keep an
+/// unattended, locked machine awake at the backdrop's cadence.
+fn lock_animation_deadline(
+    theme: &ui::theme::Theme,
+    session: &SessionManager,
+    has_wallpaper: bool,
+    last_frame: Instant,
+) -> Option<Instant> {
+    lock_screen::animation_deadline(
+        theme,
+        session.is_locked() && !session.is_blanked(),
+        has_wallpaper,
+        last_frame,
+    )
+}
+
 /// How often a locked session re-reads its players, so the lock card follows
 /// a track change or a pause made elsewhere.
 const LOCK_MEDIA_REFRESH: Duration = Duration::from_secs(1);
@@ -7246,6 +7263,7 @@ pub fn run() {
     let (mut cause_events, mut cause_revision, mut cause_anim) = (0u32, 0u32, 0u32);
     let (mut cause_session, mut cause_keepalive) = (0u32, 0u32);
     let mut animation_sources_seen = crate::shell::frame::AnimationDemand::default();
+    let mut animating_content_leaves: Vec<String> = Vec::new();
     // Test-control commands are intentionally serviced after this tick's
     // paint gate. Preserve their redraw edge for the following iteration;
     // dropping it here records input latency forever without ever producing
@@ -9408,9 +9426,9 @@ pub fn run() {
                     .is_some_and(|portal| portal.screencast.has_streams()),
             keepalive: keepalive_due,
             lock_clock: lock_clock_due,
-            lock_animation: lock_screen::animation_deadline(
+            lock_animation: lock_animation_deadline(
                 frame_builder.theme(),
-                session.is_locked(),
+                &session,
                 lock_has_wallpaper,
                 last_lock_animation_frame,
             )
@@ -9465,6 +9483,10 @@ pub fn run() {
                     animation_sources_seen.floating |= animation_demand.floating;
                     animation_sources_seen.transient |= animation_demand.transient;
                     animation_sources_seen.osk |= animation_demand.osk;
+                    if animation_demand.host & (1 << 10) != 0 && animating_content_leaves.is_empty()
+                    {
+                        animating_content_leaves = frame_builder.content_animating_leaves();
+                    }
                 }
                 if keepalive_due
                     && !(had_backend_events || session_changed || revision_changed || animating)
@@ -9481,10 +9503,14 @@ pub fn run() {
                     "paint-stats: {frames_painted}/{frames_total} painted | \
                      events={cause_events} revision={cause_revision} anim={cause_anim} \
                      session={cause_session} keepalive={cause_keepalive} | \
-                     anim_sources host=0x{:04x} host_labels={:?} floating={} transient={} osk={} | \
+                     locked={} blanked={} | \
+                     anim_sources host=0x{:04x} host_labels={:?} content={:?} floating={} transient={} osk={} | \
                      {:.3} Hz target | present={} backpressure={}",
+                    session.is_locked(),
+                    session.is_blanked(),
                     animation_sources_seen.host,
                     animation_host_labels,
+                    animating_content_leaves.join(","),
                     animation_sources_seen.floating,
                     animation_sources_seen.transient,
                     animation_sources_seen.osk,
@@ -9504,6 +9530,7 @@ pub fn run() {
                 cause_session = 0;
                 cause_keepalive = 0;
                 animation_sources_seen = crate::shell::frame::AnimationDemand::default();
+                animating_content_leaves.clear();
                 stats_since = Instant::now();
             }
         }
@@ -10244,9 +10271,9 @@ pub fn run() {
                 widget_deadline_for_presenter(pipe_ready, frame_builder.next_wake_deadline()),
                 lock_animation_park_deadline(
                     park_now,
-                    lock_screen::animation_deadline(
+                    lock_animation_deadline(
                         frame_builder.theme(),
-                        session.is_locked(),
+                        &session,
                         lock_has_wallpaper,
                         last_lock_animation_frame,
                     ),
@@ -10983,6 +11010,32 @@ mod tests {
                 ),
                 Some(Duration::from_millis(42))
             );
+        }
+        // Phase `blanked_lock_stops_animating_until_the_panel_wakes`.
+        {
+            let theme = ui::theme::Theme::dark();
+            let t0 = Instant::now();
+            let config = IdleConfig {
+                blank_timeout: Some(Duration::from_secs(10)),
+                lock_timeout: Some(Duration::from_secs(5)),
+                suspend_timeout: None,
+            };
+            let mut session = SessionManager::new(config, t0);
+            session.tick(t0 + Duration::from_secs(6));
+            assert!(session.is_locked() && !session.is_blanked());
+            assert!(
+                lock_animation_deadline(&theme, &session, false, t0).is_some(),
+                "a visible lock animates its backdrop"
+            );
+            session.tick(t0 + Duration::from_secs(11));
+            assert!(session.is_locked() && session.is_blanked());
+            assert!(
+                lock_animation_deadline(&theme, &session, false, t0).is_none(),
+                "a blanked panel must not keep the loop building lock frames"
+            );
+            session.note_activity(t0 + Duration::from_secs(12));
+            assert!(session.is_locked() && !session.is_blanked());
+            assert!(lock_animation_deadline(&theme, &session, false, t0).is_some());
         }
         // Phase `lock_osd_fade_repaints_only_while_the_lock_is_visible`.
         {
