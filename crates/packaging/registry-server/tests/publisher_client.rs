@@ -39,12 +39,20 @@ impl ProofSource for Proofs {
 }
 
 fn package(dir: &std::path::Path, key: &SigningKey, id: &str, isa: &str) -> Vec<u8> {
+    release(dir, key, id, isa, "1.0.0")
+}
+
+fn release(dir: &std::path::Path, key: &SigningKey, id: &str, isa: &str, version: &str) -> Vec<u8> {
     let identity = tilo_app_package::SigningIdentity::from_signing_key(key.clone());
-    let payload = dir.join(format!("{id}-{isa}"));
+    let payload = dir.join(format!("{id}-{isa}-{version}"));
     std::fs::create_dir_all(payload.join("bin")).unwrap();
-    std::fs::write(payload.join("bin/editor"), b"published binary").unwrap();
+    std::fs::write(
+        payload.join("bin/editor"),
+        format!("published binary {version}"),
+    )
+    .unwrap();
     let manifest = tilo_app_package::Manifest::from_toml_str(&format!(
-        "[package]\nid = \"{id}\"\nversion = \"1.0.0\"\nkind = \"app\"\n\
+        "[package]\nid = \"{id}\"\nversion = \"{version}\"\nkind = \"app\"\n\
          [package.isa]\n{isa}\n\
          [publisher]\nidentity = \"ed25519:{}\"\nsignature = \"\"\n\
          [sandbox]\nnamespaces = [\"user\"]\nseccomp = \"tilo-default\"\nlandlock = \"strict\"\n\
@@ -159,9 +167,53 @@ async fn an_outside_publisher_applies_is_approved_and_publishes() {
                 .iter()
                 .any(|(_, bytes)| bytes.as_slice() == editor.as_slice())
         );
+
+        a_release_before_review_extends_the_waiting_request(&client, &key, &dir);
     })
     .await
     .unwrap();
+}
+
+/// A second release while the first waits for review: the new request keeps
+/// every version the waiting one lists, and nobody else can read it.
+fn a_release_before_review_extends_the_waiting_request(
+    client: &RegistryClient,
+    key: &SigningKey,
+    dir: &std::path::Path,
+) {
+    let stranger = SigningKey::from_bytes(&[5; 32]);
+    assert_eq!(
+        client.pending(&stranger, "com.example.editor").unwrap(),
+        None,
+        "only the publisher reads its pending entry"
+    );
+    let next = release(dir, key, "com.example.editor", "x86_64 = \"v3\"", "1.1.0");
+    let again = registry_client::publish(client, key, &[next], None, None).unwrap();
+    assert_eq!(
+        again.first().and_then(|build| build.action),
+        Some(registry_types::EntryAction::Add),
+        "a release before review extends the waiting request"
+    );
+    let waiting = client.pending(key, "com.example.editor").unwrap().unwrap();
+    let mut versions: Vec<(&str, &str)> = waiting
+        .versions
+        .iter()
+        .map(|version| {
+            (
+                version.version.as_str(),
+                version.target.architecture.as_str(),
+            )
+        })
+        .collect();
+    versions.sort_unstable();
+    assert_eq!(
+        versions,
+        [
+            ("1.0.0", "aarch64"),
+            ("1.0.0", "x86_64"),
+            ("1.1.0", "x86_64")
+        ]
+    );
 }
 
 fn unix_now() -> u64 {
