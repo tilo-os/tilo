@@ -270,6 +270,23 @@ impl Widget for Column {
         crate::widget::start_in_children(self, op, doc, path)
     }
 
+    /// Legacy adapter: offered through [`Widget::start_operation`].
+    fn start_resource_operation_with_document(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        self.start_operation(
+            &crate::widget::ResourceOperation::local(invocation, kind, type_id, payload),
+            doc,
+            path,
+        )
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         for child in &mut self.children {
             child.sync(state, path);

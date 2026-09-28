@@ -2151,6 +2151,18 @@ impl Widget for DesktopRoot {
             .run_desktop_operation(request.kind, request.type_id, request.payload)?
             .map(ui::widget::ResourceOperationStart::Completed))
     }
+
+    /// Legacy adapter: offered to the desktop's own operations only.
+    fn invoke_resource_operation_v2(
+        &mut self,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<Option<tilo_actions::ActionOutput>, String> {
+        self.run_desktop_operation(kind, type_id, payload)
+    }
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }
