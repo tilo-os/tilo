@@ -328,6 +328,15 @@ local registry. Uploads stay private: review reads them from storage instead of
 fetching the URL (`review_entry_bytes`), and `review approve` imports the
 approved bytes as the artifact the URL then serves.
 
+A newer request for a package replaces the one waiting for review and must
+keep every version it lists, so a publisher releasing again before review
+builds on its waiting entry. `GET /entries/<package id>/pending` returns that
+request to its publisher only: the public key in `Tilo-Publisher`, the Unix
+time in `Tilo-Signed-At`, and in `Tilo-Signature` an Ed25519 signature over
+`"tilo-registry-pending-read-v1\0"`, the package id, a NUL and the time in
+decimal (`registry_types::pending`), within five minutes of the registry's
+clock. Any other caller, and a publisher with nothing waiting, gets `404`.
+
 Presentation metadata is a signed part of the entry. Localized fields use one
 consistent language-tag map, and every non-empty localized map must contain an
 English (`en`) fallback. Language tags are canonical BCP 47 spellings (for

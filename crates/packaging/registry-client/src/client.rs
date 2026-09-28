@@ -5,7 +5,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 use ed25519_dalek::SigningKey;
 use registry_types::application::PublisherApplication;
-use registry_types::{EntryAction, RegistryEntry, SignedRegistrySnapshot};
+use registry_types::{EntryAction, EntryChangeRequest, RegistryEntry, SignedRegistrySnapshot};
 
 /// The registry Tilo OS and Tilo Web install from.
 pub const DEFAULT_REGISTRY: &str = "https://apps.tilo.so";
@@ -86,6 +86,45 @@ impl RegistryClient {
                     .entries
                     .into_iter()
                     .find(|entry| entry.package_id == package_id))
+            }
+            _ => Err(failure(&url, response)),
+        }
+    }
+
+    /// The entry `key` has waiting for review for `package_id`, if any.
+    /// Only its publisher may read it.
+    ///
+    /// # Errors
+    ///
+    /// When the registry cannot be reached or refuses the read.
+    pub fn pending(&self, key: &SigningKey, package_id: &str) -> Result<Option<RegistryEntry>> {
+        let url = format!("{}/entries/{package_id}/pending", self.base);
+        let signed_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_secs());
+        let response = self
+            .http
+            .get(&url)
+            .header(
+                registry_types::upload::UPLOAD_PUBLISHER_HEADER,
+                crate::key::public_hex(key),
+            )
+            .header(
+                registry_types::pending::PENDING_TIME_HEADER,
+                signed_at.to_string(),
+            )
+            .header(
+                registry_types::upload::UPLOAD_SIGNATURE_HEADER,
+                registry_types::pending::sign_pending_read(key, package_id, signed_at),
+            )
+            .send()
+            .with_context(|| url.clone())?;
+        match response.status() {
+            reqwest::StatusCode::NOT_FOUND => Ok(None),
+            status if status.is_success() => {
+                let change: EntryChangeRequest =
+                    response.json().with_context(|| format!("decode {url}"))?;
+                Ok(Some(change.entry))
             }
             _ => Err(failure(&url, response)),
         }

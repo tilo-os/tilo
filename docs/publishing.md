@@ -74,7 +74,7 @@ tilo-app publish
 
 `publish` checks each package the way the registry will, uploads it, and asks
 for the catalogue entry that lists it: a new entry the first time, an update
-after that. Every build of one app goes into the same request. Nothing is public until the owner approves the request; the output
+after that. Every build of one app goes into the same request, and a release made while an earlier one still waits for review joins it. Nothing is public until the owner approves the request; the output
 names the entry and where it waits. `--metadata store.json` sets the store
 presentation (localized `name`, `tagline`, `description`, `images`,
 `supported_languages`, `source_url`, `homepage`); without it a new entry takes
