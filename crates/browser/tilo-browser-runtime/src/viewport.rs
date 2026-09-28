@@ -1,4 +1,13 @@
 //! Viewport work is applied by redraw, and acknowledged only after presentation.
+
+/// Widest or tallest canvas backing store the renderer draws.
+pub(crate) const MAX_SURFACE_SIDE: u32 = 4096;
+/// Pixels one frame renders: a 4K screen. A full-screen canvas on a 6K
+/// Retina display would otherwise be 20 million pixels per compute frame.
+pub(crate) const MAX_SURFACE_PIXELS: u64 = 3840 * 2160;
+/// Device pixel ratio the renderer draws at, whatever the page zoom.
+pub(crate) const MAX_DPR: f64 = 2.0;
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Viewport {
     pub width: u32,
@@ -6,6 +15,36 @@ pub(crate) struct Viewport {
     pub dpr: f64,
 }
 impl Viewport {
+    /// The viewport rendered for an observed canvas extent: the same logical
+    /// size, with a backing store inside the surface caps. The browser scales
+    /// a reduced backing store up to the canvas's CSS size.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss,
+        reason = "canvas sizes are small positive pixel counts, clamped to at least 1"
+    )]
+    pub fn bounded(self) -> Self {
+        if self.width == 0 || self.height == 0 {
+            return self;
+        }
+        let (width, height) = (f64::from(self.width), f64::from(self.height));
+        let scale = (f64::from(MAX_SURFACE_SIDE) / width.max(height))
+            .min((MAX_SURFACE_PIXELS as f64 / (width * height)).sqrt())
+            .min(if self.dpr > MAX_DPR {
+                MAX_DPR / self.dpr
+            } else {
+                1.0
+            });
+        if scale >= 1.0 {
+            return self;
+        }
+        Self {
+            width: ((width * scale).floor() as u32).max(1),
+            height: ((height * scale).floor() as u32).max(1),
+            dpr: self.dpr * scale,
+        }
+    }
     #[allow(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
@@ -20,21 +59,28 @@ impl Viewport {
 }
 
 pub(crate) struct ViewportState {
+    /// The canvas extent winit reports; pointer coordinates are relative to it.
+    observed: (u32, u32),
     requested: Viewport,
     applied: Viewport,
     presented: Option<Viewport>,
     outdated_reconfigured: bool,
 }
 impl ViewportState {
+    /// `viewport` is the observed canvas extent; the state renders it bounded.
     pub fn new(viewport: Viewport) -> Self {
+        let bounded = viewport.bounded();
         Self {
-            requested: viewport,
-            applied: viewport,
+            observed: (viewport.width, viewport.height),
+            requested: bounded,
+            applied: bounded,
             presented: None,
             outdated_reconfigured: false,
         }
     }
-    pub fn request(&mut self, viewport: Viewport) -> bool {
+    pub fn request(&mut self, observed: Viewport) -> bool {
+        self.observed = (observed.width, observed.height);
+        let viewport = observed.bounded();
         if self.requested == viewport {
             return false;
         }
@@ -102,8 +148,8 @@ impl ViewportState {
             return (x, y);
         }
         (
-            x * f64::from(self.applied.width) / f64::from(self.requested.width),
-            y * f64::from(self.applied.height) / f64::from(self.requested.height),
+            x * f64::from(self.applied.width) / f64::from(self.observed.0),
+            y * f64::from(self.applied.height) / f64::from(self.observed.1),
         )
     }
 }
@@ -111,6 +157,56 @@ impl ViewportState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Catches a Retina 6K full-screen canvas reaching the renderer at 20 MP.
+    #[test]
+    fn large_canvases_render_a_bounded_backing_store_at_the_same_logical_size() {
+        let retina_6k = Viewport {
+            width: 6016,
+            height: 3384,
+            dpr: 2.0,
+        };
+        let bounded = retina_6k.bounded();
+        assert!(u64::from(bounded.width) * u64::from(bounded.height) <= MAX_SURFACE_PIXELS);
+        assert!(bounded.width <= MAX_SURFACE_SIDE && bounded.height <= MAX_SURFACE_SIDE);
+        let (lw, lh) = bounded.logical_size();
+        assert!(lw.abs_diff(3008) <= 1 && lh.abs_diff(1692) <= 1, "{lw}x{lh}");
+
+        let zoomed = Viewport {
+            width: 2000,
+            height: 1000,
+            dpr: 4.0,
+        }
+        .bounded();
+        assert_eq!((zoomed.width, zoomed.height, zoomed.dpr), (1000, 500, 2.0));
+
+        let strip = Viewport {
+            width: 10000,
+            height: 200,
+            dpr: 1.0,
+        }
+        .bounded();
+        assert_eq!(strip.width, MAX_SURFACE_SIDE);
+
+        assert_eq!(INITIAL.bounded(), INITIAL);
+    }
+
+    #[test]
+    fn pointer_input_on_a_bounded_canvas_maps_onto_the_rendered_frame() {
+        let observed = Viewport {
+            width: 8000,
+            height: 4000,
+            dpr: 2.0,
+        };
+        let mut state = ViewportState::new(observed);
+        state.did_present();
+        let applied = state.applied();
+        assert!(applied.width < observed.width);
+        let (x, y) = state.map_pointer(4000.0, 2000.0);
+        assert!((x / applied.dpr - 2000.0).abs() < 1.0, "{x}");
+        assert!((y / applied.dpr - 1000.0).abs() < 1.0, "{y}");
+        assert!(!state.request(observed), "an unchanged extent is not a resize");
+    }
     const INITIAL: Viewport = Viewport {
         width: 800,
         height: 600,

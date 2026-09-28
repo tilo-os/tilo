@@ -196,3 +196,17 @@ Adds `ImageCache::atlas_size()`, the atlas's current live side length, for
 ## `vendor/vello_encoding/src/lib.rs`
 
 Re-exports `BumpBudget` from `config`.
+
+## `vendor/vello_shaders/shader/fine.wgsl`
+
+The fine interpreter terminates on any PTCL stream. Upstream loops `while
+true` until `CMD_END`, treats an unknown tag as a no-op that never advances,
+and follows `CMD_JUMP` anywhere — including offset 0, which coarse writes on
+PTCL overflow. A stream coarse did not fully write (a pooled buffer, an
+overflow the fine sentinel missed) can therefore spin forever; on Safari's
+WebGPU that hung the GPU and froze macOS's WindowServer until the watchdog
+rebooted the machine. Fine now stops a tile after `MAX_TILE_COMMANDS`
+commands, on an unknown tag, or on a jump that is not forward and inside the
+buffer, and `fill_segment_count` clamps a fill's segment count to the
+segment buffer. Valid streams render byte-identically (every GPU fixture in
+`vendor/vello/src/lib.rs` passes unchanged).
