@@ -43,8 +43,7 @@ use uuid::Uuid;
 
 use tilo_actions::{
     Action, ActionAddress, ActionArgs, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
-    EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource,
-    ResourceProvider, ResultSpec,
+    EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource, ResultSpec,
 };
 
 use crate::doc::SheetsDoc;
@@ -2022,7 +2021,38 @@ pub fn workbook_root(ctx: &SheetsResourceCtx) -> Resource {
 )]
 pub fn provide_resources(ctx: &SheetsResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
     let mut projection = doc.clone();
-    let mut workbook = workbook_root(ctx);
+    let state = <crate::resource::SheetsWorkbook as ui::tilo_resource::Resource>::read(doc)
+        .unwrap_or_default();
+    // View/Effect ops come from `SheetsWorkbook::local_operations` via publish.
+    // Nested sheet/range/chart rows below remain until those kinds are full
+    // `Resource`s with their own `children()` / declarations.
+    let mut workbook = ui::tilo_resource::publish::<crate::resource::SheetsWorkbook>(
+        "sheets.workbook",
+        "Workbook",
+        &state,
+    );
+    workbook.actions.extend(ctx.palette_actions.clone());
+    // Prompted new-sheet (default name from the open count) is not a
+    // declaration — keep it on the published tree for the palette.
+    let count = ctx.sheet_names.len();
+    if !workbook.actions.iter().any(|a| a.id == "new-sheet") {
+        workbook = workbook.with_action(ActionSpec::prompted(
+            "new-sheet",
+            "New sheet",
+            "Name",
+            "sheet name…",
+            ExecutionLocus::ClientLocal,
+            move |name: &str| {
+                let name = name.trim();
+                let name = if name.is_empty() {
+                    format!("Sheet{}", count + 1)
+                } else {
+                    name.to_string()
+                };
+                encode(&add_sheet_action(&name))
+            },
+        ));
+    }
     for (idx, searchable) in ctx.searchable_sheets.iter().enumerate() {
         let name = &searchable.name;
         let label = if name.trim().is_empty() {
@@ -2285,12 +2315,13 @@ pub(crate) fn searchable_cell_resource(sheet_id: &str, cell: &SearchableCell) ->
     ))
 }
 
-impl ResourceProvider for crate::app::SheetsApp {
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+// Inherent resource publication (was ResourceProvider)
+impl crate::app::SheetsApp {
+    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         provide_resources(&self.sheets_resource_ctx(), doc)
     }
 
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+    pub fn publish_resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
         let ctx = self.sheets_resource_ctx();
         let eager = provide_resources(&ctx, doc);
         let workbook = eager.first()?;

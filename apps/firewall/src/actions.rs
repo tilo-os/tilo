@@ -37,7 +37,7 @@ use serde::{Deserialize, Serialize};
 use tilo_actions::{
     ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec, ConfirmationPolicy,
     DiscoveryScope, Doc, EncodedAction, ExecutionLocus, OperationKind, ParamType,
-    PermissionRequirement, Resource, ResourceProvider, RetryPolicy, RiskLevel,
+    PermissionRequirement, Resource, RetryPolicy, RiskLevel,
 };
 
 use crate::doc::FirewallDoc;
@@ -98,13 +98,16 @@ pub enum FirewallAction {
     SetPanic { on: bool },
     /// Set the master switch — whether the firewall runs at all.
     SetEnabled { on: bool },
+    /// Publish a configuration read from the host, or promote a legacy document
+    /// to native maps. Rule edits stay field actions; this is only that import.
+    PublishImported { config: FirewallConfig },
 }
 
 impl tilo_actions::Action for FirewallAction {
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
-        // No action reads, transforms, then rewrites the whole configuration.
-        // The helpers address a single scalar/map/text object and enforce rule
-        // tombstones before accepting a stale write.
+        // Field edits address one scalar, map, or text object. `PublishImported`
+        // is the one whole-config write: the host import, or a legacy document
+        // promoted to native maps.
         match self {
             FirewallAction::AddRule { zone, rule } => FirewallDoc::add_rule(doc, *zone, rule),
             FirewallAction::EditRule { zone, id, source } => {
@@ -126,6 +129,9 @@ impl tilo_actions::Action for FirewallAction {
             }
             FirewallAction::SetPanic { on } => FirewallDoc::set_panic(doc, *on),
             FirewallAction::SetEnabled { on } => FirewallDoc::set_enabled(doc, *on),
+            FirewallAction::PublishImported { config } => {
+                let _ = FirewallDoc::store(doc, config);
+            }
         }
         Ok(())
     }
@@ -539,8 +545,9 @@ fn rule_resource(kind: ZoneKind, idx: usize, n: usize, r: &Rule) -> Resource {
     rr
 }
 
-impl ResourceProvider for crate::app::FirewallApp {
-    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
+// Inherent resource publication (was ResourceProvider)
+impl crate::app::FirewallApp {
+    pub fn publish_resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
         // Level-triggered: recomputed each frame from the app's current config,
         // which `sync` and every action keep reconciled with the shared
         // document. Empty when the firewall is unavailable / has no zones —

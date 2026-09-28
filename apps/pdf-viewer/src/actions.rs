@@ -32,7 +32,7 @@ use serde::{Deserialize, Serialize};
 use tilo_actions::{
     Action, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
     EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, PermissionRequirement,
-    Resource, ResourceProvider, ResultSpec, RetryPolicy,
+    Resource, ResultSpec, RetryPolicy,
 };
 
 use crate::doc::{ImportedPage, PagePlanEntry, PdfDoc};
@@ -536,7 +536,7 @@ pub enum PdfViewerAction {
         id: String,
         body: String,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        rich: Vec<qdoc_rich_text::ClipBlock>,
+        rich: Vec<tilo_document::ClipBlock>,
     },
     /// Set a comment's resolved flag (the resolve chip toggles it).
     SetCommentResolved {
@@ -553,7 +553,7 @@ pub enum PdfViewerAction {
         body: String,
         /// The reply as written, when it carries more than plain text.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        rich: Vec<qdoc_rich_text::ClipBlock>,
+        rich: Vec<tilo_document::ClipBlock>,
     },
     /// Delete a comment. If it pins a sticky note, the note annotation is
     /// removed too (its cascade drops this comment and any siblings), matching
@@ -629,6 +629,11 @@ pub enum PdfViewerAction {
         #[serde(default)]
         user_space: bool,
     },
+    /// Create the shared page plan for a document that does not have one yet.
+    /// Page ids are deterministic, so two peers seeding the same file agree.
+    EnsurePagePlan {
+        source_page_count: usize,
+    },
 }
 
 impl PdfViewerAction {
@@ -652,6 +657,10 @@ impl Action for PdfViewerAction {
     )]
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         match self {
+            PdfViewerAction::EnsurePagePlan { source_page_count } => {
+                PdfDoc::ensure_page_plan(doc, *source_page_count);
+                PdfDoc::migrate_page_anchors(doc);
+            }
             PdfViewerAction::DuplicatePagePlan {
                 id,
                 new_id,
@@ -1144,7 +1153,7 @@ pub fn set_comment_body_action(id: &str, body: &str) -> PdfViewerAction {
 
 /// Replace a comment's text with what was written in the editor: its
 /// paragraphs as `clips`, its plain text derived from them.
-pub fn set_comment_text_action(id: &str, clips: Vec<qdoc_rich_text::ClipBlock>) -> PdfViewerAction {
+pub fn set_comment_text_action(id: &str, clips: Vec<tilo_document::ClipBlock>) -> PdfViewerAction {
     PdfViewerAction::SetCommentBody {
         id: id.to_string(),
         body: plain_of(&clips),
@@ -1156,7 +1165,7 @@ pub fn set_comment_text_action(id: &str, clips: Vec<qdoc_rich_text::ClipBlock>) 
 pub fn add_reply_text_action(
     comment_id: &str,
     author: &str,
-    clips: Vec<qdoc_rich_text::ClipBlock>,
+    clips: Vec<tilo_document::ClipBlock>,
 ) -> PdfViewerAction {
     PdfViewerAction::AddReply {
         comment_id: comment_id.to_string(),
@@ -1168,7 +1177,7 @@ pub fn add_reply_text_action(
 }
 
 /// The plain text of paragraphs, a line each.
-fn plain_of(clips: &[qdoc_rich_text::ClipBlock]) -> String {
+fn plain_of(clips: &[tilo_document::ClipBlock]) -> String {
     clips
         .iter()
         .map(|clip| clip.text.as_str())
@@ -1183,8 +1192,8 @@ const MAX_COMMENT_CHARS: usize = 100_000;
 /// its plain text `body`; otherwise `body`, a paragraph per line.
 fn comment_text(
     body: &str,
-    rich: &[qdoc_rich_text::ClipBlock],
-) -> Result<Vec<qdoc_rich_text::ClipBlock>, ActionError> {
+    rich: &[tilo_document::ClipBlock],
+) -> Result<Vec<tilo_document::ClipBlock>, ActionError> {
     let refuse = |why: &str| Err(ActionError::Refused(why.to_owned()));
     if body.chars().count() > MAX_COMMENT_CHARS {
         return refuse("the comment is too long");
@@ -1611,6 +1620,68 @@ fn contextual_pages(ctx: &PdfResourceCtx) -> impl Iterator<Item = (usize, &str)>
 )]
 /// Stable document root only; pages, outline entries and annotations are
 /// retained/paged separately and are never materialized for root browsing.
+/// Nested markup catalogue for [`crate::resource::PdfViewer::children`].
+pub(crate) fn markup_children(state: &crate::resource::PdfMarkup) -> Vec<Resource> {
+    let mut children = Vec::new();
+    for (index, page) in state.pages.iter().enumerate().take(64) {
+        children.push(Resource::new(
+            format!("pdf.page:{}", page.id),
+            "pdf.page",
+            format!("Page {}", index.saturating_add(1)),
+        ));
+    }
+    for anno in state.annotations.iter().take(64) {
+        children.push(Resource::new(
+            format!("pdf.annotation:{}", anno.id),
+            "pdf.annotation",
+            format!("Annotation on page {}", anno.page.saturating_add(1)),
+        ));
+    }
+    for comment in state.comments.iter().take(64) {
+        children.push(Resource::new(
+            format!("pdf.comment:{}", comment.id),
+            "pdf.comment",
+            comment.author.clone(),
+        ));
+    }
+    for signature in state.signatures.iter().take(32) {
+        children.push(Resource::new(
+            format!("pdf.signature:{}", signature.id),
+            "pdf.signature",
+            signature.signer.clone(),
+        ));
+    }
+    children
+}
+
+/// Root View/Effect operations for [`crate::resource::PdfViewer::local_operations`].
+pub(crate) fn document_local_operations() -> Vec<ActionSpec> {
+    let ctx = PdfResourceCtx {
+        doc_id: "default".into(),
+        title: "PDF".into(),
+        page: 0,
+        page_count: 0,
+        page_ids: Vec::new(),
+        page_sources: Vec::new(),
+        page_imports: Vec::new(),
+        page_rotations: Vec::new(),
+        author: String::new(),
+        signature_date: String::new(),
+        created_seed: 0,
+        search_query: String::new(),
+        search_whole_word: false,
+        search_case_sensitive: false,
+        search_token: String::new(),
+        search_pages: Vec::new(),
+        outline: Vec::new(),
+    };
+    document_root(&ctx)
+        .actions
+        .into_iter()
+        .filter(|spec| spec.kind != OperationKind::Document)
+        .collect()
+}
+
 pub fn document_root(ctx: &PdfResourceCtx) -> Resource {
     let mut root = Resource::new(
         format!("pdf.document:{}", ctx.doc_id),
@@ -2032,15 +2103,16 @@ pub fn resolve_resource(ctx: &PdfResourceCtx, doc: &AutoCommit, id: &str) -> Opt
     None
 }
 
-impl ResourceProvider for crate::app::PdfApp {
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+// Inherent resource publication (was ResourceProvider)
+impl crate::app::PdfApp {
+    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         match self.pdf_resource_ctx() {
             Some(ctx) => provide_resources(&ctx, doc),
             None => Vec::new(),
         }
     }
 
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+    pub fn publish_resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
         self.pdf_resource_ctx()
             .and_then(|ctx| resolve_resource(&ctx, doc, id))
     }
@@ -2170,7 +2242,9 @@ mod tests {
 
     fn markup_resources(doc: &AutoCommit) -> Vec<Resource> {
         SEEDED.with_borrow(|app| {
-            ResourceProvider::resources(app.as_ref().expect("the contract seed ran first"), doc)
+            app.as_ref()
+                .expect("the contract seed ran first")
+                .publish_resources(doc)
         })
     }
 

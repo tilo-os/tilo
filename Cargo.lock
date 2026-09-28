@@ -316,11 +316,11 @@ dependencies = [
  "ed25519-dalek 3.0.0",
  "hex",
  "photos",
- "qdoc",
  "runtime-collab",
  "runtime-dylib",
  "runtime-identity",
  "runtime-portal",
+ "serde",
  "serde_json",
  "shell",
  "tempfile",
@@ -329,6 +329,7 @@ dependencies = [
  "tilo-automation",
  "tilo-automerge",
  "tilo-content",
+ "tilo-doc",
  "tilo-model-gateway",
  "tilo-reference",
  "tilo-resource",
@@ -1560,7 +1561,6 @@ dependencies = [
  "fnv",
  "mail",
  "pim-lines",
- "qdoc-rich-text",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -1571,6 +1571,7 @@ dependencies = [
  "tilo-app",
  "tilo-automerge",
  "tilo-dav",
+ "tilo-document",
  "tilo-rich-text",
  "tilo-test-env",
  "tracing",
@@ -1627,7 +1628,6 @@ dependencies = [
  "gstreamer-video",
  "image",
  "os-actions",
- "qdoc-pdf",
  "qrcode",
  "rqrr",
  "runtime-dylib",
@@ -1639,6 +1639,7 @@ dependencies = [
  "tilo-app",
  "tilo-clock",
  "tilo-content",
+ "tilo-doc-pdf",
  "tilo-ocr",
  "tilo-test-env",
  "vello",
@@ -1883,8 +1884,6 @@ dependencies = [
  "image",
  "iroh",
  "media",
- "qdoc",
- "qdoc-rich-text",
  "runtime-dylib",
  "runtime-identity",
  "serde",
@@ -1896,6 +1895,8 @@ dependencies = [
  "tilo-automerge",
  "tilo-clock",
  "tilo-content",
+ "tilo-doc",
+ "tilo-document",
  "tilo-reference",
  "tilo-rich-text",
  "tilo-test-env",
@@ -3444,7 +3445,6 @@ dependencies = [
  "blake3",
  "bounded-zip",
  "image",
- "qdoc-rich-text",
  "roxmltree 0.20.0",
  "runtime-dylib",
  "serde",
@@ -3459,6 +3459,7 @@ dependencies = [
  "tilo-automerge",
  "tilo-clock",
  "tilo-content",
+ "tilo-document",
  "tilo-rich-text",
  "tilo-test-env",
  "tracing",
@@ -4028,7 +4029,6 @@ dependencies = [
  "image",
  "iroh",
  "mime_guess",
- "qdoc-codecs",
  "runtime-dylib",
  "runtime-portal",
  "serde",
@@ -4042,6 +4042,7 @@ dependencies = [
  "tilo-app",
  "tilo-automation",
  "tilo-clock",
+ "tilo-doc-codecs",
  "tilo-test-env",
  "tilo-user-identity",
  "tokio",
@@ -4432,8 +4433,6 @@ dependencies = [
  "moka",
  "notify",
  "postcard",
- "qdoc",
- "qdoc-codecs",
  "rand 0.10.1",
  "redb",
  "ref-cast",
@@ -4447,6 +4446,8 @@ dependencies = [
  "tilo-automerge",
  "tilo-clock",
  "tilo-content",
+ "tilo-doc",
+ "tilo-doc-codecs",
  "tilo-power-mgmt",
  "tilo-rt",
  "tilo-test-env",
@@ -8086,8 +8087,6 @@ dependencies = [
  "md-5",
  "mime_guess",
  "pim-lines",
- "qdoc-codecs",
- "qdoc-rich-text",
  "rcgen",
  "reqwest",
  "runtime-dylib",
@@ -8100,6 +8099,8 @@ dependencies = [
  "tilo-app",
  "tilo-automerge",
  "tilo-content",
+ "tilo-doc-codecs",
+ "tilo-document",
  "tilo-net",
  "tilo-oauth",
  "tilo-rich-text",
@@ -8928,8 +8929,6 @@ dependencies = [
  "automerge",
  "blake3",
  "chrono",
- "qdoc",
- "qdoc-rich-text",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -8939,6 +8938,8 @@ dependencies = [
  "tilo-app",
  "tilo-automerge",
  "tilo-content",
+ "tilo-doc",
+ "tilo-document",
  "tilo-rich-text",
  "tilo-test-env",
  "tracing",
@@ -9967,7 +9968,6 @@ dependencies = [
  "automerge",
  "fnv",
  "image",
- "qdoc-rich-text",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -9978,6 +9978,7 @@ dependencies = [
  "tilo-app",
  "tilo-automerge",
  "tilo-content",
+ "tilo-document",
  "tilo-pdf",
  "tilo-rich-text",
  "tilo-test-env",
@@ -10763,14 +10764,15 @@ dependencies = [
  "image",
  "os-actions",
  "private-fs",
- "qdoc-pdf",
  "runtime-dylib",
+ "serde",
  "serde_json",
  "taffy",
  "tempfile",
  "thumbnail",
  "tilo-actions",
  "tilo-app",
+ "tilo-doc-pdf",
  "tilo-ocr",
  "vello",
  "winit",
@@ -10958,68 +10960,6 @@ name = "qcms"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "edecfcd5d755a5e5d98e24cf43113e7cdaec5a070edd0f6b250c03a573da30fa"
-
-[[package]]
-name = "qdoc"
-version = "0.1.0"
-dependencies = [
- "automerge",
- "blake3",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tilo-automerge",
- "tilo-content",
- "tilo-resource",
- "tracing",
- "workspace-hack",
-]
-
-[[package]]
-name = "qdoc-codecs"
-version = "0.1.0"
-dependencies = [
- "automerge",
- "base64",
- "bounded-zip",
- "proptest",
- "pulldown-cmark",
- "qdoc",
- "quick-xml 0.41.0",
- "serde_json",
- "thiserror 2.0.18",
- "tilo-automerge",
- "tilo-content",
- "workspace-hack",
- "zip",
-]
-
-[[package]]
-name = "qdoc-pdf"
-version = "0.1.0"
-dependencies = [
- "flate2",
- "image",
- "qdoc",
- "tilo-content",
- "workspace-hack",
-]
-
-[[package]]
-name = "qdoc-rich-text"
-version = "0.1.0"
-dependencies = [
- "automerge",
- "qdoc",
- "qdoc-codecs",
- "serde",
- "serde_json",
- "tilo-actions",
- "tilo-content",
- "tilo-resource",
- "url",
- "workspace-hack",
-]
 
 [[package]]
 name = "qrcode"
@@ -13073,8 +13013,6 @@ dependencies = [
  "anyhow",
  "atomic-file",
  "automerge",
- "qdoc",
- "qdoc-codecs",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -13083,6 +13021,8 @@ dependencies = [
  "tilo-actions",
  "tilo-app",
  "tilo-automerge",
+ "tilo-doc",
+ "tilo-doc-codecs",
  "tilo-test-env",
  "uuid",
  "vello",
@@ -13147,8 +13087,6 @@ dependencies = [
  "postcard",
  "private-fs",
  "qcms",
- "qdoc",
- "qdoc-codecs",
  "quick-xml 0.41.0",
  "rand_chacha 0.10.0",
  "rand_core 0.10.0",
@@ -13191,6 +13129,8 @@ dependencies = [
  "tilo-desktop",
  "tilo-desktop-entry",
  "tilo-desktop-model",
+ "tilo-doc",
+ "tilo-doc-codecs",
  "tilo-identity-host",
  "tilo-installed-apps",
  "tilo-joined-room",
@@ -13390,9 +13330,6 @@ dependencies = [
  "automerge",
  "bounded-zip",
  "image",
- "qdoc",
- "qdoc-codecs",
- "qdoc-rich-text",
  "quick-xml 0.41.0",
  "runtime-dylib",
  "serde",
@@ -13402,6 +13339,9 @@ dependencies = [
  "tilo-app",
  "tilo-automerge",
  "tilo-content",
+ "tilo-doc",
+ "tilo-doc-codecs",
+ "tilo-document",
  "tilo-rich-text",
  "tilo-test-env",
  "tracing",
@@ -14346,6 +14286,7 @@ dependencies = [
  "portable-pty",
  "runtime-dylib",
  "runtime-portal",
+ "serde",
  "serde_json",
  "serial_test",
  "taffy",
@@ -14753,7 +14694,6 @@ dependencies = [
  "js-sys",
  "notes",
  "postcard",
- "qdoc",
  "serde",
  "serde_json",
  "taffy",
@@ -14768,6 +14708,7 @@ dependencies = [
  "tilo-delivery-protocol",
  "tilo-desktop",
  "tilo-desktop-model",
+ "tilo-doc",
  "tilo-peer-state",
  "tilo-relay-protocol",
  "tilo-ui",
@@ -14859,7 +14800,6 @@ dependencies = [
  "moq-net",
  "postcard",
  "private-fs",
- "qdoc",
  "rand 0.10.1",
  "reqwest",
  "runtime-collab",
@@ -14879,6 +14819,7 @@ dependencies = [
  "tilo-cloud-enrollment",
  "tilo-delivery-protocol",
  "tilo-desktop-model",
+ "tilo-doc",
  "tilo-model-gateway",
  "tilo-moq",
  "tilo-net",
@@ -15086,7 +15027,6 @@ dependencies = [
  "libc",
  "notes",
  "postcard",
- "qdoc",
  "rcgen",
  "rustls",
  "serde",
@@ -15098,6 +15038,7 @@ dependencies = [
  "tilo-browser-runtime",
  "tilo-delivery-protocol",
  "tilo-desktop-model",
+ "tilo-doc",
  "tilo-moq",
  "tilo-peer-state",
  "tilo-relay",
@@ -15112,6 +15053,69 @@ dependencies = [
  "web-time",
  "web-transport-quinn",
  "word-processor",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-doc"
+version = "0.1.0"
+dependencies = [
+ "automerge",
+ "blake3",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tilo-actions",
+ "tilo-automerge",
+ "tilo-content",
+ "tilo-resource",
+ "tracing",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-doc-codecs"
+version = "0.1.0"
+dependencies = [
+ "automerge",
+ "base64",
+ "bounded-zip",
+ "proptest",
+ "pulldown-cmark",
+ "quick-xml 0.41.0",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tilo-automerge",
+ "tilo-content",
+ "tilo-doc",
+ "workspace-hack",
+ "zip",
+]
+
+[[package]]
+name = "tilo-doc-pdf"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "image",
+ "tilo-content",
+ "tilo-doc",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-document"
+version = "0.1.0"
+dependencies = [
+ "automerge",
+ "serde",
+ "serde_json",
+ "tilo-actions",
+ "tilo-content",
+ "tilo-doc",
+ "tilo-doc-codecs",
+ "tilo-resource",
+ "url",
  "workspace-hack",
 ]
 
@@ -15520,7 +15524,6 @@ dependencies = [
  "package-store",
  "postcard",
  "private-fs",
- "qdoc",
  "rand 0.10.1",
  "runtime-identity",
  "sd-notify",
@@ -15538,6 +15541,7 @@ dependencies = [
  "tilo-browser-runtime",
  "tilo-clock",
  "tilo-delivery-protocol",
+ "tilo-doc",
  "tilo-peer-state",
  "tilo-relay-client",
  "tilo-relay-protocol",
@@ -15623,10 +15627,10 @@ dependencies = [
 name = "tilo-rich-text"
 version = "0.1.0"
 dependencies = [
- "qdoc",
- "qdoc-rich-text",
  "serde",
  "tilo-app",
+ "tilo-doc",
+ "tilo-document",
  "tracing",
  "workspace-hack",
 ]
@@ -15819,7 +15823,6 @@ dependencies = [
  "pollster",
  "postcard",
  "private-fs",
- "qdoc",
  "qrcode",
  "rand_core 0.10.0",
  "regex",
@@ -15845,6 +15848,7 @@ dependencies = [
  "tilo-automerge",
  "tilo-content",
  "tilo-desktop-model",
+ "tilo-doc",
  "tilo-font-catalog",
  "tilo-headless-schema",
  "tilo-host",
@@ -17138,13 +17142,13 @@ dependencies = [
  "getrandom 0.4.3",
  "image",
  "pollster",
- "qdoc",
  "serde_json",
  "taffy",
  "tempfile",
  "threshold-identity",
  "tilo-actions",
  "tilo-automerge",
+ "tilo-doc",
  "tilo-resource",
  "tilo-ui",
  "vello",
@@ -19065,10 +19069,6 @@ dependencies = [
  "atomic-file",
  "automerge",
  "fnv",
- "qdoc",
- "qdoc-codecs",
- "qdoc-pdf",
- "qdoc-rich-text",
  "regex",
  "runtime-dylib",
  "serde",
@@ -19079,6 +19079,10 @@ dependencies = [
  "tilo-app",
  "tilo-automerge",
  "tilo-content",
+ "tilo-doc",
+ "tilo-doc-codecs",
+ "tilo-doc-pdf",
+ "tilo-document",
  "tilo-resource",
  "tilo-rich-text",
  "tilo-test-env",

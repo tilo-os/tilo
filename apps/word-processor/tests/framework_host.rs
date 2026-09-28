@@ -2,15 +2,15 @@
 //! record storage, permissions, per-author undo and History mode, driven the
 //! way a person drives the editor — by typing into it.
 
-use qdoc_rich_text::RichText;
+use tilo_document::RichText;
 use ui::framework::testing::TestApp;
 use ui::permissions::Role;
 use word_processor::framework::WordProcessorApp;
 
 fn paragraphs(app: &TestApp<WordProcessorApp>) -> Vec<String> {
     app.read_document(|doc| {
-        let c = qdoc::model::open(doc, &automerge::ROOT).unwrap();
-        qdoc::model::materialize(doc, &c)
+        let c = tilo_doc::model::open(doc, &automerge::ROOT).unwrap();
+        tilo_doc::model::materialize(doc, &c)
             .blocks
             .into_iter()
             .map(|block| block.text)
@@ -38,7 +38,7 @@ fn a_keystroke_is_an_action_and_typing_undoes_a_word_at_a_time() {
             .resource
             .as_ref()
             .map(|resource| resource.kind.as_str()),
-        Some("qdoc.rich-text")
+        Some("tilo.rich-text")
     );
 
     // A word is one step: undo takes back "world", redo restores it, and a
@@ -104,19 +104,19 @@ fn the_document_survives_a_relaunch() {
     assert_eq!(paragraphs(&app), ["kept"]);
     assert_eq!(
         <RichText as ui::tilo_resource::Resource>::KIND,
-        "qdoc.rich-text"
+        "tilo.rich-text"
     );
 }
 
 #[test]
 fn one_apply_creates_a_filled_table_and_one_undo_takes_it_back() {
-    use qdoc_rich_text::action::insert_filled_table_action;
+    use tilo_document::action::insert_filled_table_action;
     let mut app = open();
     app.harness().type_text("These are the people");
     app.flush().unwrap();
     let after = app.read_document(|doc| {
-        let c = qdoc::model::open(doc, &automerge::ROOT).unwrap();
-        qdoc::model::blocks_in_order(doc, &c).remove(0)
+        let c = tilo_doc::model::open(doc, &automerge::ROOT).unwrap();
+        tilo_doc::model::blocks_in_order(doc, &c).remove(0)
     });
     let cells: Vec<Vec<String>> = [["Name", "Role"], ["Priya Natarajan", "Product lead"]]
         .iter()
@@ -140,8 +140,8 @@ fn one_apply_creates_a_filled_table_and_one_undo_takes_it_back() {
         ]
     );
     let kinds = app.read_document(|doc| {
-        let c = qdoc::model::open(doc, &automerge::ROOT).unwrap();
-        qdoc::model::materialize(doc, &c)
+        let c = tilo_doc::model::open(doc, &automerge::ROOT).unwrap();
+        tilo_doc::model::materialize(doc, &c)
             .blocks
             .into_iter()
             .map(|block| block.kind)
@@ -159,8 +159,8 @@ fn one_apply_creates_a_filled_table_and_one_undo_takes_it_back() {
 /// A record holding `paragraphs` paragraphs, pasted through the editor's own
 /// paste action.
 fn long_document(paragraphs: usize) -> TestApp<WordProcessorApp> {
-    use qdoc_rich_text::ClipBlock;
-    use qdoc_rich_text::action::{RegionKind, RichTextAction};
+    use tilo_document::ClipBlock;
+    use tilo_document::action::{RegionKind, RichTextAction};
     let mut app = open();
     let blocks: Vec<ClipBlock> = (0..paragraphs)
         .map(|n| ClipBlock {
@@ -174,8 +174,8 @@ fn long_document(paragraphs: usize) -> TestApp<WordProcessorApp> {
         })
         .collect();
     let first = app.read_document(|doc| {
-        let c = qdoc::model::open(doc, &automerge::ROOT).unwrap();
-        qdoc::model::blocks_in_order(doc, &c).remove(0)
+        let c = tilo_doc::model::open(doc, &automerge::ROOT).unwrap();
+        tilo_doc::model::blocks_in_order(doc, &c).remove(0)
     });
     let paste = RichTextAction::PasteFragment {
         region: RegionKind::Body,
@@ -214,12 +214,12 @@ fn a_keystroke_in_a_long_document_costs_what_it_costs_in_a_short_one() {
 
     // Typing and Enter in the long document never list or sort its
     // paragraphs, and read only the paragraphs around the page on screen.
-    let scans = qdoc::model::ordered_keys_scan_count();
+    let scans = tilo_doc::model::ordered_keys_scan_count();
     let long_cost = keystroke_cost(&mut long);
     long.harness().key("Enter");
     long.harness().type_text("new line");
     assert_eq!(
-        qdoc::model::ordered_keys_scan_count(),
+        tilo_doc::model::ordered_keys_scan_count(),
         scans,
         "a keystroke listed the document's paragraphs"
     );
@@ -241,16 +241,16 @@ fn a_keystroke_in_a_long_document_costs_what_it_costs_in_a_short_one() {
 }
 
 /// The document as stored, formatting included.
-fn snapshot(app: &TestApp<WordProcessorApp>) -> qdoc::DocSnapshot {
+fn snapshot(app: &TestApp<WordProcessorApp>) -> tilo_doc::DocSnapshot {
     app.read_document(|doc| {
-        let c = qdoc::model::open(doc, &automerge::ROOT).unwrap();
-        qdoc::model::materialize(doc, &c)
+        let c = tilo_doc::model::open(doc, &automerge::ROOT).unwrap();
+        tilo_doc::model::materialize(doc, &c)
     })
 }
 
 #[test]
 fn undoing_a_mark_over_several_paragraphs_clears_it_from_every_one() {
-    use qdoc_rich_text::action::{MarkVal, RegionKind, RichTextAction, Span};
+    use tilo_document::action::{MarkVal, RegionKind, RichTextAction, Span};
     use ui::tilo_resource::Invoke;
     let mut app = open();
     let load = RichTextAction::ReplaceBody {

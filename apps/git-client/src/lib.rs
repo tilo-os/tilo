@@ -62,6 +62,7 @@ mod http_transport;
 pub mod model;
 pub mod panels;
 pub mod repo;
+pub mod resource;
 pub mod sample;
 pub mod settings;
 mod ssh_transport;
@@ -100,3 +101,4 @@ pub fn app_root_shot(scenario: Option<&str>) -> Box<dyn Widget> {
     }
     Box::new(app)
 }
+pub use resource::{GitClient, GitClientShell, launch_spec};

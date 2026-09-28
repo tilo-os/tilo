@@ -42,6 +42,7 @@ pub mod backend;
 pub mod doc;
 pub mod model;
 pub mod paint;
+pub mod resource;
 pub mod sample;
 
 pub use app::FirewallApp;
@@ -60,3 +61,4 @@ pub fn app_root() -> Box<dyn Widget> {
 pub fn app_root_demo() -> Box<dyn Widget> {
     Box::new(FirewallApp::new_demo())
 }
+pub use resource::{Firewall, FirewallShell, launch_spec};

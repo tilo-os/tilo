@@ -231,7 +231,7 @@ fn resource_provider_and_search_catalog_stay_bounded_and_refresh_on_revision() {
         let late_task_id = app.model.tasks.last().expect("late task").id;
         app.rebuild_resource_index();
 
-        let root = <CalendarApp as tilo_actions::ResourceProvider>::resources(&app, &doc);
+        let root = CalendarApp::publish_resources(&app, &doc);
         assert_eq!(root.len(), 1);
         assert!(
             app.resource_snapshot_inspected.get()
@@ -241,9 +241,8 @@ fn resource_provider_and_search_catalog_stay_bounded_and_refresh_on_revision() {
         );
 
         let expect_exact = |id: String, kind: &str| {
-            let resource =
-                <CalendarApp as tilo_actions::ResourceProvider>::resource(&app, &doc, &id)
-                    .unwrap_or_else(|| panic!("late stable resource did not resolve: {id}"));
+            let resource = CalendarApp::publish_resource(&app, &doc, &id)
+                .unwrap_or_else(|| panic!("late stable resource did not resolve: {id}"));
             assert_eq!(resource.kind, kind);
             assert!(
                 app.resource_exact_inspected.get() <= 1,
@@ -280,8 +279,7 @@ fn resource_provider_and_search_catalog_stay_bounded_and_refresh_on_revision() {
 
         app.model.tasks.pop();
         assert!(
-            <CalendarApp as tilo_actions::ResourceProvider>::resource(&app, &doc, &task_id)
-                .is_none(),
+            CalendarApp::publish_resource(&app, &doc, &task_id).is_none(),
             "a stale index position must not redirect a deleted stable task id"
         );
         assert_eq!(
@@ -311,12 +309,9 @@ fn resource_provider_and_search_catalog_stay_bounded_and_refresh_on_revision() {
         app.model.tasks = tasks;
         app.rebuild_resource_index();
 
-        let resource = <CalendarApp as tilo_actions::ResourceProvider>::resource(
-            &app,
-            &doc,
-            &crate::actions::task_resource_id(parent.id),
-        )
-        .expect("parent task resolves exactly");
+        let resource =
+            CalendarApp::publish_resource(&app, &doc, &crate::actions::task_resource_id(parent.id))
+                .expect("parent task resolves exactly");
         assert!(
             app.resource_exact_inspected.get() <= 1,
             "parent resolution must not walk its children"
@@ -397,7 +392,7 @@ fn resource_provider_and_search_catalog_stay_bounded_and_refresh_on_revision() {
             owner: crate::actions::NoteOwner::Event {
                 id: event.to_string(),
             },
-            edit: qdoc_rich_text::RichTextAction::AppendParagraph {
+            edit: tilo_document::RichTextAction::AppendParagraph {
                 text: "post hydration note needle".to_string(),
             },
         }
@@ -469,7 +464,7 @@ fn resource_provider_and_search_catalog_stay_bounded_and_refresh_on_revision() {
             })
             .expect("calendar collection is indexed by canonical address");
         assert_eq!(hit.title, calendar.label);
-        let resource = <CalendarApp as tilo_actions::ResourceProvider>::resource(
+        let resource = CalendarApp::publish_resource(
             &app,
             &doc,
             &crate::actions::calendar_resource_id(&calendar.id),
@@ -2022,12 +2017,9 @@ fn detail_choices_and_invitation_handoff_are_exact_resource_actions() {
                 .any(|(_, action)| matches!(action, Action::OpenTaskPopover(TaskPopover::Project)))
         );
 
-        let task = <CalendarApp as tilo_actions::ResourceProvider>::resource(
-            &app,
-            &state,
-            &crate::actions::task_resource_id(id),
-        )
-        .expect("selected task resource");
+        let task =
+            CalendarApp::publish_resource(&app, &state, &crate::actions::task_resource_id(id))
+                .expect("selected task resource");
         let due = chrono::NaiveDate::from_ymd_opt(2026, 9, 9).unwrap();
         let due_spec = task
             .actions
@@ -2705,7 +2697,7 @@ fn accessibility_exports_named_stable_controls_that_reuse_actions() {
         assert_eq!(visibility.role, Role::Checkbox);
         assert_eq!(visibility.state.checked, Some(before));
 
-        let resource = <CalendarApp as tilo_actions::ResourceProvider>::resource(
+        let resource = CalendarApp::publish_resource(
             &app,
             &state,
             &crate::actions::calendar_resource_id(&calendar_id),
@@ -2740,7 +2732,7 @@ fn accessibility_exports_named_stable_controls_that_reuse_actions() {
         // Rebuild the hit map after the pointer action. Its newly published
         // resource action carries the opposite absolute state for the
         // screen-reader checkbox as well.
-        let resource = <CalendarApp as tilo_actions::ResourceProvider>::resource(
+        let resource = CalendarApp::publish_resource(
             &app,
             &state,
             &crate::actions::calendar_resource_id(&calendar_id),
@@ -3400,12 +3392,8 @@ fn calendar_visibility_and_account_collapse_filter_views_and_sidebar() {
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &automerge::ROOT);
         app.calendar_filter = Some("work/default".into());
-        let root = <CalendarApp as tilo_actions::ResourceProvider>::resource(
-            &app,
-            &doc,
-            "calendar.calendar",
-        )
-        .expect("calendar root is addressable");
+        let root = CalendarApp::publish_resource(&app, &doc, "calendar.calendar")
+            .expect("calendar root is addressable");
         assert!(
             root.actions
                 .iter()

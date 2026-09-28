@@ -178,7 +178,7 @@ pub struct AppearancePane {
     /// draft key and this host dispatches the same action exported by Settings'
     /// resource tree; a click, keyboard activation, Ctrl+K, replay, and undo
     /// therefore all share one canonical mutation path.
-    actions: ui::ActionHost,
+    actions: crate::resource::ActionSink,
     composed: Option<Box<dyn Widget>>,
     rect: Rect,
 }
@@ -205,7 +205,7 @@ impl AppearancePane {
             wallpaper_status: None,
             structure_dirty: false,
             commit_context_pending: false,
-            actions: ui::ActionHost::new(),
+            actions: crate::resource::ActionSink::default(),
             composed: None,
             rect: Rect::ZERO,
         }
@@ -435,7 +435,7 @@ impl AppearancePane {
     /// picture through the Wallpaper portal.
     fn sync_wallpaper(&mut self, state: &mut AutoCommit, root: &ObjId) {
         if read_bool(state, root, WALLPAPER_CHOOSE_KEY).unwrap_or(false) {
-            let _ = state.put(root, WALLPAPER_CHOOSE_KEY, false);
+            self.dispatch(state, &set_bool_action(WALLPAPER_CHOOSE_KEY, false));
             if self.wallpaper_pick.is_none() && self.wallpaper_apply.is_none() {
                 self.wallpaper_pick = Some(
                     ui::portal::PickRequest::open("Choose a wallpaper", "Choose")
@@ -570,6 +570,13 @@ impl AppearancePane {
         );
     }
 
+    pub(crate) fn bind_dispatcher(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Settings>,
+    ) {
+        self.actions.attach(dispatcher);
+    }
+
     /// Reconcile a dropdown draft with its action-owned value. The draft is
     /// presentation state only; it is deliberately never read by other apps
     /// or published as a setting.
@@ -669,7 +676,7 @@ impl Widget for AppearancePane {
                     target_label(&self.prefs.wallpaper_target),
                 ),
             );
-            let _ = state.put(root, WALLPAPER_CHOOSE_KEY, false);
+            self.dispatch(state, &set_bool_action(WALLPAPER_CHOOSE_KEY, false));
             self.needs_seed = false;
         }
         self.sync_wallpaper(state, root);

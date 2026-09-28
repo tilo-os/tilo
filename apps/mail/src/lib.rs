@@ -68,6 +68,7 @@ pub mod i18n;
 pub mod model;
 pub mod oauth;
 pub mod pane;
+pub mod resource;
 pub mod sample;
 pub mod search_provider;
 pub mod shortcuts_overlay;
@@ -136,3 +137,4 @@ pub fn app_root_scenario(scenario: &str) -> Box<dyn Widget> {
     }
     Box::new(app)
 }
+pub use resource::{Mail, MailShell};

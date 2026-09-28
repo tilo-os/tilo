@@ -50,6 +50,7 @@ mod lint;
 pub mod lsp;
 pub mod model;
 pub mod native_fixture;
+pub mod resource;
 mod sample_project;
 mod search;
 pub mod search_provider;
@@ -168,3 +169,4 @@ mod tests {
         }
     }
 }
+pub use resource::{CodeEditor, CodeEditorShell};

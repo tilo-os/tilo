@@ -21,7 +21,7 @@ use automerge::{AutoCommit, ROOT};
 use serde::{Deserialize, Serialize};
 use tilo_actions::{
     Action, ActionContract, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction,
-    ExecutionLocus, OperationKind, Resource, ResourceProvider, RetryPolicy,
+    ExecutionLocus, OperationKind, Resource, RetryPolicy,
 };
 
 use crate::doc::{BackupsDoc, PolicyField};
@@ -553,8 +553,9 @@ fn snapshot_resource(snapshot: &Snapshot, configured: bool, unavailable_reason: 
     resource
 }
 
-impl ResourceProvider for crate::app::BackupsApp {
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+// Inherent resource publication (was ResourceProvider)
+impl crate::app::BackupsApp {
+    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         // Level-triggered: recomputed each frame from the document, the source of
         // truth every action reads and writes.
         provide_resources_with_unavailable_reason(
@@ -565,7 +566,7 @@ impl ResourceProvider for crate::app::BackupsApp {
         )
     }
 
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+    pub fn publish_resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
         resource_with_unavailable_reason(
             &BackupsDoc::policy(doc, &ROOT),
             self.resource_catalog(),

@@ -113,6 +113,10 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The ordinary GUI, screenshots, and headless driver share the standard
     // lifecycle. Probe/benchmark remain explicit command modes above:
     // they do not construct a GUI and therefore are not launch lifecycle.
+    if !music::standalone_launch() {
+        ui::framework::run::<music::MusicShell>();
+        return Ok(());
+    }
     ui::launch::run(
         &LaunchSpec::new_with_args("so.tilo.music", music::app_root_with_args)
             .shot_handler(render_shot)

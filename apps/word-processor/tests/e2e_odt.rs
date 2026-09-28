@@ -27,10 +27,10 @@ fn temp_path(name: &str) -> PathBuf {
 /// Author a `.odt` on disk containing a single paragraph.
 fn author_odt(path: &Path, text: &str) {
     let mut state = ui::State::new();
-    let c = qdoc::model::init(&mut state.doc, &state.root);
-    let mut ids = qdoc::IdGen::new(state.doc.get_actor().to_hex_string());
+    let c = tilo_doc::model::init(&mut state.doc, &state.root);
+    let mut ids = tilo_doc::IdGen::new(state.doc.get_actor().to_hex_string());
     {
-        let mut dm = qdoc::DocMut {
+        let mut dm = tilo_doc::DocMut {
             doc: &mut state.doc,
             c: &c,
             ids: &mut ids,
@@ -209,7 +209,7 @@ fn odt_and_markdown_edits_survive_save_and_reload() {
         let snap = ed.snapshot(&s2.doc);
         assert_eq!(
             snap.blocks[0].attrs.get("style"),
-            Some(&qdoc::AttrVal::Str("callout".into())),
+            Some(&tilo_doc::AttrVal::Str("callout".into())),
             "block keeps its named-style ref: {:?}",
             snap.blocks[0].attrs
         );

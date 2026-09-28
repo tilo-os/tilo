@@ -864,8 +864,8 @@ fn browser_writer_incremental_survives_host_restart_and_fresh_checkpoints() {
     doc.set_actor(automerge::ActorId::from(
         device.verifying_key().to_bytes().to_vec(),
     ));
-    let model = qdoc::model::open(&doc, &automerge::ROOT).unwrap();
-    let block = qdoc::model::blocks_in_order(&doc, &model)[0].clone();
+    let model = tilo_doc::model::open(&doc, &automerge::ROOT).unwrap();
+    let block = tilo_doc::model::blocks_in_order(&doc, &model)[0].clone();
     let expected = "Hosted native persistence proof. AWS hosted workspace verification.";
     word_processor::actions::RichTextAction::SpliceText {
         region: word_processor::actions::RegionKind::Body,
@@ -904,10 +904,10 @@ fn browser_writer_incremental_survives_host_restart_and_fresh_checkpoints() {
     let restored = store.peer_at(14).unwrap();
     assert_eq!(heads, restored.rows());
     let doc = automerge::AutoCommit::load(&restored.document(app, record).unwrap()).unwrap();
-    let model = qdoc::model::open(&doc, &automerge::ROOT).unwrap();
-    let text = qdoc::model::blocks_in_order(&doc, &model)
+    let model = tilo_doc::model::open(&doc, &automerge::ROOT).unwrap();
+    let text = tilo_doc::model::blocks_in_order(&doc, &model)
         .iter()
-        .filter_map(|id| qdoc::model::block_text(&doc, &model, id))
+        .filter_map(|id| tilo_doc::model::block_text(&doc, &model, id))
         .collect::<Vec<_>>()
         .join("\n");
     assert_eq!(text, expected);
@@ -1129,8 +1129,8 @@ fn reordered_browser_writer_deltas_survive_restart_and_late_predecessor() {
     doc.set_actor(automerge::ActorId::from(
         device.verifying_key().to_bytes().to_vec(),
     ));
-    let model = qdoc::model::open(&doc, &automerge::ROOT).unwrap();
-    let block = qdoc::model::blocks_in_order(&doc, &model)[0].clone();
+    let model = tilo_doc::model::open(&doc, &automerge::ROOT).unwrap();
+    let block = tilo_doc::model::blocks_in_order(&doc, &model)[0].clone();
     let mut messages = Vec::new();
     for (at, text) in ["A", "B"].iter().enumerate() {
         let heads = doc.get_heads();
@@ -1164,10 +1164,10 @@ fn reordered_browser_writer_deltas_survive_restart_and_late_predecessor() {
     let store = Store::open(dir.path(), "reordered-proof").unwrap();
     let peer = store.peer_at(14).unwrap();
     let actual = automerge::AutoCommit::load(&peer.document(app, record).unwrap()).unwrap();
-    let model = qdoc::model::open(&actual, &automerge::ROOT).unwrap();
-    let text = qdoc::model::blocks_in_order(&actual, &model)
+    let model = tilo_doc::model::open(&actual, &automerge::ROOT).unwrap();
+    let text = tilo_doc::model::blocks_in_order(&actual, &model)
         .iter()
-        .filter_map(|id| qdoc::model::block_text(&actual, &model, id))
+        .filter_map(|id| tilo_doc::model::block_text(&actual, &model, id))
         .collect::<Vec<_>>()
         .join("\n");
     assert_eq!(text, "AB");
@@ -1635,8 +1635,8 @@ async fn accepted_guest_document_logs_exact_durable_route_transition() {
     doc.set_actor(automerge::ActorId::from(
         guest_device.verifying_key().to_bytes().to_vec(),
     ));
-    let model = qdoc::model::open(&doc, &automerge::ROOT).unwrap();
-    let block = qdoc::model::blocks_in_order(&doc, &model)[0].clone();
+    let model = tilo_doc::model::open(&doc, &automerge::ROOT).unwrap();
+    let block = tilo_doc::model::blocks_in_order(&doc, &model)[0].clone();
     word_processor::actions::RichTextAction::SpliceText {
         region: word_processor::actions::RegionKind::Body,
         block,

@@ -279,8 +279,8 @@ mod tests {
         b.try_open_record(&checkout).unwrap();
         let mutate = |store: &ui::record::RecordStore, text: &str| {
             let mut doc = store.read(&checkout.id, Clone::clone).unwrap();
-            let containers = qdoc::model::open(&doc, &automerge::ROOT).unwrap();
-            let block = qdoc::model::blocks_in_order(&doc, &containers)[0].clone();
+            let containers = tilo_doc::model::open(&doc, &automerge::ROOT).unwrap();
+            let block = tilo_doc::model::blocks_in_order(&doc, &containers)[0].clone();
             word_processor::actions::RichTextAction::SpliceText {
                 region: word_processor::actions::RegionKind::Body,
                 block,

@@ -33,14 +33,14 @@ atomic-file = { path = "../../crates/system/atomic-file" }
 # Only pulled in under `--features thin`; see the `thin` feature above.
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 tilo-actions = { path = "../../crates/collab/actions" }
-qdoc = { path = "../../crates/doc/qdoc" }
+tilo-doc = { path = "../../crates/doc/tilo-doc" }
 tilo-resource = { path = "../../crates/sdk/tilo-resource" }
-qdoc-rich-text = { path = "../../crates/doc/qdoc-rich-text" }
+tilo-document = { path = "../../crates/doc/tilo-document" }
 # Comment replies are written in the SDK rich-text editor, embedded.
 tilo-rich-text = { path = "../../crates/sdk/tilo-rich-text" }
-qdoc-codecs = { path = "../../crates/doc/qdoc-codecs", default-features = false, features = ["markdown", "html", "rtf", "epub", "docx", "odt"] }
+tilo-doc-codecs = { path = "../../crates/doc/tilo-doc-codecs", default-features = false, features = ["markdown", "html", "rtf", "epub", "docx", "odt"] }
 spellcheck = { path = "../../crates/text/spellcheck" }
-qdoc-pdf = { path = "../../crates/doc/qdoc-pdf" }
+tilo-doc-pdf = { path = "../../crates/doc/tilo-doc-pdf" }
 # Content addressing everywhere; the on-disk and device stores only natively
 # (the browser build keeps content in memory).
 tilo-content = { path = "../../crates/system/content", default-features = false }

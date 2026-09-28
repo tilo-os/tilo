@@ -2079,10 +2079,10 @@ impl Widget for HexView {
 
     /// Publish the open buffer + its byte-edit actions so the shell's Ctrl+K
     /// action palette scopes to them. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
+    /// [``]() impl in
     /// [`crate::actions`].
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+        Self::publish_resources(self, doc)
     }
 
     fn name(&self) -> &'static str {

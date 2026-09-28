@@ -1,8 +1,8 @@
 //! Immutable body-text pages over the actual qdoc layout. Not a public action or authority witness.
 pub mod action;
 use automerge::AutoCommit;
-use qdoc::semantic_read::{Basis, Limits, ReadError, TextPosition};
 use serde::{Deserialize, Serialize};
+use tilo_doc::semantic_read::{Basis, Limits, ReadError, TextPosition};
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Cursor {
@@ -38,8 +38,8 @@ pub(crate) fn read_error(error: &ReadError) -> ui::semantic_document_read::Seman
     }
 }
 use automerge::{ObjId, ObjType, ROOT};
-use qdoc::semantic_read::{json_len, source::Source};
 use std::{cmp::Ordering, ops::ControlFlow};
+use tilo_doc::semantic_read::{json_len, source::Source};
 struct Candidate {
     id: String,
     order: Vec<u8>,
@@ -63,7 +63,7 @@ pub fn read_text(
     read_text_at(doc, owner_heads, &ROOT, cursor, limits)
 }
 /// One order scan retains only the next requested number of blocks plus one lookahead.
-/// Invalid order rows are skipped exactly as `qdoc::model::blocks_in_order` does; valid oversized
+/// Invalid order rows are skipped exactly as `tilo_doc::model::blocks_in_order` does; valid oversized
 /// metadata or exhausted scan work refuses the page rather than silently dropping content.
 ///
 /// # Errors
@@ -107,12 +107,12 @@ fn read_source(
         json_len(cursor, 1024).map_err(|_| ReadError::InvalidCursor)?;
     }
     let blocks = source
-        .object(root, qdoc::schema::KEY_BLOCKS, ObjType::Map)?
+        .object(root, tilo_doc::schema::KEY_BLOCKS, ObjType::Map)?
         .ok_or(ReadError::Malformed)?;
     for key in [
-        qdoc::schema::KEY_STYLES,
-        qdoc::schema::KEY_PRESERVED,
-        qdoc::schema::KEY_META,
+        tilo_doc::schema::KEY_STYLES,
+        tilo_doc::schema::KEY_PRESERVED,
+        tilo_doc::schema::KEY_META,
     ] {
         source
             .object(root, key, ObjType::Map)?
@@ -125,7 +125,7 @@ fn read_source(
         let Some(block) = value.object(ObjType::Map) else {
             return Ok(ControlFlow::Continue(()));
         };
-        source.bytes(&block, qdoc::schema::BLOCK_ORDER, |order| {
+        source.bytes(&block, tilo_doc::schema::BLOCK_ORDER, |order| {
             if order.len() > 256 || key.len() > 256 {
                 return Err(ReadError::Limit);
             }
@@ -175,11 +175,15 @@ fn read_source(
             .filter(|c| c.block == candidate.id && !c.finished)
             .map(|c| c.position)
             .unwrap_or_default();
-        let text = source.object(&candidate.object, qdoc::schema::BLOCK_TEXT, ObjType::Text)?;
+        let text = source.object(
+            &candidate.object,
+            tilo_doc::schema::BLOCK_TEXT,
+            ObjType::Text,
+        )?;
         let previous = page.next.take();
         page.segments.push(Segment {
             block: candidate.id.clone(),
-            kind: source.string(&candidate.object, qdoc::schema::BLOCK_KIND, 64)?,
+            kind: source.string(&candidate.object, tilo_doc::schema::BLOCK_KIND, 64)?,
             text: String::new(),
             complete: false,
         });

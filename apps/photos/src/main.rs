@@ -58,6 +58,12 @@ const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 extern crate runtime_dylib;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Default live path: framework-hosted ResourceApp. Shots, imports and
+    // explicit file opens keep the standalone widget launcher.
+    if !photos::standalone_launch() {
+        ui::framework::run::<photos::PhotosShell>();
+        return Ok(());
+    }
     ui::launch::run(
         &LaunchSpec::new_with_args("so.tilo.photos", live_root)
             .history(&photos::framework_history::HISTORY)

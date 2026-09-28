@@ -593,13 +593,9 @@ pub struct CalendarApp {
     resource_import_invocation: Option<tilo_actions::InvocationId>,
     resource_import_result: Option<tilo_actions::InvocationUpdate>,
 
-    /// Framework-owned action dispatch. Each on-screen affordance dispatches its
-    /// [`CalendarAction`](crate::actions::CalendarAction) through this: the host
-    /// brackets the undo boundary, applies the action through the executor (so it
-    /// replays byte-identically on peers, exactly as the Ctrl+K palette does), and
-    /// records the last one so a test can prove a button and its
-    /// [`ActionSpec`](tilo_actions::ActionSpec) build the identical action.
-    actions: ui::ActionHost,
+    /// Framework-owned action dispatch. Hosted via
+    /// [`crate::resource::ActionSink`]; standalone tests use the local host.
+    actions: crate::resource::ActionSink,
 
     /// The exact encoded non-document operation an on-screen Calendar control
     /// sent through the resource-operation boundary. This is test-only because
@@ -842,7 +838,7 @@ impl CalendarApp {
             launch_import_emitted: false,
             resource_import_invocation: None,
             resource_import_result: None,
-            actions: ui::ActionHost::new(),
+            actions: crate::resource::ActionSink::default(),
             #[cfg(test)]
             last_local_resource_operation: None,
             model_heads: Vec::new(),
@@ -850,6 +846,21 @@ impl CalendarApp {
         app.observe_calendar_projection();
         app.rebuild_resource_index();
         app
+    }
+
+    /// Adopt the framework's live model projection.
+    pub(crate) fn adopt_resource_state(&mut self, state: &std::rc::Rc<crate::model::Model>) {
+        self.model = (**state).clone();
+        self.dirty = true;
+        self.rebuild_resource_index();
+    }
+
+    /// Attach the framework dispatcher when hosted as a surface.
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Calendar>,
+    ) {
+        self.actions.attach(dispatcher);
     }
 
     // --- shots-only configuration (no effect on live runtime behaviour) --
@@ -1466,7 +1477,7 @@ impl CalendarApp {
         };
         let context = crate::actions::history_context(&crate::actions::CalendarAction::EditNotes {
             owner: note_owner.clone(),
-            edit: qdoc_rich_text::RichTextAction::AppendParagraph {
+            edit: tilo_document::RichTextAction::AppendParagraph {
                 text: String::new(),
             },
         });
@@ -1803,12 +1814,7 @@ impl CalendarApp {
     /// feedback and reconciled from the document on the next `sync`. This app
     /// supplies only its domain: the action and its type.
     fn perform_action(&mut self, doc: &mut AutoCommit, action: &crate::actions::CalendarAction) {
-        self.actions.dispatch_with_context(
-            doc,
-            crate::actions::CALENDAR_ACTION_TYPE,
-            action,
-            crate::actions::history_context(action),
-        );
+        self.actions.dispatch(doc, action);
     }
 
     /// Send a local effect through the same typed resource-operation protocol
@@ -6751,7 +6757,7 @@ impl Widget for CalendarApp {
     }
 
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        let mut resources = <Self as tilo_actions::ResourceProvider>::resources(self, doc);
+        let mut resources = Self::publish_resources(self, doc);
         resources.extend(self.pending_launch_resource());
         resources
     }
@@ -6776,7 +6782,7 @@ impl Widget for CalendarApp {
         if id == "calendar.pending-import" {
             return self.pending_launch_resource();
         }
-        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
+        Self::publish_resource(self, doc, id)
     }
 
     /// Hand the host the heads captured before an on-screen affordance dispatched

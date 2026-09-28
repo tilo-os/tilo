@@ -55,8 +55,8 @@ fn click(wp: &mut WordProcessorWidget, state: &mut ui::State, pt: Point) {
 
 /// Document text as the reader sees it, joined across blocks.
 fn body(state: &ui::State) -> String {
-    let c = qdoc::model::open(&state.doc, &state.root).expect("qdoc schema");
-    qdoc::model::materialize(&state.doc, &c)
+    let c = tilo_doc::model::open(&state.doc, &state.root).expect("qdoc schema");
+    tilo_doc::model::materialize(&state.doc, &c)
         .blocks
         .iter()
         .map(|b| b.text.clone())
@@ -84,10 +84,10 @@ fn editor_with_history(w: u32, h: u32) -> Framed<WordProcessorWidget> {
     let mut bob = state.doc.fork();
     bob.set_actor(automerge::ActorId::from("bob".as_bytes()));
     {
-        let c = qdoc::model::open(&bob, &state.root).expect("qdoc schema");
-        let blocks = qdoc::model::materialize(&bob, &c).blocks;
-        let mut ids = qdoc::IdGen::new(bob.get_actor().to_hex_string());
-        let mut dm = qdoc::DocMut {
+        let c = tilo_doc::model::open(&bob, &state.root).expect("qdoc schema");
+        let blocks = tilo_doc::model::materialize(&bob, &c).blocks;
+        let mut ids = tilo_doc::IdGen::new(bob.get_actor().to_hex_string());
+        let mut dm = tilo_doc::DocMut {
             doc: &mut bob,
             c: &c,
             ids: &mut ids,

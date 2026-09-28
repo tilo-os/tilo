@@ -5,8 +5,8 @@ use std::ops::Range;
 use std::rc::Rc;
 use ui::widget::{AppModel, ModelPath};
 
-use qdoc::snapshot::BlockView;
-use qdoc_rich_text::{ChangeCursor, RichText, RichTextAction, RichTextState};
+use tilo_doc::snapshot::BlockView;
+use tilo_document::{ChangeCursor, RichText, RichTextAction, RichTextState};
 use ui::automerge::{AutoCommit, ChangeHash};
 use ui::framework::{ResourceSurface, SurfaceCx};
 use ui::tilo_actions::ActionError;
@@ -670,7 +670,7 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use qdoc_rich_text::RICH_TEXT_ACTION_TYPE;
+    use tilo_document::RICH_TEXT_ACTION_TYPE;
     use ui::automerge::ROOT;
     use ui::headless::FrameHarness;
     use ui::tilo_actions::Action;

@@ -965,7 +965,7 @@ impl Store {
     /// Visible text bytes of every Writer record a task's scopes name, from
     /// the committed Store documents.
     fn covered_writer_text_bytes(&self, grants: &[GrantAction]) -> Option<u64> {
-        fn bytes(blocks: &[qdoc::snapshot::BlockView]) -> u64 {
+        fn bytes(blocks: &[tilo_doc::snapshot::BlockView]) -> u64 {
             blocks
                 .iter()
                 .map(|b| b.text.len() as u64 + bytes(&b.children))
@@ -984,13 +984,13 @@ impl Store {
                     continue;
                 };
                 let doc = ui::automerge::AutoCommit::load(&document).ok()?;
-                let Ok(containers) = qdoc::model::open(&doc, &ui::automerge::ROOT) else {
+                let Ok(containers) = tilo_doc::model::open(&doc, &ui::automerge::ROOT) else {
                     continue;
                 };
-                total += bytes(&qdoc::model::materialize_region(
+                total += bytes(&tilo_doc::model::materialize_region(
                     &doc,
                     &containers,
-                    qdoc::model::Region::Body,
+                    tilo_doc::model::Region::Body,
                 ));
             }
         }

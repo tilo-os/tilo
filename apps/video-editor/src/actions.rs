@@ -44,7 +44,7 @@ use uuid::Uuid;
 use tilo_actions::{
     Action, ActionAddress, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry,
     ActionSpec, Doc, EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType,
-    Resource, ResourceProvider, ResultSpec, RetryPolicy,
+    Resource, ResultSpec, RetryPolicy,
 };
 
 use crate::curve::Curve;
@@ -3922,8 +3922,9 @@ fn parse_transition(s: &str) -> Transition {
     }
 }
 
-impl ResourceProvider for crate::app::VideoEditorApp {
-    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
+// Inherent resource publication (was ResourceProvider)
+impl crate::app::VideoEditorApp {
+    pub fn publish_resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
         provide_resources(&self.video_resource_ctx())
     }
 }

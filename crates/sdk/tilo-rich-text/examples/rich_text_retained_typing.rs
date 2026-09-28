@@ -13,7 +13,7 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
-use qdoc_rich_text::{RICH_TEXT_ACTION_TYPE, RichText, RichTextAction};
+use tilo_document::{RICH_TEXT_ACTION_TYPE, RichText, RichTextAction};
 use tilo_rich_text::{RichTextField, RichTextSurface};
 use ui::automerge::{AutoCommit, ROOT};
 use ui::bound_dispatch::BoundNodeMap;

@@ -42,6 +42,9 @@ pub(crate) struct ResourceRoot<R: Resource> {
     write: Option<PermissionScope>,
     stages: Stages,
     content: Element,
+    /// View and effect operations of the app's presentation, attached to the
+    /// published resource. Document specs are dropped.
+    presentation: Vec<tilo_actions::ActionSpec>,
     /// The resource's search entries at one live revision, indexed.
     search: std::cell::RefCell<Option<(u64, Arc<IndexedEntries>)>>,
 }
@@ -77,8 +80,14 @@ impl<R: Resource> ResourceRoot<R> {
             write: None,
             stages,
             content,
+            presentation: Vec::new(),
             search: std::cell::RefCell::new(None),
         }
+    }
+
+    pub(crate) fn with_presentation(mut self, operations: Vec<tilo_actions::ActionSpec>) -> Self {
+        self.presentation = operations;
+        self
     }
 
     /// Stage a screenshot scenario's view state: every view's
@@ -262,21 +271,39 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
     fn resources_for(
         &self,
         participant: Option<&tilo_actions::ParticipantId>,
-        doc: &AutoCommit,
+        _doc: &AutoCommit,
     ) -> Vec<tilo_actions::Resource> {
-        let mut resources = vec![tilo_resource::publish::<R>(
-            self.dispatch.resource_id(),
-            &self.label,
-            &self.live.get(),
-        )];
-        resources.extend(self.content.resources_for(participant, doc));
-        resources
+        // One publish path: nested resources come from `Resource::children`,
+        // not a second hand-built tree from the surface widget.
+        let _ = participant;
+        let mut resource =
+            tilo_resource::publish::<R>(self.dispatch.resource_id(), &self.label, &self.live.get());
+        for spec in &self.presentation {
+            if spec.kind == tilo_actions::OperationKind::Document {
+                continue;
+            }
+            if resource
+                .actions
+                .iter()
+                .any(|existing| existing.id == spec.id)
+            {
+                continue;
+            }
+            resource = resource.with_action(spec.clone());
+        }
+        vec![resource]
     }
 
     // The undo boundary of a surface's immediate actions this event; the
     // host records one step per event and author.
     fn take_committed_action(&mut self) -> Option<Vec<ui_core::automerge::ChangeHash>> {
         self.dispatch.take_committed()
+    }
+
+    fn take_action_revert(
+        &mut self,
+    ) -> Option<(tilo_actions::EncodedAction, tilo_actions::EncodedAction)> {
+        self.dispatch.take_action_revert()
     }
 
     // A surface's step stays open for the actions that continue it (the

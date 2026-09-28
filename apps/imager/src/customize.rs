@@ -935,8 +935,11 @@ impl CustomizePanel {
     pub fn handle_event(
         &mut self,
         event: &WindowEvent,
-        ctx: &mut ui::widget::EventCtx<'_>,
-        host: &mut ui::ActionHost,
+        scale: f64,
+        modifiers: &Modifiers,
+        doc: &mut AutoCommit,
+        path: &automerge::ObjId,
+        host: &mut crate::resource::ActionSink,
         profile: &InstallProfile,
         target_removable: bool,
         content: Rect,
@@ -1016,8 +1019,11 @@ impl CustomizePanel {
     fn handle_left_click(
         &mut self,
         event: &WindowEvent,
-        ctx: &mut ui::widget::EventCtx<'_>,
-        host: &mut ui::ActionHost,
+        scale: f64,
+        modifiers: Modifiers,
+        doc: &mut AutoCommit,
+        path: &automerge::ObjId,
+        host: &mut crate::resource::ActionSink,
         profile: &InstallProfile,
         _target_removable: bool,
         g: &CzGeom,
@@ -1085,7 +1091,11 @@ impl CustomizePanel {
         event: &WindowEvent,
         ctx: &mut ui::widget::EventCtx<'_>,
         key_ev: &winit::event::KeyEvent,
-        host: &mut ui::ActionHost,
+        scale: f64,
+        modifiers: Modifiers,
+        doc: &mut AutoCommit,
+        path: &automerge::ObjId,
+        host: &mut crate::resource::ActionSink,
         g: &CzGeom,
     ) -> CzResponse {
         if self.export_focused {
@@ -1232,7 +1242,11 @@ impl CustomizePanel {
         }
     }
 
-    fn dispatch(doc: &mut AutoCommit, host: &mut ui::ActionHost, action: &ImagerAction) {
+    fn dispatch(
+        doc: &mut AutoCommit,
+        host: &mut crate::resource::ActionSink,
+        action: &ImagerAction,
+    ) {
         host.dispatch_with_context(
             doc,
             IMAGER_ACTION_TYPE,

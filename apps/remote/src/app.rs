@@ -712,7 +712,7 @@ pub struct RemoteApp {
     /// connection is added, edited, renamed, favourited, or deleted. It brackets
     /// the undo boundary and applies each action through the executor, so the
     /// on-screen affordances and the Ctrl+K palette share one replayable path.
-    actions: ui::ActionHost,
+    actions: crate::resource::ActionSink,
     pending_resource_operation: Option<PendingResourceOperation>,
     /// Canvas-side confirmation mirroring resource-action policy. This is
     /// private view state and never replicated with the connection profile.
@@ -996,7 +996,7 @@ impl RemoteApp {
             list_rows_measured_at: None,
             dirty: true,
             seeded: false,
-            actions: ui::ActionHost::new(),
+            actions: crate::resource::ActionSink::default(),
             pending_resource_operation: None,
             pending_confirmation: None,
             notice: None,
@@ -2010,6 +2010,31 @@ impl RemoteApp {
     fn last_dispatched(&self) -> Option<&tilo_actions::EncodedAction> {
         self.actions.last_dispatched()
     }
+
+    /// Show the saved connections the framework resource already holds.
+    pub(crate) fn adopt_resource_state(&mut self, state: &[crate::model::Connection]) {
+        if self.workspace.connections() == state {
+            return;
+        }
+        self.workspace.connections = state.to_vec();
+        if self
+            .selected
+            .and_then(|id| self.workspace.get(id))
+            .is_none()
+        {
+            self.selected = self.workspace.filtered(&self.search).first().map(|c| c.id);
+        }
+        self.seeded = true;
+        self.dirty = true;
+    }
+
+    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Remote>,
+    ) {
+        self.actions.attach(dispatcher);
+    }
 }
 
 impl Default for RemoteApp {
@@ -2362,10 +2387,10 @@ impl Widget for RemoteApp {
 
     /// Publish each saved connection as a Ctrl+K resource (rename / favourite /
     /// delete) so the shell's one action palette scopes to them. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
+    /// [``]() impl in
     /// [`crate::actions`].
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        let mut resources = <Self as tilo_actions::ResourceProvider>::resources(self, doc);
+        let mut resources = Self::publish_resources(self, doc);
         if let Some(id) = self.session_for
             && let Some(connection) = self.workspace.get(id)
         {
@@ -2611,9 +2636,24 @@ impl Widget for RemoteApp {
             }
         } else {
             if doc_conns.is_empty() {
-                // We're the origin — publish our list (empty when live).
-                for c in self.workspace.connections().to_vec() {
-                    RemoteDoc::upsert(state, &c);
+                // Publish a demo list through the connection action. A live
+                // window starts empty, so this loop writes nothing there.
+                for connection in self.workspace.connections().to_vec() {
+                    if self.actions.is_hosted() {
+                        let action = crate::actions::upsert_action(&connection);
+                        self.actions.dispatch_with_context(
+                            state,
+                            crate::actions::REMOTE_ACTION_TYPE,
+                            &action,
+                            tilo_actions::ActionContext::for_action(
+                                "so.tilo.remote",
+                                "Remote",
+                                &action,
+                            ),
+                        );
+                    } else {
+                        RemoteDoc::upsert(state, &connection);
+                    }
                 }
             } else {
                 // Adopt a peer's list wholesale.

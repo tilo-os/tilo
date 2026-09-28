@@ -50,7 +50,7 @@ use ui::doc::{read_bool, read_str_or_text};
 use tilo_actions::{
     Action, ActionAddress, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec,
     Doc, EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource,
-    ResourceProvider, ResultSpec, RetryPolicy,
+    ResultSpec, RetryPolicy,
 };
 
 use crate::categories::Category;
@@ -5499,12 +5499,13 @@ pub fn device_mesh_workspace_binding(
     .ok()
 }
 
-impl ResourceProvider for crate::SettingsApp {
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+// Inherent resource publication (was ResourceProvider)
+impl crate::SettingsApp {
+    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         provide_resources_with_accounts(doc, self.account_resource_inventory())
     }
 
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+    pub fn publish_resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
         if id == "settings.root" {
             // Exact root lookup is intentionally shallow. Building every live
             // hardware inventory merely to resolve the root made one address
@@ -5621,7 +5622,8 @@ mod tests {
             let config = crate::prefs::test_env::ScratchConfig::new();
             let app = config.app();
             let doc = AutoCommit::new();
-            let root = ResourceProvider::resource(&app, &doc, "settings.root")
+            let root = app
+                .publish_resource(&doc, "settings.root")
                 .expect("root resolves exactly");
             assert_eq!(root.children.len(), Category::ALL.len());
             assert!(
@@ -5631,9 +5633,9 @@ mod tests {
                 "resolving the root must not enumerate live dynamic inventories"
             );
 
-            let appearance =
-                ResourceProvider::resource(&app, &doc, &pane_resource_id(Category::Appearance))
-                    .expect("one section resolves without rebuilding every other section");
+            let appearance = app
+                .publish_resource(&doc, &pane_resource_id(Category::Appearance))
+                .expect("one section resolves without rebuilding every other section");
             assert_eq!(appearance.label, Category::Appearance.label());
             assert!(appearance.actions.iter().any(|action| action.id == "theme"));
         }

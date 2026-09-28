@@ -268,6 +268,13 @@ impl<R: Resource> Dispatcher<R> {
         if continuing { None } else { bracket }
     }
 
+    /// Compensating document actions for [`Self::take_committed`]'s bracket.
+    pub(crate) fn take_action_revert(
+        &self,
+    ) -> Option<(tilo_actions::EncodedAction, tilo_actions::EncodedAction)> {
+        self.host.borrow_mut().take_action_revert()
+    }
+
     /// The step the last boundary opened stays open for the actions that
     /// continue it ([`Resource::coalesces`]).
     pub(crate) fn keeps_step_open(&self) -> bool {

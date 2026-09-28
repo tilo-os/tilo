@@ -573,7 +573,7 @@ pub struct ImagerApp {
     /// [`ImagerAction`](crate::actions::ImagerAction) through this host, which
     /// brackets the undo boundary and applies it through the executor so it
     /// records one Ctrl+Z step and replays byte-identically on peers.
-    actions: ui::ActionHost,
+    actions: crate::resource::ActionSink,
 }
 
 impl Default for ImagerApp {
@@ -624,7 +624,7 @@ impl ImagerApp {
             scroll_y: 0.0,
             keyboard_hit: None,
             customize: CustomizePanel::new(),
-            actions: ui::ActionHost::new(),
+            actions: crate::resource::ActionSink::default(),
         };
         app.estimate_bands();
         app
@@ -774,6 +774,36 @@ impl ImagerApp {
     #[doc(hidden)]
     pub fn last_dispatched(&self) -> Option<&tilo_actions::EncodedAction> {
         self.actions.last_dispatched()
+    }
+
+    /// Show the selected image and install profile the framework resource holds.
+    /// An empty projection does not wipe a selection that has not been published yet.
+    pub(crate) fn adopt_resource_state(&mut self, state: &crate::resource::ImagerState) {
+        if state.source.is_none() && self.source.is_some() {
+            return;
+        }
+        if state.source.is_some() {
+            self.source = state.source.clone();
+        }
+        let profile_changed = state.profile.hostname != self.profile.hostname
+            || state.profile.keyboard != self.profile.keyboard
+            || state.profile.timezone != self.profile.timezone
+            || state.profile.locale != self.profile.locale
+            || state.profile.user.username != self.profile.user.username
+            || state.profile.user.full_name != self.profile.user.full_name
+            || state.profile.encrypt != self.profile.encrypt;
+        if profile_changed {
+            self.profile = state.profile.clone();
+            self.customize.sync(&self.profile);
+        }
+    }
+
+    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Imager>,
+    ) {
+        self.actions.attach(dispatcher);
     }
 
     /// Stage the peer-local confirmation for a deterministic offscreen frame.
@@ -5339,10 +5369,10 @@ impl Widget for ImagerApp {
     }
 
     /// The resource tree the shell's Ctrl+K palette walks — delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
+    /// [``]() impl in
     /// [`crate::actions`]. Empty unless an installable Tilo image is selected.
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        let mut resources = <Self as tilo_actions::ResourceProvider>::resources(self, doc);
+        let mut resources = Self::publish_resources(self, doc);
         let available = self.source.is_some() && self.target().is_some();
         let mut job = crate::actions::operation_resource(
             self.target().map(TargetDrive::dev_path).as_deref(),

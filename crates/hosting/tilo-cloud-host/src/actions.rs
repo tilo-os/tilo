@@ -555,9 +555,9 @@ fn execute(
             if text.len() > 64 * 1024 {
                 bail!("text limit exceeded")
             };
-            let model =
-                qdoc::model::open(&doc, &automerge::ROOT).map_err(|e| anyhow!(e.to_string()))?;
-            let block = qdoc::model::blocks_in_order(&doc, &model)
+            let model = tilo_doc::model::open(&doc, &automerge::ROOT)
+                .map_err(|e| anyhow!(e.to_string()))?;
+            let block = tilo_doc::model::blocks_in_order(&doc, &model)
                 .first()
                 .cloned()
                 .ok_or_else(|| anyhow!("Writer body empty"))?;

@@ -56,8 +56,7 @@ use automerge::AutoCommit;
 use tilo_actions::{
     Action, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec,
     ConfirmationPolicy, DiscoveryScope, Doc, EncodedAction, ExecutionLocus, ExecutionMode,
-    OperationKind, ParamType, PermissionRequirement, Resource, ResourceProvider, ResultSpec,
-    RetryPolicy, RiskLevel,
+    OperationKind, ParamType, PermissionRequirement, Resource, ResultSpec, RetryPolicy, RiskLevel,
 };
 
 use crate::doc::ImagerDoc;
@@ -628,8 +627,9 @@ pub fn plan_resources(
     resources
 }
 
-impl ResourceProvider for crate::app::ImagerApp {
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+// Inherent resource publication (was ResourceProvider)
+impl crate::app::ImagerApp {
+    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         plan_resources(
             self.resource_source(),
             self.resource_targets(),
@@ -864,7 +864,7 @@ mod tests {
             let mut doc = seeded();
             app.sync(&mut doc, &automerge::ROOT);
             // Seeded source is an installable Tilo image → it publishes.
-            assert!(!ResourceProvider::resources(&app, &doc).is_empty());
+            assert!(!app.publish_resources(&doc).is_empty());
 
             // Switch to a plain, non-installable ISO → nothing to customize.
             let iso = Source {
@@ -879,7 +879,7 @@ mod tests {
             };
             ImagerDoc::set_source(&mut doc, Some(&iso));
             app.sync(&mut doc, &automerge::ROOT);
-            let resources = ResourceProvider::resources(&app, &doc);
+            let resources = app.publish_resources(&doc);
             assert!(resources.iter().any(|resource| {
                 resource.kind == "imager.source"
                     || resource

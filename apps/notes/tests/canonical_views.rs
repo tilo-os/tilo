@@ -230,15 +230,15 @@ fn stamp_current_runs(
             edit_body(
                 doc,
                 page,
-                qdoc_rich_text::RichTextAction::SetMark {
-                    region: qdoc_rich_text::action::RegionKind::Body,
-                    spans: vec![qdoc_rich_text::action::Span {
+                tilo_document::RichTextAction::SetMark {
+                    region: tilo_document::action::RegionKind::Body,
+                    spans: vec![tilo_document::action::Span {
                         block: snapshots[index].0.clone(),
                         start: 0,
                         end: body.chars().count(),
                     }],
-                    name: qdoc::schema::MARK_AUTHOR.to_owned(),
-                    value: Some(qdoc_rich_text::action::MarkVal::Str(f.author.0.clone())),
+                    name: tilo_doc::schema::MARK_AUTHOR.to_owned(),
+                    value: Some(tilo_document::action::MarkVal::Str(f.author.0.clone())),
                     also_clear: Vec::new(),
                 },
             );

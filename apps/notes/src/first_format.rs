@@ -60,7 +60,7 @@ fn editor_mark(text: &str, mark: &NativeMark) -> Option<MarkSpan> {
 
 /// Who wrote a run of the first format's text: its `author` mark, over bytes.
 fn author_run(text: &str, mark: &NativeMark) -> Option<(std::ops::Range<usize>, String)> {
-    if mark.name != qdoc::schema::MARK_AUTHOR {
+    if mark.name != tilo_doc::schema::MARK_AUTHOR {
         return None;
     }
     let ScalarValue::Str(author) = &mark.value else {

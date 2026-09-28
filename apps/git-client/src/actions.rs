@@ -47,7 +47,7 @@ use serde::{Deserialize, Serialize};
 
 use tilo_actions::{
     Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus,
-    OperationKind, Resource, ResourceProvider, RetryPolicy,
+    OperationKind, Resource, RetryPolicy,
 };
 
 use crate::model::{ChangeArea, FileChange, RepoModel};
@@ -745,15 +745,16 @@ pub fn resolve_resource(model: &RepoModel, doc: &AutoCommit, id: &str) -> Option
         .map(remote_resource)
 }
 
-impl ResourceProvider for crate::app::GitClientApp {
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+// Inherent resource publication (was ResourceProvider)
+impl crate::app::GitClientApp {
+    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         match self.resource_model() {
             Some(model) => provide_resources(model, doc),
             None => Vec::new(),
         }
     }
 
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+    pub fn publish_resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
         resolve_resource(self.resource_model()?, doc, id)
     }
 }

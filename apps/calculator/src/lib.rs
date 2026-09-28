@@ -49,6 +49,7 @@ pub mod graph3d;
 pub mod keypad;
 pub mod mathfield;
 pub mod model;
+pub mod resource;
 pub mod zoom;
 
 pub use app::CalculatorApp;
@@ -75,3 +76,4 @@ mod component_tests;
 mod framework_history_tests;
 
 pub mod framework_history;
+pub use resource::{Calculator, CalculatorShell};
