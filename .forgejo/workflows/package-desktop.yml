@@ -205,6 +205,8 @@ jobs:
           # payload, desktop-v tags the release; only a dispatch of another
           # branch keeps the cache.
           TILO_ENABLE_REMOTE_CACHE: ${{ github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/tags/') && '1' || '0' }}
+          FALLBACK_AWS_ACCESS_KEY_ID: ${{ github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/tags/') && secrets.SCCACHE_AWS_ACCESS_KEY_ID || '' }}
+          FALLBACK_AWS_SECRET_ACCESS_KEY: ${{ github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/tags/') && secrets.SCCACHE_AWS_SECRET_ACCESS_KEY || '' }}
           # The larger runner supports six native compiler processes.
           TILO_CARGO_JOBS: "6"
           TILO_LANE_TARGETS: ${{ matrix.targets }}
@@ -218,6 +220,10 @@ jobs:
           TILO_RPM_SIGNING_FINGERPRINT: ${{ vars.TILO_RPM_SIGNING_FINGERPRINT }}
         shell: bash
         run: |
+          if [[ $TILO_ENABLE_REMOTE_CACHE == 1 ]]; then
+            # shellcheck disable=SC1091
+            source tools/ci/compiler_cache_env.sh
+          fi
           while IFS='|' read -r distro image revision; do
             [[ -n $distro ]] || continue
             echo "::group::$distro / ${{ matrix.arch }}"

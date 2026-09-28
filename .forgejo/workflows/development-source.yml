@@ -90,6 +90,35 @@ jobs:
         run: |
           bash os/dev/assert-native-arch.sh '${{ matrix.arch }}'
           bash os/dev/install-cached-cosign.sh
+      # The runner image's sccache predates --remap-path-prefix support, so
+      # use the checksum-pinned client the builder images carry.
+      - name: Materialize the pinned compiler-cache client
+        uses: ./.forgejo/actions/cache-github-assets
+        with:
+          key: sccache-client-v1-${{ matrix.arch }}
+          assets: sccache-v0.17.0-${{ matrix.arch }}-unknown-linux-musl.tar.gz
+      - name: Enable the shared compiler cache
+        env:
+          FALLBACK_AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_AWS_ACCESS_KEY_ID }}
+          FALLBACK_AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_AWS_SECRET_ACCESS_KEY }}
+          SCCACHE_CLIENT: sccache-v0.17.0-${{ matrix.arch }}-unknown-linux-musl
+        run: |
+          tar -xzf "os/external-assets/cache/$SCCACHE_CLIENT.tar.gz" -C "$RUNNER_TEMP"
+          printf '%s\n' "$RUNNER_TEMP/$SCCACHE_CLIENT" >> "$GITHUB_PATH"
+          # The runner image installs the pinned toolchain on first use; the
+          # wrapper probe below must find it already installed.
+          rustc -vV >/dev/null
+          # shellcheck disable=SC1091
+          source tools/ci/compiler_cache_env.sh
+          PATH="$RUNNER_TEMP/$SCCACHE_CLIENT:$PATH" bash tools/ci/sccache.sh prepare
+      - name: Log in to registry.tilo.so
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: registry.tilo.so
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Set up buildx
+        uses: ./.forgejo/actions/setup-buildx
       - name: Verify with a disposable local registry and private fixture keys
         shell: bash
         env:
@@ -118,10 +147,13 @@ jobs:
           mkdir -p "$context/91tilo-rollback"
           cp -a os/usr/lib/dracut/modules.d/91tilo-rollback/. "$context/91tilo-rollback/"
           cp "$(command -v cosign)" "$context/cosign"
-          RUSTC_WRAPPER= cargo build --locked --release -p tilo-crypto
+          cargo build --locked --release -p tilo-crypto
           cp target/release/tilo-crypto "$context/tilo-crypto"
           cp os/tests/Containerfile.development-source "$context/Containerfile"
-          docker build --file "$context/Containerfile" --tag "$image" "$context"
+          cache="$TILO_LAYER_CACHE_REGISTRY/tilo/tilo-development-source-fixture-buildcache:${{ matrix.arch }}"
+          docker buildx build --load --file "$context/Containerfile" --tag "$image" \
+            --cache-from "type=registry,ref=$cache" \
+            --cache-to "type=registry,ref=$cache,mode=max,ignore-error=true" "$context"
           # Nested Podman mounts only inside this disposable CI container.
           # No host directories or credentials are mounted.
           case "$TILO_NATIVE_PROOF" in
