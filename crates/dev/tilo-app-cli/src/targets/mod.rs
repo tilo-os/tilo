@@ -422,7 +422,13 @@ fn build_project(project: &Project, request: &TargetRequest) -> Result<BuildOutc
         }
         Target::Macos => {
             let binary = build_native(project, request, None)?;
-            let app = macos::assemble(project, &binary, &project.output_dir(Target::Macos))?;
+            let runtime_host = build_runtime_host(project, request)?;
+            let app = macos::assemble(
+                project,
+                &binary,
+                &runtime_host,
+                &project.output_dir(Target::Macos),
+            )?;
             macos::sign_ad_hoc(&app, &macos::entitlements_path(&app))?;
             Ok(BuildOutcome {
                 target: Target::Macos,
@@ -557,6 +563,37 @@ fn build_native(
         .get(&project.bin)
         .cloned()
         .with_context(|| format!("Cargo did not report binary {}", project.bin))
+}
+
+/// The shared runtime daemon (`tilo-runtime-mcp`, a binary of the SDK's
+/// `shell` package) in the app's profile, without the hosted test-control
+/// socket. Outside the SDK checkout it builds under the app's target
+/// directory, never inside a Cargo git checkout.
+fn build_runtime_host(project: &Project, request: &TargetRequest) -> Result<PathBuf> {
+    let manifest = project.sdk_root.join("crates/session/shell/Cargo.toml");
+    let mut command = ProcessCommand::new(cargo_program());
+    command
+        .arg("build")
+        .arg("--manifest-path")
+        .arg(&manifest)
+        .args(["--bin", macos::RUNTIME_HOST, "--no-default-features"])
+        .arg("--message-format=json-render-diagnostics")
+        .current_dir(&project.sdk_root)
+        .stdout(Stdio::piped());
+    if request.release {
+        command.arg("--release");
+    }
+    if project.in_sdk_checkout() {
+        command.arg("--locked");
+    } else {
+        command
+            .arg("--target-dir")
+            .arg(project.target_dir.join("tilo-app/runtime-host"));
+    }
+    let expected = manifest.canonicalize().unwrap_or(manifest);
+    run_cargo_build(&mut command, &expected)?
+        .remove(macos::RUNTIME_HOST)
+        .with_context(|| format!("Cargo did not report binary {}", macos::RUNTIME_HOST))
 }
 
 /// Run a `cargo build --message-format=json…` command, forwarding

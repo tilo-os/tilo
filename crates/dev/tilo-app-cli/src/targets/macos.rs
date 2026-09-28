@@ -27,9 +27,19 @@ use super::{Project, TargetPackageRequest};
 /// The oldest macOS the SDK's Metal renderer supports.
 const MINIMUM_SYSTEM_VERSION: &str = "13.0";
 
-/// Write `<output>/<Name>.app` around `binary` and its entitlements beside
-/// it. Returns the bundle path.
-pub(super) fn assemble(project: &Project, binary: &Path, output: &Path) -> Result<PathBuf> {
+/// The runtime daemon's executable name. The SDK looks for it beside the
+/// app's executable before `PATH`, so a bundle carrying it in
+/// `Contents/MacOS` joins (or starts) the shared runtime wherever it runs.
+pub(super) const RUNTIME_HOST: &str = "tilo-runtime-mcp";
+
+/// Write `<output>/<Name>.app` around `binary` and the runtime daemon
+/// `runtime_host`, with its entitlements beside it. Returns the bundle path.
+pub(super) fn assemble(
+    project: &Project,
+    binary: &Path,
+    runtime_host: &Path,
+    output: &Path,
+) -> Result<PathBuf> {
     let app = output.join(format!("{}.app", project.display_name()));
     let contents = app.join("Contents");
     let macos = contents.join("MacOS");
@@ -42,6 +52,8 @@ pub(super) fn assemble(project: &Project, binary: &Path, output: &Path) -> Resul
     let executable = macos.join(&project.bin);
     std::fs::copy(binary, &executable)
         .with_context(|| format!("copying {} into the bundle", binary.display()))?;
+    std::fs::copy(runtime_host, macos.join(RUNTIME_HOST))
+        .with_context(|| format!("copying {} into the bundle", runtime_host.display()))?;
     let icon = project.app_dir.join("assets/AppIcon.icns");
     let has_icon = icon.is_file();
     if has_icon {
@@ -60,6 +72,10 @@ pub(super) fn assemble(project: &Project, binary: &Path, output: &Path) -> Resul
 
 pub(super) fn executable(app: &Path, project: &Project) -> PathBuf {
     app.join("Contents/MacOS").join(&project.bin)
+}
+
+fn runtime_host(app: &Path) -> PathBuf {
+    app.join("Contents/MacOS").join(RUNTIME_HOST)
 }
 
 /// The entitlements file written beside `app` (codesign reads it; it is not
@@ -206,8 +222,15 @@ fn xml_escape(text: &str) -> String {
 }
 
 /// Ad-hoc sign `app` so notifications and the Keychain behave as they do in
-/// a release build.
+/// a release build. The runtime daemon is signed first: a bundle's seal
+/// covers the nested code, which must already carry its own signature.
 pub(super) fn sign_ad_hoc(app: &Path, entitlements: &Path) -> Result<()> {
+    run(
+        ProcessCommand::new("codesign")
+            .args(["--force", "--sign", "-"])
+            .arg(runtime_host(app)),
+        "codesign (ad-hoc) of the runtime daemon",
+    )?;
     run(
         ProcessCommand::new("codesign")
             .arg("--force")
@@ -388,6 +411,16 @@ fn sign_for_distribution(project: &Project, app: &Path, require_signing: bool) -
     if let Some(hook) = env("TILO_MAC_SIGN_HOOK") {
         run(ProcessCommand::new(&hook).arg(app), "TILO_MAC_SIGN_HOOK")?;
     } else if let Some(identity) = env("TILO_MAC_SIGNING_IDENTITY") {
+        // The daemon holds no app capability, so it gets none of the app's
+        // entitlements.
+        run(
+            ProcessCommand::new("codesign")
+                .args(["--force", "--options", "runtime", "--timestamp"])
+                .arg("--sign")
+                .arg(&identity)
+                .arg(runtime_host(app)),
+            "codesign of the runtime daemon",
+        )?;
         for path in [binary.as_path(), app] {
             run(
                 ProcessCommand::new("codesign")
@@ -517,6 +550,31 @@ mod tests {
         assert!(plist.contains("<key>NSCameraUsageDescription</key>"));
         assert!(plist.contains("public.app-category.productivity"));
         assert!(!plist.contains("CFBundleIconFile"));
+    }
+
+    #[test]
+    fn the_bundle_carries_the_runtime_daemon_beside_the_app() {
+        let root = tempfile::tempdir().unwrap();
+        let mut project = project("");
+        project.app_dir = root.path().join("app");
+        project.manifest_path = project.app_dir.join("tilo-app.toml");
+        std::fs::create_dir_all(&project.app_dir).unwrap();
+        std::fs::write(&project.manifest_path, "").unwrap();
+        let binary = root.path().join("hello");
+        let daemon = root.path().join("daemon");
+        std::fs::write(&binary, "app").unwrap();
+        std::fs::write(&daemon, "daemon").unwrap();
+        let app = assemble(&project, &binary, &daemon, &root.path().join("out")).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(executable(&app, &project)).unwrap(),
+            "app"
+        );
+        assert_eq!(
+            std::fs::read_to_string(executable(&app, &project).with_file_name(RUNTIME_HOST))
+                .unwrap(),
+            "daemon",
+            "the SDK finds the daemon beside the executable"
+        );
     }
 
     #[test]
