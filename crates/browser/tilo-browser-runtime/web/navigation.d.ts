@@ -10,7 +10,13 @@ export type WorkspaceActivityCloseReason = 'dismissed' | 'workspace-changed' | '
 export interface DesktopNavigationSnapshot {
   version: 1;
   generation: string;
-  entries: Array<{route: DesktopRoute; label: string; stripLabel: string; workspaceLabel: string}>;
+  /**
+   * Every window. `app` is its app id; `record` the record it shows (null for
+   * an app's one package-primary document), which another mount of the page
+   * with the same profile, device and room may pass as its `record` to edit
+   * the same document live, or `{kind: 'open', app, record}` opens again.
+   */
+  entries: Array<{route: DesktopRoute; label: string; stripLabel: string; workspaceLabel: string; app?: string | null; record?: string | null}>;
   workspaces: Array<{id: string; label: string; room: string; owner?: string | null; strips: Array<{id: string; label: string}>}>;
   applications?: Array<{id: string; label: string}>;
   activeWorkspace: string;
@@ -45,8 +51,12 @@ export type DesktopNavigationCommand = {generation: string} & (
   {kind: "maximize"; route: DesktopRoute; maximized: boolean} |
   {kind: "scroll"; region: string; action: DesktopScrollAction} |
   {kind: "commands"; query: string} |
-  /** An app id or alias, linked first when the core lacks it; opens in the active workspace. */
-  {kind: "open"; app: string}
+  /**
+   * An app id or alias, linked first when the core lacks it; opens in the active workspace.
+   * With `record` (a local desktop only) the window shows that existing record of the app
+   * in the workspace's room, such as another window's or a standalone mount's `record`.
+   */
+  {kind: "open"; app: string; record?: string}
 );
 export interface DesktopNavigationV1 {
   readonly version: 1;

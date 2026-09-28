@@ -183,6 +183,7 @@ impl HistorySource {
             return Vec::new();
         }
         let start = versions.len().saturating_sub(self.max_entries);
+        let genesis = crate::record::genesis_actor(doc).map(|actor| actor.to_hex_string());
 
         // Plus the one before the window — the patch path diffs between
         // consecutive frontiers.
@@ -221,7 +222,9 @@ impl HistorySource {
             // a revision to a nonexistent person. Skipped here rather than in
             // `versions`, which stays positional (`materialize_at` / `prefix_heads`
             // address a change by its place).
-            if qdoc::model::is_schema_genesis(v) {
+            // A record's genesis is the same kind of change: made by an actor
+            // derived from the record's identity, at time zero.
+            if qdoc::model::is_schema_genesis(v) || genesis.as_deref() == Some(v.actor.as_str()) {
                 continue;
             }
 

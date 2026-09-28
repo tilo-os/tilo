@@ -163,6 +163,14 @@ fn tile(definition: &ui::application::ApplicationDefinition) -> TileContent {
 fn installed(app: &str) -> Result<&'static ui::application::ApplicationDefinition, String> {
     desktop::definition(app).ok_or_else(|| format!("application {app:?} is not available"))
 }
+/// Commit what the owner changed at the time it did: `AutoCommit::commit`
+/// stamps a change at the epoch, which Activity would show as its time.
+fn commit(doc: &mut AutoCommit) {
+    let now = web_time::SystemTime::now()
+        .duration_since(web_time::UNIX_EPOCH)
+        .map_or(0, |elapsed| i64::try_from(elapsed.as_secs()).unwrap_or(0));
+    doc.commit_with(automerge::transaction::CommitOptions::default().with_time(now));
+}
 
 impl LocalDesktop {
     pub(crate) fn new(room: &str, author: &str, seed: &Seed) -> Result<Self, String> {
@@ -337,8 +345,22 @@ impl LocalDesktop {
     }
 
     /// Reduce one bound command against its room, as the room's topology
-    /// owner. An open selects the window it created in the next admission.
-    pub(crate) fn apply(&mut self, bound: &BoundCommand) -> Result<(), String> {
+    /// owner. An open selects the window it created in the next admission;
+    /// with `record` (an existing record of the app in the room, as a seeded
+    /// window's) the window shows it instead of a new one.
+    pub(crate) fn apply(
+        &mut self,
+        bound: &BoundCommand,
+        record: Option<&str>,
+    ) -> Result<(), String> {
+        if record.is_some()
+            && !matches!(
+                bound.command,
+                DesktopCommand::OpenApp { .. } | DesktopCommand::OpenTab { .. }
+            )
+        {
+            return Err("only an open names a record".into());
+        }
         let room = self
             .rooms
             .iter_mut()
@@ -357,7 +379,7 @@ impl LocalDesktop {
             tilo_desktop_model::commands::namespace_counter(workspace, salt, stored),
         );
         let mut routes = record_routes(&room.doc).into_iter().collect::<Vec<_>>();
-        let mut created = vec![];
+        let (mut created, mut opened) = (vec![], vec![]);
         apply_command(
             workspace,
             &resolved,
@@ -365,8 +387,18 @@ impl LocalDesktop {
             &mut |app, tab| {
                 let definition =
                     desktop::definition(app).ok_or("application cannot be opened here")?;
-                routes.push((tab, fresh_route(definition, tab)));
-                created.push(tab);
+                match record {
+                    Some(record) => {
+                        let checkout =
+                            desktop::checkout(definition, tab, &[(tab, record.into())].into())?;
+                        routes.push((tab, checkout.id.as_str().into()));
+                    }
+                    None => {
+                        routes.push((tab, fresh_route(definition, tab)));
+                        created.push(tab);
+                    }
+                }
+                opened.push(tab);
                 Ok((definition.title.into(), tile(definition)))
             },
         )?;
@@ -381,13 +413,13 @@ impl LocalDesktop {
         if let Some(shortcuts) = shortcuts {
             projection::project_workspace_shortcuts(&mut room.doc, &shortcuts)
                 .map_err(|e| e.to_string())?;
-            room.doc.commit();
+            commit(&mut room.doc);
         }
         self.fresh.extend(created.iter().copied());
         if matches!(
             resolved,
             DesktopCommand::OpenTab { .. } | DesktopCommand::DuplicateTab { .. }
-        ) && let Some(tab) = created.last()
+        ) && let Some(tab) = opened.last()
         {
             self.focus = Some(*tab);
         }
@@ -494,7 +526,7 @@ impl Room {
             doc.put(ROOT, projection::ROOM_NAME_KEY, name)
                 .map_err(|e| e.to_string())?;
         }
-        doc.commit();
+        commit(doc);
         Ok(())
     }
 }

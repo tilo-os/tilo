@@ -602,6 +602,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
     let definition = crate::catalog::resolve_mount(&config.app).map_err(error)?;
     let agent =
         crate::mount_agent::mount_agent(&config.author, config.agent.as_deref()).map_err(error)?;
+    let author = config.author.clone();
     let storage = load_cache(&config.profile, &config.device, &hydrated)?;
     let records = RecordOwners::portable(storage.clone())
         .open(definition.app_id, &config.room)
@@ -690,6 +691,13 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
     }
     let images = std::mem::take(&mut *loaders.borrow_mut());
     let checkout = component.record().clone();
+    crate::page_authors::note_mount(
+        records
+            .read(&checkout.id, |doc| doc.get_actor().clone())
+            .as_ref(),
+        &author,
+        agent.as_ref().map(|(_, label)| label.as_str()),
+    );
     let record_versions = HashMap::from([(
         (
             definition.app_id.to_owned(),

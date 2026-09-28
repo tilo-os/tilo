@@ -17,9 +17,12 @@ use vello::{
     kurbo::{Affine, Point, Rect},
 };
 
+/// The admitted records' histories; each record's writer here writes for
+/// `author`.
 pub(crate) fn capture_records(
     required: &[Requirement],
     owners: &BTreeMap<(String, String), OwnedRecord>,
+    author: &str,
 ) -> Vec<DetachedRecordHistory> {
     required
         .iter()
@@ -39,6 +42,7 @@ pub(crate) fn capture_records(
                     owner
                         .store
                         .read(&checkout.id, |doc| {
+                            crate::page_authors::note(doc.get_actor(), author, None);
                             (doc.pending_ops() == 0).then(|| doc.clone())
                         })
                         .flatten()
@@ -120,6 +124,19 @@ impl BrowserActivity {
         }
     }
     pub fn refresh(&mut self, records: Vec<DetachedRecordHistory>, excluded: &[String]) {
+        let agents = self
+            .snapshot
+            .active_workspace()
+            .into_iter()
+            .flat_map(|workspace| &workspace.capabilities)
+            .filter_map(|capability| match &capability.subject {
+                collab_types::caps::Subject::Principal(collab_types::caps::Principal::Agent(
+                    name,
+                )) => Some(name.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        crate::page_authors::register(self.pane.authors_mut(), &agents);
         self.pane.refresh(&mut self.snapshot);
         self.pane
             .refresh_detached_records(&mut self.snapshot, records);
