@@ -30,7 +30,7 @@ agents must invoke the same typed operation:
    result, and typed parameters.
 2. CRDT mutations are serializable `Action` values registered in the app's
    `ActionRegistry`. Views and effects are serializable operations handled only
-   by `invoke_resource_operation`/`start_resource_operation`; every operation
+   by `Widget::start_operation`; every operation
    type is declared by `local_resource_operation_handlers`.
 3. Inputs needed by a headless caller are parameters, not hidden UI state. A
    file action may offer a portal when a person omits `path`, but agents and
