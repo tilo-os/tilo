@@ -269,6 +269,36 @@ async fn presence_is_relayed_latest_value_and_foreign_namespaces_are_refused() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_presence_tap_sees_client_frames_but_not_injected_ones() {
+    let f = fixture();
+    let (tx, mut tapped) = tokio::sync::mpsc::unbounded_channel();
+    f.live.relay.set_presence_tap(Arc::new(
+        move |room: &str, publisher: &str, frame: &[u8]| {
+            let _ = tx.send((room.to_owned(), publisher.to_owned(), frame.to_vec()));
+        },
+    ));
+    let mut a = connect(&f, b"grant-a", A).await;
+    let b = connect(&f, b"grant-b", B).await;
+    let mut from_a = presence_subscriber(&b, A).await;
+    let mut seq = 0;
+    first_presence(&mut a, &mut from_a, &mut seq).await;
+    let (room, publisher, frame) = tokio::time::timeout(tilo_test_env::hang_bound(), tapped.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!((room.as_str(), publisher.as_str()), (ROOM, A));
+    assert_eq!(frame[8..], *b"hello");
+    while tapped.try_recv().is_ok() {}
+    assert!(f.live.relay.inject_presence(ROOM, C, &presence(1, b"host")));
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        tapped.try_recv().is_err(),
+        "a host-injected frame must not come back through the tap"
+    );
+    drop((a, b));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn viewer_may_subscribe_but_never_publish() {
     let f = fixture();
     let mut a = connect(&f, b"grant-a", A).await;

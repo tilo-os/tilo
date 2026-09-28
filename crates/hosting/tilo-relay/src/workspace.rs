@@ -113,6 +113,39 @@ pub struct WorkspaceRuntime {
     /// once, and the next idle set, on the same channels, is withheld from a
     /// device that already holds every delta — see `fanout_delta`.
     checkpoint_served: HashMap<[u8; 32], HashSet<[u8; 32]>>,
+    /// Subscribers that joined the live plane, with their rate budgets.
+    live_members: HashMap<[u8; 32], LiveBudget>,
+    /// Host order of the last admitted delta.
+    last_seq: u64,
+}
+
+/// Per-publisher live rate budget over one-second windows.
+#[derive(Default)]
+struct LiveBudget {
+    window_start_ns: u64,
+    presence: u32,
+    ops: u32,
+}
+
+impl LiveBudget {
+    fn admit(&mut self, presence: bool, now_ns: u64) -> bool {
+        if now_ns.saturating_sub(self.window_start_ns) >= 1_000_000_000 {
+            *self = Self {
+                window_start_ns: now_ns,
+                ..Self::default()
+            };
+        }
+        let (count, limit) = if presence {
+            (&mut self.presence, crate::live::MAX_PRESENCE_RATE)
+        } else {
+            (&mut self.ops, crate::live::MAX_OPS_RATE)
+        };
+        if *count >= limit {
+            return false;
+        }
+        *count = count.saturating_add(1);
+        true
+    }
 }
 
 impl WorkspaceRuntime {
@@ -206,7 +239,117 @@ impl WorkspaceRuntime {
             outbound_federation: HashMap::new(),
             checkpoint_served: HashMap::new(),
             sync_refresh: None,
+            live_members: HashMap::new(),
+            last_seq: 0,
         })
+    }
+
+    /// The host order for the next admitted delta: wall-clock nanoseconds,
+    /// forced strictly past the previous one so a clock step never reorders.
+    pub fn next_seq(&mut self, now_ns: u64) -> u64 {
+        self.last_seq = now_ns.max(self.last_seq.saturating_add(1));
+        self.last_seq
+    }
+
+    /// Add subscriber `device` to the live plane and tell the other live
+    /// members. Returns the members already present. A device that is not
+    /// subscribed cannot join.
+    pub fn live_join(&mut self, device: [u8; 32], workspace_id: u64) -> Option<Vec<[u8; 32]>> {
+        if !self.subscribers.contains_key(&device) {
+            return None;
+        }
+        let existing: Vec<[u8; 32]> = self
+            .live_members
+            .keys()
+            .copied()
+            .filter(|member| *member != device)
+            .collect();
+        if self
+            .live_members
+            .insert(device, LiveBudget::default())
+            .is_none()
+        {
+            self.announce_live_member(device, workspace_id, true);
+        }
+        Some(existing)
+    }
+
+    /// Remove `device` from the live plane and tell the remaining members.
+    pub fn live_leave(&mut self, device: &[u8; 32], workspace_id: u64) {
+        if self.live_members.remove(device).is_some() {
+            self.announce_live_member(*device, workspace_id, false);
+        }
+    }
+
+    /// Whether `device` is a live member.
+    pub fn is_live_member(&self, device: &[u8; 32]) -> bool {
+        self.live_members.contains_key(device)
+    }
+
+    /// Relay a live envelope that arrived from outside this workspace's
+    /// iroh live plane (a browser's WebTransport session, already validated
+    /// and rate-limited by the live relay) to every iroh live member other
+    /// than its author. Returns how many members received it.
+    pub fn relay_bridged_live(&self, author: &[u8; 32], envelope: &Envelope) -> usize {
+        let mut delivered = 0usize;
+        for member in self.live_members.keys() {
+            if member == author {
+                continue;
+            }
+            if let Some(sub) = self.subscribers.get(member)
+                && sub.tx.try_send(envelope.clone()).is_ok()
+            {
+                delivered = delivered.saturating_add(1);
+            }
+        }
+        delivered
+    }
+
+    /// Relay one validated live envelope from `author` to every other live
+    /// member, within the author's rate budget. Live traffic is lossy: a
+    /// member whose queue is full misses the frame rather than being
+    /// disconnected. Returns how many members received it.
+    pub fn fanout_live(
+        &mut self,
+        author: &[u8; 32],
+        presence: bool,
+        envelope: &Envelope,
+        now_ns: u64,
+    ) -> usize {
+        let Some(budget) = self.live_members.get_mut(author) else {
+            return 0;
+        };
+        if !budget.admit(presence, now_ns) {
+            return 0;
+        }
+        let mut delivered = 0usize;
+        for member in self.live_members.keys() {
+            if member == author {
+                continue;
+            }
+            if let Some(sub) = self.subscribers.get(member)
+                && sub.tx.try_send(envelope.clone()).is_ok()
+            {
+                delivered = delivered.saturating_add(1);
+            }
+        }
+        delivered
+    }
+
+    fn announce_live_member(&self, device: [u8; 32], workspace_id: u64, active: bool) {
+        let envelope = Envelope::LiveMember {
+            workspace_id,
+            device_public_key: device,
+            active,
+        };
+        for member in self.live_members.keys() {
+            if *member == device {
+                continue;
+            }
+            if let Some(sub) = self.subscribers.get(member) {
+                let _ = sub.tx.try_send(envelope.clone());
+            }
+        }
     }
 
     /// Note that `device` is a peer relay we federate with for this
@@ -279,7 +422,7 @@ impl WorkspaceRuntime {
         Ok(())
     }
 
-    /// Drop a subscription for `device`. Idempotent.
+    /// Drop a subscription for `device`, and its live membership. Idempotent.
     pub fn remove_subscriber(&mut self, device: &[u8; 32]) {
         self.subscribers.remove(device);
         self.action_targets.remove(device);
@@ -289,6 +432,8 @@ impl WorkspaceRuntime {
                 .store(false, std::sync::atomic::Ordering::SeqCst);
         }
         self.checkpoint_served.remove(device);
+        let workspace_id = self.store.workspace_id();
+        self.live_leave(device, workspace_id);
     }
 
     /// Remove only the session that registered this queue. An old connection
