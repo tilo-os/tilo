@@ -3780,7 +3780,7 @@ impl Widget for PasswordsSurface {
         if self
             .revealed
             .as_ref()
-            .is_some_and(|(_, _, until)| *until <= std::time::Instant::now())
+            .is_some_and(|(_, _, until)| *until <= ui::time::now())
         {
             self.revealed = None;
         }

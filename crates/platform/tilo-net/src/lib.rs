@@ -138,8 +138,4 @@ pub mod http {
             .gzip(false)
             .brotli(false)
     }
-
-    /// The client [`blocking_client`] builds.
-    #[cfg(feature = "blocking")]
-    pub use reqwest::blocking::Client as BlockingClient;
 }

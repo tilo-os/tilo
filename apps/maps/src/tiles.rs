@@ -339,10 +339,10 @@ impl TileLayer {
         let dir = self.cache_dir.clone();
         let base_url = self.base_url.clone();
         let style = self.style;
-        let spawned = std::thread::Builder::new()
-            .name("maps-tiles".into())
-            .spawn(move || worker(&job_rx, &done_tx, &dir, &base_url, style))
-            .is_ok();
+        let spawned = ui::rt::spawn_thread("maps-tiles", move || {
+            worker(&job_rx, &done_tx, &dir, &base_url, style);
+        })
+        .is_ok();
         self.job_tx = spawned.then_some(job_tx);
         self.done_rx = spawned.then_some(done_rx);
     }
@@ -833,7 +833,7 @@ fn worker(
     base_url: &str,
     style: TileStyle,
 ) {
-    let client = match tilo_net::http::blocking_client()
+    let client = match tilo_net::Client::builder()
         .user_agent(USER_AGENT)
         .timeout(std::time::Duration::from_secs(15))
         .build()
@@ -876,7 +876,7 @@ fn worker(
 /// Load a tile's RGBA pixels: disk cache → network. Writes fetched bytes to
 /// disk so re-views and zoom are instant.
 fn load_tile(
-    client: Option<&tilo_net::http::BlockingClient>,
+    client: Option<&tilo_net::Client>,
     cache_dir: &std::path::Path,
     base_url: &str,
     id: TileId,
@@ -898,7 +898,7 @@ fn load_tile(
 
 /// Fetch a tile to the on-disk cache only (no decode) — for bulk downloads.
 fn fetch_to_disk(
-    client: Option<&tilo_net::http::BlockingClient>,
+    client: Option<&tilo_net::Client>,
     cache_dir: &std::path::Path,
     base_url: &str,
     id: TileId,
@@ -915,33 +915,40 @@ fn fetch_to_disk(
 /// GET one tile's bytes, accepting only a successful `image/png` answer: an
 /// error status or an HTML/JSON error page is the server refusing imagery.
 fn fetch_tile(
-    client: Option<&tilo_net::http::BlockingClient>,
+    client: Option<&tilo_net::Client>,
     base_url: &str,
     id: TileId,
 ) -> Result<Vec<u8>, TileFault> {
     let client = client.ok_or(TileFault::Unreachable)?;
-    let resp = client
-        .get(id.url(base_url))
-        .send()
-        .map_err(|_| TileFault::Unreachable)?;
-    let status = resp.status();
-    if !status.is_success() {
-        tracing::warn!("maps tile server answered {status} for {id:?}");
-        return Err(TileFault::Rejected);
-    }
-    let content_type = resp
-        .headers()
-        .get(tilo_net::header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or_default()
-        .to_owned();
-    if !content_type.starts_with("image/png") {
-        tracing::warn!("maps tile server sent {content_type:?} for {id:?}, not a PNG tile");
-        return Err(TileFault::Rejected);
-    }
-    resp.bytes()
-        .map(|bytes| bytes.to_vec())
-        .map_err(|_| TileFault::Unreachable)
+    // The worker thread owns no runtime; each tile waits on the app's.
+    ui::rt::app()
+        .block_on(async {
+            let resp = client
+                .get(id.url(base_url))
+                .send()
+                .await
+                .map_err(|_| TileFault::Unreachable)?;
+            let status = resp.status();
+            if !status.is_success() {
+                tracing::warn!("maps tile server answered {status} for {id:?}");
+                return Err(TileFault::Rejected);
+            }
+            let content_type = resp
+                .headers()
+                .get(tilo_net::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or_default()
+                .to_owned();
+            if !content_type.starts_with("image/png") {
+                tracing::warn!("maps tile server sent {content_type:?} for {id:?}, not a PNG tile");
+                return Err(TileFault::Rejected);
+            }
+            resp.bytes()
+                .await
+                .map(|bytes| bytes.to_vec())
+                .map_err(|_| TileFault::Unreachable)
+        })
+        .map_err(|_| TileFault::Unreachable)?
 }
 
 fn write_cache(path: &std::path::Path, bytes: &[u8]) {
