@@ -10073,7 +10073,8 @@ impl BooksApp {
             return;
         }
         let track_h = (y1 - y0).max(1.0);
-        let thumb_h = (track_h * visible_h / content_h).clamp(28.0, track_h);
+        // A track shorter than the minimum thumb (a short window) is all thumb.
+        let thumb_h = (track_h * visible_h / content_h).clamp(28.0_f64.min(track_h), track_h);
         let progress = (scroll / max_scroll).clamp(0.0, 1.0);
         let thumb_y = y0 + progress * (track_h - thumb_h);
         paint::fill_round(

@@ -1,7 +1,7 @@
 import {createDesktopLaunchFocus} from './desktop-launch-focus.mjs';
 /** Mount-owned projection: no DOM lookup, transport mutation or polling timer. */
-export function createDesktopNavigation({snapshot,revision,dispatch,search,globalSearch,focusSearch=()=>{},captureSelect=()=>undefined,completeSelect=()=>{},awaitTerminal,active,captureLaunchFocus=()=>undefined}) {
- const parse=()=>{const next=JSON.parse(snapshot());next.capabilities={...next.capabilities,close:Boolean(awaitTerminal&&next.capabilities?.close),globalSearch:Boolean(globalSearch&&next.capabilities?.globalSearch)};return next;};
+export function createDesktopNavigation({snapshot,revision,dispatch,search,globalSearch,focusSearch=()=>{},captureSelect=()=>undefined,completeSelect=()=>{},awaitTerminal,install=async app=>app,active,captureLaunchFocus=()=>undefined}) {
+ const parse=()=>{const next=JSON.parse(snapshot());next.capabilities={...next.capabilities,close:Boolean(awaitTerminal&&next.capabilities?.close),open:Boolean(awaitTerminal&&next.capabilities?.open),globalSearch:Boolean(globalSearch&&next.capabilities?.globalSearch)};return next;};
  const sameRoute=(a,b)=>a?.workspace===b?.workspace&&a?.strip===b?.strip&&a?.group===b?.group&&a?.tab===b?.tab;
  const routeKey=route=>JSON.stringify([route?.workspace,route?.strip,route?.group,route?.tab]);
  let closed=false, serial=revision(), value=parse(), listeners=new Set(), pendingCloses=new Map(), launches=new Map(), claimedLaunchRoutes=new Set();
@@ -65,6 +65,12 @@ export function createDesktopNavigation({snapshot,revision,dispatch,search,globa
       void Promise.resolve(awaitTerminal(invocation)).then(()=>{const pending=pendingCloses.get(key);if(pending?.promise===promise){pending.terminal=true;settleCloses();}},error=>{if(pendingCloses.get(key)?.promise===promise)pendingCloses.delete(key);reject(error);});
      }catch(error){pendingCloses.delete(key);reject(error);}
      refresh();return promise;
+    }
+    if(command.kind==='open'){
+     if(!value.capabilities.open)throw Error('Open unavailable');
+     if(typeof command.app!=='string'||!command.app)throw Error('Invalid application');
+     // An app the core lacks is linked first (its resolver, as a standalone mount's).
+     return Promise.resolve(install(command.app)).then(app=>{check();if(command.generation!==value.generation)throw Error('Stale desktop surface');dispatch(JSON.stringify({kind:'open',generation:command.generation,app}));refresh();});
     }
     const beforeSelect=command.kind==='select'?captureSelect():undefined;
     if(command.kind==='global-search'){openGlobalSearch(command.generation,command.query??'');}else if(command.kind==='commands'){if(!search)throw Error('Command search unavailable');search(command.generation,command.query);}else dispatch(JSON.stringify(command));refresh();return command.kind==='select'?Promise.resolve(completeSelect(beforeSelect)).then(()=>{}):Promise.resolve();
