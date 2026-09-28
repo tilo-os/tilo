@@ -33,10 +33,6 @@ default = ["iroh"]
 # The iroh dialer: the v1 session client and certification over the ALPN.
 iroh = ["dep:iroh", "dep:n0-future", "dep:web-time"]
 
-[dev-dependencies]
-# Proves a raw Automerge delta is never mistaken for a co-edit payload.
-automerge.workspace = true
-
 [lints]
 workspace = true
 

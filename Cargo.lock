@@ -14775,7 +14775,6 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "tempfile",
- "test-http",
  "thiserror 2.0.18",
  "tilo-clock",
  "tilo-moq",
@@ -14787,7 +14786,6 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "url",
- "uuid",
  "web-time",
  "workspace-hack",
 ]
@@ -15631,7 +15629,6 @@ dependencies = [
 name = "tilo-relay-client"
 version = "0.1.0"
 dependencies = [
- "automerge",
  "ed25519-dalek 3.0.0",
  "iroh",
  "iroh-base",
