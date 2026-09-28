@@ -16,6 +16,9 @@ pub(crate) struct OperatorConfig {
     /// here (TLS passthrough on TCP, datagrams on UDP).
     #[serde(default)]
     listen: Option<std::net::SocketAddr>,
+    /// Exact dashboard origins that may embed the page in an iframe.
+    #[serde(default)]
+    frame_ancestors: Vec<String>,
     certificate_der: PathBuf,
     key_der: PathBuf,
     assets: PathBuf,
@@ -137,6 +140,7 @@ impl PreparedIngress {
                 certificates,
                 key,
                 local_enrollment: None,
+                frame_ancestors: config.frame_ancestors,
             },
             activate_delivery: config.activate_delivery,
             local_owner_enrollment: config.local_owner_enrollment,
@@ -184,6 +188,7 @@ impl PreparedIngress {
                 certificates,
                 key,
                 local_enrollment: None,
+                frame_ancestors: config.frame_ancestors,
             },
             activate_delivery: config.activate_delivery,
             local_owner_enrollment: config.local_owner_enrollment,
@@ -327,6 +332,9 @@ mod tests {
         )
         .unwrap();
         assert_eq!(public.listen, Some("0.0.0.0:7392".parse().unwrap()));
+        assert!(public.frame_ancestors.is_empty());
+        let embeddable = config(serde_json::json!({"origin":"https://c1.viewer.example","listen":"0.0.0.0:7392","frame_ancestors":["https://dash.partner.example"]})).unwrap();
+        assert_eq!(embeddable.frame_ancestors, ["https://dash.partner.example"]);
         assert!(
             config(
                 serde_json::json!({"origin":"https://c1.viewer.example:8443","listen":"[::]:7392"})

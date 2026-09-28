@@ -585,6 +585,62 @@ fn public_dns_origin_keeps_exact_host_and_origin_checks() {
     assert!(Origin::parse("https://[::1]:9443").unwrap().loopback);
 }
 
+#[test]
+fn only_an_embeddable_origin_accepts_a_dashboard_iframe_and_only_for_pages() {
+    let request = |path: &str, dest: &str, site: &str| {
+        Request::builder()
+            .method("GET")
+            .uri(path)
+            .header("host", "c1.viewer.example")
+            .header("sec-fetch-site", site)
+            .header("sec-fetch-mode", "navigate")
+            .header("sec-fetch-dest", dest)
+            .body(())
+            .unwrap()
+            .into_parts()
+            .0
+    };
+    let closed = Origin::parse("https://c1.viewer.example").unwrap();
+    let mut open = Origin::parse("https://c1.viewer.example").unwrap();
+    open.frame_ancestors = Some(
+        frame_ancestors_policy(&[
+            "https://dash.partner.example".into(),
+            "http://127.0.0.1:9981".into(),
+        ])
+        .unwrap(),
+    );
+    assert_eq!(
+        open.frame_ancestors.as_ref().unwrap(),
+        "frame-ancestors https://dash.partner.example http://127.0.0.1:9981"
+    );
+    let framed = request("/", "iframe", "cross-site");
+    assert_eq!(
+        check_origin(&framed, &closed).unwrap_err().status,
+        StatusCode::FORBIDDEN
+    );
+    check_origin(&framed, &open).unwrap();
+    check_origin(&request("/assets/app.js", "iframe", "same-site"), &open).unwrap();
+    for refused in [
+        request("/peer/v3/descriptor", "iframe", "cross-site"),
+        request("/tilo-peer/enrollment/challenge", "iframe", "cross-site"),
+        request("/", "document", "cross-site"),
+        request("/", "script", "cross-site"),
+    ] {
+        assert_eq!(
+            check_origin(&refused, &open).unwrap_err().status,
+            StatusCode::FORBIDDEN
+        );
+    }
+    for bad in [
+        vec![],
+        vec!["http://dash.partner.example".to_string()],
+        vec!["https://dash.partner.example/app".to_string()],
+        vec!["*".to_string()],
+    ] {
+        assert!(frame_ancestors_policy(&bad).is_err(), "{bad:?}");
+    }
+}
+
 // Removing exact origin, proof, target or body validation must change these outcomes.
 #[test]
 fn rejects_ambient_credentials_and_noncanonical_delivery_requests() {
