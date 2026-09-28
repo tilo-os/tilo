@@ -491,11 +491,7 @@ impl SemanticTree {
         let marker = format!("~k:{control_id}");
         let mut paths = self
             .iter()
-            .filter(|node| {
-                node.durable_identity
-                    && !node.id.0.starts_with("r:")
-                    && node.id.0.ends_with(&marker)
-            })
+            .filter(|node| !node.id.0.starts_with("r:") && node.id.0.ends_with(&marker))
             .filter_map(|node| {
                 let mut path = vec![node.id.clone()];
                 let mut cursor = node.id.clone();
