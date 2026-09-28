@@ -1216,6 +1216,13 @@ async fn a_document_proposed_over_the_relay_is_created_only_once_the_owner_accep
         &key,
     )
     .unwrap();
+    let session = Session {
+        origin,
+        room,
+        cert: &cert,
+        native: &native,
+        broker_host,
+    };
     let proposing = invoke(
         import::PROPOSE,
         serde_json::to_string(&ProposeArgument::new(proposal.clone(), &bytes)).unwrap(),
@@ -1228,10 +1235,7 @@ async fn a_document_proposed_over_the_relay_is_created_only_once_the_owner_accep
     invoke_and_observe_until(
         &client,
         &mut remote,
-        room,
-        &cert,
-        &native,
-        broker_host,
+        session,
         proposing.0,
         operation(&proposing),
         |remote| pending(remote) && label(remote, &proposing.0).is_some(),
@@ -1266,10 +1270,7 @@ async fn a_document_proposed_over_the_relay_is_created_only_once_the_owner_accep
     invoke_and_observe_until(
         &client,
         &mut remote,
-        room,
-        &cert,
-        &native,
-        broker_host,
+        session,
         accepting.0,
         operation(&accepting),
         |remote| {
@@ -1526,6 +1527,13 @@ async fn checked_application_catalogue(
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     };
+    let session = Session {
+        origin,
+        room,
+        cert: &cert,
+        native: &native,
+        broker_host,
+    };
     if multiple_writers {
         assert!(
             catalogue["surfaces"]
@@ -1536,16 +1544,7 @@ async fn checked_application_catalogue(
                 .count()
                 >= 5
         );
-        desktop_close_through_broker(
-            &client,
-            &mut remote,
-            room,
-            &cert,
-            &native,
-            broker_host,
-            &catalogue,
-        )
-        .await;
+        desktop_close_through_broker(&client, &mut remote, session, &catalogue).await;
         client.close().await;
         return;
     }
@@ -1594,18 +1593,8 @@ async fn checked_application_catalogue(
         // native host yet, so the documented outcome is a definite refusal:
         // the operation is admitted, never reported as succeeded, and no
         // document change is committed or replicated.
-        invoke_and_expect_closed_publication(
-            &client,
-            &mut remote,
-            room,
-            &cert,
-            &native,
-            broker_host,
-            invocation,
-            operation,
-            origin,
-        )
-        .await;
+        invoke_and_expect_closed_publication(&client, &mut remote, session, invocation, operation)
+            .await;
         client.close().await;
         return;
     }
@@ -1615,26 +1604,13 @@ async fn checked_application_catalogue(
     // owner keeps its contributor publication closed (asserted above).
     #[cfg(feature = "test-support")]
     if publication_failure != PublicationFailureFixture::None {
-        desktop_open_through_broker(
-            &client,
-            &mut remote,
-            room,
-            &cert,
-            &native,
-            broker_host,
-            &catalogue,
-        )
-        .await;
+        desktop_open_through_broker(&client, &mut remote, session, &catalogue).await;
         observe_native_publication(origin, &client, &mut remote).await;
         let prior = selective_publication_failure_after_commit(
             &mut host,
-            origin,
             &client,
             &mut remote,
-            room,
-            &cert,
-            &native,
-            broker_host,
+            session,
             &catalogue,
             publication_failure,
         )
@@ -1704,14 +1680,10 @@ async fn checked_application_catalogue(
     } else {
         active_replacement(
             &mut host,
-            origin,
             client,
             &observer_binding,
             &mut remote,
-            room,
-            &cert,
-            &native,
-            broker_host,
+            session,
             invocation,
             operation.clone(),
         )
@@ -1725,17 +1697,7 @@ async fn checked_application_catalogue(
     };
     #[cfg(not(feature = "test-support"))]
     let first_observation = operation.clone();
-    invoke_and_observe(
-        &client,
-        &mut remote,
-        room,
-        &cert,
-        &native,
-        broker_host,
-        invocation,
-        first_observation,
-    )
-    .await;
+    invoke_and_observe(&client, &mut remote, session, invocation, first_observation).await;
     assert_eq!(
         table_cells(&remote),
         4,
@@ -1743,46 +1705,16 @@ async fn checked_application_catalogue(
     );
     #[cfg(feature = "test-support")]
     observe_native_publication(origin, &client, &mut remote).await;
-    let (desktop_invocation, desktop_operation, desktop_records) = desktop_open_through_broker(
-        &client,
-        &mut remote,
-        room,
-        &cert,
-        &native,
-        broker_host,
-        &catalogue,
-    )
-    .await;
-    owner_and_room_isolation(
-        origin,
-        &cap,
-        &metadata,
-        &client,
-        room,
-        &cert,
-        &native,
-        &host_cert,
-        broker_host,
-        invocation,
-    )
-    .await;
+    let (desktop_invocation, desktop_operation, desktop_records) =
+        desktop_open_through_broker(&client, &mut remote, session, &catalogue).await;
+    owner_and_room_isolation(session, &cap, &metadata, &client, &host_cert, invocation).await;
     let heads = remote
         .rows()
         .into_iter()
         .find(|r| r.app_id == "so.tilo.word-processor")
         .unwrap()
         .heads;
-    invoke_and_observe(
-        &client,
-        &mut remote,
-        room,
-        &cert,
-        &native,
-        broker_host,
-        invocation,
-        operation.clone(),
-    )
-    .await;
+    invoke_and_observe(&client, &mut remote, session, invocation, operation.clone()).await;
     assert_eq!(
         table_cells(&remote),
         4,
@@ -1806,17 +1738,7 @@ async fn checked_application_catalogue(
         assert!(Instant::now() < deadline, "reconnect failed: {status}");
         tokio::time::sleep(Duration::from_millis(30)).await;
     }
-    invoke_and_observe(
-        &client,
-        &mut remote,
-        room,
-        &cert,
-        &native,
-        broker_host,
-        invocation,
-        operation.clone(),
-    )
-    .await;
+    invoke_and_observe(&client, &mut remote, session, invocation, operation.clone()).await;
     assert_eq!(table_cells(&remote), 4);
     client.close().await;
     writeln!(host.0.stdin.as_mut().unwrap(), "shutdown").unwrap();
@@ -1841,6 +1763,10 @@ async fn checked_application_catalogue(
     assert_eq!(cap2, cap);
     assert_eq!(metadata2["room"], metadata["room"]);
     let origin2 = metadata2["fixture_origin"].as_str().unwrap();
+    let restarted_session = Session {
+        origin: origin2,
+        ..session
+    };
     let key = SigningKey::from_bytes(&[92; 32]);
     let complete_request = proof(origin2, &cap2, &key, 93).await;
     let (code, bootstrap2) = request(
@@ -1907,10 +1833,7 @@ async fn checked_application_catalogue(
     invoke_and_observe(
         &client,
         &mut remote,
-        room,
-        &cert,
-        &native,
-        broker_host,
+        restarted_session,
         invocation,
         ActionMessage::Status { invocation },
     )
@@ -1918,10 +1841,7 @@ async fn checked_application_catalogue(
     invoke_and_observe(
         &client,
         &mut remote,
-        room,
-        &cert,
-        &native,
-        broker_host,
+        restarted_session,
         invocation,
         operation.clone(),
     )
@@ -1934,10 +1854,7 @@ async fn checked_application_catalogue(
     invoke_and_observe(
         &client,
         &mut remote,
-        room,
-        &cert,
-        &native,
-        broker_host,
+        restarted_session,
         desktop_invocation,
         ActionMessage::Status {
             invocation: desktop_invocation,
@@ -1947,10 +1864,7 @@ async fn checked_application_catalogue(
     invoke_and_observe(
         &client,
         &mut remote,
-        room,
-        &cert,
-        &native,
-        broker_host,
+        restarted_session,
         desktop_invocation,
         desktop_operation,
     )
@@ -2131,21 +2045,32 @@ fn table_cells(peer: &tilo_peer_state::StatePeer) -> usize {
 /// refuses the invocation's final document publication: the invocation is
 /// admitted but never succeeds, and neither the owner's Writer record nor the
 /// replicated remote copy changes.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "mirrors invoke_and_observe on the same certified relay path"
-)]
+/// One enrolled relay session against the host under test: its fixture
+/// origin, room, the enrolled device certificate, the native owner's
+/// certificate and the broker host serving its actions.
+#[derive(Clone, Copy)]
+struct Session<'a> {
+    origin: &'a str,
+    room: uuid::Uuid,
+    cert: &'a tilo_user_identity::DeviceCert,
+    native: &'a tilo_user_identity::DeviceCert,
+    broker_host: uuid::Uuid,
+}
+
 async fn invoke_and_expect_closed_publication(
     client: &tilo_relay::RelayClient,
     remote: &mut tilo_peer_state::StatePeer,
-    room: uuid::Uuid,
-    cert: &tilo_user_identity::DeviceCert,
-    native: &tilo_user_identity::DeviceCert,
-    host: uuid::Uuid,
+    session: Session<'_>,
     invocation: tilo_actions::InvocationId,
     operation: tilo_delivery_protocol::peer_actions::ActionMessage,
-    origin: &str,
 ) {
+    let Session {
+        origin,
+        room,
+        cert,
+        native,
+        broker_host: host,
+    } = session;
     use tilo_delivery_protocol::{
         peer_actions::{ActionMessage, DirectedAction},
         transport_v2::EnvelopeV2,
@@ -2232,49 +2157,34 @@ async fn invoke_and_expect_closed_publication(
     );
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "each argument is a distinct piece of custody or context the caller already holds"
-)]
 async fn invoke_and_observe(
     client: &tilo_relay::RelayClient,
     remote: &mut tilo_peer_state::StatePeer,
-    room: uuid::Uuid,
-    cert: &tilo_user_identity::DeviceCert,
-    native: &tilo_user_identity::DeviceCert,
-    host: uuid::Uuid,
+    session: Session<'_>,
     invocation: tilo_actions::InvocationId,
     operation: tilo_delivery_protocol::peer_actions::ActionMessage,
 ) {
-    invoke_and_observe_until(
-        client,
-        remote,
-        room,
-        cert,
-        native,
-        host,
-        invocation,
-        operation,
-        |remote| table_cells(remote) == 4,
-    )
+    invoke_and_observe_until(client, remote, session, invocation, operation, |remote| {
+        table_cells(remote) == 4
+    })
     .await;
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "each argument is a distinct piece of custody or context the caller already holds"
-)]
 async fn invoke_and_observe_until(
     client: &tilo_relay::RelayClient,
     remote: &mut tilo_peer_state::StatePeer,
-    room: uuid::Uuid,
-    cert: &tilo_user_identity::DeviceCert,
-    native: &tilo_user_identity::DeviceCert,
-    host: uuid::Uuid,
+    session: Session<'_>,
     invocation: tilo_actions::InvocationId,
     operation: tilo_delivery_protocol::peer_actions::ActionMessage,
     complete: impl Fn(&tilo_peer_state::StatePeer) -> bool,
 ) {
+    let Session {
+        room,
+        cert,
+        native,
+        broker_host: host,
+        ..
+    } = session;
     use tilo_delivery_protocol::{
         peer_actions::{ActionMessage, DirectedAction},
         transport_v2::EnvelopeV2,
@@ -2744,24 +2654,23 @@ async fn observer_eof_replays_once_on_the_same_endpoint_and_peer() {
     host.shutdown().await.unwrap();
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "each argument is a distinct piece of custody or context the caller already holds"
-)]
 #[cfg(feature = "test-support")]
 async fn active_replacement(
     host: &mut Host,
-    origin: &str,
     client: tilo_relay::RelayClient,
     binding: &ObserverBinding,
     remote: &mut tilo_peer_state::StatePeer,
-    room: uuid::Uuid,
-    cert: &tilo_user_identity::DeviceCert,
-    native: &tilo_user_identity::DeviceCert,
-    broker_host: uuid::Uuid,
+    session: Session<'_>,
     invocation: tilo_actions::InvocationId,
     operation: tilo_delivery_protocol::peer_actions::ActionMessage,
 ) -> tilo_relay::RelayClient {
+    let Session {
+        origin,
+        room,
+        cert,
+        native,
+        broker_host,
+    } = session;
     use std::io::Write;
     use tilo_delivery_protocol::{
         peer_actions::{ActionMessage, DirectedAction},
@@ -2994,22 +2903,21 @@ async fn active_replacement(
     client
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "each argument is a distinct piece of custody or context the caller already holds"
-)]
 async fn owner_and_room_isolation(
-    origin: &str,
+    session: Session<'_>,
     capability: &str,
     metadata: &serde_json::Value,
     first: &tilo_relay::RelayClient,
-    room: uuid::Uuid,
-    first_cert: &tilo_user_identity::DeviceCert,
-    native: &tilo_user_identity::DeviceCert,
     host_cert: &tilo_user_identity::DeviceCert,
-    broker_host: uuid::Uuid,
     invocation: tilo_actions::InvocationId,
 ) {
+    let Session {
+        origin,
+        room,
+        cert: first_cert,
+        native,
+        broker_host,
+    } = session;
     use tilo_delivery_protocol::{
         peer_actions::{ActionMessage, DirectedAction, UnavailableReason},
         transport_v2::EnvelopeV2,
@@ -3205,23 +3113,22 @@ async fn observe_native_publication(
     .expect("observer did not admit the fixed native publication within five seconds");
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "each argument is a distinct piece of custody or context the caller already holds"
-)]
 #[cfg(feature = "test-support")]
 async fn selective_publication_failure_after_commit(
     host: &mut Host,
-    origin: &str,
     client: &tilo_relay::RelayClient,
     remote: &mut tilo_peer_state::StatePeer,
-    room: uuid::Uuid,
-    cert: &tilo_user_identity::DeviceCert,
-    native: &tilo_user_identity::DeviceCert,
-    broker_host: uuid::Uuid,
+    session: Session<'_>,
     catalogue: &serde_json::Value,
     failure: PublicationFailureFixture,
 ) -> usize {
+    let Session {
+        origin,
+        room,
+        cert,
+        native,
+        broker_host,
+    } = session;
     use std::io::Write;
     use tilo_delivery_protocol::{
         peer_actions::{ActionMessage, DirectedAction},
@@ -3418,16 +3325,14 @@ fn desktop_open_operation(
 async fn desktop_open_through_broker(
     client: &tilo_relay::RelayClient,
     remote: &mut tilo_peer_state::StatePeer,
-    room: uuid::Uuid,
-    cert: &tilo_user_identity::DeviceCert,
-    native: &tilo_user_identity::DeviceCert,
-    host: uuid::Uuid,
+    session: Session<'_>,
     catalogue: &serde_json::Value,
 ) -> (
     tilo_actions::InvocationId,
     tilo_delivery_protocol::peer_actions::ActionMessage,
     usize,
 ) {
+    let (room, host) = (session.room, session.broker_host);
     #[cfg(not(feature = "test-support"))]
     while let Ok(Some(event)) =
         tokio::time::timeout(Duration::from_millis(100), client.recv()).await
@@ -3442,10 +3347,7 @@ async fn desktop_open_through_broker(
         invoke_and_observe_until(
             client,
             remote,
-            room,
-            cert,
-            native,
-            host,
+            session,
             invocation,
             operation.clone(),
             |remote| remote.rows().len() > prior,
@@ -3461,10 +3363,7 @@ async fn desktop_open_through_broker(
     invoke_and_observe_until(
         client,
         remote,
-        room,
-        cert,
-        native,
-        host,
+        session,
         invocation,
         operation.clone(),
         |_| true,
@@ -3501,12 +3400,10 @@ async fn desktop_open_through_broker(
 async fn desktop_close_through_broker(
     client: &tilo_relay::RelayClient,
     remote: &mut tilo_peer_state::StatePeer,
-    room: uuid::Uuid,
-    cert: &tilo_user_identity::DeviceCert,
-    native: &tilo_user_identity::DeviceCert,
-    host: uuid::Uuid,
+    session: Session<'_>,
     catalogue: &serde_json::Value,
 ) {
+    let (room, host) = (session.room, session.broker_host);
     use tilo_delivery_protocol::peer_actions::ActionMessage;
     use tilo_peer_state::desktop_command::*;
     let project = |remote: &tilo_peer_state::StatePeer| {
@@ -3581,17 +3478,9 @@ async fn desktop_close_through_broker(
             2
         };
     tokio::time::timeout(Duration::from_secs(budget), async {
-        invoke_and_observe_until(
-            client,
-            remote,
-            room,
-            cert,
-            native,
-            host,
-            invocation,
-            operation,
-            |remote| !present(remote),
-        )
+        invoke_and_observe_until(client, remote, session, invocation, operation, |remote| {
+            !present(remote)
+        })
         .await;
     })
     .await

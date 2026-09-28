@@ -18,6 +18,7 @@ use winit::event::{Modifiers, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::ColorCompat;
+use ui::paint::PaintCtx;
 use ui::text_edit::{EditCore, Motion};
 use ui::text_render::{TextRenderer, TextStyle};
 use ui::theme::Theme;
@@ -217,12 +218,6 @@ struct FillDrag {
     src: (Addr, Addr),
     /// Cell currently under the pointer.
     target: Addr,
-}
-
-/// Size + colour for one [`Grid::draw_cell_text`] call.
-struct CellTextStyle {
-    size: f32,
-    color: Color,
 }
 
 /// Text and band metrics for the grid, resolved from the renderer that paints
@@ -2188,8 +2183,7 @@ impl Grid {
         rows: &[u32],
     ) {
         let colors = &theme.tokens.colors;
-        let text_size = self.metrics.cell_size;
-        let line_h = self.metrics.cell_line_h;
+        let mut ctx = PaintCtx::new(scene, transform, tr, theme);
         for &r in rows {
             for &c in cols {
                 let cell = self.cell_screen_rect(c, r);
@@ -2212,19 +2206,7 @@ impl Grid {
                     } else {
                         colors.text_primary
                     };
-                    self.draw_cell_text(
-                        scene,
-                        transform,
-                        tr,
-                        raw,
-                        &CellTextStyle {
-                            size: text_size,
-                            color,
-                        },
-                        cell,
-                        false,
-                        line_h,
-                    );
+                    self.draw_cell_text(&mut ctx, raw, color, cell, false);
                     continue;
                 }
                 if let Some(val) = self.values.get(&(c, r)) {
@@ -2242,19 +2224,7 @@ impl Grid {
                         colors.text_primary
                     };
                     let right_align = val.is_numeric() && fmt != CellFormat::Text;
-                    self.draw_cell_text(
-                        scene,
-                        transform,
-                        tr,
-                        &text,
-                        &CellTextStyle {
-                            size: text_size,
-                            color,
-                        },
-                        cell,
-                        right_align,
-                        line_h,
-                    );
+                    self.draw_cell_text(&mut ctx, &text, color, cell, right_align);
                 }
             }
         }
@@ -2410,26 +2380,27 @@ impl Grid {
         Rect::new(tl.x0, tl.y0, br.x1, br.y1)
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "cell text painting takes the paint context, the text with its style, the cell rect, alignment and line height"
-    )]
     fn draw_cell_text(
         &self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
+        ctx: &mut PaintCtx<'_>,
         text: &str,
-        style: &CellTextStyle,
+        color: Color,
         cell: Rect,
         right_align: bool,
-        line_h: f64,
     ) {
+        let PaintCtx {
+            scene,
+            transform,
+            text: tr,
+            ..
+        } = ctx.reborrow();
+        let size = self.metrics.cell_size;
+        let line_h = self.metrics.cell_line_h;
         let inner = Rect::new(cell.x0 + 1.0, cell.y0, cell.x1 - 1.0, cell.y1);
         if inner.width() <= 2.0 {
             return;
         }
-        let (tw, _) = tr.measure(text, style.size, None);
+        let (tw, _) = tr.measure(text, size, None);
         // Centre the measured line box, not the nominal font size, so a cell
         // and its row header share one baseline at every text scale.
         let ty = cell.y0 + (cell.height() - line_h) / 2.0;
@@ -2442,8 +2413,8 @@ impl Grid {
         tr.draw_text(
             scene,
             text,
-            style.size,
-            style.color,
+            size,
+            color,
             transform * Affine::translate((tx, ty)),
             None,
         );
@@ -2805,10 +2776,6 @@ pub(crate) fn reference_color(slot: usize) -> Color {
 /// scene space so the caller can draw a matching caret; otherwise the return
 /// is the x just past the text. Only strings beginning with `=` are scanned
 /// for references — a plain value is drawn entirely in `base_color`.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "formula painting keeps renderer inputs, text style, origin and optional character caret explicit for reference coloring"
-)]
 pub(crate) fn draw_formula_line(
     scene: &mut Scene,
     transform: Affine,

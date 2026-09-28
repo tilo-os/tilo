@@ -4281,12 +4281,13 @@ mod tests {
                                     &mut replica,
                                     &resources,
                                     wp::register,
-                                    id,
-                                    resource,
-                                    action,
-                                    argument.as_deref(),
-                                    &actor,
-                                    context.as_deref(),
+                                    peer::DocumentInvocation {
+                                        id,
+                                        address: tilo_actions::ActionAddress { resource, action },
+                                        argument: argument.as_deref(),
+                                        actor: &actor,
+                                        context: context.as_deref(),
+                                    },
                                 )
                             };
                             client

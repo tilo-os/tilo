@@ -1565,12 +1565,6 @@ pub fn resolve_launcher_bin() -> Result<PathBuf, LaunchError> {
 /// (dma-bufs generally can't cross GPUs). `document` rides across as
 /// `--open <path>` but grants nothing on its own — see
 /// [`crate::shell::doc_open`].
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the flat public convenience signature every non-uri caller (production and \
-              test) already depends on; `build_launch_command_for` is the one that groups \
-              extras into `LaunchExtras`, which this just forwards into with `uri: None`"
-)]
 pub fn build_launch_command(
     app: &InstalledApp,
     launcher_bin: &Path,
@@ -1592,42 +1586,6 @@ pub fn build_launch_command(
             render_node,
             document,
             uri: None,
-            continuity_tab_id: None,
-        },
-    )
-}
-
-/// Build a launch command for the durable shell tab that owns this app
-/// instance. The tab id is passed through the launcher environment and becomes
-/// the record component of the app's authenticated collaboration route, so a
-/// later continuation capture can attach metadata to this exact tab.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "The launch command binds the installed app, sandbox endpoints and exact durable tab route together."
-)]
-pub fn build_launch_command_for_tab(
-    app: &InstalledApp,
-    launcher_bin: &Path,
-    wayland_socket: &Path,
-    room: RoomId,
-    capabilities_file: Option<&Path>,
-    identity_path: Option<&Path>,
-    render_node: Option<&Path>,
-    document: Option<&Path>,
-    tab_id: u64,
-) -> LaunchCommand {
-    build_launch_command_for(
-        app,
-        launcher_bin,
-        Some(wayland_socket),
-        room,
-        &LaunchExtras {
-            capabilities_file,
-            identity_path,
-            render_node,
-            document,
-            uri: None,
-            continuity_tab_id: Some(tab_id),
         },
     )
 }
@@ -1654,7 +1612,6 @@ pub fn build_workspace_agent_command(
             render_node: None,
             document: None,
             uri: None,
-            continuity_tab_id: None,
         },
     );
     command.args.push("--service".into());
@@ -1687,8 +1644,6 @@ struct LaunchExtras<'a> {
     render_node: Option<&'a Path>,
     document: Option<&'a Path>,
     uri: Option<&'a str>,
-    /// Durable shell tab id, when this launch belongs to a tiled app instance.
-    continuity_tab_id: Option<u64>,
 }
 
 fn build_launch_command_for(
@@ -1704,7 +1659,6 @@ fn build_launch_command_for(
         render_node,
         document,
         uri,
-        continuity_tab_id,
     } = *extras;
     let mut args = vec![
         "run".to_string(),
@@ -1748,15 +1702,10 @@ fn build_launch_command_for(
     if std::env::var_os("TILO_LAUNCH_NO_SERVICES").is_some() {
         args.push("--no-services".to_string());
     }
-    let mut env: Vec<(String, String)> = std::iter::once((
+    let mut env = vec![(
         "XDG_RUNTIME_DIR".to_string(),
         runtime_dir().display().to_string(),
-    ))
-    .chain(
-        continuity_tab_id
-            .map(|tab_id| ("TILO_CONTINUITY_INSTANCE".to_string(), tab_id.to_string())),
-    )
-    .collect();
+    )];
     // The developer session wrapper validates these paths and exports them as
     // one matched registry/payload/runtime overlay. Production builds do not
     // read or forward the variables at all: a normal user's environment must
@@ -2148,10 +2097,6 @@ enum LaunchContext<'a> {
     Raw(String),
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "one launch request's independent optional handoffs; bundling them adds no invariant"
-)]
 fn execute_installed(
     app: InstalledApp,
     room: RoomId,
@@ -2172,10 +2117,6 @@ fn execute_installed(
     )
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "one launch request's independent optional handoffs; bundling them adds no invariant"
-)]
 fn execute_installed_inner(
     app: InstalledApp,
     room: RoomId,
@@ -2222,7 +2163,6 @@ fn execute_installed_inner(
             render_node: crate::compositor::render_node::resolved(),
             document,
             uri,
-            continuity_tab_id: None,
         },
     );
     // This id is a durable shell-id allocation, not a random process token.

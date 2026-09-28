@@ -11,8 +11,9 @@ use vello::peniko::Color;
 use ui::ColorCompat;
 use ui::Widget;
 use ui::format::bytes as format_bytes;
+use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{Avatar, Button, ButtonFace};
 
@@ -20,8 +21,8 @@ use crate::app::{AVATAR, ChatApp, Hit, MenuTarget};
 use crate::geometry::{SidebarHeaderSpec, centered_band, line_top, sidebar_header_layout};
 use crate::model::{self, Attachment, ChannelKind, Message, Presence};
 use crate::paint::{
-    PaintContext, band_at_least, blend_toward, fill_circle, fill_rect, fill_round, hline, label,
-    legible_on, palette_color, push_clip, stroke_round, text, truncate_to,
+    band_at_least, blend_toward, fill_circle, fill_rect, fill_round, hline, label, legible_on,
+    palette_color, push_clip, stroke_round, text, truncate_to,
 };
 
 /// Body text size for a message. Shared by the measure and the draw so a
@@ -304,35 +305,27 @@ impl ChatApp {
     }
 
     /// Paint a message's body where [`Self::layout_body`] last put it.
-    fn draw_body(
-        &self,
-        m: &Message,
-        size: f32,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
+    fn draw_body(&self, m: &Message, size: f32, paint: &mut PaintCtx<'_>) {
         if let Some((_, view)) = self
             .body_views
             .borrow_mut()
             .get_mut(&(size.to_bits(), m.id.clone()))
         {
-            view.draw(scene, tf, tr, theme);
+            view.draw(paint.scene, paint.transform, paint.text, paint.theme);
         }
     }
 }
 
 /// Draw a circular initials avatar with an optional presence dot.
 pub(crate) fn draw_avatar(
-    paint: PaintContext<'_>,
+    paint: PaintCtx<'_>,
     center: Point,
     r: f64,
     initials: &str,
     color_idx: usize,
     status: Option<Presence>,
 ) {
-    let PaintContext {
+    let PaintCtx {
         scene,
         transform: tf,
         text: tr,
@@ -469,15 +462,14 @@ impl ChatApp {
             }
             let (tw, th) = tr.measure_weighted(&ws.glyph, 17.0, None, TextWeight::Bold);
             text(
-                scene,
-                tr,
-                tf,
+                &mut PaintCtx::new(scene, tf, tr, theme),
                 &ws.glyph,
-                17.0,
+                &TextStyle::new(17.0).with_weight(TextWeight::Bold),
                 if active { Color::WHITE } else { c.text_dim },
-                b.center().x - f64::from(tw) / 2.0,
-                b.center().y - f64::from(th) / 2.0,
-                TextWeight::Bold,
+                Point::new(
+                    b.center().x - f64::from(tw) / 2.0,
+                    b.center().y - f64::from(th) / 2.0,
+                ),
                 None,
             );
             ChatApp::push_hit(hits, b, Hit::CurrentContext);
@@ -507,7 +499,7 @@ impl ChatApp {
 
         let header = self.draw_sidebar_header(scene, tf, tr, theme, side, hits);
         self.draw_sidebar_tree(
-            PaintContext::new(scene, tf, tr, theme),
+            PaintCtx::new(scene, tf, tr, theme),
             presence,
             side,
             header,
@@ -664,19 +656,15 @@ impl ChatApp {
                 let name = truncate_to(tr, &channel.name, INBOX_NAME_SIZE, name_right - name_x);
                 let (_, nh) = tr.measure_weighted(&name, INBOX_NAME_SIZE, None, weight);
                 text(
-                    scene,
-                    tr,
-                    tf,
+                    &mut PaintCtx::new(scene, tf, tr, theme),
                     &name,
-                    INBOX_NAME_SIZE,
+                    &TextStyle::new(INBOX_NAME_SIZE).with_weight(weight),
                     if selected || channel.unread > 0 {
                         c.text_primary
                     } else {
                         c.text_dim
                     },
-                    name_x,
-                    line_top(cy, f64::from(nh)),
-                    weight,
+                    Point::new(name_x, line_top(cy, f64::from(nh))),
                     None,
                 );
                 if let Some((count, badge)) = badge {
@@ -851,13 +839,13 @@ impl ChatApp {
     )]
     fn draw_sidebar_tree(
         &mut self,
-        paint: PaintContext<'_>,
+        paint: PaintCtx<'_>,
         presence: &PresenceCtx,
         side: Rect,
         header: Rect,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
-        let PaintContext {
+        let PaintCtx {
             scene,
             transform: tf,
             text: tr,
@@ -879,7 +867,7 @@ impl ChatApp {
 
         // Uncategorised channels (category id "").
         y = self.draw_channel_group(
-            PaintContext::new(scene, tf, tr, theme),
+            PaintCtx::new(scene, tf, tr, theme),
             presence,
             side,
             None,
@@ -936,7 +924,7 @@ impl ChatApp {
                 matches!(&self.rename, Some(MenuTarget::Category(id)) if id == &cat.id);
             if renaming_cat {
                 self.draw_inline_rename(
-                    PaintContext::new(scene, tf, tr, theme),
+                    PaintCtx::new(scene, tf, tr, theme),
                     presence,
                     name_x,
                     y + (hrow_h - 16.0).max(0.0) / 2.0,
@@ -948,15 +936,11 @@ impl ChatApp {
                 let (_, nh) =
                     tr.measure_weighted(&name, CATEGORY_NAME_SIZE, None, TextWeight::Semibold);
                 text(
-                    scene,
-                    tr,
-                    tf,
+                    &mut PaintCtx::new(scene, tf, tr, theme),
                     &name,
-                    CATEGORY_NAME_SIZE,
+                    &TextStyle::new(CATEGORY_NAME_SIZE).with_weight(TextWeight::Semibold),
                     c.text_dim,
-                    name_x,
-                    line_top(cy, f64::from(nh)),
-                    TextWeight::Semibold,
+                    Point::new(name_x, line_top(cy, f64::from(nh))),
                     None,
                 );
             }
@@ -972,7 +956,7 @@ impl ChatApp {
 
             if !cat.collapsed {
                 y = self.draw_channel_group(
-                    PaintContext::new(scene, tf, tr, theme),
+                    PaintCtx::new(scene, tf, tr, theme),
                     presence,
                     side,
                     Some(&cat.id),
@@ -1037,7 +1021,7 @@ impl ChatApp {
         let avatar_cx = bar.x0 + f64::from(sp.s3) + r;
         let cy = bar.center().y;
         draw_avatar(
-            PaintContext::new(scene, tf, tr, theme),
+            PaintCtx::new(scene, tf, tr, theme),
             Point::new(avatar_cx, cy),
             r,
             &me.initials,
@@ -1110,15 +1094,14 @@ impl ChatApp {
         let mglyph = if self.call.muted { "🔇" } else { "🎤" };
         let (mw, mh) = tr.measure(mglyph, IDENTITY_CTL_GLYPH, None);
         text(
-            scene,
-            tr,
-            tf,
+            &mut PaintCtx::new(scene, tf, tr, theme),
             mglyph,
-            IDENTITY_CTL_GLYPH,
+            &TextStyle::new(IDENTITY_CTL_GLYPH),
             c.text_primary,
-            mute.center().x - f64::from(mw) / 2.0,
-            mute.center().y - f64::from(mh) / 2.0,
-            TextWeight::Regular,
+            Point::new(
+                mute.center().x - f64::from(mw) / 2.0,
+                mute.center().y - f64::from(mh) / 2.0,
+            ),
             None,
         );
         ChatApp::push_hit(hits, mute, Hit::CallMute);
@@ -1131,14 +1114,14 @@ impl ChatApp {
     /// each voice channel — Discord-style.
     fn draw_channel_group(
         &mut self,
-        paint: PaintContext<'_>,
+        paint: PaintCtx<'_>,
         presence: &PresenceCtx,
         side: Rect,
         category: Option<&str>,
         mut y: f64,
         hits: &mut Vec<(Rect, Hit)>,
     ) -> f64 {
-        let PaintContext {
+        let PaintCtx {
             scene,
             transform: tf,
             text: tr,
@@ -1162,7 +1145,7 @@ impl ChatApp {
                 })
                 .map_or(0.0, |s| s.dx());
             y = self.draw_channel_row(
-                PaintContext::new(scene, tf, tr, theme),
+                PaintCtx::new(scene, tf, tr, theme),
                 presence,
                 ChannelRowInput {
                     side,
@@ -1176,7 +1159,7 @@ impl ChatApp {
             // Voice presence: list connected members under a voice channel.
             if ch.kind == ChannelKind::Voice {
                 y = self.draw_voice_presence_rows(
-                    PaintContext::new(scene, tf, tr, theme),
+                    PaintCtx::new(scene, tf, tr, theme),
                     side,
                     &ch.id,
                     y,
@@ -1191,12 +1174,12 @@ impl ChatApp {
     /// Returns the cursor `y` for the row after this one.
     fn draw_channel_row(
         &mut self,
-        paint: PaintContext<'_>,
+        paint: PaintCtx<'_>,
         presence: &PresenceCtx,
         input: ChannelRowInput<'_>,
         hits: &mut Vec<(Rect, Hit)>,
     ) -> f64 {
-        let PaintContext {
+        let PaintCtx {
             scene,
             transform: tf,
             text: tr,
@@ -1226,12 +1209,7 @@ impl ChatApp {
 
         Self::draw_channel_row_swipe_delete(scene, tf, tr, theme, &ctx, swipe_dx);
         Self::draw_channel_row_glyph(scene, tf, tr, theme, &ctx);
-        self.draw_channel_row_label(
-            PaintContext::new(scene, tf, tr, theme),
-            presence,
-            &ctx,
-            hits,
-        );
+        self.draw_channel_row_label(PaintCtx::new(scene, tf, tr, theme), presence, &ctx, hits);
         self.draw_channel_row_status(scene, tf, tr, theme, &ctx);
 
         // Click joins/opens; right-click (resolved against this row's
@@ -1321,12 +1299,12 @@ impl ChatApp {
     /// otherwise its (possibly truncated) name.
     fn draw_channel_row_label(
         &mut self,
-        paint: PaintContext<'_>,
+        paint: PaintCtx<'_>,
         presence: &PresenceCtx,
         ctx: &ChannelRowCtx<'_>,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
-        let PaintContext {
+        let PaintCtx {
             scene,
             transform: tf,
             text: tr,
@@ -1336,7 +1314,7 @@ impl ChatApp {
         let renaming = matches!(&self.rename, Some(MenuTarget::Channel(id)) if id == &ctx.ch.id);
         if renaming {
             self.draw_inline_rename(
-                PaintContext::new(scene, tf, tr, theme),
+                PaintCtx::new(scene, tf, tr, theme),
                 presence,
                 ctx.row.x0 + 32.0,
                 ctx.y + 6.0,
@@ -1358,15 +1336,14 @@ impl ChatApp {
         let name = truncate_to(tr, &ctx.ch.name, CHANNEL_NAME_SIZE, ctx.row.width() - 80.0);
         let (_, nh) = tr.measure_weighted(&name, CHANNEL_NAME_SIZE, None, weight);
         text(
-            scene,
-            tr,
-            tf,
+            &mut PaintCtx::new(scene, tf, tr, theme),
             &name,
-            CHANNEL_NAME_SIZE,
+            &TextStyle::new(CHANNEL_NAME_SIZE).with_weight(weight),
             name_col,
-            ctx.row.x0 + 32.0,
-            line_top(ctx.row.center().y, f64::from(nh)),
-            weight,
+            Point::new(
+                ctx.row.x0 + 32.0,
+                line_top(ctx.row.center().y, f64::from(nh)),
+            ),
             None,
         );
     }
@@ -1423,12 +1400,12 @@ impl ChatApp {
     /// Returns the cursor `y` after the last member row.
     fn draw_voice_presence_rows(
         &self,
-        paint: PaintContext<'_>,
+        paint: PaintCtx<'_>,
         side: Rect,
         channel_id: &str,
         mut y: f64,
     ) -> f64 {
-        let PaintContext {
+        let PaintCtx {
             scene,
             transform: tf,
             text: tr,
@@ -1440,7 +1417,7 @@ impl ChatApp {
             let row = Rect::new(side.x0 + 36.0, y, side.x1 - 8.0, y + row_h);
             let radius = 9.0;
             draw_avatar(
-                PaintContext::new(scene, tf, tr, theme),
+                PaintCtx::new(scene, tf, tr, theme),
                 Point::new(row.x0 + radius + 2.0, row.center().y),
                 radius,
                 "♫",
@@ -1473,14 +1450,14 @@ impl ChatApp {
     /// text + a caret), recording a confirm hit on it.
     fn draw_inline_rename(
         &mut self,
-        paint: PaintContext<'_>,
+        paint: PaintCtx<'_>,
         presence: &PresenceCtx,
         x: f64,
         y: f64,
         w: f64,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
-        let PaintContext {
+        let PaintCtx {
             scene,
             transform: tf,
             text: tr,
@@ -1567,7 +1544,7 @@ impl ChatApp {
         // cluster and can never overlap it, even on a very narrow header.
         let cluster_left = self.draw_header_action_buttons(scene, tf, tr, theme, h, hits);
         Self::draw_header_title(
-            PaintContext::new(scene, tf, tr, theme),
+            PaintCtx::new(scene, tf, tr, theme),
             h,
             left_inset,
             cluster_left,
@@ -1667,7 +1644,7 @@ impl ChatApp {
     /// The channel glyph + name + topic, truncated to stop before
     /// `cluster_left` so nothing runs under the action buttons.
     fn draw_header_title(
-        paint: PaintContext<'_>,
+        paint: PaintCtx<'_>,
         h: Rect,
         left_inset: f64,
         cluster_left: f64,
@@ -1675,7 +1652,7 @@ impl ChatApp {
         topic: &str,
         glyph: &str,
     ) {
-        let PaintContext {
+        let PaintCtx {
             scene,
             transform: tf,
             text: tr,
@@ -1697,15 +1674,11 @@ impl ChatApp {
         let name_max = (cluster_left - 12.0 - nx).max(0.0);
         let name_t = truncate_to(tr, name, 17.0, name_max);
         let (nw, _) = text(
-            scene,
-            tr,
-            tf,
+            &mut PaintCtx::new(scene, tf, tr, theme),
             &name_t,
-            17.0,
+            &TextStyle::new(17.0).with_weight(TextWeight::Bold),
             c.text_primary,
-            nx,
-            cy - 11.0,
-            TextWeight::Bold,
+            Point::new(nx, cy - 11.0),
             None,
         );
         if !topic.is_empty() {
@@ -1767,12 +1740,12 @@ impl ChatApp {
     // ------------------------------------------------------------ messages
     pub(crate) fn draw_messages(
         &mut self,
-        paint: PaintContext<'_>,
+        paint: PaintCtx<'_>,
         presence: &PresenceCtx,
         area: Rect,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
-        let PaintContext {
+        let PaintCtx {
             scene,
             transform: tf,
             text: tr,
@@ -1850,7 +1823,7 @@ impl ChatApp {
         self.timeline_total_height = total;
 
         let mut y = self.draw_messages_date_divider(
-            PaintContext::new(scene, tf, tr, theme),
+            PaintCtx::new(scene, tf, tr, theme),
             area,
             y,
             divider_h,
@@ -1858,7 +1831,7 @@ impl ChatApp {
 
         for rm in &rows {
             self.draw_row(
-                PaintContext::new(scene, tf, tr, theme),
+                PaintCtx::new(scene, tf, tr, theme),
                 presence,
                 rm,
                 column,
@@ -1904,15 +1877,14 @@ impl ChatApp {
         fill_round(scene, tf, visual, 10.0, c.accent[5]);
         let (tw, th) = tr.measure(label_text, 12.5, None);
         text(
-            scene,
-            tr,
-            tf,
+            &mut PaintCtx::new(scene, tf, tr, theme),
             label_text,
-            12.5,
+            &TextStyle::new(12.5).with_weight(TextWeight::Semibold),
             Color::WHITE,
-            visual.center().x - f64::from(tw) / 2.0,
-            visual.center().y - f64::from(th) / 2.0,
-            TextWeight::Semibold,
+            Point::new(
+                visual.center().x - f64::from(tw) / 2.0,
+                visual.center().y - f64::from(th) / 2.0,
+            ),
             None,
         );
         // The visual remains compact; the 44px target meets touch and switch
@@ -1949,29 +1921,21 @@ impl ChatApp {
         fill_circle(scene, tf, Point::new(cx, cy), 30.0, c.lift(0.35));
         let (gw, gh) = tr.measure_weighted("#", 30.0, None, TextWeight::Bold);
         text(
-            scene,
-            tr,
-            tf,
+            &mut PaintCtx::new(scene, tf, tr, theme),
             "#",
-            30.0,
+            &TextStyle::new(30.0).with_weight(TextWeight::Bold),
             c.text_dim,
-            cx - f64::from(gw) / 2.0,
-            cy - f64::from(gh) / 2.0,
-            TextWeight::Bold,
+            Point::new(cx - f64::from(gw) / 2.0, cy - f64::from(gh) / 2.0),
             None,
         );
         let title = format!("#{ch_name}");
         let (tw, _) = tr.measure_weighted(&title, 20.0, None, TextWeight::Bold);
         text(
-            scene,
-            tr,
-            tf,
+            &mut PaintCtx::new(scene, tf, tr, theme),
             &title,
-            20.0,
+            &TextStyle::new(20.0).with_weight(TextWeight::Bold),
             c.text_primary,
-            cx - f64::from(tw) / 2.0,
-            cy + 46.0,
-            TextWeight::Bold,
+            Point::new(cx - f64::from(tw) / 2.0, cy + 46.0),
             None,
         );
         let sub = if self.can_participate() {
@@ -2022,12 +1986,12 @@ impl ChatApp {
     /// for the first message row beneath it.
     fn draw_messages_date_divider(
         &self,
-        paint: PaintContext<'_>,
+        paint: PaintCtx<'_>,
         area: Rect,
         y: f64,
         divider_h: f64,
     ) -> f64 {
-        let PaintContext {
+        let PaintCtx {
             scene,
             transform: tf,
             text: tr,
@@ -2137,14 +2101,14 @@ impl ChatApp {
 
     fn draw_row(
         &mut self,
-        paint: PaintContext<'_>,
+        paint: PaintCtx<'_>,
         presence: &PresenceCtx,
         rm: &RowM,
         column: MessageColumn,
         y: &mut f64,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
-        let PaintContext {
+        let PaintCtx {
             scene,
             transform: tf,
             text: tr,
@@ -2170,11 +2134,11 @@ impl ChatApp {
         let content_top = *y;
 
         if rm.show_header {
-            self.draw_row_header(PaintContext::new(scene, tf, tr, theme), column, &m, y);
+            self.draw_row_header(PaintCtx::new(scene, tf, tr, theme), column, &m, y);
         }
 
         self.draw_row_body(
-            PaintContext::new(scene, tf, tr, theme),
+            PaintCtx::new(scene, tf, tr, theme),
             presence,
             MessageRowRef {
                 measurement: rm,
@@ -2187,26 +2151,19 @@ impl ChatApp {
             y,
             hits,
         );
-        self.draw_row_footer(
-            PaintContext::new(scene, tf, tr, theme),
-            rm,
-            &m,
-            column,
-            y,
-            hits,
-        );
+        self.draw_row_footer(PaintCtx::new(scene, tf, tr, theme), rm, &m, column, y, hits);
     }
 
     /// A message group's header: avatar, author name (in their palette
     /// colour), and the timestamp. Advances `*y` past it.
     fn draw_row_header(
         &self,
-        paint: PaintContext<'_>,
+        paint: PaintCtx<'_>,
         column: MessageColumn,
         m: &Message,
         y: &mut f64,
     ) {
-        let PaintContext {
+        let PaintCtx {
             scene,
             transform: tf,
             text: tr,
@@ -2231,7 +2188,7 @@ impl ChatApp {
             |u| (u.initials.clone(), u.color_idx, Some(u.status)),
         );
         draw_avatar(
-            PaintContext::new(scene, tf, tr, theme),
+            PaintCtx::new(scene, tf, tr, theme),
             Point::new(area.x0 + 16.0 + AVATAR / 2.0, *y + AVATAR / 2.0),
             AVATAR / 2.0,
             &initials,
@@ -2240,15 +2197,11 @@ impl ChatApp {
         );
         let name = self.user_name(&m.author);
         let (nw, nh) = text(
-            scene,
-            tr,
-            tf,
+            &mut PaintCtx::new(scene, tf, tr, theme),
             &name,
-            NAME_SIZE,
+            &TextStyle::new(NAME_SIZE).with_weight(TextWeight::Semibold),
             palette_color(theme, cidx),
-            text_x,
-            *y,
-            TextWeight::Semibold,
+            Point::new(text_x, *y),
             None,
         );
         // The timestamp's line box is bottom-aligned to the name's, which
@@ -2273,14 +2226,14 @@ impl ChatApp {
     /// own messages. Advances `*y` past the body.
     fn draw_row_body(
         &mut self,
-        paint: PaintContext<'_>,
+        paint: PaintCtx<'_>,
         presence: &PresenceCtx,
         row: MessageRowRef<'_>,
         layout: MessageBodyLayout,
         y: &mut f64,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
-        let PaintContext {
+        let PaintCtx {
             scene,
             transform: tf,
             text: tr,
@@ -2301,7 +2254,7 @@ impl ChatApp {
         } = layout;
         if rm.editing {
             self.draw_message_editor(
-                PaintContext::new(scene, tf, tr, theme),
+                PaintCtx::new(scene, tf, tr, theme),
                 presence,
                 layout.column,
                 rm,
@@ -2314,7 +2267,7 @@ impl ChatApp {
             // The body as written: paragraphs, formatting, and mentions in
             // their participants' colours, drawn by the editor that wrote it.
             self.layout_body(m, BODY_SIZE, Point::new(text_x, *y), text_w, theme, tr);
-            self.draw_body(m, BODY_SIZE, scene, tf, tr, theme);
+            self.draw_body(m, BODY_SIZE, &mut PaintCtx::new(scene, tf, tr, theme));
             *y += rm.body_h + 2.0;
         }
         // Right-click your own message (header + body) opens the edit menu.
@@ -2334,14 +2287,14 @@ impl ChatApp {
     /// them, plus the row's trailing gap.
     fn draw_row_footer(
         &self,
-        paint: PaintContext<'_>,
+        paint: PaintCtx<'_>,
         rm: &RowM,
         m: &Message,
         column: MessageColumn,
         y: &mut f64,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
-        let PaintContext {
+        let PaintCtx {
             scene,
             transform: tf,
             text: tr,
@@ -2385,7 +2338,7 @@ impl ChatApp {
 
         if let Some(att) = &m.attachment {
             self.draw_attachment(
-                PaintContext::new(scene, tf, tr, theme),
+                PaintCtx::new(scene, tf, tr, theme),
                 att,
                 AttachmentLayout::new(text_x, *y, text_w),
             );
@@ -2395,18 +2348,12 @@ impl ChatApp {
         // Empty reaction strip still gets an add affordance on header rows —
         // handled elsewhere, so there is nothing to draw when it's empty.
         if !m.reactions.is_empty() {
-            self.draw_reactions(PaintContext::new(scene, tf, tr, theme), m, text_x, *y, hits);
+            self.draw_reactions(PaintCtx::new(scene, tf, tr, theme), m, text_x, *y, hits);
             *y += rm.react_h;
         }
 
         if rm.thread_h > 0.0 {
-            self.draw_thread_affordance(
-                PaintContext::new(scene, tf, tr, theme),
-                m,
-                column,
-                *y,
-                hits,
-            );
+            self.draw_thread_affordance(PaintCtx::new(scene, tf, tr, theme), m, column, *y, hits);
             *y += rm.thread_h;
         }
         *y += 4.0;
@@ -2419,14 +2366,14 @@ impl ChatApp {
     /// height stays exact as the text grows.
     fn draw_message_editor(
         &mut self,
-        paint: PaintContext<'_>,
+        paint: PaintCtx<'_>,
         presence: &PresenceCtx,
         column: MessageColumn,
         rm: &RowM,
         y: &mut f64,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
-        let PaintContext {
+        let PaintCtx {
             scene,
             transform: tf,
             text: tr,
@@ -2492,15 +2439,14 @@ impl ChatApp {
         fill_round(scene, tf, save, 7.0, c.accent[5]);
         let (sw, sh) = tr.measure_weighted("Save", 12.5, None, TextWeight::Semibold);
         text(
-            scene,
-            tr,
-            tf,
+            &mut PaintCtx::new(scene, tf, tr, theme),
             "Save",
-            12.5,
+            &TextStyle::new(12.5).with_weight(TextWeight::Semibold),
             Color::WHITE,
-            save.center().x - f64::from(sw) / 2.0,
-            save.center().y - f64::from(sh) / 2.0,
-            TextWeight::Semibold,
+            Point::new(
+                save.center().x - f64::from(sw) / 2.0,
+                save.center().y - f64::from(sh) / 2.0,
+            ),
             None,
         );
         ChatApp::push_hit(hits, save, Hit::EditSave);
@@ -2522,13 +2468,13 @@ impl ChatApp {
 
     fn draw_reactions(
         &self,
-        paint: PaintContext<'_>,
+        paint: PaintCtx<'_>,
         m: &Message,
         text_x: f64,
         y: f64,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
-        let PaintContext {
+        let PaintCtx {
             scene,
             transform: tf,
             text: tr,
@@ -2577,15 +2523,14 @@ impl ChatApp {
         ui::surface::card(scene, tf, add, chip_r, c.lift(0.35));
         let (aw, ah) = tr.measure("☺", 14.0, None);
         text(
-            scene,
-            tr,
-            tf,
+            &mut PaintCtx::new(scene, tf, tr, theme),
             "☺",
-            14.0,
+            &TextStyle::new(14.0),
             c.text_dim,
-            add.center().x - f64::from(aw) / 2.0,
-            add.center().y - f64::from(ah) / 2.0,
-            TextWeight::Regular,
+            Point::new(
+                add.center().x - f64::from(aw) / 2.0,
+                add.center().y - f64::from(ah) / 2.0,
+            ),
             None,
         );
         ChatApp::push_hit(
@@ -2600,13 +2545,13 @@ impl ChatApp {
 
     fn draw_thread_affordance(
         &self,
-        paint: PaintContext<'_>,
+        paint: PaintCtx<'_>,
         m: &Message,
         column: MessageColumn,
         y: f64,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
-        let PaintContext {
+        let PaintCtx {
             scene,
             transform: tf,
             text: tr,
@@ -2655,7 +2600,7 @@ impl ChatApp {
                     c.surfaces.raised,
                 );
                 draw_avatar(
-                    PaintContext::new(scene, tf, tr, theme),
+                    PaintCtx::new(scene, tf, tr, theme),
                     Point::new(ax + 11.0, bar.center().y),
                     11.0,
                     &u.initials,
@@ -2700,12 +2645,7 @@ impl ChatApp {
         ChatApp::push_hit(hits, bar, Hit::OpenThread(m.id.clone()));
     }
 
-    fn draw_attachment(
-        &self,
-        mut paint: PaintContext<'_>,
-        att: &Attachment,
-        layout: AttachmentLayout,
-    ) {
+    fn draw_attachment(&self, mut paint: PaintCtx<'_>, att: &Attachment, layout: AttachmentLayout) {
         // Permission boundary: an embed this peer hasn't been granted access to
         // renders as a locked card and never requests its shared bytes. Same
         // footprint as the real embed so the timeline layout is
@@ -2734,13 +2674,13 @@ impl ChatApp {
     /// and its pixel dimensions beneath.
     fn draw_image_attachment(
         &self,
-        paint: PaintContext<'_>,
+        paint: PaintCtx<'_>,
         name: &str,
         blob: &str,
         dimensions: (u32, u32),
         layout: AttachmentLayout,
     ) {
-        let PaintContext {
+        let PaintCtx {
             scene,
             transform: tf,
             text: tr,
@@ -2764,15 +2704,11 @@ impl ChatApp {
             fill_circle(scene, tf, dot, 12.0, c.lift(0.72));
             let (gw, gh) = tr.measure("🖼", 18.0, None);
             text(
-                scene,
-                tr,
-                tf,
+                &mut PaintCtx::new(scene, tf, tr, theme),
                 "🖼",
-                18.0,
+                &TextStyle::new(18.0),
                 c.text_dim,
-                dot.x - f64::from(gw) / 2.0,
-                dot.y - f64::from(gh) / 2.0,
-                TextWeight::Regular,
+                Point::new(dot.x - f64::from(gw) / 2.0, dot.y - f64::from(gh) / 2.0),
                 None,
             );
             let status = if blob.starts_with(crate::images::DEMO_SCHEME) {
@@ -2839,13 +2775,13 @@ impl ChatApp {
     /// glyph, a caption scrim with the filename, and dimensions + size
     /// metadata beneath.
     fn draw_video_attachment(
-        paint: PaintContext<'_>,
+        paint: PaintCtx<'_>,
         name: &str,
         dimensions: (u32, u32),
         size: u64,
         layout: AttachmentLayout,
     ) {
-        let PaintContext {
+        let PaintCtx {
             scene,
             transform: tf,
             text: tr,
@@ -2882,15 +2818,11 @@ impl ChatApp {
         fill_circle(scene, tf, cc, 24.0 * scale.min(1.3), c.lift(0.72));
         let (pw, ph) = tr.measure("▶", 20.0, None);
         text(
-            scene,
-            tr,
-            tf,
+            &mut PaintCtx::new(scene, tf, tr, theme),
             "▶",
-            20.0,
+            &TextStyle::new(20.0),
             Color::WHITE,
-            cc.x - f64::from(pw) / 2.0 + 2.0,
-            cc.y - f64::from(ph) / 2.0,
-            TextWeight::Regular,
+            Point::new(cc.x - f64::from(pw) / 2.0 + 2.0, cc.y - f64::from(ph) / 2.0),
             None,
         );
         // Caption scrim + filename, then a framing stroke.
@@ -2938,13 +2870,8 @@ impl ChatApp {
 
     /// The generic file attachment chip: an icon tile, filename, and human
     /// metadata (kind/size) beneath it.
-    fn draw_file_attachment(
-        paint: PaintContext<'_>,
-        name: &str,
-        size: u64,
-        layout: AttachmentLayout,
-    ) {
-        let PaintContext {
+    fn draw_file_attachment(paint: PaintCtx<'_>, name: &str, size: u64, layout: AttachmentLayout) {
+        let PaintCtx {
             scene,
             transform: tf,
             text: tr,
@@ -2965,15 +2892,14 @@ impl ChatApp {
         fill_round(scene, tf, icon, 8.0, c.accent[5]);
         let (iw, ih) = tr.measure("📄", 16.0, None);
         text(
-            scene,
-            tr,
-            tf,
+            &mut PaintCtx::new(scene, tf, tr, theme),
             "📄",
-            16.0,
+            &TextStyle::new(16.0),
             Color::WHITE,
-            icon.center().x - f64::from(iw) / 2.0,
-            icon.center().y - f64::from(ih) / 2.0,
-            TextWeight::Regular,
+            Point::new(
+                icon.center().x - f64::from(iw) / 2.0,
+                icon.center().y - f64::from(ih) / 2.0,
+            ),
             None,
         );
         let fname = truncate_to(tr, name, 13.5, chip.width() - 70.0);
@@ -3003,8 +2929,8 @@ impl ChatApp {
     /// Render an embed this peer isn't permitted to open: a neutral locked card
     /// with the filename but no hydrated content. Sized to match the granted
     /// embed's footprint so the timeline layout is identical either way.
-    fn draw_gated_embed(paint: PaintContext<'_>, att: &Attachment, layout: AttachmentLayout) {
-        let PaintContext {
+    fn draw_gated_embed(paint: PaintCtx<'_>, att: &Attachment, layout: AttachmentLayout) {
+        let PaintCtx {
             scene,
             transform: tf,
             text: tr,
@@ -3026,15 +2952,11 @@ impl ChatApp {
             };
         let (lw, lh) = tr.measure("🔒", 18.0, None);
         text(
-            scene,
-            tr,
-            tf,
+            &mut PaintCtx::new(scene, tf, tr, theme),
             "🔒",
-            18.0,
+            &TextStyle::new(18.0),
             c.text_dim,
-            cx - f64::from(lw) / 2.0,
-            cy - f64::from(lh) / 2.0,
-            TextWeight::Regular,
+            Point::new(cx - f64::from(lw) / 2.0, cy - f64::from(lh) / 2.0),
             None,
         );
         let msg = "Access not granted";
@@ -3087,7 +3009,7 @@ impl ChatApp {
         let draft = self.composer_main.value();
         let send_enabled = !draft.trim().is_empty();
         let inner = Self::draw_input_box(
-            PaintContext::new(scene, tf, tr, theme),
+            PaintCtx::new(scene, tf, tr, theme),
             rect,
             &draft,
             send_enabled,
@@ -3170,12 +3092,8 @@ impl ChatApp {
     /// when empty) and centred on that same line, so a short draft, its caret
     /// and the placeholder line up with the buttons instead of hugging the
     /// top edge; a long draft fills the box, which itself grows with the text.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "The composer painter needs draft geometry, send/focus state, the focus action, attachment visibility, and the hit-target output."
-    )]
     pub(crate) fn draw_input_box(
-        paint: PaintContext<'_>,
+        paint: PaintCtx<'_>,
         rect: Rect,
         draft: &str,
         send_enabled: bool,
@@ -3184,7 +3102,7 @@ impl ChatApp {
         attach: bool,
         hits: &mut Vec<(Rect, Hit)>,
     ) -> Rect {
-        let PaintContext {
+        let PaintCtx {
             scene,
             transform: tf,
             text: tr,
@@ -3257,15 +3175,14 @@ impl ChatApp {
         let emoji = Rect::new(emoji_x1 - btn, cy - half_btn, emoji_x1, cy + half_btn);
         let (ew, eh) = tr.measure("🙂", 16.0, None);
         text(
-            scene,
-            tr,
-            tf,
+            &mut PaintCtx::new(scene, tf, tr, theme),
             "🙂",
-            16.0,
+            &TextStyle::new(16.0),
             c.text_dim,
-            emoji.center().x - f64::from(ew) / 2.0,
-            line_top(emoji.center().y, f64::from(eh)),
-            TextWeight::Regular,
+            Point::new(
+                emoji.center().x - f64::from(ew) / 2.0,
+                line_top(emoji.center().y, f64::from(eh)),
+            ),
             None,
         );
         ChatApp::push_hit(
@@ -3323,7 +3240,15 @@ impl ChatApp {
         // one gap above it.
         let comp = self.thread_composer_rect(tr, panel);
         let head = self.draw_thread_header(scene, tf, tr, theme, panel, hits);
-        self.draw_thread_body(scene, tf, tr, theme, panel, head, comp.y0, &parent_id, hits);
+        // The body ends one `s2` above the composer, whatever height the
+        // composer measured to this frame.
+        let body = Rect::new(
+            panel.x0,
+            head.y1,
+            panel.x1,
+            comp.y0 - f64::from(theme.tokens.spacing.s2),
+        );
+        self.draw_thread_body(PaintCtx::new(scene, tf, tr, theme), body, &parent_id);
         if !self.can_participate() {
             self.composer_thread.set_focus(false);
             Self::draw_read_only_composer(scene, tf, tr, theme, comp);
@@ -3335,7 +3260,7 @@ impl ChatApp {
         let draft = self.composer_thread.value();
         let send_enabled = !draft.trim().is_empty();
         let inner = Self::draw_input_box(
-            PaintContext::new(scene, tf, tr, theme),
+            PaintCtx::new(scene, tf, tr, theme),
             comp,
             &draft,
             send_enabled,
@@ -3444,45 +3369,28 @@ impl ChatApp {
     }
 
     /// The thread body: the parent message, a "N replies" divider, then
-    /// every reply in order — clipped to the scrollable region between the
-    /// header and the thread composer.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "draw-context bundle, not real parameter coupling"
-    )]
-    fn draw_thread_body(
-        &self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        panel: Rect,
-        head: Rect,
-        composer_top: f64,
-        parent_id: &str,
-        _hits: &mut Vec<(Rect, Hit)>,
-    ) {
+    /// every reply in order — clipped to `body`, the scrollable region
+    /// between the header and the thread composer.
+    fn draw_thread_body(&self, paint: PaintCtx<'_>, body: Rect, parent_id: &str) {
+        let PaintCtx {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
         let c = &theme.tokens.colors;
         let scale = f64::from(theme.text_scale.max(1.0));
-        // The body ends one `s2` above the composer, whatever height the
-        // composer measured to this frame.
-        let body = Rect::new(
-            panel.x0,
-            head.y1,
-            panel.x1,
-            composer_top - f64::from(theme.tokens.spacing.s2),
-        );
         push_clip(scene, tf, body);
-        let tx = panel.x0 + (16.0 + 32.0 + 10.0) * scale.min(1.2);
-        let tw = (panel.x1 - tx - 14.0 * scale.min(1.2)).max(60.0) as f32;
+        let tx = body.x0 + (16.0 + 32.0 + 10.0) * scale.min(1.2);
+        let tw = (body.x1 - tx - 14.0 * scale.min(1.2)).max(60.0) as f32;
         let mut y = body.y0 + 12.0 * scale;
 
         // parent message
         if let Some(parent) = self.message(parent_id).cloned() {
             y = self.draw_thread_message(
-                PaintContext::new(scene, tf, tr, theme),
+                PaintCtx::new(scene, tf, tr, theme),
                 &parent,
-                panel.x0 + 16.0 * scale.min(1.2),
+                body.x0 + 16.0 * scale.min(1.2),
                 tx,
                 tw,
                 y,
@@ -3496,16 +3404,16 @@ impl ChatApp {
             hline(
                 scene,
                 tf,
-                panel.x0 + 16.0 * scale.min(1.2),
-                panel.center().x - f64::from(sw) / 2.0 - 10.0 * scale,
+                body.x0 + 16.0 * scale.min(1.2),
+                body.center().x - f64::from(sw) / 2.0 - 10.0 * scale,
                 dcy,
                 rule,
             );
             hline(
                 scene,
                 tf,
-                panel.center().x + f64::from(sw) / 2.0 + 10.0 * scale,
-                panel.x1 - 16.0 * scale.min(1.2),
+                body.center().x + f64::from(sw) / 2.0 + 10.0 * scale,
+                body.x1 - 16.0 * scale.min(1.2),
                 dcy,
                 rule,
             );
@@ -3516,7 +3424,7 @@ impl ChatApp {
                 &s,
                 11.5,
                 c.text_dim,
-                panel.center().x - f64::from(sw) / 2.0,
+                body.center().x - f64::from(sw) / 2.0,
                 dcy - 7.0 * scale,
             );
             y += 30.0 * scale;
@@ -3529,9 +3437,9 @@ impl ChatApp {
             .collect();
         for r in &replies {
             y = self.draw_thread_message(
-                PaintContext::new(scene, tf, tr, theme),
+                PaintCtx::new(scene, tf, tr, theme),
                 r,
-                panel.x0 + 16.0 * scale.min(1.2),
+                body.x0 + 16.0 * scale.min(1.2),
                 tx,
                 tw,
                 y,
@@ -3542,14 +3450,14 @@ impl ChatApp {
 
     fn draw_thread_message(
         &self,
-        paint: PaintContext<'_>,
+        paint: PaintCtx<'_>,
         m: &Message,
         avx: f64,
         tx: f64,
         tw: f32,
         y: f64,
     ) -> f64 {
-        let PaintContext {
+        let PaintCtx {
             scene,
             transform: tf,
             text: tr,
@@ -3560,7 +3468,7 @@ impl ChatApp {
         let mut yy = y;
         if let Some(u) = self.user(&m.author) {
             draw_avatar(
-                PaintContext::new(scene, tf, tr, theme),
+                PaintCtx::new(scene, tf, tr, theme),
                 Point::new(avx + 16.0 * scale.min(1.2), yy + 14.0 * scale),
                 14.0 * scale.min(1.2),
                 &u.initials,
@@ -3569,15 +3477,11 @@ impl ChatApp {
             );
         }
         let (nw, _) = text(
-            scene,
-            tr,
-            tf,
+            &mut PaintCtx::new(scene, tf, tr, theme),
             &self.user_name(&m.author),
-            13.5,
+            &TextStyle::new(13.5).with_weight(TextWeight::Semibold),
             palette_color(theme, self.user(&m.author).map_or(0, |u| u.color_idx)),
-            tx,
-            yy,
-            TextWeight::Semibold,
+            Point::new(tx, yy),
             None,
         );
         label(
@@ -3593,12 +3497,12 @@ impl ChatApp {
         yy += 19.0 * scale;
         if !m.text.is_empty() {
             let h = self.layout_body(m, 14.0, Point::new(tx, yy), tw, theme, tr);
-            self.draw_body(m, 14.0, scene, tf, tr, theme);
+            self.draw_body(m, 14.0, &mut PaintCtx::new(scene, tf, tr, theme));
             yy += h + 4.0 * scale;
         }
         if let Some(att) = &m.attachment {
             self.draw_attachment(
-                PaintContext::new(scene, tf, tr, theme),
+                PaintCtx::new(scene, tf, tr, theme),
                 att,
                 AttachmentLayout::new(tx, yy, tw),
             );
@@ -3659,18 +3563,9 @@ impl ChatApp {
         );
 
         let rows = self.roster_rows();
-        let head_y1 = self.draw_members_header(
-            PaintContext::new(scene, tf, tr, theme),
-            panel,
-            rows.len(),
-            hits,
-        );
-        self.draw_members_rows(
-            PaintContext::new(scene, tf, tr, theme),
-            panel,
-            head_y1,
-            &rows,
-        );
+        let head_y1 =
+            self.draw_members_header(PaintCtx::new(scene, tf, tr, theme), panel, rows.len(), hits);
+        self.draw_members_rows(PaintCtx::new(scene, tf, tr, theme), panel, head_y1, &rows);
     }
 
     /// A precise People/Collaborators label, the workspace name and roster
@@ -3679,12 +3574,12 @@ impl ChatApp {
     /// beneath.
     fn draw_members_header(
         &self,
-        paint: PaintContext<'_>,
+        paint: PaintCtx<'_>,
         panel: Rect,
         people_count: usize,
         hits: &mut Vec<(Rect, Hit)>,
     ) -> f64 {
-        let PaintContext {
+        let PaintCtx {
             scene,
             transform: tf,
             text: tr,
@@ -3765,12 +3660,12 @@ impl ChatApp {
     /// display name, and presence/voice status.
     fn draw_members_rows(
         &self,
-        paint: PaintContext<'_>,
+        paint: PaintCtx<'_>,
         panel: Rect,
         head_y1: f64,
         rows: &[(crate::model::User, Option<String>)],
     ) {
-        let PaintContext {
+        let PaintCtx {
             scene,
             transform: tf,
             text: tr,
@@ -3796,7 +3691,7 @@ impl ChatApp {
             }
             let avc = Point::new(panel.x0 + 16.0 + 16.0, y + row_h / 2.0);
             draw_avatar(
-                PaintContext::new(scene, tf, tr, theme),
+                PaintCtx::new(scene, tf, tr, theme),
                 avc,
                 16.0,
                 &u.initials,
@@ -3813,15 +3708,11 @@ impl ChatApp {
             };
             let name = truncate_to(tr, &display, 14.0, panel.x1 - nx - 14.0);
             text(
-                scene,
-                tr,
-                tf,
+                &mut PaintCtx::new(scene, tf, tr, theme),
                 &name,
-                14.0,
+                &TextStyle::new(14.0).with_weight(TextWeight::Semibold),
                 c.text_primary,
-                nx,
-                avc.y - 14.0,
-                TextWeight::Semibold,
+                Point::new(nx, avc.y - 14.0),
                 None,
             );
             let (status_txt, col) = match voice {
@@ -3876,7 +3767,7 @@ impl ChatApp {
             self.draw_attach_picker_empty(scene, tf, tr, theme, panel, head_h);
             return;
         }
-        self.draw_attach_picker_rows(PaintContext::new(scene, tf, tr, theme), panel, head_h, hits);
+        self.draw_attach_picker_rows(PaintCtx::new(scene, tf, tr, theme), panel, head_h, hits);
     }
 
     /// The picker panel's rect, anchored above the composer's "+" and
@@ -4030,12 +3921,12 @@ impl ChatApp {
     )]
     fn draw_attach_picker_rows(
         &self,
-        paint: PaintContext<'_>,
+        paint: PaintCtx<'_>,
         panel: Rect,
         head_h: f64,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
-        let PaintContext {
+        let PaintCtx {
             scene,
             transform: tf,
             text: tr,
@@ -4071,15 +3962,14 @@ impl ChatApp {
                 fill_round(scene, tf, thumb, 8.0, c.neutral[2]);
                 let (gw, gh) = tr.measure("🎬", 16.0, None);
                 text(
-                    scene,
-                    tr,
-                    tf,
+                    &mut PaintCtx::new(scene, tf, tr, theme),
                     "🎬",
-                    16.0,
+                    &TextStyle::new(16.0),
                     c.text_dim,
-                    thumb.center().x - f64::from(gw) / 2.0,
-                    thumb.center().y - f64::from(gh) / 2.0,
-                    TextWeight::Regular,
+                    Point::new(
+                        thumb.center().x - f64::from(gw) / 2.0,
+                        thumb.center().y - f64::from(gh) / 2.0,
+                    ),
                     None,
                 );
             } else if crate::picker::is_image_name(&e.name)
@@ -4095,15 +3985,14 @@ impl ChatApp {
                 };
                 let (gw, gh) = tr.measure(glyph, 16.0, None);
                 text(
-                    scene,
-                    tr,
-                    tf,
+                    &mut PaintCtx::new(scene, tf, tr, theme),
                     glyph,
-                    16.0,
+                    &TextStyle::new(16.0),
                     c.text_dim,
-                    thumb.center().x - f64::from(gw) / 2.0,
-                    thumb.center().y - f64::from(gh) / 2.0,
-                    TextWeight::Regular,
+                    Point::new(
+                        thumb.center().x - f64::from(gw) / 2.0,
+                        thumb.center().y - f64::from(gh) / 2.0,
+                    ),
                     None,
                 );
             }

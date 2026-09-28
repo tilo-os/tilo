@@ -3432,7 +3432,7 @@ impl Widget for ChatApp {
         let msg_area = self.messages_rect(tr);
         crate::paint::push_clip(scene, tf, msg_area);
         self.draw_messages(
-            crate::paint::PaintContext::new(scene, tf, tr, theme),
+            ui::paint::PaintCtx::new(scene, tf, tr, theme),
             presence,
             msg_area,
             &mut hits,

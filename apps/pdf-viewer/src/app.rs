@@ -24,6 +24,7 @@ use std::time::Duration;
 use crate::actions::PdfOperation;
 use ui::Widget;
 use ui::gesture::{DragSelect, Granularity};
+use ui::paint::PaintCtx;
 use ui::permissions::PermissionContext;
 use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 
@@ -3273,29 +3274,22 @@ impl PdfApp {
         let comment_id = Comment::new_id();
         // One action creates the note marker *and* its (empty) comment thread —
         // one undo boundary, replayed atomically on peers.
+        let note = crate::actions::NoteDraft {
+            anno_id: &anno_id,
+            comment_id: &comment_id,
+            color: self.swatch,
+            author: &self.author,
+            created: self.created_counter,
+            body: "",
+        };
         let action = match self.page_id_of(page) {
             Some(page_id) => crate::actions::create_note_on_action(
-                &anno_id,
-                &comment_id,
+                &note,
                 page,
                 &page_id,
                 self.page_map(page).card_to_user(pt),
-                self.swatch,
-                &self.author.clone(),
-                self.created_counter,
-                "",
             ),
-            None => crate::actions::create_note_action(
-                &anno_id,
-                &comment_id,
-                page,
-                pt.0,
-                pt.1,
-                self.swatch,
-                &self.author.clone(),
-                self.created_counter,
-                "",
-            ),
+            None => crate::actions::create_note_action(&note, page, pt.0, pt.1),
         };
         self.perform_action(state, &action);
         self.selected_anno = Some(anno_id);

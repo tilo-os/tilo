@@ -384,40 +384,31 @@ impl TestClock {
             .unwrap();
     }
 }
+/// The three request inputs one admission binds together: the decoded
+/// request proof, the exact request it signs, and the original buffered
+/// transport both must match byte for byte.
+#[derive(Clone, Copy)]
+pub(super) struct RequestEvidence<'r, 'a> {
+    pub(super) proof: &'r RequestProof,
+    pub(super) exact: &'a Request<'a>,
+    pub(super) original: &'r BufferedRequest,
+}
 impl HttpSessions {
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "each argument is a distinct piece of custody or context the caller already holds"
-    )]
     pub(super) fn admit_revalidating<'a>(
         &'a mut self,
         owner: &SessionOwner,
         current: &CommittedAuthority,
         budget: &HostBytes,
         operation: OwnerDataOperation,
-        proof: &RequestProof,
-        exact: &'a Request<'a>,
-        original: &BufferedRequest,
+        request: RequestEvidence<'_, 'a>,
     ) -> Result<(
         VerifiedRequest<'a>,
         OperationRevalidation<'a>,
         OwnerResourceTurn,
     )> {
-        self.admit_with_clock(
-            owner,
-            current,
-            budget,
-            operation,
-            proof,
-            exact,
-            original,
-            self.native_clock()?,
-        )
+        let clock = self.native_clock()?;
+        self.admit_with_clock(owner, current, budget, operation, request, clock)
     }
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "each argument is a distinct piece of custody or context the caller already holds"
-    )]
     #[cfg(test)]
     pub(super) fn admit_revalidating_at<'a>(
         &'a mut self,
@@ -425,9 +416,7 @@ impl HttpSessions {
         current: &CommittedAuthority,
         budget: &HostBytes,
         operation: OwnerDataOperation,
-        proof: &RequestProof,
-        exact: &'a Request<'a>,
-        original: &BufferedRequest,
+        request: RequestEvidence<'_, 'a>,
         clock: &TestClock,
     ) -> Result<(
         VerifiedRequest<'a>,
@@ -439,31 +428,28 @@ impl HttpSessions {
             current,
             budget,
             operation,
-            proof,
-            exact,
-            original,
+            request,
             Clock::Test(clock.clone()),
         )
     }
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "each argument is a distinct piece of custody or context the caller already holds"
-    )]
     fn admit_with_clock<'a>(
         &'a mut self,
         owner: &SessionOwner,
         current: &CommittedAuthority,
         budget: &HostBytes,
         operation: OwnerDataOperation,
-        proof: &RequestProof,
-        exact: &'a Request<'a>,
-        original: &BufferedRequest,
+        request: RequestEvidence<'_, 'a>,
         clock: Clock,
     ) -> Result<(
         VerifiedRequest<'a>,
         OperationRevalidation<'a>,
         OwnerResourceTurn,
     )> {
+        let RequestEvidence {
+            proof,
+            exact,
+            original,
+        } = request;
         // This real owner/pool-bound reservation precedes authority metadata,
         // current context, proof encoding and nonce-cache admission allocations.
         let turn = owner.prepare_data_turn(budget, operation)?;

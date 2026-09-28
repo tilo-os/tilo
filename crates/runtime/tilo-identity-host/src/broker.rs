@@ -307,10 +307,6 @@ fn sign_collaboration_join(bound_room: &RoomId, workspace_id: &str) -> Response 
 /// signing oracle: workspace/app are fixed by the launch handshake, artifact
 /// and attestation ids are route-derived, and only typed `Splice` document
 /// payloads pass.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "each argument is an independently authenticated boundary value: live tree, bound workspace/app, requested route, and opaque envelope"
-)]
 fn sign_collaboration_op(
     tree: &dyn WorkspaceMembership,
     bound_room: &RoomId,

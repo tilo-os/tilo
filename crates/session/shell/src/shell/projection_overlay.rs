@@ -12,13 +12,12 @@
 
 use std::time::{Duration, Instant};
 
-use automerge::{AutoCommit, ObjId};
 use settings_store::display_mode::{self, DisplayLayoutError, DisplayLayoutMode};
 use settings_store::hardware::{
     DisplayConfig, DisplayHardwareSnapshot, DisplayOutputSnapshot, DisplayTransaction,
     DisplayTransactionState,
 };
-use taffy::{NodeId, Style, TaffyTree};
+use taffy::{Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::{BlendMode, Color, Fill};
@@ -30,7 +29,7 @@ use ui::i18n::ArgValue;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{TextInput, Widget};
+use ui::widget::{EventCtx, TextInput, Widget};
 
 use crate::shell::i18n::{t, t_args};
 use crate::shell::projection::{
@@ -500,18 +499,12 @@ impl ProjectionOverlay {
         self.displays.pending().is_some()
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "widget event context passes through unchanged"
-    )]
+    /// Route `event` to the sheet shown over `host_rect`. The outcome says
+    /// whether the sheet used it; `ctx.handled` is left to the caller.
     pub fn handle_event(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        focus_target: &mut Option<NodeId>,
+        ctx: &mut EventCtx<'_>,
         cursor: Option<Point>,
         host_rect: Rect,
         open: bool,
@@ -522,15 +515,7 @@ impl ProjectionOverlay {
         }
         self.host_rect = host_rect;
         if self.airplay_selected()
-            && let Some(outcome) = self.handle_credential_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                focus_target,
-                cursor,
-            )
+            && let Some(outcome) = self.handle_credential_event(event, ctx, cursor)
         {
             return outcome;
         }
@@ -550,7 +535,7 @@ impl ProjectionOverlay {
                 {
                     return EventOutcome::consumed(false);
                 }
-                self.handle_key(logical_key, modifiers)
+                self.handle_key(logical_key, *ctx.modifiers)
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -567,18 +552,10 @@ impl ProjectionOverlay {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "TextInput event context passes through unchanged"
-    )]
     fn handle_credential_event(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        focus_target: &mut Option<NodeId>,
+        ctx: &mut EventCtx<'_>,
         cursor: Option<Point>,
     ) -> Option<EventOutcome> {
         if let WindowEvent::MouseInput {
@@ -597,13 +574,13 @@ impl ProjectionOverlay {
         };
         self.credential_input.handle_event(
             event,
-            &mut ui::widget::EventCtx {
-                scale_factor,
-                modifiers: &modifiers,
-                state,
-                path,
+            &mut EventCtx {
+                scale_factor: ctx.scale_factor,
+                modifiers: ctx.modifiers,
+                state: &mut *ctx.state,
+                path: ctx.path,
                 handled: &mut input_handled,
-                focus_target,
+                focus_target: &mut *ctx.focus_target,
                 node_id: input_node,
                 taffy: &input_taffy,
             },
@@ -909,10 +886,6 @@ impl ProjectionOverlay {
     }
 
     /// Paint the complete sheet and return whether worker polling changed state.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "draw context passes through unchanged"
-    )]
     pub fn draw(
         &mut self,
         scene: &mut Scene,
@@ -942,10 +915,6 @@ impl ProjectionOverlay {
         changed
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "draw context passes through unchanged"
-    )]
     fn draw_at_theme_scale(
         &mut self,
         scene: &mut Scene,

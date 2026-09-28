@@ -463,10 +463,6 @@ pub struct EventChunk {
     bytes: Vec<u8>,
 }
 impl EventChunk {
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Keep the event identity, source and byte-range fields explicit at construction"
-    )]
     /// Construct a range after validating offset and encoded-size bounds.
     ///
     /// # Errors

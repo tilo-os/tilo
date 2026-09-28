@@ -793,10 +793,6 @@ impl PageSidebar {
         );
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "page slot painting passes render context, page index and bounds to the thumbnail callback and selection decoration"
-    )]
     fn draw_slot<F>(
         &self,
         scene: &mut Scene,

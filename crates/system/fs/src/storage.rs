@@ -86,10 +86,6 @@ struct LogicalFile {
 }
 
 impl StorageAuthority {
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the constructor explicitly names the independent durable services which Settings must share with FUSE"
-    )]
     pub fn new(
         namespace: Arc<Mutex<Namespace>>,
         hydrator: Arc<Hydrator>,

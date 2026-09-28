@@ -863,7 +863,9 @@ fn framework_history_real_legacy_tile_settles_restores_and_reopens_through_enclo
     reason = "one owned-tile scenario proving settle and restore end to end"
 )]
 fn real_owned_tile_settles_and_restores(component: bool) {
-    use ui::application::{AppComponent, ApplicationDefinition, HostContext, LaunchTarget};
+    use ui::application::{
+        AppComponent, ApplicationDefinition, HostContext, HostContextInputs, LaunchTarget,
+    };
     {
         let directory = tempfile::tempdir().unwrap();
         let profile = directory.path().join("profile");
@@ -907,13 +909,15 @@ fn real_owned_tile_settles_and_restores(component: bool) {
             ));
             let mut context = HostContext::prepare(
                 &definition,
-                store.clone(),
-                views,
-                "device".into(),
-                353,
-                permissions,
-                ui::permissions::UserId("osk-author".into()),
-                ui::tilo_actions::ActionContext::default(),
+                HostContextInputs {
+                    records: store.clone(),
+                    views,
+                    device_id: "device".into(),
+                    instance_id: 353,
+                    permissions,
+                    author: ui::permissions::UserId("osk-author".into()),
+                    action_context: ui::tilo_actions::ActionContext::default(),
+                },
                 &LaunchTarget::New,
             )
             .unwrap();

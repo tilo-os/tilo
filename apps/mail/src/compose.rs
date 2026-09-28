@@ -41,7 +41,7 @@ use tilo_rich_text::{RichTextField, RichTextSurface};
 use ui::Widget;
 use ui::color_compat::ColorCompat;
 use ui::presence::PresenceCtx;
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use ui::widget::marks::Mark;
 use ui::widget::{BlockContent, BlockEditor, BlockKind, Button, ButtonFace, TextInput};
@@ -2302,10 +2302,6 @@ impl ComposeWindow {
             .map_or(Rect::ZERO, |(r, _)| *r)
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "compose-field painting shares render context with the localized label key, field bounds and focus state"
-    )]
     fn draw_field(
         &self,
         scene: &mut Scene,
@@ -2343,10 +2339,6 @@ impl ComposeWindow {
         );
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "chip buttons take the paint context, their hit id, label key and active state"
-    )]
     fn draw_chip_button(
         &self,
         scene: &mut Scene,
@@ -2478,16 +2470,15 @@ impl ComposeWindow {
             let (gw, gh) = tr.measure_weighted(glyph, TOOLBAR_GLYPH_SIZE, None, weight);
             let gx = rect.center().x - f64::from(gw) / 2.0;
             let gy = rect.center().y - f64::from(gh) / 2.0;
-            tr.draw_text_styled(
+            tr.draw_style(
                 scene,
                 glyph,
-                TOOLBAR_GLYPH_SIZE,
                 col,
                 t * Affine::translate((gx, gy)),
                 None,
-                weight,
-                italic,
-                false,
+                &TextStyle::new(TOOLBAR_GLYPH_SIZE)
+                    .with_weight(weight)
+                    .with_italic(italic),
             );
             if matches!(hit, ComposeHit::Underline) {
                 let uy = gy + f64::from(gh) * 0.8;
@@ -2626,10 +2617,6 @@ impl ComposeWindow {
 
     /// Draw the inline prompt's Add/Cancel buttons. Part of
     /// [`Self::draw_prompt`].
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each parameter is a distinct, independently-meaningful piece of this draw call (the universal scene/t/tr/theme quad plus the two button rects); bundling them would just move the same count into a field list"
-    )]
     fn draw_prompt_buttons(
         &self,
         scene: &mut Scene,
@@ -2666,10 +2653,6 @@ impl ComposeWindow {
         );
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "action buttons take the paint context, their hit id, label key and primary styling flag"
-    )]
     fn draw_action_button(
         &self,
         scene: &mut Scene,

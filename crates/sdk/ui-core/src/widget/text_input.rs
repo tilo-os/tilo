@@ -8,10 +8,12 @@
 use crate::time::{Duration, Instant};
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashSet;
+use std::ops::Range;
 use std::sync::{Arc, Mutex};
 
 use crate::color_compat::ColorCompat;
 use crate::gesture::{DragSelect, Granularity};
+use crate::paint::PaintCtx;
 use crate::presence::{PathSegment, PresenceKey};
 use crate::richtext::{RichSpan, RichTextLayout, TextAlign};
 use crate::text_break::line_break_opportunities;
@@ -351,7 +353,27 @@ struct VisualLine {
     y: f64,
 }
 
+/// Soft-wrap state across one `build_lines` pass: the metrics every
+/// paragraph wraps with, and the rows laid out so far.
+struct LineWrap {
+    size: f32,
+    wrap_w: f64,
+    /// Row pitch.
+    lh: f64,
+    /// Top of the next row.
+    y: f64,
+    lines: Vec<VisualLine>,
+}
+
 pub(crate) const AUTHOR_MARK: &str = "author";
+
+/// Which logical line each multiline-body visual row belongs to, which rows
+/// start one, and the logical line holding the caret.
+struct LogicalRows {
+    line_of_row: Vec<usize>,
+    is_line_start: Vec<bool>,
+    caret_line: usize,
+}
 
 /// One drawable multiline-body run: text, line-relative x offset, colour.
 type Seg = (String, f64, vello::peniko::Color);
@@ -1664,32 +1686,24 @@ impl TextInput {
     }
 
     fn build_lines(&mut self, tr: &mut TextRenderer, avail_w: f64) {
-        let size = self.effective_font_size();
-        let lh = self.line_height();
-        let wrap_w = if avail_w > 1.0 { avail_w } else { f64::MAX };
-        let mut lines: Vec<VisualLine> = Vec::new();
-        let mut y = 0.0f64;
+        let mut wrap = LineWrap {
+            size: self.effective_font_size(),
+            wrap_w: if avail_w > 1.0 { avail_w } else { f64::MAX },
+            lh: self.line_height(),
+            y: 0.0,
+            lines: Vec::new(),
+        };
         let mut para_start = 0usize;
         while let Some(tail) = self.text.get(para_start..) {
             let rel_nl = tail.find('\n');
             let para_end = rel_nl.map_or(self.text.len(), |i| para_start.saturating_add(i));
-            self.wrap_paragraph(
-                tr,
-                size,
-                para_start,
-                para_end,
-                rel_nl.is_some(),
-                wrap_w,
-                lh,
-                &mut y,
-                &mut lines,
-            );
+            self.wrap_paragraph(tr, &mut wrap, para_start..para_end, rel_nl.is_some());
             match rel_nl {
                 Some(i) => para_start = para_start.saturating_add(i).saturating_add(1),
                 None => break,
             }
         }
-        self.lines = lines;
+        self.lines = wrap.lines;
     }
 
     /// Uses UAX #14 opportunities, matching cosmic-text's shaped layout. It
@@ -1702,22 +1716,16 @@ impl TextInput {
     /// with `a <= b <= nchars`. The `.get`/`unwrap_or` fallbacks below exist
     /// so a future change to this invariant degrades gracefully instead of
     /// panicking; they are not expected to trigger.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "wrapping carries the bounded paragraph range and accumulated layout explicitly"
-    )]
     fn wrap_paragraph(
         &self,
         tr: &mut TextRenderer,
-        size: f32,
-        start: usize,
-        end: usize,
+        wrap: &mut LineWrap,
+        span: Range<usize>,
         hard_break: bool,
-        wrap_w: f64,
-        lh: f64,
-        y: &mut f64,
-        out: &mut Vec<VisualLine>,
     ) {
+        let Range { start, end } = span;
+        let (size, wrap_w, lh) = (wrap.size, wrap.wrap_w, wrap.lh);
+        let (y, out) = (&mut wrap.y, &mut wrap.lines);
         let Some(para) = self.text.get(start..end) else {
             return;
         };
@@ -1808,28 +1816,26 @@ impl TextInput {
         origin: Affine,
     ) {
         if let Some(fam) = &self.family {
-            tr.draw_text_font(
+            tr.draw_style(
                 scene,
                 text,
-                size,
                 color,
                 origin,
                 None,
-                TextWeight::Regular,
-                false,
-                fam,
+                &TextStyle::new(size).with_family(fam.clone()),
             );
         } else {
-            tr.draw_text_styled(
+            tr.draw_style(
                 scene,
                 text,
-                size,
                 color,
                 origin,
                 None,
-                TextWeight::Regular,
-                false,
-                self.mono,
+                &TextStyle::new(size).with_family(if self.mono {
+                    FontChoice::Monospace
+                } else {
+                    FontChoice::SansSerif
+                }),
             );
         }
     }
@@ -1880,8 +1886,6 @@ impl TextInput {
                 style,
                 Some(available_width),
                 self.align,
-                Vec::new(),
-                Vec::new(),
                 self.single_layout.take(),
                 browser_emoji,
             );
@@ -2068,7 +2072,6 @@ impl TextInput {
         gutter
     }
 
-    #[allow(clippy::too_many_arguments, reason = "internal draw-pass helper")]
     fn draw_gutter_line_numbers(
         &self,
         scene: &mut Scene,
@@ -2277,7 +2280,7 @@ impl TextInput {
     /// Per-row logical-line index and whether the row starts a new logical
     /// line (a row starts one iff the previous row ended at a hard `\n`),
     /// plus which logical line the caret is on.
-    fn ml_body_row_metadata(&self) -> (Vec<usize>, Vec<bool>, usize) {
+    fn ml_body_row_metadata(&self) -> LogicalRows {
         let mut line_of_row: Vec<usize> = Vec::with_capacity(self.lines.len());
         let mut is_line_start: Vec<bool> = Vec::with_capacity(self.lines.len());
         let mut cur_line = 0usize;
@@ -2296,20 +2299,23 @@ impl TextInput {
             .text
             .get(..caret_idx)
             .map_or(0, |s| s.bytes().filter(|&b| b == b'\n').count());
-        (line_of_row, is_line_start, caret_line)
+        LogicalRows {
+            line_of_row,
+            is_line_start,
+            caret_line,
+        }
     }
 
-    #[allow(clippy::too_many_arguments, reason = "internal draw-pass helper")]
     fn draw_body_current_line_band(
         &self,
         scene: &mut Scene,
         transform: Affine,
         theme: &Theme,
-        line_of_row: &[usize],
-        caret_line: usize,
+        rows: &LogicalRows,
         lh: f64,
         gutter_w: f64,
     ) {
+        let (line_of_row, caret_line) = (&rows.line_of_row, rows.caret_line);
         if !(self.highlight_current_line && self.is_focused && !self.shows_placeholder()) {
             return;
         }
@@ -2336,18 +2342,21 @@ impl TextInput {
     }
 
     /// Collected as owned data so all `self` borrows end before the draw calls.
-    #[allow(clippy::too_many_arguments, reason = "internal draw-pass helper")]
     fn collect_ml_body_rows(
         &self,
-        line_of_row: &[usize],
-        is_line_start: &[bool],
-        caret_line: usize,
-        view_h: f64,
+        rows: &LogicalRows,
         lh: f64,
         text_color: vello::peniko::Color,
         theme: &Theme,
-        gutter_w: f64,
     ) -> (RowDraws, GutterNums) {
+        let LogicalRows {
+            line_of_row,
+            is_line_start,
+            caret_line,
+        } = rows;
+        let caret_line = *caret_line;
+        let view_h = self.rect.height() - self.multiline_padding_y() * 2.0;
+        let gutter_w = self.code_gutter_w();
         let mut row_draws: RowDraws = Vec::new();
         let mut gutter_nums: GutterNums = Vec::new();
         for (i, ((line, &li), &starts_new_line)) in self
@@ -2372,7 +2381,6 @@ impl TextInput {
         (row_draws, gutter_nums)
     }
 
-    #[allow(clippy::too_many_arguments, reason = "internal draw-pass helper")]
     fn draw_body_gutter_numbers(
         &self,
         scene: &mut Scene,
@@ -2460,17 +2468,9 @@ impl TextInput {
             shape,
         );
 
-        let (line_of_row, is_line_start, caret_line) = self.ml_body_row_metadata();
+        let rows = self.ml_body_row_metadata();
         self.draw_code_gutter_background(scene, transform, theme, gutter_w);
-        self.draw_body_current_line_band(
-            scene,
-            transform,
-            theme,
-            &line_of_row,
-            caret_line,
-            lh,
-            gutter_w,
-        );
+        self.draw_body_current_line_band(scene, transform, theme, &rows, lh, gutter_w);
 
         if let Some((s, e)) = self.selection_range() {
             let sel_color = theme.accent_primary.with_alpha_factor(0.35);
@@ -2498,17 +2498,7 @@ impl TextInput {
         } else {
             theme.text_primary
         };
-        let view_h = self.rect.height() - self.multiline_padding_y() * 2.0;
-        let (row_draws, gutter_nums) = self.collect_ml_body_rows(
-            &line_of_row,
-            &is_line_start,
-            caret_line,
-            view_h,
-            lh,
-            text_color,
-            theme,
-            gutter_w,
-        );
+        let (row_draws, gutter_nums) = self.collect_ml_body_rows(&rows, lh, text_color, theme);
 
         self.draw_body_gutter_numbers(scene, transform, tr, theme, size, gutter_w, &gutter_nums);
         self.draw_body_rows(scene, transform, tr, size, left, &row_draws);
@@ -4169,21 +4159,9 @@ impl Widget for TextInput {
         self.draw_single_line_decorations(scene, transform, theme, true);
         self.draw_single_line_selection(scene, transform, theme);
 
-        let text_color = if self.effectively_disabled() {
-            theme.text_dim
-        } else {
-            theme.text_primary
-        };
         self.draw_single_line_text(
-            scene,
-            transform,
-            text_renderer,
-            theme,
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
             &display,
-            text_size,
-            padding_x,
-            text_y,
-            text_color,
         );
 
         self.draw_single_line_decorations(scene, transform, theme, false);
@@ -4993,19 +4971,22 @@ impl TextInput {
         }
     }
 
-    #[allow(clippy::too_many_arguments, reason = "internal draw-pass helper")]
-    fn draw_single_line_text(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        display: &str,
-        text_size: f32,
-        padding_x: f64,
-        text_y: f64,
-        text_color: vello::peniko::Color,
-    ) {
+    /// Paint the placeholder and the field's text from `single_origin`, as
+    /// laid out by `draw`; `display` is the masked text of a secret field.
+    fn draw_single_line_text(&self, ctx: &mut PaintCtx<'_>, display: &str) {
+        let PaintCtx {
+            scene,
+            transform,
+            text: text_renderer,
+            theme,
+        } = ctx.reborrow();
+        let text_size = self.effective_font_size();
+        let text_y = self.single_origin.y;
+        let text_color = if self.effectively_disabled() {
+            theme.text_dim
+        } else {
+            theme.text_primary
+        };
         if self.shows_placeholder() {
             let placeholder = crate::i18n!(&self.placeholder);
             // `Affine * Affine` composes two geometric transforms over f64
@@ -5014,8 +4995,7 @@ impl TextInput {
                 clippy::arithmetic_side_effects,
                 reason = "Affine transform composition over f64 screen coordinates"
             )]
-            let placeholder_origin =
-                transform * Affine::translate((self.rect.x0 + padding_x, text_y));
+            let placeholder_origin = transform * Affine::translate((self.single_origin.x, text_y));
             text_renderer.draw_text(
                 scene,
                 &placeholder,
@@ -5030,34 +5010,32 @@ impl TextInput {
             reason = "Affine transform composition over f64 screen coordinates"
         )]
         let text_origin =
-            transform * Affine::translate((self.rect.x0 + padding_x - self.scroll_x, text_y));
+            transform * Affine::translate((self.single_origin.x - self.scroll_x, text_y));
         if !self.masked() {
             if let Some(layout) = &self.single_layout {
                 text_renderer.draw_rich(scene, layout, text_origin, text_color);
             }
         } else if let Some(fam) = &self.family {
-            text_renderer.draw_text_font(
+            text_renderer.draw_style(
                 scene,
                 display,
-                text_size,
                 text_color,
                 text_origin,
                 None,
-                TextWeight::Regular,
-                false,
-                fam,
+                &TextStyle::new(text_size).with_family(fam.clone()),
             );
         } else {
-            text_renderer.draw_text_styled(
+            text_renderer.draw_style(
                 scene,
                 display,
-                text_size,
                 text_color,
                 text_origin,
                 None,
-                TextWeight::Regular,
-                false,
-                self.mono,
+                &TextStyle::new(text_size).with_family(if self.mono {
+                    FontChoice::Monospace
+                } else {
+                    FontChoice::SansSerif
+                }),
             );
         }
     }
@@ -5228,7 +5206,6 @@ impl TextInput {
         *handled = true;
     }
 
-    #[allow(clippy::too_many_arguments, reason = "internal event-dispatch helper")]
     fn handle_left_click(
         &mut self,
         element_state: ElementState,
@@ -5620,7 +5597,6 @@ impl TextInput {
         }
     }
 
-    #[allow(clippy::too_many_arguments, reason = "internal event-dispatch helper")]
     fn handle_keyboard_input(
         &mut self,
         logical_key: &Key,

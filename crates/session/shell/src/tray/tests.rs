@@ -358,8 +358,7 @@ async fn transcript() {
         let state = chrome.borrow();
         let catalog = ActionCatalog::build_exact(
             &registry,
-            tray_items::PROVIDER_ID,
-            &lock,
+            &ResourceRef::new(tray_items::PROVIDER_ID, &lock),
             SearchScope::All,
             None,
             &state,

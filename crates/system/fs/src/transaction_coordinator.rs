@@ -65,10 +65,6 @@ fn fail_if_armed(
 ///
 /// Returns an error when any repository, history, namespace, journal, or
 /// broadcast phase fails.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "transaction recovery coordinates repository, journal, history, namespace persistence, exact intent, authorization and broadcast"
-)]
 pub fn complete_replacement_transaction<A, F>(
     repository: &RecordRepository,
     journal: &mut RecordTransactionJournal,
@@ -119,10 +115,6 @@ where
 /// Recover a bounded record delta against current converged repository state.
 /// Later valid binding/content changes survive; the receipt remains the exact
 /// admitted manifest rather than whichever revision now wins projection.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "checked restore coordinates converged repository state, journal, history, durable namespace, admitted intent and broadcast"
-)]
 #[expect(
     clippy::significant_drop_tightening,
     reason = "namespace, history and repository stay leased until the namespace commit is journaled"

@@ -320,6 +320,9 @@ panic_in_result_fn = "deny"
 panic = "deny"
 exit = "deny"
 
+# More than eight parameters; clippy.toml sets the threshold.
+too_many_arguments = "deny"
+
 # Selected nursery lints.
 redundant_clone = "deny"                    # allocations that are never needed
 significant_drop_tightening = "deny"        # lock held longer than necessary

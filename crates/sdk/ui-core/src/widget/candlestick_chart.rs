@@ -281,10 +281,6 @@ impl CandlestickChart {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "inspector uses the active plot paint context"
-    )]
     fn draw_inspector(
         &self,
         scene: &mut Scene,

@@ -895,10 +895,6 @@ impl DesktopSurface {
         self.retained_wakes = inherited;
     }
     /// Separate recordings preserve native retained scene and capture layering.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "one scene per native layer plus the shared draw context"
-    )]
     pub fn draw_sections(
         &mut self,
         backdrop: &mut Scene,

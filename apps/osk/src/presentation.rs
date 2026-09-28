@@ -7,6 +7,7 @@ use ui::tokens::colors::ON_FILL_MIN_CONTRAST;
 use ui::{
     TextRenderer, Theme,
     icons::{self, Icon},
+    paint::PaintCtx,
 };
 use vello::{
     Scene,
@@ -28,10 +29,6 @@ pub(crate) struct KeyboardGeometry {
     pub key_area: Rect,
     pub keys: Vec<(KeyId, Rect)>,
 }
-#[allow(
-    clippy::too_many_arguments,
-    reason = "immutable geometry inputs mirror the live keyboard bands"
-)]
 pub(crate) fn keyboard_geometry(
     rect: Rect,
     layout: &KeyboardLayout,
@@ -205,6 +202,7 @@ impl KeyboardPresentation<'_> {
             &self.rect,
         );
 
+        let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
         // Toolbar.
         for (i, r) in self.toolbar_geom {
             // `toolbar_geom` is built from `self.toolbar` each frame, so `*i`
@@ -216,32 +214,21 @@ impl KeyboardPresentation<'_> {
             let hovered = self.hovered_tool == Some(*i);
             let pressed = self.pressed_tool == Some(*i);
             draw_cell(
-                scene,
-                transform,
-                text_renderer,
-                theme,
+                &mut ctx,
                 *r,
-                item.icon,
-                &item.label,
+                CellFace::new(item.icon, &item.label, 0.34),
                 CellState {
                     hovered,
                     pressed,
                     tone: CellTone::Flat,
                     ..Default::default()
                 },
-                0.34,
             );
         }
 
         // Suggestion bar: a subtle band, then a tappable chip per suggestion.
         if self.suggestion_area.area() > 0.0 && !self.emoji_panel_open {
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                theme.tokens.colors.surfaces.raised,
-                None,
-                &self.suggestion_area,
-            );
+            ctx.fill_rect(self.suggestion_area, theme.tokens.colors.surfaces.raised);
             for (i, r) in self.suggestion_geom {
                 let Some(s) = self.suggestions.get(*i) else {
                     continue;
@@ -251,15 +238,19 @@ impl KeyboardPresentation<'_> {
                 // The top chip is the highlighted (auto / best) pick.
                 let top = *i == 0;
                 draw_suggestion_chip(
-                    scene,
-                    transform,
-                    text_renderer,
-                    theme,
+                    &mut ctx,
                     *r,
                     &s.word,
-                    hovered,
-                    pressed,
-                    top,
+                    CellState {
+                        hovered,
+                        pressed,
+                        tone: if top {
+                            CellTone::Primary
+                        } else {
+                            CellTone::Plain
+                        },
+                        ..Default::default()
+                    },
                 );
             }
             if self.suggestion_geom.is_empty() {
@@ -268,12 +259,12 @@ impl KeyboardPresentation<'_> {
                 // Centre on the measured line, as the key labels and chips
                 // do: the nominal size under-reads the line at 1× and by
                 // half a line at 2×, sinking the hint below the bar's centre.
-                let (width, height) = text_renderer.measure(hint, font, None);
+                let (width, height) = ctx.text.measure(hint, font, None);
                 let x = self.suggestion_area.center().x - f64::from(width) * 0.5;
                 let y = self.suggestion_area.y0
                     + (self.suggestion_area.height() - f64::from(height)) * 0.5;
-                text_renderer.draw_text(
-                    scene,
+                ctx.text.draw_text(
+                    ctx.scene,
                     hint,
                     font,
                     theme.tokens.colors.text_primary,
@@ -318,13 +309,9 @@ impl KeyboardPresentation<'_> {
                 label.as_str()
             };
             draw_cell(
-                scene,
-                transform,
-                text_renderer,
-                theme,
+                &mut ctx,
                 *rect,
-                key.icon,
-                shown,
+                CellFace::new(key.icon, shown, font_scale),
                 CellState {
                     hovered,
                     pressed,
@@ -332,18 +319,17 @@ impl KeyboardPresentation<'_> {
                     icon_filled,
                     dim_label,
                 },
-                font_scale,
             );
             if is_space && self.cursor_mode {
-                draw_cursor_chevrons(scene, transform, theme, *rect);
+                draw_cursor_chevrons(ctx.scene, ctx.transform, ctx.theme, *rect);
             }
         }
 
         if !self.hit_cells.is_empty() {
             draw_hit_overlay(
-                scene,
-                transform,
-                theme,
+                ctx.scene,
+                ctx.transform,
+                ctx.theme,
                 self.hit_cells,
                 self.key_geom,
                 layout,
@@ -352,14 +338,21 @@ impl KeyboardPresentation<'_> {
 
         // Floating feedback goes last so it overlaps the rows above.
         if let Some(popup) = self.alternates {
-            draw_alternates(scene, transform, text_renderer, theme, popup);
+            draw_alternates(ctx.scene, ctx.transform, ctx.text, ctx.theme, popup);
         } else if let Some(id) = self.preview
             && let Some((_, rect)) = self.key_geom.iter().find(|(k, _)| *k == id)
             && let Some(key) = layout.key(id)
         {
             let label = key.display_label(shift);
             let bubble = preview_rect(*rect, self.rect);
-            draw_key_preview(scene, transform, text_renderer, theme, bubble, &label);
+            draw_key_preview(
+                ctx.scene,
+                ctx.transform,
+                ctx.text,
+                ctx.theme,
+                bubble,
+                &label,
+            );
         }
     }
 }
@@ -602,22 +595,29 @@ pub(crate) enum CellTone {
     Flat,
 }
 
+/// What a cell shows: an icon glyph, or a text label sized as a fraction of
+/// the cell's height.
+#[derive(Clone, Copy)]
+pub(crate) enum CellFace<'a> {
+    Icon(Icon),
+    Label { text: &'a str, scale: f64 },
+}
+
+impl<'a> CellFace<'a> {
+    /// The icon when there is one, else the label.
+    pub(crate) fn new(icon: Option<Icon>, text: &'a str, scale: f64) -> Self {
+        icon.map_or(Self::Label { text, scale }, Self::Icon)
+    }
+}
+
 /// Draw a rounded "button" cell (used for both keys and toolbar items).
-#[allow(
-    clippy::too_many_arguments,
-    reason = "Keyboard cells combine render context with bounds, optional icon, label, interaction state, and key-specific font scaling."
-)]
-pub(crate) fn draw_cell(
-    scene: &mut Scene,
-    transform: Affine,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
-    rect: Rect,
-    icon: Option<Icon>,
-    label: &str,
-    state: CellState,
-    font_scale: f64,
-) {
+pub(crate) fn draw_cell(ctx: &mut PaintCtx<'_>, rect: Rect, face: CellFace<'_>, state: CellState) {
+    let PaintCtx {
+        scene,
+        transform,
+        text: text_renderer,
+        theme,
+    } = ctx.reborrow();
     let CellState {
         hovered,
         pressed,
@@ -662,27 +662,30 @@ pub(crate) fn draw_cell(
         _ => c.text_primary,
     };
 
-    if let Some(icon) = icon {
-        let s = (cell.height() * 0.5).clamp(14.0, 26.0);
-        let ix = cell.center().x - s / 2.0;
-        let iy = cell.center().y - s / 2.0;
-        let icon_rect = Rect::new(ix, iy, ix + s, iy + s);
-        if icon_filled {
-            // A latched state (e.g. Caps-Lock's Shift key) reads as a solid
-            // glyph, distinct from the outline of the momentary state.
-            icon.draw_filled(scene, transform, icon_rect, fg);
-        } else {
-            icons::draw_icon(
-                scene,
-                transform,
-                icon_rect,
-                icon,
-                fg,
-                icons::LUCIDE_DEFAULT_STROKE_PX,
-            );
+    let (label, font_scale) = match face {
+        CellFace::Label { text, scale } => (text, scale),
+        CellFace::Icon(icon) => {
+            let s = (cell.height() * 0.5).clamp(14.0, 26.0);
+            let ix = cell.center().x - s / 2.0;
+            let iy = cell.center().y - s / 2.0;
+            let icon_rect = Rect::new(ix, iy, ix + s, iy + s);
+            if icon_filled {
+                // A latched state (e.g. Caps-Lock's Shift key) reads as a solid
+                // glyph, distinct from the outline of the momentary state.
+                icon.draw_filled(scene, transform, icon_rect, fg);
+            } else {
+                icons::draw_icon(
+                    scene,
+                    transform,
+                    icon_rect,
+                    icon,
+                    fg,
+                    icons::LUCIDE_DEFAULT_STROKE_PX,
+                );
+            }
+            return;
         }
-        return;
-    }
+    };
 
     if label.is_empty() {
         return;
@@ -705,24 +708,23 @@ pub(crate) fn draw_cell(
     );
 }
 
-/// Draw one suggestion chip: a pill with the word, themed by state. The `top`
-/// (best / auto-inserted) chip is accented; the rest are neutral. All colours
-/// come from theme tokens.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "Suggestion chips combine render context with bounds and word plus independent hover, press, and best-suggestion states."
-)]
-fn draw_suggestion_chip(
-    scene: &mut Scene,
-    transform: Affine,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
-    rect: Rect,
-    word: &str,
-    hovered: bool,
-    pressed: bool,
-    top: bool,
-) {
+/// Draw one suggestion chip: a pill with the word, themed by state. The
+/// best (auto-inserted) chip, the one in the [`CellTone::Primary`] tone, is
+/// highlighted; the rest are neutral. All colours come from theme tokens.
+fn draw_suggestion_chip(ctx: &mut PaintCtx<'_>, rect: Rect, word: &str, state: CellState) {
+    let PaintCtx {
+        scene,
+        transform,
+        text: text_renderer,
+        theme,
+    } = ctx.reborrow();
+    let CellState {
+        hovered,
+        pressed,
+        tone,
+        ..
+    } = state;
+    let top = tone == CellTone::Primary;
     let t = &theme.tokens;
     let pad_x = (rect.width() * 0.06).clamp(3.0, 10.0);
     let pad_y = (rect.height() * 0.14).clamp(2.0, 8.0);

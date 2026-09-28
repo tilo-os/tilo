@@ -2362,10 +2362,6 @@ impl App {
 
     /// The image is in `layout` with `digest`: check it, send the VM its new
     /// blobs, and boot it.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the image, its facts, its layout and its digest are one move, from three sources"
-    )]
     fn move_onto_layout(
         &mut self,
         vm: &Resolved,
@@ -3800,15 +3796,16 @@ impl App {
                 &desktop_id,
                 &app_id,
                 &type_text,
-                Duration::from_millis(maximum_launch_ms),
-                Duration::from_millis(maximum_control_ms),
-                Duration::from_secs(timeout_seconds),
+                FlightBudget {
+                    maximum_launch: Duration::from_millis(maximum_launch_ms),
+                    maximum_control: Duration::from_millis(maximum_control_ms),
+                    timeout: Duration::from_secs(timeout_seconds),
+                },
             ),
         }
     }
 
     #[expect(
-        clippy::too_many_arguments,
         clippy::too_many_lines,
         reason = "one linear acceptance flight keeps every measured phase and failure invariant visible"
     )]
@@ -3818,10 +3815,13 @@ impl App {
         desktop_id: &str,
         app_id: &str,
         type_text: &str,
-        maximum_launch: Duration,
-        maximum_control: Duration,
-        timeout: Duration,
+        budget: FlightBudget,
     ) -> Result<Outcome, CliError> {
+        let FlightBudget {
+            maximum_launch,
+            maximum_control,
+            timeout,
+        } = budget;
         let slot = self.slot_name(slot)?;
         let vm = self.resolve_vm(None)?;
         let mut remote = self.connect(&vm)?;
@@ -4718,6 +4718,15 @@ pub fn forward_target(slot: &str, info: Option<&SlotInfo>) -> Result<u64, CliErr
 }
 
 /// The remote words of `slot exec`, quoted for the remote shell.
+/// The limits an app flight must stay within: the launch, the slowest control
+/// round trip, and the whole flight.
+#[derive(Clone, Copy)]
+struct FlightBudget {
+    maximum_launch: Duration,
+    maximum_control: Duration,
+    timeout: Duration,
+}
+
 fn exec_words(daemon: Option<&str>, slot: &str, timeout: u64, command: &[String]) -> Vec<String> {
     let mut words = vmbuild::daemon_command(daemon, "exec");
     words.extend([

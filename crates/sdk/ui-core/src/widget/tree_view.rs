@@ -11,7 +11,6 @@ use crate::widget::{AppModel, ModelPath};
 use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::{length, percent};
 use taffy::{Dimension, Size, Style, TaffyTree};
 use vello::Scene;
@@ -2620,60 +2619,24 @@ impl<T, M: TreeModel> TreeView<T, M> {
         self.mounted_rows = mounted;
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "forwards the Widget event contract plus its handled/focus outputs"
-    )]
-    fn route_to_delegates(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<taffy::NodeId>,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn route_to_delegates(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
         if let Some(row) = self
             .mounted_rows
             .iter_mut()
             .find(|row| row.widget.wants_pointer_capture())
             && let Some(node) = row.node
         {
-            row.widget.handle_event(
-                event,
-                &mut crate::widget::EventCtx {
-                    scale_factor,
-                    modifiers: &modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    node_id: node,
-                    taffy,
-                },
-            );
+            row.widget
+                .handle_event(event, &mut ctx.reborrow(ctx.path, node));
             return;
         }
         for row in self.mounted_rows.iter_mut().rev() {
             let Some(node) = row.node else {
                 continue;
             };
-            row.widget.handle_event(
-                event,
-                &mut crate::widget::EventCtx {
-                    scale_factor,
-                    modifiers: &modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    node_id: node,
-                    taffy,
-                },
-            );
-            if *handled {
+            row.widget
+                .handle_event(event, &mut ctx.reborrow(ctx.path, node));
+            if *ctx.handled {
                 break;
             }
         }
@@ -3804,13 +3767,16 @@ impl<T: 'static, M: TreeModel + 'static> TreeView<T, M> {
         if !self.reorder.is_tracking() && !self.drag_scroll.is_tracking() {
             self.route_to_delegates(
                 event,
-                scale_factor,
-                *modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                taffy,
+                &mut EventCtx {
+                    scale_factor,
+                    modifiers,
+                    state,
+                    path,
+                    handled,
+                    focus_target,
+                    node_id,
+                    taffy,
+                },
             );
         }
         if *handled {
@@ -4047,10 +4013,6 @@ impl<T: 'static, M: TreeModel + 'static> TreeView<T, M> {
 
 /// Paint a decorated row's leading icon centred vertically on `anchor.y`,
 /// starting at `anchor.x`. Returns the width it occupied.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "one icon's paint context: scene, transform, text, theme, the icon, its anchor, the row's line box and the row's transition opacity"
-)]
 fn paint_row_icon(
     scene: &mut Scene,
     transform: Affine,
@@ -4129,6 +4091,7 @@ fn paint_row_icon(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::AutoCommit;
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
     use taffy::TaffyTree;

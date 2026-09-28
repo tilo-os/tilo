@@ -879,10 +879,6 @@ impl StandaloneHistoryHost {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "authority refresh and shared widget draw inputs are explicit at the host presentation boundary"
-    )]
     pub(crate) fn draw(
         &mut self,
         context: &HistoryReadContext<'_>,

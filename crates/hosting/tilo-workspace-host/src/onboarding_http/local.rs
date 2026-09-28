@@ -19,10 +19,6 @@ impl OnboardingRegistry {
     }
     /// The host preserves the original command lease and cancellation deadline
     /// through publication/reconciliation, then passes its exact receipt here.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "explicit protocol inputs stay separate parameters"
-    )]
     pub(crate) fn local_bootstrap(
         &mut self,
         owner: &SessionOwner,

@@ -13,6 +13,7 @@ use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, Window
 use winit::keyboard::{Key, NamedKey};
 
 use ui::a11y::{AccessNode, AccessState, Action, Role};
+use ui::paint::PaintCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 
@@ -240,34 +241,43 @@ impl ExportDialog {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "export painting needs the render context, window bounds, sorted contact store and pointer position"
-    )]
     pub(crate) fn draw(
         &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         window: Rect,
         store: &ContactStore,
         sort: SortKey,
         pointer: Point,
     ) {
+        let theme = ctx.theme;
         let colors = &theme.tokens.colors;
-        scene.fill(
+        ctx.scene.fill(
             Fill::NonZero,
-            transform,
+            ctx.transform,
             colors.surfaces.overlay,
             None,
             &window,
         );
         let geometry = self.geometry(window, store, sort);
-        menu_panel(scene, transform, theme, geometry.panel);
-        self.draw_header(scene, transform, text, theme, &geometry);
-        self.draw_rows(scene, transform, text, theme, store, pointer, &geometry);
-        self.draw_footer_buttons(scene, transform, text, theme, &geometry, pointer);
+        menu_panel(ctx.scene, ctx.transform, theme, geometry.panel);
+        self.draw_header(ctx.scene, ctx.transform, ctx.text, theme, &geometry);
+        self.draw_rows(
+            ctx.scene,
+            ctx.transform,
+            ctx.text,
+            theme,
+            store,
+            pointer,
+            &geometry,
+        );
+        self.draw_footer_buttons(
+            ctx.scene,
+            ctx.transform,
+            ctx.text,
+            theme,
+            &geometry,
+            pointer,
+        );
     }
 
     /// The title, selection count, and Select all/none chips (part of
@@ -359,10 +369,6 @@ impl ExportDialog {
     }
 
     /// The scrolling, clipped contact list (part of [`Self::draw`]).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "internal draw-step split of an over-length function"
-    )]
     fn draw_rows(
         &self,
         scene: &mut Scene,
@@ -449,10 +455,7 @@ impl ExportDialog {
         pointer: Point,
     ) {
         toolbar_button(
-            scene,
-            transform,
-            text,
-            theme,
+            &mut PaintCtx::new(scene, transform, text, theme),
             geometry.cancel,
             "Cancel",
             false,
@@ -460,10 +463,7 @@ impl ExportDialog {
             false,
         );
         toolbar_button(
-            scene,
-            transform,
-            text,
-            theme,
+            &mut PaintCtx::new(scene, transform, text, theme),
             geometry.export_v3,
             "vCard 3.0",
             false,
@@ -471,10 +471,7 @@ impl ExportDialog {
             false,
         );
         toolbar_button(
-            scene,
-            transform,
-            text,
-            theme,
+            &mut PaintCtx::new(scene, transform, text, theme),
             geometry.export_v4,
             "vCard 4.0",
             true,

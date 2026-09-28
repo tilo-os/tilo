@@ -13,6 +13,7 @@ use ui::widget::{AppModel, ModelPath};
 
 use taffy::style_helpers::length;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
@@ -428,16 +429,15 @@ impl Widget for Gallery {
             let count_size = tr
                 .renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm))
                 .size;
-            draw::text_w(
-                tr,
-                scene,
-                t,
+            PaintCtx::new(scene, t, tr, theme).text(
                 &format!("{} themes", self.count),
-                count_size,
+                &TextStyle::new(count_size).with_weight(TextWeight::Semibold),
                 theme.text_dim,
-                self.rect.x0 + f64::from(PAD),
-                self.rect.y0 + f64::from(theme.tokens.spacing.s3),
-                TextWeight::Semibold,
+                Point::new(
+                    self.rect.x0 + f64::from(PAD),
+                    self.rect.y0 + f64::from(theme.tokens.spacing.s3),
+                ),
+                None,
             );
         }
         for r in &mut self.rows {

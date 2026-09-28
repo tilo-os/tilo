@@ -1,6 +1,6 @@
 use super::*;
 use crate::application::{
-    AppComponent, ApplicationDefinition, HostContext, LaunchTarget, RestoreInput,
+    AppComponent, ApplicationDefinition, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
 };
 use crate::widget::{AppKind, AppWidget, Column, IconDescriptor, TileHost};
 use crate::widget::{AppModel, ModelPath};
@@ -578,15 +578,17 @@ fn bound_components_keep_child_binding_and_focused_document_history() {
         };
         let context = HostContext::prepare(
             &definition,
-            records.clone(),
-            views,
-            "D".into(),
-            1,
-            Rc::new(RefCell::new(
-                crate::permissions::PermissionContext::permissive(),
-            )),
-            crate::permissions::UserId("probe-author".into()),
-            tilo_actions::ActionContext::default(),
+            HostContextInputs {
+                records: records.clone(),
+                views,
+                device_id: "D".into(),
+                instance_id: 1,
+                permissions: Rc::new(RefCell::new(
+                    crate::permissions::PermissionContext::permissive(),
+                )),
+                author: crate::permissions::UserId("probe-author".into()),
+                action_context: tilo_actions::ActionContext::default(),
+            },
             &LaunchTarget::New,
         )
         .unwrap();
@@ -889,17 +891,19 @@ impl ActionFixture {
             };
             let context = HostContext::prepare(
                 &definition,
-                records.clone(),
-                views.clone(),
-                "D".into(),
-                instance,
-                if separate && instance == 12 {
-                    Rc::new(RefCell::new(permissions.borrow().clone()))
-                } else {
-                    permissions.clone()
+                HostContextInputs {
+                    records: records.clone(),
+                    views: views.clone(),
+                    device_id: "D".into(),
+                    instance_id: instance,
+                    permissions: if separate && instance == 12 {
+                        Rc::new(RefCell::new(permissions.borrow().clone()))
+                    } else {
+                        permissions.clone()
+                    },
+                    author: crate::permissions::UserId("fixture-user".into()),
+                    action_context: tilo_actions::ActionContext::default(),
                 },
-                crate::permissions::UserId("fixture-user".into()),
-                tilo_actions::ActionContext::default(),
                 &target,
             )
             .unwrap();
@@ -2121,13 +2125,16 @@ fn bound_broker_routes_keep_the_chosen_contract_and_refuse_bad_witnesses() {
                         doc,
                         &target,
                         fixture.app.actions.action_transport.as_mut(),
-                        None,
-                        None,
-                        &actor,
-                        true,
-                        false,
-                        tilo_actions::InvocationId::new(),
-                        None,
+                        crate::bound_dispatch::ResourceActionRequest {
+                            argument: None,
+                            arguments: None,
+                            actor: &actor,
+                            confirmed: true,
+                            broker_admitted: false,
+                            invocation: tilo_actions::InvocationId::new(),
+                            ambient: None,
+                            scope: None,
+                        },
                     );
                     doc.put(ROOT, "after-nested", "A").unwrap();
                     result

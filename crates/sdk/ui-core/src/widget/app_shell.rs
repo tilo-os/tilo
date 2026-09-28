@@ -674,10 +674,6 @@ impl AppShell {
 
 /// Free function (not a method) so it borrows none of `AppShell`'s fields —
 /// the caller keeps a live `&mut` on the child.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the free painter takes child, render, presence and permission inputs separately to avoid borrowing AppShell during a child borrow"
-)]
 fn paint_child(
     w: &mut dyn Widget,
     scene: &mut Scene,

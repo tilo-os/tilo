@@ -1,12 +1,12 @@
 //! Revision-bound invocation through the original certified channel.
 use super::{
-    BrokerActor, CapnpBrokerState, CapnpChannelHandle, DIRECTORY_MAX_CONFIRMATION_BYTES,
-    DIRECTORY_MAX_IDENTIFIER_BYTES, DIRECTORY_MAX_PARAMS_BYTES, DIRECTORY_MAX_QUERY_REVISION_BYTES,
-    DirectoryActionConfirmation, Duration, HostWorkerReadGuard, InvocationCaller,
-    LocalActionDirectoryRegistry, PrivateWorkerRegistration, Promise, PublishedAction,
-    PublishedSurface, Rc, RegisteredActionDirectory, channel_handle, invocation_target_peer,
-    published_directory_action, validate_directory_identifier, validate_directory_target_input,
-    validate_directory_text, write_directory_row,
+    AdmissionProvenance, BrokerActor, CapnpBrokerState, CapnpChannelHandle,
+    DIRECTORY_MAX_CONFIRMATION_BYTES, DIRECTORY_MAX_IDENTIFIER_BYTES, DIRECTORY_MAX_PARAMS_BYTES,
+    DIRECTORY_MAX_QUERY_REVISION_BYTES, DirectoryActionConfirmation, Duration, HostWorkerReadGuard,
+    InvocationCaller, InvocationInputs, LocalActionDirectoryRegistry, PrivateWorkerRegistration,
+    Promise, PublishedAction, PublishedSurface, Rc, RegisteredActionDirectory, channel_handle,
+    invocation_target_peer, published_directory_action, validate_directory_identifier,
+    validate_directory_target_input, validate_directory_text, write_directory_row,
 };
 
 struct CapturedResolution {
@@ -186,10 +186,6 @@ impl CapnpBrokerState {
         binding_data(&registered, current, peer, host)
     }
     #[expect(
-        clippy::too_many_arguments,
-        reason = "the exact directory route and revision the capture is bound to"
-    )]
-    #[expect(
         clippy::future_not_send,
         reason = "runs on the broker's single-threaded LocalSet"
     )]
@@ -239,10 +235,6 @@ impl CapnpBrokerState {
             permit,
         })
     }
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the exact directory route and revision the offer is bound to"
-    )]
     #[expect(
         clippy::future_not_send,
         reason = "runs on the broker's single-threaded LocalSet"
@@ -628,19 +620,23 @@ fn invoke_checked(
             .dispatch_invocation_from_offered_owned(
                 peer,
                 offered,
-                argument.as_deref(),
-                &actor,
-                token.as_deref(),
-                None,
-                None,
-                Some(&revision),
-                None,
-                Some(InvocationCaller::Local {
-                    route,
-                    admitted: Box::new(current),
-                }),
-                Some(&time),
-                None,
+                InvocationInputs {
+                    argument: argument.as_deref(),
+                    actor: &actor,
+                    confirmation_token: token.as_deref(),
+                    context: None,
+                },
+                AdmissionProvenance {
+                    durable: None,
+                    revision: Some(&revision),
+                    private_owner: None,
+                    origin: Some(InvocationCaller::Local {
+                        route,
+                        admitted: Box::new(current),
+                    }),
+                    retained_time: Some(&time),
+                    enrolled_durable: None,
+                },
             )
             .map_err(capnp::Error::failed)?;
         let update = state.invocation_status(job.id).ok_or_else(|| {

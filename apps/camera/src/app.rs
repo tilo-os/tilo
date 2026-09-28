@@ -5414,10 +5414,6 @@ impl CameraApp {
 
     /// A compact floating glass header (title + subtitle) used as an overlay
     /// label on the scanner's edge-to-edge feed.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "paint helpers receive the shared scene, text, theme, geometry, and copy explicitly"
-    )]
     fn draw_glass_header(
         scene: &mut Scene,
         t: Affine,
@@ -6231,12 +6227,6 @@ impl CameraApp {
 
     /// Capture group: resolution, photo format, HDR, self-timer. Returns the
     /// y coordinate the next group should start at.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the drawing context plus the group's column geometry (x0, y, colw), shared \
-                  by every settings group; bundling them would only re-create this argument \
-                  list as a throwaway struct"
-    )]
     fn draw_settings_capture_group(
         &mut self,
         scene: &mut Scene,
@@ -6303,12 +6293,6 @@ impl CameraApp {
 
     /// Composition group: grid, level guide, mirror front camera. Returns the
     /// y coordinate the next group should start at.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the drawing context plus the group's column geometry (x0, y, colw), shared \
-                  by every settings group; bundling them would only re-create this argument \
-                  list as a throwaway struct"
-    )]
     fn draw_settings_composition_group(
         &mut self,
         scene: &mut Scene,
@@ -6365,12 +6349,6 @@ impl CameraApp {
     }
 
     /// Privacy & camera group: location tags, default camera.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the drawing context plus the group's column geometry (x0, y, colw), shared \
-                  by every settings group; bundling them would only re-create this argument \
-                  list as a throwaway struct"
-    )]
     fn draw_settings_privacy_group(
         &mut self,
         scene: &mut Scene,

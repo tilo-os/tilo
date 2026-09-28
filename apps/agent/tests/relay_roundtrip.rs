@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 use tilo_automerge::ApplyIncoming;
 
 use automerge::AutoCommit;
-use tilo_actions::Resource;
+use tilo_actions::{ActionAddress, Resource};
 use tilo_agent::{Config, Session};
 use tilo_content::ContentStore;
 use ui::collaboration::{CollabEvent, CollabRequest, DocumentMutation, PresencePayload};
@@ -221,32 +221,19 @@ fn publish_word_processor_actions(peer: &mut UnixStream, doc: &AutoCommit) {
     typed_peer::publish_actions(peer, APP, &resources);
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the invocation envelope's fields stay explicit, as the toolkit host receives them"
-)]
 fn service_word_processor_invocation(
     peer: &mut UnixStream,
     replica: &mut AutoCommit,
-    id: u64,
-    resource: String,
-    action: String,
-    argument: Option<&str>,
-    actor: &str,
-    context: Option<&tilo_actions::ActionContext>,
+    invocation: typed_peer::DocumentInvocation<'_>,
 ) {
+    let id = invocation.id;
     let resources = word_processor_resources(replica);
     let update = typed_peer::service_document_invocation(
         peer,
         replica,
         &resources,
         word_processor::actions::register,
-        id,
-        resource,
-        action,
-        argument,
-        actor,
-        context,
+        invocation,
     );
     send(peer, &CollabRequest::UpdateInvocation { id, update }).unwrap();
 }
@@ -314,12 +301,13 @@ fn drive_peer_to_table(
                 service_word_processor_invocation(
                     &mut peer,
                     &mut replica,
-                    id,
-                    resource,
-                    action,
-                    argument.as_deref(),
-                    &actor,
-                    context.as_deref(),
+                    typed_peer::DocumentInvocation {
+                        id,
+                        address: ActionAddress::new(resource, action),
+                        argument: argument.as_deref(),
+                        actor: &actor,
+                        context: context.as_deref(),
+                    },
                 );
             }
             event @ CollabEvent::Document { .. } => {
@@ -741,12 +729,13 @@ fn drive_word_processor_to_table(
                 service_word_processor_invocation(
                     &mut wp_peer,
                     &mut replica,
-                    id,
-                    resource,
-                    action,
-                    argument.as_deref(),
-                    &actor,
-                    context.as_deref(),
+                    typed_peer::DocumentInvocation {
+                        id,
+                        address: ActionAddress::new(resource, action),
+                        argument: argument.as_deref(),
+                        actor: &actor,
+                        context: context.as_deref(),
+                    },
                 );
             }
             // The agent's edits. A delta from the file manager's document
@@ -918,12 +907,13 @@ fn a_sequence_in_one_instruction_runs_whole_in_order_or_is_refused_untouched() {
                     service_word_processor_invocation(
                         &mut peer,
                         &mut replica,
-                        id,
-                        resource,
-                        action,
-                        argument.as_deref(),
-                        &actor,
-                        context.as_deref(),
+                        typed_peer::DocumentInvocation {
+                            id,
+                            address: ActionAddress::new(resource, action),
+                            argument: argument.as_deref(),
+                            actor: &actor,
+                            context: context.as_deref(),
+                        },
                     );
                 }
                 event @ CollabEvent::Document { .. } => {

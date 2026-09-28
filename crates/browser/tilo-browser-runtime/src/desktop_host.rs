@@ -28,7 +28,8 @@ use ui::widget::{AppModel, ModelPath};
 use ui::{TextRenderer, Theme, presence::PresenceCtx};
 use ui::{
     application::{
-        ApplicationDefinition, ComponentCloseReport, HostContext, LaunchTarget, RestoreInput,
+        ApplicationDefinition, ComponentCloseReport, HostContext, HostContextInputs, LaunchTarget,
+        RestoreInput,
     },
     application_view::InstanceViewStore,
     portable_storage::{PortableStorage, StorageKey},
@@ -366,30 +367,20 @@ impl Contexts {
             .open(app_id, &self.room)
             .map_err(|e| ui::launch::LaunchError::Operation(e.to_string()))?;
         let checkout = self.checkout(definition, request)?;
-        let author = ui::permissions::UserId(self.author.clone());
+        let inputs = HostContextInputs {
+            records: store.clone(),
+            views: self.views.clone(),
+            device_id: self.device.clone(),
+            instance_id: request.tab.id,
+            permissions: self.permissions.clone(),
+            author: ui::permissions::UserId(self.author.clone()),
+            action_context: tilo_actions::ActionContext::default(),
+        };
         let mut context = match create {
-            Some(new) if !new.id.is_package_primary() => HostContext::prepare_new_record(
-                definition,
-                store.clone(),
-                self.views.clone(),
-                self.device.clone(),
-                request.tab.id,
-                self.permissions.clone(),
-                author,
-                tilo_actions::ActionContext::default(),
-                new.id.clone(),
-            )?,
-            _ => HostContext::prepare(
-                definition,
-                store.clone(),
-                self.views.clone(),
-                self.device.clone(),
-                request.tab.id,
-                self.permissions.clone(),
-                author,
-                tilo_actions::ActionContext::default(),
-                target,
-            )?,
+            Some(new) if !new.id.is_package_primary() => {
+                HostContext::prepare_new_record(definition, inputs, new.id.clone())?
+            }
+            _ => HostContext::prepare(definition, inputs, target)?,
         };
         if let Some(content) = &self.content {
             context.provide_content(content.clone());
@@ -732,6 +723,17 @@ pub(crate) struct DesktopRoot {
     /// The window the switcher settled on, focused during the next update.
     pending_switch: Option<tilo_desktop::window_switcher::WindowAddress>,
 }
+/// What a canonical desktop is built from: its admitted records, the storage
+/// they are cached in, the local permissions, and, for the page's own desktop,
+/// its content store and seeded local desktop.
+pub struct DesktopSources {
+    pub admission: Admission,
+    pub storage: PortableStorage,
+    pub permissions: ui::permissions::PermissionContext,
+    pub content: Option<tilo_content::ContentStore>,
+    pub local: Option<crate::local_desktop::LocalDesktop>,
+}
+
 impl DesktopRoot {
     /// LIVE_V1: record the laid-out window groups, the focused group and any
     /// window drag for the live overlay (rectangles only; no document reads).
@@ -834,22 +836,21 @@ impl DesktopRoot {
         }
         Self::queue_activation_after_route_change(handle, tree, previous);
     }
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "each argument is a distinct piece of custody or context the caller already holds"
-    )]
     pub fn new(
-        admission: Admission,
-        storage: PortableStorage,
+        sources: DesktopSources,
         room: &str,
         device: &str,
         author: &str,
         instance: u64,
-        permissions: ui::permissions::PermissionContext,
         notify: Arc<dyn Fn() + Send + Sync>,
-        content: Option<tilo_content::ContentStore>,
-        local: Option<crate::local_desktop::LocalDesktop>,
     ) -> Result<(Self, DesktopHandle), String> {
+        let DesktopSources {
+            admission,
+            storage,
+            permissions,
+            content,
+            local,
+        } = sources;
         if !admission.complete() {
             return Err("required desktop records are not admitted".into());
         }

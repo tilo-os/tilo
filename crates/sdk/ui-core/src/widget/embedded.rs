@@ -194,10 +194,6 @@ impl<W: Widget + 'static> Embedded<W> {
     }
 
     /// Route one window event to the widget.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "mirrors Widget::handle_event, minus the node and tree this host supplies"
-    )]
     pub fn handle_event(
         &mut self,
         event: &WindowEvent,

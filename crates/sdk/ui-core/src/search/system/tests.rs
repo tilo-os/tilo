@@ -126,13 +126,17 @@ fn filters_targets_match_semantic_activation_after_draw() {
     let mut renderer = TextRenderer::new();
     let mut scene = vello::Scene::new();
     let rows = filters.draw(
-        &mut scene,
-        Affine::IDENTITY,
-        &mut renderer,
-        &Theme::default(),
-        Rect::new(0., 0., 680., 36.),
-        36.,
-        1,
+        &mut crate::paint::PaintCtx::new(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut renderer,
+            &Theme::default(),
+        ),
+        crate::search::system::filters::FilterStripSlot {
+            band: Rect::new(0., 0., 680., 36.),
+            row_height: 36.,
+            reserved_rows: 1,
+        },
         None,
     );
     assert!(rows >= 1);
