@@ -81,6 +81,9 @@ struct Config {
     /// argument.
     #[serde(default)]
     open: Option<OpenRequest>,
+    /// With [`DESKTOP`] and no peer: the page's own desktop, seeded thus.
+    #[serde(default)]
+    local: Option<crate::local_desktop::Seed>,
 }
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -159,9 +162,10 @@ struct Mount {
     peer: Option<u32>,
     desktop: Option<crate::desktop_host::DesktopHandle>,
     record: Option<crate::desktop_host::OwnedRecord>,
-    /// `record_version` of `record` when this mount last drew or was
-    /// re-synced; a change is what re-syncs the page's other mounts of it.
-    record_version: (Vec<automerge::ChangeHash>, usize),
+    /// `record_version` of each record this mount shows (`record`, or its
+    /// desktop's windows) when it last drew or was re-synced; a change is
+    /// what re-syncs the page's other mounts of it.
+    record_versions: HashMap<(String, String), RecordVersion>,
     window: Arc<Window>,
     canvas: web_sys::HtmlCanvasElement,
     frame: FrameHarness,
@@ -266,6 +270,11 @@ pub fn mount(
         }
     } else if config.open.is_some() {
         return Err(error("the desktop is not handed files to open"));
+    } else if config.local.is_some() && config.peer.is_some() {
+        return Err(error("a local desktop has no peer"));
+    }
+    if config.app != DESKTOP && config.local.is_some() {
+        return Err(error("only the desktop is seeded with `local`"));
     }
     if config.open.is_some() != open.is_some() {
         return Err(error("an open request needs both its name and its bytes"));
@@ -573,11 +582,14 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         open,
     } = request;
     if config.app == DESKTOP {
+        if config.local.is_some() {
+            return begin_local_desktop(event_loop, id, canvas, config, fonts, hydrated, status);
+        }
         #[cfg(feature = "cloud")]
         return begin_desktop(event_loop, id, canvas, config, fonts, hydrated, status);
         #[cfg(not(feature = "cloud"))]
         return Err(error(
-            "the canonical desktop requires a runtime built with the Cloud peer",
+            "the canonical desktop requires a runtime built with the Cloud peer, or `local`",
         ));
     }
     let definition = crate::catalog::resolve_mount(&config.app).map_err(error)?;
@@ -667,9 +679,15 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
     }
     let images = std::mem::take(&mut *loaders.borrow_mut());
     let checkout = component.record().clone();
-    let record_version = records
-        .read(&checkout.id, record_version)
-        .unwrap_or_default();
+    let record_versions = HashMap::from([(
+        (
+            definition.app_id.to_owned(),
+            checkout.id.as_str().to_owned(),
+        ),
+        records
+            .read(&checkout.id, record_version)
+            .unwrap_or_default(),
+    )]);
     let system = ui::font_catalog::FontCatalog::product("", "en-US")
         .load_browser_startup_bytes(|name| {
             Reflect::get(&fonts, &name.into())
@@ -725,7 +743,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
             store: records,
             checkout,
         }),
-        record_version,
+        record_versions,
         window: window.clone(),
         canvas,
         frame,
@@ -772,6 +790,69 @@ fn begin_desktop(
     let admission = crate::desktop::admission(&state).map_err(error)?;
     let storage = load_cache(&config.profile, &config.device, &hydrated)?;
     let permissions = crate::peer::permissions(peer).map_err(error)?;
+    let desktop = DesktopMount {
+        admission,
+        storage,
+        permissions,
+        peer: Some(peer),
+        content: None,
+        local: None,
+    };
+    begin_desktop_root(event_loop, id, canvas, config, fonts, status, desktop)
+}
+/// The page's own desktop: room documents it seeds, which only this mount
+/// holds, and the page's permissions as the standalone mounts have them.
+fn begin_local_desktop(
+    event_loop: &ActiveEventLoop,
+    id: u64,
+    canvas: web_sys::HtmlCanvasElement,
+    config: Config,
+    fonts: JsValue,
+    hydrated: JsValue,
+    status: Function,
+) -> Result<(), JsValue> {
+    let seed = config.local.clone().unwrap_or_default();
+    let local = crate::local_desktop::LocalDesktop::new(&config.room, &config.author, &seed)
+        .map_err(error)?;
+    let desktop = DesktopMount {
+        admission: local.admission().map_err(error)?,
+        storage: load_cache(&config.profile, &config.device, &hydrated)?,
+        permissions: PermissionContext::from_capabilities(
+            Actor::person(Some(Role::Owner), &config.author),
+            vec![],
+        ),
+        peer: None,
+        content: Some(content_store(&config.profile, &config.device)),
+        local: Some(local),
+    };
+    begin_desktop_root(event_loop, id, canvas, config, fonts, status, desktop)
+}
+/// What a canonical desktop mount is built from.
+struct DesktopMount {
+    admission: crate::desktop::Admission,
+    storage: PortableStorage,
+    permissions: PermissionContext,
+    peer: Option<u32>,
+    content: Option<tilo_content::ContentStore>,
+    local: Option<crate::local_desktop::LocalDesktop>,
+}
+fn begin_desktop_root(
+    event_loop: &ActiveEventLoop,
+    id: u64,
+    canvas: web_sys::HtmlCanvasElement,
+    config: Config,
+    fonts: JsValue,
+    status: Function,
+    desktop: DesktopMount,
+) -> Result<(), JsValue> {
+    let DesktopMount {
+        admission,
+        storage,
+        permissions,
+        peer,
+        content,
+        local,
+    } = desktop;
     let system = ui::font_catalog::FontCatalog::product("", "en-US")
         .load_browser_startup_bytes(|name| {
             Reflect::get(&fonts, &name.into())
@@ -804,6 +885,8 @@ fn begin_desktop(
         Arc::new(move || {
             let _ = wake.send_event(id);
         }),
+        content,
+        local,
     )
     .map_err(error)?;
     let mut frame = FrameHarness::new_with_controlled_inputs(
@@ -831,10 +914,10 @@ fn begin_desktop(
         publication: publication_schedule(config.publication_window_ms),
         semantics: semantics_gate(config.semantics_window_ms),
         peer_suspended: false,
-        peer: Some(peer),
+        peer,
         desktop: Some(desktop),
         record: None,
-        record_version: Default::default(),
+        record_versions: HashMap::new(),
         window: window.clone(),
         canvas,
         frame,
@@ -927,12 +1010,14 @@ fn initialize_gpu(id: u64, generation: u64, window: Arc<Window>) {
         }
     });
 }
+type RecordVersion = (Vec<automerge::ChangeHash>, usize);
 /// Committed heads and uncommitted operations: any edit moves one of them.
-fn record_version(doc: &automerge::AutoCommit) -> (Vec<automerge::ChangeHash>, usize) {
+fn record_version(doc: &automerge::AutoCommit) -> RecordVersion {
     (doc.base_heads(), doc.pending_ops())
 }
-/// One standalone record as the page's mounts share it: every mount of the
-/// same profile/device cache, app and record edits one in-memory document.
+/// One record as the page's mounts share it: every mount of the same
+/// profile/device cache, app and record (standalone, or a window of a local
+/// desktop) edits one in-memory document.
 struct SharedRecord {
     storage: ui::portable_storage::ProfileNamespace,
     app: String,
@@ -940,28 +1025,31 @@ struct SharedRecord {
 }
 impl SharedRecord {
     fn shown_by(&self, mount: &Mount) -> bool {
-        mount.record.as_ref().is_some_and(|record| {
-            record.app == self.app
-                && record.checkout.id == self.record
-                && *mount.storage.namespace() == self.storage
-        })
+        *mount.storage.namespace() == self.storage
+            && mount
+                .owned_records()
+                .iter()
+                .any(|record| record.app == self.app && record.checkout.id == self.record)
     }
 }
-/// Mount `origin` may have changed the record it shows. Nothing else wakes a
-/// component whose document another component edited, so re-run the frame
-/// passes of the page's other mounts of that record, which read the document
-/// afresh, and have them present. Returns the mounts it re-synced.
+/// Mount `origin` may have changed the records it shows. Nothing else wakes
+/// a component whose document another component edited, so re-run the frame
+/// passes of the page's other mounts of those records, which read the
+/// documents afresh, and have them present. Returns the mounts it re-synced.
 fn propagate_record_change(mounts: &mut HashMap<u64, Mount>, origin: u64) -> Vec<u64> {
-    let Some(changed) = mounts.get_mut(&origin).and_then(Mount::take_record_change) else {
+    let changed = mounts
+        .get_mut(&origin)
+        .map(Mount::take_record_changes)
+        .unwrap_or_default();
+    if changed.is_empty() {
         return Vec::new();
-    };
+    }
     let mut resynced = Vec::new();
-    for (&id, mount) in mounts
-        .iter_mut()
-        .filter(|(id, mount)| **id != origin && changed.shown_by(mount))
-    {
+    for (&id, mount) in mounts.iter_mut().filter(|(id, mount)| {
+        **id != origin && changed.iter().any(|changed| changed.shown_by(mount))
+    }) {
         // Heads first: only a change this re-sync itself makes echoes back.
-        let _ = mount.take_record_change();
+        let _ = mount.take_record_changes();
         mount.frame.relayout();
         mount.pending = true;
         mount.window.request_redraw();
@@ -979,20 +1067,25 @@ fn wake(ids: impl IntoIterator<Item = u64>) {
     }
 }
 impl Mount {
-    /// The shared record this standalone mount shows, when its heads moved
-    /// since the last call.
-    fn take_record_change(&mut self) -> Option<SharedRecord> {
-        let record = self.record.as_ref()?;
-        let version = record.store.read(&record.checkout.id, record_version)?;
-        if version == self.record_version {
-            return None;
+    /// The shared records this mount shows whose heads moved since the last
+    /// call. A desktop window's record seen for the first time is not a change.
+    fn take_record_changes(&mut self) -> Vec<SharedRecord> {
+        let mut changed = Vec::new();
+        for record in self.owned_records() {
+            let Some(version) = record.store.read(&record.checkout.id, record_version) else {
+                continue;
+            };
+            let key = (record.app.clone(), record.checkout.id.as_str().to_owned());
+            match self.record_versions.insert(key, version.clone()) {
+                Some(previous) if previous != version => changed.push(SharedRecord {
+                    storage: self.storage.namespace().clone(),
+                    app: record.app,
+                    record: record.checkout.id,
+                }),
+                _ => {}
+            }
         }
-        self.record_version = version;
-        Some(SharedRecord {
-            storage: self.storage.namespace().clone(),
-            app: record.app.clone(),
-            record: record.checkout.id.clone(),
-        })
+        changed
     }
     fn metric_start(&self) -> Option<web_time::Instant> {
         self.metrics.borrow().begin()
@@ -1437,16 +1530,20 @@ pub fn semantic(
 /// The actions a standalone mount's application publishes, described as
 /// `tilo-control actions list` describes them. `resource` narrows to one
 /// resource and its children, including one the app resolves lazily.
+/// On a local desktop, the actions of one window's application: `window`
+/// (its tab id), else the focused window's.
 #[wasm_bindgen]
-pub fn component_actions(id: u64, resource: Option<String>) -> Result<String, JsValue> {
+pub fn component_actions(
+    id: u64,
+    resource: Option<String>,
+    window: Option<String>,
+) -> Result<String, JsValue> {
     MOUNTS.with_borrow(|mounts| {
         let m = mounts.get(&id).ok_or_else(|| error("closed mount"))?;
-        if m.desktop.is_some() {
-            return Err(error(DESKTOP_ACTIONS));
-        }
+        let instance = m.action_window(window.as_deref())?;
         let resources = m
             .frame
-            .bound_resources(resource.as_deref())
+            .bound_resources_of(instance, resource.as_deref())
             .map_err(door_error)?;
         serde_json::to_string(&tilo_actions::door::survey(&resources)).map_err(error)
     })
@@ -1462,21 +1559,19 @@ pub fn invoke_component_action(
     action: &str,
     arguments: &str,
     confirmed: bool,
+    window: Option<String>,
 ) -> Result<String, JsValue> {
     let arguments: serde_json::Map<String, serde_json::Value> =
         serde_json::from_str(arguments).map_err(error)?;
     let (started, resynced) = MOUNTS.with_borrow_mut(|mounts| {
         let m = mounts.get_mut(&id).ok_or_else(|| error("closed mount"))?;
-        if m.desktop.is_some() {
-            return Err(error(DESKTOP_ACTIONS));
-        }
+        let instance = m.action_window(window.as_deref())?;
         if m.peer_suspended {
             return Err(error("the mount is suspended"));
         }
         let address = ui::bound_dispatch::BoundActionAddress {
-            instance_id: m
-                .frame
-                .component_instance_id()
+            instance_id: instance
+                .or_else(|| m.frame.component_instance_id())
                 .ok_or_else(|| error("the mount hosts no application"))?,
             address: tilo_actions::ActionAddress::new(resource, action),
         };
@@ -1501,6 +1596,35 @@ pub fn invoke_component_action(
     .to_string())
 }
 const DESKTOP_ACTIONS: &str = "the canonical desktop's actions go through its certified peer";
+impl Mount {
+    /// The application instance a page's action call addresses: `None` for
+    /// a standalone mount's one app, a local desktop's `window` (tab id) or
+    /// else its focused window.
+    fn action_window(&self, window: Option<&str>) -> Result<Option<u64>, JsValue> {
+        let Some(desktop) = &self.desktop else {
+            return match window {
+                None => Ok(None),
+                Some(_) => Err(error("a standalone mount has no windows")),
+            };
+        };
+        if desktop.local.is_none() {
+            return Err(error(DESKTOP_ACTIONS));
+        }
+        let focused = desktop.navigation.borrow()["active"]["tab"]
+            .as_str()
+            .map(str::to_owned);
+        let window = window
+            .map(str::to_owned)
+            .or(focused)
+            .ok_or_else(|| error("no window is focused"))?;
+        window
+            .parse::<u64>()
+            .ok()
+            .filter(|tab| tab.to_string() == window)
+            .map(Some)
+            .ok_or_else(|| error("invalid window identity"))
+    }
+}
 fn door_error(e: tilo_actions::DoorError) -> JsValue {
     error(format!("{}: {e}", e.code()))
 }

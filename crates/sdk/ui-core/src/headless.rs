@@ -4866,6 +4866,19 @@ impl FrameHarness {
         &self,
         id: Option<&str>,
     ) -> Result<Vec<tilo_actions::Resource>, tilo_actions::DoorError> {
+        self.bound_resources_of(None, id)
+    }
+
+    /// [`Self::bound_resources`] of one hosted component instance, such as
+    /// one window of a desktop; `None` for every hosted component.
+    ///
+    /// # Errors
+    /// Refuses a closed or unavailable component.
+    pub fn bound_resources_of(
+        &self,
+        instance: Option<crate::application::InstanceId>,
+        id: Option<&str>,
+    ) -> Result<Vec<tilo_actions::Resource>, tilo_actions::DoorError> {
         self.drain_component_wakes();
         let lazy = id.map(|id| tilo_actions::ActionAddress::new(id, ""));
         let resources = crate::bound_dispatch::discover_bound_resources(
@@ -4875,6 +4888,7 @@ impl FrameHarness {
         )
         .map_err(|error| crate::bound_dispatch::BoundActionError::Dispatch(error).into_door())?
         .into_iter()
+        .filter(|snapshot| instance.is_none_or(|instance| snapshot.binding.instance_id == instance))
         .flat_map(|snapshot| snapshot.resources)
         .collect::<Vec<_>>();
         Ok(match id {
