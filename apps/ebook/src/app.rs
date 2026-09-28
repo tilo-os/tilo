@@ -152,13 +152,6 @@ struct SearchWorker {
 impl SearchWorker {
     /// `prior` is the published provider; its chapter-prose index is reused
     /// when the book set has not changed.
-    #[cfg_attr(
-        target_arch = "wasm32",
-        allow(
-            clippy::unnecessary_wraps,
-            reason = "only a native thread spawn can fail; both targets share the caller"
-        )
-    )]
     fn spawn(
         prior: crate::search_provider::BookSearchProvider,
         books: Arc<Vec<Arc<Book>>>,
