@@ -1659,7 +1659,7 @@ jobs:
           echo "::notice::independent rebuild reported manifest sha256:$manifest"
 
       - name: Release build cache before image installation
-        if: steps.release-mode.outputs.validate == 'true'
+        if: steps.release-mode.outputs.validate == 'true' && steps.release-mode.outputs.dev-fast != 'true'
         env:
           BUILDER_NAME: ${{ steps.buildx.outputs.name }}
         run: |
@@ -1673,14 +1673,17 @@ jobs:
           df -h /var/tmp
 
       # Build / OS dev: build the dev image FROM the tilo-ci image this lane
-      # just pushed and publish it as tilo-vm:<series>-ci, which
-      # `tilo-vm vm upgrade --from sha:` pulls. No disk install, no boot.
+      # just pushed, in the same BuildKit session (the base's layers are still
+      # in its store), through the shared compiler cache and a registry layer
+      # cache, and push it straight to tilo-vm:<series>-ci-<arch>. The index
+      # tilo-vm:<series>-ci, which `tilo-vm vm upgrade --from sha:` pulls,
+      # collects both architectures. No disk install, no boot.
       - name: Build and publish the dev image
         if: steps.release-mode.outputs.dev-fast == 'true' && steps.dev-image.outcome == 'success'
         env:
+          BUILDER_NAME: ${{ steps.buildx.outputs.name }}
           DEV_SERIES: ${{ steps.release-mode.outputs.dev-series }}
           DEV_BASE_DIGEST: ${{ steps.dev-image.outputs.digest }}
-          BUILD_DIGEST: ${{ steps.build.outputs.digest || steps.build-uncached.outputs.digest }}
           ARCH: ${{ matrix.arch }}
           CACHE_BUCKET: ${{ steps.compiler-cache.outputs.bucket }}
           CACHE_ENDPOINT: ${{ steps.compiler-cache.outputs.endpoint }}
@@ -1689,37 +1692,42 @@ jobs:
         run: |
           set -euo pipefail
           started=$(date +%s)
-          if ! command -v podman >/dev/null; then
-            if command -v apt-get >/dev/null; then
-              export DEBIAN_FRONTEND=noninteractive
-              sudo -n apt-get update
-              sudo -n apt-get install -y --no-install-recommends podman fuse-overlayfs uidmap slirp4netns jq skopeo
-            else
-              sudo -n dnf install -y podman fuse-overlayfs jq skopeo
-            fi
-          fi
-          if [[ '${{ matrix.runner }}' == runner-large* ]]; then
-            CONTAINERS_STORAGE_CONF="$(./os/dev/ci-native-podman-store.sh)"
-            export CONTAINERS_STORAGE_CONF
-          fi
-          first_tag="$(printf '%s\n' '${{ steps.meta.outputs.tags }}' | sed -n '1p')"
-          first_ref="$(python3 os/scripts/oci-archive-ref.py /var/tmp/tilo-image.tar "$first_tag" "$BUILD_DIGEST")"
-          dev_base="registry.tilo.so/tilo/tilo-ci:$DEV_SERIES-$ARCH"
-          skopeo copy "oci-archive:/var/tmp/tilo-image.tar:$first_ref" "containers-storage:$dev_base"
-          rm -f /var/tmp/tilo-image.tar
-          [[ "$(podman image inspect --format '{{.Digest}}' "$dev_base")" == "$DEV_BASE_DIGEST" ]] || {
-            echo "::error::the local base is not the published $dev_base ($DEV_BASE_DIGEST)"
-            exit 1
-          }
-          cache_args=""
+          base="registry.tilo.so/tilo/tilo-ci@$DEV_BASE_DIGEST"
+          created="$(skopeo inspect "docker://$base" | jq -er .Created)"
+          created="$(date -u -d "$created" +%Y-%m-%dT%H:%M:%SZ)"
+          child="registry.tilo.so/tilo/tilo-vm:$DEV_SERIES-ci-$ARCH"
+          cache=()
           if [[ -n $CACHE_BUCKET ]]; then
-            cache_args="--build-arg SCCACHE_BUCKET=$CACHE_BUCKET --build-arg SCCACHE_ENDPOINT=$CACHE_ENDPOINT --build-arg SCCACHE_REGION=$CACHE_REGION --build-arg SCCACHE_S3_USE_SSL=$CACHE_USE_SSL --secret id=aws_access_key_id,env=AWS_ACCESS_KEY_ID --secret id=aws_secret_access_key,env=AWS_SECRET_ACCESS_KEY"
+            cache=(--build-arg "SCCACHE_BUCKET=$CACHE_BUCKET" --build-arg "SCCACHE_ENDPOINT=$CACHE_ENDPOINT"
+                   --build-arg "SCCACHE_REGION=$CACHE_REGION" --build-arg "SCCACHE_S3_USE_SSL=$CACHE_USE_SSL"
+                   --secret id=aws_access_key_id,env=AWS_ACCESS_KEY_ID
+                   --secret id=aws_secret_access_key,env=AWS_SECRET_ACCESS_KEY)
           fi
-          TILO_DEV_BASE="$dev_base" TILO_DEV_IMAGE=localhost/tilo-vm:ci TILO_DEV_DISK=0 \
-            TILO_CARGO_FRESHNESS=clean \
-            TILO_BUILD_ARGS="--build-arg TILO_DEV_RUST_LTO=off $cache_args --label org.opencontainers.image.version=$DEV_SERIES-ci --label org.opencontainers.image.revision=$GITHUB_SHA --label org.opencontainers.image.base.name=registry.tilo.so/tilo/tilo-ci@$DEV_BASE_DIGEST --label org.opencontainers.image.base.digest=$DEV_BASE_DIGEST --label sh.tilo.dev.base-trust=integration" \
-            ./os/dev/build-dev-image.sh
-          DEV_IMAGE=localhost/tilo-vm:ci DEV_TAG="$DEV_SERIES-ci" SOURCE_REVISION="$GITHUB_SHA" \
+          metadata="$(mktemp /var/tmp/tilo-vm-build.XXXXXX)"
+          docker buildx build --builder "$BUILDER_NAME" --provenance=false \
+            -f os/Containerfile.dev \
+            --build-arg "BASE_IMAGE=$base" \
+            --build-arg "RPMS_REF=$RPMS_REF" \
+            --build-arg "TILO_BASE_DIGEST=$DEV_BASE_DIGEST" \
+            --build-arg "TILO_BASE_CREATED=$created" \
+            --build-arg TILO_CARGO_FRESHNESS=clean \
+            --build-arg "TILO_CARGO_BUILD_JOBS=$(nproc)" \
+            --build-arg TILO_DEV_RUST_LTO=off \
+            --build-arg "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
+            "${cache[@]}" \
+            --label "org.opencontainers.image.version=$DEV_SERIES-ci" \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --label "org.opencontainers.image.base.name=$base" \
+            --label "org.opencontainers.image.base.digest=$DEV_BASE_DIGEST" \
+            --label sh.tilo.dev.base-trust=integration \
+            --cache-from "type=registry,ref=$TILO_LAYER_CACHE_REGISTRY/tilo/tilo-buildcache:$ARCH-dev" \
+            --cache-to "type=registry,ref=$TILO_LAYER_CACHE_REGISTRY/tilo/tilo-buildcache:$ARCH-dev,mode=max,ignore-error=true" \
+            --metadata-file "$metadata" \
+            --output "type=image,name=$child,push=true,compression=zstd,compression-level=1,force-compression=true" \
+            .
+          digest="$(jq -er '."containerimage.digest"' "$metadata")"
+          echo "::notice::dev image built in $(( $(date +%s) - started ))s: $child ($digest)"
+          DEV_TAG="$DEV_SERIES-ci" PUSHED_DIGEST="$digest" SOURCE_REVISION="$GITHUB_SHA" \
             DISK_TOOLING_REVISION="$GITHUB_SHA" IMAGE_ONLY=1 \
             BASE_REPOSITORY=registry.tilo.so/tilo/tilo-ci BASE_TRUST=integration \
             BASE_INDEX_DIGEST="$DEV_BASE_DIGEST" BASE_CHILD_DIGEST="$DEV_BASE_DIGEST" \
