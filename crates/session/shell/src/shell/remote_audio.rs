@@ -45,7 +45,7 @@ use crate::shell::device_fabric::{
 use crate::shell::device_fabric_runtime::{
     FabricClockSync, fabric_peer_clock, hold_fabric_clock_sync,
 };
-use crate::shell::fabric_clock::PeerPlayoutClock;
+use crate::shell::fabric_clock::{ClockSyncFailure, ClockSyncState, PeerPlayoutClock};
 use crate::shell::network::{PersonalFabricSendError, ShellNetwork};
 use crate::shell::personal_continuity::DeviceId;
 use crate::shell::physical_gamepad::PhysicalGamepadBinding;
@@ -113,6 +113,12 @@ pub struct RemoteAudioSourceView {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RemoteAudioPhase {
     AwaitingConsent,
+    /// Approved, but the playing device has no estimate of the source's
+    /// clock yet, so nothing can play in time.
+    SyncingClock,
+    /// The playing device could not learn the source's clock within its
+    /// deadline. The route stays up and plays once the clock arrives.
+    ClockFailed(ClockSyncFailure),
     Streaming,
     /// The link or a local audio endpoint failed and the route stopped. The
     /// row stays briefly so the loss is visible; stopping it dismisses it.
@@ -166,6 +172,16 @@ struct OutboundRoute {
     /// Set for a speaker-group route: the member admitted it under its own
     /// group consent, and it captures the group's sink.
     tap: Option<Arc<crate::shell::speaker_group_audio::GroupTap>>,
+    /// What the target last reported about its clock of this device, from
+    /// its keepalives. `None` until the first one.
+    peer_playout: Option<ClockSyncState>,
+}
+
+impl OutboundRoute {
+    /// Whether the target can play what this route sends in time.
+    fn playout(&self) -> ClockSyncState {
+        self.peer_playout.unwrap_or(ClockSyncState::Syncing)
+    }
 }
 
 struct InboundRoute {
@@ -180,10 +196,29 @@ struct InboundRoute {
     last_keepalive: Instant,
     playback: Option<InboundPlayback>,
     /// Keeps the source's clock estimate fresh while the route plays.
-    _clock_sync: Option<FabricClockSync>,
+    /// `None` only for a route whose playout needs no peer clock.
+    clock_sync: Option<FabricClockSync>,
     /// A speaker-group route: every frame is admitted again against the
     /// member's group consent.
     group: bool,
+}
+
+impl InboundRoute {
+    /// Whether this device can play the route in time.
+    fn playout(&self) -> ClockSyncState {
+        self.clock_sync
+            .as_ref()
+            .map_or(ClockSyncState::Ready, FabricClockSync::state)
+    }
+}
+
+/// How a route in either direction is presented once it is approved.
+const fn approved_phase(playout: ClockSyncState) -> RemoteAudioPhase {
+    match playout {
+        ClockSyncState::Ready => RemoteAudioPhase::Streaming,
+        ClockSyncState::Syncing => RemoteAudioPhase::SyncingClock,
+        ClockSyncState::Failed(reason) => RemoteAudioPhase::ClockFailed(reason),
+    }
 }
 
 /// This device's own output playing as a member of a group session it
@@ -809,6 +844,7 @@ fn due_keepalives(state: &mut RemoteAudioState, now: Instant) -> Vec<Egress> {
                 PersonalFabricAction::RemoteAudioKeepalive {
                     session_id: *session_id,
                     authorization,
+                    playout: None,
                 },
                 Some(*session_id),
             );
@@ -823,6 +859,7 @@ fn due_keepalives(state: &mut RemoteAudioState, now: Instant) -> Vec<Egress> {
                 PersonalFabricAction::RemoteAudioKeepalive {
                     session_id: *session_id,
                     authorization: route.authorization,
+                    playout: Some(route.playout()),
                 },
                 None,
             );
@@ -998,7 +1035,7 @@ fn route_views(state: &RemoteAudioState, include_interrupted: bool) -> Vec<Remot
             label: route.label.clone(),
             inbound: false,
             phase: if route.authorization.is_some() {
-                RemoteAudioPhase::Streaming
+                approved_phase(route.playout())
             } else {
                 RemoteAudioPhase::AwaitingConsent
             },
@@ -1013,7 +1050,7 @@ fn route_views(state: &RemoteAudioState, include_interrupted: bool) -> Vec<Remot
                 peer: route.source.clone(),
                 label: route.label.clone(),
                 inbound: true,
-                phase: RemoteAudioPhase::Streaming,
+                phase: approved_phase(route.playout()),
             });
     let interrupted = state
         .interrupted
@@ -1151,6 +1188,7 @@ pub fn request(
                 capture: None,
                 pending: PendingAudio::default(),
                 tap: None,
+                peer_playout: None,
             },
         );
         drop(state);
@@ -1228,7 +1266,7 @@ pub fn authorize(
                 last_heard: now,
                 last_keepalive: now,
                 playback: Some(playback),
-                _clock_sync: Some(hold_fabric_clock_sync(pending.source.clone())),
+                clock_sync: Some(hold_fabric_clock_sync(pending.source.clone())),
                 group: false,
             },
         );
@@ -1378,6 +1416,7 @@ pub fn start_group_send(
             capture: Some(capture),
             pending: PendingAudio::default(),
             tap: Some(tap),
+            peer_playout: None,
         },
     );
     drop(state);
@@ -1456,7 +1495,7 @@ pub fn start_group_receive(
             last_heard: now,
             last_keepalive: now,
             playback: Some(playback),
-            _clock_sync: Some(hold_fabric_clock_sync(source.clone())),
+            clock_sync: Some(hold_fabric_clock_sync(source.clone())),
             group: true,
         },
     );
@@ -1482,6 +1521,51 @@ pub fn end_group_route(route: [u8; 16]) {
         state.inbound.remove(&route);
     }
     state.local.remove(&route);
+}
+
+/// Whether a running group route can play in time: for a member this device
+/// sends to, what it last reported; for a member playing here, this device's
+/// own clock of the source. `None` once the route is gone.
+#[must_use]
+pub fn group_route_playout(route: [u8; 16]) -> Option<ClockSyncState> {
+    let state = state().lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(outbound) = state.outbound.get(&route)
+        && outbound.tap.is_some()
+    {
+        return Some(outbound.playout());
+    }
+    if let Some(inbound) = state.inbound.get(&route)
+        && inbound.group
+    {
+        return Some(inbound.playout());
+    }
+    state
+        .local
+        .contains_key(&route)
+        .then_some(ClockSyncState::Ready)
+}
+
+/// [`group_route_playout`] for every running group route at once.
+#[must_use]
+pub fn group_route_playouts() -> BTreeMap<[u8; 16], ClockSyncState> {
+    let state = state().lock().unwrap_or_else(PoisonError::into_inner);
+    let outbound = state
+        .outbound
+        .iter()
+        .filter(|(_, route)| route.tap.is_some())
+        .map(|(route, outbound)| (*route, outbound.playout()));
+    let inbound = state
+        .inbound
+        .iter()
+        .filter(|(_, route)| route.group)
+        .map(|(route, inbound)| (*route, inbound.playout()));
+    let local = state
+        .local
+        .keys()
+        .map(|route| (*route, ClockSyncState::Ready));
+    let playouts = outbound.chain(inbound).chain(local).collect();
+    drop(state);
+    playouts
 }
 
 /// Whether a group route is still running here; the audio path ends one on
@@ -1753,6 +1837,7 @@ pub fn handle_action(network: &ShellNetwork, envelope: &PersonalFabricActionEnve
         PersonalFabricAction::RemoteAudioKeepalive {
             session_id,
             authorization,
+            playout,
         } => {
             if let Ok(mut state) = state().lock() {
                 let now = Instant::now();
@@ -1773,6 +1858,9 @@ pub fn handle_action(network: &ShellNetwork, envelope: &PersonalFabricActionEnve
                     && route.authorization == Some(*authorization)
                 {
                     route.last_heard = now;
+                    if playout.is_some() {
+                        route.peer_playout = *playout;
+                    }
                 }
             }
             true
@@ -1988,6 +2076,7 @@ mod tests {
             capture: None,
             pending: PendingAudio::default(),
             tap: None,
+            peer_playout: None,
         }
     }
 
@@ -2001,7 +2090,7 @@ mod tests {
             last_heard: at,
             last_keepalive: at,
             playback: None,
-            _clock_sync: None,
+            clock_sync: None,
             group: false,
         }
     }
@@ -2666,6 +2755,7 @@ mod tests {
                     == PersonalFabricAction::RemoteAudioKeepalive {
                         session_id: [1; 16],
                         authorization: [9; 16],
+                        playout: None,
                     }
         }));
         assert!(egress.iter().any(|message| {
@@ -2674,9 +2764,35 @@ mod tests {
                     == PersonalFabricAction::RemoteAudioKeepalive {
                         session_id: [3; 16],
                         authorization: [5; 16],
+                        playout: Some(ClockSyncState::Ready),
                     }
         }));
         assert!(due_keepalives(&mut state, now).is_empty());
+    }
+
+    #[test]
+    fn an_approved_route_shows_the_players_clock_instead_of_streaming_silence() {
+        let target = DeviceId::new("target").unwrap();
+        let now = Instant::now();
+        let mut state = RemoteAudioState::default();
+        state.outbound.insert(
+            [1; 16],
+            outbound(&target, LocalAudioSelection::System, Some([9; 16]), now),
+        );
+        let phase = |state: &RemoteAudioState| route_views(state, false)[0].phase;
+        assert_eq!(
+            phase(&state),
+            RemoteAudioPhase::SyncingClock,
+            "nothing is known to play before the target reports its clock"
+        );
+        let route = state.outbound.get_mut(&[1; 16]).unwrap();
+        route.peer_playout = Some(ClockSyncState::Failed(ClockSyncFailure::NoReply));
+        assert_eq!(
+            phase(&state),
+            RemoteAudioPhase::ClockFailed(ClockSyncFailure::NoReply)
+        );
+        state.outbound.get_mut(&[1; 16]).unwrap().peer_playout = Some(ClockSyncState::Ready);
+        assert_eq!(phase(&state), RemoteAudioPhase::Streaming);
     }
 
     #[test]

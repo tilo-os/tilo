@@ -136,6 +136,10 @@ impl ContinuityPolicySnapshot {
             | PersonalFabricAction::SpeakerGroupSessionStop { .. }
             | PersonalFabricAction::SpeakerIdentify { .. }
             | PersonalFabricAction::SpeakerSweep { .. }
+            // Speaker groups and remote audio play against the fabric clock,
+            // so its probes are part of Media, not of display health.
+            | PersonalFabricAction::FabricClockProbe { .. }
+            | PersonalFabricAction::FabricClockReport { .. }
             | PersonalFabricAction::RemoteCaptureSignal { .. }
             | PersonalFabricAction::RemoteCaptureChunk { .. }
             | PersonalFabricAction::BluetoothHandoffPrepare { .. }
@@ -325,5 +329,59 @@ mod tests {
         master_switch_overrides_the_full_capability_matrix();
         each_capability_is_independently_opted_in();
         per_capability_and_master_kill_switches_report_revocation();
+    }
+
+    fn policy(media: bool, display_input: bool) -> ContinuityPolicySnapshot {
+        ContinuityPolicySnapshot::from_document(&document(&json!({
+            "continuity": {"enabled": true, "media": media, "display_input": display_input}
+        })))
+    }
+
+    #[test]
+    fn the_fabric_clock_is_media_and_device_health_stays_display_input() {
+        let clock_probe = PersonalFabricAction::FabricClockProbe {
+            nonce: [1; 16],
+            sent_us: 10,
+        };
+        let clock_report = PersonalFabricAction::FabricClockReport {
+            report: crate::shell::fabric_clock::ClockReport {
+                probe_nonce: [1; 16],
+                probe_sent_us: 10,
+                received_us: 20,
+                replied_us: 21,
+            },
+        };
+        let health_probe = PersonalFabricAction::DeviceHealthProbe { nonce: [2; 16] };
+        let health_report = PersonalFabricAction::DeviceHealthReport {
+            report: crate::shell::spatial_calibration::DeviceHealthReport {
+                probe_nonce: [2; 16],
+                power: crate::shell::spatial_calibration::DevicePower::Battery(50),
+                energy_saver: false,
+            },
+        };
+        for clock in [&clock_probe, &clock_report] {
+            assert_eq!(
+                ContinuityPolicySnapshot::capability_for_action(clock),
+                ContinuityCapability::Media
+            );
+        }
+        for health in [&health_probe, &health_report] {
+            assert_eq!(
+                ContinuityPolicySnapshot::capability_for_action(health),
+                ContinuityCapability::DisplayInput
+            );
+        }
+
+        let media_only = policy(true, false);
+        assert!(media_only.permits_action(&clock_probe));
+        assert!(media_only.permits_action(&clock_report));
+        assert!(!media_only.permits_action(&health_probe));
+        assert!(!media_only.permits_action(&health_report));
+
+        let display_only = policy(false, true);
+        assert!(!display_only.permits_action(&clock_probe));
+        assert!(!display_only.permits_action(&clock_report));
+        assert!(display_only.permits_action(&health_probe));
+        assert!(display_only.permits_action(&health_report));
     }
 }
