@@ -2,11 +2,9 @@
 name = "tilo-relay-protocol"
 version = "0.1.0"
 edition = "2024"
-publish = true
+publish.workspace = true
 description = "Shared value types of the Tilo host + relay: the handshake and wire messages, mesh roles and placement, relay configuration, home-peer registrations, room shard ids and the metrics snapshot."
 license = "MIT OR Apache-2.0"
-repository.workspace = true
-homepage.workspace = true
 
 # Clients of the relay (the shell, Settings, Remote) read and write these
 # records without linking the daemon. Keep this crate free of the relay's
