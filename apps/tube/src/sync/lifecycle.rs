@@ -12,7 +12,7 @@ use std::io::{self, Read};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -29,9 +29,7 @@ const MAX_PEERS: usize = 64;
 const AUTO_SYNC_INTERVAL: Duration = Duration::from_secs(5 * 60);
 
 fn now() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_secs() as i64)
+    tilo_clock::unix_now_i64()
 }
 
 /// Durable, non-secret record for one locally approved Grayjay peer.

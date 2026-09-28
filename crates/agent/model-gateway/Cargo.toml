@@ -15,6 +15,7 @@ name = "tilo-model-gateway"
 path = "src/main.rs"
 
 [dependencies]
+tilo-clock = { path = "../../system/tilo-clock" }
 agent-provider-config = { path = "../provider-config" }
 accounts = { path = "../../system/accounts" }
 reqwest = { workspace = true, features = ["json"] }

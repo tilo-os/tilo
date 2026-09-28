@@ -27,18 +27,6 @@ pub(crate) fn next_id() -> u64 {
     NEXT_ID.fetch_add(1, Ordering::Relaxed)
 }
 
-fn unix_now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()
-        .and_then(|duration| i64::try_from(duration.as_secs()).ok())
-        .unwrap_or_default()
-}
-
-fn unix_now_u64() -> u64 {
-    u64::try_from(unix_now()).unwrap_or_default()
-}
-
 fn empty_workspace(id: WorkspaceId, name: &str, strips: Vec<Strip>) -> Workspace {
     let mut workspace = Workspace::new(id, name);
     workspace.room = RoomId::new();
@@ -215,7 +203,7 @@ impl TestTree {
             .workspaces
             .iter_mut()
             .find(|w| w.id == workspace_id)?;
-        let id = workspace.grant_as_at(grantor, cap, unix_now_u64())?;
+        let id = workspace.grant_as_at(grantor, cap, tilo_clock::unix_now())?;
         let stored = workspace
             .capabilities
             .iter()
@@ -239,7 +227,7 @@ impl TestTree {
         else {
             return false;
         };
-        if !workspace.revoke_as_at(revoker, cap_id, unix_now_u64()) {
+        if !workspace.revoke_as_at(revoker, cap_id, tilo_clock::unix_now()) {
             return false;
         }
         if tilo_desktop_model::desktop_doc::revoke_capability(&mut self.doc, workspace_id, cap_id) {
@@ -314,7 +302,7 @@ impl TestTree {
             actor: actor.to_string(),
             context,
             status,
-            completed_at: unix_now(),
+            completed_at: tilo_clock::unix_now_i64(),
         };
         workspace.effect_receipts.push(receipt.clone());
         if tilo_desktop_model::desktop_doc::upsert_effect_receipt(
@@ -341,7 +329,7 @@ impl TestTree {
             return None;
         }
         let actor = actor.into();
-        let now = unix_now();
+        let now = tilo_clock::unix_now_i64();
         let id = format!("task:{}", uuid::Uuid::new_v4());
         let task = WorkspaceTask {
             id: id.clone(),
@@ -378,7 +366,7 @@ impl TestTree {
         status: WorkspaceTaskStatus,
         actor: &str,
     ) -> bool {
-        let now = unix_now();
+        let now = tilo_clock::unix_now_i64();
         let Some(task) = self
             .desktop
             .workspaces
@@ -494,7 +482,7 @@ impl ActivityHost for TestHost {
         true
     }
     fn agent_members(&self, workspace: &Workspace) -> Vec<(String, collab_types::role::Role)> {
-        workspace.agent_members_at(unix_now_u64())
+        workspace.agent_members_at(tilo_clock::unix_now())
     }
     fn launch_agent(&self, _agent: &str, _workspace: &Workspace) -> Result<(), String> {
         Ok(())

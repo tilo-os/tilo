@@ -14,7 +14,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 use ui::search::{CatalogSearchProvider, SearchCatalog, SearchProvider, SearchResult};
 use ui::widget::{AppModel, ModelPath};
 
@@ -1545,9 +1545,7 @@ impl MonitorApp {
     }
 
     fn clock() -> String {
-        let secs = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs());
+        let secs = tilo_clock::unix_now();
         format!(
             "{:02}:{:02}:{:02}",
             (secs / 3600) % 24,
