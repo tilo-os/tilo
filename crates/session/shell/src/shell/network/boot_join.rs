@@ -60,12 +60,14 @@ impl ShellNetwork {
         .room
         .clone();
         let target = RoomId::parse(&room).ok_or("invitation names an invalid room")?;
+        let tree = self
+            .replica
+            .lock()
+            .map_err(|_| "native replica unavailable")?
+            .tree
+            .clone();
         let (local, member) = {
-            let replica = self
-                .replica
-                .lock()
-                .map_err(|_| "native replica unavailable")?;
-            let tree = replica.tree.read();
+            let tree = tree.read();
             let member = tree
                 .desktop
                 .workspaces
@@ -78,7 +80,9 @@ impl ShellNetwork {
             self.native_owner()?;
             return Ok(BootJoin::AlreadyMember(room));
         }
-        let deadline = Instant::now() + JOIN_DEADLINE;
+        let deadline = Instant::now()
+            .checked_add(JOIN_DEADLINE)
+            .ok_or("boot join deadline overflows")?;
         let mut response = self.accept_peer_invitation(local, &text)?;
         loop {
             match response {
