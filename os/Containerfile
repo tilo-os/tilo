@@ -575,6 +575,10 @@ ARG TILO_WITH_BROWSER
 ARG TILO_PREBUILT_APPS=0
 ARG TILO_PREBUILT_DESKTOP=0
 ARG TILO_CARGO_BUILD_JOBS=4
+# Debug info the release profile compiles (it strips symbols from the output
+# either way): the profile's line tables by default; 0 skips them, which only
+# makes a dev build compile faster.
+ARG TILO_RUST_DEBUGINFO=line-tables-only
 ARG TILO_REQUIRE_COMPILER_CACHE=0
 # `shared` compiles through sccache (its S3 backend when configured). `off` is
 # the independent reproduction lane of a publication: with no cache at all, a
@@ -661,10 +665,12 @@ RUN --mount=type=cache,target=/build/.cargo-home \
     && build_phase rust-release \
     && CARGO_PROFILE_RELEASE_LTO="$TILO_RUST_LTO" \
        CARGO_PROFILE_RELEASE_CODEGEN_UNITS=8 \
+       CARGO_PROFILE_RELEASE_DEBUG="$TILO_RUST_DEBUGINFO" \
        cargo build --release ${RELEASE_ARGS} -p tilo-relay ${RELEASE_BINS} ${BROWSER_PKG} \
     && build_phase rust-windows-vm \
     && CARGO_PROFILE_RELEASE_LTO="$TILO_RUST_LTO" \
        CARGO_PROFILE_RELEASE_CODEGEN_UNITS=8 \
+       CARGO_PROFILE_RELEASE_DEBUG="$TILO_RUST_DEBUGINFO" \
        cargo build --release -p windows-vm \
          --bin tilo-windows-vm-control --bin tilo-windows-rail \
     && build_phase rust-output-validation \

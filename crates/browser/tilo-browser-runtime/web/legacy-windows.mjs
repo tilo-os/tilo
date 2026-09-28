@@ -9,6 +9,11 @@
  * above the WebGPU canvas. Those tabs are the ones this build has no
  * application for (`legacy` in the runtime's live snapshot).
  *
+ * A member whose live grant may publish drives the window: pointer and keys
+ * on its canvas go to the host as `legacy_window::InputRequest`s, which the
+ * host forwards to the session. A viewer's canvas takes no input, and the
+ * host refuses a viewer's input anyway.
+ *
  * Frames: `0xF1 | kind u8 | payload`; kind 1 index (JSON streams), 2 start
  * (JSON stream, first frame of every group), 3 chunk (`flags u8 | seq u32 |
  * ts_us u64 | total u32 | bytes`, big endian), 4 end.
@@ -168,6 +173,40 @@ export function createStreamDecoder({VideoDecoder, EncodedVideoChunk, onFrame, o
   };
 }
 
+/** Linux input codes of the DOM's primary, middle and secondary buttons. */
+const BUTTONS = [272, 274, 273];
+const LETTERS = {Q: 16, W: 17, E: 18, R: 19, T: 20, Y: 21, U: 22, I: 23, O: 24, P: 25, A: 30, S: 31, D: 32, F: 33, G: 34, H: 35, J: 36, K: 37, L: 38, Z: 44, X: 45, C: 46, V: 47, B: 48, N: 49, M: 50};
+const KEYS = {
+  Escape: 1, Minus: 12, Equal: 13, Backspace: 14, Tab: 15, BracketLeft: 26, BracketRight: 27, Enter: 28, ControlLeft: 29,
+  Semicolon: 39, Quote: 40, Backquote: 41, ShiftLeft: 42, Backslash: 43, Comma: 51, Period: 52, Slash: 53, ShiftRight: 54,
+  AltLeft: 56, Space: 57, CapsLock: 58, F11: 87, F12: 88, ControlRight: 97, AltRight: 100, Home: 102, ArrowUp: 103,
+  PageUp: 104, ArrowLeft: 105, ArrowRight: 106, End: 107, ArrowDown: 108, PageDown: 109, Insert: 110, Delete: 111,
+  MetaLeft: 125, MetaRight: 126,
+};
+/** Most events one input request carries (`legacy_window::MAX_INPUT_EVENTS`). */
+const MAX_INPUT_EVENTS = 64;
+
+/** The Linux evdev keycode of a `KeyboardEvent.code`, or null. */
+export function evdevKey(code) {
+  if (typeof code !== 'string') return null;
+  if (/^Key[A-Z]$/.test(code)) return LETTERS[code[3]];
+  if (/^Digit[0-9]$/.test(code)) return code[5] === '0' ? 11 : Number(code[5]) + 1;
+  if (/^F([1-9]|10)$/.test(code)) return 58 + Number(code.slice(1));
+  return KEYS[code] ?? null;
+}
+
+/**
+ * The window pixel under a point, for a canvas showing a `width`×`height`
+ * picture letterboxed (`object-fit: contain`) into `box`; null outside it.
+ */
+export function windowPoint(box, width, height, clientX, clientY) {
+  if (!(box.width > 0 && box.height > 0 && width > 0 && height > 0)) return null;
+  const scale = Math.min(box.width / width, box.height / height);
+  const x = (clientX - box.left - (box.width - width * scale) / 2) / scale;
+  const y = (clientY - box.top - (box.height - height * scale) / 2) / scale;
+  return x >= 0 && y >= 0 && x < width && y < height ? [Math.round(x * 100) / 100, Math.round(y * 100) / 100] : null;
+}
+
 const validRect = rect => Array.isArray(rect) && rect.length === 4 && rect.every(Number.isFinite) && rect[2] > 0 && rect[3] > 0;
 
 /**
@@ -240,7 +279,7 @@ export function createLegacyWindows({
   const streams = new Map(); // `${publisher}/${record}` -> entry
   const indexed = new Map(); // publisher -> last index time
   let placement = new Map();
-  const stats = {indexes: 0, frames: 0, drawn: 0, placed: 0};
+  const stats = {indexes: 0, frames: 0, drawn: 0, placed: 0, inputSent: 0, inputRefused: 0};
   let api;
   let unwatchIndex;
   let frame;
@@ -282,8 +321,76 @@ export function createLegacyWindows({
     entry.unwatch = api.watchRecord({app: LEGACY_APP, record: stream.record}, (from, bytes) => {
       if (from === publisher) onStreamFrame(entry, bytes);
     });
+    bindInput(entry);
     streams.set(key, entry);
     layoutDirty = true;
+  }
+  // ---- Input (a member whose grant may publish; the host refuses anyone else) --
+  function queueInput(entry, event) {
+    if (!api?.canControl) return;
+    const motion = 'PointerMotion' in event;
+    const last = entry.input.at(-1);
+    // Latest-wins pointer motion; buttons, keys and focus keep their order.
+    if (motion && last && 'PointerMotion' in last) entry.input[entry.input.length - 1] = event;
+    else entry.input.push(event);
+    if (!entry.flushing) void flushInput(entry);
+  }
+  async function flushInput(entry) {
+    entry.flushing = true;
+    try {
+      while (entry.input.length && api?.canControl) {
+        const events = entry.input.splice(0, MAX_INPUT_EVENTS);
+        const sent = await api.sendLegacyInput({record: entry.stream.record, events});
+        if (sent.ok) stats.inputSent += events.length;
+        else stats.inputRefused += events.length;
+      }
+    } catch (error) { report(error); } finally {
+      entry.input.length = 0;
+      entry.flushing = false;
+    }
+  }
+  function bindInput(entry) {
+    const {canvas} = entry;
+    entry.input = [];
+    entry.focused = false;
+    canvas.tabIndex = -1;
+    const surface = 0;
+    const point = event => windowPoint(canvas.getBoundingClientRect(), canvas.width, canvas.height, event.clientX, event.clientY);
+    const motion = event => {
+      const at = point(event);
+      if (at) queueInput(entry, {PointerMotion: {x: at[0], y: at[1]}});
+      return at;
+    };
+    const on = (type, handler) => canvas.addEventListener?.(type, handler);
+    on('pointerenter', event => { queueInput(entry, {PointerEnter: {surface}}); motion(event); });
+    on('pointermove', motion);
+    on('pointerleave', () => queueInput(entry, {PointerLeave: {surface}}));
+    on('pointerdown', event => {
+      if (!api?.canControl) return;
+      event.preventDefault();
+      canvas.focus?.({preventScroll: true});
+      if (!entry.focused) { entry.focused = true; queueInput(entry, {KeyboardFocus: {surface, focused: true}}); }
+      if (motion(event)) queueInput(entry, {PointerButton: {button: BUTTONS[event.button] ?? 272, pressed: true}});
+    });
+    on('pointerup', event => {
+      if (!api?.canControl) return;
+      event.preventDefault();
+      queueInput(entry, {PointerButton: {button: BUTTONS[event.button] ?? 272, pressed: false}});
+    });
+    on('contextmenu', event => { if (api?.canControl) event.preventDefault(); });
+    const key = pressed => event => {
+      const keysym = evdevKey(event.code);
+      if (!api?.canControl || keysym === null || (pressed && event.repeat)) return;
+      event.preventDefault();
+      queueInput(entry, {Key: {keysym, pressed, modifiers: 0}});
+    };
+    on('keydown', key(true));
+    on('keyup', key(false));
+    on('blur', () => {
+      if (!entry.focused) return;
+      entry.focused = false;
+      queueInput(entry, {KeyboardFocus: {surface, focused: false}});
+    });
   }
   function draw(entry, picture) {
     try {
@@ -369,6 +476,8 @@ export function createLegacyWindows({
         entry.canvas.style.transform = `translate3d(${x.toFixed(1)}px,${y.toFixed(1)}px,0)`;
       }
       entry.canvas.dataset.tab = place.tab;
+      const events = api?.canControl ? 'auto' : 'none';
+      if (entry.canvas.style.pointerEvents !== events) entry.canvas.style.pointerEvents = events;
       if (!entry.visible) { entry.canvas.style.display = 'block'; entry.visible = true; }
     }
   }

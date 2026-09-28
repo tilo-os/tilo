@@ -1937,6 +1937,19 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                         Some(request)=>installed.handle(&mut owner,request),
                         None=>bail!("installed HTTPS ingress stopped"),
                     }
+                    // A controlling viewer's input reaches the session as this
+                    // host's governor device, which it shares its windows with.
+                    let (hello, input) = installed.take_legacy_input();
+                    if !input.is_empty() { tracing::debug!(events = input.len(), hello, ready = session.as_ref().is_some_and(|s| s.is_ready()), "legacy window input forwarded"); }
+                    if let Some(current) = session.as_ref().filter(|session| session.is_ready()) {
+                        if hello {
+                            let identity = tilo_peer_state::NeighbourMsg::IdentityHello { cert: Box::new(owner.identity.native_cert.clone()), revocations: Vec::new() };
+                            if let Err(problem) = current.publish_presence(postcard::to_stdvec(&identity)?) { tracing::debug!(%problem, "legacy window input identity not sent"); }
+                        }
+                        for message in input {
+                            if let Err(problem) = current.publish_presence(postcard::to_stdvec(&message)?) { tracing::debug!(%problem, "legacy window input not sent"); }
+                        }
+                    }
                     // HTTPS data, onboarding and staged admissions commit on the
                     // owner; follow up exactly as other inbound commits do.
                     if owner.committed_generation() != before && owner.permits_publication() {

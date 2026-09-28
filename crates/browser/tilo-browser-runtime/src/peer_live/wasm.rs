@@ -148,6 +148,31 @@ pub fn peer_live_grant(
     })
 }
 
+/// Prepare a proven `POST /peer/v3/live/legacy-input` carrying `body` (a
+/// `legacy_window::InputRequest`, JSON). The host refuses it from a member who
+/// may not publish; this side does not decide that.
+#[wasm_bindgen]
+pub fn peer_live_legacy_input(id: u32, body: Vec<u8>) -> Result<String, JsValue> {
+    use live_wire::legacy_window::{INPUT_TARGET, InputRequest};
+    InputRequest::decode(&body).map_err(|e| error(e.to_string()))?;
+    let peer = owner(id)?;
+    let authority = authority(&peer)?;
+    media_api::with_view(&peer, |view| {
+        let authority = authority.borrow();
+        if !authority.http_ready()
+            || authority.descriptor.media_capabilities() & live_wire::MEDIA_LIVE_V1 == 0
+        {
+            return Err("live relay unavailable".into());
+        }
+        let proof = authority.prove(view, "POST", INPUT_TARGET, &body)?;
+        Ok(serde_json::json!({
+            "kind": "request", "origin": authority.descriptor.origin(),
+            "target": INPUT_TARGET, "body": body, "proof": proof,
+        })
+        .to_string())
+    })
+}
+
 /// Verify the host's `SignedLiveGrant` response for one prepared request.
 #[wasm_bindgen]
 pub fn peer_live_grant_complete(id: u32, request: u32, bytes: Vec<u8>) -> Result<String, JsValue> {

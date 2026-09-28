@@ -99,22 +99,8 @@ installed mutable state and the ESP for any file equal to the helper digest.
 This keeps the workaround available across bootc re-exec while proving it was
 not installed.
 
-Build this helper in Forgejo rather than on an operator or Kubernetes builder.
-The workflow selects a native runner and an immutable builder image; its cache
-key covers the upstream commit and Cargo.lock, canonical patch, Rust/Cargo
-toolchain, architecture and builder image. It uploads only `bootc` and the
-receipt consumed by this contract:
-
-```sh
-fgj workflow run development-installer-bootc-helper.yml -R tilo/tilo \
-  -r codex/tilo-install-ready -f architecture=aarch64
-```
-
-Download `installer-bootc-helper-aarch64-<revision>`, verify it with
-`installer_bootc_helper.verify_artifact`, and use the receipt's
-`binary_sha256` as `installer_bootc_sha256`. A local native build is useful as
-a canary only; final installation evidence must name the CI run and consume its
-artifact unchanged.
+Verify the helper artifact with `installer_bootc_helper.verify_artifact`, and
+use the receipt's `binary_sha256` as `installer_bootc_sha256`.
 The installer container itself is started by the already verified canonical
 digest reference. Bootc resolves that running container's exact local manifest
 digest and enters its private mount namespace; the explicit canonical target

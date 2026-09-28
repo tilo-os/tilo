@@ -7,6 +7,7 @@ use crate::shell::state::WorkspaceAuthority as _;
 
 mod boot_join;
 mod governor_actions;
+mod hosted_topology;
 mod native_enrollment;
 mod native_ingress;
 
@@ -1113,6 +1114,7 @@ pub struct PendingInviteSummary {
 /// [`WorkspaceTreeReplica`], and the actor↔replica event channel.
 pub struct ShellNetwork {
     native_enrollment: native_enrollment::State,
+    hosted_topology: hosted_topology::State,
     /// Send commands into the actor (e.g. publish a `NeighbourMsg`).
     pub cmd_tx: mpsc::Sender<NetCmd>,
     /// Shared replica owning the tree-side reactions to `NetEvent::Msg`;
@@ -1610,6 +1612,7 @@ impl ShellNetwork {
             pending_invitations_path: Some(pending_invitations_path),
             pending_redemptions: Mutex::new(std::collections::HashMap::new()),
             native_enrollment: native_enrollment::State::default(),
+            hosted_topology: hosted_topology::State::default(),
             inbound_presence: Arc::new(Mutex::new(Vec::new())),
             inbound_documents: Arc::new(Mutex::new(Vec::new())),
             inbound_channel_governance: Arc::new(Mutex::new(Vec::new())),
@@ -1885,6 +1888,14 @@ impl ShellNetwork {
             .unwrap_or_default()
     }
 
+    /// Wake the compositor loop whenever legacy-window traffic (a stream, or
+    /// a viewer's input) arrives, so an idle headless session answers at once.
+    pub fn set_wake(&self, wake: crate::session_runtime::Wake) {
+        let _ = self
+            .cmd_tx
+            .try_send(NetCmd::SetWake(crate::network::actor::LoopWake(wake)));
+    }
+
     pub fn active_ws_for_publish(&self) -> u64 {
         let Ok(replica) = self.replica.lock() else {
             return DEFAULT_WS_TOPIC;
@@ -2047,6 +2058,9 @@ impl ShellNetwork {
         // Never reflect a host's own gossip echo into a decoder or seat.
         if Self::claimed_publisher(&message) == Some(self.local_peer_hash) {
             return;
+        }
+        if let NeighbourMsg::RemoteInput { peer, surface, .. } = &message {
+            tracing::debug!(workspace_topic, peer, surface, "remote input queued");
         }
         self.notify_workspace_control(WorkspaceControlNetworkEvent::Message(InboundLegacyEvent {
             workspace_topic,
@@ -6147,6 +6161,7 @@ pub(crate) fn shell_network_for_test(
         pending_invitations_path: None,
         pending_redemptions: Mutex::new(std::collections::HashMap::new()),
         native_enrollment: native_enrollment::State::default(),
+        hosted_topology: hosted_topology::State::default(),
         inbound_presence: Arc::new(Mutex::new(Vec::new())),
         inbound_documents: Arc::new(Mutex::new(Vec::new())),
         inbound_channel_governance: Arc::new(Mutex::new(Vec::new())),
