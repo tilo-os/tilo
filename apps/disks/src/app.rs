@@ -454,6 +454,7 @@ pub struct DisksApp {
     /// Hamburger-toggle and whole-disk-pill hover, checked together each
     /// frame when resolving the overlay's hit targets.
     hover_toggle: HoverToggles,
+    shared: crate::resource::ActionSink,
 }
 
 /// One-time first-frame setup flags for [`DisksApp`] (part of `DisksApp`).
@@ -487,6 +488,42 @@ impl Default for DisksApp {
 type ContentRects = (Rect, Vec<(Rect, usize)>, Vec<(Rect, usize)>);
 
 impl DisksApp {
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Disks>,
+    ) {
+        self.shared.attach(dispatcher);
+    }
+
+    pub(crate) fn adopt_shared(&mut self, state: &crate::resource::DisksState) {
+        if self.selected != state.selected {
+            self.selected = state.selected;
+            self.dirty = true;
+        }
+        if self.selected_part != state.selected_part {
+            self.selected_part = state.selected_part;
+            self.dirty = true;
+        }
+        let tab = Tab::from_key(&state.tab);
+        if self.tab != tab {
+            self.tab = tab;
+            self.dirty = true;
+        }
+        if self.status != state.status {
+            self.status.clone_from(&state.status);
+            self.dirty = true;
+        }
+    }
+
+    fn commit_shared(&mut self, doc: &mut AutoCommit, action: &crate::resource::DisksAction) {
+        self.shared.dispatch(doc, action);
+    }
+
+    fn commit_topology(&mut self, doc: &mut AutoCommit, topo: &Topology) {
+        let json = serde_json::to_string(topo).unwrap_or_else(|_| "{\"drives\":[]}".into());
+        self.commit_shared(doc, &crate::resource::DisksAction::WriteTopology { json });
+    }
+
     pub fn new() -> Self {
         Self {
             topo: Topology::default(),
@@ -516,6 +553,7 @@ impl DisksApp {
             flap: FlapState::open_when_docked(),
             k: 1.0,
             hover_toggle: HoverToggles::default(),
+            shared: crate::resource::ActionSink::default(),
         }
     }
 
@@ -3029,14 +3067,16 @@ impl DisksApp {
             });
             self.confirm_input.set_text("");
             self.confirm_input.set_focus(true);
-            DisksDoc::set_pending(
+            self.commit_shared(
                 state,
-                &format!(
-                    "{}:{}:{}",
-                    action.key(),
-                    self.selected,
-                    part.map_or(-1, |i| i as i64)
-                ),
+                &crate::resource::DisksAction::SetPending {
+                    pending: format!(
+                        "{}:{}:{}",
+                        action.key(),
+                        self.selected,
+                        part.map_or(-1, |i| i as i64)
+                    ),
+                },
             );
             self.dirty = true;
         } else {
@@ -3080,7 +3120,12 @@ impl DisksApp {
             self.action_rx = Some(rx);
             let msg = format!("{} {dev}…", action.gerund());
             self.status.clone_from(&msg);
-            DisksDoc::set_status(state, &msg);
+            self.commit_shared(
+                state,
+                &crate::resource::DisksAction::SetStatus {
+                    status: msg.clone(),
+                },
+            );
         } else {
             // Hermetic build / --shots: state what *would* run, no side effects.
             let plan = match action {
@@ -3101,7 +3146,12 @@ impl DisksApp {
                 }
             };
             self.status.clone_from(&plan);
-            DisksDoc::set_status(state, &plan);
+            self.commit_shared(
+                state,
+                &crate::resource::DisksAction::SetStatus {
+                    status: plan.clone(),
+                },
+            );
         }
         self.dirty = true;
     }
@@ -3114,7 +3164,12 @@ impl DisksApp {
         let Some(p) = self.pending.take() else { return };
         self.confirm_input.set_text("");
         self.confirm_input.set_focus(false);
-        DisksDoc::set_pending(state, "");
+        self.commit_shared(
+            state,
+            &crate::resource::DisksAction::SetPending {
+                pending: String::new(),
+            },
+        );
         self.dispatch_action(state, p.action, p.part);
     }
 
@@ -3122,19 +3177,30 @@ impl DisksApp {
         self.pending = None;
         self.confirm_input.set_text("");
         self.confirm_input.set_focus(false);
-        DisksDoc::set_pending(state, "");
+        self.commit_shared(
+            state,
+            &crate::resource::DisksAction::SetPending {
+                pending: String::new(),
+            },
+        );
     }
 
     fn select(&mut self, state: &mut AutoCommit, idx: usize) {
         if idx < self.topo.drives.len() {
             let changed = idx != self.selected;
             self.selected = idx;
-            DisksDoc::set_selected(state, idx);
+            self.commit_shared(
+                state,
+                &crate::resource::DisksAction::SetSelected { index: idx as u64 },
+            );
             // A new drive resets the partition focus to the whole disk so the
             // detail + action bar can never point at a stale partition.
             if changed {
                 self.selected_part = None;
-                DisksDoc::set_selected_part(state, None);
+                self.commit_shared(
+                    state,
+                    &crate::resource::DisksAction::SetSelectedPart { part: -1 },
+                );
                 self.content_scroll = 0.0;
             }
             self.dirty = true;
@@ -3149,13 +3215,23 @@ impl DisksApp {
             other => other,
         };
         self.selected_part = next;
-        DisksDoc::set_selected_part(state, next);
+        self.commit_shared(
+            state,
+            &crate::resource::DisksAction::SetSelectedPart {
+                part: next.map_or(-1, |index| index as i64),
+            },
+        );
         self.dirty = true;
     }
 
     fn set_tab(&mut self, state: &mut AutoCommit, tab: Tab) {
         self.tab = tab;
-        DisksDoc::set_tab(state, tab.key());
+        self.commit_shared(
+            state,
+            &crate::resource::DisksAction::SetTab {
+                tab: tab.key().to_string(),
+            },
+        );
         self.content_scroll = 0.0;
         self.dirty = true;
     }
@@ -3584,13 +3660,18 @@ impl Widget for DisksApp {
                 });
             }
             self.status.clone_from(&res.text);
-            DisksDoc::set_status(state, &res.text);
+            self.commit_shared(
+                state,
+                &crate::resource::DisksAction::SetStatus {
+                    status: res.text.clone(),
+                },
+            );
             // A mount/format/unmount/eject changed the on-disk topology.
             if res.refresh
                 && self.live
                 && let Some(topo) = crate::probe::probe()
             {
-                DisksDoc::write_topology(state, &topo);
+                self.commit_topology(state, &topo);
             }
             self.dirty = true;
         }
@@ -4553,12 +4634,22 @@ impl DisksApp {
         } else {
             // In demo/offscreen mode, just confirm on the status line.
             self.status = "Rescanned storage devices".to_string();
-            DisksDoc::set_status(state, &self.status);
+            self.commit_shared(
+                state,
+                &crate::resource::DisksAction::SetStatus {
+                    status: self.status.clone(),
+                },
+            );
             return;
         };
-        DisksDoc::write_topology(state, &topo);
+        self.commit_topology(state, &topo);
         self.status = format!("Rescanned — {} devices", topo.drives.len());
-        DisksDoc::set_status(state, &self.status);
+        self.commit_shared(
+            state,
+            &crate::resource::DisksAction::SetStatus {
+                status: self.status.clone(),
+            },
+        );
         self.dirty = true;
     }
 }

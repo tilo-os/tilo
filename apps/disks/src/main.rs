@@ -30,8 +30,10 @@
 )]
 
 use disks::DisksApp;
+use disks::resource::DisksAction;
 use ui::launch::{LaunchArgs, LaunchError, LaunchSpec, ShotFrame};
 use ui::theme::Theme;
+use ui::tilo_actions::Action;
 use ui::widget::Widget;
 
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
@@ -178,19 +180,22 @@ fn render_shot_to_png(
     {
         let doc = &mut frame.state.doc;
         if let Some(d) = preset.drive {
-            disks::doc::DisksDoc::set_selected(doc, d);
+            let _ = DisksAction::SetSelected { index: d as u64 }.apply(doc);
         }
         if let Some(p) = preset.part {
-            disks::doc::DisksDoc::set_selected_part(doc, Some(p));
+            let _ = DisksAction::SetSelectedPart { part: p as i64 }.apply(doc);
         }
         if let Some(t) = &preset.tab {
-            disks::doc::DisksDoc::set_tab(doc, t);
+            let _ = DisksAction::SetTab { tab: t.clone() }.apply(doc);
         }
         if let Some(p) = &preset.pending {
-            disks::doc::DisksDoc::set_pending(doc, p);
+            let _ = DisksAction::SetPending { pending: p.clone() }.apply(doc);
         }
         if let Some(status) = &preset.status {
-            disks::doc::DisksDoc::set_status(doc, status);
+            let _ = DisksAction::SetStatus {
+                status: status.clone(),
+            }
+            .apply(doc);
         }
         frame.sync(&mut widget);
     }

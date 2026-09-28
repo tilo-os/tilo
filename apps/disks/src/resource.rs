@@ -2,7 +2,8 @@
 //! shared document holds a topology projection plus view selection.
 
 use serde::{Deserialize, Serialize};
-use ui::framework::{ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
+use ui::automerge::AutoCommit;
+use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
 use ui::tilo_actions::{Action, ActionError, ActionRegistry, ActionSpec};
 use ui::tilo_resource::{Doc, ModelError, Resource};
 use ui::widget::Element;
@@ -10,13 +11,45 @@ use ui::widget::Element;
 use crate::app::DisksApp;
 use crate::doc::DisksDoc;
 
-/// No collaborative document mutations — topology is a host projection
-/// reconciled wholesale; disk jobs are Effects.
+/// Shared disks document mutations: selection, tab, confirmation, status, and
+/// the probed topology snapshot. Mount and format stay effects; they change
+/// one machine, not the document.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum EmptyDocAction {}
+pub enum DisksAction {
+    SetSelected {
+        index: u64,
+    },
+    /// `-1` is the whole disk.
+    SetSelectedPart {
+        part: i64,
+    },
+    SetTab {
+        tab: String,
+    },
+    SetPending {
+        pending: String,
+    },
+    SetStatus {
+        status: String,
+    },
+    WriteTopology {
+        json: String,
+    },
+}
 
-impl Action for EmptyDocAction {
-    fn apply(&self, _doc: &mut ui::tilo_actions::Doc) -> Result<(), ActionError> {
+impl Action for DisksAction {
+    fn apply(&self, doc: &mut ui::tilo_actions::Doc) -> Result<(), ActionError> {
+        match self {
+            Self::SetSelected { index } => DisksDoc::set_selected(doc, *index as usize),
+            Self::SetSelectedPart { part } => {
+                let part = (*part >= 0).then_some(*part as usize);
+                DisksDoc::set_selected_part(doc, part);
+            }
+            Self::SetTab { tab } => DisksDoc::set_tab(doc, tab),
+            Self::SetPending { pending } => DisksDoc::set_pending(doc, pending),
+            Self::SetStatus { status } => DisksDoc::set_status(doc, status),
+            Self::WriteTopology { json } => DisksDoc::write_topology_json(doc, json),
+        }
         Ok(())
     }
 }
@@ -27,7 +60,8 @@ pub struct DisksState {
     pub selected: usize,
     pub selected_part: Option<usize>,
     pub tab: String,
-    pub topology_present: bool,
+    pub pending: String,
+    pub status: String,
 }
 
 /// The storage-devices resource.
@@ -39,10 +73,10 @@ impl Resource for Disks {
     const ACTION_TYPE: &'static str = "disks.action";
 
     type State = DisksState;
-    type Action = EmptyDocAction;
+    type Action = DisksAction;
 
     fn register(registry: &mut ActionRegistry) {
-        registry.register::<EmptyDocAction>(Self::ACTION_TYPE);
+        registry.register::<DisksAction>(Self::ACTION_TYPE);
     }
 
     fn read(doc: &Doc) -> Result<DisksState, ModelError> {
@@ -50,7 +84,8 @@ impl Resource for Disks {
             selected: DisksDoc::selected(doc),
             selected_part: DisksDoc::selected_part(doc),
             tab: DisksDoc::tab(doc),
-            topology_present: DisksDoc::topology_json(doc).is_some(),
+            pending: DisksDoc::pending(doc),
+            status: DisksDoc::status(doc),
         })
     }
 
@@ -77,7 +112,43 @@ impl ResourceApp for DisksShell {
 }
 
 impl ResourceSurface<Disks> for DisksApp {
-    fn present(&mut self, _state: &std::rc::Rc<DisksState>) {}
+    fn present(&mut self, state: &std::rc::Rc<DisksState>) {
+        self.adopt_shared(state);
+    }
 
-    fn attach(&mut self, _cx: SurfaceCx<Disks>) {}
+    fn attach(&mut self, cx: SurfaceCx<Disks>) {
+        self.attach_framework(cx.dispatcher());
+    }
+}
+
+pub(crate) struct ActionSink {
+    local: ui::ActionHost,
+    framework: Option<Dispatcher<Disks>>,
+}
+
+impl Default for ActionSink {
+    fn default() -> Self {
+        Self {
+            local: ui::ActionHost::new(),
+            framework: None,
+        }
+    }
+}
+
+impl ActionSink {
+    pub(crate) fn attach(&mut self, dispatcher: Dispatcher<Disks>) {
+        self.framework = Some(dispatcher);
+    }
+
+    pub(crate) fn dispatch(&mut self, doc: &mut AutoCommit, action: &DisksAction) {
+        let context = ui::tilo_actions::ActionContext::for_action("so.tilo.disks", "Disks", action);
+        match &self.framework {
+            Some(dispatcher) => {
+                let _ = dispatcher.apply_now_with(doc, action, context);
+            }
+            None => self
+                .local
+                .dispatch_with_context(doc, Disks::ACTION_TYPE, action, context),
+        }
+    }
 }
