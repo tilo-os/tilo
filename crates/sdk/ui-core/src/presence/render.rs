@@ -480,6 +480,9 @@ pub struct PeerCursor {
     /// Authenticated participant kind. Agents use diamond pointer geometry
     /// and an icon-bearing chip, so identity does not depend on reading text.
     pub is_agent: bool,
+    /// `1.0` normally; falls towards `0.0` as a quiet peer's pointer fades
+    /// out (see [`super::PresenceCtx::pointer_opacity`]).
+    pub opacity: f32,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -645,7 +648,10 @@ pub fn draw_peer_cursors(
     let placements = layout_peer_pills(viewport, &requests);
 
     for p in peers {
-        draw_peer_dot(scene, transform, p.pos, p.color, p.is_agent);
+        let bounds = Rect::from_center_size(p.pos, (FADE_DOT_BOUNDS, FADE_DOT_BOUNDS));
+        faded(scene, transform, p.opacity, bounds, |scene| {
+            draw_peer_dot(scene, transform, p.pos, p.color, p.is_agent);
+        });
     }
 
     // Tethers — under the pills so a line never crosses a name.
@@ -658,27 +664,66 @@ pub fn draw_peer_cursors(
         let mut line = vello::kurbo::BezPath::new();
         line.move_to(from);
         line.line_to(to);
-        scene.stroke(
-            &Stroke::new(1.5),
-            transform,
-            p.color.with_alpha_factor(0.75),
-            None,
-            &line,
-        );
+        let bounds = Rect::from_points(from, to).inflate(FADE_EDGE, FADE_EDGE);
+        faded(scene, transform, p.opacity, bounds, |scene| {
+            scene.stroke(
+                &Stroke::new(1.5),
+                transform,
+                p.color.with_alpha_factor(0.75),
+                None,
+                &line,
+            );
+        });
     }
 
     for (p, place) in peers.iter().zip(&placements) {
-        draw_peer_pill_kind(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            place.rect,
-            &p.label,
-            p.color,
-            p.is_agent,
-        );
+        let bounds = place.rect.inflate(FADE_EDGE, FADE_EDGE);
+        faded(scene, transform, p.opacity, bounds, |scene| {
+            draw_peer_pill_kind(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                place.rect,
+                &p.label,
+                p.color,
+                p.is_agent,
+            );
+        });
     }
+}
+
+/// Room around a pointer's centre that covers its halo, shadow and ring.
+const FADE_DOT_BOUNDS: f64 = 96.0;
+/// Room around a pill or tether for its stroke and shadow.
+const FADE_EDGE: f64 = 8.0;
+
+/// Paint `draw` at `opacity`: directly when opaque, not at all when fully
+/// faded, else through a layer clipped to `bounds`, so overlapping parts of
+/// one peer's mark fade as one rather than showing through each other.
+fn faded(
+    scene: &mut Scene,
+    transform: Affine,
+    opacity: f32,
+    bounds: Rect,
+    draw: impl FnOnce(&mut Scene),
+) {
+    if opacity >= 1.0 {
+        draw(scene);
+        return;
+    }
+    if opacity <= 0.0 {
+        return;
+    }
+    scene.push_layer(
+        vello::peniko::Fill::NonZero,
+        vello::peniko::BlendMode::default(),
+        opacity,
+        transform,
+        &bounds,
+    );
+    draw(scene);
+    scene.pop_layer();
 }
 
 /// A peer's pointer: halo, shadow edge, solid dot, white ring. Shadow and
@@ -871,6 +916,7 @@ fn peer_of(ctx: &PresenceCtx, cursor: &super::RemoteCursor) -> PeerCursor {
             255,
         ),
         is_agent: ctx.is_agent(&UserId(cursor.user_id.clone())),
+        opacity: 1.0,
     }
 }
 
@@ -1202,15 +1248,17 @@ pub fn draw_peer_presence(
     for peer in peers {
         let target = Point::new(peer.pos.0, peer.pos.1);
         if let Some(mist) = super::geom::edge_mist_for(viewport, target) {
-            draw_edge_mist(
-                scene,
-                text_renderer,
-                theme,
-                viewport,
-                &mist,
-                peer.color,
-                &peer.label,
-            );
+            faded(scene, Affine::IDENTITY, peer.opacity, viewport, |scene| {
+                draw_edge_mist(
+                    scene,
+                    text_renderer,
+                    theme,
+                    viewport,
+                    &mist,
+                    peer.color,
+                    &peer.label,
+                );
+            });
         } else {
             on_screen.push(peer.clone());
         }
@@ -1909,6 +1957,7 @@ mod tests {
                 label: "Ada".to_string(),
                 color: Color::from_rgb8(236, 72, 153),
                 is_agent: false,
+                opacity: 1.0,
             }];
             let mut scene = Scene::new();
             draw_peer_presence(
@@ -2067,6 +2116,7 @@ mod tests {
                     label: "bob".into(),
                     color: peer,
                     is_agent: false,
+                    opacity: 1.0,
                 }],
             );
             let mut r = OffscreenRenderer::new(200, 200);
@@ -2110,6 +2160,7 @@ mod tests {
                         label: "p".into(),
                         color: peer,
                         is_agent: false,
+                        opacity: 1.0,
                     }],
                 );
                 let mut r = OffscreenRenderer::new(120, 120);
