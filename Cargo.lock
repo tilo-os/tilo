@@ -13293,6 +13293,7 @@ dependencies = [
  "tilo-desktop",
  "tilo-desktop-entry",
  "tilo-desktop-model",
+ "tilo-desktop-search",
  "tilo-identity-host",
  "tilo-installed-apps",
  "tilo-joined-room",
