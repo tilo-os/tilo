@@ -23,10 +23,11 @@ pub struct Published {
 }
 
 /// Upload every package in `packages` and ask for the entries that list
-/// them, answering one [`Published`] per package in the same order: `add` for a package id the catalogue does not have yet, `update`
-/// otherwise. Builds of one package id — its platforms and architectures —
-/// go into a single request, because a newer request for a package replaces
-/// the one waiting for review.
+/// them, answering one [`Published`] per package in the same order: `add` for
+/// a package id the catalogue does not have yet, `update` otherwise. Builds of
+/// one package id — its platforms and architectures — go into a single
+/// request that extends the one still waiting for review, if any: a newer
+/// request for a package replaces the waiting one and must keep its versions.
 ///
 /// # Errors
 ///
@@ -54,14 +55,18 @@ pub fn publish(
     }
     let mut published: Vec<Option<Published>> = vec![None; packages.len()];
     for (package_id, builds) in by_id {
-        let previous = client.entry(&package_id)?;
-        if let Some(previous) = &previous
+        let published_entry = client.entry(&package_id)?;
+        if let Some(previous) = &published_entry
             && !previous
                 .publisher_pubkey_hex
                 .eq_ignore_ascii_case(&crate::key::public_hex(key))
         {
             bail!("{package_id} is published by another key");
         }
+        let previous = match client.pending(key, &package_id)? {
+            Some(pending) => Some(pending),
+            None => published_entry.clone(),
+        };
         let mut entry = previous.clone();
         let indices: Vec<usize> = builds.iter().map(|(index, ..)| *index).collect();
         for (index, platform, version) in builds {
@@ -89,7 +94,7 @@ pub fn publish(
         let Some(entry) = entry.filter(|entry| previous.as_ref() != Some(entry)) else {
             continue;
         };
-        let action = if previous.is_some() {
+        let action = if published_entry.is_some() {
             EntryAction::Update
         } else {
             EntryAction::Add
