@@ -3573,6 +3573,10 @@ fn handle_spatial_action(
         | PersonalFabricAction::SpeakerGroupSessionStop { .. }
         | PersonalFabricAction::SpeakerIdentify { .. }
         | PersonalFabricAction::SpeakerSweep { .. }
+        | PersonalFabricAction::SpeakerListenInvite { .. }
+        | PersonalFabricAction::SpeakerListenDecision { .. }
+        | PersonalFabricAction::SpeakerListen { .. }
+        | PersonalFabricAction::SpeakerHeard { .. }
         | PersonalFabricAction::RemoteCaptureSignal { .. }
         | PersonalFabricAction::RemoteCaptureChunk { .. }
         | PersonalFabricAction::DeviceHealthProbe { .. }

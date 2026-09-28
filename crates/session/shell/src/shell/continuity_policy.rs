@@ -140,6 +140,10 @@ impl ContinuityPolicySnapshot {
             // so its probes are part of Media, not of display health.
             | PersonalFabricAction::FabricClockProbe { .. }
             | PersonalFabricAction::FabricClockReport { .. }
+            | PersonalFabricAction::SpeakerListenInvite { .. }
+            | PersonalFabricAction::SpeakerListenDecision { .. }
+            | PersonalFabricAction::SpeakerListen { .. }
+            | PersonalFabricAction::SpeakerHeard { .. }
             | PersonalFabricAction::RemoteCaptureSignal { .. }
             | PersonalFabricAction::RemoteCaptureChunk { .. }
             | PersonalFabricAction::BluetoothHandoffPrepare { .. }

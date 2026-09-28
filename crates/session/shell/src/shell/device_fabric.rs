@@ -576,6 +576,38 @@ pub enum PersonalFabricAction {
         group: crate::shell::speaker_group::SpeakerGroupId,
         start_ns: i64,
     },
+    /// The group's leader asks one of the person's devices to let it listen
+    /// with `microphone` while calibrating the group. That device's own
+    /// compositor asks its user; nothing is recorded until it approves.
+    SpeakerListenInvite {
+        group: crate::shell::speaker_group::SpeakerGroupId,
+        name: String,
+        microphone: crate::shell::speaker_group::EndpointSelector,
+    },
+    /// The answer. The durable consent itself is the listener record the
+    /// device authors in its own snapshot; this only reports promptly.
+    SpeakerListenDecision {
+        group: crate::shell::speaker_group::SpeakerGroupId,
+        accepted: bool,
+    },
+    /// The calibrating leader asks a consenting device to record around one
+    /// member's sweep, whose first sample leaves the speaker at `start_ns` on
+    /// the listening device's own `CLOCK_MONOTONIC`. The leader converts its
+    /// schedule through the fabric clock estimate it holds of that device, so
+    /// the listener needs no estimate of its own.
+    SpeakerListen {
+        group: crate::shell::speaker_group::SpeakerGroupId,
+        sweep: [u8; 16],
+        microphone: crate::shell::speaker_group::EndpointSelector,
+        start_ns: i64,
+    },
+    /// What that microphone heard of the sweep, measured on the device. The
+    /// recording itself never crosses the fabric.
+    SpeakerHeard {
+        group: crate::shell::speaker_group::SpeakerGroupId,
+        sweep: [u8; 16],
+        hearing: crate::shell::speaker_calibration::SpeakerHearing,
+    },
 }
 
 /// Versioned, ephemeral control and data plane for a certified-device display.
@@ -934,7 +966,39 @@ impl PersonalFabricActionEnvelope {
                     return Err(FabricError::InvalidAction);
                 }
             }
+            PersonalFabricAction::SpeakerListenInvite {
+                group,
+                name,
+                microphone,
+            } => {
+                if !group.valid()
+                    || !crate::shell::speaker_group::valid_group_name(name)
+                    || !microphone.valid()
+                {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::SpeakerListen {
+                group,
+                sweep,
+                microphone,
+                start_ns,
+            } => {
+                if !group.valid() || sweep == &[0; 16] || !microphone.valid() || *start_ns <= 0 {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::SpeakerHeard {
+                group,
+                sweep,
+                hearing,
+            } => {
+                if !group.valid() || sweep == &[0; 16] || !hearing.valid() {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
             PersonalFabricAction::SpeakerGroupDecision { group, .. }
+            | PersonalFabricAction::SpeakerListenDecision { group, .. }
             | PersonalFabricAction::SpeakerGroupLeave { group } => {
                 if !group.valid() {
                     return Err(FabricError::InvalidAction);

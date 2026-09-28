@@ -19,8 +19,8 @@ use std::time::{Duration, Instant};
 use automerge::{AutoCommit, ObjId, transaction::Transactable};
 use taffy::{NodeId, TaffyTree};
 use ui::collaboration::{
-    CalibrationMemberState, CalibrationPhaseInfo, SpeakerCommand, SpeakerReply, SpeakerRoleSpec,
-    SpeakerSnapshot, SpeakerTrimInfo,
+    CalibrationMemberState, CalibrationMicrophoneState, CalibrationPhaseInfo, SpeakerCommand,
+    SpeakerReply, SpeakerRoleSpec, SpeakerSnapshot, SpeakerTrimInfo,
 };
 use ui::doc::read_bool;
 use ui::theme::Theme;
@@ -30,6 +30,7 @@ use vello::kurbo::{Affine, Circle, Line, Point, Rect, RoundedRect, Stroke};
 use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
 
 use crate::actions::{LocalOperationStatus, SPEAKER_OPERATION_TYPE, SpeakerOperation};
+use crate::i18n::{t, t_args};
 use crate::speaker_setup::{
     Arrangement, BrokerSpeakers, ROOM_EXTENT_MM, SpeakerService, SpeakerSetup, Step,
 };
@@ -51,6 +52,7 @@ const CALIBRATE_KEY: &str = "speakers.calibrate.edit";
 const APPLY_KEY: &str = "speakers.apply.edit";
 const REVERT_KEY: &str = "speakers.revert.edit";
 const DISMISS_KEY: &str = "speakers.dismiss.edit";
+const CANCEL_KEY: &str = "speakers.cancel.edit";
 const DONE_KEY: &str = "speakers.done.edit";
 
 fn role_key(role: SpeakerRoleSpec) -> String {
@@ -90,6 +92,60 @@ fn trim_summary(trim: &SpeakerTrimInfo) -> String {
     format!("{:.1} ms · {:+.1} dB", trim.delay_ms, trim.gain_db)
 }
 
+/// Metres sound travels per millisecond at room temperature.
+const SOUND_METRES_PER_MS: f64 = 0.343;
+
+fn one_decimal(value: f64) -> String {
+    format!("{value:.1}")
+}
+
+/// "Arrives after 48.2 ms at your seat · its output takes 41.0 ms · about
+/// 2.4 m away".
+fn measured_text(
+    delay_ms: f64,
+    output_latency_ms: Option<f64>,
+    acoustic_ms: Option<f64>,
+) -> String {
+    let mut parts = vec![t_args(
+        "speakers-run-member-arrives",
+        &[("delay", one_decimal(delay_ms).into())],
+    )];
+    if let Some(latency) = output_latency_ms {
+        parts.push(t_args(
+            "speakers-run-member-output-latency",
+            &[("latency", one_decimal(latency).into())],
+        ));
+    }
+    if let Some(acoustic) = acoustic_ms {
+        parts.push(t_args(
+            "speakers-run-member-distance",
+            &[("metres", one_decimal(acoustic * SOUND_METRES_PER_MS).into())],
+        ));
+    }
+    parts.join(" · ")
+}
+
+fn microphone_run_text(state: &CalibrationMicrophoneState) -> String {
+    match state {
+        CalibrationMicrophoneState::AwaitingConsent => t("speakers-run-microphone-awaiting"),
+        CalibrationMicrophoneState::Declined => t("speakers-run-microphone-declined"),
+        CalibrationMicrophoneState::Listening => t("speakers-run-microphone-listening"),
+        CalibrationMicrophoneState::Used { heard, rejected } if *rejected > 0 => t_args(
+            "speakers-run-microphone-used-rejected",
+            &[("heard", (*heard).into()), ("rejected", (*rejected).into())],
+        ),
+        CalibrationMicrophoneState::Used { heard, .. } => t_args(
+            "speakers-run-microphone-used",
+            &[("heard", (*heard).into())],
+        ),
+        CalibrationMicrophoneState::NotHeard => t("speakers-run-microphone-not-heard"),
+        CalibrationMicrophoneState::Failed { reason } => t_args(
+            "speakers-run-microphone-failed",
+            &[("reason", reason.as_str().into())],
+        ),
+    }
+}
+
 /// What a finished background call was for.
 #[derive(Clone, Debug)]
 enum Purpose {
@@ -116,7 +172,8 @@ pub struct SpeakersPane {
     delete_armed: HashSet<String>,
     arrangement_state: ui::LocalState<String>,
     name_state: ui::LocalState<String>,
-    microphone_state: ui::LocalState<String>,
+    listening_state: ui::LocalState<String>,
+    microphone_states: Vec<(String, ui::LocalState<bool>)>,
     chosen_states: Vec<(String, String, ui::LocalState<bool>)>,
     room_points: ui::LocalState<Vec<(i32, i32)>>,
     placement_states: Vec<(ui::LocalState<f64>, ui::LocalState<f64>)>,
@@ -154,7 +211,8 @@ impl SpeakersPane {
             delete_armed: HashSet::new(),
             arrangement_state: ui::LocalState::new(Arrangement::Stereo.label().to_string()),
             name_state: ui::LocalState::new("Speakers".into()),
-            microphone_state: ui::LocalState::new(String::new()),
+            listening_state: ui::LocalState::new(String::new()),
+            microphone_states: Vec::new(),
             chosen_states: Vec::new(),
             room_points: ui::LocalState::new(Vec::new()),
             placement_states: Vec::new(),
@@ -291,6 +349,9 @@ impl SpeakersPane {
             }
             (Ok(_), SpeakerOperation::Identify { .. }) => Ok("Playing a sound".into()),
             (Ok(_), SpeakerOperation::Calibrate { .. }) => Ok("Calibrating".into()),
+            (Ok(_), SpeakerOperation::CancelCalibration { .. }) => {
+                Ok(t("speakers-calibration-cancelled"))
+            }
             (Ok(_), SpeakerOperation::ApplyCalibration { .. }) => Ok("Calibration applied".into()),
             (Ok(_), SpeakerOperation::RevertCalibration { .. }) => {
                 Ok("Previous calibration restored".into())
@@ -337,6 +398,43 @@ impl SpeakersPane {
                 .collect();
             self.structure_dirty = true;
         }
+        let calibrating = match self.setup.step() {
+            Step::Calibrate { group } => Some(group.clone()),
+            _ => None,
+        };
+        let extras = calibrating
+            .as_deref()
+            .map(|group| self.setup.extra_microphones(group))
+            .unwrap_or_default();
+        let devices = extras
+            .iter()
+            .map(|microphone| microphone.device.clone())
+            .collect::<Vec<_>>();
+        let current = self
+            .microphone_states
+            .iter()
+            .map(|(device, _)| device.clone())
+            .collect::<Vec<_>>();
+        if devices != current {
+            self.microphone_states = extras
+                .iter()
+                .map(|microphone| {
+                    (
+                        microphone.device.clone(),
+                        ui::LocalState::new(self.setup.also_listens(microphone)),
+                    )
+                })
+                .collect();
+            self.structure_dirty = true;
+        }
+        if let Some(listening) = calibrating
+            .as_deref()
+            .and_then(|group| self.setup.listening(group))
+            && self.listening_state.with(Clone::clone) != listening.label
+        {
+            self.listening_state.set(listening.label);
+            self.structure_dirty = true;
+        }
         let points = self.setup.room_points();
         if points != self.last_room_points {
             self.last_room_points.clone_from(&points);
@@ -378,6 +476,34 @@ impl SpeakersPane {
                 self.structure_dirty = true;
             }
         }
+        if let Step::Calibrate { group } = self.setup.step().clone() {
+            let chosen = self.listening_state.with(Clone::clone);
+            if let Some(microphone) = self
+                .setup
+                .listening_choices(&group)
+                .into_iter()
+                .find(|microphone| microphone.label == chosen)
+                && self
+                    .setup
+                    .listening(&group)
+                    .is_none_or(|listening| listening.device != microphone.device)
+            {
+                self.setup.set_listening(&microphone.device);
+                self.structure_dirty = true;
+            }
+            let extras = self.setup.extra_microphones(&group);
+            for (device, state) in &self.microphone_states {
+                let wanted = state.with(|value| *value);
+                if let Some(microphone) = extras
+                    .iter()
+                    .find(|microphone| &microphone.device == device)
+                    && self.setup.also_listens(microphone) != wanted
+                {
+                    self.setup.set_also_listens(device, wanted);
+                    self.structure_dirty = true;
+                }
+            }
+        }
         if self.setup.step() == &Step::Layout {
             let dragged = self.room_points.with(Clone::clone);
             for (index, point) in dragged.iter().enumerate() {
@@ -400,14 +526,65 @@ impl SpeakersPane {
         }
     }
 
-    fn microphone(&self) -> Option<crate::speaker_setup::Microphone> {
-        let chosen = self.microphone_state.with(Clone::clone);
-        let microphones = self.setup.microphones();
-        microphones
-            .iter()
-            .find(|microphone| microphone.label == chosen)
-            .or_else(|| microphones.first())
-            .cloned()
+    /// "Where you sit" and "Also listen with" for the calibrate step.
+    fn microphone_rows(&self, group: &str) -> Vec<Box<dyn Widget>> {
+        let mut body = Vec::new();
+        let choices = self.setup.listening_choices(group);
+        let Some(listening) = self.setup.listening(group) else {
+            return body;
+        };
+        let chooser = Dropdown::from_state(
+            choices
+                .iter()
+                .map(|microphone| microphone.label.clone())
+                .collect(),
+            &self.listening_state,
+        )
+        .with_id("speakers.listening")
+        .with_accessible_name(t("speakers-listening-title"))
+        .with_placeholder(&listening.label);
+        body.push(choice_row_described(
+            &t("speakers-listening-title"),
+            &t("speakers-listening-description"),
+            Box::new(chooser),
+        ));
+        let extras = self.setup.extra_microphones(group);
+        if !extras.is_empty() {
+            body.push(caption(&t("speakers-also-listen-caption")));
+        }
+        for microphone in &extras {
+            let title = if microphone.local {
+                t_args(
+                    "speakers-microphone-this-device-title",
+                    &[("label", microphone.label.as_str().into())],
+                )
+            } else {
+                microphone.label.clone()
+            };
+            let state = self
+                .microphone_states
+                .iter()
+                .find(|(device, _)| device == &microphone.device)
+                .map(|(_, state)| state);
+            match state {
+                Some(state) if microphone.status.usable() => {
+                    body.push(setting_row_described(
+                        &title,
+                        &microphone.status_text(),
+                        Box::new(
+                            Toggle::from_state(state)
+                                .with_id(&format!("speakers.microphone.{}", microphone.device))
+                                .with_accessible_name(&t_args(
+                                    "speakers-microphone-use",
+                                    &[("label", microphone.label.as_str().into())],
+                                )),
+                        ),
+                    ));
+                }
+                _ => body.push(value_row(&title, &microphone.status_text())),
+            }
+        }
+        body
     }
 
     #[allow(
@@ -508,20 +685,16 @@ impl SpeakersPane {
         };
         if let Some(group) = calibrating {
             if take(CALIBRATE_KEY) {
-                match self
-                    .microphone()
-                    .ok_or_else(|| "This device has no microphone to calibrate with".to_string())
-                    .and_then(|microphone| self.setup.calibrate_command(&group, &microphone))
-                {
+                match self.setup.calibrate_command(&group) {
                     Ok(SpeakerCommand::StartCalibration {
                         group,
-                        microphone_device,
-                        microphone,
+                        excluded,
+                        listening,
                     }) => self.run(
                         SpeakerOperation::Calibrate {
                             group,
-                            microphone_device,
-                            microphone,
+                            excluded,
+                            listening,
                         },
                         false,
                     ),
@@ -540,6 +713,12 @@ impl SpeakersPane {
                 (
                     REVERT_KEY,
                     SpeakerOperation::RevertCalibration {
+                        group: group.clone(),
+                    },
+                ),
+                (
+                    CANCEL_KEY,
+                    SpeakerOperation::CancelCalibration {
                         group: group.clone(),
                     },
                 ),
@@ -927,40 +1106,33 @@ impl SpeakersPane {
         }
         let run = self.setup.calibration(group);
         let phase = run.map(|run| run.phase);
-        let microphones = self.setup.microphones();
         if !matches!(
             phase,
-            Some(CalibrationPhaseInfo::Measuring | CalibrationPhaseInfo::Proposed)
-        ) && !microphones.is_empty()
-        {
-            let chooser = Dropdown::from_state(
-                microphones
-                    .iter()
-                    .map(|microphone| microphone.label.clone())
-                    .collect(),
-                &self.microphone_state,
+            Some(
+                CalibrationPhaseInfo::WaitingForMicrophones
+                    | CalibrationPhaseInfo::Measuring
+                    | CalibrationPhaseInfo::Proposed
             )
-            .with_id("speakers.microphone")
-            .with_accessible_name("Microphone")
-            .with_placeholder(
-                microphones
-                    .first()
-                    .map_or("Microphone", |microphone| microphone.label.as_str()),
-            );
-            body.push(choice_row_described(
-                "Microphone",
-                "Put it where you usually sit",
-                Box::new(chooser),
-            ));
+        ) {
+            body.extend(self.microphone_rows(group));
         }
         if let Some(run) = run {
+            if let Some(label) = &run.listening_label {
+                body.push(caption(&t_args(
+                    "speakers-run-aligned-for",
+                    &[("label", label.as_str().into())],
+                )));
+            }
             for member in &run.members {
                 let status = match &member.state {
-                    CalibrationMemberState::Waiting => "Waiting".to_string(),
-                    CalibrationMemberState::Measuring => "Listening…".to_string(),
-                    CalibrationMemberState::Measured { delay_ms, level_db } => {
-                        format!("Heard after {delay_ms:.1} ms at {level_db:+.1} dB")
-                    }
+                    CalibrationMemberState::Waiting => t("speakers-run-member-waiting"),
+                    CalibrationMemberState::Measuring => t("speakers-run-member-measuring"),
+                    CalibrationMemberState::Measured {
+                        delay_ms,
+                        output_latency_ms,
+                        acoustic_ms,
+                        ..
+                    } => measured_text(*delay_ms, *output_latency_ms, *acoustic_ms),
                     CalibrationMemberState::Failed { reason } => reason.clone(),
                 };
                 let detail = member.after.as_ref().map_or_else(
@@ -974,6 +1146,20 @@ impl SpeakersPane {
                     },
                 );
                 body.push(value_row(&member.label, &detail));
+            }
+            for microphone in &run.microphones {
+                let label = if microphone.listening {
+                    t_args(
+                        "speakers-run-microphone-listening-position",
+                        &[("label", microphone.label.as_str().into())],
+                    )
+                } else {
+                    microphone.label.clone()
+                };
+                body.push(value_row(&label, &microphone_run_text(&microphone.state)));
+            }
+            if run.phase == CalibrationPhaseInfo::WaitingForMicrophones {
+                body.push(caption(&t("speakers-run-waiting-for-microphones")));
             }
             if let Some(message) = &run.message {
                 body.push(caption(message));
@@ -1006,7 +1192,13 @@ impl SpeakersPane {
                     Some(REVERT_KEY),
                 )));
             }
-            Some(CalibrationPhaseInfo::Measuring) => {}
+            Some(CalibrationPhaseInfo::Measuring | CalibrationPhaseInfo::WaitingForMicrophones) => {
+                actions = actions.push(Box::new(Button::new(
+                    "speakers.cancel",
+                    &t("speakers-calibration-cancel"),
+                    Some(CANCEL_KEY),
+                )));
+            }
             Some(CalibrationPhaseInfo::Failed) | None => {
                 let problem = self.setup.calibration_problem(group);
                 if let Some(problem) = &problem {
@@ -1543,6 +1735,7 @@ mod tests {
                         trim: SpeakerTrimInfo::default(),
                     }],
                     playback: None,
+                    microphones: Vec::new(),
                 }],
                 calibrations: Vec::new(),
             }),
@@ -1689,17 +1882,45 @@ mod tests {
         );
     }
 
+    fn microphone_switch(pane: &SpeakersPane, device: &str) -> ui::LocalState<bool> {
+        pane.microphone_states
+            .iter()
+            .find(|(known, _)| known == device)
+            .map(|(_, state)| state.clone())
+            .unwrap()
+    }
+
+    /// The set's own shelf listens too by default; the phone is switched on,
+    /// the listening position moves to it, and the shelf is switched off.
+    fn sit_at_the_phone_without_the_shelf(pane: &mut SpeakersPane, doc: &mut AutoCommit) {
+        let phone = microphone_switch(pane, "phone");
+        assert!(!phone.with(|on| *on));
+        assert!(microphone_switch(pane, "shelf").with(|on| *on));
+        phone.set(true);
+        settle(pane, doc);
+        pane.listening_state.set("phone · Microphone".into());
+        settle(pane, doc);
+        microphone_switch(pane, "shelf").set(false);
+        settle(pane, doc);
+    }
+
     #[test]
     fn calibration_is_a_proposal_until_applied() {
         use ui::collaboration::{CalibrationInfo, CalibrationMemberInfo};
         let service = fake();
         {
             let mut snapshot = service.snapshot.lock().unwrap();
-            snapshot.devices[0].microphones.push(SpeakerEndpointInfo {
-                selector: "ee".repeat(16),
-                label: "Microphone".into(),
-                is_default: true,
-            });
+            for (device, local) in [("desk", true), ("shelf", false), ("phone", false)] {
+                snapshot.groups[0]
+                    .microphones
+                    .push(ui::collaboration::CalibrationMicrophoneInfo {
+                        device: device.into(),
+                        device_label: device.into(),
+                        label: "Microphone".into(),
+                        local,
+                        status: ui::collaboration::MicrophoneStatus::Ready,
+                    });
+            }
         }
         let mut pane = SpeakersPane::with_service(service.clone());
         let mut doc = AutoCommit::new();
@@ -1712,6 +1933,7 @@ mod tests {
                 group: group.clone()
             }
         );
+        sit_at_the_phone_without_the_shelf(&mut pane, &mut doc);
         press(&mut pane, &mut doc, CALIBRATE_KEY);
         assert!(
             service
@@ -1720,8 +1942,8 @@ mod tests {
                 .unwrap()
                 .contains(&SpeakerCommand::StartCalibration {
                     group: group.clone(),
-                    microphone_device: "desk".into(),
-                    microphone: "ee".repeat(16),
+                    excluded: vec!["desk".into(), "shelf".into()],
+                    listening: Some("phone".into()),
                 })
         );
         // The measurement finishes: the shell reports a proposal.
@@ -1739,6 +1961,8 @@ mod tests {
                     state: CalibrationMemberState::Measured {
                         delay_ms: 4.0,
                         level_db: -6.0,
+                        output_latency_ms: Some(1.0),
+                        acoustic_ms: Some(3.0),
                     },
                     before: SpeakerTrimInfo::default(),
                     after: Some(SpeakerTrimInfo {
@@ -1747,6 +1971,8 @@ mod tests {
                         eq_bands: 2,
                     }),
                 }],
+                microphones: Vec::new(),
+                listening_label: Some("phone".into()),
                 message: None,
             });
         pane.refresh();
