@@ -1051,25 +1051,36 @@ impl ChatApp {
         participant: &tilo_actions::ParticipantId,
     ) -> Option<actions::ChatResourceCtx> {
         participant.agent_task()?;
-        let id = participant.as_str().to_owned();
-        let label = self
-            .participant_labels
-            .get(&id)
+        let mut ctx = self.chat_resource_ctx();
+        Self::author_as_agent(
+            &mut ctx,
+            participant.as_str(),
+            self.agent_label(participant.as_str()),
+        );
+        Some(ctx)
+    }
+
+    /// The display name the host gave agent task participant `id`.
+    fn agent_label(&self, id: &str) -> String {
+        self.participant_labels
+            .get(id)
             .filter(|label| !label.is_empty())
             .cloned()
-            .unwrap_or_else(|| "Agent".to_owned());
-        let mut ctx = self.chat_resource_ctx();
+            .unwrap_or_else(|| "Agent".to_owned())
+    }
+
+    /// `ctx` authored by agent participant `id`, in the room as an agent.
+    fn author_as_agent(ctx: &mut actions::ChatResourceCtx, id: &str, label: String) {
         ctx.participants.retain(|p| p.id != id);
         ctx.participants.insert(
             0,
             crate::mention::Participant {
-                id: id.clone(),
+                id: id.to_owned(),
                 name: label,
                 is_agent: true,
             },
         );
-        ctx.me = id;
-        Some(ctx)
+        id.clone_into(&mut ctx.me);
     }
 
     pub(crate) fn chat_resource_ctx(&self) -> actions::ChatResourceCtx {
@@ -1099,6 +1110,7 @@ impl ChatApp {
                 .iter()
                 .map(|m| actions::MessageResource {
                     id: m.id.clone(),
+                    author: m.author.clone(),
                     label: self.message_resource_label(m),
                     pinned: m.pinned,
                     parent: m.parent.clone(),
@@ -1119,7 +1131,7 @@ impl ChatApp {
                         .collect(),
                 })
                 .collect();
-        actions::ChatResourceCtx {
+        let mut ctx = actions::ChatResourceCtx {
             me: self.me.id.clone(),
             workspace_id: self.active_ws.clone(),
             workspace_name,
@@ -1127,7 +1139,19 @@ impl ChatApp {
             active_channel: self.active_channel.clone(),
             messages,
             participants: self.participants(),
+        };
+        // A host acting as an admitted agent task (a browser mount with an
+        // agent author) authors its own tree as that agent.
+        if self
+            .me
+            .id
+            .starts_with(tilo_actions::AGENT_TASK_PARTICIPANT_PREFIX)
+            && self.participant_labels.contains_key(&self.me.id)
+        {
+            let me = self.me.id.clone();
+            Self::author_as_agent(&mut ctx, &me, self.agent_label(&me));
         }
+        ctx
     }
 
     /// Build the reaction action a click on `msg`/`emoji` should dispatch,
@@ -1583,7 +1607,13 @@ impl ChatApp {
             return format!("{agent} \u{b7} agent");
         }
         let named = self.display_name(id);
-        if named != id && !named.trim().is_empty() {
+        // A name that happens to equal the id is still a name when the
+        // document stores it (a browser mount's author is both).
+        let stored = self
+            .users
+            .iter()
+            .any(|u| u.id == id && u.name.trim() == named.trim());
+        if (named != id || stored) && !named.trim().is_empty() {
             return named;
         }
         format!("Someone ({})", Self::unnamed_tag(id))
@@ -2655,6 +2685,203 @@ pub(crate) fn frac_rect(win: Rect, f: (f64, f64, f64, f64)) -> Rect {
     Rect::new(x0, y0, x0 + f.2 * win.width(), y0 + f.3 * win.height())
 }
 
+impl ChatApp {
+    /// Perform one of the operations Chat's resources export; `None` for an
+    /// operation that is not Chat's.
+    ///
+    /// # Errors
+    ///
+    /// Refuses an operation of the wrong kind, for a conversation or message
+    /// that no longer exists, or that its local service rejects.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one exhaustive operation dispatcher preserves the resource contract at a single boundary"
+    )]
+    pub(crate) fn perform_operation(
+        &mut self,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+    ) -> Result<Option<tilo_actions::ActionOutput>, String> {
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(None);
+        };
+        match &operation {
+            crate::actions::ChatOperation::NativeVoice { request, .. } => {
+                if kind != tilo_actions::OperationKind::Effect
+                    || !request.valid()
+                    || request.intent != 0
+                {
+                    return Err("Call controls require a valid local Effect".into());
+                }
+            }
+            crate::actions::ChatOperation::ImportAttachment { .. } => {
+                if !self.external_services {
+                    return Err("attachment import unsupported: no host asset transport".into());
+                }
+                if kind != tilo_actions::OperationKind::Effect {
+                    return Err("attachment import requires an Effect operation".into());
+                }
+            }
+            _ if !chat_navigation_kind(kind)? => return Ok(None),
+            _ => {}
+        }
+        match operation {
+            crate::actions::ChatOperation::NativeVoice { channel, request } => {
+                self.native_voice_command(&channel, request.command)?;
+            }
+            crate::actions::ChatOperation::OpenWorkspace { workspace } => {
+                self.reveal_workspace_resource(workspace)?;
+            }
+            crate::actions::ChatOperation::OpenChannel { workspace, channel } => {
+                if !self
+                    .channels
+                    .iter()
+                    .any(|item| item.id == channel && item.workspace == workspace)
+                {
+                    return Err("conversation no longer exists".into());
+                }
+                self.active_ws = workspace;
+                self.active_channel = channel;
+                self.inbox_open = false;
+                self.thread_open = None;
+                self.revealed_message = None;
+                self.reveal_scroll_pending = false;
+                self.revealed_person = None;
+                self.reset_timeline_to_latest();
+                self.focus = Focus::Main;
+            }
+            crate::actions::ChatOperation::OpenCategory {
+                workspace,
+                category,
+            } => self.reveal_category_resource(workspace, &category)?,
+            crate::actions::ChatOperation::RevealMessage {
+                workspace,
+                channel,
+                message,
+                parent,
+            } => {
+                if !self
+                    .channels
+                    .iter()
+                    .any(|item| item.id == channel && item.workspace == workspace)
+                {
+                    return Err("conversation no longer exists".into());
+                }
+                if !ChatDoc::list_messages(doc, &channel)
+                    .iter()
+                    .any(|item| item.id == message)
+                {
+                    return Err("message no longer exists".into());
+                }
+                self.active_ws = workspace;
+                self.active_channel = channel;
+                self.inbox_open = false;
+                self.thread_open = parent;
+                self.revealed_message = Some(message);
+                self.reveal_scroll_pending = true;
+                self.revealed_person = None;
+                self.timeline_total_height = 0.0;
+                self.timeline_at_end = false;
+                self.focus = if self.thread_open.is_some() {
+                    Focus::Thread
+                } else {
+                    Focus::Main
+                };
+                if self.thread_open.is_some() {
+                    self.right_flap.open();
+                }
+            }
+            crate::actions::ChatOperation::OpenPerson { user } => {
+                if !ChatDoc::list_users(doc).iter().any(|item| item.id == user) {
+                    return Err("person no longer exists".into());
+                }
+                // Prefer the current workspace when it already evidences this
+                // person; otherwise open the first workspace where they wrote.
+                if !self.users.iter().any(|item| item.id == user)
+                    && let Some(channel) = self.channels.iter().find(|channel| {
+                        ChatDoc::list_messages(doc, &channel.id)
+                            .iter()
+                            .any(|message| {
+                                message.author == user
+                                    || message.mentions.iter().any(|mention| mention.user == user)
+                                    || message
+                                        .reactions
+                                        .iter()
+                                        .any(|reaction| reaction.users.iter().any(|id| id == &user))
+                            })
+                    })
+                {
+                    self.active_ws = channel.workspace.clone();
+                    self.active_channel = channel.id.clone();
+                }
+                self.inbox_open = false;
+                self.thread_open = None;
+                self.revealed_message = None;
+                self.revealed_person = Some(user);
+                self.focus = Focus::Main;
+                self.right_flap.open();
+            }
+            crate::actions::ChatOperation::ImportAttachment { channel, path } => {
+                if path.is_empty() {
+                    return Err("attachment path is empty".into());
+                }
+                if !self.channels.iter().any(|item| item.id == channel) {
+                    return Err("conversation no longer exists".into());
+                }
+                if !self.begin_attachment_import_into(&channel, std::path::Path::new(&path)) {
+                    return Err("attachment import was not accepted".into());
+                }
+            }
+            crate::actions::ChatOperation::ReadMessage { message } => {
+                return self.read_message(doc, &message).map(|value| {
+                    Some(tilo_actions::ActionOutput {
+                        value: Some(value),
+                        resources: Vec::new(),
+                    })
+                });
+            }
+        }
+        Ok(Some(tilo_actions::ActionOutput::default()))
+    }
+
+    /// One message as a value: who wrote it, whether that is an agent, its
+    /// whole text and the agent's record of its work.
+    fn read_message(&self, doc: &AutoCommit, id: &str) -> Result<serde_json::Value, String> {
+        let message = self
+            .channels
+            .iter()
+            .find_map(|channel| {
+                ChatDoc::list_messages(doc, &channel.id)
+                    .into_iter()
+                    .find(|message| message.id == id)
+            })
+            .ok_or("message no longer exists")?;
+        // From the document, not the last projection: a reply this mount
+        // just posted is already the agent's.
+        let agent_name = ChatDoc::agent_authors(doc).remove(&message.author);
+        let agent = agent_name.is_some()
+            || self
+                .users
+                .iter()
+                .any(|user| user.id == message.author && user.is_agent);
+        Ok(serde_json::json!({
+            "id": message.id,
+            "channel": message.channel,
+            "parent": message.parent,
+            "author": message.author,
+            "authorName": agent_name.unwrap_or_else(|| self.display_name(&message.author)),
+            "agent": agent,
+            "mine": self.is_me(&message.author),
+            "ts": message.ts,
+            "edited": message.edited,
+            "text": message.text,
+            "work": message.work,
+        }))
+    }
+}
+
 fn chat_navigation_kind(kind: tilo_actions::OperationKind) -> Result<bool, String> {
     match kind {
         tilo_actions::OperationKind::Document => Ok(false),
@@ -2892,154 +3119,6 @@ impl FloatingSurfaceProvider for ChatApp {
         ) {
             self.call.placement.confirm_app_adoption(self.rect);
         }
-    }
-}
-
-impl ChatApp {
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one exhaustive operation dispatcher preserves the resource contract at a single boundary"
-    )]
-    fn answer_resource_operation(
-        &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(false);
-        };
-        match &operation {
-            crate::actions::ChatOperation::NativeVoice { request, .. } => {
-                if kind != tilo_actions::OperationKind::Effect
-                    || !request.valid()
-                    || request.intent != 0
-                {
-                    return Err("Call controls require a valid local Effect".into());
-                }
-            }
-            crate::actions::ChatOperation::ImportAttachment { .. } => {
-                if !self.external_services {
-                    return Err("attachment import unsupported: no host asset transport".into());
-                }
-                if kind != tilo_actions::OperationKind::Effect {
-                    return Err("attachment import requires an Effect operation".into());
-                }
-            }
-            _ if !chat_navigation_kind(kind)? => return Ok(false),
-            _ => {}
-        }
-        match operation {
-            crate::actions::ChatOperation::NativeVoice { channel, request } => {
-                self.native_voice_command(&channel, request.command)?;
-            }
-            crate::actions::ChatOperation::OpenWorkspace { workspace } => {
-                self.reveal_workspace_resource(workspace)?;
-            }
-            crate::actions::ChatOperation::OpenChannel { workspace, channel } => {
-                if !self
-                    .channels
-                    .iter()
-                    .any(|item| item.id == channel && item.workspace == workspace)
-                {
-                    return Err("conversation no longer exists".into());
-                }
-                self.active_ws = workspace;
-                self.active_channel = channel;
-                self.inbox_open = false;
-                self.thread_open = None;
-                self.revealed_message = None;
-                self.reveal_scroll_pending = false;
-                self.revealed_person = None;
-                self.reset_timeline_to_latest();
-                self.focus = Focus::Main;
-            }
-            crate::actions::ChatOperation::OpenCategory {
-                workspace,
-                category,
-            } => self.reveal_category_resource(workspace, &category)?,
-            crate::actions::ChatOperation::RevealMessage {
-                workspace,
-                channel,
-                message,
-                parent,
-            } => {
-                if !self
-                    .channels
-                    .iter()
-                    .any(|item| item.id == channel && item.workspace == workspace)
-                {
-                    return Err("conversation no longer exists".into());
-                }
-                if !ChatDoc::list_messages(doc, &channel)
-                    .iter()
-                    .any(|item| item.id == message)
-                {
-                    return Err("message no longer exists".into());
-                }
-                self.active_ws = workspace;
-                self.active_channel = channel;
-                self.inbox_open = false;
-                self.thread_open = parent;
-                self.revealed_message = Some(message);
-                self.reveal_scroll_pending = true;
-                self.revealed_person = None;
-                self.timeline_total_height = 0.0;
-                self.timeline_at_end = false;
-                self.focus = if self.thread_open.is_some() {
-                    Focus::Thread
-                } else {
-                    Focus::Main
-                };
-                if self.thread_open.is_some() {
-                    self.right_flap.open();
-                }
-            }
-            crate::actions::ChatOperation::OpenPerson { user } => {
-                if !ChatDoc::list_users(doc).iter().any(|item| item.id == user) {
-                    return Err("person no longer exists".into());
-                }
-                // Prefer the current workspace when it already evidences this
-                // person; otherwise open the first workspace where they wrote.
-                if !self.users.iter().any(|item| item.id == user)
-                    && let Some(channel) = self.channels.iter().find(|channel| {
-                        ChatDoc::list_messages(doc, &channel.id)
-                            .iter()
-                            .any(|message| {
-                                message.author == user
-                                    || message.mentions.iter().any(|mention| mention.user == user)
-                                    || message
-                                        .reactions
-                                        .iter()
-                                        .any(|reaction| reaction.users.iter().any(|id| id == &user))
-                            })
-                    })
-                {
-                    self.active_ws = channel.workspace.clone();
-                    self.active_channel = channel.id.clone();
-                }
-                self.inbox_open = false;
-                self.thread_open = None;
-                self.revealed_message = None;
-                self.revealed_person = Some(user);
-                self.focus = Focus::Main;
-                self.right_flap.open();
-            }
-            crate::actions::ChatOperation::ImportAttachment { channel, path } => {
-                if path.is_empty() {
-                    return Err("attachment path is empty".into());
-                }
-                if !self.channels.iter().any(|item| item.id == channel) {
-                    return Err("conversation no longer exists".into());
-                }
-                if !self.begin_attachment_import_into(&channel, std::path::Path::new(&path)) {
-                    return Err("attachment import was not accepted".into());
-                }
-            }
-        }
-        Ok(true)
     }
 }
 
@@ -3596,8 +3675,14 @@ impl Widget for ChatApp {
 
     fn set_participant_label(&mut self, participant: &tilo_actions::ParticipantId, label: &str) {
         if participant.agent_task().is_some() {
+            let label = label.trim();
             self.participant_labels
-                .insert(participant.as_str().to_owned(), label.trim().to_owned());
+                .insert(participant.as_str().to_owned(), label.to_owned());
+            // A host acting as this agent: it is also the local participant.
+            if participant.as_str() == self.me.id && !label.is_empty() {
+                label.clone_into(&mut self.me.name);
+                self.me.initials = crate::identity::initials_for(label);
+            }
         }
     }
 
@@ -3862,18 +3947,13 @@ impl Widget for ChatApp {
             return Ok(None);
         };
         Ok(self
-            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
-            .then(|| {
-                ui::widget::ResourceOperationStart::Completed(
-                    ui::tilo_actions::ActionOutput::default(),
-                )
-            }))
+            .perform_operation(request.kind, request.type_id, request.payload, doc)?
+            .map(ui::widget::ResourceOperationStart::Completed))
     }
 
     fn name(&self) -> &'static str {
         "ChatApp"
     }
-
     fn get_rect(&self) -> Rect {
         self.rect
     }
