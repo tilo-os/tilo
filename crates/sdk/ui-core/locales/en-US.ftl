@@ -269,3 +269,12 @@ history-action-stale-cursor = The history changed since this page. List it again
 history-action-unknown-entry = That change isn't in this document's history.
 history-action-unknown-session = That preview isn't open.
 history-action-invalid = That History request isn't valid.
+
+command-palette-hint-navigate = Navigate
+command-palette-hint-open = Open
+command-palette-hint-run = Run
+command-palette-hint-close = Close
+command-palette-result-count = { $count ->
+    [one] { $count } result
+   *[other] { $count } results
+}
