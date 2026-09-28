@@ -2998,6 +2998,11 @@ impl ui::search::capability::SearchSource for ImageEditorApp {
 
 impl ui::resources::PublishesResources for ImageEditorApp {
     fn resources(&self, _: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        // The framework root publishes the project and its adjustments. The
+        // widget tree would be a second door.
+        if self.actions.is_hosted() {
+            return Vec::new();
+        }
         vec![crate::actions::resource(&self.project)]
     }
 }
