@@ -87,6 +87,16 @@ class AppResourceActionContractTests(unittest.TestCase):
             violations, apps = contract.audit(root)
             self.assertEqual(violations, [])
             self.assertEqual(apps, 1)
+        with self.subTest(phase='toolkit host with a hand-built multi-operation descriptor passes'):
+            root = self.fixture(
+                "pub fn app_root() {\n"
+                " let mut resource = tilo_actions::Resource::new(\"k:root\", \"k\", \"K\");\n"
+                " resource.actions.push(ActionSpec::operation(\"a\", \"A\", OperationKind::Effect, T, &()).unwrap());\n"
+                " ui::widget::resource_actions::background(root, resource, |_| {});\n"
+                "}\n"
+            )
+            violations, _ = contract.audit(root)
+            self.assertEqual(violations, [])
         with self.subTest(phase='toolkit host without resource descriptor fails'):
             root = self.fixture(
                 "pub fn app_root() {\n"
