@@ -806,9 +806,12 @@ jobs:
         id: buildx
         uses: ./.forgejo/actions/setup-buildx
         with:
-          buildkitd-config-inline: |
-            [worker.oci]
-              max-parallelism = 1
+          max-parallelism: "1"
+          # Build / OS dev keeps its layers and Rust target cache on the slot
+          # between builds of the same trust class (main pushes, or pull
+          # requests). Releases always start from an empty builder.
+          persistent: ${{ github.event_name == 'workflow_call' }}
+          max-used-space: 120GB
 
       # A board build's layers include its private firmware, so its layer
       # cache must never reach the public registry.
@@ -927,10 +930,14 @@ jobs:
           echo "dev-fast=$fast" >> "$GITHUB_OUTPUT"
           # A release and its reproduction clamp every mtime and compress
           # alike. A Build / OS dev image needs neither: fast zstd, no rewrite.
+          # Its persistent builder also keeps the Rust target cache, and
+          # recompiles only the crates whose sources changed.
           if [[ $fast == true ]]; then
             echo 'TILO_OCI_EXPORT=compression=zstd,compression-level=1,force-compression=true' >> "$GITHUB_ENV"
+            echo 'TILO_CARGO_FRESHNESS=content' >> "$GITHUB_ENV"
           else
             echo 'TILO_OCI_EXPORT=rewrite-timestamp=true' >> "$GITHUB_ENV"
+            echo 'TILO_CARGO_FRESHNESS=clean' >> "$GITHUB_ENV"
           fi
           # A branch build that validates without publishing installs and
           # boots the dev image built FROM this image instead, and publishes
@@ -1281,6 +1288,7 @@ jobs:
             TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
             TILO_CARGO_BUILD_JOBS=${{ env.TILO_RUST_LTO == 'off' && env.TILO_DEV_CARGO_JOBS || (env.TILO_PREBUILT_DESKTOP == '1' && '4' || '2') }}
             TILO_RUST_DEBUGINFO=${{ env.TILO_RUST_LTO == 'off' && '0' || 'line-tables-only' }}
+            TILO_CARGO_FRESHNESS=${{ env.TILO_CARGO_FRESHNESS }}
             TILO_RUST_LTO=${{ env.TILO_RUST_LTO }}
             TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=${{ env.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
             TILO_APP_COLLECTION_PUBLISHER=${{ env.TILO_APP_COLLECTION_PUBLISHER }}
@@ -1356,6 +1364,7 @@ jobs:
             TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
             TILO_CARGO_BUILD_JOBS=${{ env.TILO_RUST_LTO == 'off' && env.TILO_DEV_CARGO_JOBS || (env.TILO_PREBUILT_DESKTOP == '1' && '4' || '2') }}
             TILO_RUST_DEBUGINFO=${{ env.TILO_RUST_LTO == 'off' && '0' || 'line-tables-only' }}
+            TILO_CARGO_FRESHNESS=${{ env.TILO_CARGO_FRESHNESS }}
             TILO_RUST_LTO=${{ env.TILO_RUST_LTO }}
             TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=${{ env.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
             TILO_APP_COLLECTION_PUBLISHER=${{ env.TILO_APP_COLLECTION_PUBLISHER }}
@@ -1450,6 +1459,7 @@ jobs:
             TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
             TILO_CARGO_BUILD_JOBS=${{ env.TILO_RUST_LTO == 'off' && env.TILO_DEV_CARGO_JOBS || (env.TILO_PREBUILT_DESKTOP == '1' && '4' || '2') }}
             TILO_RUST_DEBUGINFO=${{ env.TILO_RUST_LTO == 'off' && '0' || 'line-tables-only' }}
+            TILO_CARGO_FRESHNESS=${{ env.TILO_CARGO_FRESHNESS }}
             TILO_RUST_LTO=${{ env.TILO_RUST_LTO }}
             TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=${{ env.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
             TILO_APP_COLLECTION_PUBLISHER=${{ env.TILO_APP_COLLECTION_PUBLISHER }}
@@ -1560,6 +1570,7 @@ jobs:
             TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
             TILO_CARGO_BUILD_JOBS=${{ env.TILO_RUST_LTO == 'off' && env.TILO_DEV_CARGO_JOBS || (env.TILO_PREBUILT_DESKTOP == '1' && '4' || '2') }}
             TILO_RUST_DEBUGINFO=${{ env.TILO_RUST_LTO == 'off' && '0' || 'line-tables-only' }}
+            TILO_CARGO_FRESHNESS=${{ env.TILO_CARGO_FRESHNESS }}
             TILO_RUST_LTO=${{ env.TILO_RUST_LTO }}
             TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=${{ env.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
             TILO_APP_COLLECTION_PUBLISHER=${{ env.TILO_APP_COLLECTION_PUBLISHER }}
@@ -1710,7 +1721,7 @@ jobs:
             --build-arg "RPMS_REF=$RPMS_REF" \
             --build-arg "TILO_BASE_DIGEST=$DEV_BASE_DIGEST" \
             --build-arg "TILO_BASE_CREATED=$created" \
-            --build-arg TILO_CARGO_FRESHNESS=clean \
+            --build-arg TILO_CARGO_FRESHNESS=content \
             --build-arg "TILO_CARGO_BUILD_JOBS=$(nproc)" \
             --build-arg TILO_DEV_RUST_LTO=off \
             --build-arg "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
