@@ -401,6 +401,8 @@ impl CodeEditor {
 }
 
 impl Widget for CodeEditor {
+    crate::provides!(dyn crate::presence::capability::PublishesPresence);
+
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.inner.sync(state, path);
     }
@@ -576,7 +578,9 @@ impl Widget for CodeEditor {
     fn text_review(&self) -> Option<(usize, String)> {
         self.inner.text_review()
     }
+}
 
+impl crate::presence::capability::PublishesPresence for CodeEditor {
     fn presence_key(&self) -> Option<PresenceKey> {
         self.inner.presence_key()
     }

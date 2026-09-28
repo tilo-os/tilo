@@ -156,7 +156,7 @@ use crate::compositor::switch_control::{SwitchAction, SwitchControlRuntime};
 use crate::compositor::state::{ClientState, State};
 use crate::compositor::test_control::{
     self, ControlState, KeyTag, NamedKeyTag, PlannedAction, PointerButtonKind, TouchPhaseKind,
-    parse_command, serialise_response,
+    parse_request, serialise_response,
 };
 use crate::compositor::{BackendKind, parse_backend_from_args};
 use crate::shell::overlay_host::PeerSyncRequest;
@@ -2312,6 +2312,11 @@ struct TestControlCtx {
     input: InputEnvironment,
     /// The latest `watch` answer, for the loop to hand to the backend.
     watch_request: Option<bool>,
+    /// One seat and strip per agent driving this compositor.
+    agents: crate::compositor::agent_seats::AgentSeats,
+    /// While an agent's command runs, the screen region its snapshots show:
+    /// its strip's viewport.
+    snapshot_crop: Option<vello::kurbo::Rect>,
 }
 
 impl TestControlCtx {
@@ -2325,6 +2330,8 @@ impl TestControlCtx {
             direct_touch: DirectTouchOwnership::default(),
             input: InputEnvironment::default(),
             watch_request: None,
+            agents: crate::compositor::agent_seats::AgentSeats::new(),
+            snapshot_crop: None,
         }
     }
 
@@ -3083,7 +3090,7 @@ fn execute_planned_action(
                     )
                 })
             });
-            write_snapshot_png(fb, path, drag);
+            write_snapshot_png(fb, path, drag, ctx.snapshot_crop);
         }
         PlannedAction::InvokeAction { provider, id, args } => {
             return Some(execute_invoke_action(provider, id, args, fb, ctx));
@@ -3174,6 +3181,7 @@ fn write_snapshot_png(
         vello::kurbo::Point,
         crate::compositor::drag_feedback::DragVisual,
     )>,
+    crop: Option<vello::kurbo::Rect>,
 ) {
     let (w, h) = fb.scene_size();
     // Scene dimensions are always non-negative pixel counts; clamped rather
@@ -3261,12 +3269,45 @@ fn write_snapshot_png(
         drop(slot);
         rgba
     };
+    let (w, h, rgba) = match crop {
+        Some(crop) => crop_rgba(&rgba, (w, h), crop),
+        None => (w, h, rgba),
+    };
+    if w == 0 || h == 0 {
+        eprintln!("tilo compositor: test_control snapshot: the crop is empty, nothing to write");
+        return;
+    }
     if let Err(e) = ui::png::write_rgba8(path, w, h, &rgba) {
         eprintln!(
             "tilo compositor: test_control snapshot: write {}: {e}",
             path.display()
         );
     }
+}
+
+/// The part of a `size` RGBA8 frame inside `crop`, clamped to the frame.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "every edge is clamped to [0, frame size] and rounded before the cast"
+)]
+fn crop_rgba(rgba: &[u8], (w, h): (u32, u32), crop: vello::kurbo::Rect) -> (u32, u32, Vec<u8>) {
+    let edge = |value: f64, max: u32| value.round().clamp(0.0, f64::from(max)) as u32;
+    let (x0, x1) = (edge(crop.x0, w), edge(crop.x1, w));
+    let (y0, y1) = (edge(crop.y0, h), edge(crop.y1, h));
+    let (cw, ch) = (x1.saturating_sub(x0), y1.saturating_sub(y0));
+    let stride = (w as usize).saturating_mul(4).max(1);
+    let start = (x0 as usize).saturating_mul(4);
+    let end = start.saturating_add((cw as usize).saturating_mul(4));
+    let out = rgba
+        .chunks_exact(stride)
+        .skip(y0 as usize)
+        .take(ch as usize)
+        .filter_map(|row| row.get(start..end))
+        .flatten()
+        .copied()
+        .collect();
+    (cw, ch, out)
 }
 
 /// Drain pending bytes from `conn`'s buffer: for each complete `\n`-line,
@@ -3366,6 +3407,317 @@ fn pump_pending_test_control_conn(conn: &mut TestControlConn) -> PendingConnecti
     }
 }
 
+/// The agent a command on the agent-control socket acts for when it names
+/// none: a single-agent client keeps working without knowing about seats.
+const DEFAULT_AGENT: &str = "agent";
+
+/// The agent one control command runs for, once it holds the shared seat.
+struct AgentScope {
+    agent: String,
+    peer: crate::network::protocol::PeerId,
+    strip: crate::shell::state::StripId,
+    /// The agent's strip on screen: its coordinates' origin and its
+    /// screenshots' extent.
+    viewport: Rect,
+}
+
+impl AgentScope {
+    fn origin(&self) -> (f64, f64) {
+        (self.viewport.x0, self.viewport.y0)
+    }
+}
+
+fn agent_refusal(code: &str, message: &str) -> test_control::Response {
+    test_control::Response::Err {
+        code: code.to_string(),
+        message: message.to_string(),
+    }
+}
+
+/// Run `actions` on the shared seat as `peer`'s input.
+fn run_as_participant(
+    peer: crate::network::protocol::PeerId,
+    actions: &[PlannedAction],
+    fb: &mut FrameBuilder,
+    ctx: &mut TestControlCtx,
+    state: &mut State,
+) {
+    if actions.is_empty() {
+        return;
+    }
+    state.client_input.set_participant(Some(peer));
+    for action in actions {
+        let _ = execute_planned_action(action, fb, ctx, Some(state));
+    }
+    state.client_input.set_participant(None);
+}
+
+/// Give `agent` the shared seat before its command runs: find or make its
+/// strip, release what the previous agent holds to that agent's window, focus
+/// the strip (keyboard focus follows its active tab, and a launch lands in it)
+/// and press again what `agent` itself holds. `Ok(None)` when the command was
+/// `agent_leave`, which this completes.
+#[allow(
+    clippy::result_large_err,
+    reason = "the refusal is the wire Response the transport writes back as is, like parse_request's"
+)]
+fn seat_agent(
+    agent: &test_control::Agent,
+    command: &test_control::Command,
+    fb: &mut FrameBuilder,
+    ctx: &mut TestControlCtx,
+    state: &mut State,
+) -> Result<Option<AgentScope>, test_control::Response> {
+    if matches!(command, test_control::Command::AgentLeave) {
+        leave_agent(&agent.id, fb, ctx, state);
+        return Ok(None);
+    }
+    let label = agent.label.clone().unwrap_or_else(|| agent.id.clone());
+    let current = ctx.agents.seat(&agent.id).and_then(|seat| seat.strip);
+    let mut strip = None;
+    {
+        let agents = &ctx.agents;
+        let claimed = |id| {
+            agents
+                .strip_owner(id)
+                .is_some_and(|owner| owner != agent.id)
+        };
+        fb.with_chrome(|chrome| strip = chrome.agent_strip(current, claimed, &label));
+    }
+    let strip = strip.ok_or_else(|| agent_refusal("no_workspace", "no active workspace"))?;
+    let peer = {
+        let seat = ctx.agents.seat_mut(&agent.id, &label);
+        seat.strip = Some(strip);
+        seat.peer
+    };
+    fb.relayout();
+    let viewport = agent_viewport(fb, strip)
+        .ok_or_else(|| agent_refusal("strip_hidden", "the agent's strip is not on screen"))?;
+    let handover = ctx.agents.hand_over(
+        &agent.id,
+        &label,
+        ctx.modifiers.state(),
+        (viewport.x0, viewport.y0),
+    );
+    if let Some((previous, releases)) = &handover.release {
+        run_as_participant(*previous, releases, fb, ctx, state);
+    }
+    let mut focused = false;
+    fb.with_chrome(|chrome| focused = chrome.focus_strip(strip));
+    if focused {
+        fb.relayout();
+        fb.reconcile_native_focus(&mut ctx.focus);
+    }
+    client_input::sync_keyboard_focus(state, fb);
+    run_as_participant(peer, &handover.restore, fb, ctx, state);
+    if let Some(modifiers) = handover.modifiers {
+        apply_modifier_mask(ctx, modifiers);
+    }
+    let viewport = agent_viewport(fb, strip).unwrap_or(viewport);
+    Ok(Some(AgentScope {
+        agent: agent.id.clone(),
+        peer,
+        strip,
+        viewport,
+    }))
+}
+
+/// Where an agent working in `strip` sees and acts: the strip's row. A
+/// workspace with no window at all draws its empty-workspace card over the
+/// whole screen instead of rows, and that card is where any agent opens its
+/// first app, so there the viewport is the screen.
+fn agent_viewport(fb: &FrameBuilder, strip: crate::shell::state::StripId) -> Option<Rect> {
+    if let Some(row) = fb.host().strip_row_rect(strip) {
+        return Some(row);
+    }
+    let empty = {
+        let chrome = fb.chrome();
+        let tree = chrome.tree();
+        tree.desktop
+            .active_workspace()
+            .is_some_and(|ws| ws.strips.iter().all(|s| s.window_groups.is_empty()))
+    };
+    let (w, h) = fb.scene_size();
+    (empty && w > 0.0 && h > 0.0).then(|| Rect::new(0.0, 0.0, w, h))
+}
+
+/// Retire `agent`: its window sees the release of everything it still holds,
+/// the shared-seat ledger forgets it, and its strip goes if it holds no window.
+fn leave_agent(agent: &str, fb: &mut FrameBuilder, ctx: &mut TestControlCtx, state: &mut State) {
+    let Some((seat, releases)) = ctx.agents.leave(agent) else {
+        return;
+    };
+    run_as_participant(seat.peer, &releases, fb, ctx, state);
+    state.remote_seats.drop_peer(seat.peer);
+    if let Some(strip) = seat.strip {
+        let mut removed = false;
+        fb.with_chrome(|chrome| removed = chrome.remove_strip_if_empty(strip));
+        if removed {
+            fb.relayout();
+            client_input::sync_keyboard_focus(state, fb);
+        }
+    }
+}
+
+/// Dispatch `command` for the seated agent in `scope`: its coordinates are
+/// relative to its strip, what it lists is what its strip shows, and a pointer
+/// it would move outside the strip is refused.
+fn dispatch_for_agent(
+    command: test_control::Command,
+    scope: &AgentScope,
+    fb: &FrameBuilder,
+    ctx: &mut TestControlCtx,
+    state: &mut State,
+    lock: &LockController,
+) -> (test_control::Response, Vec<PlannedAction>) {
+    use test_control::{Command, Response};
+    let (ox, oy) = scope.origin();
+    let command = match command {
+        Command::AgentSeat => {
+            let v = scope.viewport;
+            return (
+                Response::Answer(serde_json::json!({
+                    "agent": scope.agent,
+                    "strip": scope.strip.0,
+                    "viewport": [v.x0, v.y0, v.width(), v.height()],
+                })),
+                Vec::new(),
+            );
+        }
+        Command::ClickAt { x, y } => Command::ClickAt {
+            x: x + ox,
+            y: y + oy,
+        },
+        Command::PointerMove { x, y } => Command::PointerMove {
+            x: x + ox,
+            y: y + oy,
+        },
+        Command::Drag {
+            x_from,
+            y_from,
+            x_to,
+            y_to,
+            steps,
+        } => Command::Drag {
+            x_from: x_from + ox,
+            y_from: y_from + oy,
+            x_to: x_to + ox,
+            y_to: y_to + oy,
+            steps,
+        },
+        other => other,
+    };
+    let (response, actions) = dispatch_control_command(command, fb, ctx, state, lock);
+    let viewport = scope.viewport;
+    let inside =
+        |x: f64, y: f64| x >= viewport.x0 && x < viewport.x1 && y >= viewport.y0 && y < viewport.y1;
+    if actions
+        .iter()
+        .any(|action| matches!(action, PlannedAction::CursorMoved { x, y } if !inside(*x, *y)))
+    {
+        return (
+            agent_refusal(
+                "outside_viewport",
+                "the pointer would leave the agent's strip",
+            ),
+            Vec::new(),
+        );
+    }
+    let response = match response {
+        Response::Targets(targets) => Response::Targets(
+            targets
+                .into_iter()
+                .filter(|target| {
+                    let [x, y, w, h] = target.rect;
+                    inside(x + w / 2.0, y + h / 2.0)
+                })
+                .map(|mut target| {
+                    target.rect[0] -= ox;
+                    target.rect[1] -= oy;
+                    target
+                })
+                .collect(),
+        ),
+        other => other,
+    };
+    (response, actions)
+}
+
+/// Record where the agent `peer`'s keyboard and pointer landed on its
+/// shared-seat ledger entry, for attribution.
+fn note_agent_focus(state: &mut State, peer: crate::network::protocol::PeerId) {
+    let keyboard = state.client_input.keyboard_focus();
+    let pointer = state.client_input.pointer_focus();
+    let seat = state.remote_seats.seat_mut(peer);
+    match keyboard {
+        Some(surface) => {
+            let _ = seat.enter(surface);
+        }
+        None => {
+            let _ = seat.leave();
+        }
+    }
+    match pointer {
+        Some(surface) => {
+            let _ = seat.pointer_enter(surface);
+        }
+        None => {
+            let _ = seat.pointer_leave();
+        }
+    }
+}
+
+/// Plan one control command against the live frame, as the transport's
+/// person or the agent already seated for it.
+fn dispatch_control_command(
+    command: test_control::Command,
+    frame_builder: &FrameBuilder,
+    ctx: &mut TestControlCtx,
+    state: &mut State,
+    lock: &LockController,
+) -> (test_control::Response, Vec<PlannedAction>) {
+    match command {
+        test_control::Command::Watch { watching } => {
+            ctx.watch_request = Some(watching);
+            (test_control::Response::Ok { frame: 0 }, Vec::new())
+        }
+        test_control::Command::MintHostLaunchActivation {
+            desktop_id,
+            display_name,
+        } => {
+            // Mirror the production host-palette transaction: it records the
+            // destination against every desktop-entry window identity before
+            // minting the optional activation token. Without this, a real X11
+            // client which maps through StartupWMClass but does not bind
+            // xdg-activation can never exercise the production placement path.
+            let placement = crate::compositor::tab_binding::Placement::NewGroup;
+            let identities = crate::shell::host_apps::find(&desktop_id)
+                .map_or_else(|| vec![desktop_id.clone()], |app| app.window_identities);
+            crate::shell::launcher::set_pending_placement_for_identities(
+                &desktop_id,
+                &identities,
+                placement,
+            );
+            let token = state.issue_host_launch_activation(desktop_id, display_name, placement);
+            (
+                test_control::Response::Answer(serde_json::json!({
+                    "activation_token": token,
+                })),
+                Vec::new(),
+            )
+        }
+        cmd => {
+            let state = FrameBuilderControlState {
+                fb: frame_builder,
+                doc: Some((&ctx.doc, &ctx.root_obj)),
+                shares: Some(&state.share_registry),
+                lock: Some(lock),
+            };
+            test_control::dispatch_command(&cmd, &state)
+        }
+    }
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "Connection pumping preserves request order, response framing, and frame-state mutation in one transaction to make test-control behavior deterministic."
@@ -3397,15 +3749,16 @@ fn pump_test_control_conn(
                 return injected_input;
             }
             Ok(Some(())) => {
-                let (resp, actions) = match parse_command(&line) {
-                    Ok(cmd) if conn.agent && !cmd.agent_permitted() => (
+                let mut scope: Option<AgentScope> = None;
+                let (resp, actions) = match parse_request(&line) {
+                    Ok(request) if conn.agent && !request.command.agent_permitted() => (
                         test_control::Response::Err {
                             code: "not_permitted".to_string(),
                             message: AGENT_CONTROL_NOT_PERMITTED.to_string(),
                         },
                         Vec::new(),
                     ),
-                    Ok(cmd) => {
+                    Ok(request) => {
                         // Settle layout before anything reads a rect. The relayout after an action
                         // (below) covers a tree the *socket* changed, not one a **client** changed
                         // — a window map/close/resize rearranges the strip with no command sent,
@@ -3414,59 +3767,69 @@ fn pump_test_control_conn(
                         // the round-trip that asked for it.
                         frame_builder.relayout();
                         frame_builder.reconcile_native_focus(&mut ctx.focus);
-                        match cmd {
-                            test_control::Command::MintHostLaunchActivation {
-                                desktop_id,
-                                display_name,
-                            } => {
-                                // Mirror the production host-palette
-                                // transaction: it records the destination
-                                // against every desktop-entry window
-                                // identity before minting the optional
-                                // activation token. Without this, a real X11
-                                // client which maps through StartupWMClass but
-                                // does not bind xdg-activation can never
-                                // exercise the production placement path.
-                                let placement = crate::compositor::tab_binding::Placement::NewGroup;
-                                let identities = crate::shell::host_apps::find(&desktop_id)
-                                    .map_or_else(
-                                        || vec![desktop_id.clone()],
-                                        |app| app.window_identities,
-                                    );
-                                crate::shell::launcher::set_pending_placement_for_identities(
-                                    &desktop_id,
-                                    &identities,
-                                    placement,
-                                );
-                                let token = state.issue_host_launch_activation(
-                                    desktop_id,
-                                    display_name,
-                                    placement,
-                                );
+                        // Everything the agent socket carries acts for some agent.
+                        let agent = request.agent.or_else(|| {
+                            conn.agent.then(|| test_control::Agent {
+                                id: DEFAULT_AGENT.to_string(),
+                                label: None,
+                            })
+                        });
+                        match agent {
+                            Some(_)
+                                if session.is_locked()
+                                    && matches!(
+                                        request.command,
+                                        test_control::Command::AgentSeat
+                                            | test_control::Command::AgentLeave
+                                    ) =>
+                            {
                                 (
-                                    test_control::Response::Answer(serde_json::json!({
-                                        "activation_token": token,
-                                    })),
+                                    agent_refusal("session_locked", "the session is locked"),
                                     Vec::new(),
                                 )
                             }
-                            test_control::Command::Watch { watching } => {
-                                ctx.watch_request = Some(watching);
-                                (test_control::Response::Ok { frame: 0 }, Vec::new())
+                            // Locked, input belongs to the lock screen, whoever sends it.
+                            Some(agent) if !session.is_locked() => {
+                                match seat_agent(
+                                    &agent,
+                                    &request.command,
+                                    frame_builder,
+                                    ctx,
+                                    state,
+                                ) {
+                                    Ok(Some(seated)) => {
+                                        let reply = dispatch_for_agent(
+                                            request.command,
+                                            &seated,
+                                            frame_builder,
+                                            ctx,
+                                            state,
+                                            lock,
+                                        );
+                                        scope = Some(seated);
+                                        reply
+                                    }
+                                    Ok(None) => {
+                                        (test_control::Response::Ok { frame: 0 }, Vec::new())
+                                    }
+                                    Err(refusal) => (refusal, Vec::new()),
+                                }
                             }
-                            cmd => {
-                                let state = FrameBuilderControlState {
-                                    fb: frame_builder,
-                                    doc: Some((&ctx.doc, &ctx.root_obj)),
-                                    shares: Some(&state.share_registry),
-                                    lock: Some(lock),
-                                };
-                                test_control::dispatch_command(&cmd, &state)
-                            }
+                            _ => dispatch_control_command(
+                                request.command,
+                                frame_builder,
+                                ctx,
+                                state,
+                                lock,
+                            ),
                         }
                     }
                     Err(err_resp) => (err_resp, Vec::new()),
                 };
+                if let Some(scope) = &scope {
+                    state.client_input.set_participant(Some(scope.peer));
+                    ctx.snapshot_crop = Some(scope.viewport);
+                }
                 // A planned action that could not run replaces this command's answer.
                 // Actions execute before the reply is written; first failure wins, the rest still run.
                 let mut failed: Option<InvokeFailure> = None;
@@ -3492,6 +3855,14 @@ fn pump_test_control_conn(
                             }
                         }
                     }
+                    if let Some(scope) = &scope {
+                        ctx.agents.record(&scope.agent, action, scope.origin());
+                    }
+                }
+                if let Some(scope) = &scope {
+                    state.client_input.set_participant(None);
+                    ctx.snapshot_crop = None;
+                    note_agent_focus(state, scope.peer);
                 }
                 // Re-run layout so the next command/paint sees rects post-mutation — a
                 // chrome state change can alter structural layout, leaving stale rects otherwise.
@@ -9697,6 +10068,19 @@ pub fn run() {
                 metrics.note_input(Instant::now());
                 injected_redraw_pending = true;
             }
+            // An agent at work is the person's activity on a hosted machine:
+            // without this it locks under its agents after the idle timeout.
+            if injected && conn.agent {
+                for t in session.note_activity(Instant::now()) {
+                    apply_session_transition(
+                        t,
+                        backend.as_mut(),
+                        present_pipe.as_ref(),
+                        local_session_lifecycle.as_ref(),
+                        &mut screen_dimmer,
+                    );
+                }
+            }
         }
         if let Some(watching) = test_control_ctx.watch_request.take()
             && backend.set_watched(watching)
@@ -13778,3 +14162,15 @@ mod external_floating_security_tests {
     reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
 )]
 use crate::shell::state::WorkspaceExt as _;
+
+#[cfg(test)]
+#[allow(
+    clippy::float_cmp,
+    reason = "viewport geometry fixtures compare exactly the values the compositor laid out"
+)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the fixture owns the compositor's lock and tree guards for the whole scenario, as the socket tests' do"
+)]
+#[path = "native_agent_seats_tests.rs"]
+mod agent_seats_tests;

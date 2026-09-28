@@ -108,6 +108,10 @@ pub struct Component {
     /// Absolute install paths (`to`) of the component's files; a trailing
     /// `/` marks a whole directory tree. What a CI layer extracts.
     pub paths: Vec<String>,
+    /// `layer = "direct"`: the image build writes these files itself (the
+    /// signed runtime bundle, the thin-app store), so no cargo build of
+    /// `packages` alone produces them.
+    pub image_assembled: bool,
 }
 
 /// Is `profile` a cargo profile name tilo-vm will pass on?
@@ -307,6 +311,7 @@ fn component(name: &str, entry: &toml::Table) -> Component {
         dev_features: strings(entry, "dev_features"),
         profile: text("profile").unwrap_or_else(|| "release".into()),
         paths: file_paths(entry),
+        image_assembled: text("layer").as_deref() == Some("direct"),
     }
 }
 
@@ -370,6 +375,7 @@ mod tests {
                 name = "apps+runtime"
                 scope = "session"
                 profile = "thin-app"
+                layer = "direct"
                 [[component]]
                 name = "kernel"
                 kind = "boot"
@@ -397,6 +403,8 @@ mod tests {
             assert_eq!(m.get("browser").unwrap().features, ["browser/wpe"]);
             assert_eq!(fs.paths, ["/usr/bin/fs"]);
             assert_eq!(m.get("apps+runtime").unwrap().profile, "thin-app");
+            assert!(m.get("apps+runtime").unwrap().image_assembled);
+            assert!(!fs.image_assembled);
             let kernel = m.get("kernel").unwrap();
             assert!(kernel.boot);
             assert_eq!(kernel.scenario.as_deref(), Some("os/dev/vm.sh"));

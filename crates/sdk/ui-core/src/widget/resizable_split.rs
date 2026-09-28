@@ -217,6 +217,11 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
 }
 
 impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
+    crate::provides!(
+        dyn crate::permissions::capability::PermissionGated,
+        dyn crate::presence::capability::PublishesPresence
+    );
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -464,14 +469,6 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
         self.divider_drag.is_some()
     }
 
-    fn presence_key(&self) -> Option<PresenceKey> {
-        None
-    }
-
-    fn permission_scope(&self) -> Option<PermissionScope> {
-        None
-    }
-
     fn draw_with_presence(
         &mut self,
         scene: &mut Scene,
@@ -535,6 +532,22 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
             None,
             &paint_rect,
         );
+    }
+}
+
+impl<L: Widget + 'static, R: Widget + 'static> crate::presence::capability::PublishesPresence
+    for ResizableSplit<L, R>
+{
+    fn presence_key(&self) -> Option<PresenceKey> {
+        None
+    }
+}
+
+impl<L: Widget + 'static, R: Widget + 'static> crate::permissions::capability::PermissionGated
+    for ResizableSplit<L, R>
+{
+    fn permission_scope(&self) -> Option<PermissionScope> {
+        None
     }
 }
 

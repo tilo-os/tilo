@@ -824,3 +824,61 @@ fn a_records_genesis_can_be_left_out_of_a_feed_of_what_people_did() {
     );
     assert_eq!(genesis_actor(&AutoCommit::new()), None);
 }
+
+#[test]
+fn a_package_primary_documents_genesis_is_left_out_of_a_feed_too() {
+    use crate::record::{RecordCheckout, RecordKind, RecordOwners, genesis_actor};
+    let cache = crate::portable_storage::PortableStorage::new("profile", "device").unwrap();
+    let store = RecordOwners::portable(cache).open("test", "room").unwrap();
+    let checkout = RecordCheckout::package_primary(RecordKind::new("chat"));
+    store
+        .reserve_record(&checkout)
+        .unwrap()
+        .initialize(|doc| {
+            doc.put(ROOT, "categories", "general")
+                .map_err(|error| error.to_string())?;
+            Ok(())
+        })
+        .unwrap();
+    let mut doc = store.read(&checkout.id, AutoCommit::clone).unwrap();
+    assert_eq!(
+        genesis_actor(&doc),
+        None,
+        "a primary document records no identity"
+    );
+    assert_eq!(
+        HistorySource::new().entries(&mut doc).len(),
+        1,
+        "its own history keeps the version it was created as"
+    );
+    assert!(
+        HistorySource::new()
+            .without_record_genesis()
+            .entries(&mut doc)
+            .is_empty(),
+        "nobody made the root change at time zero"
+    );
+
+    doc.put(ROOT, "categories", "general, voice").unwrap();
+    doc.commit();
+    assert_eq!(
+        HistorySource::new()
+            .without_record_genesis()
+            .entries(&mut doc)
+            .len(),
+        1,
+        "an edit without a time is still someone's"
+    );
+
+    let mut first = AutoCommit::new();
+    first.put(ROOT, "text", "typed").unwrap();
+    first.commit();
+    assert_eq!(
+        HistorySource::new()
+            .without_record_genesis()
+            .entries(&mut first)
+            .len(),
+        1,
+        "a document's first edit is not a genesis unless its store made it"
+    );
+}

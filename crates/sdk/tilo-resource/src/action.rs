@@ -188,6 +188,12 @@ pub trait Operation: Serialize + DeserializeOwned + Clone + std::fmt::Debug + 's
     fn risk(&self) -> RiskLevel {
         RiskLevel::Low
     }
+
+    /// Whether the operation changes the record's content or is housekeeping
+    /// about it. `#[resource]` generates it from `#[action(housekeeping)]`.
+    fn change_kind(&self) -> tilo_actions::ChangeKind {
+        tilo_actions::ChangeKind::Content
+    }
 }
 
 /// A record operation with the origin's time attached: the replayable action
@@ -220,6 +226,10 @@ impl<O: Operation> tilo_actions::Action for Stamped<O> {
 
     fn risk(&self) -> RiskLevel {
         self.operation.risk()
+    }
+
+    fn change_kind(&self) -> tilo_actions::ChangeKind {
+        self.operation.change_kind()
     }
 }
 

@@ -6615,7 +6615,8 @@ impl Widget for CalendarApp {
     ui::provides!(
         dyn ui::undo::CommittedActions,
         dyn ui::widget::controls::ActionControls,
-        dyn ui::resources::PublishesResources
+        dyn ui::resources::PublishesResources,
+        dyn ui::search::capability::SearchSource
     );
 
     fn start_operation(
@@ -6674,12 +6675,6 @@ impl Widget for CalendarApp {
         } else {
             None
         }
-    }
-
-    /// Fold the calendar's events and tasks into the unified Ctrl+K palette.
-    /// Every hit addresses the matching resource's exported `open` view action.
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(self.search_provider.clone())]
     }
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
@@ -7350,6 +7345,14 @@ impl Widget for CalendarApp {
         _permissions: &PermissionContext,
     ) {
         self.draw(scene, transform, text_renderer, theme, presence);
+    }
+}
+
+impl ui::search::capability::SearchSource for CalendarApp {
+    /// Fold the calendar's events and tasks into the unified Ctrl+K palette.
+    /// Every hit addresses the matching resource's exported `open` view action.
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(self.search_provider.clone())]
     }
 }
 

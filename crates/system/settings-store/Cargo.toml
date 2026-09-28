@@ -10,6 +10,7 @@ name = "settings_store"
 path = "src/lib.rs"
 
 [dependencies]
+advisory-lock = { path = "../advisory-lock" }
 tilo-clock = { path = "../tilo-clock" }
 serde.workspace = true
 serde_json.workspace = true

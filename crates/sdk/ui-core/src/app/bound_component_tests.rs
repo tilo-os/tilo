@@ -216,22 +216,9 @@ impl Widget for Probe {
     crate::provides!(
         dyn crate::undo::CommittedActions,
         dyn crate::widget::controls::ActionControls,
-        dyn crate::resources::PublishesResources
+        dyn crate::resources::PublishesResources,
+        dyn crate::search::capability::SearchSource
     );
-
-    fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
-        if let Some(counts) = PAGED_SEARCH_COUNTS.with_borrow(Clone::clone) {
-            return vec![Box::new(PagedProbe::new(self.strict, counts))];
-        }
-        vec![Box::new(LazyProbe {
-            strict: self.strict,
-        })]
-    }
-    fn activate_search_result(&mut self, id: &str, doc: &mut AppModel, path: &ModelPath) {
-        let (doc, _) = crate::doc::document(doc, path);
-        assert_eq!(id, "opaque");
-        doc.put(ROOT, "navigation", true).unwrap();
-    }
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &["bound.follow-up", "bound.view"]
@@ -414,6 +401,22 @@ impl Widget for Probe {
         doc.put(ROOT, "action", true).unwrap();
         Self::capture("action");
         true
+    }
+}
+
+impl crate::search::capability::SearchSource for Probe {
+    fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
+        if let Some(counts) = PAGED_SEARCH_COUNTS.with_borrow(Clone::clone) {
+            return vec![Box::new(PagedProbe::new(self.strict, counts))];
+        }
+        vec![Box::new(LazyProbe {
+            strict: self.strict,
+        })]
+    }
+    fn activate_search_result(&mut self, id: &str, doc: &mut AppModel, path: &ModelPath) {
+        let (doc, _) = crate::doc::document(doc, path);
+        assert_eq!(id, "opaque");
+        doc.put(ROOT, "navigation", true).unwrap();
     }
 }
 

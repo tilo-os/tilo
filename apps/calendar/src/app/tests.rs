@@ -359,7 +359,7 @@ fn resource_provider_and_search_catalog_stay_bounded_and_refresh_on_revision() {
         action.apply(&mut doc).expect("valid patch applies");
         app.sync(&mut doc, &ROOT);
         assert!(
-            app.search_providers()[0]
+            ui::search::capability::search_providers(&app)[0]
                 .search("catalogue needle")
                 .iter()
                 .any(|hit| hit.action_address() == Some(crate::actions::open_event_address(id))),
@@ -374,7 +374,7 @@ fn resource_provider_and_search_catalog_stay_bounded_and_refresh_on_revision() {
         .expect("valid delete applies");
         app.sync(&mut doc, &ROOT);
         assert!(
-            app.search_providers()[0]
+            ui::search::capability::search_providers(&app)[0]
                 .search("catalogue needle")
                 .is_empty(),
             "the next revision withdraws the deleted record"
@@ -406,7 +406,7 @@ fn resource_provider_and_search_catalog_stay_bounded_and_refresh_on_revision() {
         app.sync(&mut doc, &ROOT);
         assert_eq!(app.note_projection_refreshes, initial_projections + 1);
         assert!(
-            app.search_providers()[0]
+            ui::search::capability::search_providers(&app)[0]
                 .search("hydration note needle")
                 .iter()
                 .any(|hit| hit.action_address() == Some(crate::actions::open_event_address(event)))
@@ -438,7 +438,7 @@ fn resource_provider_and_search_catalog_stay_bounded_and_refresh_on_revision() {
         );
         assert_eq!(app.search_catalog_refreshes, catalog_refreshes + 1);
         assert!(
-            app.search_providers()[0]
+            ui::search::capability::search_providers(&app)[0]
                 .search("reload catalogue needle")
                 .iter()
                 .any(|hit| {
@@ -461,7 +461,7 @@ fn resource_provider_and_search_catalog_stay_bounded_and_refresh_on_revision() {
             .into_iter()
             .find(|calendar| calendar.id != "local")
             .expect("demo has a remote calendar");
-        let hit = app.search_providers()[0]
+        let hit = ui::search::capability::search_providers(&app)[0]
             .search(&calendar.label)
             .into_iter()
             .find(|hit| {

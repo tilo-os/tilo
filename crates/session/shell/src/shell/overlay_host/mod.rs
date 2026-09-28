@@ -7694,6 +7694,19 @@ impl ShellOverlayHost {
         out
     }
 
+    /// Where `strip` is drawn on screen, as laid out last. `None` while the
+    /// strip has no row yet or its row is collapsed (another strip's window
+    /// is fullscreen).
+    pub fn strip_row_rect(&self, strip: StripId) -> Option<vello::kurbo::Rect> {
+        let &ptr = self.group_row_ptrs.get(&strip)?;
+        // SAFETY: same contract as every other `group_row_ptrs` accessor —
+        // the pointer is captured from a `Box<GroupRow>` owned through the
+        // content tree, and the host outlives it.
+        let row: &GroupRow = unsafe { &*ptr };
+        let rect = ui::widget::Widget::get_rect(row);
+        (rect.area() > 0.0).then_some(rect)
+    }
+
     /// The rows on offer with their subtitles — [`Self::palette_snapshot`]
     /// carries labels only, not the badge/source-marker text a harness
     /// needs to tell "already have this" from "fetches this" apart.

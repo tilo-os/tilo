@@ -10,9 +10,8 @@ CONSUMERS = {
     "build-builder-image.yml": 2,
     "build-image.yml": 2,
     "build-kernel.yml": 3,
-    "snapshot-kernel-buildroot.yml": 3,
+    "build-buildroots.yml": 3,
     "snapshot-rpms.yml": 1,
-    "snapshot-wpe-buildroot.yml": 3,
     "release-relay.yml": 2,
 }
 
@@ -45,9 +44,8 @@ class CosignInstallActionTests(unittest.TestCase):
             for name in (
                 "build-builder-image.yml",
                 "build-kernel.yml",
-                "snapshot-kernel-buildroot.yml",
+                "build-buildroots.yml",
                 "snapshot-rpms.yml",
-                "snapshot-wpe-buildroot.yml",
                 "release-relay.yml",
             ):
                 with self.subTest(workflow=name):

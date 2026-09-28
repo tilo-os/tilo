@@ -245,7 +245,14 @@ struct Inner {
     counters: Counters,
     /// HTTPS fallback carrier sessions ([`fallback`]).
     fallback: fallback::Registry,
+    /// See [`LiveRelay::set_presence_tap`].
+    presence_tap: std::sync::OnceLock<PresenceTap>,
 }
+
+/// Sees every presence frame a client session publishes and the relay
+/// forwards: room, publisher (both 64 hex) and the frame. Host-injected
+/// frames never reach it, so a host bridging frames both ways cannot loop.
+pub type PresenceTap = Arc<dyn Fn(&str, &str, &[u8]) + Send + Sync>;
 
 /// The live relay. Cheap to clone; all clones share one egress origin.
 #[derive(Clone)]
@@ -329,7 +336,13 @@ impl LiveRelay {
             next_session: AtomicU64::new(1),
             counters: Counters::default(),
             fallback: fallback::Registry::default(),
+            presence_tap: std::sync::OnceLock::new(),
         }))
+    }
+
+    /// Install the one [`PresenceTap`]; later calls are ignored.
+    pub fn set_presence_tap(&self, tap: PresenceTap) {
+        let _ = self.0.presence_tap.set(tap);
     }
 
     pub fn counters(&self) -> LiveCounters {
@@ -1045,7 +1058,13 @@ impl Inner {
 
     /// Validate and forward one presence frame. Latest-value: a sequence at or
     /// below the last forwarded one is stale and dropped.
-    fn forward_presence(&self, slot: &Slot, session: u64, payload: bytes::Bytes) -> bool {
+    fn forward_presence(
+        &self,
+        slot: &Slot,
+        session: u64,
+        path: &str,
+        payload: bytes::Bytes,
+    ) -> bool {
         let valid = payload.len() <= MAX_DATAGRAM_FRAME_BYTES;
         let seq = valid
             .then(|| self.authority.presence_seq(&payload))
@@ -1063,14 +1082,24 @@ impl Inner {
             && state.presence_bucket.take(now);
         if forward {
             state.last_seq = seq;
+            let tapped = self.presence_tap.get().map(|tap| (tap, payload.clone()));
             if let Some(track) = state.presence.as_mut()
                 && track
                     .append_datagram(moq_net::Timestamp::ZERO, payload)
                     .is_ok()
             {
+                drop(state);
                 self.counters
                     .presence_forwarded
                     .fetch_add(1, Ordering::Relaxed);
+                if let Some((tap, payload)) = tapped
+                    && let Some((room, publisher)) = path
+                        .strip_prefix(NAMESPACE_ROOT)
+                        .and_then(|rest| rest.strip_prefix('/'))
+                        .and_then(|rest| rest.split_once('/'))
+                {
+                    tap(room, publisher, &payload);
+                }
                 return true;
             }
         }
@@ -1213,7 +1242,7 @@ async fn presence_pump(
         }
         let Some(payload) = latest else { continue };
         let Some(slot) = slot.upgrade() else { return };
-        if !owner.forward_presence(&slot, session, payload) {
+        if !owner.forward_presence(&slot, session, &path, payload) {
             return;
         }
     }

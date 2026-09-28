@@ -426,7 +426,7 @@ pub fn dispatch_gated_event<W: crate::widget::Widget + ?Sized>(
     widget: &W,
     dispatch: impl FnOnce(),
 ) -> bool {
-    if let Some(scope) = widget.permission_scope()
+    if let Some(scope) = crate::permissions::capability::permission_scope(widget)
         && !ctx.check(&scope)
     {
         return false;

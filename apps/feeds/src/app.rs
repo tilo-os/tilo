@@ -4492,7 +4492,8 @@ impl Widget for FeedsApp {
     ui::provides!(
         dyn ui::undo::CommittedActions,
         dyn ui::undo::LocalUndo,
-        dyn ui::resources::PublishesResources
+        dyn ui::resources::PublishesResources,
+        dyn ui::search::capability::SearchSource
     );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
@@ -4610,17 +4611,6 @@ impl Widget for FeedsApp {
         } else {
             None
         }
-    }
-
-    /// Fold the reader's articles and subscriptions into the unified Ctrl+K
-    /// palette: a snapshot
-    /// [`FeedsSearchProvider`](crate::search_provider::FeedsSearchProvider)
-    /// makes both findable there without touching the network, alongside the
-    /// actions the app exports.
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(crate::search_provider::FeedsSearchProvider::new(
-            &self.store,
-        ))]
     }
 
     #[allow(
@@ -5386,6 +5376,19 @@ impl Widget for FeedsApp {
                 .toast
                 .as_ref()
                 .is_some_and(|(_, since)| since.elapsed().as_secs_f32() < 4.0)
+    }
+}
+
+impl ui::search::capability::SearchSource for FeedsApp {
+    /// Fold the reader's articles and subscriptions into the unified Ctrl+K
+    /// palette: a snapshot
+    /// [`FeedsSearchProvider`](crate::search_provider::FeedsSearchProvider)
+    /// makes both findable there without touching the network, alongside the
+    /// actions the app exports.
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(crate::search_provider::FeedsSearchProvider::new(
+            &self.store,
+        ))]
     }
 }
 

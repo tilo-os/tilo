@@ -97,7 +97,7 @@ class RunTests(unittest.TestCase):
     def run_suites(self, files: dict[str, str], names: list[str]) -> tuple[int, str]:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            listed = [name for name in files if name.endswith((".py", ".sh"))]
+            listed = [name for name in files if name.endswith((".py", ".sh", ".test.mjs"))]
             (root / "tools/ci").mkdir(parents=True)
             (root / suites.MANIFEST).write_text(
                 '[[group]]\nname = "g"\ninputs = ["x/"]\nsuites = [%s]\n'
@@ -128,6 +128,15 @@ class RunTests(unittest.TestCase):
                                  '&& test "$XDG_RUNTIME_DIR" = "$TILO_TEST_ENVIRONMENT/runtime"\n'},
                 ["x/session.sh"])
             self.assertEqual(code, 0, output)
+        with self.subTest(phase='JavaScript suites run under node --test'):
+            code, output = self.run_suites(
+                {"x/ok.test.mjs": "import test from 'node:test';\ntest('passes', () => {});\n",
+                 "x/bad.test.mjs": "import test from 'node:test';\n"
+                                   "test('fails', () => { throw new Error('no'); });\n"},
+                ["x/ok.test.mjs", "x/bad.test.mjs"])
+            self.assertEqual(code, 1, output)
+            self.assertIn("x/ok.test.mjs: ok", output)
+            self.assertIn("x/bad.test.mjs: FAILED", output)
         with self.subTest(phase='undeclared or empty selection fails'):
             self.assertEqual(self.run_suites({"x/ok.sh": "true\n"}, ["x/other.sh"])[0], 2)
             self.assertEqual(self.run_suites({"x/ok.sh": "true\n"}, [])[0], 2)
@@ -165,7 +174,7 @@ class AuditTests(unittest.TestCase):
         with self.subTest(phase='unclassified test shaped files are rejected'):
             for path in ("os/tests/new.sh", "os/tests/new.py", "tools/tests/new.sh",
                          "dist/x/test-contract.sh", "apps/x/test_y.py", "scripts/z_test.py",
-                         "os/other_invariants.sh"):
+                         "os/other_invariants.sh", "crates/x/web/y.test.mjs"):
                 with self.subTest(path=path):
                     problems = self.audit({path: "true\n"})
                     self.assertEqual(len(problems), 1, problems)

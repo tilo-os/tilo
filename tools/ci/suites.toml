@@ -20,7 +20,8 @@
 # is an exact file. Pushes to main run every group, so an input list that
 # misses a real dependency is caught at the merge that broke the suite.
 #
-# Each suite runs as `python3 PATH` or `bash PATH` inside
+# Each suite runs as `python3 PATH`, `bash PATH` or, for a JavaScript
+# `*.test.mjs` suite, `node --test PATH` inside
 # tools/with-test-environment.sh (no desktop session), from the repository root in
 # the ci-fast image, as root, without network. A Python suite that defines
 # unittest cases must call unittest.main() so direct execution runs them.
@@ -65,6 +66,7 @@ suites = [
   "os/tests/installer_offline_target_test.py",
   "os/tests/local_boot_esp.sh",
   "os/tests/test_no_ui_toolkits.py",
+  "os/tests/test_boot_unit_ordering.py",
   "os/tests/podman_build_flags.sh",
   "os/tests/portal_config_validity.sh",
   "os/tests/sealed_extensions.sh",
@@ -72,16 +74,9 @@ suites = [
   "os/tests/test-installer-cycle-runtime.py",
   "os/tests/test_adopt_development_wpe.py",
   "os/tests/test_allocate_windows_direct_final_install.py",
-  "os/tests/test_assembly_registry_cache.py",
   "os/tests/test_bootc_registry_wrapper.py",
   "os/tests/test_broker_signing_runner.py",
   "os/tests/test_cache_reconstruction_approval.py",
-  "os/tests/test_cache_source_compatibility.py",
-  "os/tests/test_checkpoint_export.py",
-  "os/tests/test_compile_host_crypto.py",
-  "os/tests/test_compile_retention.py",
-  "os/tests/test_compile_tools_cache.py",
-  "os/tests/test_compile_tools_source.py",
   "os/tests/test_container_signature_policy.py",
   "os/tests/test_complete_initramfs_rebind.py",
   "os/tests/test_copy_windows_direct_final_install.py",
@@ -89,7 +84,6 @@ suites = [
   "os/tests/dev_base_inputs_tree.sh",
   "os/tests/test_dev_builder_staging.py",
   "os/tests/test_development_boot.py",
-  "os/tests/test_development_compile.py",
   "os/tests/test_development_composefs.py",
   "os/tests/test_development_loader.py",
   "os/tests/test_development_prediction.py",
@@ -100,18 +94,15 @@ suites = [
   "os/tests/test_development_wine_repository.py",
   "os/tests/test_fetch_windows_guest_assets.py",
   "os/tests/test_finalization_driver.py",
-  "os/tests/test_finalization_operator.py",
   "os/tests/test_finalization_staging.py",
   "os/tests/test_guest_loader_inspection.py",
   "os/tests/test_hardware_firmware_artifact.py",
-  "os/tests/test_hydrate_assembly_history.py",
   "os/tests/test_identity_public_key.py",
   "os/tests/test_initramfs_module_policy.py",
   "os/tests/test_initramfs_trust.py",
   "os/tests/test_installed_development_disk.py",
   "os/tests/test_loop_partition_nodes.py",
   "os/tests/test_installer_bootc_helper.py",
-  "os/tests/test_installer_bootc_helper_workflow.py",
   "os/tests/test_installer_cmdline_projection.py",
   "os/tests/test_installer_offline_target.py",
   "os/tests/test_installer_overlay.py",
@@ -123,8 +114,6 @@ suites = [
   "os/tests/test_native_reconstruction_approval.py",
   "os/tests/test_native_resume.py",
   "os/tests/test_native_resume_admission.py",
-  "os/tests/test_native_resume_launcher.py",
-  "os/tests/test_native_source_compatibility.py",
   "os/tests/test_oci_image_diff.py",
   "os/tests/test_pack_apps_cleanup.py",
   "os/tests/test_prepare_wpe_stage.py",
@@ -132,14 +121,11 @@ suites = [
   "os/tests/test_read_fat32_efi.py",
   "os/tests/test_private_disk_image.py",
   "os/tests/test_profile_installer_qcow2.py",
-  "os/tests/test_produce_wpe_stage.py",
   "os/tests/test_raw_rootfs_receipt.py",
   "os/tests/test_rebind_development_rootfs.py",
   "os/tests/test_rebind_development_trust.py",
-  "os/tests/test_reconstructed_native_consumer.py",
   "os/tests/test_reconstructed_partials.py",
   "os/tests/test_reseal_image.py",
-  "os/tests/test_restore_thin_cache.py",
   "os/tests/test_retain_development_rootfs.py",
   "os/tests/test_rootfs_layer_audit.py",
   "os/tests/test_secureboot_evidence.py",
@@ -172,12 +158,9 @@ suites = [
   "os/containers/tilo-relay/test-contract.sh",
   "os/tests/rpm_snapshot_invariants.sh",
   "os/tests/test_rpm_snapshot_fingerprint.py",
-  "os/tests/test_finalization_checkpoint_fetch.py",
-  "os/tests/test_finalization_worker.py",
   "os/tests/test_kernel_build_environment.py",
   "os/tests/test_open_snapshot_pr.py",
   "os/tests/wpe_runtime_check.sh",
-  "os/tests/test_raw_layer_epoch.py",
 ]
 
 [[group]]
@@ -359,6 +342,74 @@ inputs = ["scripts/ux-bench/"]
 suites = [
   "scripts/ux-bench/test_suite.py",
   "scripts/ux-bench/usability_test.py",
+]
+
+[[group]]
+name = "browser-runtime-web"
+# The browser runtime's JavaScript: the web host, its loaders and bridges,
+# and the scripts that assemble the web core. app-installer reads the Rust
+# app catalogue.
+inputs = ["crates/browser/tilo-browser-runtime/"]
+suites = [
+  "crates/browser/tilo-browser-runtime/scripts/web-runtime/abi.test.mjs",
+  "crates/browser/tilo-browser-runtime/scripts/web-runtime/bundle-glue.test.mjs",
+  "crates/browser/tilo-browser-runtime/scripts/web-runtime/external-workspace.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/action-client.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/action-palette-bridge.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/action-ticket.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/agent-reads-client.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/app-directory.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/app-installer.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/asset-recovery.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/automerge-check.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/clipboard.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/cloud-identity-custody.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/cloud-machine-linking.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/cloud-peer-session.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/cloud-peer-source.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/core-loader.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/desktop-command-bridge.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/desktop-launch-focus.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/desktop-navigation.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/desktop-speculation.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/dylink.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/font-loader.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/host-input.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/host.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/identity-custody.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/identity-storage.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/invited-identity-custody.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/invited-peer-session.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/invited-peer-source.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/legacy-windows.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/live-overlay.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/live-presence.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/media-audio-codecs.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/media-audio.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/media-buffers.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/media-session.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/media-voice-profile.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/open-file.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/peer-delivery.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/peer-media.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/peer-persistence.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/peer-recovery.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/storage-revision.test.mjs",
+]
+
+[[group]]
+name = "web-registry-client"
+inputs = ["crates/browser/web-registry-client/"]
+suites = [
+  "crates/browser/web-registry-client/registry-client.test.mjs",
+]
+
+[[group]]
+name = "browser-benchmark-scripts"
+inputs = ["scripts/browser/"]
+suites = [
+  "scripts/browser/benchmark-pages.test.mjs",
+  "scripts/browser/scroll-response.test.mjs",
 ]
 
 # Cargo packages whose code reads repository files outside their directory.
@@ -1088,3 +1139,55 @@ reason = "manual smoke test across two hosts on a LAN"
 [[unrequired]]
 suite = "tools/tests/test_vendor_history.sh"
 reason = "needs the vendor-upstream refs fetched from the network"
+
+[[unrequired]]
+suite = "crates/browser/tilo-browser-runtime/web/action-storage.browser.test.mjs"
+reason = "drives a real browser through Playwright, which the ci-fast image does not carry"
+
+[[unrequired]]
+suite = "crates/browser/tilo-browser-runtime/web/live-client.test.mjs"
+reason = "imports media-moq-library.mjs, which scripts/moq-browser bundles from npm packages fetched over the network"
+
+[[unrequired]]
+suite = "crates/browser/tilo-browser-runtime/web/live-fake-relay.test.mjs"
+reason = "imports media-moq-library.mjs, which scripts/moq-browser bundles from npm packages fetched over the network"
+
+[[unrequired]]
+suite = "crates/browser/tilo-browser-runtime/web/live-fallback.test.mjs"
+reason = "imports media-moq-library.mjs, which scripts/moq-browser bundles from npm packages fetched over the network"
+
+[[unrequired]]
+suite = "crates/browser/tilo-browser-runtime/web/live-transport.test.mjs"
+reason = "imports media-moq-library.mjs, which scripts/moq-browser bundles from npm packages fetched over the network"
+
+[[unrequired]]
+suite = "crates/browser/tilo-browser-runtime/web/media-moq.test.mjs"
+reason = "imports media-moq-library.mjs, which scripts/moq-browser bundles from npm packages fetched over the network"
+
+[[unrequired]]
+suite = "scripts/moq-browser/bundle.test.mjs"
+reason = "a bun test of the MoQ bundle, which needs its npm dependencies installed from the network"
+
+[[unrequired]]
+suite = "crates/browser/tilo-browser-runtime/web/action-storage.test.mjs"
+reason = "its fake persistence workers need Node 24's worker messaging; the ci-fast image's nodejs is Node 22"
+
+[[unrequired]]
+suite = "crates/browser/tilo-browser-runtime/web/close-recovery.test.mjs"
+reason = "its fake persistence workers need Node 24's worker messaging; the ci-fast image's nodejs is Node 22"
+
+[[unrequired]]
+suite = "crates/browser/tilo-browser-runtime/web/peer-session.test.mjs"
+reason = "its fake persistence workers need Node 24's worker messaging; the ci-fast image's nodejs is Node 22"
+
+[[unrequired]]
+suite = "crates/browser/tilo-browser-runtime/web/semantics.test.mjs"
+reason = "Node 22 and 24 crash (SIGSEGV) in its composition-revocation tests; it passes on Node 26, which Fedora 44 does not package"
+
+[[unrequired]]
+suite = "crates/browser/tilo-browser-runtime/web/storage.test.mjs"
+reason = "its fake persistence workers need Node 24's worker messaging; the ci-fast image's nodejs is Node 22"
+
+[[unrequired]]
+suite = "crates/browser/tilo-browser-runtime/web/transfer-staging.test.mjs"
+reason = "its fake persistence workers need Node 24's worker messaging; the ci-fast image's nodejs is Node 22"

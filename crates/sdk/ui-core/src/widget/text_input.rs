@@ -3887,7 +3887,10 @@ impl Drop for TextInput {
 }
 
 impl Widget for TextInput {
-    crate::provides!(dyn crate::widget::controls::ActionControls);
+    crate::provides!(
+        dyn crate::widget::controls::ActionControls,
+        dyn crate::presence::capability::PublishesPresence
+    );
 
     fn set_interaction_environment(
         &mut self,
@@ -4545,16 +4548,6 @@ impl Widget for TextInput {
         Some((self.cursor_pos, self.text.clone()))
     }
 
-    fn presence_key(&self) -> Option<PresenceKey> {
-        if self.path.is_empty() {
-            None
-        } else {
-            Some(PresenceKey::Widget {
-                path: self.path.clone(),
-            })
-        }
-    }
-
     fn draw_with_presence(
         &mut self,
         scene: &mut Scene,
@@ -4569,7 +4562,7 @@ impl Widget for TextInput {
         }
         self.draw(scene, transform, text_renderer, theme, presence);
 
-        if let Some(key) = self.presence_key() {
+        if let Some(key) = crate::presence::capability::presence_key(self) {
             // Peer caret + selection reuse `caret_rect`/`selection_rect`, never a
             // re-derived approximation. `transform` maps the local rect to the scene.
 
@@ -4618,7 +4611,7 @@ impl Widget for TextInput {
             }
         }
 
-        if let Some(scope) = self.permission_scope()
+        if let Some(scope) = crate::permissions::capability::permission_scope(self)
             && !permissions.check(&scope)
         {
             let r = self.rect;
@@ -4652,6 +4645,18 @@ impl Widget for TextInput {
                 theme,
                 presence,
             );
+        }
+    }
+}
+
+impl crate::presence::capability::PublishesPresence for TextInput {
+    fn presence_key(&self) -> Option<PresenceKey> {
+        if self.path.is_empty() {
+            None
+        } else {
+            Some(PresenceKey::Widget {
+                path: self.path.clone(),
+            })
         }
     }
 }

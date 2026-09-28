@@ -149,6 +149,82 @@ fn workspace_activity_detached_record_origins_do_not_collide() {
     assert_eq!(apps, ["app-a", "app-b"]);
 }
 
+// Listing a read marker, or offering a filter for a participant no row can
+// be attributed to, must fail this regression.
+#[test]
+fn workspace_activity_lists_content_and_filters_by_the_people_it_names() {
+    use automerge::{ActorId, transaction::CommitOptions};
+    use tilo_actions::{ActionContext, ChangeKind};
+    use tilo_desktop::activity::*;
+    use ui::record::{RecordCheckout, RecordId, RecordKind};
+    let workspace = Workspace::new(WorkspaceId(9), "Design");
+    let mut doc = AutoCommit::new();
+    doc.put(ROOT, "room", workspace.room.to_string()).unwrap();
+    doc.commit();
+    let mut tree = ActivitySnapshot::new(
+        DesktopTree {
+            active: workspace.id,
+            workspaces: vec![workspace],
+            ..Default::default()
+        },
+        doc,
+    )
+    .unwrap();
+    let posted =
+        ActionContext::for_resource("Post message", "chat.channel:c", "chat.channel", "general");
+    let commit = |record: &mut AutoCommit, context: &ActionContext, at: i64| {
+        record.commit_with(
+            CommitOptions::default()
+                .with_time(at)
+                .with_message(context.change_message().unwrap()),
+        );
+    };
+    let ada = ActorId::random();
+    let mut record = AutoCommit::new().with_actor(ada.clone());
+    record.put(ROOT, "message", "hello").unwrap();
+    commit(&mut record, &posted, 1_800_000_000);
+    record.put(ROOT, "read", 1).unwrap();
+    let marker = ActionContext::for_resource(
+        "Mark channel read",
+        "chat.channel:c",
+        "chat.channel",
+        "general",
+    )
+    .with_change(ChangeKind::Housekeeping);
+    commit(&mut record, &marker, 1_800_000_001);
+    record.set_actor(ActorId::random());
+    record.put(ROOT, "message", "hi").unwrap();
+    commit(&mut record, &posted, 1_800_000_002);
+
+    let mut pane = RoomActivityPane::new();
+    pane.authors_mut().register(
+        &ada.to_hex_string(),
+        ui::widget::HistoryAuthor::new("Ada", 120.0, "ada"),
+    );
+    pane.refresh(&mut tree);
+    pane.refresh_detached_records(
+        &mut tree,
+        vec![DetachedRecordHistory {
+            app: "so.tilo.chat".into(),
+            checkout: RecordCheckout::new(RecordId::for_tab(1), RecordKind::new("chat")),
+            document: Some(record),
+        }],
+    );
+    let labels = pane
+        .entries()
+        .iter()
+        .filter_map(|row| row.context.as_ref().map(|c| c.action_label.clone()))
+        .collect::<Vec<_>>();
+    assert_eq!(labels, ["Post message", "Post message"], "no read marker");
+    assert!(
+        pane.entries()
+            .iter()
+            .any(|row| row.author.name == ui::history_source::UNKNOWN_AUTHOR_NAME),
+        "a change history cannot name still shows under Everyone"
+    );
+    assert_eq!(pane.contributors(), ["Ada"]);
+}
+
 #[test]
 fn workspace_activity_unsettled_refresh_retains_only_current_admission_rows() {
     use tilo_desktop::activity::*;

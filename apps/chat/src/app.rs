@@ -3124,15 +3124,13 @@ impl Widget for ChatApp {
         dyn ui::widget::FloatingSurfaceProvider,
         dyn ui::collaboration::participants::Participants,
         dyn ui::undo::CommittedActions,
-        dyn ui::resources::PublishesResources
+        dyn ui::resources::PublishesResources,
+        dyn ui::search::capability::SearchSource,
+        dyn ui::presence::capability::PublishesPresence
     );
 
     fn semantic_readers(&self) -> &'static [ui::semantic_document_read::RegisteredSemanticReader] {
         &crate::semantic_read::action::READERS
-    }
-
-    fn presence_payload(&self) -> Option<(ui::presence::PresenceKey, ui::PresencePayload)> {
-        self.composer_presence()
     }
 
     fn primary_vertical_scroll(&self) -> Option<ui::widget::PrimaryScrollRegion> {
@@ -3825,19 +3823,6 @@ impl Widget for ChatApp {
         })
     }
 
-    /// Fold conversations, full-text messages, and people into global search.
-    /// Every result names an exported `View` action; there is no app-private
-    /// activation path.
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(crate::search_provider::ChatSearchProvider::new(
-            &self.categories,
-            &self.channels,
-            &self.workspaces,
-            &self.search_messages,
-            &self.search_users,
-        ))]
-    }
-
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::CHAT_OPERATION_TYPE]
     }
@@ -3916,6 +3901,27 @@ impl Widget for ChatApp {
         self.canonical_dirty = false;
         self.composer_main.mark_drawn();
         self.composer_thread.mark_drawn();
+    }
+}
+
+impl ui::presence::capability::PublishesPresence for ChatApp {
+    fn presence_payload(&self) -> Option<(ui::presence::PresenceKey, ui::PresencePayload)> {
+        self.composer_presence()
+    }
+}
+
+impl ui::search::capability::SearchSource for ChatApp {
+    /// Fold conversations, full-text messages, and people into global search.
+    /// Every result names an exported `View` action; there is no app-private
+    /// activation path.
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(crate::search_provider::ChatSearchProvider::new(
+            &self.categories,
+            &self.channels,
+            &self.workspaces,
+            &self.search_messages,
+            &self.search_users,
+        ))]
     }
 }
 
@@ -4168,16 +4174,16 @@ mod live_draft_presence {
         let key = ChatApp::draft_presence_key(&app.active_channel);
         app.composer_main.select(5, 5);
         assert_eq!(
-            app.presence_payload(),
+            ui::presence::capability::presence_payload(&app),
             Some((key.clone(), PresencePayload::Caret { pos: 5 }))
         );
         app.composer_main.select(0, 5);
         assert_eq!(
-            app.presence_payload(),
+            ui::presence::capability::presence_payload(&app),
             Some((key, PresencePayload::Selection { start: 0, end: 5 }))
         );
         Widget::set_focus(&mut app, false);
-        assert_eq!(app.presence_payload(), None);
+        assert_eq!(ui::presence::capability::presence_payload(&app), None);
     }
 
     /// A collaborator's caret and selection in the same draft are drawn in

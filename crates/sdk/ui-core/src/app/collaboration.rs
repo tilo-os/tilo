@@ -257,9 +257,11 @@ impl App {
     fn broadcast_focus_presence(&mut self) {
         use crate::collaboration::PresencePayload;
         let current = self.focused_node.and_then(|id| {
-            self.inspect_node(id, |widget| widget.presence_payload())
-                .ok()
-                .flatten()
+            self.inspect_node(id, |widget| {
+                crate::presence::capability::presence_payload(widget)
+            })
+            .ok()
+            .flatten()
         });
         if current != self.presence.last_focus {
             // When the caret advances forward under the same scope, publish
@@ -292,7 +294,7 @@ impl App {
     /// focus.
     #[cfg(feature = "native")]
     fn broadcast_location_presence(&mut self) {
-        let current = self.root_widget.presence_payload();
+        let current = crate::presence::capability::presence_payload(self.root_widget.as_ref());
         if current != self.presence.last_location {
             if let Some((key, payload)) = current.clone() {
                 self.broadcast_presence(key, payload);

@@ -937,12 +937,22 @@ fn committed_snapshot(doc: &AutoCommit) -> AutoCommit {
     snapshot
 }
 
+/// The feed lists what people did to the workspace: housekeeping about a
+/// document (a read marker, a reading position) stays in that document's own
+/// history.
 fn insert_rows(
     target: &mut BTreeMap<WorkspaceHistoryId, WorkspaceHistoryEntry>,
     origin: &HistoryOrigin,
     rows: Vec<HistoryEntry>,
 ) {
     for entry in rows {
+        if entry
+            .context
+            .as_ref()
+            .is_some_and(ui::tilo_actions::ActionContext::is_housekeeping)
+        {
+            continue;
+        }
         let id = WorkspaceHistoryId {
             origin: origin.clone(),
             change: entry.id,

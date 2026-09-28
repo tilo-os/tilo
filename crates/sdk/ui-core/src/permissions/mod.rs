@@ -373,6 +373,8 @@ fn unix_now() -> Option<u64> {
         .map(|d| d.as_secs())
 }
 
+pub mod capability;
+
 #[cfg(test)]
 mod policy_time_tests;
 

@@ -33,6 +33,11 @@ fn envelope_for(
     context: Option<ActionContext>,
 ) -> ActionEnvelope {
     let base = doc.get_heads();
+    let change = action.change_kind();
+    let context = match context {
+        Some(context) => Some(context.with_change(change)),
+        None => (!change.is_content()).then(|| ActionContext::default().with_change(change)),
+    };
     ActionEnvelope {
         id: ActionId::new(),
         action: encoded,
