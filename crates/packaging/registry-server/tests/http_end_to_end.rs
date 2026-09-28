@@ -887,6 +887,117 @@ async fn package_ids_must_lie_in_a_verified_namespace() {
     assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
 }
 
+/// A package signed by `key`, in full.
+fn signed_package(dir: &std::path::Path, key: &SigningKey) -> Vec<u8> {
+    let identity = tilo_app_package::SigningIdentity::from_signing_key(key.clone());
+    let payload = dir.join(hex::encode(key.verifying_key().to_bytes()));
+    std::fs::create_dir_all(payload.join("bin")).unwrap();
+    std::fs::write(payload.join("bin/editor"), b"uploaded binary").unwrap();
+    let manifest = tilo_app_package::Manifest::from_toml_str(&format!(
+        "[package]\nid = \"so.tilo.editor\"\nversion = \"1.0.0\"\nkind = \"app\"\n\
+         [package.isa]\nx86_64 = \"v3\"\n\
+         [publisher]\nidentity = \"ed25519:{}\"\nsignature = \"\"\n\
+         [sandbox]\nnamespaces = [\"user\"]\nseccomp = \"tilo-default\"\nlandlock = \"strict\"\n\
+         [sandbox.net]\nmode = \"off\"\n\
+         [entrypoint]\nbin = \"bin/editor\"\ntype = \"gui\"\n",
+        hex::encode(identity.public_key_bytes())
+    ))
+    .unwrap();
+    let packed = tilo_app_package::pack(&payload, &manifest, &identity).unwrap();
+    tilo_app_package::tapp::to_bytes(&packed.meta, Some(&packed)).unwrap()
+}
+
+/// An allowlisted publisher uploads its own signed package; the registry keeps
+/// it privately, and review reads it from there without a network fetch.
+#[tokio::test]
+async fn publishers_upload_their_own_packages_for_review() {
+    let h = spawn_server(true).await;
+    let client = tilo_net::http::client().build().expect("http client");
+    let bytes = signed_package(h.tmp.path(), &h.publisher);
+    let digest = blake3::hash(&bytes).to_hex().to_string();
+    let path = format!("/uploads/{digest}.tapp");
+    let put = |key: &SigningKey, signed: &str, body: Vec<u8>| {
+        client
+            .put(url(h.addr, &path))
+            .header(
+                registry_types::upload::UPLOAD_PUBLISHER_HEADER,
+                hex::encode(key.verifying_key().to_bytes()),
+            )
+            .header(
+                registry_types::upload::UPLOAD_SIGNATURE_HEADER,
+                registry_types::upload::sign_upload(key, signed),
+            )
+            .body(body)
+            .send()
+    };
+
+    let unsigned = client
+        .put(url(h.addr, &path))
+        .body(bytes.clone())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unsigned.status(), reqwest::StatusCode::UNAUTHORIZED);
+    let wrong_digest = put(&h.publisher, &"00".repeat(32), bytes.clone())
+        .await
+        .unwrap();
+    assert_eq!(wrong_digest.status(), reqwest::StatusCode::FORBIDDEN);
+    let stranger = put(&h.outsider, &digest, bytes.clone()).await.unwrap();
+    assert_eq!(stranger.status(), reqwest::StatusCode::FORBIDDEN);
+    let foreign = signed_package(h.tmp.path(), &h.outsider);
+    let foreign_digest = blake3::hash(&foreign).to_hex().to_string();
+    let foreign_upload = client
+        .put(url(h.addr, &format!("/uploads/{foreign_digest}.tapp")))
+        .header(
+            registry_types::upload::UPLOAD_PUBLISHER_HEADER,
+            hex::encode(h.publisher.verifying_key().to_bytes()),
+        )
+        .header(
+            registry_types::upload::UPLOAD_SIGNATURE_HEADER,
+            registry_types::upload::sign_upload(&h.publisher, &foreign_digest),
+        )
+        .body(foreign)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(foreign_upload.status(), reqwest::StatusCode::BAD_REQUEST);
+    assert_eq!(h.storage.load_upload(&foreign_digest).unwrap(), None);
+
+    let accepted = put(&h.publisher, &digest, bytes.clone()).await.unwrap();
+    assert_eq!(accepted.status(), reqwest::StatusCode::CREATED);
+    let answer: serde_json::Value = accepted.json().await.unwrap();
+    let artifact_url = format!("https://apps.tilo.so/artifacts/{digest}.tapp");
+    assert_eq!(answer["url"], artifact_url.as_str());
+    assert_eq!(h.storage.load_upload(&digest).unwrap(), Some(bytes.clone()));
+    let public = client
+        .get(url(h.addr, &format!("/artifacts/{digest}.tapp")))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(public.status(), reqwest::StatusCode::NOT_FOUND);
+
+    let package = app_registry::tapp::load(&bytes).unwrap();
+    let mut entry = sample_entry(&h.publisher, 100);
+    entry.versions[0].version = "1.0.0".into();
+    entry.versions[0].tapp_url = artifact_url;
+    entry.versions[0].tapp_root_hash_hex = package.package_id.to_hex();
+    entry.versions[0].tapp_size_bytes = bytes.len() as u64;
+    entry.versions[0].tapp_blake3_hex = digest.clone();
+    let storage = h.storage.clone();
+    let reviewed = tokio::task::spawn_blocking(move || {
+        registry_server::review_entry_bytes(
+            &storage,
+            &entry,
+            registry_server::InspectionPolicy::default(),
+        )
+    })
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(reviewed.len(), 1);
+    assert_eq!(reviewed[0].1, bytes);
+}
+
 /// A browser page on a configured origin may read the catalogue and blobs;
 /// any other origin, and every POST, gets no CORS grant. An unchanged
 /// catalogue revalidates to an empty 304.
