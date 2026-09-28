@@ -2264,6 +2264,13 @@ impl ShellNetwork {
         in_room
     }
 
+    /// Certificates of `user`'s devices this session authenticated (directly
+    /// or through a workspace host), valid and not revoked now.
+    pub fn authenticated_devices_of(&self, user: &[u8; 32]) -> Vec<tilo_user_identity::DeviceCert> {
+        self.peer_identities
+            .devices_of(user, tilo_clock::unix_now_ns())
+    }
+
     /// Shared handle to inbound signed document envelopes.
     pub fn inbound_documents_handle(&self) -> Arc<Mutex<Vec<InboundDocument>>> {
         Arc::clone(&self.inbound_documents)
