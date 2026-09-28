@@ -86,6 +86,13 @@ pub struct VmEntry {
     /// Windows WHPX: omit the display and USB devices for SSH-only VMs.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub headless: bool,
+    /// libvirt: virtio-gpu outputs (default one).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub heads: Option<u8>,
+    /// libvirt: the first output's preferred mode, `WIDTHxHEIGHT`; the others
+    /// offer the standard modes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolution: Option<String>,
     /// Host port forwarded to the guest's SSH port (libvirt, qemu).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ssh_port: Option<u16>,
