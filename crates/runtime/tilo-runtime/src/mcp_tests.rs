@@ -76,6 +76,22 @@ fn query_rows_carry_the_schema_of_the_generic_apply_argument() {
         has_children: false,
         visibility: None,
     };
+    assert_eq!(
+        browsed_row_json(&row)["descriptor"]["params"][0]["schema"],
+        row_json(&row)["descriptor"]["params"][0]["schema"],
+        "a small schema stays in a browsed page"
+    );
+    let mut large = row.clone();
+    if let Some(descriptor) = large.action.as_mut() {
+        descriptor.params[0].schema = Some(json!({"description": "x".repeat(4096)}));
+    }
+    let browsed = browsed_row_json(&large);
+    assert!(browsed["descriptor"]["params"][0].get("schema").is_none());
+    assert!(browsed["descriptor"]["params"][0]["schema_omitted"].is_string());
+    assert!(
+        row_json(&large)["descriptor"]["params"][0]["schema"].is_object(),
+        "resolve keeps the full schema"
+    );
     let schema = &row_json(&row)["descriptor"]["params"][0]["schema"];
     let operations = schema["properties"]["op"]["oneOf"].as_array().unwrap();
     let rename = operations
