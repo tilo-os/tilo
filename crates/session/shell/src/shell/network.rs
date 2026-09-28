@@ -781,6 +781,11 @@ fn configured_host_addrs() -> Vec<iroh::EndpointAddr> {
     hosts
 }
 
+/// Whether `TILO_COLLAB_HOST` or `TILO_COLLAB_HOSTS` names a workspace host.
+pub fn collab_host_configured() -> bool {
+    !configured_host_addrs().is_empty()
+}
+
 const MAX_HOME_PEER_REGISTRY_BYTES: u64 = 1024 * 1024;
 const MAX_HOME_PEERS: usize = 128;
 const MAX_HOME_PEER_LABEL_BYTES: usize = 80;
