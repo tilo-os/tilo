@@ -30,22 +30,17 @@ pub fn target_dir(metadata: &Value) -> String {
         .map_or_else(|| "target".to_owned(), str::to_owned)
 }
 
-/// The cargo host builds run: `TILO_VM_CARGO` if set, else `rcargo` (a
-/// drop-in that builds remotely and hands back the outputs) when it is on
-/// PATH, else `cargo`.
+/// The cargo host builds run: `TILO_VM_CARGO` if set (any cargo drop-in,
+/// such as a wrapper that builds on another machine and hands back the
+/// outputs), else `cargo`.
 pub fn cargo_program() -> String {
-    cargo_program_from(
-        std::env::var("TILO_VM_CARGO").ok(),
-        !crate::host::which_all("rcargo").is_empty(),
-    )
+    cargo_program_from(std::env::var("TILO_VM_CARGO").ok())
 }
 
-fn cargo_program_from(explicit: Option<String>, rcargo_on_path: bool) -> String {
-    match explicit.filter(|c| !c.trim().is_empty()) {
-        Some(program) => program,
-        None if rcargo_on_path => "rcargo".into(),
-        None => "cargo".into(),
-    }
+fn cargo_program_from(explicit: Option<String>) -> String {
+    explicit
+        .filter(|c| !c.trim().is_empty())
+        .unwrap_or_else(|| "cargo".into())
 }
 
 pub fn cargo_build(component: &Component, extra_features: &[String]) -> CommandLine {
@@ -251,19 +246,15 @@ mod tests {
         format!("cargo {}", command.args.join(" "))
     }
 
-    /// Host builds prefer an explicit cargo then rcargo; builds use manifest features plus dev overrides;
+    /// Host builds run an explicit cargo, else cargo; builds use manifest features plus dev overrides;
     /// the installer gets the profile dir and component; apps package with their own tools.
     #[test]
     fn builds_pick_the_right_cargo_features_and_tools() {
-        // Phase: host_builds_prefer_an_explicit_cargo_then_rcargo.
+        // Phase: host_builds_run_an_explicit_cargo_else_cargo.
         {
-            assert_eq!(
-                cargo_program_from(Some("my-cargo".into()), true),
-                "my-cargo"
-            );
-            assert_eq!(cargo_program_from(Some(" ".into()), true), "rcargo");
-            assert_eq!(cargo_program_from(None, true), "rcargo");
-            assert_eq!(cargo_program_from(None, false), "cargo");
+            assert_eq!(cargo_program_from(Some("my-cargo".into())), "my-cargo");
+            assert_eq!(cargo_program_from(Some(" ".into())), "cargo");
+            assert_eq!(cargo_program_from(None), "cargo");
         }
 
         // Phase: build_uses_manifest_features_plus_dev_overrides.
