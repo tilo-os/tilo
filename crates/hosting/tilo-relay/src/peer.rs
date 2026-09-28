@@ -1783,14 +1783,20 @@ async fn open_resume(
             .as_deref()
             .and_then(|position| issuer.verify(position, workspace_id, &device, &generation))
         {
-            Some(resume) => store
-                .load_resume(&device, &resume.log, resume.len)?
-                .filter(|_| {
-                    store
-                        .truncate_resume(&device, &resume.log, resume.len)
-                        .unwrap_or(false)
-                })
-                .map(|held| (resume, held)),
+            Some(resume) => match store.load_resume(&device, &resume.log, resume.len)? {
+                Some(held) => store
+                    .fork_resume(&device, &resume.log, resume.len)?
+                    .map(|log| {
+                        (
+                            crate::position::Resume {
+                                log,
+                                len: resume.len,
+                            },
+                            held,
+                        )
+                    }),
+                None => None,
+            },
             None => None,
         };
         let (resume, skip) = match held {

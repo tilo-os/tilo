@@ -125,30 +125,37 @@ impl WorkspaceStore {
         ))
     }
 
-    /// Cut `device`'s log `log` back to `len` entries, so what it records
-    /// matches the position a resume presented. Returns whether it held
-    /// that many.
+    /// Continue `device`'s log `log` from its first `len` entries under a
+    /// new log, removing every other log of the device. A session the device
+    /// left may still be writing to the old log what the device never
+    /// received; the new log records only what the resumed session delivers.
+    /// Returns `None` when `log` does not hold `len` entries.
     ///
     /// # Errors
-    /// Returns an error if the log can't be opened or truncated.
-    pub fn truncate_resume(
+    /// Returns an error if the logs can't be read or written.
+    pub fn fork_resume(
         &self,
         device: &[u8; 32],
         log: &[u8; 16],
         len: u64,
-    ) -> Result<bool, StoreError> {
-        let Ok(file) = fs::OpenOptions::new()
-            .write(true)
-            .open(self.resume_path(device, log))
-        else {
-            return Ok(false);
+    ) -> Result<Option<[u8; 16]>, StoreError> {
+        let Ok(bytes) = fs::read(self.resume_path(device, log)) else {
+            return Ok(None);
         };
-        let want = len.saturating_mul(DIGEST_BYTES as u64);
-        if file.metadata()?.len() < want {
-            return Ok(false);
+        let Some(held) = usize::try_from(len)
+            .ok()
+            .and_then(|len| len.checked_mul(DIGEST_BYTES))
+            .and_then(|want| bytes.get(..want))
+        else {
+            return Ok(None);
+        };
+        let dir = self.resume_dir(device);
+        for entry in fs::read_dir(&dir)?.flatten() {
+            let _ = fs::remove_file(entry.path());
         }
-        file.set_len(want)?;
-        Ok(true)
+        let fork: [u8; 16] = rand::random();
+        fs::write(self.resume_path(device, &fork), held)?;
+        Ok(Some(fork))
     }
 
     /// Append delivered frames' digests to `device`'s log `log`.
@@ -216,12 +223,18 @@ mod tests {
             store.load_resume(&device, &log, 4).unwrap().is_none(),
             "a position beyond the log is refused"
         );
-        assert!(store.truncate_resume(&device, &log, 2).unwrap());
-        store.append_resume(&device, &log, &[[4; 32]]).unwrap();
+        let fork = store.fork_resume(&device, &log, 2).unwrap().unwrap();
+        store.append_resume(&device, &fork, &[[4; 32]]).unwrap();
         assert_eq!(
-            store.load_resume(&device, &log, 3).unwrap().unwrap(),
+            store.load_resume(&device, &fork, 3).unwrap().unwrap(),
             HashSet::from([[1; 32], [2; 32], [4; 32]])
         );
+        assert!(
+            store.append_resume(&device, &log, &[[5; 32]]).is_err(),
+            "a session left behind no longer writes to what the device resumes from"
+        );
+        assert!(store.fork_resume(&device, &fork, 9).unwrap().is_none());
+        let log = fork;
         let fresh = store.start_resume(&device).unwrap();
         assert!(store.load_resume(&device, &log, 1).unwrap().is_none());
         assert_eq!(
