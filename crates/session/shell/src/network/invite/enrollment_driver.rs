@@ -1,5 +1,5 @@
 //! Bounded actor work and cancellation for canonical native enrollment.
-use super::{VerifiedNativeEnrollment, certified::exchange};
+use super::{VerifiedNativeEnrollment, exchange};
 use crate::{
     network::actor::HostIdentity,
     shell::{native_workspace_owner::NativeWorkspaceOwner, state::WorkspaceId},

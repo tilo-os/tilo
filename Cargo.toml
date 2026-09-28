@@ -133,6 +133,7 @@ members = [
     "crates/collab/reference",
     "crates/collab/threshold-identity",
     "crates/collab/tilo-callstream",
+    "crates/collab/tilo-joined-room",
     "crates/collab/tilo-user-identity",
 
     # Dev

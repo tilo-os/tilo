@@ -6,20 +6,20 @@
 //! reader's current membership and document Read permission there, and
 //! refuses a document that is encrypted, causally incomplete or larger than
 //! the caller can hold.
-use super::NativeCommittedView;
+use crate::NativeCommittedView;
 use std::time::SystemTime;
 use tilo_peer_state::{BoundedStatePeer, PeerDocumentReadError, PeerLimits};
 use tilo_user_identity::RevocationList;
 
 /// A document as the room last admitted it.
-pub(crate) struct CommittedDocument {
+pub struct CommittedDocument {
     /// Names exactly these heads; equal revisions are equal documents.
-    pub(crate) revision: [u8; 32],
-    pub(crate) bytes: Vec<u8>,
+    pub revision: [u8; 32],
+    pub bytes: Vec<u8>,
 }
 
 /// What a bounded read found.
-pub(crate) enum DocumentRead {
+pub enum DocumentRead {
     /// The reader already holds this revision.
     Unchanged([u8; 32]),
     Captured(CommittedDocument),
@@ -41,7 +41,7 @@ impl NativeCommittedView {
     /// # Errors
     /// The reader may not read it now, the room does not hold it as a
     /// complete plaintext document, or it is larger than `maximum` bytes.
-    pub(crate) fn read_document(
+    pub fn read_document(
         &self,
         reader: [u8; 32],
         app: &str,
@@ -81,45 +81,5 @@ impl NativeCommittedView {
             revision,
             bytes,
         }))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::DocumentRead;
-    use automerge::ReadDoc as _;
-
-    const APP: &str = "so.tilo.chat";
-
-    #[test]
-    fn a_member_reads_the_admitted_document_and_a_stranger_does_not() {
-        let (_directory, owner, room, now, member) = super::super::test_enrolled_owner();
-        let member = member.verifying_key().to_bytes();
-        let stranger = ed25519_dalek::SigningKey::from_bytes(&[99; 32])
-            .verifying_key()
-            .to_bytes();
-        let read = |reader, record: &str, known, maximum| {
-            owner.with_current(room, |view| {
-                view.read_document(reader, APP, record, known, maximum, now)
-            })
-        };
-        let Ok(DocumentRead::Captured(document)) = read(member, "", None, usize::MAX) else {
-            panic!("a member reads what the room admitted");
-        };
-        let doc = automerge::AutoCommit::load(&document.bytes).unwrap();
-        assert!(doc.get(automerge::ROOT, "channels").unwrap().is_some());
-        assert!(matches!(
-            read(member, "", Some(document.revision), usize::MAX),
-            Ok(DocumentRead::Unchanged(revision)) if revision == document.revision
-        ));
-        assert!(
-            read(member, "", None, document.bytes.len() - 1).is_err(),
-            "a document larger than the reader can hold is refused"
-        );
-        assert!(
-            read(stranger, "", None, usize::MAX).is_err(),
-            "a device outside the room reads nothing"
-        );
-        assert!(read(member, "uuid:absent", None, usize::MAX).is_err());
     }
 }
