@@ -327,7 +327,7 @@ impl<H: ActionHost + Clone + Send + Sync + 'static> Endpoint<H> {
         let id = uuid::Uuid::new_v4().to_string();
         let server = Arc::new(tokio::sync::Mutex::new(
             McpServer::new(self.host.clone(), self.room.clone(), self.actor.clone())
-                .with_agent_run(format!("mcp:{id}"), client_label(initialize))
+                .with_agent_run(agent_run_id(&id), client_label(initialize))
                 .with_computer(self.computer.clone()),
         ));
         let now = Instant::now();
@@ -335,15 +335,47 @@ impl<H: ActionHost + Clone + Send + Sync + 'static> Endpoint<H> {
             server: Arc::clone(&server),
             last_used: now,
         };
-        {
+        let mut idle = Vec::new();
+        let admitted = {
             let mut sessions = self.sessions.lock().ok()?;
-            sessions.retain(|_, session| now.duration_since(session.last_used) < SESSION_IDLE);
-            if sessions.len() >= MAX_SESSIONS {
-                return None;
+            sessions.retain(|id, session| {
+                let live = now.duration_since(session.last_used) < SESSION_IDLE;
+                if !live {
+                    idle.push(id.clone());
+                }
+                live
+            });
+            let admitted = sessions.len() < MAX_SESSIONS;
+            if admitted {
+                sessions.insert(id.clone(), session);
             }
-            sessions.insert(id.clone(), session);
+            admitted
+        };
+        for id in idle {
+            self.release_agent(&id);
         }
-        Some((id, server))
+        admitted.then_some((id, server))
+    }
+
+    /// Let the compositor release whatever the ended session's agent still
+    /// holds on the shared seat. Off the async runtime: it is socket I/O.
+    fn release_agent(&self, id: &str) {
+        let Some(computer) = self.computer.clone() else {
+            return;
+        };
+        let agent = crate::computer::Agent {
+            id: agent_run_id(id),
+            label: String::new(),
+        };
+        let leave = move || {
+            if let Err(error) = computer.leave(&agent) {
+                tracing::debug!(%error, "agent seat release");
+            }
+        };
+        match tokio::runtime::Handle::try_current() {
+            Ok(runtime) => drop(runtime.spawn_blocking(leave)),
+            Err(_) => leave(),
+        }
     }
 
     fn find(&self, id: &str) -> Option<Arc<tokio::sync::Mutex<McpServer<H>>>> {
@@ -354,9 +386,14 @@ impl<H: ActionHost + Clone + Send + Sync + 'static> Endpoint<H> {
     }
 
     fn remove(&self, id: &str) -> bool {
-        self.sessions
+        let removed = self
+            .sessions
             .lock()
-            .is_ok_and(|mut sessions| sessions.remove(id).is_some())
+            .is_ok_and(|mut sessions| sessions.remove(id).is_some());
+        if removed {
+            self.release_agent(id);
+        }
+        removed
     }
 }
 
@@ -390,6 +427,11 @@ enum ViewerCall {
     Revoke(String),
     Role(String),
     Renew(String),
+}
+
+/// The agent run an MCP session is.
+fn agent_run_id(session: &str) -> String {
+    format!("mcp:{session}")
 }
 
 /// The human label of an agent run: the client's declared name, bounded.
