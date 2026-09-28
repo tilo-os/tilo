@@ -11,8 +11,8 @@
 
 use std::path::Path;
 
+use crate::shell::state::WorkspaceAuthority as _;
 use serde_json::{Value, json};
-use shell::shell::state::WorkspaceAuthority as _;
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CatalogueQuery, InvokeArgument, InvokeRequest,
     MAX_CATALOGUE_PAGE, Pending, ReceiptStatus, RemoteActionTarget, workspace_provider,
@@ -31,9 +31,9 @@ fn answer<T>(pending: Pending<T>) -> T {
 }
 
 struct Door {
-    _broker: shell::shell::collab_broker::BrokerHandle,
-    membership: shell::shell::state::WorkspaceTreeHandle,
-    host: shell::shell::remote_actions::BrokerActionHost,
+    _broker: crate::shell::collab_broker::BrokerHandle,
+    membership: crate::shell::state::WorkspaceTreeHandle,
+    host: crate::shell::remote_actions::BrokerActionHost,
     owner: Caller,
     _dir: tempfile::TempDir,
 }
@@ -47,8 +47,8 @@ impl Door {
         )
         .expect("owner-only socket directory");
         let mut workspace =
-            shell::shell::state::Workspace::new(shell::shell::state::WorkspaceId(1), "Desk");
-        workspace.room = shell::shell::state::RoomId::parse(&ROOM.to_string()).expect("room id");
+            crate::shell::state::Workspace::new(crate::shell::state::WorkspaceId(1), "Desk");
+        workspace.room = crate::shell::state::RoomId::parse(&ROOM.to_string()).expect("room id");
         workspace.set_owner(OWNER.to_string());
         workspace
             .grant_as(
@@ -60,16 +60,16 @@ impl Door {
                 ),
             )
             .expect("the owner admits a helper that holds no Settings grant");
-        let mut tree = shell::shell::state::WorkspaceTree::default();
+        let mut tree = crate::shell::state::WorkspaceTree::default();
         tree.desktop.workspaces.push(workspace);
         let membership = tree.shared();
-        let broker = shell::shell::collab_broker::spawn_native_harness(
+        let broker = crate::shell::collab_broker::spawn_native_harness(
             socket.to_path_buf(),
             std::sync::Arc::clone(&membership),
             Vec::new(),
         )
         .expect("bind the collaboration service");
-        let host = shell::shell::remote_actions::BrokerActionHost::new(
+        let host = crate::shell::remote_actions::BrokerActionHost::new(
             broker.app_action_broker().expect("the action broker"),
         );
         Self {
@@ -141,7 +141,7 @@ impl Door {
 /// Press `key` with `modifiers` in `host` after one layout pass; whether
 /// the shell took the press.
 fn press(
-    host: &mut shell::shell::overlay_host::ShellOverlayHost,
+    host: &mut crate::shell::overlay_host::ShellOverlayHost,
     key: winit::keyboard::Key,
     modifiers: winit::keyboard::ModifiersState,
 ) -> bool {
@@ -292,7 +292,7 @@ fn rebinding_through_the_door_moves_what_the_chord_triggers() {
 
     // The compositor re-reads the saved table whenever the settings file
     // changes; this is that handoff.
-    let (mut host, chrome) = shell::shell::build_tilo_overlay_host_with_handle(
+    let (mut host, chrome) = crate::shell::build_tilo_overlay_host_with_handle(
         std::sync::Arc::clone(&door.membership),
         false,
     );

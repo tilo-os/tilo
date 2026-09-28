@@ -1736,7 +1736,7 @@ fn quick_settings_power_tile_and_drill_ins_own_their_pointer_input() {
 
         let _ = pump(&mut h, &cursor_moved_at(power.center()));
         assert!(pump(&mut h, &left_button_pressed()));
-        assert!(h.host.power_menu.is_open());
+        assert!(h.host.layers.power_menu.is_open());
         assert!(!h.chrome.borrow().overlays.quick_settings);
     }
 
@@ -1758,7 +1758,7 @@ fn quick_settings_power_tile_and_drill_ins_own_their_pointer_input() {
         let _ = pump(&mut h, &cursor_moved_at(painted_power));
         assert!(pump(&mut h, &left_button_pressed()));
         assert!(
-            h.host.power_menu.is_open(),
+            h.host.layers.power_menu.is_open(),
             "clicking the visibly transformed Power tile must open its menu"
         );
         assert!(!h.chrome.borrow().overlays.quick_settings);

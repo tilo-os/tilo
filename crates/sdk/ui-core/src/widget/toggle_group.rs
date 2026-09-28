@@ -947,22 +947,23 @@ impl Widget for ToggleGroup {
             .collect()
     }
 
-    fn invoke_resource_operation_v2(
+    fn start_operation(
         &mut self,
-        kind: crate::tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
+        op: &super::ResourceOperation<'_>,
+        _doc: &mut AutoCommit,
         _path: &ObjId,
-    ) -> Result<Option<crate::tilo_actions::ActionOutput>, String> {
-        if kind != crate::tilo_actions::OperationKind::View
-            || type_id != "tilo.ui.segmented.select"
+    ) -> Result<Option<super::ResourceOperationStart>, String> {
+        let Some(request) = op.unscoped() else {
+            return Ok(None);
+        };
+        if request.kind != crate::tilo_actions::OperationKind::View
+            || request.type_id != "tilo.ui.segmented.select"
             || self.action.is_none()
         {
             return Ok(None);
         }
         let value: serde_json::Value =
-            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+            serde_json::from_slice(request.payload).map_err(|error| error.to_string())?;
         if value.get("control").and_then(serde_json::Value::as_str) != self.id.as_deref() {
             return Ok(None);
         }
@@ -973,7 +974,9 @@ impl Widget for ToggleGroup {
             .filter(|index| *index < self.segments.len())
             .ok_or_else(|| "segmented action index is out of range".to_owned())?;
         self.apply_selection(index);
-        Ok(Some(crate::tilo_actions::ActionOutput::default()))
+        Ok(Some(super::ResourceOperationStart::Completed(
+            crate::tilo_actions::ActionOutput::default(),
+        )))
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
@@ -1604,14 +1607,18 @@ mod tests {
             assert_eq!(invocation.arguments["index"], 1);
             let encoded = spec.build_json(&invocation.arguments).unwrap();
             assert_eq!(encoded.type_id, "tilo.ui.segmented.select");
-            let output = Widget::invoke_resource_operation_v2(
+            let output = Widget::start_operation(
                 &mut group,
-                crate::tilo_actions::OperationKind::View,
-                &encoded.type_id,
-                &encoded.payload,
-                &AutoCommit::new(),
+                &crate::widget::ResourceOperation::local(
+                    crate::tilo_actions::InvocationId::new(),
+                    crate::tilo_actions::OperationKind::View,
+                    &encoded.type_id,
+                    &encoded.payload,
+                ),
+                &mut AutoCommit::new(),
                 &automerge::ROOT,
             )
+            .map(|started| started.and_then(crate::widget::ResourceOperationStart::completed))
             .unwrap();
             assert!(output.is_some());
             assert_eq!(group.selected(), 1);

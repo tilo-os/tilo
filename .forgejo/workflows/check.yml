@@ -108,6 +108,8 @@ jobs:
       pins: ${{ steps.plan.outputs.pins }}
       android_required: ${{ steps.plan.outputs.android_required }}
       android_packages: ${{ steps.plan.outputs.android_packages }}
+      wasm_required: ${{ steps.plan.outputs.wasm_required }}
+      wasm_packages: ${{ steps.plan.outputs.wasm_packages }}
       selected_count: ${{ steps.plan.outputs.selected_count }}
       workspace_count: ${{ steps.plan.outputs.workspace_count }}
       estimated_cost: ${{ steps.plan.outputs.estimated_cost }}
@@ -604,6 +606,49 @@ jobs:
               -- -D warnings -A clippy::missing_const_for_thread_local
           done
 
+  # Browser crates (anything built on wasm-bindgen) and their cfg(wasm32)
+  # code paths, which no native job compiles. Type-check only: the browser
+  # bundle build and its tests run elsewhere.
+  wasm:
+    if: needs.select.outputs.wasm_required == 'true'
+    needs: [builder, select]
+    runs-on: runner
+    timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: '4'
+      CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS: -D warnings
+    container:
+      image: ${{ needs.builder.outputs.image }}
+    steps:
+      - name: Checkout exact change
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          token: ${{ secrets.REGISTRY_TOKEN }}
+          fetch-depth: 1
+
+      - name: Prepare Rust build caches
+        uses: ./.forgejo/actions/prepare-rust-build
+
+      # A no-op on builders built from the current recipe.
+      - name: Ensure the wasm32 Rust target
+        run: rustup target add wasm32-unknown-unknown
+
+      - name: Check browser crates for wasm32
+        env:
+          PACKAGES: ${{ needs.select.outputs.wasm_packages }}
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2086
+          bash tools/ci/measure.sh "check wasm32" -- \
+            bash scripts/ci-run.sh "Check (browser crates, wasm32)" -- \
+            cargo check --locked $PACKAGES --target wasm32-unknown-unknown
+
+      # The step above checks each crate with its default features. The
+      # browser builds the web core with `dylink` and its app collection, and
+      # the Cloud frontend with `cloud,static-apps`; check those as built.
+      - name: Check the browser's wasm32 builds
+        run: bash tools/ci/check-wasm.sh
+
   pins:
     if: needs.select.outputs.pins_required == 'true'
     needs: [select]
@@ -634,7 +679,7 @@ jobs:
 
   checks:
     if: always()
-    needs: [builder, select, security, test, check, clippy, android, suites, pins]
+    needs: [builder, select, security, test, check, clippy, android, wasm, suites, pins]
     runs-on: runner-quality
     timeout-minutes: 10
     container:
@@ -656,6 +701,8 @@ jobs:
           PINS_REQUIRED: ${{ needs.select.outputs.pins_required }}
           ANDROID_RESULT: ${{ needs.android.result }}
           ANDROID_REQUIRED: ${{ needs.select.outputs.android_required }}
+          WASM_RESULT: ${{ needs.wasm.result }}
+          WASM_REQUIRED: ${{ needs.select.outputs.wasm_required }}
           EVENT_NAME: ${{ github.event_name }}
           SECURITY_REQUIRED: ${{ needs.select.outputs.security_required }}
           RUST_REQUIRED: ${{ needs.select.outputs.rust_required }}
@@ -699,6 +746,14 @@ jobs:
             false:skipped) ;;
             *)
               echo '::error::Android app checks failed or applicability is invalid.'
+              exit 1
+              ;;
+          esac
+          case "$WASM_REQUIRED:$WASM_RESULT" in
+            true:success) ;;
+            false:skipped) ;;
+            *)
+              echo '::error::Browser crate wasm32 checks failed or applicability is invalid.'
               exit 1
               ;;
           esac

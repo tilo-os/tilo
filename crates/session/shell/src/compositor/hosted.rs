@@ -139,6 +139,12 @@ pub fn run_with_full_options(opts: HostedOptions) {
         }));
     }
     if let Some(network) = peer_sync.as_ref() {
+        chrome
+            .borrow_mut()
+            .window_transfers
+            .set_hosted_rooms(Box::new(crate::shell::document_import::NativeHostedRooms(
+                Arc::clone(network),
+            )));
         let follow_network = Arc::clone(network);
         let status_network = Arc::clone(network);
         host.set_follow_presence_bridge(std::rc::Rc::new(move |room, target| {

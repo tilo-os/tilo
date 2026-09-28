@@ -35,15 +35,15 @@ use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+use crate::shell::app_action_consent::{AppActionConsent, SheetPrompter};
+use crate::shell::automation_triggers::{Firing, ManualClock, TriggerEvent, TriggerHost, armed};
+use crate::shell::portal_dialog::{DialogView, PortalDialogController, PortalDialogQueue};
+use crate::shell::state::WorkspaceAuthority as _;
 use automerge::transaction::{CommitOptions, Transactable};
 use automerge::{AutoCommit, ReadDoc};
 use collab_types::{PermissionProfileRule, Scope, Verb};
 use ed25519_dalek::{Signer as _, SigningKey};
 use serde_json::{Map, Value, json};
-use shell::shell::app_action_consent::{AppActionConsent, SheetPrompter};
-use shell::shell::automation_triggers::{Firing, ManualClock, TriggerEvent, TriggerHost, armed};
-use shell::shell::portal_dialog::{DialogView, PortalDialogController, PortalDialogQueue};
-use shell::shell::state::WorkspaceAuthority as _;
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, InvokeArgument,
     InvokeRequest, MAX_CATALOGUE_PAGE, Pending, ReceiptStatus, RemoteActionMessage,
@@ -78,8 +78,8 @@ const INVOKER_APP: &str = "so.tilo.fixture-invoker";
 const BOB: &str = "person:bob";
 /// The person a fixture compositor session acts for.
 fn session_person() -> String {
-    shell::shell::state::local_user_id_for_room(
-        &shell::shell::state::RoomId::parse(&ROOM.to_string()).expect("room id"),
+    crate::shell::state::local_user_id_for_room(
+        &crate::shell::state::RoomId::parse(&ROOM.to_string()).expect("room id"),
     )
 }
 
@@ -139,13 +139,13 @@ fn owner_principal() -> String {
 fn spawn_broker(
     path: &Path,
 ) -> (
-    shell::shell::collab_broker::BrokerHandle,
-    shell::shell::state::WorkspaceTreeHandle,
+    crate::shell::collab_broker::BrokerHandle,
+    crate::shell::state::WorkspaceTreeHandle,
 ) {
     let owner = owner_principal();
     let mut workspace =
-        shell::shell::state::Workspace::new(shell::shell::state::WorkspaceId(1), "Drafts room");
-    workspace.room = shell::shell::state::RoomId::parse(&ROOM.to_string()).expect("room id");
+        crate::shell::state::Workspace::new(crate::shell::state::WorkspaceId(1), "Drafts room");
+    workspace.room = crate::shell::state::RoomId::parse(&ROOM.to_string()).expect("room id");
     workspace.set_owner(owner.clone());
     workspace
         .grant_as(
@@ -180,10 +180,10 @@ fn spawn_broker(
             )
             .expect("the owner admits a member who may edit");
     }
-    let mut tree = shell::shell::state::WorkspaceTree::default();
+    let mut tree = crate::shell::state::WorkspaceTree::default();
     tree.desktop.workspaces.push(workspace);
     let membership = tree.shared();
-    let broker = shell::shell::collab_broker::spawn_native_harness(
+    let broker = crate::shell::collab_broker::spawn_native_harness(
         path.to_path_buf(),
         std::sync::Arc::clone(&membership),
         [
@@ -385,9 +385,9 @@ fn answer<T>(pending: Pending<T>) -> T {
 /// A running broker, the door as the room's owner reaches it, and the
 /// fixture application once its actions are offered.
 struct Door {
-    broker: shell::shell::collab_broker::BrokerHandle,
-    membership: shell::shell::state::WorkspaceTreeHandle,
-    host: shell::shell::remote_actions::BrokerActionHost,
+    broker: crate::shell::collab_broker::BrokerHandle,
+    membership: crate::shell::state::WorkspaceTreeHandle,
+    host: crate::shell::remote_actions::BrokerActionHost,
     owner: Caller,
     app: FixtureApp,
     deadline: Instant,
@@ -405,7 +405,7 @@ impl Door {
         .expect("owner-only socket directory");
         let socket = dir.path().join("collab.sock");
         let (broker, membership) = spawn_broker(&socket);
-        let host = shell::shell::remote_actions::BrokerActionHost::new(
+        let host = crate::shell::remote_actions::BrokerActionHost::new(
             broker.app_action_broker().expect("the action broker"),
         );
         let mut door = Self {
@@ -595,7 +595,7 @@ impl Door {
         }
     }
 
-    fn finished_runs(&self) -> Vec<shell::shell::automation_host::FinishedShortcutRun> {
+    fn finished_runs(&self) -> Vec<crate::shell::automation_host::FinishedShortcutRun> {
         loop {
             let finished = self
                 .broker
@@ -751,7 +751,7 @@ fn a_saved_shortcut_runs_its_steps_through_the_door_and_undoes_as_one() {
     let finished = door.finished_runs();
     assert_eq!(finished.len(), 1, "one run finished");
     let mut workspace_doc = AutoCommit::new();
-    shell::shell::automation_host::record_shortcut_run(
+    crate::shell::automation_host::record_shortcut_run(
         &mut workspace_doc,
         &finished[0],
         &mut [(RECORD.to_string(), &mut door.app.doc)],
@@ -863,7 +863,7 @@ fn served_actions(door: &Door) -> Vec<String> {
 
 /// Press `key` with `modifiers` in `host`, after one layout pass.
 fn press(
-    host: &mut shell::shell::overlay_host::ShellOverlayHost,
+    host: &mut crate::shell::overlay_host::ShellOverlayHost,
     key: winit::keyboard::Key,
     modifiers: winit::keyboard::ModifiersState,
 ) {
@@ -946,7 +946,7 @@ fn a_chord_pressed_in_the_shell_runs_the_shortcut_saved_with_it() {
     door.save_as(&session, &triggered_draft("from-keys", vec![chord]))
         .expect("the shortcut is saved with its keyboard trigger");
 
-    let (mut host, _chrome) = shell::shell::build_tilo_overlay_host_with_handle(
+    let (mut host, _chrome) = crate::shell::build_tilo_overlay_host_with_handle(
         std::sync::Arc::clone(&door.membership),
         false,
     );
@@ -1289,7 +1289,7 @@ fn revoking_the_savers_membership_or_deleting_the_shortcut_stops_its_triggers() 
     // The owner revokes Bob's membership: the next fire starts nothing.
     let owner = owner_principal();
     assert!(door.membership.write().revoke_in_workspace(
-        shell::shell::state::WorkspaceId(1),
+        crate::shell::state::WorkspaceId(1),
         &owner,
         &membership_id(BOB),
     ));
@@ -1510,7 +1510,7 @@ fn door_with_declared_access() -> Door {
         .app_action_broker()
         .expect("the action broker")
         .set_app_action_access(std::sync::Arc::new(|app: &str| {
-            shell::shell::app_action_access::ActionAccess {
+            crate::shell::app_action_access::ActionAccess {
                 query: app == SHORTCUTS_APP_ID || app == INVOKER_APP,
                 invoke: app == INVOKER_APP,
             }
@@ -1928,8 +1928,8 @@ fn with_nobody_present_the_call_is_refused_without_asking() {
 
 /// A compositor session sharing the door's workspaces and broker, and the
 /// person it acts for.
-fn session_host(door: &Door) -> shell::shell::overlay_host::ShellOverlayHost {
-    let (mut host, _chrome) = shell::shell::build_tilo_overlay_host_with_handle(
+fn session_host(door: &Door) -> crate::shell::overlay_host::ShellOverlayHost {
+    let (mut host, _chrome) = crate::shell::build_tilo_overlay_host_with_handle(
         std::sync::Arc::clone(&door.membership),
         false,
     );
@@ -1966,8 +1966,8 @@ fn run_interactively(door: &Door, shortcut: &str) -> u64 {
 /// Serve the fixture until the shell shows a sheet; what it shows.
 fn await_sheet(
     door: &mut Door,
-    host: &mut shell::shell::overlay_host::ShellOverlayHost,
-) -> shell::shell::portal_dialog::DialogView {
+    host: &mut crate::shell::overlay_host::ShellOverlayHost,
+) -> crate::shell::portal_dialog::DialogView {
     loop {
         assert!(Instant::now() < door.deadline, "no sheet was shown");
         door.app.pump();
@@ -1979,7 +1979,7 @@ fn await_sheet(
     }
 }
 
-fn type_text(host: &mut shell::shell::overlay_host::ShellOverlayHost, text: &str) {
+fn type_text(host: &mut crate::shell::overlay_host::ShellOverlayHost, text: &str) {
     for character in text.chars() {
         press(
             host,
@@ -1990,7 +1990,7 @@ fn type_text(host: &mut shell::shell::overlay_host::ShellOverlayHost, text: &str
 }
 
 fn press_named(
-    host: &mut shell::shell::overlay_host::ShellOverlayHost,
+    host: &mut crate::shell::overlay_host::ShellOverlayHost,
     key: winit::keyboard::NamedKey,
 ) {
     press(

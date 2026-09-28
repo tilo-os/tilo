@@ -106,6 +106,11 @@ pub enum Block {
     Paragraph { spans: Vec<Span> },
     /// `<blockquote>` — rendered indented with a rule.
     Quote { spans: Vec<Span> },
+    /// A stanza or verse paragraph: a `<p>` (or other line container) inside
+    /// z3998 `poem`/`verse`/`song`/`lyrics` semantics whose lines are marked
+    /// up. Each run with [`Span::line_break`] starts a new line; lines are set
+    /// ragged with a hanging indent. `quoted` verse sits in a `<blockquote>`.
+    Verse { spans: Vec<Span>, quoted: bool },
     /// One `<li>` inside `<ul>`/`<ol>`. `ordered` picks bullet vs number;
     /// `index` is the 1-based ordinal for ordered lists.
     ListItem {
@@ -130,6 +135,7 @@ impl Block {
             Block::Heading { spans, .. }
             | Block::Paragraph { spans }
             | Block::Quote { spans }
+            | Block::Verse { spans, .. }
             | Block::ListItem { spans, .. } => spans,
             Block::Math { .. } | Block::Separator => &[],
         }
@@ -163,11 +169,16 @@ impl Block {
 /// `space_before`, so `"burning <em>for</em>."` yields a `for` run with a
 /// leading space and a `.` run with none. The layout and `plain_text` both
 /// consult `space_before` to decide whether to insert a gap.
+///
+/// A hard line break (`<br/>`, a verse line) is laid out from `line_break`
+/// but kept in the text as the single word space it always was, so a
+/// block's plain text and every character offset into it are the same
+/// whether or not its lines break.
 #[derive(Clone, Debug, PartialEq)]
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "bold/italic/code/space_before are independent inline style flags a span can \
-              carry in any combination, not a state machine"
+    reason = "bold/italic/code/space_before/line_break are independent inline flags a span \
+              can carry in any combination, not a state machine"
 )]
 pub struct Span {
     pub text: String,
@@ -179,6 +190,11 @@ pub struct Span {
     /// Whether a word break separated this run from the previous one. Ignored
     /// for the first run of a block (it starts the line).
     pub space_before: bool,
+    /// This run starts a new line. Always carries `space_before`.
+    pub line_break: bool,
+    /// Indentation in ems of the line this run starts (a verse line's `i1`,
+    /// `i2`, … class); read on a block's first run and on `line_break` runs.
+    pub line_indent: u8,
 }
 
 impl Span {
@@ -190,6 +206,8 @@ impl Span {
             italic: false,
             code: false,
             space_before: false,
+            line_break: false,
+            line_indent: 0,
         }
     }
 }
@@ -1037,6 +1055,8 @@ mod tests {
                         italic: false,
                         code: false,
                         space_before: false,
+                        line_break: false,
+                        line_indent: 0,
                     },
                 ],
             };

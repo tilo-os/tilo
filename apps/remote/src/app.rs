@@ -6699,6 +6699,7 @@ fn next_field(cur: Option<Field>, kind: ConnectionKind) -> Field {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui::headless::Framed;
 
     fn doc() -> AutoCommit {
         AutoCommit::new()
@@ -6743,24 +6744,21 @@ mod tests {
         );
     }
 
-    /// Drive the real layout passes (`build_layout` → taffy → `apply_layout`)
-    /// at a given allocation, exactly as the host does, so responsive tests
-    /// assert on the production path rather than a tautological helper.
-    fn lay_out(app: &mut RemoteApp, w: f64, h: f64) {
-        let theme = Theme::dark();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let node = app.build_layout(&mut taffy, &theme, &mut node_map);
-        taffy
-            .compute_layout(
-                node,
-                taffy::Size {
-                    width: taffy::AvailableSpace::Definite(w as f32),
-                    height: taffy::AvailableSpace::Definite(h as f32),
-                },
-            )
-            .unwrap();
-        app.apply_layout(&taffy, node, Point::ZERO);
+    fn viewport(w: f64, h: f64) -> (u32, u32) {
+        ui::headless::viewport((w, h))
+    }
+
+    /// Mount `app` in the shared frame harness and run its first frame —
+    /// the production sync, layout and draw passes — at `w`x`h`.
+    fn framed(app: RemoteApp, w: f64, h: f64) -> Framed<RemoteApp> {
+        Framed::new(ui::State::new(), app, viewport(w, h), Theme::dark())
+    }
+
+    /// Run the next frame at a new allocation.
+    fn lay_out(app: &mut Framed<RemoteApp>, w: f64, h: f64) {
+        Framed::harness_mut(app)
+            .relayout_at(viewport(w, h))
+            .expect("layout settles");
     }
 
     #[test]
@@ -6835,8 +6833,7 @@ mod tests {
         // short of the last row.
         eprintln!("phase keyboard_scroller_and_painter_share_the_list_stride");
         {
-            let mut app = RemoteApp::new_demo();
-            lay_out(&mut app, 1280.0, 400.0);
+            let mut app = framed(RemoteApp::new_demo(), 1280.0, 400.0);
             let mut tr = TextRenderer::new();
             let mut scene = Scene::new();
             app.draw(
@@ -6946,8 +6943,7 @@ mod tests {
 
         eprintln!("phase long_narrow_lists_scroll_and_keep_selection_visible");
         {
-            let mut app = RemoteApp::new_demo();
-            lay_out(&mut app, 640.0, 500.0);
+            let mut app = framed(RemoteApp::new_demo(), 640.0, 500.0);
             let count = app.workspace.connections().len();
             app.scroll_connection_into_view(count - 1, count);
             assert!(app.list_scroll > 0.0);
@@ -6956,13 +6952,12 @@ mod tests {
 
         eprintln!("phase protocol_segments_share_one_gapless_form_card_row");
         {
-            let mut app = RemoteApp::new();
-            lay_out(&mut app, 1280.0, 800.0);
+            let mut app = framed(RemoteApp::new(), 1280.0, 800.0);
             app.apply(Action::NewConnection, &mut doc());
             let mut scene = Scene::new();
             let mut text = TextRenderer::new();
             Widget::draw(
-                &mut app,
+                &mut *app,
                 &mut scene,
                 Affine::IDENTITY,
                 &mut text,
@@ -6994,8 +6989,7 @@ mod tests {
     fn accessibility_routes_every_control_through_validation() {
         eprintln!("phase accessibility_exposes_and_routes_every_connection_control");
         {
-            let mut app = RemoteApp::new_demo();
-            lay_out(&mut app, 640.0, 900.0);
+            let mut app = framed(RemoteApp::new_demo(), 640.0, 900.0);
             let id = app
                 .workspace
                 .connections()
@@ -7085,8 +7079,7 @@ mod tests {
 
         eprintln!("phase confirmation_is_a_modal_accessibility_surface");
         {
-            let mut app = RemoteApp::new_demo();
-            lay_out(&mut app, 960.0, 700.0);
+            let mut app = framed(RemoteApp::new_demo(), 960.0, 700.0);
             let id = app.workspace.connections()[0].id;
             app.apply(Action::RequestDelete(id), &mut doc());
             let tree = app.accessibility().expect("confirmation semantics");
@@ -7102,8 +7095,7 @@ mod tests {
 
         eprintln!("phase failed_status_surface_exposes_retry_and_exit_actions");
         {
-            let mut app = RemoteApp::new_demo();
-            lay_out(&mut app, 1280.0, 800.0);
+            let mut app = framed(RemoteApp::new_demo(), 1280.0, 800.0);
             app.dev_preview_session(
                 ConnectionKind::Ssh,
                 SessionStatus::Failed("Connection refused".into()),
@@ -7112,7 +7104,7 @@ mod tests {
             let mut scene = Scene::new();
             let mut text = TextRenderer::new();
             Widget::draw(
-                &mut app,
+                &mut *app,
                 &mut scene,
                 Affine::IDENTITY,
                 &mut text,
@@ -7143,8 +7135,7 @@ mod tests {
     fn rail_mode_follows_the_inclusive_breakpoint() {
         eprintln!("phase wide_window_docks_rail_open");
         {
-            let mut app = RemoteApp::new();
-            lay_out(&mut app, 1280.0, 800.0);
+            let app = framed(RemoteApp::new(), 1280.0, 800.0);
             assert_eq!(app.rail_layout, SplitLayout::Docked);
             assert!(
                 app.rail_open(),
@@ -7154,8 +7145,7 @@ mod tests {
 
         eprintln!("phase narrow_window_collapses_rail_to_closed_overlay");
         {
-            let mut app = RemoteApp::new();
-            lay_out(&mut app, 640.0, 900.0);
+            let app = framed(RemoteApp::new(), 640.0, 900.0);
             assert_eq!(app.rail_layout, SplitLayout::Overlay);
             assert!(
                 !app.rail_open(),
@@ -7165,15 +7155,13 @@ mod tests {
 
         eprintln!("phase breakpoint_boundary_is_inclusive_docked");
         {
-            let mut app = RemoteApp::new();
-            lay_out(&mut app, RAIL_BREAKPOINT, 800.0);
+            let app = framed(RemoteApp::new(), RAIL_BREAKPOINT, 800.0);
             assert_eq!(
                 app.rail_layout,
                 SplitLayout::Docked,
                 "at the breakpoint we dock"
             );
-            let mut app2 = RemoteApp::new();
-            lay_out(&mut app2, RAIL_BREAKPOINT - 1.0, 800.0);
+            let app2 = framed(RemoteApp::new(), RAIL_BREAKPOINT - 1.0, 800.0);
             assert_eq!(
                 app2.rail_layout,
                 SplitLayout::Overlay,
@@ -7184,9 +7172,8 @@ mod tests {
 
     /// Draw the demo roster once at `width` × 800 and `scale`, exactly as the
     /// host does, and return the row hit rects top to bottom.
-    fn drawn_rows(width: f64, scale: f32) -> (RemoteApp, Vec<Rect>) {
-        let mut app = RemoteApp::new_demo();
-        lay_out(&mut app, width, 800.0);
+    fn drawn_rows(width: f64, scale: f32) -> (Framed<RemoteApp>, Vec<Rect>) {
+        let mut app = framed(RemoteApp::new_demo(), width, 800.0);
         let mut tr = TextRenderer::new();
         tr.set_text_scale(scale);
         let mut scene = Scene::new();
@@ -7210,8 +7197,7 @@ mod tests {
     fn rail_toggle_dismiss_and_motion_settle_to_mode_default() {
         eprintln!("phase toggle_opens_overlay_rail_then_esc_dismisses");
         {
-            let mut app = RemoteApp::new();
-            lay_out(&mut app, 640.0, 900.0);
+            let mut app = framed(RemoteApp::new(), 640.0, 900.0);
             assert!(!app.rail_open());
             // Hamburger summons the overlay rail.
             app.apply(Action::ToggleRail, &mut doc());
@@ -7231,9 +7217,8 @@ mod tests {
 
         eprintln!("phase crossing_breakpoint_returns_rail_to_mode_default");
         {
-            let mut app = RemoteApp::new();
             // Start docked, user hides the rail.
-            lay_out(&mut app, 1280.0, 800.0);
+            let mut app = framed(RemoteApp::new(), 1280.0, 800.0);
             app.apply(Action::ToggleRail, &mut doc());
             assert!(!app.rail_open(), "user hid the docked rail");
             // Narrow past the breakpoint, then widen again: the stale preference
@@ -7248,8 +7233,7 @@ mod tests {
 
         eprintln!("phase reduced_motion_settles_the_navigation_flap");
         {
-            let mut app = RemoteApp::new();
-            lay_out(&mut app, 640.0, 900.0);
+            let mut app = framed(RemoteApp::new(), 640.0, 900.0);
             app.apply(Action::ToggleRail, &mut doc());
             assert!(app.needs_animation_frame());
             app.set_motion_reduced(true);
@@ -7413,8 +7397,7 @@ mod tests {
         eprintln!("phase the_connection_form_takes_a_paste_and_a_selection");
         {
             let ctrl = ModifiersState::CONTROL;
-            let mut app = RemoteApp::new();
-            lay_out(&mut app, 1280.0, 800.0);
+            let mut app = framed(RemoteApp::new(), 1280.0, 800.0);
             let mut state = doc();
             app.apply(Action::NewConnection, &mut state);
             app.apply(Action::FocusField(Field::Host), &mut state);
@@ -7438,8 +7421,7 @@ mod tests {
         eprintln!("phase the_port_field_takes_a_paste_and_stays_numeric");
         {
             let ctrl = ModifiersState::CONTROL;
-            let mut app = RemoteApp::new();
-            lay_out(&mut app, 1280.0, 800.0);
+            let mut app = framed(RemoteApp::new(), 1280.0, 800.0);
             let mut state = doc();
             app.apply(Action::NewConnection, &mut state);
             app.apply(Action::FocusField(Field::Port), &mut state);
@@ -7458,8 +7440,7 @@ mod tests {
         eprintln!("phase the_search_box_takes_a_paste");
         {
             let ctrl = ModifiersState::CONTROL;
-            let mut app = RemoteApp::new_demo();
-            lay_out(&mut app, 1280.0, 800.0);
+            let mut app = framed(RemoteApp::new_demo(), 1280.0, 800.0);
             let mut state = doc();
             app.apply(Action::FocusField(Field::Search), &mut state);
             ui::text_selection::clipboard_copy("build");

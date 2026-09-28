@@ -37,8 +37,9 @@ pub struct Packed {
     pub bytes: u64,
 }
 
-/// Signs `payload` with `manifest` as a full `.tapp` at `output`, then reads
-/// it back and verifies it against its own publisher key.
+/// Signs `payload` with `manifest` as a full `.tapp` at `output`, declaring
+/// `resource_kinds` as the kinds the app's records hold, then reads it back
+/// and verifies it against its own publisher key.
 ///
 /// # Errors
 ///
@@ -46,6 +47,7 @@ pub struct Packed {
 /// the archive exceeds the application size ceiling, or it does not verify.
 pub fn pack_payload(
     manifest_path: &Path,
+    resource_kinds: Vec<String>,
     payload: &Path,
     output: &Path,
     identity: &SigningIdentity,
@@ -55,6 +57,7 @@ pub fn pack_payload(
     let mut manifest = Manifest::from_toml_str(&source)
         .with_context(|| format!("parsing {}", manifest_path.display()))?;
     manifest.publisher.identity = format!("ed25519:{}", hex::encode(identity.public_key_bytes()));
+    manifest.resources.kinds = resource_kinds;
     let packed =
         pack(payload, &manifest, identity).map_err(|error| anyhow!("pack failed: {error}"))?;
 

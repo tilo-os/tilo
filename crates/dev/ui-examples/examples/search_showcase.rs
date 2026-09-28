@@ -22,7 +22,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use tilo_ui::icons::Icon;
 use tilo_ui::offscreen::OffscreenRenderer;
 use tilo_ui::presence::PresenceCtx;
-use tilo_ui::search::{SearchRegistry, SearchResult, fuzzy_score};
+use tilo_ui::search::{FieldWeight, ListIndex, SearchRegistry, SearchResult};
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
 use tilo_ui::widget::{SearchField, SearchResultsView, Widget};
@@ -59,11 +59,20 @@ fn px_dim(v: f64) -> u32 {
 type Rec = (&'static str, Option<&'static str>, &'static str);
 
 fn provider(reg: &mut SearchRegistry, kind: &'static str, icon: Icon, recs: &'static [Rec]) {
+    let index = ListIndex::default();
     reg.register_fn(kind, move |q: &str| {
+        let ranks = index.ranks(
+            q,
+            recs.iter().map(|(title, sub, _)| {
+                [
+                    (*title, FieldWeight::TITLE),
+                    (sub.unwrap_or_default(), FieldWeight::SUBTITLE),
+                ]
+            }),
+        );
         recs.iter()
-            .filter(|(title, sub, _)| {
-                fuzzy_score(q, title).is_some() || sub.is_some_and(|s| fuzzy_score(q, s).is_some())
-            })
+            .zip(ranks)
+            .filter_map(|(rec, rank)| rank.map(|_| rec))
             .map(|(title, sub, id)| {
                 let mut r = SearchResult::new(kind, *title, *id).with_icon(icon);
                 if let Some(s) = sub {

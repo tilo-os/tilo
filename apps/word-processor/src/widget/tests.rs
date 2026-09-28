@@ -7494,13 +7494,15 @@ fn save_and_open_preserve_identity_recovery_and_bytes() {
                 })
                 .unwrap();
                 assert!(
-                    wp.start_resource_operation(
-                        tilo_actions::InvocationId::new(),
-                        tilo_actions::OperationKind::Effect,
-                        crate::actions::WORD_PROCESSOR_OPERATION_TYPE,
-                        &payload,
-                        &state.doc,
-                        &state.root,
+                    wp.start_operation(
+                        &ui::widget::ResourceOperation::local(
+                            tilo_actions::InvocationId::new(),
+                            tilo_actions::OperationKind::Effect,
+                            crate::actions::WORD_PROCESSOR_OPERATION_TYPE,
+                            &payload
+                        ),
+                        &mut state.doc,
+                        &state.root
                     )
                     .is_err()
                 );
@@ -8723,12 +8725,14 @@ fn canonical_saves_preserve_links_permissions_and_close_requirements() {
         let payload =
             serde_json::to_vec(&crate::actions::WordProcessorOperation::Save { path: None })
                 .unwrap();
-        wp.start_resource_operation(
-            tilo_actions::InvocationId::new(),
-            tilo_actions::OperationKind::Effect,
-            crate::actions::WORD_PROCESSOR_OPERATION_TYPE,
-            &payload,
-            &state.doc,
+        wp.start_operation(
+            &ui::widget::ResourceOperation::local(
+                tilo_actions::InvocationId::new(),
+                tilo_actions::OperationKind::Effect,
+                crate::actions::WORD_PROCESSOR_OPERATION_TYPE,
+                &payload,
+            ),
+            &mut state.doc,
             &state.root,
         )
         .unwrap();
@@ -8794,13 +8798,15 @@ fn canonical_saves_preserve_links_permissions_and_close_requirements() {
             })
             .unwrap();
             assert!(
-                wp.start_resource_operation(
-                    tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::WORD_PROCESSOR_OPERATION_TYPE,
-                    &payload,
-                    &state.doc,
-                    &state.root,
+                wp.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        tilo_actions::InvocationId::new(),
+                        tilo_actions::OperationKind::Effect,
+                        crate::actions::WORD_PROCESSOR_OPERATION_TYPE,
+                        &payload
+                    ),
+                    &mut state.doc,
+                    &state.root
                 )
                 .is_err()
             );
@@ -8852,12 +8858,14 @@ fn canonical_saves_preserve_links_permissions_and_close_requirements() {
         })
         .unwrap();
         assert!(
-            wp.start_resource_operation(
-                tilo_actions::InvocationId::new(),
-                tilo_actions::OperationKind::Effect,
-                crate::actions::WORD_PROCESSOR_OPERATION_TYPE,
-                &payload,
-                &state.doc,
+            wp.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::Effect,
+                    crate::actions::WORD_PROCESSOR_OPERATION_TYPE,
+                    &payload
+                ),
+                &mut state.doc,
                 &state.root
             )
             .is_err()
@@ -8868,12 +8876,14 @@ fn canonical_saves_preserve_links_permissions_and_close_requirements() {
             serde_json::to_vec(&crate::actions::WordProcessorOperation::Save { path: None })
                 .unwrap();
         assert!(matches!(
-            wp.start_resource_operation(
-                tilo_actions::InvocationId::new(),
-                tilo_actions::OperationKind::Effect,
-                crate::actions::WORD_PROCESSOR_OPERATION_TYPE,
-                &payload,
-                &state.doc,
+            wp.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::Effect,
+                    crate::actions::WORD_PROCESSOR_OPERATION_TYPE,
+                    &payload
+                ),
+                &mut state.doc,
                 &state.root
             )
             .unwrap(),
@@ -9210,13 +9220,15 @@ fn tile_host_preserves_completed_direct_open_result_across_record_intent_release
     })
     .unwrap();
     assert!(matches!(
-        tile.start_resource_operation_with_document(
-            invocation,
-            tilo_actions::OperationKind::Effect,
-            crate::actions::WORD_PROCESSOR_OPERATION_TYPE,
-            &payload,
+        tile.start_operation(
+            &ui::widget::ResourceOperation::local(
+                invocation,
+                tilo_actions::OperationKind::Effect,
+                crate::actions::WORD_PROCESSOR_OPERATION_TYPE,
+                &payload
+            ),
             &mut outer,
-            &automerge::ROOT,
+            &automerge::ROOT
         )
         .unwrap(),
         Some(ui::widget::ResourceOperationStart::Accepted)
@@ -9300,13 +9312,15 @@ fn tile_host_routes_escape_to_old_writer_draft_before_retrying_open_handoff() {
     })
     .unwrap();
     assert!(matches!(
-        tile.start_resource_operation_with_document(
-            invocation,
-            tilo_actions::OperationKind::Effect,
-            crate::actions::WORD_PROCESSOR_OPERATION_TYPE,
-            &payload,
+        tile.start_operation(
+            &ui::widget::ResourceOperation::local(
+                invocation,
+                tilo_actions::OperationKind::Effect,
+                crate::actions::WORD_PROCESSOR_OPERATION_TYPE,
+                &payload
+            ),
             &mut outer,
-            &automerge::ROOT,
+            &automerge::ROOT
         )
         .unwrap(),
         Some(ui::widget::ResourceOperationStart::Accepted)

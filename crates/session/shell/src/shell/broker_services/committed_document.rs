@@ -1,4 +1,6 @@
 //! Reads the same native owner; local app storage is never an authority fallback.
+//! Captures come from a bounded restore of the room's committed state, never
+//! from the live peer.
 use super::{
     NativeDocumentRead, NativeDocumentReadContext, NativeDocumentReads, NativeOwnerCommitService,
 };
@@ -36,13 +38,43 @@ impl NativeDocumentReads for NativeOwnerCommitService {
     fn capture(
         &self,
         context: &NativeDocumentReadContext,
-        _known_revision: Option<[u8; 32]>,
-        _maximum: usize,
+        known_revision: Option<[u8; 32]>,
+        maximum: usize,
     ) -> Result<NativeDocumentRead, String> {
+        use super::super::native_workspace_owner::document_read::DocumentRead;
         self.authorize(context)?;
-        // This seam deliberately cannot call StatePeer::document (clone/save).
-        // Installation awaits a capture from the actual owner's
-        // BoundedStatePeer. A nominal broker byte token is not a substitute.
-        Err("bounded native document capture is not installed".into())
+        let route = context.route();
+        let room = super::super::state::RoomId::parse(&route.cluster_id)
+            .ok_or("invalid committed document room")?;
+        let owner = self
+            .owner
+            .as_ref()
+            .ok_or("native document owner unavailable")?;
+        let read = owner.with_current(room, |view| {
+            view.read_document(
+                context.certificate().device_public_key,
+                &route.app_id,
+                &route.record_id,
+                known_revision,
+                maximum,
+                std::time::SystemTime::now(),
+            )
+        })?;
+        Ok(match read {
+            DocumentRead::Unchanged(revision) => NativeDocumentRead::Unchanged(revision),
+            DocumentRead::Captured(document) => NativeDocumentRead::Captured {
+                revision: document.revision,
+                body: Box::new(Captured(document.bytes)),
+            },
+        })
+    }
+}
+
+/// The bytes of one bounded capture, held until the broker has sent them.
+struct Captured(Vec<u8>);
+
+impl tilo_action_broker::services::DocumentBytes for Captured {
+    fn bytes(&self) -> &[u8] {
+        &self.0
     }
 }

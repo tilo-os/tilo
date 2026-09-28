@@ -146,11 +146,15 @@ impl FrameHarness {
                     return;
                 }
             };
-            if let Err(error) = self.root.invoke_resource_operation_v2(
-                pending.kind,
-                &encoded.type_id,
-                &encoded.payload,
-                &self.state.doc,
+            if let Err(error) = crate::widget::start_without_document_writes(
+                self.root.as_mut(),
+                &crate::widget::ResourceOperation::local(
+                    tilo_actions::InvocationId::new(),
+                    pending.kind,
+                    &encoded.type_id,
+                    &encoded.payload,
+                ),
+                &mut self.state.doc,
                 &self.state.root,
             ) {
                 tracing::warn!(%error, "caller local request refused");

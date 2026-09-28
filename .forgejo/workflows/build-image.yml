@@ -824,8 +824,10 @@ jobs:
           echo "KERNEL_RPMS_REF=$ref" >> "$GITHUB_ENV"
 
       # Deterministic timestamp for reproducible builds: the HEAD commit time.
-      # buildkit rewrites layer/image timestamps to SOURCE_DATE_EPOCH, and the
-      # builder stage honours it for the compile.
+      # buildkit stamps the image config and history with SOURCE_DATE_EPOCH.
+      # File mtimes are another matter: COPY keeps the checkout's and RUN
+      # leaves the build's wall clock, so every OCI export below sets
+      # rewrite-timestamp=true to clamp them to it as well.
       - name: Compute SOURCE_DATE_EPOCH (HEAD commit time)
         run: |
           epoch="$(git log -1 --format=%ct)"
@@ -1240,8 +1242,6 @@ jobs:
             browser_runtime_identity=RUNTIME_BUNDLE_SIGNING_KEY
             browser_app_identity=TAPP_PUBLISHER_IDENTITY
             ${{ steps.compiler-cache.outputs.secret-envs }}
-          # buildkit clamps layer timestamps to SOURCE_DATE_EPOCH for
-          # reproducible image digests.
           provenance: false
           cache-from: |
             type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/tilo/tilo-buildcache:${{ matrix.arch }}-wpe
@@ -1269,7 +1269,7 @@ jobs:
             ${{ steps.wpe-stage.outputs.digest && format('wpe-builder=oci-layout:///var/tmp/tilo-wpe@{0}', steps.wpe-stage.outputs.digest) || '' }}
           file: os/Containerfile
           push: false
-          outputs: ${{ steps.release-mode.outputs.validate == 'true' && 'type=oci,dest=/var/tmp/tilo-image.tar' || '' }}
+          outputs: ${{ steps.release-mode.outputs.validate == 'true' && 'type=oci,dest=/var/tmp/tilo-image.tar,rewrite-timestamp=true' || '' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           # TILO_WITH_BROWSER: a manual run can omit the browser + its WPE WebKit
@@ -1317,8 +1317,6 @@ jobs:
             browser_runtime_identity=RUNTIME_BUNDLE_SIGNING_KEY
             browser_app_identity=TAPP_PUBLISHER_IDENTITY
             ${{ steps.compiler-cache.outputs.secret-envs }}
-          # buildkit clamps layer timestamps to SOURCE_DATE_EPOCH for
-          # reproducible image digests.
           provenance: false
           # Registry-backed layer cache: each run starts with empty BuildKit
           # storage. mode=max keeps intermediate stages (WPE engine, builder
@@ -1374,7 +1372,7 @@ jobs:
             ${{ steps.wpe-uncached.outputs.digest && format('wpe-builder=oci-layout:///var/tmp/tilo-wpe-uncached@{0}', steps.wpe-uncached.outputs.digest) || (steps.wpe-stage.outputs.digest && format('wpe-builder=oci-layout:///var/tmp/tilo-wpe@{0}', steps.wpe-stage.outputs.digest)) || '' }}
           file: os/Containerfile
           push: false
-          outputs: ${{ steps.release-mode.outputs.validate == 'true' && 'type=oci,dest=/var/tmp/tilo-image.tar' || '' }}
+          outputs: ${{ steps.release-mode.outputs.validate == 'true' && 'type=oci,dest=/var/tmp/tilo-image.tar,rewrite-timestamp=true' || '' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
@@ -1482,7 +1480,7 @@ jobs:
             ${{ steps.wpe-stage.outputs.digest && format('wpe-builder=oci-layout:///var/tmp/tilo-wpe@{0}', steps.wpe-stage.outputs.digest) || '' }}
           file: os/Containerfile
           push: false
-          outputs: type=oci,dest=/var/tmp/tilo-image-repro.tar
+          outputs: type=oci,dest=/var/tmp/tilo-image-repro.tar,rewrite-timestamp=true
           tags: ${{ env.TILO_OS_REPOSITORY }}:repro-${{ github.sha }}
           # Identical labels: the manifests are compared byte for byte.
           labels: ${{ steps.meta.outputs.labels }}

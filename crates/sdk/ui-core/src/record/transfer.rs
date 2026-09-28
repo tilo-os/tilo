@@ -187,7 +187,10 @@ impl Origin {
     }
 
     /// Refuse anything but this origin's live document in `room`.
-    fn validate(&self, doc: &AutoCommit, room: &str) -> Result<(), TransferError> {
+    ///
+    /// # Errors
+    /// A document that is not this origin's live document there.
+    pub fn validate(&self, doc: &AutoCommit, room: &str) -> Result<(), TransferError> {
         match self {
             Self::Record(checkout) => Ok(validate_identity(doc, checkout, room)?),
             Self::AppDocument(_) if is_retired(doc) => Err(RecordOpenError::Retired.into()),
@@ -198,7 +201,8 @@ impl Origin {
         }
     }
 
-    fn kind(&self) -> &RecordKind {
+    /// The kind the document has, or takes once it arrives as a record.
+    pub fn kind(&self) -> &RecordKind {
         match self {
             Self::Record(checkout) => &checkout.kind,
             Self::AppDocument(kind) => kind,
@@ -290,6 +294,83 @@ pub fn adopt_fetched(
         }
         other => other,
     }
+}
+
+/// Identity keys a record's meta map may hold; anything else could claim
+/// more than the one record the document is.
+const IMPORTABLE_META: [&str; 7] = ["id", "kind", "home", super::ROOM, FORMERLY, "refs", "blobs"];
+
+/// Check `bytes` offered to become record `id` of `room` with their whole
+/// history, before anything keeps them: at most `max_bytes`, a complete
+/// document whose identity is exactly that freshly minted record scoped to
+/// that room, live, holding no room index and no references to other
+/// records, and naming earlier ids only as provenance.
+///
+/// # Errors
+/// Bytes that are too large, malformed, or not exactly that record.
+pub fn validate_import(
+    bytes: &[u8],
+    room: &str,
+    id: &RecordId,
+    max_bytes: usize,
+) -> Result<(AutoCommit, RecordCheckout), TransferError> {
+    if bytes.len() > max_bytes {
+        return Err(TransferError::NotTransferable("the document is too large"));
+    }
+    let minted = id.as_str().strip_prefix("uuid:").is_some_and(|text| {
+        uuid::Uuid::parse_str(text).is_ok_and(|uuid| uuid.hyphenated().to_string() == text)
+    });
+    if !minted || RecordId::parse(id.as_str()).as_ref() != Some(id) {
+        return Err(TransferError::NotTransferable(
+            "a document joins a room only as a newly minted record",
+        ));
+    }
+    let label = std::path::PathBuf::from(format!("imported {id}"));
+    let (doc, _) = app_state::decode_canonical(bytes, false, &label)?;
+    let checkout = identity(&doc)
+        .filter(|found| &found.id == id)
+        .ok_or(RecordOpenError::IdentityMismatch)?;
+    validate_identity(&doc, &checkout, room)?;
+    if super::room_scope(&doc).as_deref() != Some(room) {
+        return Err(RecordOpenError::IdentityMismatch.into());
+    }
+    if doc
+        .get(automerge::ROOT, super::INDEX)
+        .ok()
+        .flatten()
+        .is_some()
+    {
+        return Err(TransferError::NotTransferable(
+            "a document listing other records cannot join a room",
+        ));
+    }
+    let meta = meta_ro(&doc).ok_or(RecordOpenError::IdentityMismatch)?;
+    if doc
+        .keys(&meta)
+        .any(|key| !IMPORTABLE_META.contains(&key.as_str()))
+    {
+        return Err(RecordOpenError::IdentityMismatch.into());
+    }
+    if !super::references(&doc).is_empty()
+        || matches!(object_at(&doc, &meta, "refs", ObjType::List), ObjectAt::Object(list) if doc.length(&list) != 0)
+    {
+        return Err(TransferError::NotTransferable(
+            "a document referring to other records cannot join a room",
+        ));
+    }
+    let formerly = match object_at(&doc, &meta, FORMERLY, ObjType::List) {
+        ObjectAt::Object(list) => doc.length(&list),
+        ObjectAt::Missing => 0,
+        ObjectAt::Invalid => return Err(RecordOpenError::IdentityMismatch.into()),
+    };
+    let provenance = provenance(&doc);
+    if formerly > super::MAX_FORMER_IDS
+        || provenance.len() != formerly
+        || provenance.iter().any(|former| former == id)
+    {
+        return Err(RecordOpenError::IdentityMismatch.into());
+    }
+    Ok((doc, checkout))
 }
 
 /// [`read`] as of `heads`: what the document held before its app stamped
@@ -656,6 +737,104 @@ mod tests {
             Some("first draft, last words"),
             "the retirement is one more change, not an erasure"
         );
+    }
+
+    #[test]
+    fn a_document_joins_another_room_only_as_exactly_the_minted_record_it_claims() {
+        let dir = tempfile::tempdir().unwrap();
+        let (checkout, writer) = seeded(dir.path());
+        drop(writer);
+        let source = read(
+            &store(dir.path()),
+            PACKAGE,
+            FROM,
+            &Origin::Record(checkout.clone()),
+        )
+        .unwrap();
+        let target = RecordId::minted();
+        let arriving = |doc: &AutoCommit| doc.clone().save();
+        let mut rehomed = rehome(
+            &source,
+            &Origin::Record(checkout.clone()),
+            FROM,
+            TO,
+            &target,
+        )
+        .unwrap();
+        let bytes = arriving(&rehomed);
+        let (kept, identity) = validate_import(&bytes, TO, &target, bytes.len()).unwrap();
+        assert_eq!(identity.id, target);
+        assert_eq!(body(&kept).as_deref(), Some("first draft"));
+        assert_eq!(provenance(&kept), std::slice::from_ref(&checkout.id));
+
+        assert!(
+            validate_import(&bytes, TO, &target, bytes.len() - 1).is_err(),
+            "size is bounded"
+        );
+        assert!(
+            validate_import(&bytes, FROM, &target, bytes.len()).is_err(),
+            "scoped to the room it joins"
+        );
+        assert!(
+            validate_import(&bytes, TO, &RecordId::minted(), bytes.len()).is_err(),
+            "it is only the record it claims"
+        );
+        let derived = RecordId::derived("notes", &target);
+        let under_derived = rehome(
+            &source,
+            &Origin::Record(checkout.clone()),
+            FROM,
+            TO,
+            &derived,
+        )
+        .unwrap();
+        let derived_bytes = arriving(&under_derived);
+        assert!(
+            validate_import(&derived_bytes, TO, &derived, derived_bytes.len()).is_err(),
+            "only a freshly minted id joins a room"
+        );
+
+        let mut referring = rehomed.clone();
+        assert!(crate::record::add_reference(
+            &mut referring,
+            &crate::record::RecordRef {
+                target: RecordId::minted(),
+                relation: "cites".into(),
+            }
+        ));
+        let referring = arriving(&referring);
+        assert!(
+            validate_import(&referring, TO, &target, referring.len()).is_err(),
+            "no identities of other records ride along"
+        );
+        let mut indexing = rehomed.clone();
+        indexing
+            .put_object(ROOT, crate::record::INDEX, ObjType::Map)
+            .unwrap();
+        let indexing = arriving(&indexing);
+        assert!(validate_import(&indexing, TO, &target, indexing.len()).is_err());
+        let meta = meta_obj(&mut rehomed).unwrap();
+        rehomed.put(&meta, "alias", "uuid:other").unwrap();
+        let aliased = arriving(&rehomed);
+        assert!(validate_import(&aliased, TO, &target, aliased.len()).is_err());
+        let mut retired = read(
+            &store(dir.path()),
+            PACKAGE,
+            FROM,
+            &Origin::Record(checkout.clone()),
+        )
+        .unwrap();
+        let mut retired = rehome(
+            &retired.fork(),
+            &Origin::Record(checkout),
+            FROM,
+            TO,
+            &target,
+        )
+        .unwrap();
+        stamp_retired(&mut retired, &moved()).unwrap();
+        let retired = arriving(&retired);
+        assert!(validate_import(&retired, TO, &target, retired.len()).is_err());
     }
 
     #[test]

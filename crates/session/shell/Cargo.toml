@@ -268,25 +268,16 @@ futures-util = { workspace = true, features = ["io"] }
 postcard = { workspace = true, features = ["alloc"] }
 
 # Search infrastructure.
-# `walkdir` powers the files provider's name-index walker + the tantivy
-# content indexer.
+# `walkdir` powers the files provider's name-index walker + the content
+# indexer.
 walkdir.workspace = true
 tar.workspace = true
-# tantivy is the BM25 content index behind the files provider's
-# full-text search. `mmap` avoids reading the whole segment file into
-# RAM for each query; disabling default features drops the parquet
-# writer, ICU tokenizer, and other extras we don't need for a
-# home-directory index.
-tantivy = { version = "0.22", default-features = false, features = ["mmap"] }
-# Tilo's search layer: the providers' retained indexes.
-tilo-search = { path = "../../sdk/search" }
+# Tilo's search layer: the providers' retained indexes, and the files
+# provider's on-disk content index.
+tilo-search = { path = "../../sdk/search", features = ["disk"] }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
-# The integration tests drive the native broker harness. The dev image uses
-# the unqualified `dev-overrides` feature to target this package; a qualified
-# `shell/dev-overrides` would instead target this self dev-dependency.
-shell = { path = ".", features = ["test-support"] }
 tilo-copy-lint = { path = "../../dev/copy-lint" }
 # Pairing-broker tests talk to a local broker on a loaded runner; the
 # toolkit's test support bounds that exchange only against a hang.
@@ -371,7 +362,7 @@ reis = { version = "0.7.1", features = ["calloop"] }
 # Session-lock unlock reuses the greeter's greetd/PAM conversation
 # (`greetd_client::verify_password` — verify credentials without starting a
 # session) so login and unlock share one non-leaky auth path.
-greeter = { path = "../greeter" }
+greetd-client = { path = "../greetd-client" }
 # Session-owned Windows compatibility broker. The shell supplies the trusted
 # launcher registry and fresh workspace capability authority.
 compat-service = { path = "../../windows/compat-service" }

@@ -555,16 +555,16 @@ mod tests {
         fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
             &[crate::widget::resource_actions::OPERATION_TYPE]
         }
-        fn start_resource_operation(
+        fn start_operation(
             &mut self,
-            _: tilo_actions::InvocationId,
-            _: tilo_actions::OperationKind,
-            type_id: &str,
-            _: &[u8],
-            _: &automerge::AutoCommit,
+            op: &crate::widget::ResourceOperation<'_>,
+            _: &mut automerge::AutoCommit,
             _: &automerge::ObjId,
         ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-            if type_id != crate::widget::resource_actions::OPERATION_TYPE {
+            let Some(request) = op.unscoped() else {
+                return Ok(None);
+            };
+            if request.type_id != crate::widget::resource_actions::OPERATION_TYPE {
                 return Ok(None);
             }
             if !self.save_allowed {

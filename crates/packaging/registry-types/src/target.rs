@@ -6,10 +6,12 @@
 //! same bytes, and a client must be able to decide support from the string
 //! alone.
 //!
-//! Two platform families are accepted:
+//! Four platform families are accepted:
 //!
 //! - `tilo-os` — native thin apps; `architecture` is `x86_64` or `aarch64`,
 //!   `isa` is the native feature level and `runtime` is optional.
+//! - `windows` and `macos` — the same app as a self-contained native
+//!   executable, under the same architecture and `isa` rules.
 //! - `web` — WebAssembly side modules loaded by the browser toolkit core;
 //!   `architecture` is `wasm32`, `isa` is a canonical feature-set string
 //!   ([`parse_wasm_isa`]) and `runtime` is required and is the exact core
@@ -18,7 +20,16 @@
 use crate::entry::RegistryTarget;
 
 pub const TILO_OS_PLATFORM: &str = "tilo-os";
+pub const WINDOWS_PLATFORM: &str = "windows";
+pub const MACOS_PLATFORM: &str = "macos";
 pub const WEB_PLATFORM: &str = "web";
+
+/// Families whose versions are native executables for `x86_64` or `aarch64`.
+pub const NATIVE_PLATFORMS: [&str; 3] = [TILO_OS_PLATFORM, WINDOWS_PLATFORM, MACOS_PLATFORM];
+
+/// Native families outside Tilo OS: the executable links the toolkit in, and
+/// its signed manifest carries a `[target]` naming the version exactly.
+pub const DESKTOP_PLATFORMS: [&str; 2] = [WINDOWS_PLATFORM, MACOS_PLATFORM];
 pub const WASM32_ARCHITECTURE: &str = "wasm32";
 
 /// Every `isa` of the `web` platform starts with this baseline: the
@@ -254,10 +265,13 @@ impl RegistryTarget {
     /// Returns the first [`TargetError`] found.
     pub fn validate(&self) -> Result<(), TargetError> {
         match self.platform.as_str() {
-            TILO_OS_PLATFORM => {
+            platform @ (TILO_OS_PLATFORM | WINDOWS_PLATFORM | MACOS_PLATFORM) => {
                 if !matches!(self.architecture.as_str(), "x86_64" | "aarch64") {
                     return Err(TargetError::Architecture {
-                        platform: TILO_OS_PLATFORM,
+                        platform: NATIVE_PLATFORMS
+                            .into_iter()
+                            .find(|known| *known == platform)
+                            .unwrap_or(TILO_OS_PLATFORM),
                         architecture: self.architecture.clone(),
                     });
                 }
@@ -432,6 +446,27 @@ mod tests {
         let mut empty = native;
         empty.isa.clear();
         assert_eq!(empty.validate(), Err(TargetError::EmptyIsa));
+        for platform in [WINDOWS_PLATFORM, MACOS_PLATFORM] {
+            let desktop = RegistryTarget {
+                platform: platform.into(),
+                architecture: "x86_64".into(),
+                isa: "x86_64-v2".into(),
+                runtime: None,
+            };
+            assert_eq!(desktop.validate(), Ok(()));
+            let mut wasm = desktop.clone();
+            wasm.architecture = WASM32_ARCHITECTURE.into();
+            assert_eq!(
+                wasm.validate(),
+                Err(TargetError::Architecture {
+                    platform,
+                    architecture: WASM32_ARCHITECTURE.into()
+                })
+            );
+            let mut bare = desktop;
+            bare.isa.clear();
+            assert_eq!(bare.validate(), Err(TargetError::EmptyIsa));
+        }
         assert!(matches!(
             RegistryTarget {
                 platform: "linux".into(),

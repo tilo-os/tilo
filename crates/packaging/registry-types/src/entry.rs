@@ -111,7 +111,7 @@ impl LocalizedImages {
 
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum EntryValidationError {
-    #[error("package id must use the so.tilo reverse-DNS namespace")]
+    #[error("package id must be lowercase reverse DNS with at least three labels")]
     InvalidPackageId,
     #[error("{field} must contain an English fallback")]
     MissingEnglishFallback { field: &'static str },
@@ -251,7 +251,7 @@ impl RegistryEntry {
     /// Returns an [`EntryValidationError`] identifying the first invalid field
     /// or collection encountered.
     pub fn validate(&self) -> Result<(), EntryValidationError> {
-        if !self.package_id.starts_with("so.tilo.") || self.package_id.len() > 255 {
+        if !crate::namespace::valid_package_id(&self.package_id) {
             return Err(EntryValidationError::InvalidPackageId);
         }
         validate_localized_text("name", &self.name, 256)?;

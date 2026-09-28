@@ -14,9 +14,6 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use std::collections::HashMap;
-
-use taffy::{NodeId, TaffyTree};
 use themes::ThemesApp;
 use themes::app::{NARROW_CONTENT_GUTTER, TOPBAR_H};
 use themes::customizer::{
@@ -25,96 +22,38 @@ use themes::customizer::{
 };
 use themes::model::default_catalog;
 use themes::widgets::{ROW_H, ThemeRow};
-use ui::text_render::TextRenderer;
+use ui::headless::{FrameOptions, Framed};
 use ui::widget::Widget;
-use vello::kurbo::{Point, Rect};
+use vello::kurbo::Rect;
 
-/// The production layout cycle for any widget under a large-text
-/// preference: the theme carries `text_scale` and the renderer is told the
-/// same scale, exactly as the live host and the shared launcher do. The
-/// outer box is a column so a measured, auto-height child keeps its own
-/// height instead of being stretched to the box.
-fn lay_out_widget_scaled(widget: &mut dyn Widget, (w, h): (f32, f32), text_scale: f32) {
-    let theme = ui::Theme::dark().with_text_scale(text_scale);
-    let mut state = ui::State::new();
-    widget.sync(&mut state.doc, &state.root);
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    let node = widget.build_layout(&mut taffy, &theme, &mut node_map);
-    let outer = taffy
-        .new_with_children(
-            taffy::Style {
+/// The production frame for any widget under a large-text preference: the
+/// theme carries `text_scale` and the harness tells the renderer the same
+/// scale, exactly as the live host and the shared launcher do. The host box
+/// is a column so a measured, auto-height child keeps its own height instead
+/// of being stretched to the box.
+fn lay_out_widget_scaled<W: Widget + 'static>(
+    widget: W,
+    (w, h): (u32, u32),
+    text_scale: f32,
+) -> Framed<W> {
+    Framed::with_options(
+        ui::State::new(),
+        widget,
+        (w, h),
+        FrameOptions {
+            theme: Some(ui::Theme::dark().with_text_scale(text_scale)),
+            host_style: Some(taffy::Style {
                 display: taffy::Display::Flex,
                 flex_direction: taffy::FlexDirection::Column,
-                size: taffy::Size {
-                    width: taffy::Dimension::length(w),
-                    height: taffy::Dimension::length(h),
-                },
                 ..Default::default()
-            },
-            &[node],
-        )
-        .unwrap();
-    let measure_map = node_map.clone();
-    let mut tr = TextRenderer::new();
-    tr.set_text_scale(text_scale);
-    taffy
-        .compute_layout_with_measure(
-            outer,
-            taffy::Size {
-                width: taffy::AvailableSpace::Definite(w),
-                height: taffy::AvailableSpace::Definite(h),
-            },
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = measure_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, &mut tr) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
-        )
-        .unwrap();
-    widget.apply_layout(&taffy, node, Point::ORIGIN);
+            }),
+            ..FrameOptions::default()
+        },
+    )
 }
 
-fn lay_out(app: &mut ThemesApp, (w, h): (f32, f32)) {
-    let theme = ui::Theme::dark();
-    let mut state = ui::State::new();
-    app.sync(&mut state.doc, &state.root);
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    let node = app.build_layout(&mut taffy, &theme, &mut node_map);
-    let outer = taffy
-        .new_with_children(
-            taffy::Style {
-                size: taffy::Size {
-                    width: taffy::Dimension::length(w),
-                    height: taffy::Dimension::length(h),
-                },
-                ..Default::default()
-            },
-            &[node],
-        )
-        .unwrap();
-    let measure_map = node_map.clone();
-    let mut tr = TextRenderer::new();
-    taffy
-        .compute_layout_with_measure(
-            outer,
-            taffy::Size {
-                width: taffy::AvailableSpace::Definite(w),
-                height: taffy::AvailableSpace::Definite(h),
-            },
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = measure_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, &mut tr) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
-        )
-        .unwrap();
-    app.apply_layout(&taffy, node, Point::ORIGIN);
+fn lay_out(app: ThemesApp, viewport: (u32, u32)) -> Framed<ThemesApp> {
+    Framed::new(ui::State::new(), app, viewport, ui::Theme::dark())
 }
 
 fn walk(w: &dyn Widget, f: &mut dyn FnMut(&dyn Widget)) {
@@ -167,9 +106,8 @@ fn narrow_customize_app() -> ThemesApp {
 fn narrow_selector_and_customizer_controls_align_to_shared_metrics() {
     // Case `narrow_view_selector_keeps_the_content_gutter_on_three_sides`.
     {
-        let mut app = narrow_customize_app();
-        lay_out(&mut app, (480.0, 900.0));
-        let tabs = by_widget_name(&app, "ToggleGroup")[0];
+        let app = lay_out(narrow_customize_app(), (480, 900));
+        let tabs = by_widget_name(&*app, "ToggleGroup")[0];
         let gutter = f64::from(NARROW_CONTENT_GUTTER);
         // The selector is content-sized and left-aligned to the content gutter
         // (the accepted narrow view-selector alignment); above it the same gutter
@@ -207,12 +145,11 @@ fn narrow_selector_and_customizer_controls_align_to_shared_metrics() {
 
     // Case `customizer_actions_match_the_dropdown_control_height`.
     {
-        let mut app = narrow_customize_app();
-        lay_out(&mut app, (480.0, 900.0));
-        let duplicate = by_test_id(&app, "themes.duplicate");
-        let reset = by_test_id(&app, "themes.reset");
-        let delete = by_test_id(&app, "themes.delete");
-        let font = by_test_id(&app, "font_dropdown");
+        let app = lay_out(narrow_customize_app(), (480, 900));
+        let duplicate = by_test_id(&*app, "themes.duplicate");
+        let reset = by_test_id(&*app, "themes.reset");
+        let delete = by_test_id(&*app, "themes.delete");
+        let font = by_test_id(&*app, "font_dropdown");
         for (name, button) in [
             ("Duplicate", duplicate),
             ("Reset", reset),
@@ -243,10 +180,9 @@ fn narrow_selector_and_customizer_controls_align_to_shared_metrics() {
     // gutter, centred in the bar, on the same centre line and control height as
     // the bar's actions (round one's U5 replaced a hand-painted 34 px rect).
     {
-        let mut app = narrow_customize_app();
-        lay_out(&mut app, (480.0, 900.0));
+        let app = lay_out(narrow_customize_app(), (480, 900));
         let metrics = ui::tokens::Metrics::default();
-        let toggle = by_test_id(&app, "themes.gallery_toggle");
+        let toggle = by_test_id(&*app, "themes.gallery_toggle");
         close(
             toggle.width(),
             f64::from(metrics.bar_height),
@@ -268,7 +204,7 @@ fn narrow_selector_and_customizer_controls_align_to_shared_metrics() {
             "toggle centred in the 1× bar",
         );
         for id in ["themes.new", "themes.export", "themes.apply"] {
-            let action = by_test_id(&app, id);
+            let action = by_test_id(&*app, id);
             close(
                 action.center().y,
                 toggle.center().y,
@@ -295,9 +231,9 @@ fn narrow_selector_and_customizer_controls_align_to_shared_metrics() {
         // the toggle in that tree is the close control.
         let mut open = ThemesApp::new_demo();
         open.seed_shot(480.0, "menu");
-        lay_out(&mut open, (480.0, 900.0));
+        let open = lay_out(open, (480, 900));
         assert_eq!(spoken(&open), "Hide themes");
-        let close_toggle = by_test_id(&open, "themes.gallery_toggle");
+        let close_toggle = by_test_id(&*open, "themes.gallery_toggle");
         close(
             close_toggle.x0,
             toggle.x0,
@@ -326,12 +262,11 @@ fn large_text_reflows_the_bar_gallery_and_specimen() {
     // instead of being painted over the toggle, and the content starts below
     // the taller bar.
     {
-        let mut app = narrow_customize_app();
-        lay_out_widget_scaled(&mut app, (480.0, 900.0), 2.0);
-        let toggle = by_test_id(&app, "themes.gallery_toggle");
+        let app = lay_out_widget_scaled(narrow_customize_app(), (480, 900), 2.0);
+        let toggle = by_test_id(&*app, "themes.gallery_toggle");
         let mut bar_bottom = toggle.y1;
         for id in ["themes.new", "themes.export", "themes.apply"] {
-            let action = by_test_id(&app, id);
+            let action = by_test_id(&*app, id);
             let overlap = toggle.intersect(action);
             assert!(
                 overlap.width() <= 0.0 || overlap.height() <= 0.0,
@@ -343,7 +278,7 @@ fn large_text_reflows_the_bar_gallery_and_specimen() {
             );
             bar_bottom = bar_bottom.max(action.y1);
         }
-        let tabs = by_widget_name(&app, "ToggleGroup")[0];
+        let tabs = by_widget_name(&*app, "ToggleGroup")[0];
         assert!(
             tabs.y0 >= bar_bottom,
             "the view selector {tabs:?} starts below the wrapped bar (bottom {bar_bottom})"
@@ -359,13 +294,13 @@ fn large_text_reflows_the_bar_gallery_and_specimen() {
             .into_iter()
             .next()
             .expect("a preset theme");
-        let mut row = ThemeRow::from_spec(&spec, false);
-        lay_out_widget_scaled(&mut row, (272.0, 400.0), 1.0);
+        let row = ThemeRow::from_spec(&spec, false);
+        let row = lay_out_widget_scaled(row, (272, 400), 1.0);
         close(row.get_rect().height(), f64::from(ROW_H), "1× row height");
         close(row.get_rect().width(), 272.0, "row fills the gallery width");
 
-        let mut large = ThemeRow::from_spec(&spec, false);
-        lay_out_widget_scaled(&mut large, (272.0, 400.0), 2.0);
+        let large = ThemeRow::from_spec(&spec, false);
+        let large = lay_out_widget_scaled(large, (272, 400), 2.0);
         let tall = large.get_rect().height();
         assert!(
             tall > f64::from(ROW_H) + 20.0,
@@ -398,13 +333,13 @@ fn large_text_reflows_the_bar_gallery_and_specimen() {
 
         let mut one = ThemesApp::new_demo();
         one.seed_shot(480.0, "preview");
-        lay_out_widget_scaled(&mut one, (480.0, 900.0), 1.0);
-        let specimen_1x = by_widget_name(&one, "PreviewPane")[0];
+        let one = lay_out_widget_scaled(one, (480, 900), 1.0);
+        let specimen_1x = by_widget_name(&*one, "PreviewPane")[0];
 
         let mut two = ThemesApp::new_demo();
         two.seed_shot(480.0, "preview");
-        lay_out_widget_scaled(&mut two, (480.0, 900.0), 2.0);
-        let specimen_2x = by_widget_name(&two, "PreviewPane")[0];
+        let two = lay_out_widget_scaled(two, (480, 900), 2.0);
+        let specimen_2x = by_widget_name(&*two, "PreviewPane")[0];
         assert!(
             specimen_2x.height() > specimen_1x.height() + 200.0,
             "the full-preview specimen grows with the type ({} → {})",
@@ -422,8 +357,8 @@ fn large_text_reflows_the_bar_gallery_and_specimen() {
         let sp = ui::tokens::Spacing::BASE;
         let mut app = ThemesApp::new_demo();
         app.seed_shot(1280.0, "");
-        lay_out(&mut app, (1280.0, 1500.0));
-        let mut rows = by_widget_name(&app, "ThemeRow");
+        let app = lay_out(app, (1280, 1500));
+        let mut rows = by_widget_name(&*app, "ThemeRow");
         rows.retain(|r| r.width() > 0.0 && r.height() > 0.0);
         rows.sort_by(|a, b| a.y0.total_cmp(&b.y0));
         assert!(
@@ -443,7 +378,7 @@ fn large_text_reflows_the_bar_gallery_and_specimen() {
             close(pair[0].x0, pair[1].x0, "rows share a left edge");
             close(pair[0].x1, pair[1].x1, "rows share a right edge");
         }
-        let gallery = by_widget_name(&app, "Gallery")[0];
+        let gallery = by_widget_name(&*app, "Gallery")[0];
         close(
             rows[0].x0 - gallery.x0,
             f64::from(sp.s4),

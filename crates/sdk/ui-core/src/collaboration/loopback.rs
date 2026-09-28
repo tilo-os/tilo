@@ -168,6 +168,7 @@ mod tests {
             app_id: route.app_id.clone(),
             cluster_id: route.cluster_id,
             record: route.record.clone(),
+            record_kind: None,
             handle: None,
         }
     }

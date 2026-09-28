@@ -19,24 +19,36 @@ use web_time::SystemTime;
 pub struct CheckedCanonicalApplication {
     definition: fn() -> &'static ApplicationDefinition,
     initialize: fn(&mut AutoCommit) -> Result<(), String>,
+    /// Checks a whole document proposed as a new record against what the
+    /// application opens. Without one the application takes no proposals:
+    /// the owner mounts it for every record, so a document it cannot open
+    /// must never become one.
+    validate_import: Option<ImportCheck>,
 }
+
+/// An application's check of a document proposed as a new record.
+type ImportCheck = fn(&AutoCommit) -> Result<(), String>;
 
 static INSTALLED: [CheckedCanonicalApplication; 4] = [
     CheckedCanonicalApplication {
         definition: word_processor::definition,
         initialize: word_processor::initialize_empty_document,
+        validate_import: None,
     },
     CheckedCanonicalApplication {
         definition: notes::definition,
         initialize: notes::notebook::initialize_empty,
+        validate_import: Some(notes::notebook::validate),
     },
     CheckedCanonicalApplication {
         definition: calculator::definition,
         initialize: calculator::doc::initialize_empty,
+        validate_import: None,
     },
     CheckedCanonicalApplication {
         definition: chat::definition,
         initialize: initialize_chat,
+        validate_import: None,
     },
 ];
 
@@ -67,6 +79,23 @@ impl tilo_desktop_model::apps::AppCatalogue for Installed {
 /// Resolve an app id to its installed factory.
 pub fn resolve(app: &str) -> Option<CheckedCanonicalApplication> {
     installed().find(|entry| entry.app_id() == app).copied()
+}
+
+/// Whether `doc` may become a new record of `app` in a room this owner
+/// hosts. An application the owner does not host is opened only on the
+/// members' own devices, which check what they open.
+///
+/// # Errors
+/// An installed application that takes no proposals, or a document it
+/// would not open.
+pub(crate) fn accepts_import(app: &str, doc: &AutoCommit) -> Result<(), String> {
+    let Some(entry) = resolve(app) else {
+        return Ok(());
+    };
+    let validate = entry
+        .validate_import
+        .ok_or("this application does not take proposed documents here")?;
+    validate(doc).map_err(|error| format!("the application would not open it: {error}"))
 }
 
 /// Result of a current factory decision, not a committed creation result.

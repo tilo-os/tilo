@@ -1,5 +1,6 @@
 //! Actual native semantic owner, committed through the existing state.json writer.
 mod bootstrap;
+pub(crate) mod document_read;
 mod enrollment;
 pub(crate) mod publication;
 mod record;

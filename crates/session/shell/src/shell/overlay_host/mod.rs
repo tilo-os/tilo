@@ -34,12 +34,16 @@ mod controller;
 mod device_fabric;
 mod displays;
 mod history;
+pub(crate) mod layers;
 mod now_playing;
 mod shortcut_steps;
 mod shortcut_triggers;
 mod shortcuts;
+mod tab_menu;
 
 pub use controller::{ControllerDelivery, ControllerKey};
+use layers::{LayerCx, LayerId, LayerIntent, LayerPaint, OverlayStack, ShellLayer as _};
+use tab_menu::TabMenuTarget;
 
 pub use device_fabric::{
     BluetoothHandoffAuthorizationView, DeviceFabricBridge, DeviceFabricUiAction, DeviceFabricView,
@@ -78,10 +82,10 @@ use ui::theme::Theme;
 use ui::widget::{
     Button, ButtonFace, CrossStripDetach, FloatingWindow, GroupRow, OutputSpan, PROMPT_HEIGHT,
     PermissionPrompt, PromptChoice, Widget, WindowGroup as UiWindowGroup,
-    context_menu::ContextMenu,
 };
 use ui::{CommandEntry, CommandPalette};
 
+use crate::shell::TabMenuAction;
 #[cfg(test)]
 use crate::shell::capture_surface::CaptureSurfaceKind;
 use crate::shell::capture_surface::{
@@ -101,7 +105,9 @@ pub use crate::shell::peer_sync_overlay::{
     PendingInvitationSummary, RememberedInvitee,
 };
 use crate::shell::portal_dialog::PortalDialogController;
-use crate::shell::power_menu::{PowerMenu, PowerMenuClick};
+use crate::shell::power_menu::PowerMenu;
+#[cfg(test)]
+use crate::shell::power_menu::PowerMenuClick;
 use crate::shell::projection_overlay::ProjectionOverlay;
 use crate::shell::quick_settings::bluetooth::{BluetoothOutcome, QuickSettingsBluetoothPane};
 use crate::shell::quick_settings::root::{QuickSettingsRoot, RootAction, SliderCommit};
@@ -109,7 +115,6 @@ use crate::shell::quick_settings::vpn::{QuickSettingsVpnPane, VpnPaneOutcome};
 use crate::shell::quick_settings::wifi::QuickSettingsWifiPane;
 use crate::shell::search::ResourceKindText as _;
 use crate::shell::state::{Capability, GroupId, StripId, WorkspaceId};
-use crate::shell::{TabMenuAction, build_tab_context_menu};
 pub use tilo_desktop::collaborators::RosterRow;
 use tilo_desktop::collaborators::{CollaboratorsHit, CollaboratorsModel, CollaboratorsOverlay};
 use tilo_desktop::drill_in as qs;
@@ -271,37 +276,6 @@ enum ShortcutGuideFocus {
     Done,
 }
 
-/// Shell-owned overlays that contribute synthetic children to the host's
-/// accessibility node, in the exact order in which those children are
-/// published. Geometry and focus routing must use this same order: deriving
-/// their indices independently lets one visible modal shift another overlay's
-/// semantic path onto the wrong target.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum AccessibleOverlay {
-    /// The Alt+Tab switcher, while Alt is held and it is on screen. First:
-    /// it is above everything and owns the keyboard until Alt comes up.
-    WindowSwitcher,
-    /// The tab right-click menu. Published first while open: it is the
-    /// topmost transient and its rows are what a reader should land on.
-    TabContextMenu,
-    PowerMenu,
-    CommandPalette,
-    MemberSheet,
-    Overview,
-    WorkspaceSettings,
-    Collaborators,
-    RoomActivity,
-    QuickSettings,
-    /// The now-playing card beside the Quick Settings root page.
-    NowPlaying,
-    ShortcutHelp,
-    DisplayLayouts,
-    /// Keep or revert a display tool's change; above everything while up.
-    DisplayConfirmation,
-    /// The emoji picker; modal while open.
-    EmojiPicker,
-}
-
 /// The result of asking whether the global Print Screen shortcut may change
 /// the desktop's modal stack. Capture is a temporary input owner: it may sit
 /// above an OOBE, portal, consent, or file-selection dialog, but it must not
@@ -333,61 +307,6 @@ impl DesktopControlsSource {
 
     fn is_explicit(&self) -> bool {
         matches!(self, Self::Explicit(_))
-    }
-}
-
-/// Which tab a right-click asked about, resolved when the request is
-/// harvested so a later selection acts on that tab even if focus moved.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct TabMenuTarget {
-    strip: StripId,
-    group: GroupId,
-    tab: u64,
-}
-
-/// The tab right-click menu. Lives on the host rather than the tab bar
-/// because it paints above every window (the bar is clipped to its group),
-/// and because its actions mutate the persisted tree, which only the host
-/// can reach. The widget is the shared `ui::widget::ContextMenu`: the same
-/// surface, rows, accent highlight and keyboard model every app menu has.
-#[derive(Default)]
-struct TabContextMenu {
-    menu: ContextMenu,
-    /// Row index → action; `None` is a separator. Index-aligned with
-    /// `menu.items()` by [`build_tab_context_menu`]. (A `MenuItem` id on
-    /// the shared widget would replace this parallel list — recorded for
-    /// F4.)
-    items: Vec<Option<TabMenuAction>>,
-    target: Option<TabMenuTarget>,
-    /// Title of the tab the menu is for, for the accessible name.
-    title: String,
-    /// The pointer position the menu opened at, so a refused row can
-    /// re-open the menu exactly where it was.
-    anchor: Point,
-    /// A press the menu absorbed has a release still to come; swallow that
-    /// one too, even after the press closed the menu, so a dismissing or
-    /// selecting click never ends on the window underneath.
-    swallow_release: bool,
-}
-
-impl TabContextMenu {
-    fn is_open(&self) -> bool {
-        self.menu.is_open() && self.target.is_some()
-    }
-
-    /// The `i`-th action row's item index (separators are not actions and
-    /// publish no semantic node).
-    fn item_index_of_action(&self, ordinal: usize) -> Option<usize> {
-        self.items
-            .iter()
-            .enumerate()
-            .filter(|(_, item)| item.is_some())
-            .nth(ordinal)
-            .map(|(index, _)| index)
-    }
-
-    fn item_index_of(&self, action: TabMenuAction) -> Option<usize> {
-        self.items.iter().position(|item| *item == Some(action))
     }
 }
 
@@ -596,14 +515,11 @@ pub struct ShellOverlayHost {
     qs_selected_remote_audio: Option<u64>,
     qs_selected_remote_capture: Option<crate::shell::remote_capture::device::RemoteCaptureKind>,
     qs_selected_display_mirror: bool,
-    /// Session action modal, including destructive-action arming and its
-    /// own open/close transition.
-    power_menu: PowerMenu,
-    /// The tab right-click menu; see [`TabContextMenu`]. Opened by
-    /// `harvest_pending_tab_context_menus` from the tab bar's request,
-    /// routed by `route_tab_context_menu_event`, drawn in the top overlay
-    /// pass, published as an accessible overlay while open.
-    tab_menu: TabContextMenu,
+    /// The overlays that are self-contained [`layers::ShellLayer`]s, and the
+    /// ordering, dismissal and release bookkeeping they share. The tab menu
+    /// is opened by `harvest_pending_tab_context_menus` from the tab bar's
+    /// request; the power flyout by its chord and the Quick Settings tile.
+    layers: OverlayStack,
     /// Results from session helpers run off the frame thread. Failures must
     /// return to chrome instead of disappearing into the journal.
     session_action_channel: (
@@ -1495,7 +1411,7 @@ impl ShellOverlayHost {
                 quick_settings: self.qs_transition.is_animating(now),
                 workspace_settings: self.workspace_settings_overlay.is_animating(now),
                 palette: self.palette_transition.is_animating(now),
-                power_menu: self.power_menu.is_animating(now),
+                power_menu: self.layers.power_menu.is_animating(now),
                 room_activity: self.room_activity_transition.is_animating(now),
                 follow: self.follow_transition.is_animating(now),
                 room_replay: self.room_activity.replay_is_playing(),
@@ -1608,12 +1524,16 @@ impl ShellOverlayHost {
             .into_iter()
             .chain(self.strip_chrome_bounds(flags, quick_settings_transition_visible))
             .reduce(|current, rect| current.union(rect));
-        self.power_menu.draw(
-            self.rect,
-            &mut above_quick_settings,
-            transform,
-            text_renderer,
-            theme,
+        self.layers.draw(
+            LayerId::PowerMenu,
+            &mut LayerPaint {
+                scene: &mut above_quick_settings,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+                viewport: self.rect,
+            },
         );
         self.draw_collaborators_dropdown(
             &mut above_quick_settings,
@@ -1680,73 +1600,62 @@ impl ShellOverlayHost {
         }
     }
 
-    fn accessible_overlay_order(&self) -> Vec<AccessibleOverlay> {
-        let mut order = Vec::with_capacity(7);
+    /// The open overlays, topmost first — the order the synthetic
+    /// accessibility tree publishes them in.
+    fn accessible_overlay_order(&self) -> Vec<LayerId> {
         let flags = self.overlay_flags();
-        if self.display_confirm.visible() {
-            order.push(AccessibleOverlay::DisplayConfirmation);
+        LayerId::ALL
+            .into_iter()
+            .filter(|&id| self.overlay_is_open(id, flags))
+            .collect()
+    }
+
+    /// Whether overlay `id` is on screen. The stack answers for its own
+    /// layers; the rest are still tracked by the host.
+    fn overlay_is_open(
+        &self,
+        id: LayerId,
+        flags: crate::shell::chrome_state::OverlayFlags,
+    ) -> bool {
+        if let Some(layer) = self.layers.layer(id) {
+            return layer.is_open();
         }
-        if self.window_switcher.is_revealed(Instant::now()) {
-            order.push(AccessibleOverlay::WindowSwitcher);
+        match id {
+            LayerId::DisplayConfirmation => self.display_confirm.visible(),
+            LayerId::WindowSwitcher => self.window_switcher.is_revealed(Instant::now()),
+            LayerId::EmojiPicker => self.emoji_picker.is_open(),
+            LayerId::DisplayLayouts => flags.projection,
+            // The palette has a complete semantic tree (query, result list,
+            // and focused result).  It is drawn as a top overlay, so publish
+            // it from the same ordered synthetic tree as every other overlay
+            // rather than leaving screen readers with only the obscured
+            // workspace.
+            LayerId::CommandPalette => self.palette_visible,
+            LayerId::MemberSheet => self.workspace_settings_overlay.member_sheet_is_open(),
+            LayerId::Overview => flags.overview,
+            LayerId::WorkspaceSettings => flags.ws_settings,
+            LayerId::Collaborators => flags.collaborators,
+            LayerId::RoomActivity => self.chrome.as_ref().is_some_and(|chrome| {
+                crate::shell::tab_binding::active_workspace_activity_tab(&chrome.borrow().tree())
+                    .is_some()
+            }),
+            LayerId::QuickSettings => {
+                flags.quick_settings
+                    && self.chrome.as_ref().is_some_and(|chrome| {
+                        matches!(
+                            chrome.borrow().quick_settings.current_level(),
+                            crate::shell::quick_settings::QsLevel::Root
+                                | crate::shell::quick_settings::QsLevel::Notifications
+                                | crate::shell::quick_settings::QsLevel::Clipboard
+                                | crate::shell::quick_settings::QsLevel::Devices
+                        )
+                    })
+            }
+            LayerId::NowPlaying => self.now_playing_published(),
+            LayerId::ShortcutHelp => flags.shortcut_help,
+            // Stacked; answered above.
+            LayerId::TabContextMenu | LayerId::PowerMenu => false,
         }
-        if self.emoji_picker.is_open() {
-            order.push(AccessibleOverlay::EmojiPicker);
-        }
-        // The display sheet is modal and drawn above every other overlay.
-        if flags.projection {
-            order.push(AccessibleOverlay::DisplayLayouts);
-        }
-        if self.tab_menu.is_open() {
-            order.push(AccessibleOverlay::TabContextMenu);
-        }
-        if self.power_menu.is_open() {
-            order.push(AccessibleOverlay::PowerMenu);
-        }
-        // The palette has a complete semantic tree (query, result list, and
-        // focused result).  It is drawn as a top overlay, so publish it from
-        // the same ordered synthetic tree as every other overlay rather than
-        // leaving screen readers with only the obscured workspace.
-        if self.palette_visible {
-            order.push(AccessibleOverlay::CommandPalette);
-        }
-        if self.workspace_settings_overlay.member_sheet_is_open() {
-            order.push(AccessibleOverlay::MemberSheet);
-        }
-        if flags.overview {
-            order.push(AccessibleOverlay::Overview);
-        }
-        if flags.ws_settings {
-            order.push(AccessibleOverlay::WorkspaceSettings);
-        }
-        if flags.collaborators {
-            order.push(AccessibleOverlay::Collaborators);
-        }
-        if self.chrome.as_ref().is_some_and(|chrome| {
-            crate::shell::tab_binding::active_workspace_activity_tab(&chrome.borrow().tree())
-                .is_some()
-        }) {
-            order.push(AccessibleOverlay::RoomActivity);
-        }
-        if flags.quick_settings
-            && self.chrome.as_ref().is_some_and(|chrome| {
-                matches!(
-                    chrome.borrow().quick_settings.current_level(),
-                    crate::shell::quick_settings::QsLevel::Root
-                        | crate::shell::quick_settings::QsLevel::Notifications
-                        | crate::shell::quick_settings::QsLevel::Clipboard
-                        | crate::shell::quick_settings::QsLevel::Devices
-                )
-            })
-        {
-            order.push(AccessibleOverlay::QuickSettings);
-        }
-        if self.now_playing_published() {
-            order.push(AccessibleOverlay::NowPlaying);
-        }
-        if flags.shortcut_help {
-            order.push(AccessibleOverlay::ShortcutHelp);
-        }
-        order
     }
 
     /// Attach the session's live application action directory after the
@@ -1806,7 +1715,7 @@ impl ShellOverlayHost {
             crate::shell::search::providers::DesktopWindowsProvider::new(),
         ));
         search_registry.register(std::rc::Rc::new(
-            crate::shell::search::providers::ContinueFromDeviceProvider,
+            crate::shell::search::providers::ContinueFromDeviceProvider::default(),
         ));
         search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::SessionActionsProvider::new(session_action_policy),
@@ -1823,7 +1732,7 @@ impl ShellOverlayHost {
             crate::shell::search::providers::ApplicationsProvider::new(),
         ));
         search_registry.register(std::rc::Rc::new(
-            crate::shell::search::providers::NativeApplicationsProvider,
+            crate::shell::search::providers::NativeApplicationsProvider::default(),
         ));
         // Applications Tilo did not package: unconfined, separate chip
         // from the one above.
@@ -1892,7 +1801,10 @@ impl ShellOverlayHost {
         );
         // Offer Switch user only where the display manager can open a greeter
         // beside this session; greetd cannot.
-        host.power_menu = PowerMenu::for_session(os_actions::user_switching_supported());
+        let user_switching = os_actions::user_switching_supported();
+        host.session_action_policy
+            .set_user_switching(user_switching);
+        host.layers.power_menu = PowerMenu::for_session(user_switching);
         host.pairing = crate::bluetooth_prompt::PairingOverlay::new(
             crate::bluetooth::PairingPromptHandle::global(),
         );
@@ -2050,8 +1962,7 @@ impl ShellOverlayHost {
             qs_selected_remote_audio: None,
             qs_selected_remote_capture: None,
             qs_selected_display_mirror: false,
-            power_menu: PowerMenu::default(),
-            tab_menu: TabContextMenu::default(),
+            layers: OverlayStack::default(),
             session_action_channel: std::sync::mpsc::channel(),
             power_bridge: None,
             session_action_policy: inputs.session_action_policy,
@@ -2367,7 +2278,7 @@ impl ShellOverlayHost {
     /// pill must leave applications interactive. Screenshot markup and the
     /// power confirmation remain modal for their whole lifetime.
     pub(crate) fn inner_surface_captures_input(&self) -> bool {
-        self.power_menu.is_open()
+        self.layers.power_menu.is_open()
             || self.screenshot_markup.is_some()
             || self.capture_studio.modal_capture().is_some()
     }
@@ -5384,6 +5295,18 @@ impl ShellOverlayHost {
         posted
     }
 
+    /// Typed `session.*` actions invoked since the last update, run by the
+    /// executor the power flyout uses.
+    fn run_requested_session_actions(&self) {
+        let Some(chrome) = self.chrome.as_ref() else {
+            return;
+        };
+        let requests = chrome.borrow_mut().take_session_action_requests();
+        for action in requests {
+            self.execute_session_action(action);
+        }
+    }
+
     fn drain_session_action_results(&self) -> bool {
         let mut posted = false;
         while let Ok(outcome) = self.session_action_channel.1.try_recv() {
@@ -6884,7 +6807,7 @@ impl ShellOverlayHost {
     /// Refreshes the palette's rows by fanning the query out to every
     /// registered [`crate::shell::search::SearchProvider`]. Cheap on a warm
     /// cache; the first open pays for the files provider's deferred home walk
-    /// and tantivy open (kept off the `OverlayHost` constructor on purpose).
+    /// and content index open (kept off the `OverlayHost` constructor on purpose).
     fn refresh_search_results(&mut self, doc: &automerge::AutoCommit, root: &ObjId) {
         self.poll_pending_action_admissions();
         let Some(chrome) = self.chrome.clone() else {
@@ -8005,14 +7928,17 @@ impl ShellOverlayHost {
     /// entrance animation so deterministic screenshots capture the resting
     /// production surface rather than a wall-clock-dependent intermediate.
     pub fn force_power_menu_for_visual_test(&mut self, select_shutdown: bool) {
-        self.power_menu.open();
+        self.layers.power_menu.open();
         if select_shutdown {
             use winit::keyboard::{Key, NamedKey};
             for _ in 0..5 {
-                let _ = self.power_menu.key(&Key::Named(NamedKey::ArrowDown), false);
+                let _ = self
+                    .layers
+                    .power_menu
+                    .key(&Key::Named(NamedKey::ArrowDown), false);
             }
         }
-        self.power_menu.force_settled_for_visual_test();
+        self.layers.power_menu.force_settled_for_visual_test();
     }
 
     /// Folds every reading the quick-settings workers delivered into
@@ -9143,7 +9069,7 @@ impl ShellOverlayHost {
     }
 
     pub fn power_menu_semantic_rects(&self) -> Vec<(&'static str, Rect)> {
-        self.power_menu.action_rects(self.rect)
+        self.layers.power_menu.action_rects(self.rect)
     }
 
     /// May the local user invite into the room they're looking at? Asked
@@ -10935,15 +10861,6 @@ impl ShellOverlayHost {
             *handled = true;
             return true;
         }
-        // The session action sheet is modal. It owns every key while open so
-        // typing cannot leak into a hosted or Wayland app behind it; the
-        // conventional navigation keys make every action reachable.
-        if self.power_menu.is_open() {
-            let outcome = self.power_menu.key(logical_key, shift_down);
-            self.apply_power_menu_outcome(outcome);
-            *handled = true;
-            return true;
-        }
         // The usual host event path handles this ahead of modal routing.
         // Keep the same arbitration here for direct widget dispatch and any
         // future backend that enters through this keyboard-only helper.
@@ -11456,7 +11373,7 @@ impl ShellOverlayHost {
                 }
             }
             A::PowerMenu => {
-                self.power_menu.open();
+                self.layers.power_menu.open();
                 let mut st = chrome.borrow_mut();
                 st.overlays.quick_settings = false;
                 st.bump();
@@ -11922,7 +11839,7 @@ impl ShellOverlayHost {
             *handled = true;
             return true;
         }
-        if self.power_menu.close() {
+        if self.layers.dismiss_topmost() {
             *handled = true;
             return true;
         }
@@ -12311,10 +12228,6 @@ impl ShellOverlayHost {
             *handled = true;
             return true;
         }
-        if self.handle_power_menu_click(p) {
-            *handled = true;
-            return true;
-        }
         let flags = self.overlay_flags();
         if flags.capture && !self.capture_studio.is_open() {
             self.capture_studio.open();
@@ -12425,16 +12338,12 @@ impl ShellOverlayHost {
         false
     }
 
-    fn handle_power_menu_click(&mut self, p: Point) -> bool {
-        let outcome = self.power_menu.click(self.rect, p);
-        self.apply_power_menu_outcome(outcome)
-    }
-
-    fn apply_power_menu_outcome(&self, outcome: PowerMenuClick) -> bool {
-        match outcome {
-            PowerMenuClick::Ignored => false,
-            PowerMenuClick::Consumed => true,
-            PowerMenuClick::Lock => {
+    /// The one executor for session lifecycle actions, whichever door they
+    /// came through: the power flyout's rows and the typed `session.*`
+    /// actions both land here, so they share admission and failure reporting.
+    fn execute_session_action(&self, action: os_actions::SessionAction) {
+        match action {
+            os_actions::SessionAction::Lock => {
                 // Do not delegate this to logind: its lock-session request
                 // cannot establish Tilo's lock scene or revoke our clients'
                 // focus/input.  The native loop drains this edge through its
@@ -12444,30 +12353,28 @@ impl ShellOverlayHost {
                 } else {
                     tracing::error!(
                         target: "tilo::power",
-                        "power-menu Lock requested without compositor chrome state"
+                        "session Lock requested without compositor chrome state"
                     );
                 }
-                true
             }
-            PowerMenuClick::Execute(action) => {
-                if action == os_actions::SessionAction::Suspend {
-                    if let Some(bridge) = &self.power_bridge {
-                        bridge.request_suspend();
-                    } else {
-                        let _ = self.session_action_channel.0.send(SessionActionResult {
-                            action,
-                            result: Err("power service is unavailable".into()),
-                        });
-                    }
-                    return true;
+            os_actions::SessionAction::Suspend => {
+                if let Some(bridge) = &self.power_bridge {
+                    bridge.request_suspend();
+                } else {
+                    let _ = self.session_action_channel.0.send(SessionActionResult {
+                        action,
+                        result: Err("power service is unavailable".into()),
+                    });
                 }
+            }
+            _ => {
                 if let Err(reason) = self.session_action_policy.admit(action) {
                     if let Some(chrome) = self.chrome.as_ref() {
                         chrome
                             .borrow_mut()
                             .push_notification(t("host-session-action-blocked"), reason);
                     }
-                    return true;
+                    return;
                 }
                 // Logout is a tiny, private file write plus an in-process
                 // edge. Do it on this input tick so the native loop observes
@@ -12480,14 +12387,13 @@ impl ShellOverlayHost {
                             result: Err(error),
                         });
                     }
-                    return true;
+                    return;
                 }
                 let results = self.session_action_channel.0.clone();
                 std::thread::spawn(move || {
                     let result = os_actions::perform_session_action(action);
                     let _ = results.send(SessionActionResult { action, result });
                 });
-                true
             }
         }
     }
@@ -14387,7 +14293,7 @@ impl ShellOverlayHost {
             }
             RootAction::OpenPowerMenu => {
                 let mut st = chrome.borrow_mut();
-                self.power_menu.open();
+                self.layers.power_menu.open();
                 st.overlays.quick_settings = false;
                 st.quick_settings.nav_stack = vec![crate::shell::quick_settings::QsLevel::Root];
                 st.bump();
@@ -15300,201 +15206,23 @@ impl ShellOverlayHost {
         let Some((target, tab_count, point, title)) = nearest else {
             return;
         };
-        self.open_tab_context_menu(target, tab_count, point, title);
+        self.layers
+            .tab_menu
+            .open(target, tab_count, point, title, self.rect);
     }
 
-    fn open_tab_context_menu(
-        &mut self,
-        target: TabMenuTarget,
-        tab_count: usize,
-        at: Point,
-        title: String,
-    ) {
-        let (menu, items) = build_tab_context_menu(tab_count);
-        self.tab_menu = TabContextMenu {
-            menu,
-            items,
-            target: Some(target),
-            title,
-            anchor: at,
-            swallow_release: false,
-        };
-        // Anchored to the pointer as a zero-size rect: `open_anchored`
-        // hangs the menu below-right of it and flips above / clamps inside
-        // the host when the pointer is near an edge. Geometry is usable at
-        // once for hit-testing; `draw` settles the rows at live text
-        // metrics.
-        let anchor = Rect::new(at.x, at.y, at.x, at.y);
-        self.tab_menu.menu.open_anchored(anchor, self.rect);
-    }
-
-    fn close_tab_context_menu(&mut self) {
-        self.tab_menu.menu.close();
-        self.tab_menu.target = None;
-    }
-
-    /// A menu whose tab or group has gone (closed by a peer, a revision, a
-    /// chord) has nothing left to act on — close it rather than let a stale
-    /// selection fire against whatever now carries that id.
+    /// A menu whose tab or group has gone has nothing left to act on.
     fn prune_stale_tab_context_menu(&mut self) {
-        let Some(target) = self.tab_menu.target else {
-            return;
-        };
-        if !self.tab_menu.menu.is_open() {
-            self.tab_menu.target = None;
-            return;
-        }
-        let alive = self.group_row_ptrs.get(&target.strip).is_some_and(|&ptr| {
-            // SAFETY: see field doc on `group_row_ptrs`.
-            let row: &GroupRow = unsafe { &*ptr };
-            row.groups
-                .iter()
-                .any(|g| g.id == target.group && g.tabs().iter().any(|t| t.id == target.tab))
+        let rows = &self.group_row_ptrs;
+        self.layers.tab_menu.prune(|target| {
+            rows.get(&target.strip).is_some_and(|&ptr| {
+                // SAFETY: see field doc on `group_row_ptrs`.
+                let row: &GroupRow = unsafe { &*ptr };
+                row.groups
+                    .iter()
+                    .any(|g| g.id == target.group && g.tabs().iter().any(|t| t.id == target.tab))
+            })
         });
-        if !alive {
-            self.close_tab_context_menu();
-        }
-    }
-
-    /// Route one event to the open tab menu. `true` when the menu owned the
-    /// event. The widget's own model does the work — hover arms a row,
-    /// Up/Down move it, Enter fires it, Escape closes, a left press inside
-    /// selects and one outside dismisses (absorbed, so the thing under the
-    /// menu is not also activated). Two shell-level rules sit on top: a
-    /// Super chord closes the menu and still runs, and a second right-click
-    /// outside it closes this menu and falls through so the tab bar under
-    /// the pointer can open its own in the same dispatch.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one routing gate in the host's handle_event chain, same shape as its siblings"
-    )]
-    fn route_tab_context_menu_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) -> bool {
-        // A press the menu absorbed owes one release: swallow it even when
-        // that press closed the menu, or a dismissing click's release lands
-        // on the window (or the client) underneath as a stray button-up.
-        if let WindowEvent::MouseInput {
-            state: ElementState::Released,
-            ..
-        } = event
-            && self.tab_menu.swallow_release
-        {
-            self.tab_menu.swallow_release = false;
-            *handled = true;
-            return true;
-        }
-        if !self.tab_menu.is_open() {
-            return false;
-        }
-        if let WindowEvent::KeyboardInput {
-            event:
-                KeyEvent {
-                    state: ElementState::Pressed,
-                    ..
-                },
-            ..
-        } = event
-            && modifiers.state().super_key()
-        {
-            self.close_tab_context_menu();
-            return false;
-        }
-        match event {
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: winit::event::MouseButton::Right,
-                ..
-            } => {
-                let inside = self
-                    .last_cursor
-                    .is_some_and(|p| self.tab_menu.menu.contains([p.x, p.y]));
-                self.close_tab_context_menu();
-                if inside {
-                    self.tab_menu.swallow_release = true;
-                    *handled = true;
-                }
-                // Outside: fall through so the tab bar under the pointer can
-                // open its own menu in this same dispatch (and that menu
-                // then absorbs the release, being open).
-                return inside;
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                ..
-            } => {
-                self.tab_menu.swallow_release = true;
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Released,
-                ..
-            } => {
-                // The release of the opening right-click.
-                *handled = true;
-                return true;
-            }
-            _ => {}
-        }
-        // `ContextMenu::handle_event` ignores the node id and the tree —
-        // the menu is a host field, not a taffy child — but takes them by
-        // the trait's shape; its `handled`/`focus` outputs are not needed
-        // because the host absorbs every event while the menu is up.
-        let mut widget_handled = false;
-        let mut widget_focus: Option<NodeId> = None;
-        self.tab_menu.menu.handle_event(
-            event,
-            scale_factor,
-            &modifiers,
-            state,
-            path,
-            &mut widget_handled,
-            &mut widget_focus,
-            node_id,
-            taffy,
-        );
-        // Modal while up: hover, wheel and stray keys stop here rather
-        // than reaching the tab bar or the app under the menu.
-        *handled = true;
-        self.apply_tab_menu_selection();
-        if !self.tab_menu.menu.is_open() {
-            self.tab_menu.target = None;
-        }
-        true
-    }
-
-    /// Fire the row `ContextMenu::take_selection` reports (a click or
-    /// Enter), once. The action runs first; only a performed action
-    /// releases the target and closes the menu. A refusal (the shared
-    /// widget has already folded the menu on the click) re-opens it where
-    /// it was with the same row armed, and the refusal itself has been
-    /// surfaced as a warning notification by `window_actions`.
-    fn apply_tab_menu_selection(&mut self) {
-        let Some(index) = self.tab_menu.menu.take_selection() else {
-            return;
-        };
-        let Some(Some(action)) = self.tab_menu.items.get(index).copied() else {
-            return;
-        };
-        let Some(target) = self.tab_menu.target else {
-            return;
-        };
-        if self.perform_tab_menu_action(target, action) {
-            self.close_tab_context_menu();
-            return;
-        }
-        let anchor = self.tab_menu.anchor;
-        self.tab_menu
-            .menu
-            .open_anchored(Rect::new(anchor.x, anchor.y, anchor.x, anchor.y), self.rect);
-        let _ = self.tab_menu.menu.focus_item(index);
     }
 
     /// Run one tab-menu action against its tab; `true` when it was
@@ -15569,102 +15297,46 @@ impl ShellOverlayHost {
         }
     }
 
-    /// Painted rect of the `ordinal`-th *action* row (separators publish
-    /// no node), in host coordinates.
-    fn tab_menu_action_rect(&self, ordinal: usize) -> Option<Rect> {
-        let index = self.tab_menu.item_index_of_action(ordinal)?;
-        self.tab_menu.menu.item_rect(index)
+    /// Route `event` through the overlay stack and carry out what its
+    /// layers asked for before the event finishes dispatching.
+    fn route_overlay_layers(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+    ) -> bool {
+        let mut cx = LayerCx::new(self.rect, self.last_cursor, ctx);
+        let consumed = self.layers.route(event, &mut cx);
+        for intent in cx.into_intents() {
+            self.apply_layer_intent(intent);
+        }
+        consumed
     }
 
-    /// The menu as an assistive technology reads it: a `Menu` whose
-    /// `MenuItem` children carry the shared widget's row bounds, the
-    /// armed row as focused, and `tabmenu:*` targets that
-    /// `perform_semantic_action` activates.
-    fn tab_context_menu_accessibility(&self) -> ui::a11y::AccessNode {
-        use ui::a11y::{AccessNode, AccessState, Role};
-        let hovered = self.tab_menu.menu.hovered();
-        let actions: Vec<(usize, TabMenuAction)> = self
-            .tab_menu
-            .items
-            .iter()
-            .enumerate()
-            .filter_map(|(index, item)| item.map(|action| (index, action)))
-            .collect();
-        let count = actions.len();
-        let children = actions
-            .iter()
-            .enumerate()
-            .map(|(ordinal, &(index, action))| {
-                let node = AccessNode::new(Role::MenuItem)
-                    .with_name(action.label())
-                    .with_semantic_key(action.semantic_key())
-                    .with_action_target(action.semantic_key())
-                    .with_position(ordinal.saturating_add(1), count)
-                    .with_state(AccessState {
-                        focusable: true,
-                        focused: hovered == Some(index),
-                        ..AccessState::default()
-                    });
-                match self.tab_menu.menu.item_rect(index) {
-                    Some(rect) => node.with_bounds(rect),
-                    None => node,
-                }
-            })
-            .collect();
-        AccessNode::new(Role::Menu)
-            .with_name(t_args(
-                "host-a11y-tab-menu",
-                &[("title", self.tab_menu.title.clone().into())],
-            ))
-            .with_semantic_key("tabmenu")
-            .with_bounds(self.tab_menu.menu.get_rect())
-            .with_state(AccessState {
-                expanded: Some(true),
-                ..AccessState::default()
-            })
-            .with_children(children)
+    /// Carry out one [`LayerIntent`]; `true` when it was performed.
+    fn apply_layer_intent(&mut self, intent: LayerIntent) -> bool {
+        match intent {
+            LayerIntent::TabMenu { target, action } => {
+                let performed = self.perform_tab_menu_action(target, action);
+                self.layers
+                    .tab_menu
+                    .settle(target, action, performed, self.rect);
+                performed
+            }
+            LayerIntent::Session(action) => {
+                self.execute_session_action(action);
+                true
+            }
+        }
     }
 
     /// Whether the tab menu is up. For tests and the bench state snapshot.
     pub fn tab_context_menu_is_open(&self) -> bool {
-        self.tab_menu.is_open()
+        self.layers.tab_menu.is_open()
     }
 
     /// Painted rect of the open tab menu, `None` when closed.
     pub fn tab_context_menu_rect(&self) -> Option<Rect> {
-        self.tab_menu
-            .is_open()
-            .then(|| self.tab_menu.menu.get_rect())
-    }
-
-    fn draw_tab_context_menu(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        if !self.tab_menu.is_open() {
-            return;
-        }
-        // Settle the rows at the live text metrics before reading the rect
-        // (`ContextMenu::draw` does the same), so the shadow follows exactly
-        // the outline the widget is about to paint.
-        self.tab_menu.menu.layout_within(text_renderer, theme);
-        let rect = self.tab_menu.menu.get_rect();
-        // A popover is a Panel (HIG §9.1): `e4`, following the radius the
-        // shared widget paints itself with (`radii.md` today — F4-16).
-        ui::surface::shadow(
-            scene,
-            transform,
-            rect,
-            f64::from(theme.tokens.radii.md),
-            &theme.tokens.elevation.e4,
-        );
-        self.tab_menu
-            .menu
-            .draw(scene, transform, text_renderer, theme, presence);
+        self.layers.tab_menu.rect()
     }
 }
 
@@ -16066,6 +15738,7 @@ impl Widget for ShellOverlayHost {
         let dialog_dirty = self.pump_portal_dialogs();
         self.pump_permission_prompt();
         let launch_dirty = self.drain_launch_events() | self.retire_notices_for_opened_windows();
+        self.run_requested_session_actions();
         let session_action_dirty = self.drain_session_action_results();
         // Also driven by the widget's own `update`, but routed here too so
         // chrome stays consistent for tests that never call the widget.
@@ -16898,18 +16571,21 @@ impl Widget for ShellOverlayHost {
         ) {
             return;
         }
-        // The tab right-click menu owns the pointer and the keyboard while
-        // it is up, below the genuinely modal sheets above (a portal answer
-        // still wins) and above every other overlay and the windows.
-        if self.route_tab_context_menu_event(
+        // Stacked layers sit below the genuinely modal sheets above (a
+        // portal answer still wins) and above every other overlay and the
+        // windows.
+        if self.route_overlay_layers(
             event,
-            scale_factor,
-            *modifiers,
-            state,
-            path,
-            handled,
-            node_id,
-            taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                node_id,
+                taffy,
+            },
         ) {
             return;
         }
@@ -17092,21 +16768,19 @@ impl Widget for ShellOverlayHost {
 
         let mut root = AccessNode::new(Role::Group).with_name(t("a11y-workspace"));
         for overlay in self.accessible_overlay_order() {
+            if let Some(layer) = self.layers.layer(overlay) {
+                root.children.extend(layer.accessibility(self.rect));
+                continue;
+            }
             match overlay {
-                AccessibleOverlay::WindowSwitcher => {
+                LayerId::WindowSwitcher => {
                     if let Some(switcher) = self.window_switcher.accessibility() {
                         root.children.push(switcher);
                     }
                 }
-                AccessibleOverlay::TabContextMenu => {
-                    root.children.push(self.tab_context_menu_accessibility());
-                }
-                AccessibleOverlay::PowerMenu => {
-                    if let Some(power_menu) = self.power_menu.accessibility_snapshot() {
-                        root.children.push(power_menu);
-                    }
-                }
-                AccessibleOverlay::CommandPalette => {
+                // Stacked; published above.
+                LayerId::TabContextMenu | LayerId::PowerMenu => {}
+                LayerId::CommandPalette => {
                     if let Some(mut palette) = self.palette.accessibility() {
                         // The filter band is the host's, painted over the
                         // palette's reserved strip; it joins the palette's
@@ -17122,13 +16796,13 @@ impl Widget for ShellOverlayHost {
                         root.children.push(palette);
                     }
                 }
-                AccessibleOverlay::MemberSheet => root.children.push(
+                LayerId::MemberSheet => root.children.push(
                     AccessNode::new(Role::Dialog)
                         .with_name(t("a11y-member-sheet"))
                         .with_description(t("a11y-member-sheet-description"))
                         .with_state(AccessState::new().modal(true)),
                 ),
-                AccessibleOverlay::Overview => {
+                LayerId::Overview => {
                     let cards = self.overview_cards();
                     let mut overview = AccessNode::new(Role::Dialog)
                         .with_name(t("a11y-overview"))
@@ -17177,7 +16851,7 @@ impl Widget for ShellOverlayHost {
                     );
                     root.children.push(overview);
                 }
-                AccessibleOverlay::WorkspaceSettings => {
+                LayerId::WorkspaceSettings => {
                     let mut settings = AccessNode::new(Role::Dialog)
                         .with_name(t("a11y-workspace-settings"))
                         .with_description(t("a11y-workspace-settings-description"))
@@ -17244,18 +16918,18 @@ impl Widget for ShellOverlayHost {
                     }
                     root.children.push(settings);
                 }
-                AccessibleOverlay::Collaborators => root
+                LayerId::Collaborators => root
                     .children
                     .push(self.collaborators_overlay.accessibility_snapshot()),
-                AccessibleOverlay::RoomActivity => root
+                LayerId::RoomActivity => root
                     .children
                     .push(self.room_activity.accessibility_snapshot()),
-                AccessibleOverlay::NowPlaying => {
+                LayerId::NowPlaying => {
                     if let Some(card) = self.now_playing_accessibility() {
                         root.children.push(card);
                     }
                 }
-                AccessibleOverlay::QuickSettings => {
+                LayerId::QuickSettings => {
                     if let Some(chrome) = self.chrome.as_ref() {
                         let state = chrome.borrow();
                         if matches!(
@@ -17953,15 +17627,15 @@ impl Widget for ShellOverlayHost {
                         }
                     }
                 }
-                AccessibleOverlay::DisplayLayouts => {
+                LayerId::DisplayLayouts => {
                     root.children.push(self.projection_overlay.accessibility());
                 }
-                AccessibleOverlay::EmojiPicker => {
+                LayerId::EmojiPicker => {
                     if let Some(picker) = self.emoji_picker.accessibility() {
                         root.children.push(picker);
                     }
                 }
-                AccessibleOverlay::DisplayConfirmation => {
+                LayerId::DisplayConfirmation => {
                     if let Some(prompt) = self
                         .display_confirm
                         .accessibility(&self.display_confirm_outputs())
@@ -17969,7 +17643,7 @@ impl Widget for ShellOverlayHost {
                         root.children.push(prompt);
                     }
                 }
-                AccessibleOverlay::ShortcutHelp => {
+                LayerId::ShortcutHelp => {
                     use settings_store::hardware::ShortcutAction;
                     let shortcuts = &self.shortcut_config;
                     let chord = |action| {
@@ -18026,10 +17700,9 @@ impl Widget for ShellOverlayHost {
         Some(root)
     }
 
-    /// The semantic route into the tab menu: an assistive technology, a
-    /// script or the bench activates `tabmenu:<slug>` and gets the same
-    /// operation a click or Enter on that row performs. Only a row the open
-    /// menu actually offers may fire — a single-tab group has no split.
+    /// The semantic route into an open layer: an assistive technology, a
+    /// script or the bench activates a published target (`tabmenu:<slug>`)
+    /// and gets the same operation a click or Enter on that row performs.
     fn perform_semantic_action(
         &mut self,
         target: &str,
@@ -18040,22 +17713,10 @@ impl Widget for ShellOverlayHost {
         if !matches!(action, ui::a11y::Action::Activate) {
             return false;
         }
-        let Some(menu_action) = TabMenuAction::from_semantic_key(target) else {
+        let Some(intent) = self.layers.semantic_intent(target) else {
             return false;
         };
-        if !self.tab_menu.is_open() || self.tab_menu.item_index_of(menu_action).is_none() {
-            return false;
-        }
-        let Some(tab) = self.tab_menu.target else {
-            return false;
-        };
-        // The action first; a refusal leaves the menu up (and has been
-        // surfaced as a notification), a performed action closes it.
-        let performed = self.perform_tab_menu_action(tab, menu_action);
-        if performed {
-            self.close_tab_context_menu();
-        }
-        performed
+        self.apply_layer_intent(intent)
     }
 
     #[expect(
@@ -18064,18 +17725,17 @@ impl Widget for ShellOverlayHost {
     )]
     fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
         let (&overlay_index, child_path) = path.split_first()?;
-        match self.accessible_overlay_order().get(overlay_index)? {
-            AccessibleOverlay::WindowSwitcher => match child_path {
+        let overlay = *self.accessible_overlay_order().get(overlay_index)?;
+        if let Some(layer) = self.layers.layer(overlay) {
+            return layer.accessibility_rect(self.rect, child_path);
+        }
+        match overlay {
+            LayerId::WindowSwitcher => match child_path {
                 [] | [0] => Some(self.window_switcher.panel_rect()),
                 [0, index] => self.window_switcher.card_rect(*index),
                 _ => None,
             },
-            AccessibleOverlay::TabContextMenu => match child_path {
-                [] => Some(self.tab_menu.menu.get_rect()),
-                [ordinal] => self.tab_menu_action_rect(*ordinal),
-                _ => None,
-            },
-            AccessibleOverlay::CommandPalette => match child_path {
+            LayerId::CommandPalette => match child_path {
                 // The trailing child is the host's filter band (see
                 // `accessibility`); everything before it is the palette's.
                 [first, rest @ ..] if Some(*first) == self.search_filters_child_index() => {
@@ -18083,19 +17743,16 @@ impl Widget for ShellOverlayHost {
                 }
                 _ => self.palette.synthetic_accessibility_rect(child_path),
             },
-            AccessibleOverlay::PowerMenu => self
-                .power_menu
-                .accessibility_rect_for_path(self.rect, child_path),
-            AccessibleOverlay::RoomActivity => {
+            LayerId::RoomActivity => {
                 let mut local_path = Vec::with_capacity(path.len());
                 local_path.push(0);
                 local_path.extend_from_slice(child_path);
                 self.room_activity.accessibility_rect_for_path(&local_path)
             }
-            AccessibleOverlay::Collaborators => self
+            LayerId::Collaborators => self
                 .collaborators_overlay
                 .accessibility_rect_for_path(child_path),
-            AccessibleOverlay::QuickSettings => {
+            LayerId::QuickSettings => {
                 let drill_in_action = self.chrome.as_ref().and_then(|chrome| {
                     let state = chrome.borrow();
                     if matches!(child_path, [0]) {
@@ -18138,7 +17795,7 @@ impl Widget for ShellOverlayHost {
                     .or(notification_action)
                     .or_else(|| self.qs_root.accessibility_rect_for_path(child_path))
             }
-            AccessibleOverlay::WorkspaceSettings => {
+            LayerId::WorkspaceSettings => {
                 let ownership = self.workspace_settings_overlay.ownership_action_rect();
                 let ownership_present = ownership.area() > 0.0;
                 match child_path {
@@ -18163,7 +17820,7 @@ impl Widget for ShellOverlayHost {
                     _ => None,
                 }
             }
-            AccessibleOverlay::Overview => match child_path {
+            LayerId::Overview => match child_path {
                 [] => Some(self.overview_panel_rect()),
                 [index] if *index < self.overview_cards().len() => {
                     Some(self.overview_row_rect(*index))
@@ -18173,14 +17830,17 @@ impl Widget for ShellOverlayHost {
                 }
                 _ => None,
             },
-            AccessibleOverlay::NowPlaying => self.now_playing_accessibility_rect(child_path),
-            AccessibleOverlay::EmojiPicker => {
+            LayerId::NowPlaying => self.now_playing_accessibility_rect(child_path),
+            LayerId::EmojiPicker => {
                 self.emoji_picker.accessibility_rect_for_path(child_path)
             }
-            AccessibleOverlay::MemberSheet
-            | AccessibleOverlay::ShortcutHelp
-            | AccessibleOverlay::DisplayLayouts
-            | AccessibleOverlay::DisplayConfirmation => None,
+            LayerId::MemberSheet
+            | LayerId::ShortcutHelp
+            | LayerId::DisplayLayouts
+            | LayerId::DisplayConfirmation
+            // Stacked; answered above.
+            | LayerId::TabContextMenu
+            | LayerId::PowerMenu => None,
         }
     }
 
@@ -18191,8 +17851,11 @@ impl Widget for ShellOverlayHost {
         let Some(overlay) = self.accessible_overlay_order().get(overlay_index).copied() else {
             return false;
         };
+        if let Some(layer) = self.layers.layer_mut(overlay) {
+            return layer.focus_accessibility(child_path);
+        }
         match overlay {
-            AccessibleOverlay::WindowSwitcher => match child_path {
+            LayerId::WindowSwitcher => match child_path {
                 [0, index] => {
                     let focused = self.window_switcher.focus_index(*index);
                     if focused && let Some(chrome) = self.chrome.as_ref() {
@@ -18202,39 +17865,34 @@ impl Widget for ShellOverlayHost {
                 }
                 _ => false,
             },
-            AccessibleOverlay::TabContextMenu => match child_path {
-                [ordinal] => self
-                    .tab_menu
-                    .item_index_of_action(*ordinal)
-                    .is_some_and(|index| self.tab_menu.menu.focus_item(index)),
-                _ => false,
-            },
-            AccessibleOverlay::PowerMenu => self.power_menu.focus_accessibility_path(child_path),
-            AccessibleOverlay::CommandPalette => {
+            LayerId::CommandPalette => {
                 self.palette.focus_synthetic_accessibility(child_path)
             }
-            AccessibleOverlay::RoomActivity => {
+            LayerId::RoomActivity => {
                 let mut local_path = Vec::with_capacity(path.len());
                 local_path.push(0);
                 local_path.extend_from_slice(child_path);
                 self.room_activity.focus_accessibility_path(&local_path)
             }
-            AccessibleOverlay::Collaborators => self
+            LayerId::Collaborators => self
                 .collaborators_overlay
                 .focus_accessibility_path(child_path),
-            AccessibleOverlay::QuickSettings => {
+            LayerId::QuickSettings => {
                 focus_quick_settings_accessibility(self, child_path)
             }
-            AccessibleOverlay::NowPlaying => self.focus_now_playing_accessibility(child_path),
-            AccessibleOverlay::WorkspaceSettings => {
+            LayerId::NowPlaying => self.focus_now_playing_accessibility(child_path),
+            LayerId::WorkspaceSettings => {
                 !child_path.is_empty() && self.synthetic_accessibility_rect(path).is_some()
             }
-            AccessibleOverlay::Overview
-            | AccessibleOverlay::MemberSheet
-            | AccessibleOverlay::ShortcutHelp
-            | AccessibleOverlay::DisplayLayouts
-            | AccessibleOverlay::DisplayConfirmation
-            | AccessibleOverlay::EmojiPicker => false,
+            LayerId::Overview
+            | LayerId::MemberSheet
+            | LayerId::ShortcutHelp
+            | LayerId::DisplayLayouts
+            | LayerId::DisplayConfirmation
+            | LayerId::EmojiPicker
+            // Stacked; answered above.
+            | LayerId::TabContextMenu
+            | LayerId::PowerMenu => false,
         }
     }
 
@@ -18406,7 +18064,7 @@ impl ShellOverlayHost {
         let qs_in_flight = self.qs_transition.is_animating(now);
         let ws_settings_in_flight = self.workspace_settings_overlay.is_animating(now);
         let palette_in_flight = self.palette_transition.is_animating(now);
-        let power_menu_in_flight = self.power_menu.is_animating(now);
+        let layers_in_flight = self.layers.is_animating(now);
         let room_activity_in_flight = self.room_activity_transition.is_animating(now)
             || self.room_activity.needs_animation_frame(now);
         let follow_in_flight = self.follow_transition.is_animating(now);
@@ -18440,7 +18098,7 @@ impl ShellOverlayHost {
             || qs_in_flight
             || ws_settings_in_flight
             || palette_in_flight
-            || power_menu_in_flight
+            || layers_in_flight
             || room_activity_in_flight
             || follow_in_flight
             || room_replay_in_flight
@@ -19121,8 +18779,17 @@ impl ShellOverlayHost {
 
         let _ = self.draw_quick_settings_dropdown(scene, transform, text_renderer, theme);
 
-        self.power_menu
-            .draw(self.rect, scene, transform, text_renderer, theme);
+        self.layers.draw(
+            LayerId::PowerMenu,
+            &mut LayerPaint {
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+                viewport: self.rect,
+            },
+        );
 
         self.draw_collaborators_dropdown(scene, transform, text_renderer, theme, presence, flags);
         self.draw_room_activity_sheet(scene, transform, text_renderer, theme, presence, flags);
@@ -19737,7 +19404,7 @@ impl ShellOverlayHost {
             || self.palette_visible
             || self.palette_transition.is_visible(Instant::now())
             || self.qs_transition.is_visible(Instant::now())
-            || self.power_menu.is_open()
+            || self.layers.power_menu.is_open()
             || self.workspace_settings_overlay.member_sheet_is_open()
             || self.file_picker_overlay.widget().is_some()
             || self.peer_sync_overlay.visible()
@@ -20510,7 +20177,17 @@ impl ShellOverlayHost {
         // The tab menu: above the windows and the strip chrome it was
         // opened from, below the sheets that follow (a portal answer or a
         // token prompt is modal; a menu is not).
-        self.draw_tab_context_menu(scene, transform, text_renderer, theme, presence);
+        self.layers.draw(
+            LayerId::TabContextMenu,
+            &mut LayerPaint {
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+                viewport: self.rect,
+            },
+        );
 
         // Owns the keyboard while up, so it must sit above the palette
         // that opened it.

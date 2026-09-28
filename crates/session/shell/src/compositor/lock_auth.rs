@@ -63,7 +63,7 @@ impl GreetdVerifier {
 #[cfg(target_os = "linux")]
 impl PasswordVerifier for GreetdVerifier {
     fn verify(&self, username: &str, password: &str) -> Result<(), String> {
-        greeter::greetd_client::verify_password(&self.sock, username, password)
+        greetd_client::verify_password(&self.sock, username, password)
             // `user_message` is the same non-leaky copy the login box shows ("Incorrect username or password"), so unlock never reveals more than login does.
             .map_err(|e| e.user_message())
     }

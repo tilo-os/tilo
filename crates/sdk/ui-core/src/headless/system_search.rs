@@ -137,16 +137,6 @@ fn kind(label: &str) -> ResourceKind {
         other => ResourceKind::Custom(other.into()),
     }
 }
-fn score(query: &str, title: &str, id: &str, description: Option<&str>) -> Option<i32> {
-    system::application_match_score(
-        query,
-        &title.to_lowercase(),
-        &id.to_lowercase(),
-        None,
-        description.map(str::to_lowercase).as_deref(),
-    )
-}
-
 #[derive(Default)]
 pub(super) struct SystemSearch {
     data: GlobalSearchSourceData,
@@ -155,6 +145,8 @@ pub(super) struct SystemSearch {
     epoch: u64,
     pending: Option<GlobalSearchIntent>,
     saved_focus: Option<crate::widget::layout::CompositionFocus>,
+    /// Applications, actions and tabs, each indexed while it stays the same.
+    indexes: [crate::search::ListIndex; 3],
 }
 struct Overlay {
     palette: CommandPalette,
@@ -391,48 +383,67 @@ impl FrameHarness {
             revision: data.revision.clone(),
             target: tab.target.clone(),
         };
+        let [app_index, action_index, tab_index] = &self.system_search.indexes;
+        let app_ranks = app_index.ranks(
+            &needle,
+            data.applications
+                .iter()
+                .map(|app| system::application_fields(&app.title, &app.app_id, None, None)),
+        );
         let applications = data
             .applications
             .iter()
-            .filter_map(|app| {
+            .zip(app_ranks)
+            .filter_map(|(app, rank)| {
                 Some(Row {
                     identity: format!("app:{}", app.app_id),
                     title: app.title.clone(),
                     subtitle: Some(app.app_id.clone()),
                     kind: ResourceKind::Application,
-                    score: score(&needle, &app.title, &app.app_id, None)?,
+                    score: system::provider_score(rank?),
                     icon: app.icon,
                     intent: GlobalSearchIntent::CallerAction(app.action.clone()),
                 })
             })
             .collect();
-        let actions = tilo_actions::flatten(&self.caller_resources())
+        let caller_resources = self.caller_resources();
+        let caller_actions: Vec<_> = tilo_actions::flatten(&caller_resources)
             .into_iter()
             .filter(|fa| fa.action.contract.availability.is_available())
-            .filter_map(|fa| {
-                // Desktop launch actions already have the authoritative Applications group.
-                if data.applications.iter().any(|a| {
+            // Desktop launch actions already have the authoritative Applications group.
+            .filter(|fa| {
+                !data.applications.iter().any(|a| {
                     a.action.resource == fa.resource_id.as_str() && a.action.action == fa.action.id
-                }) {
-                    return None;
-                }
-                let title = format!("{} — {}", fa.resource_label, fa.action.label);
+                })
+            })
+            .collect();
+        // The resource label is context, not the command name. Otherwise
+        // "Writer — Insert table" ties the exact Writer application and
+        // Actions precedence steals its launch.
+        let contexts: Vec<String> = caller_actions
+            .iter()
+            .map(|fa| {
+                format!(
+                    "{} {}",
+                    fa.resource_label,
+                    fa.action.description.as_deref().unwrap_or("")
+                )
+            })
+            .collect();
+        let action_ranks = action_index.ranks(
+            &needle,
+            caller_actions.iter().zip(&contexts).map(|(fa, context)| {
+                system::application_fields(&fa.action.label, &fa.action.id, None, Some(context))
+            }),
+        );
+        let actions = caller_actions
+            .into_iter()
+            .zip(action_ranks)
+            .filter_map(|(fa, rank)| {
                 Some(Row {
                     identity: format!("action:{}", fa.key),
-                    // The resource label is context, not the command name.
-                    // Otherwise "Writer — Insert table" ties the exact Writer
-                    // application and Actions precedence steals its launch.
-                    score: score(
-                        &needle,
-                        &fa.action.label,
-                        &fa.action.id,
-                        Some(&format!(
-                            "{} {}",
-                            fa.resource_label,
-                            fa.action.description.as_deref().unwrap_or("")
-                        )),
-                    )?,
-                    title,
+                    score: system::provider_score(rank?),
+                    title: format!("{} — {}", fa.resource_label, fa.action.label),
                     subtitle: fa.action.description.clone(),
                     kind: ResourceKind::Action,
                     icon: None,
@@ -470,8 +481,14 @@ impl FrameHarness {
                         .is_none_or(|id| id == tab.instance_id)
             })
             .collect();
-        for tab in &tabs {
-            let rows = score(&needle, &tab.title, &tab.record_id, None)
+        let tab_ranks = tab_index.ranks(
+            &needle,
+            tabs.iter()
+                .map(|tab| system::application_fields(&tab.title, &tab.record_id, None, None)),
+        );
+        for (tab, rank) in tabs.iter().zip(tab_ranks) {
+            let rows = rank
+                .map(system::provider_score)
                 .map(|score| Row {
                     identity: format!("tab:{}", tab.target),
                     title: tab.title.clone(),

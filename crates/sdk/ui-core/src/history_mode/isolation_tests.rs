@@ -296,15 +296,20 @@ impl Widget for LiveOwner {
             .take()
             .or_else(|| self.emitter.borrow_mut().take())
     }
-    fn start_resource_operation_with_document(
+    fn start_operation(
         &mut self,
-        invocation: tilo_actions::InvocationId,
-        _: tilo_actions::OperationKind,
-        type_id: &str,
-        _: &[u8],
+        op: &crate::widget::ResourceOperation<'_>,
         _: &mut AutoCommit,
         _: &ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        let Some(crate::widget::OperationRequest {
+            invocation,
+            type_id,
+            ..
+        }) = op.unscoped()
+        else {
+            return Ok(None);
+        };
         if type_id != self.type_id {
             return Ok(None);
         }
