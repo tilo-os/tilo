@@ -1,5 +1,6 @@
 //! Current-room command admission in the serialized durable owner.
 use crate::SessionOwner;
+mod namespace;
 mod policy;
 pub(crate) use policy::DesktopPolicyFence;
 use tilo_action_broker::peer_actions::PolicyTime;
@@ -48,6 +49,9 @@ impl SessionOwner {
             return Ok(receipt);
         }
         policy::topology(self, caller, command, now).map_err(rejected)?;
+        if let DesktopCommand::ClaimNamespace { salt } = command.command {
+            return self.commit_namespace_claim(request, binding, caller, salt, time);
+        }
         let mut doc = self
             .peer()
             .admitted_room()
