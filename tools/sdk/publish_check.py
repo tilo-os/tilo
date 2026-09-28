@@ -22,8 +22,8 @@ resolves their dependencies on each other): manifests, files and dependency
 resolution against crates.io. `--verify` also builds every package from its
 packaged sources, in dependency order, against crates.io and the packages
 before it; `--report-only` skips the dry run. The packaged `.crate` files stay
-in `target/package/`, where tools/sdk/local_registry.py builds a registry
-from them.
+in `target/package/tmp-registry/`, where tools/sdk/local_registry.py builds a
+registry from them.
 
 A dry run cannot see ownership, and a name another owner holds on crates.io
 would resolve to their crate wherever they published our version. The SDK's
