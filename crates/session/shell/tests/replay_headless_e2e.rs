@@ -282,6 +282,27 @@ fn outline(tree: &Value) -> String {
     out
 }
 
+/// The bounds of the first node of `role` named `label` in a semantic
+/// tree, when it has bounds of its own.
+fn find_named(tree: &Value, role: &str, label: &str) -> Option<Value> {
+    match tree {
+        Value::Object(map) => {
+            if map.get("role") == Some(&json!(role)) && map.get("label") == Some(&json!(label)) {
+                return map
+                    .get("bounds")
+                    .filter(|bounds| !bounds.is_null())
+                    .cloned();
+            }
+            map.values()
+                .find_map(|child| find_named(child, role, label))
+        }
+        Value::Array(items) => items
+            .iter()
+            .find_map(|child| find_named(child, role, label)),
+        _ => None,
+    }
+}
+
 /// The bounds of the first node of `role` in a semantic tree.
 fn find_role(tree: &Value, role: &str) -> Option<Value> {
     match tree {
@@ -334,35 +355,41 @@ impl Session {
         window
     }
 
-    /// Open the first note of Notes' empty notebook and return where its
-    /// body is on screen. The "New note" button sits in the middle of the
-    /// empty page, whose semantic bounds are the whole page, so the press
-    /// walks down the page's middle until it lands on the button.
+    /// Open the first note of Notes' empty notebook by pressing its "New
+    /// note" button where Notes says it is, and return where the note's
+    /// body is on screen.
     fn open_first_note(&self, window: &Value) -> (f64, f64) {
         let surface = window["surface_id"].as_u64().unwrap();
         let rect = &window["rect"];
         let number = |key: &str| rect[key].as_f64().unwrap_or_default();
-        let (x, top) = (number("x") + number("w") / 2.0, number("y"));
-        let mut offset = 200.0;
-        while self
-            .inspect(surface)
-            .is_none_or(|tree| tree.to_string().contains("\"New note\""))
-        {
+        let (left, top) = (number("x"), number("y"));
+        let button = self.until("Notes' \"New note\" button", Duration::from_secs(10), |s| {
+            s.inspect(surface)
+                .and_then(|tree| find_named(&tree, "button", "New note"))
+        });
+        let at = |key: &str| button[key].as_f64().unwrap_or_default();
+        self.click(
+            left + at("x") + at("width") / 2.0,
+            top + at("y") + at("height") / 2.0,
+        );
+        let deadline = later(Duration::from_secs(10));
+        let body = loop {
+            let tree = self.inspect(surface).unwrap_or_default();
+            if find_named(&tree, "button", "New note").is_none()
+                && let Some(body) = find_role(&tree, "text_input")
+            {
+                break body;
+            }
             assert!(
-                offset < number("h"),
-                "Notes did not open a new note.\nits tree: {}\n{}",
-                outline(&self.inspect(surface).unwrap_or_default()),
+                Instant::now() < deadline,
+                "pressing \"New note\" at {button} did not open a note with a body.\nits tree: {}\n{}",
+                outline(&tree),
                 self.log()
             );
-            self.click(x, top + offset);
-            std::thread::sleep(Duration::from_millis(400));
-            offset += 16.0;
-        }
-        let tree = self.inspect(surface).unwrap_or_default();
-        let body = find_role(&tree, "text_input")
-            .unwrap_or_else(|| panic!("the new note has a body to write in: {}", outline(&tree)));
+            std::thread::sleep(Duration::from_millis(100));
+        };
         (
-            number("x") + body["x"].as_f64().unwrap() + 24.0,
+            left + body["x"].as_f64().unwrap() + 24.0,
             top + body["y"].as_f64().unwrap() + 12.0,
         )
     }

@@ -1132,6 +1132,31 @@ impl MainPanel {
     pub fn empty_action_center_for_test(&self) -> Option<Point> {
         (self.empty_action_rect.width() > 0.0).then(|| self.empty_action_rect.center())
     }
+
+    /// The empty page: a labelled group whose call to action is a button of
+    /// its own, where it is painted, so pointer and assistive activation
+    /// land on what a person sees.
+    fn empty_page_accessibility(&self) -> ui::a11y::AccessNode {
+        use ui::a11y::{AccessNode, AccessState, Role};
+        let focused = AccessState {
+            focusable: true,
+            focused: self.empty_action_focused,
+            ..Default::default()
+        };
+        let mut action = AccessNode::new(Role::Button)
+            .with_name("New note")
+            .with_description("Create the first note in this workspace")
+            .with_action_target("notes.first_note")
+            .with_state(focused);
+        if self.empty_action_rect.width() > 0.0 {
+            action = action.with_bounds(self.empty_action_rect);
+        }
+        AccessNode::new(Role::Group)
+            .with_name("Start your first note")
+            .with_description("Capture an idea, a plan, or a decision. You can organise it later.")
+            .with_state(focused)
+            .with_children(vec![action])
+    }
 }
 
 impl Default for MainPanel {
@@ -1992,17 +2017,7 @@ impl Widget for MainPanel {
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Role};
         if self.page_id.is_none() {
-            return Some(
-                AccessNode::new(Role::Button)
-                    .with_name("New note")
-                    .with_description("Create the first note in this workspace")
-                    .with_action_target("notes.first_note")
-                    .with_state(AccessState {
-                        focusable: true,
-                        focused: self.empty_action_focused,
-                        ..Default::default()
-                    }),
-            );
+            return Some(self.empty_page_accessibility());
         }
         let mut children = vec![
             AccessNode::new(Role::TextInput)
@@ -2090,6 +2105,10 @@ impl Widget for MainPanel {
         let [index] = path else {
             return None;
         };
+        if self.page_id.is_none() {
+            return (*index == 0 && self.empty_action_rect.width() > 0.0)
+                .then_some(self.empty_action_rect);
+        }
         if *index == 2 + self.tags.len() + self.backlinks.len() {
             return self.scroll_thumb();
         }
@@ -2111,6 +2130,14 @@ impl Widget for MainPanel {
         let [index] = path else {
             return false;
         };
+        if self.page_id.is_none() {
+            if *index != 0 {
+                return false;
+            }
+            self.empty_action_focused = true;
+            self.dirty = true;
+            return true;
+        }
         if *index == 2 + self.tags.len() + self.backlinks.len() {
             return self.focus_scrollbar();
         }
@@ -2317,11 +2344,26 @@ mod tests {
         {
             let mut p = MainPanel::new();
             p.set_focus(true);
+            p.rect = Rect::new(0.0, 0.0, 600.0, 700.0);
+            p.empty_action_rect = Rect::new(250.0, 400.0, 350.0, 436.0);
             let node = p.accessibility().expect("empty state is exposed");
-            assert_eq!(node.role, ui::a11y::Role::Button);
-            assert_eq!(node.name.as_deref(), Some("New note"));
-            assert!(node.state.focusable);
-            assert!(node.state.focused);
+            assert_eq!(node.role, ui::a11y::Role::Group);
+            let [button] = node.children.as_slice() else {
+                panic!("the empty page has one call to action: {node:?}");
+            };
+            assert_eq!(button.role, ui::a11y::Role::Button);
+            assert_eq!(button.name.as_deref(), Some("New note"));
+            assert!(button.state.focusable);
+            assert!(button.state.focused);
+            assert_eq!(
+                button.bounds.map(ui::a11y::AccessBounds::to_rect),
+                Some(p.empty_action_rect),
+                "the button is where it is painted, not the whole page"
+            );
+            assert_eq!(
+                p.synthetic_accessibility_rect(&[0]),
+                Some(p.empty_action_rect)
+            );
 
             let mut doc = AutoCommit::new();
             assert!(p.perform_action(&ui::a11y::Action::Activate, &mut doc, &ObjId::Root));
