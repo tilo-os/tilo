@@ -90,6 +90,8 @@ const phone = await mountDesktop(phoneEl, {app: 'so.tilo.ebook', newDocument: tr
   open: {url: '/books/the-odyssey.epub'}, ...shared});
 const book = phone.opened.resource;   // 'ebook.book:book:<32 hex>'
 const laptop = await mountDesktop(laptopEl, {app: 'so.tilo.ebook', record: phone.record, ...shared});
+// Each mount reads at its own position: open both at Book I without selecting.
+for (const mount of [phone, laptop]) mount.invokeAction(book, 'go-to', {chapter: 4, block: 3});
 phone.invokeAction(book, 'select-passage', {chapter: 4, start_block: 3, end_block: 3});
 ```
 

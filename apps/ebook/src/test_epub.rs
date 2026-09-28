@@ -5,6 +5,59 @@ use std::fmt::Write as _;
 
 /// An EPUB titled `title` with one spine document per `(heading, paragraphs)`.
 pub(crate) fn epub(title: &str, chapters: &[(&str, Vec<String>)]) -> Vec<u8> {
+    let documents: Vec<(&str, String)> = chapters
+        .iter()
+        .map(|(heading, paragraphs)| {
+            let mut body = format!("<h2>{heading}</h2>");
+            for paragraph in paragraphs {
+                let _ = write!(body, "<p>{paragraph}</p>");
+            }
+            (*heading, body)
+        })
+        .collect();
+    epub_documents(title, &documents)
+}
+
+/// A verse classic laid out like the Standard Ebooks Odyssey: front matter,
+/// then `books` spine documents, each a z3998 poem section whose header
+/// (heading, title, bridgehead) is blocks 0–2 and whose stanzas start at
+/// block 3, their lines `<span>`s between `<br/>`s, some indented `i1`.
+pub(crate) fn verse_classic(books: usize) -> Vec<u8> {
+    let mut documents = vec![
+        (
+            "Titlepage",
+            "<section epub:type=\"titlepage\"><h1>The Test Odyssey</h1><p>Homer</p></section>"
+                .to_string(),
+        ),
+        (
+            "Preface",
+            "<section epub:type=\"preface\"><h2>Preface</h2><p>An address<br/>on two lines.</p></section>"
+                .to_string(),
+        ),
+    ];
+    let headings: Vec<String> = (1..=books).map(|book| format!("Book {book}")).collect();
+    for heading in &headings {
+        let mut body = format!(
+            "<section epub:type=\"chapter z3998:poem\"><header><h2>{heading}</h2>\
+             <p epub:type=\"title\">The voyage</p>\
+             <p epub:type=\"se:bridgehead\">A council of the gods—Mercury despatched to Calypso.</p></header>"
+        );
+        for stanza in 1..=3 {
+            let _ = write!(
+                body,
+                "<p><span class=\"first-child\">{heading}, stanza {stanza}: tell me, O Muse,</span><br/>\
+                 <span>of that sagacious man who wandered far</span><br/>\
+                 <span class=\"i1\">and visited the capitals of nations.</span></p>"
+            );
+        }
+        body.push_str("</section>");
+        documents.push((heading.as_str(), body));
+    }
+    epub_documents("The Test Odyssey", &documents)
+}
+
+/// An EPUB titled `title` with one spine document per `(title, body markup)`.
+fn epub_documents(title: &str, chapters: &[(&str, String)]) -> Vec<u8> {
     let mut files = vec![
         ("mimetype".to_string(), b"application/epub+zip".to_vec()),
         (
@@ -13,7 +66,7 @@ pub(crate) fn epub(title: &str, chapters: &[(&str, Vec<String>)]) -> Vec<u8> {
         ),
     ];
     let (mut manifest, mut spine, mut nav) = (String::new(), String::new(), String::new());
-    for (index, (heading, paragraphs)) in chapters.iter().enumerate() {
+    for (index, (heading, body)) in chapters.iter().enumerate() {
         let href = format!("text/chapter-{index}.xhtml");
         let _ = write!(
             manifest,
@@ -21,14 +74,10 @@ pub(crate) fn epub(title: &str, chapters: &[(&str, Vec<String>)]) -> Vec<u8> {
         );
         let _ = write!(spine, r#"<itemref idref="c{index}"/>"#);
         let _ = write!(nav, r#"<li><a href="{href}">{heading}</a></li>"#);
-        let mut body = String::new();
-        for paragraph in paragraphs {
-            let _ = write!(body, "<p>{paragraph}</p>");
-        }
         files.push((
             format!("OEBPS/{href}"),
             format!(
-                r#"<?xml version="1.0" encoding="utf-8"?><html xmlns="http://www.w3.org/1999/xhtml"><head><title>{heading}</title></head><body><h2>{heading}</h2>{body}</body></html>"#
+                r#"<?xml version="1.0" encoding="utf-8"?><html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><head><title>{heading}</title></head><body>{body}</body></html>"#
             )
             .into_bytes(),
         ));
@@ -140,4 +189,37 @@ fn a_generated_classic_parses_with_every_chapter() {
         "the heading and six paragraphs"
     );
     assert_eq!(book.id, crate::epub::content_id(&bytes));
+}
+
+#[test]
+fn a_generated_verse_classic_parses_stanzas_as_verse_at_prose_block_indices() {
+    use crate::model::Block;
+
+    let book = crate::epub::parse_epub(&verse_classic(3), 0, "").expect("parses");
+    assert_eq!(book.chapters.len(), 5);
+    let preface = &book.chapters[1].blocks[1];
+    assert!(matches!(preface, Block::Paragraph { .. }), "{preface:?}");
+    assert!(
+        preface.spans().iter().any(|span| span.line_break),
+        "a prose <br/> breaks its line"
+    );
+    let book_one = &book.chapters[2];
+    assert_eq!(book_one.blocks.len(), 6, "{:#?}", book_one.blocks);
+    assert!(matches!(book_one.blocks[0], Block::Heading { .. }));
+    assert!(matches!(book_one.blocks[2], Block::Paragraph { .. }));
+    let Block::Verse { spans, quoted } = &book_one.blocks[3] else {
+        panic!("the first stanza is verse: {:?}", book_one.blocks[3]);
+    };
+    assert!(!quoted);
+    let breaks: Vec<u8> = spans
+        .iter()
+        .filter(|span| span.line_break)
+        .map(|span| span.line_indent)
+        .collect();
+    assert_eq!(breaks, [0, 1], "three lines, the last indented");
+    assert_eq!(
+        book_one.block_text(3),
+        "Book 1, stanza 1: tell me, O Muse, of that sagacious man who wandered far \
+         and visited the capitals of nations."
+    );
 }
