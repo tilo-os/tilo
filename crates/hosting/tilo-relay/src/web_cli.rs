@@ -265,17 +265,26 @@ async fn approve_every_browser(
     }
 }
 
-/// What a page (or Cloud's `dev:tilo`) needs to connect: one JSON line on
+/// What a page (or Cloud's `dev:tilo`) needs to connect, and the Iroh
+/// address a native runtime names in `TILO_COLLAB_HOST`: one JSON line on
 /// stdout, and instructions on stderr.
-fn announce(web: &WebHandle, user: &[u8; 32], allowed: &[String], state: &Path) {
+fn announce(
+    web: &WebHandle,
+    iroh: &iroh::EndpointAddr,
+    user: &[u8; 32],
+    allowed: &[String],
+    state: &Path,
+) {
     let localhost = format!("https://localhost:{}", web.addr.port());
     let user = hex::encode(user);
+    let iroh = serde_json::to_string(iroh).unwrap_or_default();
     println!(
         "{}",
         serde_json::json!({
             "origin": web.origin,
             "localhostOrigin": localhost,
             "plainOrigin": web.plain_origin,
+            "irohAddr": iroh,
             "userPublicKey": user,
             "certificateSha256": web.certificate_sha256,
             "allowedOrigins": allowed,
@@ -288,7 +297,8 @@ fn announce(web: &WebHandle, user: &[u8; 32], allowed: &[String], state: &Path) 
          allowed origins:     {}\n  state:               {}\n\n\
          Cloud console:\n  npm run dev:tilo -- --port 9998 --host-origin {localhost} --user-public-key {user}\n\n\
          Open {localhost} in that browser once and accept the development certificate;\n\
-         WebTransport pins it by hash.\n",
+         WebTransport pins it by hash.\n\n\
+         Native runtime (its identity must be this user root):\n  TILO_COLLAB_HOST='{iroh}'\n",
         allowed.join(" "),
         state.display(),
     );
@@ -354,7 +364,13 @@ pub async fn dev(
         .serve_web(web_config(&web_args, listen, &state))
         .await
         .context("start the browser listener")?;
-    announce(&web, &user, &web_args.allowed_origins, &state);
+    announce(
+        &web,
+        &relay.node_addr(),
+        &user,
+        &web_args.allowed_origins,
+        &state,
+    );
     let endpoint = iroh::endpoint::Endpoint::builder(iroh::endpoint::presets::Minimal)
         .bind()
         .await
