@@ -108,6 +108,10 @@ pub struct ClientInput {
     /// `wl_touch`. That client owns the whole tap, so the compositor must not
     /// also synthesise a pointer click for it.
     touch_down_reached_client: bool,
+    /// Who the input being routed belongs to, when it is not the person at
+    /// this machine: an agent's seat. Its key and button edges are then
+    /// attributed to that participant on the shared-seat ledger.
+    participant: Option<crate::network::protocol::PeerId>,
 }
 
 impl ClientInput {
@@ -259,6 +263,12 @@ impl ClientInput {
     /// falls back to the origin for callers wanting a point, not a question. Use [`Self::pointer_position`] to distinguish "never been anywhere" from "at the origin".
     pub fn cursor(&self) -> (f64, f64) {
         self.cursor.unwrap_or_default()
+    }
+
+    /// Attribute the input routed from now on to `participant` (an agent's
+    /// seat), or with `None` to the person at this machine again.
+    pub fn set_participant(&mut self, participant: Option<crate::network::protocol::PeerId>) {
+        self.participant = participant;
     }
 
     /// Where the pointer is, or `None` if it has never been anywhere — the honest form of [`Self::cursor`], for the one caller that must tell the two apart.
@@ -1202,9 +1212,12 @@ pub fn route_input(
     modifiers: &Modifiers,
 ) -> bool {
     // The host's own input takes priority over every remote peer for the next half second; stamped here since both the backend loop and the test-control socket push local input through this function.
-    state
-        .remote_input_firewall
-        .note_local_input(std::time::Instant::now());
+    // An agent is one more participant, not the host, and wins no priority.
+    if state.client_input.participant.is_none() {
+        state
+            .remote_input_firewall
+            .note_local_input(std::time::Instant::now());
+    }
     match event {
         WindowEvent::CursorMoved { position, .. } => {
             // Capture depends on the pointer's *new* location (notably the
@@ -1422,7 +1435,10 @@ fn admit_local_pointer_edge(
     pressed: bool,
     chrome_drag: bool,
 ) -> bool {
-    let final_shared_edge = state.remote_seats.local_button_transition(button, pressed);
+    let final_shared_edge = match state.client_input.participant {
+        Some(peer) => state.remote_seats.button_transition(peer, button, pressed),
+        None => state.remote_seats.local_button_transition(button, pressed),
+    };
     final_shared_edge || (chrome_drag && !pressed)
 }
 
@@ -1542,7 +1558,11 @@ fn route_keyboard_input(
         pressed,
         !shell_owns && state.client_input.keyboard_focus.is_some(),
     );
-    if !state.remote_seats.local_key_transition(code, pressed) {
+    let admitted = match state.client_input.participant {
+        Some(peer) => state.remote_seats.key_transition(peer, code, pressed),
+        None => state.remote_seats.local_key_transition(code, pressed),
+    };
+    if !admitted {
         return false;
     }
     // Runs for shell-owned keys too: the seat's xkb state has to track every key, or its modifier view drifts (see `deliver_client_key`).
