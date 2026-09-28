@@ -203,6 +203,7 @@ fn view_texts(root: &dyn Widget) -> Vec<String> {
 
 /// Lay out and draw `A`'s view over `doc`, a frozen past version, in a
 /// `size` pane.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn render_past<A: ResourceApp>(
     doc: AutoCommit,
     size: (u32, u32),
