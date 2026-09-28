@@ -198,3 +198,14 @@ settings-shortcut-unassigned = Nicht belegt
 settings-shortcuts-vim = Vim-Navigation (H J K L)
 settings-shortcuts-actions = Aktionen
 settings-shortcuts-actions-caption = Der Tastatur-Auslöser eines gespeicherten Kurzbefehls belegt hier seine Tastenkombination; ändere oder entferne ihn im Kurzbefehl.
+
+# Geräte: was jeder Kontinuitätsschalter teilt
+continuity-clipboard-description = Kopierte Texte und Bilder mit dem aktuellen zertifizierten Gerät teilen.
+continuity-notifications-description = Inhalte und Aktionen von Benachrichtigungen auf das aktuelle Gerät spiegeln.
+continuity-wifi-settings-description = Gespeicherte Netzwerke und passende persönliche Einstellungen anbieten.
+continuity-media-description = Wiedergabe fortsetzen, Mediensteuerung anbieten und das Lautsprecher-Timing für Lautsprechergruppen und Audio auf anderen Geräten synchron halten.
+continuity-display-input-description = Diesem Gerät erlauben, einen Bildschirm zu erweitern oder Eingaben von anderen Geräten anzunehmen.
+continuity-file-transfer-description = Ausdrücklich gesendete Dateien zwischen deinen zertifizierten Geräten annehmen.
+continuity-realtime-sessions-description = Laufende Anrufe und andere Live-Sitzungen von Apps übergeben.
+continuity-typed-gamepad-description = Typisierte Gamepad-Ereignisse weiterleiten, niemals einen untypisierten Eingabestrom.
+continuity-app-continuations-description = App-Platzierung und einen begrenzten Fortsetzungsstand für deine zertifizierten Geräte anbieten.

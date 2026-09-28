@@ -173,6 +173,34 @@ pub struct SpeakerMemberInfo {
     pub trim: SpeakerTrimInfo,
 }
 
+/// A session playing on the group right now, most urgent state first.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum SpeakerPlaybackInfo {
+    Playing,
+    /// A member has not admitted the session yet.
+    Connecting,
+    /// A member does not have the playing device's clock yet, and plays
+    /// nothing until it does.
+    SyncingClocks,
+    /// A member could not get the playing device's clock in time.
+    ClockFailed {
+        reason: String,
+    },
+}
+
+impl SpeakerPlaybackInfo {
+    #[must_use]
+    pub const fn label(&self) -> &'static str {
+        match self {
+            Self::Playing => "Playing",
+            Self::Connecting => "Connecting…",
+            Self::SyncingClocks => "Syncing clocks…",
+            Self::ClockFailed { .. } => "Can't play in time",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SpeakerGroupInfo {
@@ -182,6 +210,8 @@ pub struct SpeakerGroupInfo {
     /// Only the device that created a group can edit, calibrate or delete it.
     pub led_here: bool,
     pub members: Vec<SpeakerMemberInfo>,
+    /// A session this device plays to the group, or plays in as a member.
+    pub playback: Option<SpeakerPlaybackInfo>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -311,10 +341,15 @@ impl SpeakerReply {
                             && device.outputs.len() <= MAX_SPEAKER_ENDPOINTS
                             && device.microphones.len() <= MAX_SPEAKER_ENDPOINTS
                     })
-                    && snapshot
-                        .groups
-                        .iter()
-                        .all(|group| group.members.len() <= MAX_SPEAKER_MEMBERS)
+                    && snapshot.groups.iter().all(|group| {
+                        group.members.len() <= MAX_SPEAKER_MEMBERS
+                            && match &group.playback {
+                                Some(SpeakerPlaybackInfo::ClockFailed { reason }) => {
+                                    valid_label(reason)
+                                }
+                                _ => true,
+                            }
+                    })
             }
             Self::Done { group } => group.as_deref().is_none_or(valid_hex16),
             Self::Rejected { reason } => !reason.is_empty() && valid_label(reason),
