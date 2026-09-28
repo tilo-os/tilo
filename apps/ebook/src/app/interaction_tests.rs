@@ -4138,16 +4138,21 @@ fn reader_shots_render_within_the_page_box() {
         settings.font_scale = Settings::FONT_MAX;
         BooksDoc::write_settings(&mut doc, &settings);
 
-        frame(&mut app, &mut doc, 390.0, 844.0);
-        let geom = app.reader_page_geometry(app.rect, app.settings.mode);
-        let right = geom.full_content_x + f64::from(geom.full_content_w);
-        assert!(right <= app.rect.x1 + 0.01, "content box fits the viewport");
-        assert!(
-            app.sel_runs
-                .iter()
-                .all(|run| { run.x0 >= geom.full_content_x - 0.5 && run.x1 <= right + 0.5 }),
-            "every measured painted text run reflows inside the narrow page box"
-        );
+        // Every phone width, so the proof does not hinge on where one font's
+        // metrics happen to put the line ends.
+        for width in (360..=420).step_by(2) {
+            app.layout = None;
+            frame(&mut app, &mut doc, f64::from(width), 844.0);
+            let geom = app.reader_page_geometry(app.rect, app.settings.mode);
+            let right = geom.full_content_x + f64::from(geom.full_content_w);
+            assert!(right <= app.rect.x1 + 0.01, "content box fits the viewport");
+            assert!(
+                app.sel_runs
+                    .iter()
+                    .all(|run| { run.x0 >= geom.full_content_x - 0.5 && run.x1 <= right + 0.5 }),
+                "{width}px: every measured painted text run reflows inside the narrow page box"
+            );
+        }
     }
 }
 
