@@ -183,12 +183,7 @@ impl Drop for Ticket {
 }
 
 fn now_ns() -> Result<u64, String> {
-    SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map_err(|_| "native clock precedes epoch".to_string())?
-        .as_nanos()
-        .try_into()
-        .map_err(|_| "native clock overflow".into())
+    tilo_clock::try_unix_now_ns().ok_or_else(|| "native clock precedes epoch".to_string())
 }
 fn namespace(value: media_wire::MediaNamespace) -> String {
     format!(

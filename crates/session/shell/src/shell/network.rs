@@ -935,9 +935,7 @@ impl PendingInvitation {
 }
 
 fn now_unix_seconds() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_secs())
+    tilo_clock::unix_now()
 }
 
 fn pending_invites_path(keypair_path: &Path) -> PathBuf {
@@ -2135,9 +2133,7 @@ impl ShellNetwork {
     /// `try_send` failures are swallowed — presence is best-effort and
     /// a momentary backlog should never block the render loop.
     pub fn publish_presence(&self, key: String, point: (f64, f64)) {
-        let ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
+        let ts = tilo_clock::unix_now_ms();
         let msg = NeighbourMsg::PresenceMoved {
             peer: self.local_peer_id_hash(),
             user: crate::shell::state::local_user_id(),
@@ -5796,9 +5792,7 @@ impl ShellNetwork {
             .ok()
             .and_then(|pending| pending.get(&invite_id).cloned());
         let Some(admission) = admission else { return };
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |duration| duration.as_secs());
+        let now = tilo_clock::unix_now();
         if admission.room != room || admission.expiry_unix_seconds < now {
             if let Ok(mut pending) = self.pending_identity_admissions.lock() {
                 pending.remove(&invite_id);

@@ -6,9 +6,7 @@
 /// system clock as UTC. Good enough to seed the calendar's default
 /// month; the app never claims timezone precision.
 pub fn today() -> (i32, u32, u32) {
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs() as i64);
+    let secs = tilo_clock::unix_now_i64();
     let days = secs.div_euclid(86_400);
     civil_from_days(days)
 }

@@ -145,9 +145,7 @@ fn signing_payload(token: &PeerInviteToken) -> Result<Vec<u8>, postcard::Error> 
 }
 
 fn now_unix_seconds() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
+    tilo_clock::unix_now()
 }
 
 /// Stable, non-secret identifier for one exact signed invite. Authorities use

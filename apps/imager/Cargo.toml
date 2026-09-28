@@ -25,6 +25,7 @@ host-media-writer = []
 flatpak-media-writer = ["dep:zbus", "block-devices/udisks"]
 
 [dependencies]
+tilo-clock = { path = "../../crates/system/tilo-clock" }
 uuid.workspace = true
 base64.workspace = true
 crc32fast.workspace = true
