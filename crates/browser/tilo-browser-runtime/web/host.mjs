@@ -423,7 +423,7 @@ export async function mountDesktop(target,options={}) {
       get opened(){return opened;},
       actions:(resource,{window}={})=>JSON.parse(runtime.component_actions(actionSurface(),resource,window)),
       invokeAction:(resource,action,args={},{confirm=false,window}={})=>JSON.parse(runtime.invoke_component_action(actionSurface(),resource,action,JSON.stringify(args),confirm,window)),
-      openApp:app=>{if(!navigation)throw Error('the mount is not a desktop');return navigation.controller.dispatch({kind:'open',generation:navigation.controller.getSnapshot().generation,app});},
+      openApp:(app,{record}={})=>{if(!navigation)throw Error('the mount is not a desktop');return navigation.controller.dispatch({kind:'open',generation:navigation.controller.getSnapshot().generation,app,...(record===undefined?{}:{record})});},
       cleanup:async()=>{registry.remove(token);await cleanup();},flush:()=>{persistenceFailed=false;return persist();},
       state:()=>lastState,canvas,get editor(){return editor;},semantics:accessibility,requestSemantics,
 
