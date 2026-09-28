@@ -962,7 +962,13 @@ impl StatePeer {
             .caps
             .clone();
         let person = Principal::person_from_key(Ed25519PublicKey::from_bytes(cert.user_public_key));
-        backend::member::restrict_foreign_device(cert, person.id(), &mut caps, now);
+        backend::member::restrict_foreign_device(
+            cert,
+            &self.core.authority,
+            person.id(),
+            &mut caps,
+            now,
+        );
         Ok((role, caps, person.id().to_owned()))
     }
     /// Committed, admitted room only. Callers cannot mutate the admission owner.
@@ -1180,7 +1186,13 @@ impl StatePeer {
             self.core.room_doc.as_deref().ok_or("missing governance")?,
         );
         let person = Principal::person_from_key(Ed25519PublicKey::from_bytes(cert.user_public_key));
-        backend::member::restrict_foreign_device(cert, person.id(), &mut caps, authorization_time);
+        backend::member::restrict_foreign_device(
+            cert,
+            &self.core.authority,
+            person.id(),
+            &mut caps,
+            authorization_time,
+        );
         let actor = Actor::person(Some(role), person.id())
             .with_principal(Principal::App(app_id.to_owned()))
             .in_room(self.core.room.clone());
