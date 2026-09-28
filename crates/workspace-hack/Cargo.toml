@@ -432,7 +432,6 @@ zerovec = { version = "0.11", default-features = false, features = ["alloc", "de
 [target.x86_64-unknown-linux-gnu.dependencies]
 ashpd = { version = "0.13", default-features = false, features = ["file_chooser", "location", "notification", "open_uri", "screencast", "secret", "tokio", "wallpaper"] }
 brotli = { version = "8" }
-futures-task = { version = "0.3", default-features = false, features = ["std"] }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
 hyper-util = { version = "0.1", default-features = false, features = ["client-legacy", "client-proxy"] }
 itertools-594e8ee84c453af0 = { package = "itertools", version = "0.13" }
@@ -468,7 +467,6 @@ wayland-sys = { version = "0.31", default-features = false, features = ["dlopen"
 [target.x86_64-unknown-linux-gnu.build-dependencies]
 ashpd = { version = "0.13", default-features = false, features = ["file_chooser", "location", "notification", "open_uri", "screencast", "secret", "tokio", "wallpaper"] }
 brotli = { version = "8" }
-futures-task = { version = "0.3", default-features = false, features = ["std"] }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
 hyper-util = { version = "0.1", default-features = false, features = ["client-legacy", "client-proxy"] }
 itertools-594e8ee84c453af0 = { package = "itertools", version = "0.13" }
@@ -504,7 +502,6 @@ wayland-sys = { version = "0.31", default-features = false, features = ["dlopen"
 [target.aarch64-unknown-linux-gnu.dependencies]
 ashpd = { version = "0.13", default-features = false, features = ["file_chooser", "location", "notification", "open_uri", "screencast", "secret", "tokio", "wallpaper"] }
 brotli = { version = "8" }
-futures-task = { version = "0.3", default-features = false, features = ["std"] }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
 hyper-util = { version = "0.1", default-features = false, features = ["client-legacy", "client-proxy"] }
 itertools-594e8ee84c453af0 = { package = "itertools", version = "0.13" }
@@ -540,7 +537,6 @@ wayland-sys = { version = "0.31", default-features = false, features = ["dlopen"
 [target.aarch64-unknown-linux-gnu.build-dependencies]
 ashpd = { version = "0.13", default-features = false, features = ["file_chooser", "location", "notification", "open_uri", "screencast", "secret", "tokio", "wallpaper"] }
 brotli = { version = "8" }
-futures-task = { version = "0.3", default-features = false, features = ["std"] }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
 hyper-util = { version = "0.1", default-features = false, features = ["client-legacy", "client-proxy"] }
 itertools-594e8ee84c453af0 = { package = "itertools", version = "0.13" }

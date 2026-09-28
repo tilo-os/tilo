@@ -13165,7 +13165,6 @@ dependencies = [
  "hex",
  "image",
  "iroh",
- "iroh-base",
  "iroh-gossip",
  "iroh-mdns-address-lookup",
  "launcher",
@@ -16024,7 +16023,6 @@ dependencies = [
  "sha2 0.11.0",
  "thiserror 2.0.18",
  "tilo-model-gateway",
- "url",
  "workspace-hack",
 ]
 
@@ -19236,7 +19234,6 @@ dependencies = [
  "futures-io",
  "futures-lite",
  "futures-sink",
- "futures-task",
  "futures-util",
  "generic-array 0.14.7",
  "getrandom 0.2.17",
