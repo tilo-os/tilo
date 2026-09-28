@@ -229,6 +229,15 @@ pub fn raw_fixture_at(
     .unwrap();
     (intent, bootstrap, messages, governor.device_public_key, now)
 }
+/// # Errors
+/// As the enrollment a pinned host's Complete response finalizes.
+pub fn finalize(
+    intent: VerifiedNativeEnrollmentIntent,
+    pending: crate::PendingEnrollmentId,
+    bootstrap: join::JoinBootstrap,
+) -> Result<crate::VerifiedNativeEnrollment, String> {
+    crate::VerifiedNativeEnrollment::finalize(intent, pending, bootstrap)
+}
 /// The store an owner publishes through, for a host test to downcast.
 #[must_use]
 pub fn store(owner: &NativeWorkspaceOwner) -> Arc<dyn Store> {

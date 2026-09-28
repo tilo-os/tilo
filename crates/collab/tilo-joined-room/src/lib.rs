@@ -7,9 +7,11 @@
 //! installed, so no reader or receipt ever sees state the disk may not hold.
 //! The desktop session keeps that record inside its state file; the
 //! standalone runtime keeps it in a file of its own ([`open_file`]).
+//! [`enroll`] redeems an invitation with the host that issued it.
 mod bootstrap;
 mod certified;
 mod document_read;
+pub mod enroll;
 mod enrollment;
 mod file_store;
 mod limits;

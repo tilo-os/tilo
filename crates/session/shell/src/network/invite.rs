@@ -6,8 +6,9 @@
 //! duplicated in the token.
 
 pub(crate) mod enrollment_driver;
-#[path = "invite/native_exchange.rs"]
-mod exchange;
+#[cfg(test)]
+#[path = "invite/native_exchange_tests.rs"]
+mod exchange_tests;
 pub(crate) use tilo_joined_room::{VerifiedNativeEnrollment, VerifiedNativeEnrollmentIntent};
 
 use base64::Engine as _;
