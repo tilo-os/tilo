@@ -588,6 +588,12 @@ pub struct FrameHarness {
     /// Re-entrancy guard for the geometry check, whose forced rebuild runs
     /// through `try_relayout` itself.
     verifying_geometry: bool,
+    /// Concrete type of `root` when it was mounted through
+    /// [`FrameHarness::for_root`]; gates [`FrameHarness::root`].
+    root_type: Option<std::any::TypeId>,
+    /// Style of the viewport-sized node the root is laid out in; its size is
+    /// always the viewport's.
+    host_style: Style,
 }
 
 /// What one completed [`FrameHarness::relayout`] did with its layout tree.
@@ -616,6 +622,105 @@ fn full_relayout_forced() -> bool {
 
 /// Backwards-compatible name for the input-driving use of [`FrameHarness`].
 pub type Driver = FrameHarness;
+
+/// What the root reported for one [`FrameHarness::dispatch_to_root_outcome`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RootDispatch {
+    pub handled: bool,
+    pub focus_target: Option<NodeId>,
+}
+
+/// Construction options for [`FrameHarness::for_root_with`].
+#[derive(Default)]
+pub struct FrameOptions {
+    /// Defaults to [`Theme::dark`].
+    pub theme: Option<Theme>,
+    /// Defaults to [`TextRenderer::new`]; its text scale follows the theme.
+    pub text: Option<TextRenderer>,
+    /// Style of the viewport-sized node the root is laid out in, for a root
+    /// that must not be stretched by the default row. Its size is replaced
+    /// by the viewport.
+    pub host_style: Option<Style>,
+}
+
+/// A logical `(width, height)` as a harness viewport.
+///
+/// Fractions truncate and negative or NaN sizes become zero, so a size
+/// written as a float names the same viewport it would as an integer.
+#[must_use]
+pub fn viewport<T: Into<f64>>((w, h): (T, T)) -> (u32, u32) {
+    let (w, h) = (w.into(), h.into());
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "`as` saturates and maps NaN to zero, which is the documented contract"
+    )]
+    (w as u32, h as u32)
+}
+
+/// A [`FrameHarness`] over one concrete root that reads as that root.
+///
+/// Dereferencing yields the widget; a mutable dereference makes the next
+/// frame recompose from scratch (see [`FrameHarness::root_mut`]). Harness
+/// operations are associated functions so they never shadow the root's own
+/// methods.
+pub struct Framed<W: Widget + 'static> {
+    harness: FrameHarness,
+    root: std::marker::PhantomData<fn() -> W>,
+}
+
+impl<W: Widget + 'static> Framed<W> {
+    /// Mount `root` over `state` and run its first frame at `viewport`.
+    pub fn new(state: State, root: W, viewport: (u32, u32), theme: Theme) -> Self {
+        Self::from_harness(FrameHarness::for_root(state, root, viewport, theme))
+    }
+
+    /// [`Self::new`] with every construction option spelled out.
+    pub fn with_options(
+        state: State,
+        root: W,
+        viewport: (u32, u32),
+        options: FrameOptions,
+    ) -> Self {
+        Self::from_harness(FrameHarness::for_root_with(state, root, viewport, options))
+    }
+
+    fn from_harness(harness: FrameHarness) -> Self {
+        let _: &W = harness.root();
+        Self {
+            harness,
+            root: std::marker::PhantomData,
+        }
+    }
+
+    pub fn harness(this: &Self) -> &FrameHarness {
+        &this.harness
+    }
+
+    pub fn harness_mut(this: &mut Self) -> &mut FrameHarness {
+        &mut this.harness
+    }
+
+    /// The root and the live document at once; see
+    /// [`FrameHarness::root_and_state_mut`].
+    pub fn split(this: &mut Self) -> (&mut W, &mut State) {
+        this.harness.root_and_state_mut()
+    }
+}
+
+impl<W: Widget + 'static> std::ops::Deref for Framed<W> {
+    type Target = W;
+
+    fn deref(&self) -> &W {
+        self.harness.root()
+    }
+}
+
+impl<W: Widget + 'static> std::ops::DerefMut for Framed<W> {
+    fn deref_mut(&mut self) -> &mut W {
+        self.harness.root_mut()
+    }
+}
 
 impl FrameHarness {
     /// Mount a prepared component without a native window, GPU, or service discovery.
@@ -775,6 +880,7 @@ impl FrameHarness {
         self.discard_layout_tree();
         self.focused = None;
         self.focus_before_trap = None;
+        self.root_type = None;
         self.root = root;
     }
 
@@ -1094,7 +1200,52 @@ impl FrameHarness {
         Self::with_inputs(state, root, viewport, theme, text, || author, None)
     }
 
+    fn with_inputs_styled(
+        state: State,
+        root: Box<dyn Widget>,
+        viewport: (u32, u32),
+        theme: Theme,
+        text: TextRenderer,
+        host_style: Style,
+    ) -> Self {
+        Self::with_inputs_and_host(
+            state,
+            root,
+            viewport,
+            theme,
+            text,
+            crate::collaboration::local_user_id,
+            None,
+            host_style,
+        )
+    }
+
     fn with_inputs(
+        state: State,
+        root: Box<dyn Widget>,
+        viewport: (u32, u32),
+        theme: Theme,
+        text: TextRenderer,
+        author: impl FnOnce() -> crate::permissions::UserId,
+        component_wake: Option<ComponentRunnerWakeState>,
+    ) -> Self {
+        Self::with_inputs_and_host(
+            state,
+            root,
+            viewport,
+            theme,
+            text,
+            author,
+            component_wake,
+            Style::default(),
+        )
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "private constructor behind the public entry points"
+    )]
+    fn with_inputs_and_host(
         state: State,
         root: Box<dyn Widget>,
         viewport: (u32, u32),
@@ -1102,6 +1253,7 @@ impl FrameHarness {
         mut text: TextRenderer,
         author: impl FnOnce() -> crate::permissions::UserId,
         component_wake: Option<ComponentRunnerWakeState>,
+        host_style: Style,
     ) -> Self {
         if component_wake.is_some() {
             let ui_scale = theme.ui_scale;
@@ -1180,6 +1332,8 @@ impl FrameHarness {
             retained_frames: 0,
             retained_geometry_check_every: 0,
             verifying_geometry: false,
+            root_type: None,
+            host_style,
         };
         // Match `App::rebuild_theme`: reduced motion is both a paint-time
         // theme property and a lifecycle policy retained widgets use to settle
@@ -1188,6 +1342,191 @@ impl FrameHarness {
         d.root.set_motion_reduced(d.theme.reduce_motion);
         d.relayout();
         d
+    }
+
+    /// Mount one concrete widget as the root so a test can read and adjust
+    /// it through [`Self::root`] and [`Self::root_mut`] between frames.
+    pub fn for_root<W: Widget + 'static>(
+        state: State,
+        root: W,
+        viewport: (u32, u32),
+        theme: Theme,
+    ) -> Self {
+        Self::for_root_with(
+            state,
+            root,
+            viewport,
+            FrameOptions {
+                theme: Some(theme),
+                ..FrameOptions::default()
+            },
+        )
+    }
+
+    /// [`Self::for_root`] with every construction option spelled out.
+    pub fn for_root_with<W: Widget + 'static>(
+        state: State,
+        root: W,
+        viewport: (u32, u32),
+        options: FrameOptions,
+    ) -> Self {
+        let FrameOptions {
+            theme,
+            text,
+            host_style,
+        } = options;
+        let mut harness = Self::with_inputs_styled(
+            state,
+            Box::new(root),
+            viewport,
+            theme.unwrap_or_else(Theme::dark),
+            text.unwrap_or_default(),
+            host_style.unwrap_or_default(),
+        );
+        harness.root_type = Some(std::any::TypeId::of::<W>());
+        harness
+    }
+
+    /// The root mounted by [`Self::for_root`].
+    ///
+    /// # Panics
+    /// When the root was not mounted through [`Self::for_root`] as a `W`.
+    #[must_use]
+    pub fn root<W: Widget + 'static>(&self) -> &W {
+        assert_eq!(
+            self.root_type,
+            Some(std::any::TypeId::of::<W>()),
+            "FrameHarness::root: the root was not mounted as this type"
+        );
+        // SAFETY: `root_type` records the concrete type `root` was boxed from
+        // and is cleared whenever `root` is replaced.
+        unsafe { &*std::ptr::from_ref::<dyn Widget>(self.root.as_ref()).cast::<W>() }
+    }
+
+    /// Mutable access to the root mounted by [`Self::for_root`]. Anything
+    /// may change through it, so the next frame recomposes from scratch.
+    ///
+    /// # Panics
+    /// When the root was not mounted through [`Self::for_root`] as a `W`.
+    pub fn root_mut<W: Widget + 'static>(&mut self) -> &mut W {
+        assert_eq!(
+            self.root_type,
+            Some(std::any::TypeId::of::<W>()),
+            "FrameHarness::root_mut: the root was not mounted as this type"
+        );
+        self.discard_layout_tree();
+        // SAFETY: as in `root`; the raw layout maps that pointed into this
+        // tree were discarded above.
+        unsafe { &mut *std::ptr::from_mut::<dyn Widget>(self.root.as_mut()).cast::<W>() }
+    }
+
+    /// The root mounted by [`Self::for_root`] together with the live
+    /// document, for calls that take both. Invalidates as [`Self::root_mut`].
+    ///
+    /// # Panics
+    /// When the root was not mounted through [`Self::for_root`] as a `W`.
+    pub fn root_and_state_mut<W: Widget + 'static>(&mut self) -> (&mut W, &mut State) {
+        assert_eq!(
+            self.root_type,
+            Some(std::any::TypeId::of::<W>()),
+            "FrameHarness::root_and_state_mut: the root was not mounted as this type"
+        );
+        self.discard_layout_tree();
+        // SAFETY: as in `root_mut`.
+        let root =
+            unsafe { &mut *std::ptr::from_mut::<dyn Widget>(self.root.as_mut()).cast::<W>() };
+        (root, &mut self.state)
+    }
+
+    /// Run one frame at `viewport`, even when neither the size nor the
+    /// composition changed since the last one.
+    ///
+    /// # Errors
+    /// As [`Self::resize`].
+    pub fn relayout_at(
+        &mut self,
+        viewport: (u32, u32),
+    ) -> Result<(), crate::widget::WidgetLayoutError> {
+        self.viewport = viewport;
+        self.try_relayout()
+    }
+
+    /// [`Self::relayout_at`] under `theme`, which later frames keep.
+    ///
+    /// # Errors
+    /// As [`Self::resize`].
+    pub fn relayout_themed(
+        &mut self,
+        viewport: (u32, u32),
+        theme: Theme,
+    ) -> Result<(), crate::widget::WidgetLayoutError> {
+        self.theme = theme;
+        self.text.set_text_scale(self.theme.text_scale);
+        self.invalidate_layout_tree();
+        self.relayout_at(viewport)
+    }
+
+    /// Hand `event` straight to the root's `handle_event` against the last
+    /// frame's layout, bypassing host focus routing, and report whether the
+    /// root marked it handled. Nothing is laid out until the next frame,
+    /// which rebuilds only if the root reports a structural change.
+    pub fn dispatch_to_root(&mut self, event: &WindowEvent) -> bool {
+        let modifiers = self.modifiers;
+        self.dispatch_to_root_with(event, &modifiers)
+    }
+
+    /// [`Self::dispatch_to_root`] with an explicit modifier state for this
+    /// one event.
+    pub fn dispatch_to_root_with(
+        &mut self,
+        event: &WindowEvent,
+        modifiers: &winit::event::Modifiers,
+    ) -> bool {
+        self.dispatch_to_root_outcome(event, modifiers).handled
+    }
+
+    /// [`Self::dispatch_to_root_with`], also reporting the node the root
+    /// asked to focus.
+    pub fn dispatch_to_root_outcome(
+        &mut self,
+        event: &WindowEvent,
+        modifiers: &winit::event::Modifiers,
+    ) -> RootDispatch {
+        let mut handled = false;
+        let mut focus_target = None;
+        self.root.handle_event(
+            event,
+            self.input_scale,
+            modifiers,
+            &mut self.state.doc,
+            &self.state.root,
+            &mut handled,
+            &mut focus_target,
+            self.child_node,
+            &self.taffy,
+        );
+        RootDispatch {
+            handled,
+            focus_target,
+        }
+    }
+
+    /// The root widget, whatever it was mounted as.
+    #[must_use]
+    pub fn root_widget(&self) -> &dyn Widget {
+        self.root.as_ref()
+    }
+
+    /// The live document, read-only.
+    #[must_use]
+    pub fn state(&self) -> &State {
+        &self.state
+    }
+
+    /// Theme the next frame is drawn with.
+    #[must_use]
+    pub fn theme(&self) -> &Theme {
+        &self.theme
     }
 
     /// Resize in logical pixels and settle geometry-dependent composition
@@ -2082,7 +2421,7 @@ impl FrameHarness {
                             width: Dimension::length(w as f32),
                             height: Dimension::length(h as f32),
                         },
-                        ..Default::default()
+                        ..self.host_style.clone()
                     },
                     &[presentation_node],
                 );
@@ -11643,3 +11982,173 @@ pub(crate) mod legacy_control_feedback_tests {
 
 #[cfg(test)]
 mod portable_host_tests;
+
+#[cfg(test)]
+mod framed_tests {
+    use super::*;
+
+    struct Probe {
+        width: f32,
+        rect: Rect,
+        syncs: usize,
+        presses: usize,
+    }
+
+    impl Probe {
+        fn new(width: f32) -> Self {
+            Self {
+                width,
+                rect: Rect::ZERO,
+                syncs: 0,
+                presses: 0,
+            }
+        }
+    }
+
+    impl Widget for Probe {
+        fn sync(&mut self, _state: &mut automerge::AutoCommit, _path: &automerge::ObjId) {
+            self.syncs = self.syncs.saturating_add(1);
+        }
+
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _theme: &Theme,
+            node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            let node = taffy
+                .new_leaf(Style {
+                    size: Size {
+                        width: Dimension::length(self.width),
+                        height: Dimension::length(40.0),
+                    },
+                    ..Default::default()
+                })
+                .unwrap();
+            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+            node
+        }
+
+        fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+            let layout = taffy.layout(node).unwrap();
+            self.rect = Rect::new(
+                origin.x + f64::from(layout.location.x),
+                origin.y + f64::from(layout.location.y),
+                origin.x + f64::from(layout.location.x + layout.size.width),
+                origin.y + f64::from(layout.location.y + layout.size.height),
+            );
+        }
+
+        fn draw(
+            &mut self,
+            _scene: &mut Scene,
+            _transform: Affine,
+            _text_renderer: &mut TextRenderer,
+            _theme: &Theme,
+            _presence: &PresenceCtx,
+        ) {
+        }
+
+        fn handle_event(
+            &mut self,
+            event: &WindowEvent,
+            _scale_factor: f64,
+            _modifiers: &winit::event::Modifiers,
+            _state: &mut automerge::AutoCommit,
+            _path: &automerge::ObjId,
+            handled: &mut bool,
+            _focus_target: &mut Option<NodeId>,
+            _node_id: NodeId,
+            _taffy: &TaffyTree<()>,
+        ) {
+            if matches!(
+                event,
+                WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    ..
+                }
+            ) {
+                self.presses = self.presses.saturating_add(1);
+                *handled = true;
+            }
+        }
+
+        fn get_rect(&self) -> Rect {
+            self.rect
+        }
+
+        fn name(&self) -> &'static str {
+            "Probe"
+        }
+    }
+
+    fn press() -> WindowEvent {
+        WindowEvent::MouseInput {
+            device_id: winit::event::DeviceId::dummy(),
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        }
+    }
+
+    #[test]
+    fn framed_root_runs_a_frame_on_mount_and_recomposes_after_mutable_access() {
+        let mut probe = Framed::new(State::new(), Probe::new(120.0), (400, 200), Theme::dark());
+        assert!(probe.syncs > 0, "mount runs the production sync pass");
+        assert!((probe.rect.width() - 120.0).abs() < f64::EPSILON);
+
+        Framed::harness_mut(&mut probe).relayout();
+        assert!(
+            !Framed::harness(&probe).last_relayout().rebuilt,
+            "an untouched root keeps its retained tree"
+        );
+
+        probe.width = 200.0;
+        Framed::harness_mut(&mut probe).relayout();
+        assert!(Framed::harness(&probe).last_relayout().rebuilt);
+        assert!((probe.rect.width() - 200.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn dispatch_to_root_reaches_the_root_and_keeps_the_retained_tree() {
+        let mut probe = Framed::new(State::new(), Probe::new(120.0), (400, 200), Theme::dark());
+        let outcome = Framed::harness_mut(&mut probe)
+            .dispatch_to_root_outcome(&press(), &winit::event::Modifiers::default());
+        assert!(outcome.handled);
+        assert_eq!(outcome.focus_target, None);
+        assert_eq!(probe.presses, 1);
+
+        Framed::harness_mut(&mut probe).relayout();
+        assert!(!Framed::harness(&probe).last_relayout().rebuilt);
+    }
+
+    #[test]
+    fn host_style_positions_the_root_inside_the_viewport() {
+        let probe = Framed::with_options(
+            State::new(),
+            Probe::new(120.0),
+            (400, 200),
+            FrameOptions {
+                host_style: Some(Style {
+                    justify_content: Some(JustifyContent::Center),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        );
+        assert!((probe.rect.x0 - 140.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    #[should_panic(expected = "the root was not mounted as this type")]
+    fn typed_root_access_rejects_another_type() {
+        let harness =
+            FrameHarness::for_root(State::new(), Probe::new(120.0), (400, 200), Theme::dark());
+        let _ = harness.root::<crate::widget::Text>();
+    }
+
+    #[test]
+    fn viewport_truncates_and_clamps_float_sizes() {
+        assert_eq!(viewport((1200.9_f32, 760.0)), (1200, 760));
+        assert_eq!(viewport((-3.0_f64, f64::NAN)), (0, 0));
+    }
+}
