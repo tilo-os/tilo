@@ -1293,6 +1293,7 @@ search-session-logout = Log out of Tilo
 search-session-logout-detail = End this desktop session cleanly and return to the display manager
 search-session-unsaved-work = An app has unsaved work
 search-session-inhibited = { $reason } — close the app or finish its work first.
+search-session-not-offered = This session shares the computer with another desktop, which owns its power.
 
 # Search: shortcuts
 search-shortcut-run-on = Run on { $resource }

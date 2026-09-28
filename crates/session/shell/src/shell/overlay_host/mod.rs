@@ -3036,6 +3036,14 @@ impl ShellOverlayHost {
         self.power_bridge = Some(bridge);
     }
 
+    /// For a session that does not own the seat: another desktop owns the
+    /// machine, so this one never suspends, restarts, shuts down or switches
+    /// its user, from any entry point.
+    pub fn detach_from_host(&mut self) {
+        self.session_action_policy.detach_from_host();
+        self.layers.power_menu.detach_from_host();
+    }
+
     /// Whether peer-sync palette entries are registered.
     pub fn peer_sync_enabled(&self) -> bool {
         self.peer_sync_enabled
@@ -12225,6 +12233,14 @@ impl ShellOverlayHost {
     /// came through: the power flyout's rows and the typed `session.*`
     /// actions both land here, so they share admission and failure reporting.
     fn execute_session_action(&self, action: os_actions::SessionAction) {
+        if let Err(reason) = self.session_action_policy.admit(action) {
+            if let Some(chrome) = self.chrome.as_ref() {
+                chrome
+                    .borrow_mut()
+                    .push_notification(t("host-session-action-blocked"), reason);
+            }
+            return;
+        }
         match action {
             os_actions::SessionAction::Lock => {
                 // Do not delegate this to logind: its lock-session request
@@ -12251,14 +12267,6 @@ impl ShellOverlayHost {
                 }
             }
             _ => {
-                if let Err(reason) = self.session_action_policy.admit(action) {
-                    if let Some(chrome) = self.chrome.as_ref() {
-                        chrome
-                            .borrow_mut()
-                            .push_notification(t("host-session-action-blocked"), reason);
-                    }
-                    return;
-                }
                 // Logout is a tiny, private file write plus an in-process
                 // edge. Do it on this input tick so the native loop observes
                 // the edge before it parks. The other actions may block on

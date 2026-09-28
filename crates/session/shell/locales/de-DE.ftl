@@ -1296,6 +1296,7 @@ search-session-logout = Von Tilo abmelden
 search-session-logout-detail = Diese Desktop-Sitzung sauber beenden und zur Anmeldung zurückkehren
 search-session-unsaved-work = Eine App hat ungesicherte Arbeit
 search-session-inhibited = { $reason } – schließe die App oder beende zuerst ihre Arbeit.
+search-session-not-offered = Diese Sitzung teilt den Computer mit einem anderen Desktop, der seine Energieverwaltung steuert.
 
 # Suche: Kurzbefehle
 search-shortcut-run-on = Auf { $resource } anwenden

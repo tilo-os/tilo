@@ -6465,9 +6465,23 @@ pub fn run() {
     // Mailbox the async power service uses to reach this loop (lock, battery
     // toast, idle-reset on resume) and this loop uses to reach it (request suspend).
     let power_bridge = tilo_power_mgmt::PowerBridge::new();
-    frame_builder
-        .host_mut()
-        .set_power_bridge(power_bridge.clone());
+    // Only a DRM session owns the seat. A headless or nested session runs
+    // beside another desktop on the same machine and logind, so it must never
+    // suspend, lock-on-lid or power off that machine, nor take its lid and
+    // power-key delegation.
+    let owns_host_power = matches!(backend_kind, BackendKind::Drm);
+    if owns_host_power {
+        frame_builder
+            .host_mut()
+            .set_power_bridge(power_bridge.clone());
+    } else {
+        frame_builder.host_mut().detach_from_host();
+        tracing::info!(
+            target: "tilo::power",
+            ?backend_kind,
+            "session does not own the seat: host power actions and logind power service disabled"
+        );
+    }
 
     // The `org.freedesktop.Notifications` D-Bus service — the compositor owns
     // it so sandboxed apps' toasts render as OS-drawn chrome. The bridge is the
@@ -6608,7 +6622,7 @@ pub fn run() {
     // inhibitor registry into a logind lock, watching the battery and lid.
     // Spawned on the session runtime; if the system bus/logind/UPower are
     // unreachable it logs and falls back to the pure idle policy (still blanks/locks/honours env timeouts, just can't actuate real suspend).
-    if let Some(rt) = notif_runtime {
+    if owns_host_power && let Some(rt) = notif_runtime {
         let bridge = power_bridge.clone();
         let registry = inhibit_registry.clone();
         let policy = power_policy;
