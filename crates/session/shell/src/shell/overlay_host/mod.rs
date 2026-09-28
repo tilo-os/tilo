@@ -1425,6 +1425,10 @@ type QsFastFields = (
 
 type AppLauncher = std::rc::Rc<dyn Fn(&Chrome, &str, &str)>;
 impl ShellOverlayHost {
+    pub(crate) fn content_animating_leaves(&self) -> Vec<String> {
+        crate::shell::animation_diagnostics::animating_leaves(self.content.as_ref())
+    }
+
     /// Stable, allocation-free diagnostics for animation demand. Each bit is
     /// one independent source so the compositor can identify a stuck source
     /// without changing the scheduling decision itself.
