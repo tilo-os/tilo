@@ -122,6 +122,13 @@ const GITHUB_BUILDS: &[Build] = &[
     },
 ];
 
+/// Closes a Forgejo or Gitea matrix, which lists only the builder's builds.
+const OTHER_RUNNERS_NOTE: &str = "          \
+    # Windows and macOS need runners on those systems, and Linux\n          \
+    # for other desktops a runner with Rust and an older glibc than\n          \
+    # the builder's; register them and add entries here as above,\n          \
+    # with container: \"\".\n";
+
 impl Build {
     /// Built on the forge's Linux `x86_64` runner, the one every forge has.
     fn on_default_runner(&self) -> bool {
@@ -298,12 +305,7 @@ fn workflow(forge: Forge, runner: &str, working_directory: &str, lock: &str) -> 
                     matrix_entry(&mut out, build, "# ", "your-aarch64-runner");
                 }
             }
-            out.push_str(
-                "          # Windows and macOS need runners on those systems, and Linux\n          \
-                 # for other desktops a runner with Rust and an older glibc than\n          \
-                 # the builder's; register them and add entries here as above,\n          \
-                 # with container: \"\".\n",
-            );
+            out.push_str(OTHER_RUNNERS_NOTE);
             out.push_str("    runs-on: ${{ matrix.runner }}\n");
             let _ = writeln!(out, "    container: {BUILDER_IMAGE}");
         }
