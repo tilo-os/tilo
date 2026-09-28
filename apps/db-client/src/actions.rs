@@ -374,7 +374,7 @@ mod tests {
         use ui::widget::Widget;
         let mut app = crate::app::DbClientApp::new();
         app.sync(&mut doc.clone(), &ROOT);
-        let mut resources = app.resources(doc);
+        let mut resources = ui::resources::resources(&app, doc);
         let addressed = ConnectionsDoc::read(doc)
             .into_iter()
             .map(|c| format!("connection:{}", c.id))
@@ -385,7 +385,7 @@ mod tests {
             );
         for id in addressed {
             resources.push(
-                app.publish_resource(doc, &id)
+                ui::resources::resource(&app, doc, &id)
                     .unwrap_or_else(|| panic!("the app resolves {id}")),
             );
         }

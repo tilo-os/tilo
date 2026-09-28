@@ -6824,7 +6824,8 @@ impl ContactsApp {
 impl Widget for ContactsApp {
     ui::provides!(
         dyn ui::undo::CommittedActions,
-        dyn ui::history_mode::capability::DocumentHistory
+        dyn ui::history_mode::capability::DocumentHistory,
+        dyn ui::resources::PublishesResources
     );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
@@ -7020,22 +7021,6 @@ impl Widget for ContactsApp {
 
     fn name(&self) -> &'static str {
         "ContactsApp"
-    }
-
-    /// Publish the open book + its contacts so the host's Ctrl+K action palette
-    /// scopes to them. Delegates to the
-    /// [``]() impl in
-    /// [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        Self::publish_resources(self, doc)
-    }
-
-    /// Resolve contacts outside the contextual palette page. This is the
-    /// other half of bounded discovery: a search hit for contact 65,000 still
-    /// reaches the exact current resource/action catalogue, while a deleted
-    /// contact has no resource for the broker to invoke.
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        Self::publish_resource(self, doc, id)
     }
 
     fn start_operation(
@@ -8241,6 +8226,23 @@ impl Widget for ContactsApp {
         _permissions: &PermissionContext,
     ) {
         self.render(scene, transform, tr, theme, presence);
+    }
+}
+
+impl ui::resources::PublishesResources for ContactsApp {
+    /// Publish the open book + its contacts so the host's Ctrl+K action palette
+    /// scopes to them. Delegates to the
+    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
+    /// [`crate::actions`].
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+    }
+    /// Resolve contacts outside the contextual palette page. This is the
+    /// other half of bounded discovery: a search hit for contact 65,000 still
+    /// reaches the exact current resource/action catalogue, while a deleted
+    /// contact has no resource for the broker to invoke.
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
     }
 }
 

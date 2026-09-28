@@ -527,7 +527,7 @@ mod tests {
         // the byte-edit actions at the cursor. Drives the real resource hook.
         let (mut view, doc) = open_view(&[0x00, 0x11, 0x22, 0x33]);
         view.model_mut().move_to(1, false);
-        let resources = Widget::resources(&view, &doc);
+        let resources = ui::resources::resources(&view, &doc);
         assert_eq!(resources.len(), 1, "one open buffer");
         let root = &resources[0];
         assert_eq!(root.kind, "hex_editor.document");
@@ -540,7 +540,7 @@ mod tests {
         // buffer-only commands remain explicitly unavailable.
         let view = HexView::empty();
         let doc = AutoCommit::new();
-        let resources = Widget::resources(&view, &doc);
+        let resources = ui::resources::resources(&view, &doc);
         assert_eq!(resources.len(), 1);
         assert!(
             resources[0]
@@ -560,7 +560,7 @@ mod tests {
         let (mut view, doc) = open_view(&(0u8..=15).collect::<Vec<_>>());
         view.model_mut().move_to(2, false);
         view.model_mut().move_to(5, true); // select 2..=5
-        let resources = Widget::resources(&view, &doc);
+        let resources = ui::resources::resources(&view, &doc);
         let ids: Vec<&str> = resources[0].actions.iter().map(|a| a.id.as_str()).collect();
         assert!(ids.contains(&"delete-selection"), "{ids:?}");
         assert!(
@@ -607,7 +607,7 @@ mod tests {
         view.model_mut().move_to(2, false);
 
         // The palette's "Delete byte" spec.
-        let resources = Widget::resources(&view, &doc);
+        let resources = ui::resources::resources(&view, &doc);
         let spec = resources[0]
             .actions
             .iter()
@@ -631,7 +631,7 @@ mod tests {
         // does when both target the same byte.
         let (mut view, doc) = open_view(&[0x00, 0x11, 0x22, 0x33]);
         view.model_mut().move_to(1, false);
-        let resources = Widget::resources(&view, &doc);
+        let resources = ui::resources::resources(&view, &doc);
         let spec = resources[0]
             .actions
             .iter()

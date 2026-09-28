@@ -623,7 +623,7 @@ mod tests {
     /// Case of `resource_tree_publishes_retention_catalog_and_honest_contracts`.
     fn ctrl_k_publishes_the_retention_tree() {
         let (app, doc) = seeded();
-        let resources = Widget::resources(&app, &doc);
+        let resources = ui::resources::resources(&app, &doc);
         assert_eq!(
             resources.len(),
             2,
@@ -843,7 +843,7 @@ mod tests {
     ui::action_contract_tests! {
         seed: seeded().1,
         registry: registry(),
-        resources: |doc| Widget::resources(&BackupsApp::new(), doc),
+        resources: |doc| ui::resources::resources(&BackupsApp::new(), doc),
         palette: ["Set daily retention", "Increase by one", "Decrease by one", "Set up backups"],
         replay: [
             set_monthly => |doc| encode(&set_retention_action(
@@ -875,7 +875,7 @@ mod tests {
 
         // The palette spec for Daily's increment, captured before we mutate.
         let (cur, spec_encoded) = {
-            let resources = Widget::resources(&app, &doc);
+            let resources = ui::resources::resources(&app, &doc);
             let daily = field_resource(&resources[0], PolicyField::Daily);
             let spec = daily.actions.iter().find(|a| a.id == "increment").unwrap();
             (

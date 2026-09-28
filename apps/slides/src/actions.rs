@@ -2207,7 +2207,7 @@ mod tests {
     /// What the door builds for a declared deck operation, from the tree the
     /// app publishes for `doc`.
     fn through_door(doc: &AutoCommit, action: &str, args: serde_json::Value) -> EncodedAction {
-        let resources = Widget::resources(&app_for(doc), doc);
+        let resources = ui::resources::resources(&app_for(doc), doc);
         tilo_actions::door::encode_json(
             &resources,
             &ActionAddress::new("slides.deck", action),
@@ -2261,7 +2261,7 @@ mod tests {
     ui::action_contract_tests! {
         seed: seeded().1,
         registry: registry(),
-        resources: |doc| Widget::resources(&app_for(doc), doc),
+        resources: |doc| ui::resources::resources(&app_for(doc), doc),
         palette: ["Add slide", "Delete slide", "Delete element", "Start presentation"],
         replay: [
             set_background => |doc| encode(&set_slide_background_action(
@@ -2336,7 +2336,7 @@ mod tests {
         // bring-front / send-back). Drives the real resource hook.
         {
             let (app, doc) = seeded();
-            let resources = Widget::resources(&app, &doc);
+            let resources = ui::resources::resources(&app, &doc);
             assert_eq!(resources.len(), 1, "one deck root");
             let deck = &resources[0];
             assert_eq!(deck.kind, "slides.deck");
@@ -2376,7 +2376,7 @@ mod tests {
         // Case `nested_view_resources_export_stable_broker_addresses`.
         {
             let (app, doc) = seeded();
-            let resources = Widget::resources(&app, &doc);
+            let resources = ui::resources::resources(&app, &doc);
             let slide = &resources[0].children[0];
             let slide_id = slide.id.0.strip_prefix("slides.slide:").unwrap();
             let open_slide = slide

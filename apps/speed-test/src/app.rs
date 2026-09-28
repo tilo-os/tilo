@@ -295,6 +295,8 @@ impl SpeedTestApp {
 }
 
 impl Widget for SpeedTestApp {
+    ui::provides!(dyn ui::resources::PublishesResources);
+
     fn update(&mut self, _doc: &mut AppModel, _path: &ModelPath) -> bool {
         let mut changed = false;
         if let Some(rx) = &self.worker {
@@ -753,26 +755,6 @@ impl Widget for SpeedTestApp {
         &[OPERATION_TYPE]
     }
 
-    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
-        let mut root = Resource::new("speed-test:root", "speed-test", "Internet speed test");
-        if let Some(spec) = action("start", "Run speed test", &SpeedOperation::Start) {
-            root.actions.push(spec);
-        }
-        if self.is_running()
-            && let Some(spec) = action("stop", "Stop speed test", &SpeedOperation::Stop)
-        {
-            root.actions.push(spec);
-        }
-        if let Some(spec) = action(
-            "change-region",
-            "Change test region",
-            &SpeedOperation::ChangeRegion,
-        ) {
-            root.actions.push(spec);
-        }
-        vec![root]
-    }
-
     fn start_operation(
         &mut self,
         op: &ui::widget::ResourceOperation<'_>,
@@ -811,6 +793,28 @@ impl Widget for SpeedTestApp {
         };
         (self.is_running() || (self.ring_progress - target).abs() > 0.001)
             .then(|| Instant::now() + Duration::from_millis(16))
+    }
+}
+
+impl ui::resources::PublishesResources for SpeedTestApp {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
+        let mut root = Resource::new("speed-test:root", "speed-test", "Internet speed test");
+        if let Some(spec) = action("start", "Run speed test", &SpeedOperation::Start) {
+            root.actions.push(spec);
+        }
+        if self.is_running()
+            && let Some(spec) = action("stop", "Stop speed test", &SpeedOperation::Stop)
+        {
+            root.actions.push(spec);
+        }
+        if let Some(spec) = action(
+            "change-region",
+            "Change test region",
+            &SpeedOperation::ChangeRegion,
+        ) {
+            root.actions.push(spec);
+        }
+        vec![root]
     }
 }
 
@@ -1167,7 +1171,7 @@ mod tests {
     ui::action_contract_tests! {
         seed: AutoCommit::new(),
         registry: ui::tilo_actions::ActionRegistry::new(),
-        resources: |doc| SpeedTestApp::new().resources(doc),
+        resources: |doc| ui::resources::resources(&SpeedTestApp::new(), doc),
         palette: ["Run speed test", "Change test region"],
     }
 

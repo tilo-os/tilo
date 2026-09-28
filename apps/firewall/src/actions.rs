@@ -605,7 +605,7 @@ mod tests {
         // delete. Drives the real resource hook.
         {
             let (app, doc) = seeded();
-            let resources = Widget::resources(&app, &doc);
+            let resources = ui::resources::resources(&app, &doc);
             assert_eq!(resources.len(), 1, "one configuration root");
             let cfg = &resources[0];
             assert_eq!(cfg.kind, "firewall.config");
@@ -702,7 +702,7 @@ mod tests {
         {
             let app = FirewallApp::new(); // no firewalld on the test host → unavailable
             let doc = AutoCommit::new();
-            let resources = Widget::resources(&app, &doc);
+            let resources = ui::resources::resources(&app, &doc);
             assert_eq!(resources.len(), 1);
             assert_eq!(resources[0].kind, "firewall.recovery");
             assert_eq!(resources[0].actions.len(), 1);
@@ -733,7 +733,7 @@ mod tests {
         // rule in the document with the committed port.
         {
             let (app, mut doc) = seeded();
-            let resources = Widget::resources(&app, &doc);
+            let resources = ui::resources::resources(&app, &doc);
             let public = resources[0]
                 .children
                 .iter()

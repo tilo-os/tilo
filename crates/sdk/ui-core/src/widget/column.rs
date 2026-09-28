@@ -245,20 +245,13 @@ impl Column {
 }
 
 impl Widget for Column {
+    crate::provides!(dyn crate::widget::controls::ActionControls);
+
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
-    }
-    fn has_action_control_bindings(&self) -> bool {
-        let mut found = false;
-        self.for_each_child(&mut |child| {
-            if !found {
-                found = child.has_action_control_bindings();
-            }
-        });
-        found
     }
 
     fn start_operation(
@@ -641,6 +634,18 @@ impl Widget for Column {
         for child in &mut self.children {
             child.release_scene_cache();
         }
+    }
+}
+
+impl crate::widget::controls::ActionControls for Column {
+    fn has_action_control_bindings(&self) -> bool {
+        let mut found = false;
+        self.for_each_child(&mut |child| {
+            if !found {
+                found = crate::widget::controls::has_action_control_bindings(child);
+            }
+        });
+        found
     }
 }
 

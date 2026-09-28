@@ -109,7 +109,7 @@ mod tests {
             let mut document = AutoCommit::new();
             files.sync(&mut document, &ROOT);
 
-            let resources = Widget::resources(&files, &document);
+            let resources = ui::resources::resources(&files, &document);
             assert_eq!(resources.len(), 1, "one current-folder root");
             let folder = &resources[0];
             assert_eq!(folder.kind, "files.folder");
@@ -141,7 +141,7 @@ mod tests {
         files.navigate(directory.path().to_path_buf());
         let mut synced = document.clone();
         files.sync(&mut synced, &ROOT);
-        Widget::resources(&files, &synced)
+        ui::resources::resources(&files, &synced)
     }
 
     // Files has no replayable CRDT actions (see the module docs): its surface

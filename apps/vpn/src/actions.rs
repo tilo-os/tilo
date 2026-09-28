@@ -420,7 +420,7 @@ mod tests {
         // Profile removal is a privileged OS effect, not a document action.
         {
             let (app, doc) = seeded();
-            let resources = Widget::resources(&app, &doc);
+            let resources = ui::resources::resources(&app, &doc);
             let (_, delete_spec) = find_spec(&resources, "vpn.connection", "delete");
             assert_eq!(spec_encoding(delete_spec, None).type_id, VPN_DELETE_TYPE);
         }
@@ -458,7 +458,7 @@ mod tests {
         // palette.
         {
             let (app, doc) = seeded();
-            let resources = Widget::resources(&app, &doc);
+            let resources = ui::resources::resources(&app, &doc);
             assert_eq!(resources.len(), 1, "one vault root");
             let root = &resources[0];
             assert_eq!(root.kind, "vpn.vault");
@@ -524,7 +524,7 @@ mod tests {
             // Read the palette spec for Home's toggle-Tor, capturing the owned
             // encoded action before we mutate the app.
             let (id, spec_encoded) = {
-                let resources = Widget::resources(&app, &doc);
+                let resources = ui::resources::resources(&app, &doc);
                 let root = &resources[0];
                 let id = home_id(root);
                 let home = root

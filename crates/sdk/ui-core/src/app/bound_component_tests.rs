@@ -213,19 +213,11 @@ impl crate::search::SearchProvider for LazyProbe {
     }
 }
 impl Widget for Probe {
-    crate::provides!(dyn crate::undo::CommittedActions);
-
-    fn refresh_control_action_availability(
-        &mut self,
-        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
-    ) {
-        CONTROL_AUTHORITY.with_borrow_mut(|seen| {
-            seen.push((
-                self.strict,
-                allowed.contains(&tilo_actions::ActionAddress::new("bound:probe", "apply")),
-            ));
-        });
-    }
+    crate::provides!(
+        dyn crate::undo::CommittedActions,
+        dyn crate::widget::controls::ActionControls,
+        dyn crate::resources::PublishesResources
+    );
 
     fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
         if let Some(counts) = PAGED_SEARCH_COUNTS.with_borrow(Clone::clone) {
@@ -243,79 +235,6 @@ impl Widget for Probe {
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &["bound.follow-up", "bound.view"]
-    }
-    fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
-        DISCOVERY_COUNT.set(DISCOVERY_COUNT.get().saturating_add(1));
-        let mut action = tilo_actions::ActionSpec::operation(
-            "follow-up",
-            "Follow up",
-            tilo_actions::OperationKind::Effect,
-            "bound.follow-up",
-            &(),
-        )
-        .unwrap();
-        action.contract.execution = tilo_actions::ExecutionMode::Background { cancellable: true };
-        action.contract.result = tilo_actions::ResultSpec::Job;
-        if self.strict {
-            action.contract.confirmation = tilo_actions::ConfirmationPolicy::Confirm;
-        }
-        vec![
-            tilo_actions::Resource::new(
-                self.collision.as_deref().unwrap_or("bound:probe"),
-                "probe",
-                "Probe",
-            )
-            .with_action(action)
-            .with_action(
-                tilo_actions::ActionSpec::immediate(
-                    "apply",
-                    "Apply follow up",
-                    "bound.apply",
-                    &FollowUp,
-                )
-                .unwrap(),
-            )
-            .with_action(
-                tilo_actions::ActionSpec::operation(
-                    "view",
-                    "View",
-                    tilo_actions::OperationKind::View,
-                    "bound.view",
-                    &(),
-                )
-                .unwrap()
-                .with_contract(tilo_actions::ActionContract::view()),
-            ),
-        ]
-    }
-    fn resource(&self, doc: &automerge::AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        self.resources(doc)
-            .into_iter()
-            .find(|resource| resource.id.as_str() == id)
-    }
-    fn action_directory_visibility(
-        &self,
-        _: &automerge::AutoCommit,
-        id: &str,
-    ) -> Option<tilo_actions::ActionAddress> {
-        (self.strict && id == "bound:probe")
-            .then(|| tilo_actions::ActionAddress::new(id, "follow-up"))
-    }
-    fn action_directory_resource_page(
-        &self,
-        doc: &automerge::AutoCommit,
-        cursor: &[u8],
-        max_results: usize,
-    ) -> Option<crate::widget::ActionDirectoryResourcePage> {
-        Some(crate::widget::ActionDirectoryResourcePage {
-            resources: if cursor.is_empty() && max_results > 0 {
-                self.resources(doc)
-            } else {
-                vec![]
-            },
-            next_cursor: vec![],
-            exhausted: true,
-        })
     }
     #[allow(
         clippy::panic_in_result_fn,
@@ -495,6 +414,96 @@ impl Widget for Probe {
         doc.put(ROOT, "action", true).unwrap();
         Self::capture("action");
         true
+    }
+}
+
+impl crate::resources::PublishesResources for Probe {
+    fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
+        DISCOVERY_COUNT.set(DISCOVERY_COUNT.get().saturating_add(1));
+        let mut action = tilo_actions::ActionSpec::operation(
+            "follow-up",
+            "Follow up",
+            tilo_actions::OperationKind::Effect,
+            "bound.follow-up",
+            &(),
+        )
+        .unwrap();
+        action.contract.execution = tilo_actions::ExecutionMode::Background { cancellable: true };
+        action.contract.result = tilo_actions::ResultSpec::Job;
+        if self.strict {
+            action.contract.confirmation = tilo_actions::ConfirmationPolicy::Confirm;
+        }
+        vec![
+            tilo_actions::Resource::new(
+                self.collision.as_deref().unwrap_or("bound:probe"),
+                "probe",
+                "Probe",
+            )
+            .with_action(action)
+            .with_action(
+                tilo_actions::ActionSpec::immediate(
+                    "apply",
+                    "Apply follow up",
+                    "bound.apply",
+                    &FollowUp,
+                )
+                .unwrap(),
+            )
+            .with_action(
+                tilo_actions::ActionSpec::operation(
+                    "view",
+                    "View",
+                    tilo_actions::OperationKind::View,
+                    "bound.view",
+                    &(),
+                )
+                .unwrap()
+                .with_contract(tilo_actions::ActionContract::view()),
+            ),
+        ]
+    }
+    fn action_directory_resource_page(
+        &self,
+        doc: &automerge::AutoCommit,
+        cursor: &[u8],
+        max_results: usize,
+    ) -> Option<crate::widget::ActionDirectoryResourcePage> {
+        Some(crate::widget::ActionDirectoryResourcePage {
+            resources: if cursor.is_empty() && max_results > 0 {
+                self.resources(doc)
+            } else {
+                vec![]
+            },
+            next_cursor: vec![],
+            exhausted: true,
+        })
+    }
+    fn resource(&self, doc: &automerge::AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        self.resources(doc)
+            .into_iter()
+            .find(|resource| resource.id.as_str() == id)
+    }
+    fn action_directory_visibility(
+        &self,
+        _: &automerge::AutoCommit,
+        id: &str,
+    ) -> Option<tilo_actions::ActionAddress> {
+        (self.strict && id == "bound:probe")
+            .then(|| tilo_actions::ActionAddress::new(id, "follow-up"))
+    }
+}
+
+impl crate::widget::controls::ActionControls for Probe {
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
+    ) {
+        CONTROL_AUTHORITY.with_borrow_mut(|seen| {
+            seen.push((
+                self.strict,
+                allowed.contains(&tilo_actions::ActionAddress::new("bound:probe", "apply")),
+            ));
+        });
     }
 }
 

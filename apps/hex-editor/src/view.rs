@@ -1773,6 +1773,8 @@ fn ui_accent_idx() -> usize {
 }
 
 impl Widget for HexView {
+    ui::provides!(dyn ui::resources::PublishesResources);
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::HEX_EDITOR_OPERATION_TYPE]
     }
@@ -2052,14 +2054,6 @@ impl Widget for HexView {
         }
     }
 
-    /// Publish the open buffer + its byte-edit actions so the shell's Ctrl+K
-    /// action palette scopes to them. Delegates to the
-    /// [``]() impl in
-    /// [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        Self::publish_resources(self, doc)
-    }
-
     fn name(&self) -> &'static str {
         "HexView"
     }
@@ -2211,6 +2205,16 @@ impl Widget for HexView {
 
     fn mark_drawn(&mut self) {
         self.dirty = false;
+    }
+}
+
+impl ui::resources::PublishesResources for HexView {
+    /// Publish the open buffer + its byte-edit actions so the shell's Ctrl+K
+    /// action palette scopes to them. Delegates to the
+    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
+    /// [`crate::actions`].
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
     }
 }
 
@@ -2857,7 +2861,7 @@ mod tests {
         ));
         assert_eq!(view.model.bytes(), &[0x10, 0xAB]);
         assert!(
-            Widget::resources(&view, &doc)[0]
+            ui::resources::resources(&view, &doc)[0]
                 .actions
                 .iter()
                 .find(|action| action.id == "undo")

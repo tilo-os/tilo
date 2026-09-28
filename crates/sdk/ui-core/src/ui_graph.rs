@@ -1362,6 +1362,8 @@ impl LiveUi {
 }
 
 impl Widget for LiveUi {
+    crate::provides!(dyn crate::resources::PublishesResources);
+
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.rebuild_if_changed();
         self.child.sync(state, path);
@@ -1483,12 +1485,6 @@ impl Widget for LiveUi {
         ]
     }
 
-    fn resources(&self, doc: &AutoCommit) -> Vec<crate::tilo_actions::Resource> {
-        let mut resources = self.child.resources(doc);
-        resources.push(self.graph_resource());
-        resources
-    }
-
     fn start_operation(
         &mut self,
         op: &crate::widget::ResourceOperation<'_>,
@@ -1526,6 +1522,14 @@ impl Widget for LiveUi {
             presence,
             permissions,
         );
+    }
+}
+
+impl crate::resources::PublishesResources for LiveUi {
+    fn resources(&self, doc: &AutoCommit) -> Vec<crate::tilo_actions::Resource> {
+        let mut resources = crate::resources::resources(self.child.as_ref(), doc);
+        resources.push(self.graph_resource());
+        resources
     }
 }
 
@@ -3872,7 +3876,7 @@ mod tests {
     fn live_graph_actions_apply_and_dump() {
         let handle = UiGraphHandle::new(sample()).unwrap();
         let mut live = handle.widget(&Theme::dark()).unwrap();
-        let resources = live.resources(&AutoCommit::new());
+        let resources = crate::resources::resources(&live, &AutoCommit::new());
         assert!(
             resources
                 .iter()

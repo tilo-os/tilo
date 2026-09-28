@@ -725,7 +725,8 @@ fn joined_participants_start_at_the_document_end_and_leave_cleanly() {
     assert_eq!(wp.participant_presence(&state.doc).len(), 1);
     // Per-participant resolution through the Widget hooks.
     assert!(
-        Widget::resource_for(&wp, Some(&agent), &state.doc, "word-processor.document").is_some()
+        ui::resources::resource_for(&wp, Some(&agent), &state.doc, "word-processor.document")
+            .is_some()
     );
     ui::collaboration::participants::leave_participant(&mut wp, &agent);
     assert_eq!(wp.participant_view(&agent, &state.doc), None);
@@ -782,8 +783,9 @@ fn a_noted_outcome_is_adopted_only_after_its_edit_applied() {
 fn a_participant_host_publishes_the_schema_as_its_own_tree() {
     let (mut wp, state, _) = widget_with(&["x"]);
     ui::collaboration::participants::set_participant_host(&mut wp, true);
-    let published = Widget::resources(&wp, &state.doc);
-    let schema = WordProcessorWidget::publish_catalogue_schema(&wp, &state.doc);
+    let published = ui::resources::resources(&wp, &state.doc);
+    let schema =
+        <WordProcessorWidget as tilo_actions::ResourceProvider>::catalogue_schema(&wp, &state.doc);
     assert_eq!(published.len(), schema.len());
     assert_eq!(
         published
@@ -880,7 +882,7 @@ fn a_participant_host_resolves_a_delivered_invocation_against_the_invokers_view(
         let _scope = ui::invocation_scope::InvokerScope::enter(
             ActionInvoker::actor("agent-actor").with_participant(agent.clone()),
         );
-        Widget::resources(&wp, &state.doc)
+        ui::resources::resources(&wp, &state.doc)
     };
     assert_eq!(
         format!(
@@ -915,8 +917,9 @@ fn a_participant_host_resolves_a_delivered_invocation_against_the_invokers_view(
     );
     // Outside any invocation the host still publishes the schema.
     assert_eq!(
-        Widget::resources(&wp, &state.doc).len(),
-        WordProcessorWidget::publish_catalogue_schema(&wp, &state.doc).len()
+        ui::resources::resources(&wp, &state.doc).len(),
+        <WordProcessorWidget as tilo_actions::ResourceProvider>::catalogue_schema(&wp, &state.doc)
+            .len()
     );
 }
 
@@ -931,7 +934,7 @@ fn a_participant_host_resolves_a_participantless_invocation_against_its_own_view
     let tree = {
         let _scope =
             ui::invocation_scope::InvokerScope::enter(ActionInvoker::actor("certified-job"));
-        Widget::resources(&wp, &state.doc)
+        ui::resources::resources(&wp, &state.doc)
     };
     let ids = |resources: &[Resource]| -> Vec<String> {
         fn walk(resource: &Resource, out: &mut Vec<String>) {

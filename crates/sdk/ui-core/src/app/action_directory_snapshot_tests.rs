@@ -7,28 +7,8 @@ struct DeclaredDirectory {
     sync_change: Option<std::rc::Rc<Cell<Option<&'static str>>>>,
 }
 impl Widget for DeclaredDirectory {
-    fn action_directory_invocation_domain(
-        &self,
-        doc: &automerge::AutoCommit,
-    ) -> crate::widget::ActionDirectoryInvocationDomain {
-        // This fixture has no lazy provider or hidden handler state: every
-        // target is the fixed CounterAction encoded in resources() below.
-        if doc.get(ROOT, "unknown-domain").unwrap().is_some() {
-            return crate::widget::ActionDirectoryInvocationDomain::Unsupported;
-        }
-        if doc.get(ROOT, "changed-domain").unwrap().is_some() {
-            return crate::widget::ActionDirectoryInvocationDomain::versioned(
-                &tilo_actions::ContinuationEvidence::Draft {
-                    resolution_domain: tilo_actions::ContinuationKey::new(
-                        "root",
-                        [b"changed".as_slice()],
-                    ),
-                    handler: tilo_actions::ContinuationKey::new("handler", [b"v1".as_slice()]),
-                },
-            );
-        }
-        crate::widget::ActionDirectoryInvocationDomain::MaterializedOnly
-    }
+    crate::provides!(dyn crate::resources::PublishesResources);
+
     fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
         self.domain_provider
             .clone()
@@ -65,6 +45,9 @@ impl Widget for DeclaredDirectory {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[COUNTER_TYPE]
     }
+}
+
+impl crate::resources::PublishesResources for DeclaredDirectory {
     fn resources(&self, doc: &automerge::AutoCommit) -> Vec<Resource> {
         self.calls.set(self.calls.get() + 1);
         let effect = doc.get(ROOT, "effect").unwrap().is_some();
@@ -165,6 +148,28 @@ impl Widget for DeclaredDirectory {
             resources[0].children.push(child);
         }
         resources
+    }
+    fn action_directory_invocation_domain(
+        &self,
+        doc: &automerge::AutoCommit,
+    ) -> crate::widget::ActionDirectoryInvocationDomain {
+        // This fixture has no lazy provider or hidden handler state: every
+        // target is the fixed CounterAction encoded in resources() below.
+        if doc.get(ROOT, "unknown-domain").unwrap().is_some() {
+            return crate::widget::ActionDirectoryInvocationDomain::Unsupported;
+        }
+        if doc.get(ROOT, "changed-domain").unwrap().is_some() {
+            return crate::widget::ActionDirectoryInvocationDomain::versioned(
+                &tilo_actions::ContinuationEvidence::Draft {
+                    resolution_domain: tilo_actions::ContinuationKey::new(
+                        "root",
+                        [b"changed".as_slice()],
+                    ),
+                    handler: tilo_actions::ContinuationKey::new("handler", [b"v1".as_slice()]),
+                },
+            );
+        }
+        crate::widget::ActionDirectoryInvocationDomain::MaterializedOnly
     }
 }
 fn declared_directory(count: usize) -> (App, std::rc::Rc<Cell<usize>>) {
@@ -628,6 +633,8 @@ impl ExtendedDirectory {
     }
 }
 impl Widget for ExtendedDirectory {
+    crate::provides!(dyn crate::resources::PublishesResources);
+
     fn build_layout(
         &mut self,
         t: &mut TaffyTree<()>,
@@ -648,6 +655,9 @@ impl Widget for ExtendedDirectory {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[COUNTER_TYPE]
     }
+}
+
+impl crate::resources::PublishesResources for ExtendedDirectory {
     fn resources(&self, _: &automerge::AutoCommit) -> Vec<Resource> {
         vec![Self::resource_tree(false)]
     }

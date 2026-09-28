@@ -319,7 +319,7 @@ mod tests {
             let mut app = crate::app::FeedsApp::new_demo();
             let mut doc = AutoCommit::new();
             app.sync(&mut doc, &ROOT);
-            let resources = app.resources(&doc);
+            let resources = ui::resources::resources(&app, &doc);
             let tag_count = crate::sample::store().tags().len();
             let total = app.store_article_ids().len() + app.store_feed_ids().len() + tag_count;
             let hits = app.search_providers()[0].search_limited("", total);
@@ -327,8 +327,7 @@ mod tests {
                 hit.action_address().is_some_and(|address| {
                     tilo_actions::door::resolve(&resources, &address)
                         .is_some_and(|spec| spec.kind == tilo_actions::OperationKind::View)
-                        || app
-                            .publish_resource(&doc, address.resource.as_str())
+                        || ui::resources::resource(&app, &doc, address.resource.as_str())
                             .is_some_and(|resource| {
                                 tilo_actions::door::resolve(&[resource], &address).is_some_and(
                                     |spec| spec.kind == tilo_actions::OperationKind::View,
@@ -343,7 +342,7 @@ mod tests {
             let mut app = crate::app::FeedsApp::new_demo();
             let mut doc = AutoCommit::new();
             app.sync(&mut doc, &ROOT);
-            let resources = app.resources(&doc);
+            let resources = ui::resources::resources(&app, &doc);
             let feed_resource = resources[0]
                 .children
                 .iter()
@@ -380,7 +379,7 @@ mod tests {
             crate::doc::FeedsDoc::remove_feed(&mut doc, feed);
             app.sync(&mut doc, &ROOT);
             let mut palette = ui::ActionPalette::new();
-            palette.load_open_resources(&app.resources(&doc));
+            palette.load_open_resources(&ui::resources::resources(&app, &doc));
             palette.set_providers(vec![provider]);
             palette.open();
             palette.set_query(&hit.title);
@@ -413,7 +412,7 @@ mod tests {
                 })
                 .expect("the target article is searchable")
                 .title;
-            let resources = app.resources(&doc);
+            let resources = ui::resources::resources(&app, &doc);
             let mut palette = ui::ActionPalette::new();
             palette.load_open_resources(&resources);
             palette.set_providers(providers);

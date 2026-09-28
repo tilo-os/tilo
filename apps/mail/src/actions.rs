@@ -1517,7 +1517,7 @@ mod tests {
         // delete, and surfaces them in the one palette. Drives the real resource hook.
         {
             let (app, state) = seeded_app();
-            let resources = Widget::resources(&app, &state.doc);
+            let resources = ui::resources::resources(&app, &state.doc);
             let handlers: std::collections::HashSet<String> = app
                 .local_resource_operation_handlers()
                 .iter()
@@ -1607,7 +1607,7 @@ mod tests {
             );
 
             app.inject_mail_search_snapshot_failure();
-            let resources = Widget::resources(&app, &state.doc);
+            let resources = ui::resources::resources(&app, &state.doc);
             let mailbox = resources
                 .iter()
                 .find(|resource| resource.id.as_str() == "mail.mailbox")
@@ -1630,7 +1630,7 @@ mod tests {
                 "only a successful replacement clears the retained error"
             );
             assert!(
-                !Widget::resources(&app, &state.doc)
+                !ui::resources::resources(&app, &state.doc)
                     .iter()
                     .flat_map(|root| &root.children)
                     .any(|resource| resource.id.as_str() == "mail.search-status")
@@ -1910,7 +1910,7 @@ mod tests {
         // Phase `mailbox_batch_actions_bind_stable_ids_and_purge_is_confirmed`.
         {
             let (app, state) = seeded_app();
-            let resources = Widget::resources(&app, &state.doc);
+            let resources = ui::resources::resources(&app, &state.doc);
             let id = app.mail_resource_ctx(&state.doc).messages[0].id.clone();
             let address = tilo_actions::ActionAddress::new("mail.mailbox", "archive-messages");
             let args = serde_json::json!({"ids": [id.clone(), id]});
@@ -2149,7 +2149,7 @@ mod tests {
         // registry.
         {
             let (app, state) = seeded_app();
-            let resources = Widget::resources(&app, &state.doc);
+            let resources = ui::resources::resources(&app, &state.doc);
             let spec = resources[0]
                 .actions
                 .iter()

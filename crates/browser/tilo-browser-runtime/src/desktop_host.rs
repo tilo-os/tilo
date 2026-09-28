@@ -2385,30 +2385,13 @@ impl DesktopRoot {
 }
 
 impl Widget for DesktopRoot {
-    fn caller_view_resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        let mut resources = self.resources(doc);
-        let mut views = tilo_actions::Resource::new(
-            activity::view_actions::RESOURCE_ID,
-            "desktop",
-            "Workspace views",
-        );
-        for descriptor in activity::view_actions::workspace_view_descriptors(
-            &self.handle.tree.borrow(),
-            self.activity_snapshot().is_ok(),
-        ) {
-            views = views.with_action(descriptor.action());
-        }
-        resources.push(views);
-        resources
-    }
+    ui::provides!(dyn ui::resources::PublishesResources);
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[
             "tilo.desktop.request",
             activity::view_actions::OPERATION_TYPE,
         ]
-    }
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        self.resources_for_close(doc, None)
     }
 
     fn start_operation(
@@ -2654,6 +2637,28 @@ impl Widget for DesktopRoot {
     }
     fn take_component_close_reports(&mut self) -> Vec<ComponentCloseReport> {
         self.surface.take_component_close_reports()
+    }
+}
+
+impl ui::resources::PublishesResources for DesktopRoot {
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        self.resources_for_close(doc, None)
+    }
+    fn caller_view_resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        let mut resources = self.resources(doc);
+        let mut views = tilo_actions::Resource::new(
+            activity::view_actions::RESOURCE_ID,
+            "desktop",
+            "Workspace views",
+        );
+        for descriptor in activity::view_actions::workspace_view_descriptors(
+            &self.handle.tree.borrow(),
+            self.activity_snapshot().is_ok(),
+        ) {
+            views = views.with_action(descriptor.action());
+        }
+        resources.push(views);
+        resources
     }
 }
 

@@ -184,7 +184,7 @@ mod tests {
             "settings publishes a search provider"
         );
         let mut doc = AutoCommit::new();
-        let resources = app.resources(&doc);
+        let resources = ui::resources::resources(&app, &doc);
         let hits = providers[0].search("");
         assert_eq!(hits.len(), Category::ALL.len());
 
@@ -223,13 +223,12 @@ mod tests {
     #[test]
     fn runtime_lazy_resolution_only_accepts_current_canonical_open_addresses() {
         use automerge::AutoCommit;
-        use ui::widget::Widget;
         let config = crate::prefs::test_env::ScratchConfig::new();
 
         let app = config.app();
         let doc = AutoCommit::new();
         let address = crate::actions::open_pane_address(Category::Accessibility);
-        let resource = Widget::resource(&app, &doc, &address.resource)
+        let resource = ui::resources::resource(&app, &doc, &address.resource)
             .expect("the widget resolves a current canonical resource at activation time");
         assert_eq!(resource.id.as_str(), address.resource);
         let resources = [resource];
@@ -242,8 +241,8 @@ mod tests {
             crate::actions::pane_resource_id(Category::Accessibility),
             "removed-action",
         );
-        assert!(Widget::resource(&app, &doc, &stale_resource.resource).is_none());
-        let current_resource = Widget::resource(&app, &doc, &stale_action.resource)
+        assert!(ui::resources::resource(&app, &doc, &stale_resource.resource).is_none());
+        let current_resource = ui::resources::resource(&app, &doc, &stale_action.resource)
             .expect("the current resource remains resolvable");
         assert!(tilo_actions::door::resolve(&[current_resource], &stale_action).is_none());
     }

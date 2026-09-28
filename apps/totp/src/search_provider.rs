@@ -171,7 +171,7 @@ mod tests {
             assert!(!hits.is_empty());
             assert!(hits.iter().all(|hit| {
                 hit.action_address().is_some_and(|address| {
-                    Widget::resource(&app, &doc, &address.resource).is_some_and(|resource| {
+                    ui::resources::resource(&app, &doc, &address.resource).is_some_and(|resource| {
                         tilo_actions::door::resolve(&[resource], &address).is_some_and(|spec| {
                             spec.kind == tilo_actions::OperationKind::View
                                 && spec.contract == tilo_actions::ActionContract::view()
@@ -201,9 +201,9 @@ mod tests {
                 .expect("account resource")
                 .parse()
                 .expect("account uuid");
-            let mut resources = app.resources(&doc);
+            let mut resources = ui::resources::resources(&app, &doc);
             resources.push(
-                Widget::resource(&app, &doc, &address.resource)
+                ui::resources::resource(&app, &doc, &address.resource)
                     .expect("canonical result lazily resolves"),
             );
             let mut palette = ui::ActionPalette::new();

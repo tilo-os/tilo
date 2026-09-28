@@ -1926,6 +1926,91 @@ impl ChromeState {
         self.focus_strip_index(next)
     }
 
+    /// Focus `strip` of the active workspace. `false` when it is already
+    /// focused or not in the active workspace.
+    pub fn focus_strip(&mut self, strip: crate::shell::state::StripId) -> bool {
+        let index = {
+            let tree = self.tree();
+            tree.desktop
+                .active_workspace()
+                .and_then(|ws| ws.strips.iter().position(|s| s.id == strip))
+        };
+        index.is_some_and(|index| self.focus_strip_index(index))
+    }
+
+    /// The strip an agent works in: `current` while it is still in the active
+    /// workspace, else an empty strip nobody `claimed` yet, else a new strip
+    /// named `label` at the bottom. `None` without an active workspace.
+    pub fn agent_strip(
+        &mut self,
+        current: Option<crate::shell::state::StripId>,
+        claimed: impl Fn(crate::shell::state::StripId) -> bool,
+        label: &str,
+    ) -> Option<crate::shell::state::StripId> {
+        let strip = {
+            let mut tree = self.tree_mut();
+            let ws = tree.desktop.active_workspace_mut()?;
+            if let Some(current) = current.filter(|id| ws.strips.iter().any(|s| s.id == *id)) {
+                return Some(current);
+            }
+            let free = ws
+                .strips
+                .iter()
+                .find(|s| s.window_groups.is_empty() && !claimed(s.id))
+                .map(|s| s.id);
+            if let Some(free) = free {
+                return Some(free);
+            }
+            let strip = crate::shell::state::Strip::new(
+                <crate::shell::state::StripId as crate::shell::state::FreshId>::new(),
+                label.to_owned(),
+            );
+            let id = strip.id;
+            ws.strips.push(strip);
+            tree.flush_to_disk();
+            id
+        };
+        self.bump();
+        Some(strip)
+    }
+
+    /// Remove `strip` from the active workspace if it holds no window and is
+    /// not the workspace's last strip. Focus moves to the first strip when it
+    /// had it. Returns whether the strip went.
+    pub fn remove_strip_if_empty(&mut self, strip: crate::shell::state::StripId) -> bool {
+        let removed = {
+            let mut tree = self.tree_mut();
+            let Some(ws) = tree.desktop.active_workspace_mut() else {
+                return false;
+            };
+            let Some(index) = ws
+                .strips
+                .iter()
+                .position(|s| s.id == strip && s.window_groups.is_empty())
+            else {
+                return false;
+            };
+            if ws.strips.len() < 2 {
+                return false;
+            }
+            let ws_id = ws.id;
+            ws.strips.remove(index);
+            let first = ws.strips.first().map(|s| s.id);
+            if tree.desktop.active_strip.get(&ws_id) == Some(&strip)
+                && let Some(first) = first
+            {
+                tree.desktop.active_strip.insert(ws_id, first);
+            }
+            tree.desktop.active_group.remove(&strip);
+            tree.flush_to_disk();
+            true
+        };
+        if removed {
+            self.bump();
+        }
+        removed
+    }
+
     pub fn switch_workspace(&mut self, dir: i32) -> bool {
         let changed = {
             let mut tree = self.tree_mut();

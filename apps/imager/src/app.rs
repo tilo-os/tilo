@@ -4765,7 +4765,10 @@ impl ImagerApp {
 // Widget impl
 // =========================================================================
 impl Widget for ImagerApp {
-    ui::provides!(dyn ui::undo::CommittedActions);
+    ui::provides!(
+        dyn ui::undo::CommittedActions,
+        dyn ui::resources::PublishesResources
+    );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::IMAGER_OPERATION_TYPE]
@@ -5100,45 +5103,6 @@ impl Widget for ImagerApp {
         }
     }
 
-    /// The resource tree the shell's Ctrl+K palette walks — delegates to the
-    /// [``]() impl in
-    /// [`crate::actions`]. Empty unless an installable Tilo image is selected.
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        let mut resources = Self::publish_resources(self, doc);
-        let available = self.source.is_some() && self.target().is_some();
-        let mut job = crate::actions::operation_resource(
-            self.target().map(TargetDrive::dev_path).as_deref(),
-            available,
-            !self.startup_write_state_reconciled || self.job_rx.is_some(),
-            crate::write::write_available(),
-        );
-        job.actions.push(
-            crate::actions::operation_spec(
-                "export-config",
-                "Export headless configuration",
-                tilo_actions::OperationKind::View,
-                crate::actions::ImagerOperation::ExportConfig,
-            )
-            .with_contract(tilo_actions::ActionContract {
-                availability: if available {
-                    tilo_actions::Availability::Available
-                } else {
-                    tilo_actions::Availability::Unavailable {
-                        code: "incomplete_plan".into(),
-                        reason: "Select an image source and target drive first".into(),
-                    }
-                },
-                result: tilo_actions::ResultSpec::Json {
-                    schema: serde_json::json!({ "type": "string" }),
-                },
-                discovery: tilo_actions::DiscoveryScope::Launchable,
-                ..tilo_actions::ActionContract::view()
-            }),
-        );
-        resources.push(job);
-        resources
-    }
-
     fn start_operation(
         &mut self,
         op: &ui::widget::ResourceOperation<'_>,
@@ -5344,6 +5308,47 @@ impl Widget for ImagerApp {
         _permissions: &PermissionContext,
     ) {
         self.draw(scene, transform, text_renderer, theme, presence);
+    }
+}
+
+impl ui::resources::PublishesResources for ImagerApp {
+    /// The resource tree the shell's Ctrl+K palette walks — delegates to the
+    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
+    /// [`crate::actions`]. Empty unless an installable Tilo image is selected.
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        let mut resources = <Self as tilo_actions::ResourceProvider>::resources(self, doc);
+        let available = self.source.is_some() && self.target().is_some();
+        let mut job = crate::actions::operation_resource(
+            self.target().map(TargetDrive::dev_path).as_deref(),
+            available,
+            !self.startup_write_state_reconciled || self.job_rx.is_some(),
+            crate::write::write_available(),
+        );
+        job.actions.push(
+            crate::actions::operation_spec(
+                "export-config",
+                "Export headless configuration",
+                tilo_actions::OperationKind::View,
+                crate::actions::ImagerOperation::ExportConfig,
+            )
+            .with_contract(tilo_actions::ActionContract {
+                availability: if available {
+                    tilo_actions::Availability::Available
+                } else {
+                    tilo_actions::Availability::Unavailable {
+                        code: "incomplete_plan".into(),
+                        reason: "Select an image source and target drive first".into(),
+                    }
+                },
+                result: tilo_actions::ResultSpec::Json {
+                    schema: serde_json::json!({ "type": "string" }),
+                },
+                discovery: tilo_actions::DiscoveryScope::Launchable,
+                ..tilo_actions::ActionContract::view()
+            }),
+        );
+        resources.push(job);
+        resources
     }
 }
 
@@ -5753,7 +5758,7 @@ mod tests {
                 .expect_err("unreconciled startup must not expose a write");
             assert!(error.contains("Restoring the previous image-write state"));
 
-            let job = <ImagerApp as Widget>::resources(&app, &doc)
+            let job = ui::resources::resources(&app, &doc)
                 .into_iter()
                 .find(|resource| resource.kind == "imager.write-plan")
                 .expect("write operation resource");

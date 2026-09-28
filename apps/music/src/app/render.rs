@@ -910,7 +910,11 @@ impl Continuable for MusicApp {
 }
 
 impl Widget for MusicApp {
-    ui::provides!(dyn ui::widget::Continuable, dyn ui::undo::CommittedActions);
+    ui::provides!(
+        dyn ui::widget::Continuable,
+        dyn ui::undo::CommittedActions,
+        dyn ui::resources::PublishesResources
+    );
 
     fn take_structure_dirty(&mut self) -> bool {
         self.open_file_layout_visible != Some(matches!(self.view, View::Home))
@@ -956,14 +960,6 @@ impl Widget for MusicApp {
         self.apply_pending_media_handoff(state);
         self.publish_mpris();
         self.publish_handoff();
-    }
-
-    /// Publish the open library + its playlists/tracks so the host's Ctrl+K action
-    /// palette scopes to them. Delegates to the
-    /// [``]() impl in
-    /// [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        Self::publish_resources(self, doc)
     }
 
     /// Fold the user's library into the unified Ctrl+K palette. The app retains
@@ -1910,6 +1906,16 @@ impl Widget for MusicApp {
 
     fn mark_drawn(&mut self) {
         self.dirty = false;
+    }
+}
+
+impl ui::resources::PublishesResources for MusicApp {
+    /// Publish the open library + its playlists/tracks so the host's Ctrl+K action
+    /// palette scopes to them. Delegates to the
+    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
+    /// [`crate::actions`].
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
     }
 }
 
