@@ -12,7 +12,6 @@
 //! app-owned durable mutation.
 
 use crate::widget::{AppModel, ModelPath};
-use automerge::{AutoCommit, ObjId};
 use chrono::{Datelike, Local, NaiveDate};
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -727,6 +726,7 @@ fn month_name_en(m: u32) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::AutoCommit;
     use std::cell::RefCell;
     use std::rc::Rc;
     use taffy::prelude::TaffyMaxContent;

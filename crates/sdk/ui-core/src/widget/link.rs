@@ -11,7 +11,6 @@
 //! link fired.
 
 use crate::widget::{AppModel, ModelPath};
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
@@ -365,6 +364,7 @@ impl Widget for Link {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::AutoCommit;
     use winit::event::{DeviceId, ElementState, MouseButton};
 
     #[test]

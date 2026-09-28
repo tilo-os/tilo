@@ -11,7 +11,7 @@ use tilo_clock::unix_now;
 use ui::doc::{read_bool, read_str};
 use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId, transaction::Transactable};
+use automerge::transaction::Transactable;
 use taffy::{NodeId, TaffyTree};
 use tilo_relay_protocol::config::CheckpointPrefixRecovery;
 use tilo_relay_protocol::{DeviceRole, RelayConfig, ReplicationIntent};
@@ -2057,6 +2057,7 @@ impl Widget for DeviceMeshPane {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::AutoCommit;
     use settings_store::roaming_provenance::{SCHEMA_VERSION, SettingResolution, WifiResolution};
     use std::time::Instant;
     use tilo_relay_protocol::WorkspaceBinding;

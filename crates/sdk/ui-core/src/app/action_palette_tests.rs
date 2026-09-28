@@ -2,7 +2,7 @@ use super::*;
 use crate::widget::{AppModel, ModelPath};
 use crate::widget::{Button, Widget};
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjId, ROOT, ReadDoc, ScalarValue};
+use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tilo_actions::{Action, ActionError, ActionSpec, Doc, Resource};

@@ -19,7 +19,6 @@ use crate::time::SystemTime;
 use crate::widget::{AppModel, ModelPath};
 use std::collections::{HashMap, HashSet};
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stroke};
@@ -3710,6 +3709,7 @@ mod tests {
     use super::*;
     use crate::time::Duration;
     use crate::widget::history::HistoryAuthor;
+    use automerge::AutoCommit;
     use collab_types::ArtifactKind;
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -4562,6 +4562,7 @@ mod group_tests {
     use crate::time::Duration;
     use crate::widget::history::HistoryAuthor;
     use crate::widget::history_group::NamedRange;
+    use automerge::AutoCommit;
     use collab_types::ArtifactKind;
     use std::cell::RefCell;
     use std::rc::Rc;

@@ -39,7 +39,6 @@
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use taffy::{Dimension, Display, NodeId, Size, Style, TaffyTree};
 use threshold_identity::ThresholdIdentity;
@@ -700,6 +699,7 @@ impl Widget for CreateIdentityScreen {
 mod tests {
     use super::*;
     use crate::widget::identity_flow::MemoryIdentityStore;
+    use automerge::AutoCommit;
 
     #[test]
     fn create_identity_submit_validates_name_and_stores_record() {

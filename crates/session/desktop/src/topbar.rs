@@ -11,7 +11,6 @@ use std::collections::HashMap;
 use ui::clock::{Duration, Instant};
 use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, Display, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
@@ -5446,6 +5445,7 @@ mod calendar_strip_tests {
 )]
 mod tests {
     use super::*;
+    use automerge::AutoCommit;
     use collab_types::caps::{CapOverride, Subject, Verb};
     use tilo_desktop_model::{
         DesktopTree, Strip, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,

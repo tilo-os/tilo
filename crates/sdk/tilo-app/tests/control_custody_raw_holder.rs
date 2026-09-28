@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use ui_core::widget::{AppModel, ModelPath};
 
 use tilo_app as ui;
-use ui::automerge::{AutoCommit, ObjId};
 use ui::control_custody::{CustodyAttachment, RawControlEmission, RawControlSlot};
 use ui::taffy::{NodeId, TaffyTree};
 use ui::tilo_actions::{ActionAddress, ControlInvocation};

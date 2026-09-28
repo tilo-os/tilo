@@ -17,7 +17,6 @@
 use crate::widget::{AppModel, ModelPath};
 use std::sync::Arc;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -597,6 +596,7 @@ mod tests {
     use super::*;
     use crate::webview::WebViewEngine; // send()/commands() on the concrete TestEngine
     use crate::webview::test_engine::TestEngine;
+    use automerge::AutoCommit;
     use std::sync::Arc;
     use winit::event::{DeviceId, ElementState, WindowEvent};
 

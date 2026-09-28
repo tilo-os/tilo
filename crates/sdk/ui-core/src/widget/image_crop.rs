@@ -4,7 +4,6 @@ use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
@@ -478,6 +477,7 @@ impl Widget for ImageCropEditor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::AutoCommit;
 
     #[test]
     fn crop_handles_normalize_and_are_touch_and_assistive_targets() {

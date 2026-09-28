@@ -25,7 +25,6 @@
 use std::collections::HashMap;
 use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
@@ -699,6 +698,7 @@ fn section_block(label: &str, rows: Vec<El>) -> El {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::AutoCommit;
 
     fn count_rows(w: &dyn Widget) -> usize {
         let mut n = usize::from(w.name() == "SidebarRow");

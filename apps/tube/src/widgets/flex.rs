@@ -19,7 +19,6 @@
 use std::collections::HashMap;
 use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::{fr, length, minmax, percent, repeat};
 use taffy::{Dimension, NodeId, Style, TaffyTree};
 use vello::Scene;
@@ -938,6 +937,7 @@ impl Widget for Flex {
 #[cfg(test)]
 mod accessibility_tests {
     use super::*;
+    use automerge::AutoCommit;
 
     #[test]
     fn clickable_surface_is_a_named_keyboard_focusable_button() {

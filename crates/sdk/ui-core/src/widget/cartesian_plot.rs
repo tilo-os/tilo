@@ -15,7 +15,6 @@ use crate::widget::{AppModel, ModelPath};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stroke};
