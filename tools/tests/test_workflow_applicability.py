@@ -336,21 +336,25 @@ jobs:
                 'legacy-app-e2e.yml': ('caret',),
                 'package-desktop.yml': ('validate',),
             }
+            shared = (ROOT/'.forgejo/workflows/applicability.yml').read_text(encoding='utf-8')
+            gate_job = job(shared, '  compare:')
+            self.assertIn("if: ${{ github.event_name == 'pull_request' }}", gate_job)
+            self.assertIn('runs-on: runner-quality', gate_job)
+            self.assertIn('timeout-minutes: 5', gate_job)
+            self.assertRegex(gate_job, r'image: registry\.tilo\.so/tilo/ci-fast@sha256:[0-9a-f]{64}')
+            self.assertIn('persist-credentials: false', gate_job)
+            self.assertNotIn('REGISTRY_TOKEN', gate_job)
+            self.assertIn('sparse-checkout-cone-mode: false', gate_job)
+            self.assertIn('tools/ci/prepare_pr_history.py', gate_job)
+            self.assertIn('tools/ci/workflow_applicability.py', gate_job)
+            self.assertIn('${{ inputs.workflow }}', gate_job)
+            self.assertLess(gate_job.index('Prepare targeted PR history'),
+                            gate_job.index('Require an exact relevant PR diff'))
             for name, expensive_jobs in jobs.items():
                 text = (ROOT/'.forgejo/workflows'/name).read_text(encoding='utf-8')
-                gate_job = job(text, '  applicability:')
-                self.assertIn("if: ${{ github.event_name == 'pull_request' }}", gate_job)
-                self.assertIn('runs-on: runner-quality', gate_job)
-                self.assertIn('timeout-minutes: 5', gate_job)
-                self.assertRegex(gate_job, r'image: registry\.tilo\.so/tilo/ci-fast@sha256:[0-9a-f]{64}')
-                self.assertIn('fetch-depth: 2', gate_job)
-                self.assertNotIn('fetch-depth: 0', gate_job)
-                self.assertIn('sparse-checkout-cone-mode: false', gate_job)
-                self.assertIn('tools/ci/prepare_pr_history.py', gate_job)
-                self.assertIn('tools/ci/workflow_applicability.py', gate_job)
-                self.assertIn('.forgejo/workflows/'+name, gate_job)
-                self.assertLess(gate_job.index('Prepare targeted PR history'),
-                                gate_job.index('Require an exact relevant PR diff'))
+                caller = job(text, '  applicability:')
+                self.assertIn('uses: ./.forgejo/workflows/applicability.yml', caller)
+                self.assertIn('workflow: .forgejo/workflows/'+name, caller)
                 for job_name in expensive_jobs:
                     with self.subTest(workflow=name, job=job_name):
                         build = job(text, f'  {job_name}:')
