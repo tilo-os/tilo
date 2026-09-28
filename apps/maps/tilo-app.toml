@@ -22,7 +22,7 @@ aarch64 = "aarch64"
 
 [capabilities]
 required = ["network.http"]
-optional = ["app-files", "location"]
+optional = ["app-files", "files.paths", "location", "threads"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"

@@ -608,7 +608,12 @@ struct BuildArgs {
     path: Option<PathBuf>,
 
     /// Target to build for.
-    #[arg(long, value_enum, required_unless_present = "platform", conflicts_with = "platform")]
+    #[arg(
+        long,
+        value_enum,
+        required_unless_present = "platform",
+        conflicts_with = "platform"
+    )]
     target: Option<TargetArg>,
 
     #[command(flatten)]
@@ -1593,7 +1598,7 @@ fn run_run(args: RunArgs) -> Result<Value> {
 fn run_build(args: BuildArgs) -> Result<Value> {
     let path = args.path.clone().map_or_else(std::env::current_dir, Ok)?;
     let Some(target) = args.target else {
-        return run_platform_build(path, args);
+        return run_platform_build(&path, args);
     };
     let outcome = tilo_app_cli::targets::build(&path, &args.options.request(target))?;
     println!("{}", outcome.artifact.display());
@@ -1652,12 +1657,12 @@ fn run_dev(args: DevArgs) -> Result<Value> {
     Ok(json!({"stopped": true}))
 }
 
-fn run_platform_build(path: PathBuf, args: BuildArgs) -> Result<Value> {
+fn run_platform_build(path: &Path, args: BuildArgs) -> Result<Value> {
     let Some(BuildPlatformArg::Web) = args.platform else {
         anyhow::bail!("name a --target or --platform to build for");
     };
     let build = tilo_app_cli::web::build_web(
-        &path,
+        path,
         &tilo_app_cli::web::WebBuildRequest {
             output: args.output,
             app_only: args.app_only,

@@ -3391,10 +3391,10 @@ fn each_template_composes_the_toolkit_patterns_it_teaches() {
         assert!(app_readme(&spec).contains("tilo-app ui apply"));
         assert!(app_readme(&spec).contains("--mount main"));
         assert!(app_readme(&spec).contains("available to every generated screen automatically"));
-    for target in ["linux", "macos", "web"] {
-        assert!(app_readme(&spec).contains(&format!("tilo-app run --target {target}")));
-        assert!(app_readme(&spec).contains(&format!("tilo-app package --target {target}")));
-    }
+        for target in ["linux", "macos", "web"] {
+            assert!(app_readme(&spec).contains(&format!("tilo-app run --target {target}")));
+            assert!(app_readme(&spec).contains(&format!("tilo-app package --target {target}")));
+        }
     }
 
     // Phase: list_template_starts_sparse_variable_and_interactive.

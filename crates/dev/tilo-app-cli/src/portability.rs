@@ -73,6 +73,7 @@ pub(crate) struct RuleSpec {
     predicates: Vec<String>,
     exempt_cfg_attr: Vec<String>,
     cargo_target_sections: bool,
+    build_only_target_dependencies: Vec<String>,
     std_modules: Vec<String>,
     paths: Vec<String>,
     extern_blocks: bool,
@@ -594,13 +595,23 @@ impl CargoFacts {
             return;
         }
         let predicates = table.list("R1", |rule| &rule.predicates);
+        let build_only = table.list("R1", |rule| &rule.build_only_target_dependencies);
         let targets = manifest.get("target").and_then(toml::Value::as_table);
-        for target in targets.into_iter().flat_map(toml::Table::keys) {
+        for (target, tables) in targets.into_iter().flatten() {
             let selects = !target.starts_with("cfg(")
                 || predicates
                     .iter()
                     .any(|predicate| contains_word(target, predicate));
-            if selects {
+            let named: Vec<&String> = ["dependencies", "dev-dependencies", "build-dependencies"]
+                .iter()
+                .filter_map(|kind| tables.get(*kind).and_then(toml::Value::as_table))
+                .flat_map(toml::Table::keys)
+                .collect();
+            let plumbing = !named.is_empty()
+                && named
+                    .iter()
+                    .all(|alias| build_only.contains(&alias.as_str()));
+            if selects && !plumbing {
                 self.push(
                     header_line(text, target),
                     FindingKind::TargetCfg,

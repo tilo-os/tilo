@@ -12,6 +12,9 @@ platform-reason = "Holds the publisher's signing key in the device's own key sto
 x86_64 = "v3"
 aarch64 = "aarch64"
 
+[capabilities]
+optional = ["clipboard", "threads"]
+
 [publisher]
 identity = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
 signature = ""
