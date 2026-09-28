@@ -627,7 +627,7 @@ fn row_json(row: &CatalogueRow) -> Value {
 fn tool_definitions() -> Vec<Value> {
     let integer = json!({"type":"integer","minimum":0});
     let string = json!({"type":"string"});
-    let workspace = json!({"type":"boolean","description":"Address the workspace itself instead of a live app: installed applications to open (resource app.<id>, action open), shortcuts and workspace settings"});
+    let workspace = json!({"type":"boolean","description":"Address the workspace itself instead of a live app: installed applications to open (resource app.<id>, action open; app.host:<desktop-id> opens an unconfined host application such as a browser or office suite, driven with the computer tool), shortcuts and workspace settings"});
     let target = json!({"peer_id":integer,"workspace":workspace,"revision":string,"resource":string,"action":string});
     let mut invoke = target.clone();
     if let Some(properties) = invoke.as_object_mut() {
