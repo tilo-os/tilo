@@ -1020,7 +1020,8 @@ impl SnippetsApp {
 impl ui::widget::Widget for SnippetsApp {
     ui::provides!(
         dyn ui::undo::CommittedActions,
-        dyn ui::history_mode::capability::DocumentHistory
+        dyn ui::history_mode::capability::DocumentHistory,
+        dyn ui::widget::controls::ActionControls
     );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
@@ -1393,24 +1394,6 @@ impl ui::widget::Widget for SnippetsApp {
         )
     }
 
-    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
-        let mut seen = std::collections::HashSet::new();
-        self.hit
-            .iter()
-            .filter_map(|(_, action)| {
-                let control_id = action.semantic_id();
-                seen.insert(control_id.clone())
-                    .then(|| ui::widget::ControlBindingMetadata {
-                        control_id: control_id.clone(),
-                        kind: action.canonical_address().map_or_else(
-                            || ui::widget::ControlBindingKind::SemanticAction(control_id),
-                            ui::widget::ControlBindingKind::Action,
-                        ),
-                    })
-            })
-            .collect()
-    }
-
     fn perform_semantic_action(
         &mut self,
         target: &str,
@@ -1524,6 +1507,26 @@ impl ui::widget::Widget for SnippetsApp {
         _permissions: &PermissionContext,
     ) {
         self.draw(scene, transform, tr, theme, presence);
+    }
+}
+
+impl ui::widget::controls::ActionControls for SnippetsApp {
+    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
+        let mut seen = std::collections::HashSet::new();
+        self.hit
+            .iter()
+            .filter_map(|(_, action)| {
+                let control_id = action.semantic_id();
+                seen.insert(control_id.clone())
+                    .then(|| ui::widget::ControlBindingMetadata {
+                        control_id: control_id.clone(),
+                        kind: action.canonical_address().map_or_else(
+                            || ui::widget::ControlBindingKind::SemanticAction(control_id),
+                            ui::widget::ControlBindingKind::Action,
+                        ),
+                    })
+            })
+            .collect()
     }
 }
 

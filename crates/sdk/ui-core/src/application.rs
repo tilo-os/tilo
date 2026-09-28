@@ -655,7 +655,8 @@ impl AppComponent {
             crate::semantic_document_read::retirement::MountConstructionRetirement::new(
                 context.retirement.as_ref(),
             );
-        root.install_control_custody(
+        crate::widget::controls::install_control_custody(
+            root.as_mut(),
             &context.control_domain(),
             crate::control_custody::CustodyAttachment::Initial,
         );
@@ -728,7 +729,8 @@ impl AppComponent {
             return Err(LaunchError::BindingMismatch);
         }
         if let Some(root) = &mut self.root {
-            root.install_control_custody(
+            crate::widget::controls::install_control_custody(
+                root.as_mut(),
                 &self.context.control_domain(),
                 crate::control_custody::CustodyAttachment::Dynamic,
             );

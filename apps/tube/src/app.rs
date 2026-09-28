@@ -2395,7 +2395,8 @@ impl TubeApp {
 impl Widget for TubeApp {
     ui::provides!(
         dyn ui::widget::FullscreenProvider,
-        dyn ui::undo::CommittedActions
+        dyn ui::undo::CommittedActions,
+        dyn ui::widget::controls::ActionControls
     );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
@@ -2414,47 +2415,6 @@ impl Widget for TubeApp {
         vec![Box::new(crate::search_type::TubeSearchProvider::new(
             &self.model,
         ))]
-    }
-
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.pending_device_actions
-            .pop_front()
-            .or_else(|| self.play_action.as_mut().and_then(ActionEmitter::take))
-            .or_else(|| self.share_action.as_mut().and_then(ActionEmitter::take))
-            .or_else(|| {
-                self.root_child
-                    .as_mut()
-                    .and_then(|child| child.take_control_invocation())
-            })
-    }
-
-    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
-        let mut bindings = Vec::new();
-        if let Some(action) = &self.play_action {
-            bindings.push(action.metadata("tube.watch.play-pause"));
-        }
-        if let Some(action) = &self.share_action {
-            bindings.push(action.metadata("tube.watch.share"));
-        }
-        if let Some(child) = &self.root_child {
-            bindings.extend(child.control_action_bindings());
-        }
-        bindings
-    }
-
-    fn refresh_control_action_availability(
-        &mut self,
-        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
-    ) {
-        if let Some(action) = &mut self.play_action {
-            action.refresh_availability(allowed);
-        }
-        if let Some(action) = &mut self.share_action {
-            action.refresh_availability(allowed);
-        }
-        if let Some(child) = &mut self.root_child {
-            child.refresh_control_action_availability(allowed);
-        }
     }
 
     fn start_operation(
@@ -3002,6 +2962,49 @@ impl Widget for TubeApp {
     }
 }
 
+impl ui::widget::controls::ActionControls for TubeApp {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.pending_device_actions
+            .pop_front()
+            .or_else(|| self.play_action.as_mut().and_then(ActionEmitter::take))
+            .or_else(|| self.share_action.as_mut().and_then(ActionEmitter::take))
+            .or_else(|| {
+                self.root_child
+                    .as_mut()
+                    .and_then(|child| ui::widget::controls::take_control_invocation(child.as_mut()))
+            })
+    }
+    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
+        let mut bindings = Vec::new();
+        if let Some(action) = &self.play_action {
+            bindings.push(action.metadata("tube.watch.play-pause"));
+        }
+        if let Some(action) = &self.share_action {
+            bindings.push(action.metadata("tube.watch.share"));
+        }
+        if let Some(child) = &self.root_child {
+            bindings.extend(ui::widget::controls::control_action_bindings(
+                child.as_ref(),
+            ));
+        }
+        bindings
+    }
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
+    ) {
+        if let Some(action) = &mut self.play_action {
+            action.refresh_availability(allowed);
+        }
+        if let Some(action) = &mut self.share_action {
+            action.refresh_availability(allowed);
+        }
+        if let Some(child) = &mut self.root_child {
+            ui::widget::controls::refresh_control_action_availability(child.as_mut(), allowed);
+        }
+    }
+}
+
 impl ui::undo::CommittedActions for TubeApp {
     fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
         self.actions.take_committed()
@@ -3031,8 +3034,7 @@ mod tests {
     }
 
     fn dispatch_control(app: &mut TubeApp, doc: &mut AutoCommit) {
-        let intent = app
-            .take_control_invocation()
+        let intent = ui::widget::controls::take_control_invocation(app)
             .expect("custom control emitted an action-native invocation");
         let resources = <TubeApp as tilo_actions::ResourceProvider>::resources(app, doc);
         let spec = tilo_actions::door::resolve(&resources, &intent.address)
@@ -3078,8 +3080,7 @@ mod tests {
                 .unwrap_or_else(std::sync::PoisonError::into_inner) =
                 "grayjay://secret-invite".into();
             assert!(app.apply(Action::PairDevice, &doc, &automerge::ROOT));
-            let invocation = app
-                .take_control_invocation()
+            let invocation = ui::widget::controls::take_control_invocation(&mut app)
                 .expect("visible Pair queues a host-routable invocation");
             assert_eq!(invocation.address.resource, "tube.device-sync");
             assert_eq!(invocation.address.action, "pair");

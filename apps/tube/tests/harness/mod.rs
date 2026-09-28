@@ -231,7 +231,7 @@ impl<W: Widget> Harness<W> {
     /// event. Stopping after the leaf emits an invocation makes a working
     /// effect control look inert in this integration harness.
     fn dispatch_control_invocations(&mut self) {
-        while let Some(intent) = self.app.take_control_invocation() {
+        while let Some(intent) = ui::widget::controls::take_control_invocation(&mut self.app) {
             let resources = self.app.resources(&self.state.doc);
             let spec = tilo_actions::door::resolve(&resources, &intent.address)
                 .expect("action-bound test control must resolve in the current resource tree");

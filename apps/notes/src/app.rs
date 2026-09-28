@@ -4208,16 +4208,10 @@ impl NotesApp {
 }
 
 impl Widget for NotesApp {
-    ui::provides!(dyn ui::undo::CommittedActions);
-
-    fn has_pending_control_invocation(&self) -> bool {
-        !self.adopted
-            || self.pending_markdown_source.is_some()
-            || self
-                .children()
-                .iter()
-                .any(|child| child.has_pending_control_invocation())
-    }
+    ui::provides!(
+        dyn ui::undo::CommittedActions,
+        dyn ui::widget::controls::ActionControls
+    );
 
     fn try_flush_owned_persistence(&mut self) -> Option<Result<(), String>> {
         self.legacy_fixture_storage.as_ref()?;
@@ -4231,50 +4225,6 @@ impl Widget for NotesApp {
         let bodies = legacy.page_saver.try_flush();
         let metadata = legacy.saver.try_flush();
         Some(bodies.and(metadata))
-    }
-
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        if !self.import_control_emitted
-            && let Some(resource) = self.pending_import_resource()
-            && let Some(spec) = resource.actions.first()
-            && let Ok(binding) =
-                tilo_actions::ActionBinding::new(&resource, spec, |()| serde_json::Map::new())
-            && let Ok(intent) = binding.invoke(())
-        {
-            self.import_control_emitted = true;
-            return Some(intent);
-        }
-        self.children_mut()
-            .into_iter()
-            .find_map(Widget::take_control_invocation)
-    }
-
-    fn on_control_invocation_result(
-        &mut self,
-        address: &tilo_actions::ActionAddress,
-        result: &Result<ui::widget::ResourceOperationStart, tilo_actions::DoorError>,
-    ) {
-        if address.resource == "notes.pending-import" && address.action == "finalize" {
-            match result {
-                Err(error) => {
-                    self.pending_markdown_source = None;
-                    self.import_control_emitted = false;
-                    self.transfer_toasts.push(
-                        format!("Import failed: {error}"),
-                        ui::widget::toast::ToastKind::Error,
-                    );
-                    self.complete_markdown_operation(Err(error.to_string()));
-                    self.self_dirty = true;
-                }
-                Ok(ui::widget::ResourceOperationStart::Completed(output)) => {
-                    self.complete_markdown_operation(Ok(output.clone()));
-                }
-                Ok(ui::widget::ResourceOperationStart::Accepted) => {}
-            }
-        }
-        for child in self.children_mut() {
-            child.on_control_invocation_result(address, result);
-        }
     }
 
     fn start_operation(
@@ -4995,6 +4945,59 @@ impl Widget for NotesApp {
     }
 }
 
+impl ui::widget::controls::ActionControls for NotesApp {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        if !self.import_control_emitted
+            && let Some(resource) = self.pending_import_resource()
+            && let Some(spec) = resource.actions.first()
+            && let Ok(binding) =
+                tilo_actions::ActionBinding::new(&resource, spec, |()| serde_json::Map::new())
+            && let Ok(intent) = binding.invoke(())
+        {
+            self.import_control_emitted = true;
+            return Some(intent);
+        }
+        self.children_mut()
+            .into_iter()
+            .find_map(ui::widget::controls::take_control_invocation)
+    }
+    fn on_control_invocation_result(
+        &mut self,
+        address: &tilo_actions::ActionAddress,
+        result: &Result<ui::widget::ResourceOperationStart, tilo_actions::DoorError>,
+    ) {
+        if address.resource == "notes.pending-import" && address.action == "finalize" {
+            match result {
+                Err(error) => {
+                    self.pending_markdown_source = None;
+                    self.import_control_emitted = false;
+                    self.transfer_toasts.push(
+                        format!("Import failed: {error}"),
+                        ui::widget::toast::ToastKind::Error,
+                    );
+                    self.complete_markdown_operation(Err(error.to_string()));
+                    self.self_dirty = true;
+                }
+                Ok(ui::widget::ResourceOperationStart::Completed(output)) => {
+                    self.complete_markdown_operation(Ok(output.clone()));
+                }
+                Ok(ui::widget::ResourceOperationStart::Accepted) => {}
+            }
+        }
+        for child in self.children_mut() {
+            ui::widget::controls::on_control_invocation_result(child, address, result);
+        }
+    }
+    fn has_pending_control_invocation(&self) -> bool {
+        !self.adopted
+            || self.pending_markdown_source.is_some()
+            || self
+                .children()
+                .iter()
+                .any(|child| ui::widget::controls::has_pending_control_invocation(*child))
+    }
+}
+
 impl ui::undo::CommittedActions for NotesApp {
     /// Hand the host the heads captured before a sidebar affordance dispatched
     /// its page-tree action, so it records one undo boundary for it (see
@@ -5662,9 +5665,8 @@ mod tests {
     }
 
     fn admit_pending_import(app: &mut NotesApp, state: &mut ui::State) {
-        let intent = app
-            .take_control_invocation()
-            .expect("import emits a host intent");
+        let intent =
+            ui::widget::controls::take_control_invocation(app).expect("import emits a host intent");
         let resource = Widget::resource(app, &state.doc, &intent.address.resource).unwrap();
         let spec = resource
             .actions
@@ -5700,7 +5702,7 @@ mod tests {
             started,
             ui::widget::ResourceOperationStart::Completed(_)
         ));
-        app.on_control_invocation_result(&intent.address, &Ok(started));
+        ui::widget::controls::on_control_invocation_result(app, &intent.address, &Ok(started));
         app.sync(&mut state.doc, &state.root);
     }
 
@@ -7291,10 +7293,11 @@ mod tests {
             app.sync(&mut state.doc, &state.root);
             settle_markdown_io(&mut app, &mut state.doc);
             app.sync(&mut state.doc, &state.root);
-            let intent = app.take_control_invocation().unwrap();
+            let intent = ui::widget::controls::take_control_invocation(&mut app).unwrap();
             // The separate FrameHarness revocation regression proves this host
             // refusal route. Here assert its original asynchronous receipt too.
-            app.on_control_invocation_result(
+            ui::widget::controls::on_control_invocation_result(
+                &mut app,
                 &intent.address,
                 &Err(tilo_actions::DoorError::Unavailable {
                     code: "permission_denied".into(),
@@ -7306,7 +7309,7 @@ mod tests {
                 tilo_actions::InvocationUpdate::Failed { .. }
             ));
             assert!(app.pending_markdown_source.is_none());
-            assert!(app.take_control_invocation().is_none());
+            assert!(ui::widget::controls::take_control_invocation(&mut app).is_none());
             assert_eq!(state.doc.get_heads(), before);
             assert_eq!(std::fs::read_to_string(source).unwrap(), "Private source");
         }

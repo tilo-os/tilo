@@ -3444,8 +3444,7 @@ impl SheetsApp {
 
     #[cfg(test)]
     fn dispatch_palette_view_for_test(&mut self, doc: &AutoCommit) {
-        let intent = self
-            .take_control_invocation()
+        let intent = ui::widget::controls::take_control_invocation(self)
             .expect("palette emitted a resource action");
         let resources = <Self as tilo_actions::ResourceProvider>::resources(self, doc);
         let spec = tilo_actions::door::resolve(&resources, &intent.address)
@@ -5626,7 +5625,10 @@ fn file_label(path: &std::path::Path) -> String {
 }
 
 impl Widget for SheetsApp {
-    ui::provides!(dyn ui::undo::CommittedActions);
+    ui::provides!(
+        dyn ui::undo::CommittedActions,
+        dyn ui::widget::controls::ActionControls
+    );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[actions::SHEETS_OPERATION_TYPE]
@@ -6393,18 +6395,6 @@ impl Widget for SheetsApp {
         true
     }
 
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.palette.take_control_invocation()
-    }
-
-    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
-        if self.palette.is_open() {
-            self.palette.control_action_bindings()
-        } else {
-            Vec::new()
-        }
-    }
-
     fn get_rect(&self) -> Rect {
         self.rect
     }
@@ -6424,6 +6414,19 @@ impl Widget for SheetsApp {
 
     fn on_commit(&mut self) {
         self.pending.commit = false;
+    }
+}
+
+impl ui::widget::controls::ActionControls for SheetsApp {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.palette.take_control_invocation()
+    }
+    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
+        if self.palette.is_open() {
+            self.palette.control_action_bindings()
+        } else {
+            Vec::new()
+        }
     }
 }
 

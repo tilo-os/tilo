@@ -2119,9 +2119,7 @@ mod tests {
     }
 
     fn route_narrow_view_invocation(app: &mut ThemesApp, state: &mut ui::State) {
-        let invocation = app
-            .narrow_tabs
-            .take_control_invocation()
+        let invocation = ui::widget::controls::take_control_invocation(&mut app.narrow_tabs)
             .expect("view selection emitted its canonical invocation");
         let index = invocation.arguments["index"]
             .as_u64()

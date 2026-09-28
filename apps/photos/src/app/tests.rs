@@ -2418,7 +2418,7 @@ fn background_work_dashboards_pause_cancel_page_and_reflow() {
                 },
             );
         }
-        let invocation = Widget::take_control_invocation(&mut app)
+        let invocation = ui::widget::controls::take_control_invocation(&mut app)
             .expect("pointer stop is exported through the host action door");
         assert_eq!(
             invocation.address.resource,

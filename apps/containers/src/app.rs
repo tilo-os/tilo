@@ -1297,8 +1297,7 @@ impl ContainersApp {
 
     #[cfg(test)]
     pub(crate) fn dispatch_palette_invocation_for_test(&mut self, doc: &mut AutoCommit) {
-        let intent = self
-            .take_control_invocation()
+        let intent = ui::widget::controls::take_control_invocation(self)
             .expect("palette emitted a resource action");
         let resources = self.resources(doc);
         let spec = ui::tilo_actions::door::resolve(&resources, &intent.address)
@@ -2180,7 +2179,10 @@ impl ContainersApp {
 }
 
 impl Widget for ContainersApp {
-    ui::provides!(dyn ui::history_mode::capability::DocumentHistory);
+    ui::provides!(
+        dyn ui::history_mode::capability::DocumentHistory,
+        dyn ui::widget::controls::ActionControls
+    );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[
@@ -3036,6 +3038,20 @@ impl Widget for ContainersApp {
         self.has_focus
     }
 
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+
+    fn needs_redraw(&self) -> bool {
+        true
+    }
+
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == Rect::ZERO
+    }
+}
+
+impl ui::widget::controls::ActionControls for ContainersApp {
     fn install_control_custody(
         &mut self,
         domain: &ui::ControlDomain,
@@ -3046,14 +3062,12 @@ impl Widget for ContainersApp {
             .pending_control_invocation
             .install_custody(domain, attachment);
     }
-
     fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
         if let Some(invocation) = self.palette.take_control_invocation() {
             return Some(invocation);
         }
         self.pending_control_invocation.take_legacy_compatibility()
     }
-
     fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
         if self.palette_open {
             self.palette.control_action_bindings()
@@ -3124,18 +3138,6 @@ impl Widget for ContainersApp {
             );
             bindings
         }
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-
-    fn needs_redraw(&self) -> bool {
-        true
-    }
-
-    fn is_layout_dirty(&self) -> bool {
-        self.rect == Rect::ZERO
     }
 }
 
@@ -3834,8 +3836,7 @@ mod tests {
             app.engine.live = true;
             let id = app.engine.containers[0].id.clone();
             app.apply_action(Action::Stop, &id);
-            let intent = app
-                .take_control_invocation()
+            let intent = ui::widget::controls::take_control_invocation(&mut app)
                 .expect("the host receives an inert resource intent");
             assert_eq!(
                 intent.address,
@@ -4053,11 +4054,12 @@ mod tests {
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &automerge::ROOT);
         app.sync(&mut doc, &automerge::ROOT);
-        let intent = Widget::take_control_invocation(&mut app).expect("retained intent");
+        let intent =
+            ui::widget::controls::take_control_invocation(&mut app).expect("retained intent");
         assert_eq!(intent.address.resource, "container:retained-target");
         assert_eq!(intent.address.action, "restart");
         assert!(intent.arguments.is_empty());
-        assert!(Widget::take_control_invocation(&mut app).is_none());
+        assert!(ui::widget::controls::take_control_invocation(&mut app).is_none());
         assert!(requests.try_recv().is_err());
     }
 

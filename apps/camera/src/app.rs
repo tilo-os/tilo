@@ -2549,7 +2549,10 @@ fn sample_recent_capture() -> Capture {
 }
 
 impl Widget for CameraApp {
-    ui::provides!(dyn ui::undo::CommittedActions);
+    ui::provides!(
+        dyn ui::undo::CommittedActions,
+        dyn ui::widget::controls::ActionControls
+    );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::CAMERA_OPERATION_TYPE]
@@ -2565,60 +2568,6 @@ impl Widget for CameraApp {
         // capture resource, so search and agents cannot mistake Camera for a
         // second media library.
         <Self as tilo_actions::ResourceProvider>::resources(self, doc)
-    }
-
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.photos_browse
-            .as_mut()
-            .and_then(ActionEmitter::take)
-            .or_else(|| self.photos_handoff.as_mut().and_then(ActionEmitter::take))
-            .or_else(|| self.video_handoff.as_mut().and_then(ActionEmitter::take))
-    }
-
-    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
-        let mut bindings = ui::widget::semantic_action_bindings(self.accessibility());
-        // The visible recent-capture tile is one control whose canonical
-        // cross-app destination depends on the current capture type. Preserve
-        // that one semantic identity while attaching the same emitter the
-        // pointer path uses; do not inventory two invisible destination
-        // controls.
-        let recent_handoff = self.captures.first().and_then(|capture| {
-            if capture.is_video() {
-                self.video_handoff.as_ref()
-            } else {
-                self.photos_handoff.as_ref()
-            }
-        });
-        if let Some(handoff) = recent_handoff
-            && let Some(binding) = bindings
-                .iter_mut()
-                .find(|binding| binding.control_id == "camera.open-recent-capture")
-        {
-            *binding = handoff.metadata("camera.open-recent-capture");
-        }
-        if let Some(handoff) = self.photos_browse.as_ref()
-            && let Some(binding) = bindings
-                .iter_mut()
-                .find(|binding| binding.control_id == "camera.open-photos")
-        {
-            *binding = handoff.metadata("camera.open-photos");
-        }
-        bindings
-    }
-
-    fn refresh_control_action_availability(
-        &mut self,
-        allowed: &HashSet<tilo_actions::ActionAddress>,
-    ) {
-        if let Some(handoff) = self.photos_handoff.as_mut() {
-            handoff.refresh_availability(allowed);
-        }
-        if let Some(handoff) = self.photos_browse.as_mut() {
-            handoff.refresh_availability(allowed);
-        }
-        if let Some(handoff) = self.video_handoff.as_mut() {
-            handoff.refresh_availability(allowed);
-        }
     }
 
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
@@ -3464,6 +3413,60 @@ impl Widget for CameraApp {
         _permissions: &ui::permissions::PermissionContext,
     ) {
         self.draw(scene, t, tr, theme, presence);
+    }
+}
+
+impl ui::widget::controls::ActionControls for CameraApp {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.photos_browse
+            .as_mut()
+            .and_then(ActionEmitter::take)
+            .or_else(|| self.photos_handoff.as_mut().and_then(ActionEmitter::take))
+            .or_else(|| self.video_handoff.as_mut().and_then(ActionEmitter::take))
+    }
+    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
+        let mut bindings = ui::widget::semantic_action_bindings(self.accessibility());
+        // The visible recent-capture tile is one control whose canonical
+        // cross-app destination depends on the current capture type. Preserve
+        // that one semantic identity while attaching the same emitter the
+        // pointer path uses; do not inventory two invisible destination
+        // controls.
+        let recent_handoff = self.captures.first().and_then(|capture| {
+            if capture.is_video() {
+                self.video_handoff.as_ref()
+            } else {
+                self.photos_handoff.as_ref()
+            }
+        });
+        if let Some(handoff) = recent_handoff
+            && let Some(binding) = bindings
+                .iter_mut()
+                .find(|binding| binding.control_id == "camera.open-recent-capture")
+        {
+            *binding = handoff.metadata("camera.open-recent-capture");
+        }
+        if let Some(handoff) = self.photos_browse.as_ref()
+            && let Some(binding) = bindings
+                .iter_mut()
+                .find(|binding| binding.control_id == "camera.open-photos")
+        {
+            *binding = handoff.metadata("camera.open-photos");
+        }
+        bindings
+    }
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &HashSet<tilo_actions::ActionAddress>,
+    ) {
+        if let Some(handoff) = self.photos_handoff.as_mut() {
+            handoff.refresh_availability(allowed);
+        }
+        if let Some(handoff) = self.photos_browse.as_mut() {
+            handoff.refresh_availability(allowed);
+        }
+        if let Some(handoff) = self.video_handoff.as_mut() {
+            handoff.refresh_availability(allowed);
+        }
     }
 }
 
@@ -7169,7 +7172,7 @@ mod tests {
                 &mut state.doc,
                 &root,
             ));
-            let invocation = Widget::take_control_invocation(&mut *app)
+            let invocation = ui::widget::controls::take_control_invocation(&mut *app)
                 .expect("Photos browse emits a typed external invocation");
             assert_eq!(invocation.address.resource, "camera.capture");
             assert_eq!(invocation.address.action, "open-photos");
