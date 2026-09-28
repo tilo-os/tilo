@@ -1416,69 +1416,35 @@ impl Widget for ThemesApp {
         <Self as tilo_actions::ResourceProvider>::resources(self, doc)
     }
 
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        if kind != tilo_actions::OperationKind::Effect {
-            return Ok(false);
-        }
-        if type_id == "themes.new" {
-            self.pending_new = true;
-            return Ok(true);
-        }
-        if type_id == "themes.apply" {
-            return Err("theme application requires the lifecycle-capable operation host".into());
-        }
-        if type_id != "themes.export" {
-            return Ok(false);
-        }
-        let id = serde_json::from_slice::<Option<String>>(payload)
-            .map_err(|error| error.to_string())?
-            .unwrap_or_else(|| self.selected.clone());
-        let Some(theme) = doc::load_catalog(doc, &automerge::ROOT)
-            .unwrap_or_default()
-            .into_iter()
-            .find(|theme| theme.id == id)
-        else {
-            return Err("Theme is no longer available".into());
-        };
-        self.last_export = Some(theme.to_json());
-        self.status = format!("Exported “{}” as JSON", theme.name);
-        Ok(true)
-    }
-
-    fn start_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        _path: &ObjId,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if kind != tilo_actions::OperationKind::Effect || type_id != "themes.apply" {
-            return Ok(None);
+        let Some(request) = op.unscoped() else {
+            return ui::widget::start_in_children(self, op, doc, path);
+        };
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
         }
-        if self.pending_apply.is_some() {
-            return Err("another theme is still being applied".into());
+        if let Some(started) = self.admit_resource_operation(
+            request.invocation,
+            request.kind,
+            request.type_id,
+            request.payload,
+            doc,
+            path,
+        )? {
+            return Ok(Some(started));
         }
-        let id = serde_json::from_slice::<Option<String>>(payload)
-            .map_err(|error| error.to_string())?
-            .unwrap_or_else(|| self.selected.clone());
-        let exists = doc::load_catalog(doc, &automerge::ROOT)
-            .unwrap_or_default()
-            .iter()
-            .any(|theme| theme.id == id);
-        if !exists {
-            return Err("Theme is no longer available".into());
-        }
-        self.pending_apply = Some((id, invocation));
-        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
     }
 
     fn poll_resource_operation(
@@ -1958,6 +1924,73 @@ impl Widget for ThemesApp {
         _permissions: &ui::permissions::PermissionContext,
     ) {
         self.draw(scene, transform, text_renderer, theme, presence);
+    }
+}
+
+impl ThemesApp {
+    fn answer_resource_operation(
+        &mut self,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind != tilo_actions::OperationKind::Effect {
+            return Ok(false);
+        }
+        if type_id == "themes.new" {
+            self.pending_new = true;
+            return Ok(true);
+        }
+        if type_id == "themes.apply" {
+            return Err("theme application requires the lifecycle-capable operation host".into());
+        }
+        if type_id != "themes.export" {
+            return Ok(false);
+        }
+        let id = serde_json::from_slice::<Option<String>>(payload)
+            .map_err(|error| error.to_string())?
+            .unwrap_or_else(|| self.selected.clone());
+        let Some(theme) = doc::load_catalog(doc, &automerge::ROOT)
+            .unwrap_or_default()
+            .into_iter()
+            .find(|theme| theme.id == id)
+        else {
+            return Err("Theme is no longer available".into());
+        };
+        self.last_export = Some(theme.to_json());
+        self.status = format!("Exported “{}” as JSON", theme.name);
+        Ok(true)
+    }
+
+    fn admit_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if kind != tilo_actions::OperationKind::Effect || type_id != "themes.apply" {
+            return Ok(None);
+        }
+        if self.pending_apply.is_some() {
+            return Err("another theme is still being applied".into());
+        }
+        let id = serde_json::from_slice::<Option<String>>(payload)
+            .map_err(|error| error.to_string())?
+            .unwrap_or_else(|| self.selected.clone());
+        let exists = doc::load_catalog(doc, &automerge::ROOT)
+            .unwrap_or_default()
+            .iter()
+            .any(|theme| theme.id == id);
+        if !exists {
+            return Err("Theme is no longer available".into());
+        }
+        self.pending_apply = Some((id, invocation));
+        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
     }
 }
 
@@ -2466,17 +2499,21 @@ mod tests {
             let (mut app, mut state, _env) = seeded_demo();
             state.doc.commit();
             let before_heads = state.doc.get_heads();
-            assert!(
-                Widget::invoke_resource_operation(
+            assert!(matches!(
+                Widget::start_operation(
                     &mut app,
-                    tilo_actions::OperationKind::Effect,
-                    "themes.export",
-                    &serde_json::to_vec(&()).unwrap(),
-                    &state.doc,
-                    &state.root,
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        tilo_actions::OperationKind::Effect,
+                        "themes.export",
+                        &serde_json::to_vec(&()).unwrap()
+                    ),
+                    &mut state.doc,
+                    &state.root
                 )
-                .unwrap()
-            );
+                .unwrap(),
+                Some(ui::widget::ResourceOperationStart::Completed(_))
+            ));
             assert_eq!(state.doc.get_heads(), before_heads);
             assert!(
                 app.last_export
@@ -2504,17 +2541,21 @@ mod tests {
         {
             let (mut app, mut state, _env) = seeded_demo();
             let before = catalog(&state).len();
-            assert!(
-                Widget::invoke_resource_operation(
+            assert!(matches!(
+                Widget::start_operation(
                     &mut app,
-                    tilo_actions::OperationKind::Effect,
-                    "themes.new",
-                    &serde_json::to_vec(&()).unwrap(),
-                    &state.doc,
-                    &state.root,
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        tilo_actions::OperationKind::Effect,
+                        "themes.new",
+                        &serde_json::to_vec(&()).unwrap()
+                    ),
+                    &mut state.doc,
+                    &state.root
                 )
-                .unwrap()
-            );
+                .unwrap(),
+                Some(ui::widget::ResourceOperationStart::Completed(_))
+            ));
             app.sync(&mut state.doc, &state.root);
             assert_eq!(catalog(&state).len(), before + 1);
             let dispatched = app.last_dispatched().expect("create action dispatched");
@@ -2540,14 +2581,16 @@ mod tests {
             run(&mut app, &mut st, "select:dracula");
             let invocation = tilo_actions::InvocationId::new();
             assert_eq!(
-                Widget::start_resource_operation(
+                Widget::start_operation(
                     &mut app,
-                    invocation,
-                    tilo_actions::OperationKind::Effect,
-                    "themes.apply",
-                    &serde_json::to_vec(&()).unwrap(),
-                    &st.doc,
-                    &st.root,
+                    &ui::widget::ResourceOperation::local(
+                        invocation,
+                        tilo_actions::OperationKind::Effect,
+                        "themes.apply",
+                        &serde_json::to_vec(&()).unwrap()
+                    ),
+                    &mut st.doc,
+                    &st.root
                 )
                 .unwrap(),
                 Some(ui::widget::ResourceOperationStart::Accepted)
@@ -2680,16 +2723,18 @@ mod tests {
     fn apply_lifecycle_is_cancellable_and_the_gallery_goes_idle() {
         // Case `exported_apply_uses_cancellable_background_lifecycle`.
         {
-            let (mut app, st, _env) = seeded();
+            let (mut app, mut st, _env) = seeded();
             let theme_id = catalog(&st)[0].id.clone();
             let invocation = tilo_actions::InvocationId::new();
             let started = app
-                .start_resource_operation(
-                    invocation,
-                    tilo_actions::OperationKind::Effect,
-                    "themes.apply",
-                    &serde_json::to_vec(&theme_id).unwrap(),
-                    &st.doc,
+                .start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        invocation,
+                        tilo_actions::OperationKind::Effect,
+                        "themes.apply",
+                        &serde_json::to_vec(&theme_id).unwrap(),
+                    ),
+                    &mut st.doc,
                     &st.root,
                 )
                 .unwrap();

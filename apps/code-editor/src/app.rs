@@ -4136,173 +4136,35 @@ impl Widget for CodeApp {
         self.actions.take_committed()
     }
 
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        if type_id != crate::actions::CODE_EDITOR_OPERATION_TYPE {
-            return Ok(false);
-        }
-        let operation: crate::actions::CodeEditorOperation =
-            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-        let expected = crate::actions::operation_kind(&operation)?;
-        if kind != expected {
-            return Err(format!(
-                "operation kind {kind:?} does not match code editor operation kind {expected:?}"
-            ));
-        }
-        match (kind, operation) {
-            (
-                tilo_actions::OperationKind::View,
-                crate::actions::CodeEditorOperation::Open { file_id },
-            ) => {
-                let node = self
-                    .session
-                    .project
-                    .node_for_resource(&file_id)
-                    .ok_or_else(|| "Code file no longer exists".to_string())?;
-                self.open_node(node);
-            }
-            (
-                tilo_actions::OperationKind::View,
-                crate::actions::CodeEditorOperation::RevealLocation {
-                    file_id,
-                    path,
-                    line,
-                    col,
-                    show_search,
-                },
-            ) => {
-                let target = file_id
-                    .as_deref()
-                    .and_then(|file| self.session.project.node_for_resource(file))
-                    .or_else(|| {
-                        path.as_deref().and_then(|path| {
-                            self.session.project.reveal_path(std::path::Path::new(path))
-                        })
-                    });
-                let Some(target) = target else {
-                    return Err("Code location no longer exists".to_string());
-                };
-                explorer::refresh(&mut self.sidebar, &self.session.project);
-                self.open_node(target);
-                self.pending_jump = Some((line, col));
-                if show_search {
-                    self.panel_visible = true;
-                    self.panel.set_tab(PanelTab::Search);
-                }
-            }
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::CodeEditorOperation::Save { file_id, .. },
-            ) => {
-                let node = self
-                    .session
-                    .project
-                    .node_for_resource(&file_id)
-                    .ok_or_else(|| "Code file no longer exists".to_string())?;
-                if !self.save_buffer(doc, node, false) {
-                    return Err("file could not be saved without user input".to_string());
-                }
-            }
-            (_, crate::actions::CodeEditorOperation::Command { id, argument }) => {
-                self.pending_resource_command = Some((id, argument));
-            }
-            _ => return Err("operation kind does not match Code operation".to_string()),
-        }
-        Ok(true)
-    }
-
-    fn start_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        use crate::actions::CodeEditorOperation;
-
-        if type_id != crate::actions::CODE_EDITOR_OPERATION_TYPE {
-            return Ok(None);
-        }
-        let operation: crate::actions::CodeEditorOperation =
-            serde_json::from_slice(payload).map_err(|e| e.to_string())?;
-        let expected = crate::actions::operation_kind(&operation)?;
-        if kind != expected {
-            return Err(format!(
-                "operation kind {kind:?} does not match code editor operation kind {expected:?}"
-            ));
-        }
-        if self.resource_invocation.is_some() || self.pending_resource_file.is_some() {
-            return Err("another file operation is already running".into());
-        }
-        let resource = match operation {
-            CodeEditorOperation::OpenFile { path: Some(path) } => {
-                Some(ResourceFileOperation::OpenFile(path.into()))
-            }
-            CodeEditorOperation::OpenFolder { path: Some(path) } => {
-                Some(ResourceFileOperation::OpenFolder(path.into()))
-            }
-            CodeEditorOperation::Save {
-                file_id,
-                path: None,
-            } if self
-                .session
-                .project
-                .node_for_resource(&file_id)
-                .and_then(|node| self.session.buffer_of(node))
-                .and_then(|b| b.path.as_ref())
-                .is_none() =>
-            {
-                let node = self
-                    .session
-                    .project
-                    .node_for_resource(&file_id)
-                    .ok_or_else(|| "Code file no longer exists".to_string())?;
-                self.request_save_as(node);
-                None
-            }
-            CodeEditorOperation::Save { file_id, path } => Some(ResourceFileOperation::Save {
-                node: self
-                    .session
-                    .project
-                    .node_for_resource(&file_id)
-                    .ok_or_else(|| "Code file no longer exists".to_string())?,
-                path: path.map(Into::into),
-            }),
-            CodeEditorOperation::OpenFile { path: None } => {
-                self.request_open_file();
-                None
-            }
-            CodeEditorOperation::OpenFolder { path: None } => {
-                self.request_open_folder();
-                None
-            }
-            other => {
-                return self
-                    .invoke_resource_operation_v2(
-                        kind,
-                        type_id,
-                        &serde_json::to_vec(&other).map_err(|e| e.to_string())?,
-                        doc,
-                        path,
-                    )
-                    .map(|v| v.map(ui::widget::ResourceOperationStart::Completed));
-            }
+        let Some(request) = op.unscoped() else {
+            return ui::widget::start_in_children(self, op, doc, path);
         };
-        self.notice = None;
-        if let Some(resource) = resource {
-            self.pending_resource_file = Some((invocation, resource));
-        } else {
-            self.resource_invocation = Some(invocation);
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
         }
-        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+        if let Some(started) = self.admit_resource_operation(
+            request.invocation,
+            request.kind,
+            request.type_id,
+            request.payload,
+            doc,
+            path,
+        )? {
+            return Ok(Some(started));
+        }
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
     }
 
     fn poll_resource_operation(
@@ -4412,6 +4274,178 @@ impl Widget for CodeApp {
         self.editor.mark_drawn();
         self.panel.mark_drawn();
         self.find.mark_drawn();
+    }
+}
+
+impl CodeApp {
+    fn answer_resource_operation(
+        &mut self,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if type_id != crate::actions::CODE_EDITOR_OPERATION_TYPE {
+            return Ok(false);
+        }
+        let operation: crate::actions::CodeEditorOperation =
+            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+        let expected = crate::actions::operation_kind(&operation)?;
+        if kind != expected {
+            return Err(format!(
+                "operation kind {kind:?} does not match code editor operation kind {expected:?}"
+            ));
+        }
+        match (kind, operation) {
+            (
+                tilo_actions::OperationKind::View,
+                crate::actions::CodeEditorOperation::Open { file_id },
+            ) => {
+                let node = self
+                    .session
+                    .project
+                    .node_for_resource(&file_id)
+                    .ok_or_else(|| "Code file no longer exists".to_string())?;
+                self.open_node(node);
+            }
+            (
+                tilo_actions::OperationKind::View,
+                crate::actions::CodeEditorOperation::RevealLocation {
+                    file_id,
+                    path,
+                    line,
+                    col,
+                    show_search,
+                },
+            ) => {
+                let target = file_id
+                    .as_deref()
+                    .and_then(|file| self.session.project.node_for_resource(file))
+                    .or_else(|| {
+                        path.as_deref().and_then(|path| {
+                            self.session.project.reveal_path(std::path::Path::new(path))
+                        })
+                    });
+                let Some(target) = target else {
+                    return Err("Code location no longer exists".to_string());
+                };
+                explorer::refresh(&mut self.sidebar, &self.session.project);
+                self.open_node(target);
+                self.pending_jump = Some((line, col));
+                if show_search {
+                    self.panel_visible = true;
+                    self.panel.set_tab(PanelTab::Search);
+                }
+            }
+            (
+                tilo_actions::OperationKind::Effect,
+                crate::actions::CodeEditorOperation::Save { file_id, .. },
+            ) => {
+                let node = self
+                    .session
+                    .project
+                    .node_for_resource(&file_id)
+                    .ok_or_else(|| "Code file no longer exists".to_string())?;
+                if !self.save_buffer(doc, node, false) {
+                    return Err("file could not be saved without user input".to_string());
+                }
+            }
+            (_, crate::actions::CodeEditorOperation::Command { id, argument }) => {
+                self.pending_resource_command = Some((id, argument));
+            }
+            _ => return Err("operation kind does not match Code operation".to_string()),
+        }
+        Ok(true)
+    }
+
+    fn admit_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        use crate::actions::CodeEditorOperation;
+
+        if type_id != crate::actions::CODE_EDITOR_OPERATION_TYPE {
+            return Ok(None);
+        }
+        let operation: crate::actions::CodeEditorOperation =
+            serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+        let expected = crate::actions::operation_kind(&operation)?;
+        if kind != expected {
+            return Err(format!(
+                "operation kind {kind:?} does not match code editor operation kind {expected:?}"
+            ));
+        }
+        if self.resource_invocation.is_some() || self.pending_resource_file.is_some() {
+            return Err("another file operation is already running".into());
+        }
+        let resource = match operation {
+            CodeEditorOperation::OpenFile { path: Some(path) } => {
+                Some(ResourceFileOperation::OpenFile(path.into()))
+            }
+            CodeEditorOperation::OpenFolder { path: Some(path) } => {
+                Some(ResourceFileOperation::OpenFolder(path.into()))
+            }
+            CodeEditorOperation::Save {
+                file_id,
+                path: None,
+            } if self
+                .session
+                .project
+                .node_for_resource(&file_id)
+                .and_then(|node| self.session.buffer_of(node))
+                .and_then(|b| b.path.as_ref())
+                .is_none() =>
+            {
+                let node = self
+                    .session
+                    .project
+                    .node_for_resource(&file_id)
+                    .ok_or_else(|| "Code file no longer exists".to_string())?;
+                self.request_save_as(node);
+                None
+            }
+            CodeEditorOperation::Save { file_id, path } => Some(ResourceFileOperation::Save {
+                node: self
+                    .session
+                    .project
+                    .node_for_resource(&file_id)
+                    .ok_or_else(|| "Code file no longer exists".to_string())?,
+                path: path.map(Into::into),
+            }),
+            CodeEditorOperation::OpenFile { path: None } => {
+                self.request_open_file();
+                None
+            }
+            CodeEditorOperation::OpenFolder { path: None } => {
+                self.request_open_folder();
+                None
+            }
+            other => {
+                return self
+                    .answer_resource_operation(
+                        kind,
+                        type_id,
+                        &serde_json::to_vec(&other).map_err(|e| e.to_string())?,
+                        doc,
+                        path,
+                    )
+                    .map(|handled| handled.then(ui::tilo_actions::ActionOutput::default))
+                    .map(|v| v.map(ui::widget::ResourceOperationStart::Completed));
+            }
+        };
+        self.notice = None;
+        if let Some(resource) = resource {
+            self.pending_resource_file = Some((invocation, resource));
+        } else {
+            self.resource_invocation = Some(invocation);
+        }
+        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
     }
 }
 

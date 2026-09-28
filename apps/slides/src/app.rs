@@ -5616,154 +5616,35 @@ impl Widget for SlidesApp {
         &[crate::actions::SLIDES_OPERATION_TYPE]
     }
 
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        use crate::actions::SlidesOperation;
-        self.reconcile_canonical(doc);
-
-        if kind == tilo_actions::OperationKind::Document {
-            return Ok(false);
-        }
-        // Keep the registered wire type on the canonical dispatch path.  This
-        // is both a cheap rejection of foreign operation payloads and makes
-        // the runtime registry auditable independently from the decoder.
-        if type_id != crate::actions::SLIDES_OPERATION_TYPE {
-            return Ok(false);
-        }
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(false);
-        };
-        match operation {
-            SlidesOperation::ShowEditor => self.mode = Mode::Edit,
-            SlidesOperation::ShowOverview => self.mode = Mode::Overview,
-            SlidesOperation::StartPresentation => self.enter_present(),
-            SlidesOperation::StartPresentationOn { output } => {
-                self.presentation_target = match output {
-                    crate::actions::PresentationOutput::LargestExternal => {
-                        ui::fullscreen::FullscreenTarget::Largest
-                    }
-                    crate::actions::PresentationOutput::PrimaryExternal => {
-                        ui::fullscreen::FullscreenTarget::PrimaryExternal
-                    }
-                };
-                self.enter_present();
-            }
-            SlidesOperation::EndPresentation => self.exit_present(),
-            SlidesOperation::RevealSlide { slide } => {
-                let Some(idx) = self.deck.index_of(&slide) else {
-                    return Err("slide no longer exists".into());
-                };
-                self.mode = Mode::Edit;
-                self.editing_notes = false;
-                self.goto_slide(idx);
-                self.scroll_rail_to_current();
-            }
-            SlidesOperation::RevealElement {
-                slide,
-                element,
-                edit_text,
-            } => {
-                let Some(idx) = self.deck.index_of(&slide) else {
-                    return Err("slide no longer exists".into());
-                };
-                let Some(target) = self
-                    .deck
-                    .slides
-                    .get(idx)
-                    .and_then(|candidate| candidate.element(&element))
-                else {
-                    return Err("element no longer exists".into());
-                };
-                if edit_text && target.kind != ElementKind::Text {
-                    return Err("element is not editable text".into());
-                }
-                self.mode = Mode::Edit;
-                self.editing_notes = false;
-                self.goto_slide(idx);
-                self.sel = Some(element);
-                self.editing_text = edit_text;
-                if edit_text {
-                    // A text search result restores an immediately useful edit
-                    // state: the exact text resource is selected in full.
-                    self.begin_text_edit(true);
-                }
-                self.scroll_rail_to_current();
-            }
-            SlidesOperation::RevealNotes { slide } => {
-                let Some(idx) = self.deck.index_of(&slide) else {
-                    return Err("slide no longer exists".into());
-                };
-                self.mode = Mode::Edit;
-                self.goto_slide(idx);
-                self.editing_notes = true;
-                self.editing_text = false;
-                self.sel = None;
-                self.scroll_rail_to_current();
-            }
-            SlidesOperation::Open { .. } | SlidesOperation::SaveAs { .. } => {
-                return Err(
-                    "presentation file operations require the lifecycle-capable host".into(),
-                );
-            }
-        }
-        Ok(true)
-    }
-
-    fn start_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        self.reconcile_canonical(doc);
-        if type_id != crate::actions::SLIDES_OPERATION_TYPE {
-            return Ok(None);
-        }
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(None);
+        let Some(request) = op.unscoped() else {
+            return ui::widget::start_in_children(self, op, doc, path);
         };
-        let save_operation = matches!(&operation, crate::actions::SlidesOperation::SaveAs { .. });
-        match operation {
-            crate::actions::SlidesOperation::Open { path: file }
-            | crate::actions::SlidesOperation::SaveAs { path: file } => {
-                if self.resource_invocation.is_some() || self.dispatched_save.is_some() {
-                    return Err("another presentation file operation is running".into());
-                }
-                let save = save_operation;
-                self.resource_invocation = Some(invocation);
-                let direct = file.is_some();
-                if let Some(file) = file {
-                    self.resource_file = Some((save, file.into()));
-                } else if save {
-                    self.request_odp_save();
-                } else {
-                    self.request_odp_open();
-                }
-                if !direct && self.doc_portal_rx.is_none() {
-                    self.resource_invocation = None;
-                    return Err("presentation picker could not be started".into());
-                }
-                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
-            }
-            _ => self
-                .invoke_resource_operation(kind, type_id, payload, doc, path)
-                .map(|handled| {
-                    handled.then(|| {
-                        ui::widget::ResourceOperationStart::Completed(
-                            tilo_actions::ActionOutput::default(),
-                        )
-                    })
-                }),
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
         }
+        if let Some(started) = self.admit_resource_operation(
+            request.invocation,
+            request.kind,
+            request.type_id,
+            request.payload,
+            doc,
+            path,
+        )? {
+            return Ok(Some(started));
+        }
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
     }
 
     fn poll_resource_operation(
@@ -6471,6 +6352,158 @@ impl Widget for SlidesApp {
     /// search uses the same brokered navigation route as agents and a11y.
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
         vec![Box::new(self.search_provider.clone())]
+    }
+}
+
+impl SlidesApp {
+    fn answer_resource_operation(
+        &mut self,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        use crate::actions::SlidesOperation;
+        self.reconcile_canonical(doc);
+
+        if kind == tilo_actions::OperationKind::Document {
+            return Ok(false);
+        }
+        // Keep the registered wire type on the canonical dispatch path.  This
+        // is both a cheap rejection of foreign operation payloads and makes
+        // the runtime registry auditable independently from the decoder.
+        if type_id != crate::actions::SLIDES_OPERATION_TYPE {
+            return Ok(false);
+        }
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
+        };
+        match operation {
+            SlidesOperation::ShowEditor => self.mode = Mode::Edit,
+            SlidesOperation::ShowOverview => self.mode = Mode::Overview,
+            SlidesOperation::StartPresentation => self.enter_present(),
+            SlidesOperation::StartPresentationOn { output } => {
+                self.presentation_target = match output {
+                    crate::actions::PresentationOutput::LargestExternal => {
+                        ui::fullscreen::FullscreenTarget::Largest
+                    }
+                    crate::actions::PresentationOutput::PrimaryExternal => {
+                        ui::fullscreen::FullscreenTarget::PrimaryExternal
+                    }
+                };
+                self.enter_present();
+            }
+            SlidesOperation::EndPresentation => self.exit_present(),
+            SlidesOperation::RevealSlide { slide } => {
+                let Some(idx) = self.deck.index_of(&slide) else {
+                    return Err("slide no longer exists".into());
+                };
+                self.mode = Mode::Edit;
+                self.editing_notes = false;
+                self.goto_slide(idx);
+                self.scroll_rail_to_current();
+            }
+            SlidesOperation::RevealElement {
+                slide,
+                element,
+                edit_text,
+            } => {
+                let Some(idx) = self.deck.index_of(&slide) else {
+                    return Err("slide no longer exists".into());
+                };
+                let Some(target) = self
+                    .deck
+                    .slides
+                    .get(idx)
+                    .and_then(|candidate| candidate.element(&element))
+                else {
+                    return Err("element no longer exists".into());
+                };
+                if edit_text && target.kind != ElementKind::Text {
+                    return Err("element is not editable text".into());
+                }
+                self.mode = Mode::Edit;
+                self.editing_notes = false;
+                self.goto_slide(idx);
+                self.sel = Some(element);
+                self.editing_text = edit_text;
+                if edit_text {
+                    // A text search result restores an immediately useful edit
+                    // state: the exact text resource is selected in full.
+                    self.begin_text_edit(true);
+                }
+                self.scroll_rail_to_current();
+            }
+            SlidesOperation::RevealNotes { slide } => {
+                let Some(idx) = self.deck.index_of(&slide) else {
+                    return Err("slide no longer exists".into());
+                };
+                self.mode = Mode::Edit;
+                self.goto_slide(idx);
+                self.editing_notes = true;
+                self.editing_text = false;
+                self.sel = None;
+                self.scroll_rail_to_current();
+            }
+            SlidesOperation::Open { .. } | SlidesOperation::SaveAs { .. } => {
+                return Err(
+                    "presentation file operations require the lifecycle-capable host".into(),
+                );
+            }
+        }
+        Ok(true)
+    }
+
+    fn admit_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        self.reconcile_canonical(doc);
+        if type_id != crate::actions::SLIDES_OPERATION_TYPE {
+            return Ok(None);
+        }
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(None);
+        };
+        let save_operation = matches!(&operation, crate::actions::SlidesOperation::SaveAs { .. });
+        match operation {
+            crate::actions::SlidesOperation::Open { path: file }
+            | crate::actions::SlidesOperation::SaveAs { path: file } => {
+                if self.resource_invocation.is_some() || self.dispatched_save.is_some() {
+                    return Err("another presentation file operation is running".into());
+                }
+                let save = save_operation;
+                self.resource_invocation = Some(invocation);
+                let direct = file.is_some();
+                if let Some(file) = file {
+                    self.resource_file = Some((save, file.into()));
+                } else if save {
+                    self.request_odp_save();
+                } else {
+                    self.request_odp_open();
+                }
+                if !direct && self.doc_portal_rx.is_none() {
+                    self.resource_invocation = None;
+                    return Err("presentation picker could not be started".into());
+                }
+                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+            }
+            _ => self
+                .answer_resource_operation(kind, type_id, payload, doc, path)
+                .map(|handled| {
+                    handled.then(|| {
+                        ui::widget::ResourceOperationStart::Completed(
+                            tilo_actions::ActionOutput::default(),
+                        )
+                    })
+                }),
+        }
     }
 }
 
@@ -8478,23 +8511,27 @@ mod tests {
         // Case `presentation_output_resource_policy_is_local_and_selects_primary_external`.
         {
             let mut app = SlidesApp::new();
-            let doc = AutoCommit::new();
+            let mut doc = AutoCommit::new();
             let payload =
                 serde_json::to_vec(&crate::actions::SlidesOperation::StartPresentationOn {
                     output: crate::actions::PresentationOutput::PrimaryExternal,
                 })
                 .expect("presentation output operation serializes");
-            assert!(
-                Widget::invoke_resource_operation(
+            assert!(matches!(
+                Widget::start_operation(
                     &mut app,
-                    tilo_actions::OperationKind::View,
-                    crate::actions::SLIDES_OPERATION_TYPE,
-                    &payload,
-                    &doc,
-                    &automerge::ROOT,
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        tilo_actions::OperationKind::View,
+                        crate::actions::SLIDES_OPERATION_TYPE,
+                        &payload
+                    ),
+                    &mut doc,
+                    &automerge::ROOT
                 )
-                .expect("presentation output operation is accepted")
-            );
+                .expect("presentation output operation is accepted"),
+                Some(ui::widget::ResourceOperationStart::Completed(_))
+            ));
             assert_eq!(app.mode, Mode::Present);
             assert_eq!(
                 app.presentation_target,
@@ -11114,17 +11151,21 @@ mod tests {
             })
             .unwrap();
 
-            assert!(
-                Widget::invoke_resource_operation(
+            assert!(matches!(
+                Widget::start_operation(
                     &mut app,
-                    tilo_actions::OperationKind::View,
-                    crate::actions::SLIDES_OPERATION_TYPE,
-                    &payload,
-                    &doc,
-                    &automerge::ROOT,
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        tilo_actions::OperationKind::View,
+                        crate::actions::SLIDES_OPERATION_TYPE,
+                        &payload
+                    ),
+                    &mut doc,
+                    &automerge::ROOT
                 )
-                .unwrap()
-            );
+                .unwrap(),
+                Some(ui::widget::ResourceOperationStart::Completed(_))
+            ));
             assert_eq!(app.cur_slide, slide_index);
             assert_eq!(app.sel.as_deref(), Some(element_id.as_str()));
             assert!(app.editing_text);
@@ -11278,13 +11319,15 @@ mod history_interruption_tests {
         })
         .unwrap();
         assert!(matches!(
-            app.start_resource_operation(
-                invocation,
-                tilo_actions::OperationKind::Effect,
-                crate::actions::SLIDES_OPERATION_TYPE,
-                &payload,
-                &doc,
-                &automerge::ROOT,
+            app.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    invocation,
+                    tilo_actions::OperationKind::Effect,
+                    crate::actions::SLIDES_OPERATION_TYPE,
+                    &payload
+                ),
+                &mut doc,
+                &automerge::ROOT
             )
             .unwrap(),
             Some(ui::widget::ResourceOperationStart::Accepted)
@@ -11324,13 +11367,15 @@ mod history_interruption_tests {
         );
         let other_invocation = tilo_actions::InvocationId::new();
         assert!(
-            app.start_resource_operation(
-                other_invocation,
-                tilo_actions::OperationKind::Effect,
-                crate::actions::SLIDES_OPERATION_TYPE,
-                &payload,
-                &doc,
-                &automerge::ROOT,
+            app.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    other_invocation,
+                    tilo_actions::OperationKind::Effect,
+                    crate::actions::SLIDES_OPERATION_TYPE,
+                    &payload
+                ),
+                &mut doc,
+                &automerge::ROOT
             )
             .is_err()
         );
