@@ -21781,7 +21781,14 @@ impl ShellOverlayHost {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        let peers = self.workspace_peers(presence);
+        // A quiet peer's pointer fades out before it is retired; with
+        // reduced motion it simply goes.
+        let fade = if theme.reduce_motion {
+            std::time::Duration::ZERO
+        } else {
+            ui::presence::POINTER_FADE
+        };
+        let peers = self.workspace_peers(presence, fade);
         ui::presence::draw_peer_presence(scene, transform, self.rect, text_renderer, theme, &peers);
         self.draw_follow_cursor_affordances(scene, transform, presence);
     }
@@ -21976,13 +21983,19 @@ impl ShellOverlayHost {
     /// test, not just an empty screen both ways.
     #[cfg(test)]
     pub(crate) fn visible_peers(&self, presence: &PresenceCtx) -> Vec<ui::presence::PeerCursor> {
-        self.workspace_peers(presence)
+        self.workspace_peers(presence, ui::presence::POINTER_FADE)
             .into_iter()
             .filter(|peer| self.rect.contains(Point::new(peer.pos.0, peer.pos.1)))
             .collect()
     }
 
-    fn workspace_peers(&self, presence: &PresenceCtx) -> Vec<ui::presence::PeerCursor> {
+    /// The active workspace's peer pointers as painted, each at the
+    /// opacity its fade (over `fade`) has reached.
+    fn workspace_peers(
+        &self,
+        presence: &PresenceCtx,
+        fade: std::time::Duration,
+    ) -> Vec<ui::presence::PeerCursor> {
         let Some(chrome_rc) = self.chrome.as_ref() else {
             return Vec::new();
         };
@@ -22014,6 +22027,7 @@ impl ShellOverlayHost {
         room_ids.push(local.as_str());
         let reserved: Vec<(u8, u8, u8)> = presence.color_overrides.values().copied().collect();
         let assigned = ui::presence::assign_peer_colors(&room_ids, &reserved);
+        let now = std::time::Instant::now();
 
         peers
             .iter()
@@ -22031,6 +22045,13 @@ impl ShellOverlayHost {
                     label: presence.display_name(user),
                     color: Color::from_rgb8(r, g, b),
                     is_agent: presence.is_agent(user),
+                    opacity: presence.pointer_opacity(
+                        &key,
+                        user,
+                        now,
+                        ui::presence::POINTER_IDLE,
+                        fade,
+                    ),
                 }
             })
             .collect()
