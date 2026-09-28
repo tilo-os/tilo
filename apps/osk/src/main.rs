@@ -80,6 +80,10 @@ use ui::widget::Widget;
 /// (48 + 40 + 4×56 = 312, rounded up).
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (720, 360);
 
+/// Paint the effective tap targets over the keys, to see how the typing
+/// context grows and shrinks them.
+const HIT_OVERLAY_FLAG: &str = "--debug-hit-areas";
+
 /// # Errors
 ///
 /// Returns an error when `--input-method` is explicitly requested but the
@@ -104,7 +108,7 @@ fn launch_spec_with_root(
         .history(&osk::framework_history::HISTORY)
         .shot_root(shot_root)
         .shot_viewport(|_| DEFAULT_SHOTS_VIEWPORT)
-        .allowed_live_flags(&["--input-method", "--no-input-method"])
+        .allowed_live_flags(&["--input-method", "--no-input-method", HIT_OVERLAY_FLAG])
         .allowed_live_options(&["--purpose"])
         .disable_headless()
         .live_handler(run_live)
@@ -175,9 +179,11 @@ fn run_always_visible(args: &LaunchArgs, purpose: Option<InputPurpose>) -> Resul
             let mut injector = default_injector();
             tracing::info!("osk: text-injection backend = {}", injector.backend_name());
             let mut emulator = PreeditEmulator::new();
-            let mut widget = OskWidget::new().on_output(move |output| {
-                injector.send(&emulator.symbols(&output));
-            });
+            let mut widget = OskWidget::new()
+                .with_hit_overlay(args.has(HIT_OVERLAY_FLAG))
+                .on_output(move |output| {
+                    injector.send(&emulator.symbols(&output));
+                });
             if let Some(purpose) = purpose {
                 widget.set_purpose(purpose);
             }
@@ -283,12 +289,15 @@ fn run_auto_show(
         .build_root_with_history(|| {
             let mut editing_keys = default_injector();
             let mut router = OrderedRouter::new();
-            let mut widget = OskWidget::new().hidden().on_output(move |output| {
-                let Ok(mut im) = im_for_output.lock() else {
-                    return;
-                };
-                deliver(&mut router, &mut im, editing_keys.as_mut(), output);
-            });
+            let mut widget = OskWidget::new()
+                .hidden()
+                .with_hit_overlay(args.has(HIT_OVERLAY_FLAG))
+                .on_output(move |output| {
+                    let Ok(mut im) = im_for_output.lock() else {
+                        return;
+                    };
+                    deliver(&mut router, &mut im, editing_keys.as_mut(), output);
+                });
             // A `--purpose` override still applies as the initial layout; the
             // field's content_type will replace it once focus lands.
             if let Some(purpose) = purpose {

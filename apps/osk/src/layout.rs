@@ -145,7 +145,48 @@ impl Key {
             other => other.clone(),
         }
     }
+
+    /// What a long press on this key offers: the letter itself first, then
+    /// its accented forms, cased for `shift`. Empty for keys without any.
+    pub fn alternates(&self, shift: ShiftState) -> Vec<String> {
+        let KeyAction::Char(s) = &self.action else {
+            return Vec::new();
+        };
+        let Some(&(_, forms)) = ALTERNATES.iter().find(|(base, _)| base == s) else {
+            return Vec::new();
+        };
+        let case = |form: &str| {
+            let upper = form.to_uppercase();
+            // Casing must not change the length (ß → SS): keep such forms.
+            if shift.is_upper() && upper.chars().count() == form.chars().count() {
+                upper
+            } else {
+                form.to_string()
+            }
+        };
+        std::iter::once(s.as_str())
+            .chain(forms.iter().copied())
+            .map(case)
+            .collect()
+    }
 }
+
+/// Accented forms offered on a long press, for the Latin letters the shipped
+/// layouts type (French, German, Spanish, Portuguese, Nordic and Central
+/// European forms), most common first.
+const ALTERNATES: &[(&str, &[&str])] = &[
+    ("a", &["à", "á", "â", "ä", "æ", "ã", "å", "ā"]),
+    ("c", &["ç", "ć", "č"]),
+    ("e", &["é", "è", "ê", "ë", "ē", "ę", "ė"]),
+    ("i", &["î", "ï", "í", "ì", "ī"]),
+    ("l", &["ł"]),
+    ("n", &["ñ", "ń"]),
+    ("o", &["ô", "ö", "ó", "ò", "œ", "ø", "õ", "ō"]),
+    ("s", &["ß", "ś", "š"]),
+    ("u", &["ù", "û", "ü", "ú", "ū"]),
+    ("y", &["ÿ", "ý"]),
+    ("z", &["ž", "ź", "ż"]),
+];
 
 /// Shift / caps-lock state. The transition cycle on tapping Shift is
 /// Off → Shift → `CapsLock` → Off (deterministic and unit-tested). A single
