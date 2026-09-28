@@ -1793,6 +1793,11 @@ pub(crate) fn invoke_resource_action(
     let mut delivery = |binding: &CallbackBinding,
                         widget: &mut dyn crate::widget::AppWidget,
                         registry: &tilo_actions::ActionRegistry| {
+        let route = binding
+            .records
+            .readable()
+            .then(|| binding.broker_route().or_else(|| binding.admission_route()))
+            .flatten();
         result = Some(
             binding
                 .with_record_frame(document, false, |doc, path| {
@@ -1875,7 +1880,14 @@ pub(crate) fn invoke_resource_action(
                     };
                     let run = |doc: &mut AutoCommit| {
                     let mut operation = BoundOperation::enter(binding, doc, spec.kind)?;
-                    let started = execute(widget, operation.doc, path);
+                    let started = crate::invocation_scope::with_loaned_record(
+                        &binding.records,
+                        &binding.checkout,
+                        &binding.app_id,
+                        route.clone(),
+                        operation.doc,
+                        |doc| execute(widget, doc, path),
+                    );
                     accepted = matches!(started, Ok(crate::widget::ResourceOperationStart::Accepted));
                     // Consume the legacy rising edge without widening an exact typed
                     // span to arbitrary writes elsewhere in the opaque callback.
