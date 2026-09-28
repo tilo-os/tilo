@@ -72,26 +72,19 @@ pub struct PeerInviteToken {
     pub owner_addr: iroh::EndpointAddr,
     /// Optional always-on workspace hosts. Guests dial these in addition to
     /// the inviter, so an accepted room does not become dependent on the
-    /// inviter staying online. Absent from legacy v1 tokens.
-    #[serde(default)]
+    /// inviter staying online.
     pub host_addrs: Vec<iroh::EndpointAddr>,
     /// Enrollment-bound identity for a home host. Signed with the invite so a
     /// recipient never treats an arbitrary same-root relay as its Files peer.
-    #[serde(default)]
     pub home_host_pins: Vec<HomeHostPin>,
     /// Root-signed binding from the inviter's person identity to the Iroh
-    /// endpoint/device key. Absent only on legacy invitations.
-    #[serde(default)]
+    /// endpoint/device key.
     pub owner_device_cert: Option<DeviceCert>,
-    /// Maximum workspace role granted when this invite is redeemed. Legacy
-    /// invitations predate role selection and retain their historic Editor
-    /// behaviour through the enum default.
-    #[serde(default)]
+    /// Maximum workspace role granted when this invite is redeemed.
     pub role: InviteRole,
     /// Random per-invite nonce. Names stay authority-side, but this makes
     /// two invitations minted in the same second distinct credentials so
     /// cancellation and redemption can target the exact invitation.
-    #[serde(default)]
     pub invite_nonce: [u8; 16],
     /// Optional recipient person identity. When present, possession of the
     /// bearer is insufficient: redemption must present a device certificate
@@ -116,60 +109,10 @@ pub struct HomeHostPin {
 
 const MAX_HOME_HOST_PINS: usize = 16;
 
+/// The signed bytes of an invitation: every field of the token except the
+/// signature itself.
 #[derive(Serialize)]
 struct InvitePayload<'a> {
-    workspace_id: u64,
-    room_id: &'a str,
-    owner_peer_id: &'a str,
-    owner_addr: &'a iroh::EndpointAddr,
-    host_addrs: &'a [iroh::EndpointAddr],
-    expiry_unix_seconds: u64,
-}
-
-#[derive(Serialize)]
-struct InvitePayloadV2<'a> {
-    workspace_id: u64,
-    room_id: &'a str,
-    owner_peer_id: &'a str,
-    owner_addr: &'a iroh::EndpointAddr,
-    host_addrs: &'a [iroh::EndpointAddr],
-    owner_device_cert: &'a DeviceCert,
-    expiry_unix_seconds: u64,
-}
-
-#[derive(Serialize)]
-struct InvitePayloadWithRole<'a> {
-    workspace_id: u64,
-    room_id: &'a str,
-    owner_peer_id: &'a str,
-    owner_addr: &'a iroh::EndpointAddr,
-    host_addrs: &'a [iroh::EndpointAddr],
-    owner_device_cert: Option<&'a DeviceCert>,
-    role: InviteRole,
-    expiry_unix_seconds: u64,
-}
-
-#[derive(Serialize)]
-struct CurrentInvitePayload<'a> {
-    workspace_id: u64,
-    room_id: &'a str,
-    owner_peer_id: &'a str,
-    owner_addr: &'a iroh::EndpointAddr,
-    host_addrs: &'a [iroh::EndpointAddr],
-    owner_device_cert: Option<&'a DeviceCert>,
-    role: InviteRole,
-    invite_nonce: [u8; 16],
-    recipient_user_public_key: Option<&'a [u8; 32]>,
-    invitee_name: Option<&'a str>,
-    expiry_unix_seconds: u64,
-}
-
-/// Current invite format with enrollment-bound home-host pins.  This remains
-/// a distinct payload rather than extending `CurrentInvitePayload`: old
-/// nonce-bearing invitations were signed without the new field and must keep
-/// validating, while any invitation that carries pins must cover them.
-#[derive(Serialize)]
-struct CurrentInvitePayloadWithHomeHostPins<'a> {
     workspace_id: u64,
     room_id: &'a str,
     owner_peer_id: &'a str,
@@ -184,149 +127,19 @@ struct CurrentInvitePayloadWithHomeHostPins<'a> {
     expiry_unix_seconds: u64,
 }
 
-#[derive(Serialize)]
-struct InvitePayloadWithNonce<'a> {
-    workspace_id: u64,
-    room_id: &'a str,
-    owner_peer_id: &'a str,
-    owner_addr: &'a iroh::EndpointAddr,
-    host_addrs: &'a [iroh::EndpointAddr],
-    owner_device_cert: Option<&'a DeviceCert>,
-    role: InviteRole,
-    invite_nonce: [u8; 16],
-    expiry_unix_seconds: u64,
-}
-
-#[derive(Serialize)]
-struct RecipientBoundInvitePayload<'a> {
-    workspace_id: u64,
-    room_id: &'a str,
-    owner_peer_id: &'a str,
-    owner_addr: &'a iroh::EndpointAddr,
-    host_addrs: &'a [iroh::EndpointAddr],
-    owner_device_cert: Option<&'a DeviceCert>,
-    role: InviteRole,
-    recipient_user_public_key: &'a [u8; 32],
-    invitee_name: Option<&'a str>,
-    expiry_unix_seconds: u64,
-}
-
-#[derive(Serialize)]
-struct LegacyInvitePayload<'a> {
-    workspace_id: u64,
-    room_id: &'a str,
-    owner_peer_id: &'a str,
-    owner_addr: &'a iroh::EndpointAddr,
-    expiry_unix_seconds: u64,
-}
-
-#[derive(Serialize, Deserialize)]
-struct Libp2pInviteToken {
-    workspace_id: u64,
-    room_id: String,
-    owner_peer_id: String,
-    owner_public_key: String,
-    owner_addr: String,
-    expiry_unix_seconds: u64,
-    signature: Vec<u8>,
-}
-
-fn libp2p_payload(token: &Libp2pInviteToken) -> String {
-    format!(
-        "{}|{}|{}|{}|{}|{}",
-        token.workspace_id,
-        token.room_id,
-        token.owner_peer_id,
-        token.owner_public_key,
-        token.owner_addr,
-        token.expiry_unix_seconds
-    )
-}
-
-fn legacy_libp2p_invite_error(json: &[u8]) -> Option<String> {
-    use ed25519_dalek::Verifier as _;
-
-    let token: Libp2pInviteToken = serde_json::from_slice(json).ok()?;
-    if token.expiry_unix_seconds < now_unix_seconds() {
-        return Some("legacy libp2p invite expired".into());
-    }
-    RoomId::parse(&token.room_id).filter(|room| !room.is_nil())?;
-    let protobuf = B64.decode(token.owner_public_key.as_bytes()).ok()?;
-    if protobuf.len() != 36 || protobuf.get(..4)? != [0x08, 0x01, 0x12, 0x20] {
-        return None;
-    }
-    let public: [u8; 32] = protobuf.get(4..)?.try_into().ok()?;
-    let endpoint = crate::network::behaviour::endpoint_from_legacy_peer_id(&token.owner_peer_id)?;
-    if endpoint.as_bytes() != &public {
-        return None;
-    }
-    let signature: [u8; 64] = token.signature.as_slice().try_into().ok()?;
-    let key = ed25519_dalek::VerifyingKey::from_bytes(&public).ok()?;
-    key.verify(
-        libp2p_payload(&token).as_bytes(),
-        &ed25519_dalek::Signature::from_bytes(&signature),
-    )
-    .ok()?;
-    Some(
-        "this is a valid legacy libp2p invite, but its TCP address cannot be dialed by the Iroh transport; ask the inviter for a fresh invite"
-            .into(),
-    )
-}
-
 fn signing_payload(token: &PeerInviteToken) -> Result<Vec<u8>, postcard::Error> {
-    if !token.home_host_pins.is_empty() {
-        return postcard::to_allocvec(&CurrentInvitePayloadWithHomeHostPins {
-            workspace_id: token.workspace_id,
-            room_id: &token.room_id,
-            owner_peer_id: &token.owner_peer_id,
-            owner_addr: &token.owner_addr,
-            host_addrs: &token.host_addrs,
-            home_host_pins: &token.home_host_pins,
-            owner_device_cert: token.owner_device_cert.as_ref(),
-            role: token.role,
-            invite_nonce: token.invite_nonce,
-            recipient_user_public_key: token.recipient_user_public_key.as_ref(),
-            invitee_name: token.invitee_name.as_deref(),
-            expiry_unix_seconds: token.expiry_unix_seconds,
-        });
-    }
-    if token.invite_nonce != [0; 16] {
-        return postcard::to_allocvec(&CurrentInvitePayload {
-            workspace_id: token.workspace_id,
-            room_id: &token.room_id,
-            owner_peer_id: &token.owner_peer_id,
-            owner_addr: &token.owner_addr,
-            host_addrs: &token.host_addrs,
-            owner_device_cert: token.owner_device_cert.as_ref(),
-            role: token.role,
-            invite_nonce: token.invite_nonce,
-            recipient_user_public_key: token.recipient_user_public_key.as_ref(),
-            invitee_name: token.invitee_name.as_deref(),
-            expiry_unix_seconds: token.expiry_unix_seconds,
-        });
-    }
-    if let Some(recipient_user_public_key) = token.recipient_user_public_key.as_ref() {
-        return postcard::to_allocvec(&RecipientBoundInvitePayload {
-            workspace_id: token.workspace_id,
-            room_id: &token.room_id,
-            owner_peer_id: &token.owner_peer_id,
-            owner_addr: &token.owner_addr,
-            host_addrs: &token.host_addrs,
-            owner_device_cert: token.owner_device_cert.as_ref(),
-            role: token.role,
-            recipient_user_public_key,
-            invitee_name: token.invitee_name.as_deref(),
-            expiry_unix_seconds: token.expiry_unix_seconds,
-        });
-    }
-    postcard::to_allocvec(&InvitePayloadWithRole {
+    postcard::to_allocvec(&InvitePayload {
         workspace_id: token.workspace_id,
         room_id: &token.room_id,
         owner_peer_id: &token.owner_peer_id,
         owner_addr: &token.owner_addr,
         host_addrs: &token.host_addrs,
+        home_host_pins: &token.home_host_pins,
         owner_device_cert: token.owner_device_cert.as_ref(),
         role: token.role,
+        invite_nonce: token.invite_nonce,
+        recipient_user_public_key: token.recipient_user_public_key.as_ref(),
+        invitee_name: token.invitee_name.as_deref(),
         expiry_unix_seconds: token.expiry_unix_seconds,
     })
 }
@@ -528,8 +341,7 @@ pub fn make_invite_token_with_recipient(
 ///
 /// Returns an error describing which check failed: base64/JSON decoding,
 /// expiry, an invalid or unminted room id, a device-certificate/endpoint
-/// mismatch, or a signature that verifies against neither the current nor
-/// the legacy signing payload.
+/// mismatch, or a signature that does not cover the token.
 #[allow(
     clippy::too_many_lines,
     reason = "one linear sequence of token checks, each failing with its own message"
@@ -538,15 +350,8 @@ pub fn validate_invite_token(token_str: &str) -> Result<PeerInviteToken, String>
     let json = B64
         .decode(token_str)
         .map_err(|e| format!("base64 decode: {e}"))?;
-    let token: PeerInviteToken = match serde_json::from_slice(&json) {
-        Ok(token) => token,
-        Err(error) => {
-            if let Some(message) = legacy_libp2p_invite_error(&json) {
-                return Err(message);
-            }
-            return Err(format!("json parse: {error}"));
-        }
-    };
+    let token: PeerInviteToken =
+        serde_json::from_slice(&json).map_err(|error| format!("json parse: {error}"))?;
     if token.expiry_unix_seconds < now_unix_seconds() {
         return Err("token expired".into());
     }
@@ -612,81 +417,10 @@ pub fn validate_invite_token(token_str: &str) -> Result<PeerInviteToken, String>
         .try_into()
         .map_err(|_| "signature has the wrong length".to_string())?;
     let signature = iroh_base::Signature::from_bytes(&signature);
-    let current = signing_payload(&token).map_err(|e| format!("canonical encode: {e}"))?;
-    if endpoint.verify(&current, &signature).is_err() {
-        // V4 nonce-only invitations predate recipient binding. Accept only
-        // their exact historical payload shape; recipient/name fields must be
-        // absent so they cannot be grafted onto an old bearer.
-        if token.invite_nonce != [0; 16]
-            && token.recipient_user_public_key.is_none()
-            && token.invitee_name.is_none()
-            && token.home_host_pins.is_empty()
-        {
-            let nonce_only = postcard::to_allocvec(&InvitePayloadWithNonce {
-                workspace_id: token.workspace_id,
-                room_id: &token.room_id,
-                owner_peer_id: &token.owner_peer_id,
-                owner_addr: &token.owner_addr,
-                host_addrs: &token.host_addrs,
-                owner_device_cert: token.owner_device_cert.as_ref(),
-                role: token.role,
-                invite_nonce: token.invite_nonce,
-                expiry_unix_seconds: token.expiry_unix_seconds,
-            })
-            .map_err(|e| format!("nonce canonical encode: {e}"))?;
-            if endpoint.verify(&nonce_only, &signature).is_ok() {
-                return Ok(token);
-            }
-        }
-        // New recipient/name fields are part of the signed V4 payload. Never
-        // retry an older payload when either is present: doing so would let an
-        // attacker graft an unsigned recipient onto a valid legacy bearer.
-        if token.invite_nonce != [0; 16]
-            || token.recipient_user_public_key.is_some()
-            || token.invitee_name.is_some()
-            || !token.home_host_pins.is_empty()
-        {
-            return Err("signature verification failed".into());
-        }
-        let previous = if let Some(cert) = &token.owner_device_cert {
-            postcard::to_allocvec(&InvitePayloadV2 {
-                workspace_id: token.workspace_id,
-                room_id: &token.room_id,
-                owner_peer_id: &token.owner_peer_id,
-                owner_addr: &token.owner_addr,
-                host_addrs: &token.host_addrs,
-                owner_device_cert: cert,
-                expiry_unix_seconds: token.expiry_unix_seconds,
-            })
-        } else {
-            postcard::to_allocvec(&InvitePayload {
-                workspace_id: token.workspace_id,
-                room_id: &token.room_id,
-                owner_peer_id: &token.owner_peer_id,
-                owner_addr: &token.owner_addr,
-                host_addrs: &token.host_addrs,
-                expiry_unix_seconds: token.expiry_unix_seconds,
-            })
-        }
-        .map_err(|e| format!("previous canonical encode: {e}"))?;
-        if endpoint.verify(&previous, &signature).is_ok() {
-            return Ok(token);
-        }
-        if !token.host_addrs.is_empty() || token.owner_device_cert.is_some() {
-            return Err("signature mismatch".into());
-        }
-        let legacy = postcard::to_allocvec(&LegacyInvitePayload {
-            workspace_id: token.workspace_id,
-            room_id: &token.room_id,
-            owner_peer_id: &token.owner_peer_id,
-            owner_addr: &token.owner_addr,
-            expiry_unix_seconds: token.expiry_unix_seconds,
-        })
-        .map_err(|e| format!("legacy canonical encode: {e}"))?;
-        endpoint
-            .verify(&legacy, &signature)
-            .map_err(|_| "signature mismatch".to_string())?;
-    }
+    let payload = signing_payload(&token).map_err(|e| format!("canonical encode: {e}"))?;
+    endpoint
+        .verify(&payload, &signature)
+        .map_err(|_| "signature verification failed".to_string())?;
     Ok(token)
 }
 
@@ -810,38 +544,6 @@ mod tests {
             assert_ne!(invite_id(&first), invite_id(&second));
             validate_invite_token(&first).expect("first remains valid");
             validate_invite_token(&second).expect("second remains valid");
-        }
-        // Phase `legacy_token_without_hosts_still_validates`.
-        {
-            let key = iroh::SecretKey::from_bytes(&[15; 32]);
-            let workspace = workspace(6);
-            let addr = endpoint(&key, 2468);
-            let mut token = PeerInviteToken {
-                workspace_id: workspace.id.raw(),
-                room_id: workspace.room.to_string(),
-                owner_peer_id: key.public().to_string(),
-                owner_addr: addr,
-                host_addrs: Vec::new(),
-                home_host_pins: Vec::new(),
-                owner_device_cert: None,
-                role: InviteRole::Editor,
-                invite_nonce: [0; 16],
-                recipient_user_public_key: None,
-                invitee_name: None,
-                expiry_unix_seconds: now_unix_seconds() + 3600,
-                signature: Vec::new(),
-            };
-            let legacy = postcard::to_allocvec(&LegacyInvitePayload {
-                workspace_id: token.workspace_id,
-                room_id: &token.room_id,
-                owner_peer_id: &token.owner_peer_id,
-                owner_addr: &token.owner_addr,
-                expiry_unix_seconds: token.expiry_unix_seconds,
-            })
-            .unwrap();
-            token.signature = key.sign(&legacy).to_bytes().to_vec();
-            let encoded = B64.encode(serde_json::to_vec(&token).unwrap());
-            assert!(validate_invite_token(&encoded).is_ok());
         }
         // Phase `accepting_invite_adopts_room_and_roster_identity`.
         {
@@ -975,12 +677,12 @@ mod tests {
             let forged = B64.encode(serde_json::to_vec(&forged).expect("json"));
             assert!(validate_invite_token(&forged).is_err());
         }
-        // Phase `an_unsigned_recipient_cannot_be_grafted_onto_a_legacy_bearer`.
+        // Phase `an_unsigned_recipient_cannot_be_grafted_onto_a_bearer`.
         {
             let owner = iroh::SecretKey::from_bytes(&[19; 32]);
             let workspace = workspace(19);
             let encoded = make_invite_token(&owner, &workspace, &endpoint(&owner, 1919), 3600)
-                .expect("legacy-shaped bearer");
+                .expect("bearer invite");
             let bytes = B64.decode(encoded).expect("base64");
             let mut forged: PeerInviteToken = serde_json::from_slice(&bytes).expect("json");
             forged.recipient_user_public_key = Some([0x66; 32]);
@@ -1065,33 +767,6 @@ mod tests {
                     .iter()
                     .any(|member| member.id == person)
             );
-        }
-        // Phase `valid_libp2p_invite_gets_an_actionable_migration_error`.
-        {
-            let key = iroh::SecretKey::from_bytes(&[16; 32]);
-            let public = key.public();
-            let mut peer_bytes = vec![0x00, 0x24, 0x08, 0x01, 0x12, 0x20];
-            peer_bytes.extend_from_slice(public.as_bytes());
-            let owner_peer_id = bs58::encode(peer_bytes).into_string();
-            let mut public_protobuf = vec![0x08, 0x01, 0x12, 0x20];
-            public_protobuf.extend_from_slice(public.as_bytes());
-            let mut token = Libp2pInviteToken {
-                workspace_id: 7,
-                room_id: workspace(7).room.to_string(),
-                owner_peer_id,
-                owner_public_key: B64.encode(public_protobuf),
-                owner_addr: "/ip4/127.0.0.1/tcp/1234".into(),
-                expiry_unix_seconds: now_unix_seconds() + 3600,
-                signature: Vec::new(),
-            };
-            token.signature = key
-                .sign(libp2p_payload(&token).as_bytes())
-                .to_bytes()
-                .to_vec();
-            let encoded = B64.encode(serde_json::to_vec(&token).unwrap());
-            let error = validate_invite_token(&encoded).unwrap_err();
-            assert!(error.contains("legacy libp2p invite"));
-            assert!(error.contains("fresh invite"));
         }
         // Phase `nil_room_cannot_be_invited`.
         {
