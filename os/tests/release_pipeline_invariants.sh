@@ -317,6 +317,7 @@ grep -Fq 'with_browser=0' "$os" \
   && grep -Fq 'TILO_PROVISIONAL_CFS_DIGEST="$(printf '\''0%.0s'\'' {1..128})"' "$repo/os/dev/build-image.sh" \
   && ! grep -Fq 'id=tilo-composefs-' "$repo/os/Containerfile" \
   && grep -Fq 'find /build/target -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +' "$repo/os/Containerfile" \
+  && grep -Fq 'CONTINUOUS_RELEASE: "0"' "$os" \
   && ! grep -Fq 'token: ${{ secrets.REGISTRY_TOKEN }}' "$os" \
   && ! grep -Fq 'fetch-depth: 0' "$os" \
   && grep -Fq "if: steps.release-mode.outputs.validate == 'true'" "$os" \
@@ -325,18 +326,15 @@ grep -Fq 'with_browser=0' "$os" \
   && ok 'ordinary OS integration checks omit the release-only browser engine' \
   || bad 'OS branch validation still rebuilds or requires the WPE release snapshot'
 
-# The nightly run is a dev build: it keeps a same-commit dev image available
-# and never enters the release channel, which only tags and explicit release
-# dispatches reach.
-release_rule="$(awk '/- name: Select build, validation, or publication mode/,/validate=false/' "$os")"
 grep -Fq 'cron: "0 2 * * *"' "$os" \
   && grep -Fq "if: github.event_name == 'schedule' && github.ref == 'refs/heads/main'" "$os" \
-  && grep -Fq '&& -n ${INTEGRATION_REVISION:-} && $INTEGRATION_REVISION == "$GITHUB_SHA" ]]; then' "$os" \
+  && grep -Fq 'elif [[ $GITHUB_EVENT_NAME == schedule && $GITHUB_REF == refs/heads/main ]]; then' "$os" \
+  && grep -Fq '$PUBLISHED_REVISION == "$GITHUB_SHA"' "$os" \
   && grep -Fq "needs.plan.outputs.skip != 'true'" "$os" \
-  && ! grep -Fq 'schedule' <<<"$release_rule" \
-  && ! grep -Fq "github.event_name == 'schedule' && github.ref == 'refs/heads/main')" "$os" \
-  && ok 'nightly main runs are dev builds and skip a commit whose dev image exists' \
-  || bad 'the nightly OS run can release, or rebuilds an existing dev image'
+  && grep -Fq '&& ${PLANNED_PUBLISH:-false} == true ) \' "$os" \
+  && grep -Fq "(github.event_name == 'schedule' && github.ref == 'refs/heads/main')" "$os" \
+  && ok 'nightly main runs publish through the protected main path and skip an already published revision' \
+  || bad 'nightly OS publication is missing, not main-only, or rebuilds an already published revision'
 
 grep -Fq 'refs/tags/v*) with_browser=1 ;;' "$os" \
   && grep -Fq 'if [[ -n ${WPE_BUILDROOT_X86_64_REF:-} && -n ${WPE_BUILDROOT_AARCH64_REF:-} ]]; then' "$os" \

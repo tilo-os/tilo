@@ -107,6 +107,54 @@ pub fn ci_candidates(tag: &str, arch: &str) -> CiCandidates {
     }
 }
 
+/// The seven-hex commit a `sha:` tag (`main-<sha7>`) names.
+pub fn ci_commit(tag: &str) -> Option<&str> {
+    tag.strip_prefix("main-")
+        .filter(|sha| sha.len() == 7 && sha.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
+/// A dev build of a branch or pull request is tagged `<ref>-<sha7>`, so a
+/// commit that is not on main is found by listing the repositories' tags:
+/// `tilo-vm:<ref>-<sha7>-ci` is the published dev image,
+/// `tilo-ci:<ref>-<sha7>-<arch>` the image a dev image can be built FROM.
+/// `skopeo list-tags` output in, candidates out; several refs sort by name so
+/// the choice is stable.
+pub fn ci_ref_candidates(sha: &str, arch: &str, vm_tags: &str, ci_tags: &str) -> CiCandidates {
+    fn tags(listing: &str) -> Vec<String> {
+        serde_json::from_str::<serde_json::Value>(listing)
+            .ok()
+            .and_then(|value| value.get("Tags").cloned())
+            .and_then(|tags| serde_json::from_value::<Vec<String>>(tags).ok())
+            .unwrap_or_default()
+    }
+    fn named_ref(tag: &str, suffix: &str) -> bool {
+        tag.strip_suffix(suffix).is_some_and(|name| {
+            !name.is_empty()
+                && name
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"_.-".contains(&b))
+        })
+    }
+    let mut dev_images: Vec<String> = tags(vm_tags)
+        .into_iter()
+        .filter(|tag| named_ref(tag, &format!("-{sha}-ci")))
+        .map(|tag| format!("registry.tilo.so/tilo/tilo-vm:{tag}"))
+        .collect();
+    let mut bases: Vec<String> = tags(ci_tags)
+        .into_iter()
+        .filter(|tag| named_ref(tag, &format!("-{sha}-{arch}")))
+        .map(|tag| format!("registry.tilo.so/tilo/tilo-ci:{tag}"))
+        .collect();
+    dev_images.sort();
+    bases.sort();
+    CiCandidates { dev_images, bases }
+}
+
+/// `skopeo list-tags` for one repository.
+pub fn list_tags_command(repository: &str) -> CommandLine {
+    CommandLine::new("skopeo", &["list-tags"]).arg(format!("docker://{repository}"))
+}
+
 /// The local tag of a dev image built FROM a CI base.
 pub fn ci_dev_image(base: &str) -> String {
     let tag = base.rsplit_once(':').map_or(base, |(_, tag)| tag);
@@ -877,6 +925,35 @@ mod tests {
         assert!(!is_already_booted(
             "error: Switching: pulling: connection refused"
         ));
+    }
+
+    /// A commit off main is found by its `<ref>-<sha7>` tags.
+    #[test]
+    fn a_pull_request_commit_resolves_through_its_ref_tags() {
+        assert_eq!(ci_commit("main-1a2b3c4"), Some("1a2b3c4"));
+        assert_eq!(ci_commit("main-1a2b3c4-x86_64"), None);
+        assert_eq!(ci_commit("v1.2.3"), None);
+        let vm = r#"{"Repository":"registry.tilo.so/tilo/tilo-vm","Tags":["main-0000000-ci","pr-12-1a2b3c4-ci","pr-12-1a2b3c4-ci-x86_64","fix-x-1a2b3c4-ci","1a2b3c4-ci"]}"#;
+        let ci =
+            r#"{"Tags":["pr-12-1a2b3c4-x86_64","pr-12-1a2b3c4-aarch64","main-1a2b3c4x-x86_64"]}"#;
+        let found = ci_ref_candidates("1a2b3c4", "x86_64", vm, ci);
+        assert_eq!(
+            found.dev_images,
+            vec![
+                "registry.tilo.so/tilo/tilo-vm:fix-x-1a2b3c4-ci".to_owned(),
+                "registry.tilo.so/tilo/tilo-vm:pr-12-1a2b3c4-ci".to_owned(),
+            ]
+        );
+        assert_eq!(
+            found.bases,
+            vec!["registry.tilo.so/tilo/tilo-ci:pr-12-1a2b3c4-x86_64".to_owned()]
+        );
+        let none = ci_ref_candidates("1a2b3c4", "aarch64", "not json", "{}");
+        assert!(none.dev_images.is_empty() && none.bases.is_empty());
+        assert_eq!(
+            list_tags_command("registry.tilo.so/tilo/tilo-vm").display(),
+            "skopeo list-tags docker://registry.tilo.so/tilo/tilo-vm"
+        );
     }
 
     /// `--from ci:` and `--from sha:` name a CI tag, which resolves to published dev images, then
