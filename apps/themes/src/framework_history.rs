@@ -41,11 +41,6 @@ pub static SCHEMA: HistoryRestoreSchema = HistoryRestoreSchema {
             required: false,
             expected_type: RestoreValueType::Object(ObjType::Map),
         },
-        HistoryRestoreRoot {
-            key: "catalog",
-            required: false,
-            expected_type: RestoreValueType::Object(ObjType::Text),
-        },
     ],
     selectors: &[],
     preserved_roots: &["active"],
@@ -59,9 +54,7 @@ fn validate(d: &AutoCommit) -> Result<(), String> {
 fn preview(input: PreviewInput) -> Result<Box<dyn HistoryPreview>, String> {
     let d = AutoCommit::load(input.snapshot.bytes()).map_err(|e| e.to_string())?;
     validate(&d)?;
-    let recorded = ["themes", "catalog"]
-        .iter()
-        .any(|key| d.get(ROOT, *key).ok().flatten().is_some());
+    let recorded = d.get(ROOT, "themes").ok().flatten().is_some();
     let mut specs = if recorded {
         doc::load_catalog(&d, &ROOT).unwrap_or_default()
     } else {

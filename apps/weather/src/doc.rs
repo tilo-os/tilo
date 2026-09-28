@@ -25,22 +25,8 @@ use crate::model::{SavedLocation, WeatherModel};
 pub struct WeatherDoc;
 
 impl WeatherDoc {
-    /// True once either the current keyed schema or the old list schema has
-    /// been seeded. The old schema is read and migrated lazily on the next
-    /// location action; it is never discarded in place.
+    /// True once the keyed schema has been seeded.
     pub fn is_initialised(doc: &AutoCommit) -> bool {
-        matches!(
-            doc.get(&ROOT, "saved_locations"),
-            Ok(Some((Value::Object(ObjType::Map), _)))
-        ) || matches!(
-            doc.get(&ROOT, "locations"),
-            Ok(Some((Value::Object(ObjType::List), _)))
-        )
-    }
-
-    /// Whether the current keyed schema is already present (as distinct from
-    /// an older list-backed document that still needs action-driven migration).
-    pub fn has_keyed_schema(doc: &AutoCommit) -> bool {
         matches!(
             doc.get(&ROOT, "saved_locations"),
             Ok(Some((Value::Object(ObjType::Map), _)))
@@ -105,45 +91,6 @@ impl WeatherDoc {
             longitude: read_f64_coerced(doc, m, "lon").unwrap_or(0.0),
             timezone: read_str(doc, m, "tz").unwrap_or_default(),
         })
-    }
-
-    /// Copy the legacy ordered list into the keyed map once. Keeping the
-    /// legacy value makes this safe for a peer that has not upgraded yet.
-    pub(crate) fn migrate_legacy_locations(doc: &mut AutoCommit) {
-        if matches!(
-            doc.get(&ROOT, "saved_locations"),
-            Ok(Some((Value::Object(ObjType::Map), _)))
-        ) {
-            return;
-        }
-        let legacy = Self::read_legacy_locations(doc);
-        if legacy.is_empty() {
-            return;
-        }
-        for location in &legacy {
-            Self::upsert_location(doc, location);
-        }
-        Self::set_location_order(
-            doc,
-            &legacy
-                .iter()
-                .map(|location| location.id)
-                .collect::<Vec<_>>(),
-        );
-        // A user may have changed the stable view choice while the authored
-        // places were still legacy-backed. Content migration must not reset it.
-        if doc.get(&ROOT, "selected_location").ok().flatten().is_some() {
-            return;
-        }
-        let selected = match doc.get(&ROOT, "selected") {
-            Ok(Some((Value::Scalar(value), _))) => {
-                legacy.get(value.as_i64().unwrap_or(0).max(0) as usize)
-            }
-            _ => legacy.first(),
-        };
-        if let Some(selected) = selected {
-            Self::select_location(doc, selected.id);
-        }
     }
 
     /// Upsert a saved location as independent CRDT fields under its stable id.
@@ -304,7 +251,6 @@ impl WeatherDoc {
     )]
     #[cfg(test)]
     pub fn write_model(doc: &mut AutoCommit, model: &WeatherModel) {
-        Self::migrate_legacy_locations(doc);
         for location in &model.locations {
             Self::upsert_location(doc, location);
         }
@@ -319,22 +265,6 @@ impl WeatherDoc {
         if let Some(location) = model.selected_location() {
             Self::select_location(doc, location.id);
         }
-    }
-
-    fn read_legacy_locations(doc: &AutoCommit) -> Vec<SavedLocation> {
-        let mut locations = Vec::new();
-        if let Ok(Some((Value::Object(ObjType::List), list))) = doc.get(&ROOT, "locations") {
-            for index in 0..doc.length(&list) {
-                let Ok(Some((Value::Object(ObjType::Map), location))) = doc.get(&list, index)
-                else {
-                    continue;
-                };
-                if let Some(location) = Self::location_from_map(doc, &location, "") {
-                    locations.push(location);
-                }
-            }
-        }
-        locations
     }
 
     /// Read the model back out of the document.
@@ -389,8 +319,6 @@ impl WeatherDoc {
                     .total_cmp(&right.order_rank)
                     .then_with(|| left.id.cmp(&right.id))
             });
-        } else {
-            model.locations = Self::read_legacy_locations(doc);
         }
 
         let selected_id: Option<crate::model::LocationId> =
@@ -404,12 +332,6 @@ impl WeatherDoc {
                     .locations
                     .iter()
                     .position(|location| location.id == id)
-            })
-            .or_else(|| match doc.get(&ROOT, "selected") {
-                Ok(Some((Value::Scalar(value), _))) => {
-                    Some(value.as_i64().unwrap_or(0).max(0) as usize)
-                }
-                _ => None,
             })
             .unwrap_or(0);
         if model.selected >= model.locations.len() && !model.locations.is_empty() {
@@ -460,43 +382,6 @@ mod tests {
             WeatherDoc::write_model(&mut doc, &model);
             assert!(doc.get(&ROOT, "snapshots").unwrap().is_none());
             assert!(doc.get(&ROOT, "air_quality").unwrap().is_none());
-        }
-        // Case `legacy_location_list_is_read_then_migrated_to_keyed_records`.
-        {
-            let model = crate::sample::sample_model();
-            let mut legacy = AutoCommit::new();
-            let list = legacy
-                .put_object(&ROOT, "locations", ObjType::List)
-                .unwrap();
-            for (index, location) in model.locations.iter().enumerate() {
-                let entry = legacy.insert_object(&list, index, ObjType::Map).unwrap();
-                legacy.put(&entry, "id", location.id.to_string()).unwrap();
-                legacy.put(&entry, "name", location.name.as_str()).unwrap();
-                legacy
-                    .put(&entry, "region", location.region.as_str())
-                    .unwrap();
-                legacy
-                    .put(&entry, "country", location.country.as_str())
-                    .unwrap();
-                legacy
-                    .put(&entry, "country_code", location.country_code.as_str())
-                    .unwrap();
-                legacy.put(&entry, "lat", location.latitude).unwrap();
-                legacy.put(&entry, "lon", location.longitude).unwrap();
-                legacy
-                    .put(&entry, "tz", location.timezone.as_str())
-                    .unwrap();
-            }
-
-            WeatherDoc::migrate_legacy_locations(&mut legacy);
-            assert!(matches!(
-                legacy.get(&ROOT, "saved_locations"),
-                Ok(Some((Value::Object(ObjType::Map), _)))
-            ));
-            assert_eq!(
-                WeatherDoc::read_model(&legacy).locations.len(),
-                model.locations.len()
-            );
         }
         // Case `remove_wins_over_a_concurrent_same_id_add_without_resurrection`.
         {

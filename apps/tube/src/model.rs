@@ -1365,19 +1365,18 @@ mod tests {
         // Case `image_url_fields_round_trip_and_default`.
         {
             // A video/channel carrying real image URLs survives a serde round-trip
-            // (the model is mirrored into the CRDT as JSON), and legacy JSON without
-            // the new fields deserializes with empty defaults (no data loss on old
-            // persisted state).
+            // (the model is mirrored into the CRDT as JSON), and sparse JSON without
+            // the optional fields deserializes with empty defaults.
             let mut v = sample_video();
             v.thumbnail_url = "https://i.ytimg.com/vi/x/hqdefault.jpg".into();
             let json = serde_json::to_string(&v).unwrap();
             let back: Video = serde_json::from_str(&json).unwrap();
             assert_eq!(back.thumbnail_url, v.thumbnail_url);
 
-            let legacy = r#"{"id":"y","title":"T","channel_id":"c","channel_name":"C",
+            let sparse = r#"{"id":"y","title":"T","channel_id":"c","channel_name":"C",
             "channel_seed":"c","views":0,"published":"","duration":0,"description":"",
             "likes":0,"seed":"y","category":"x"}"#;
-            let v2: Video = serde_json::from_str(legacy).unwrap();
+            let v2: Video = serde_json::from_str(sparse).unwrap();
             assert_eq!(v2.thumbnail_url, "", "missing thumbnail_url defaults empty");
 
             let ch = Channel {
