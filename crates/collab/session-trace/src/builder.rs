@@ -157,6 +157,14 @@ impl TraceBuilder {
         self.snapshots.len()
     }
 
+    /// Semantic-tree keyframes on the timeline so far.
+    pub fn keyframe_count(&self) -> usize {
+        self.timeline
+            .iter()
+            .filter(|entry| matches!(entry.event, Event::Inspect(_)))
+            .count()
+    }
+
     /// Whether `route` already has its snapshot.
     pub fn has_snapshot(&self, route: &Route) -> bool {
         self.snapshots

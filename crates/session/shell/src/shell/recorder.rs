@@ -724,6 +724,7 @@ impl Recorder {
                         "apps": recording.apps,
                         "events": recording.builder.event_count(),
                         "snapshots": recording.builder.snapshot_count(),
+                        "keyframes": recording.builder.keyframe_count(),
                         "truncated": recording.builder.is_truncated(),
                         "pixels": recording.frames.as_ref().map(|frames| frames.purpose().as_str()),
                         "frames": recording.frames.as_ref().map(FrameStripBuilder::frame_count),

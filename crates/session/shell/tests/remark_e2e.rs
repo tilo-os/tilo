@@ -394,16 +394,27 @@ fn a_remark_about_a_field_with_a_redacted_recording_reaches_the_team_privately()
             .as_u64()
             .is_some_and(|events| events > 0)
     });
-    let events = |recorder: &shell::shell::recorder::Recorder| {
-        recorder.status_json()["recording"]["events"]
+    let keyframes = |recorder: &shell::shell::recorder::Recorder| {
+        recorder.status_json()["recording"]["keyframes"]
             .as_u64()
             .unwrap_or(0)
     };
-    let before = events(&recorder);
     click(&mut world, send_button);
-    // The press, the banner it brought up, and the keyframe showing it.
-    world.until("the recording to see the press and the banner", |_| {
-        events(&recorder) >= before + 3
+    // Mail brought up the banner, and the recording then kept a keyframe:
+    // the first one taken after Mail shows the banner shows it too. Counting
+    // events would race the room's other traffic, such as what Mail
+    // restates to the recorder when it arrives.
+    let mut shown_at = None;
+    world.until("the recording to keep the banner", |world| {
+        let shown = world.mail.semantic_tree().iter().any(|node| {
+            node.name
+                .as_deref()
+                .is_some_and(|name| name.contains("Couldn't send"))
+        });
+        if shown && shown_at.is_none() {
+            shown_at = Some(keyframes(&recorder));
+        }
+        shown_at.is_some_and(|at| keyframes(&recorder) > at)
     });
     world.act("remark.record.stop", &json!({}));
 
