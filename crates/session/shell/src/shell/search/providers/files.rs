@@ -445,10 +445,9 @@ const PATH: FieldWeight = FieldWeight::METADATA;
 const STRUCT_EXACT_LEAF: i32 = 88;
 /// The leaf minus its extension is exactly the needle: `open` → `open.md`.
 const STRUCT_EXACT_STEM: i32 = 84;
-/// The needle is exactly the first word of the name: `open` → `open-notes.md`.
-const STRUCT_FIRST_TOKEN: i32 = 76;
-/// The needle is exactly a later word: `open` → `xdg-open`.
-const STRUCT_TOKEN: i32 = 70;
+/// The needle is exactly a word of the name, wherever it sits:
+/// `report` → `report-template.xlsx` and `quarterly-report-2024.pdf` alike.
+const STRUCT_TOKEN: i32 = 76;
 /// The needle starts the first word but does not finish it:
 /// `open` → `openttd-logo.png`.
 const STRUCT_FIRST_TOKEN_PREFIX: i32 = 64;
@@ -471,8 +470,7 @@ fn name_rank(tier: MatchTier, weight: FieldWeight) -> Option<i32> {
     match (weight, tier) {
         (_, Typo) => Some(STRUCT_FUZZY),
         (LEAF, Exact) => Some(STRUCT_EXACT_LEAF),
-        (LEAF, PrefixWord) => Some(STRUCT_FIRST_TOKEN),
-        (LEAF, Word) => Some(STRUCT_TOKEN),
+        (LEAF, PrefixWord | Word) => Some(STRUCT_TOKEN),
         (LEAF, Prefix) => Some(STRUCT_FIRST_TOKEN_PREFIX),
         (LEAF, WordPrefix) => Some(STRUCT_TOKEN_PREFIX),
         (LEAF, Contains) => Some(STRUCT_IN_TOKEN),
@@ -500,7 +498,7 @@ const PENALTY_MAX: i32 = 28;
 /// Path components a file may sit under before depth counts against it —
 /// free so ordinary project layouts pay nothing.
 const DEPTH_FREE: usize = 4;
-const PENALTY_PER_LEVEL: i32 = 3;
+const PENALTY_PER_LEVEL: i32 = 4;
 const PENALTY_DEPTH_MAX: i32 = 15;
 
 /// Top of the provider's scale, normalised against by the registry.
