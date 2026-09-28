@@ -101,6 +101,8 @@ mod hardware_encode;
 mod hdr_capability_probe;
 #[path = "hdr_decode_pipeline.rs"]
 mod hdr_decode_pipeline;
+#[path = "hdr_layer_composite.rs"]
+mod hdr_layer_composite;
 #[path = "hdr_output_encode_shader.rs"]
 mod hdr_output_encode_shader;
 #[path = "hdr_output_pipeline.rs"]

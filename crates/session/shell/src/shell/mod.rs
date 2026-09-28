@@ -69,6 +69,7 @@ pub mod foreign;
 pub mod frame;
 pub mod fs_authority;
 pub mod hdr_display;
+pub mod hdr_surface;
 pub mod hdr_tonemap;
 pub mod history_narrative;
 pub mod host_apps;

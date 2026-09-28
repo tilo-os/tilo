@@ -24,11 +24,13 @@ use ui::gpu::RenderContext;
 use vello::{AaConfig, AaSupport, RenderParams, Renderer, RendererOptions, Scene, wgpu};
 use wgpu::util::TextureBlitter;
 
+use super::hdr_composite::{HdrCompositor, HdrPass};
 use super::hdr_encode::HdrEncodePipeline;
 use super::xrgb_history::XrgbWritePlan;
 pub use super::xrgb_history::{
     XrgbHistoryCommit, XrgbHistoryIdentity, XrgbHistoryTransaction, XrgbTargetHistory,
 };
+use crate::shell::hdr_surface::HdrLayer;
 
 /// Errors the bridge can return; each variant maps to an operator-visible message and the DRM backend logs+skips the frame.
 #[derive(Debug, thiserror::Error)]
@@ -414,6 +416,10 @@ pub struct RetainedGpuTarget {
     /// Sparse submissions from the latest paint whose recorded Vello pass selected canonical
     /// segment order. Sparse overflow is still counted before its dense recovery.
     last_canonical_segment_order_sparse_attempts: usize,
+    /// HDR layers the next render composites: each attempt first renders the
+    /// scene with the layer images in their channel colours, then the frame
+    /// itself with them black.
+    hdr_pass: Option<HdrPass>,
     /// Full submissions from the latest paint that actually selected the experimental Area PPT8
     /// shader. This is route-attempt telemetry only, not a completion or speed claim.
     last_area_ppt8_full_attempts: usize,
@@ -474,6 +480,7 @@ impl RetainedGpuTarget {
             last_full_render_attempts: 0,
             last_canonical_segment_order_full_attempts: 0,
             last_canonical_segment_order_sparse_attempts: 0,
+            hdr_pass: None,
             last_area_ppt8_full_attempts: 0,
             last_area_ppt8_sparse_attempts: 0,
             last_clip_single_group_full_attempts: 0,
@@ -726,6 +733,13 @@ impl RetainedGpuTarget {
         // Once encoding starts, even a pre-submit abort leaves renderer-owned downloads and
         // timestamp bookkeeping unusable. Clear poison only after both completion facts hold.
         let result = self.render_attempts(scene, sparse, output, policy, timing, post_render);
+        if let Some(pass) = self.hdr_pass.as_ref() {
+            // Later renders (and captures on this renderer) draw the images
+            // as they are again.
+            for substitution in &pass.substitutions {
+                self.renderer.override_image(&substitution.image, None);
+            }
+        }
         if result.is_ok() {
             self.retained_target_valid = true;
             self.last_successful_revision = damage.map(|damage| damage.revision);
@@ -758,6 +772,26 @@ impl RetainedGpuTarget {
                 height: self.size.1,
                 antialiasing_method: AaConfig::Area,
             };
+            if let Some(pass) = self.hdr_pass.as_ref() {
+                for substitution in &pass.substitutions {
+                    self.renderer
+                        .override_image(&substitution.image, Some(substitution.lit.clone()));
+                }
+                let second = self.renderer.render_to_texture(
+                    &self.device,
+                    &self.queue,
+                    scene,
+                    &pass.second_view,
+                    &params,
+                );
+                for substitution in &pass.substitutions {
+                    self.renderer
+                        .override_image(&substitution.image, Some(substitution.black.clone()));
+                }
+                second.map_err(|error| {
+                    BridgeError::Render(format!("HDR layer weights: {error:?}"))
+                })?;
+            }
             let loss = self.loss.clone();
             #[cfg(test)]
             let gate_now = self.completion_test.as_mut().map(|clock| {
@@ -1310,6 +1344,8 @@ pub struct VelloDrmBridge {
     bgra_blitter: TextureBlitter,
     /// SDR → PQ encode passes, one per HDR scanout format in use.
     hdr_encoders: Vec<HdrEncodePipeline>,
+    /// Composites HDR layers; built with the first frame that has any.
+    hdr_compositor: Option<HdrCompositor>,
     dev_id: usize,
 
     /// Readback buffer (padded to the wgpu row alignment requirement).
@@ -1390,6 +1426,7 @@ impl VelloDrmBridge {
             target,
             bgra_blitter,
             hdr_encoders: Vec::new(),
+            hdr_compositor: None,
             dev_id,
 
             readback_buf,
@@ -1423,6 +1460,12 @@ impl VelloDrmBridge {
         self.bump_xrgb_history_epoch();
     }
 
+    /// The device and queue this bridge renders with, for targets it renders
+    /// into that were not imported from a dma-buf.
+    pub fn gpu(&self) -> (&wgpu::Device, &wgpu::Queue) {
+        (&self.target.device, &self.target.queue)
+    }
+
     /// Import a compositor-owned linear scanout dma-buf (`XRGB8888`, or `XBGR2101010` /
     /// `ABGR16161616F` for HDR) on this bridge's exact wgpu device.
     ///
@@ -1443,7 +1486,7 @@ impl VelloDrmBridge {
     /// Render into an imported direct-scanout target in one submission, then wait for the
     /// existing completion marker before returning. An SDR (`Bgra8Unorm`) target receives a
     /// plain copy; an HDR target receives the PQ BT.2020 encode with SDR white at
-    /// `sdr_white_nits`.
+    /// `sdr_white_nits`, compositing `hdr_layers` at full precision in linear light.
     ///
     /// # Errors
     ///
@@ -1456,6 +1499,7 @@ impl VelloDrmBridge {
         target: &ui::dmabuf_import::ImportedRenderTarget,
         deadline: Instant,
         sdr_white_nits: f32,
+        hdr_layers: &[HdrLayer],
     ) -> Result<GpuFrameStats, BridgeError> {
         self.last_phase_timing = None;
         if (target.width, target.height) != self.target.size {
@@ -1465,6 +1509,29 @@ impl VelloDrmBridge {
             )));
         }
         let hdr = target.format != wgpu::TextureFormat::Bgra8Unorm;
+        let composite = hdr && !hdr_layers.is_empty();
+        if composite {
+            let (device, queue) = (&self.target.device, &self.target.queue);
+            let compositor = self
+                .hdr_compositor
+                .get_or_insert_with(|| HdrCompositor::new(device, queue));
+            self.target.hdr_pass = Some(compositor.prepare(
+                self.target.size,
+                hdr_layers,
+                Some((target.format, sdr_white_nits)),
+            ));
+        }
+        // The substituted layer images are not what the retained target holds
+        // from an earlier frame, so a composited frame renders densely.
+        let damage = if composite {
+            SceneDamage {
+                revision: damage.revision,
+                previous_revision: None,
+                regions: None,
+            }
+        } else {
+            damage
+        };
         if hdr
             && !self
                 .hdr_encoders
@@ -1483,17 +1550,27 @@ impl VelloDrmBridge {
         }
         let blitter = &self.bgra_blitter;
         let view = &target.view;
-        let (_, admitted) = self.target.render(
+        let format = target.format;
+        let compositor = self.hdr_compositor.as_ref().filter(|_| composite);
+        let rendered = self.target.render(
             scene,
             Some(damage),
             FrameOutput::GpuOnly,
             CompletionPolicy::Absolute(deadline),
             None,
-            |device, encoder, source| match encode {
-                Some(pipeline) => pipeline.encode(device, encoder, source, view),
-                None => blitter.copy(device, encoder, source, view),
+            |device, encoder, source| match (compositor, encode) {
+                (Some(compositor), _) => compositor.encode(encoder, source, view, format),
+                (None, Some(pipeline)) => pipeline.encode(device, encoder, source, view),
+                (None, None) => blitter.copy(device, encoder, source, view),
             },
-        )?;
+        );
+        self.target.hdr_pass = None;
+        if composite {
+            // The retained frame holds the layers black: no later frame may
+            // repair it sparsely, whether or not it composites.
+            self.target.last_successful_revision = None;
+        }
+        let (_, admitted) = rendered?;
         Ok(GpuFrameStats {
             revision: damage.revision,
             damage_admitted: admitted,
@@ -1832,6 +1909,36 @@ impl VelloDrmBridge {
         }
 
         Ok(&self.readback)
+    }
+
+    /// [`paint`](Self::paint) for a frame with HDR layers: the tight RGBA render with every
+    /// layer image black, and the render with each in its channel colour, for
+    /// [`crate::shell::hdr_surface::composite_hdr_pixel`].
+    ///
+    /// # Errors
+    /// Fails like [`paint`](Self::paint), or when the second render cannot be read back.
+    pub fn paint_with_hdr_layers(
+        &mut self,
+        scene: &Scene,
+        hdr_layers: &[HdrLayer],
+    ) -> Result<(&[u8], Vec<u8>), BridgeError> {
+        {
+            let (device, queue) = (&self.target.device, &self.target.queue);
+            let compositor = self
+                .hdr_compositor
+                .get_or_insert_with(|| HdrCompositor::new(device, queue));
+            self.target.hdr_pass = Some(compositor.prepare(self.target.size, hdr_layers, None));
+        }
+        let painted = self.paint(scene).map(|_| ());
+        self.target.hdr_pass = None;
+        painted?;
+        let second = self
+            .hdr_compositor
+            .as_ref()
+            .ok_or_else(|| BridgeError::Render("HDR compositor missing".to_owned()))?
+            .read_second(LINUX_FENCE_WAIT)
+            .map_err(BridgeError::Render)?;
+        Ok((&self.readback, second))
     }
 
     /// Render `scene` and write it **directly** into an XRGB8888 destination (little-endian
@@ -3613,7 +3720,7 @@ pub fn swizzle_subrect_rgba_to_xrgb8888_transformed(
         dst_pitch,
         (physical_w, physical_h),
         transform,
-        |dpix, spix| {
+        |dpix, spix, _, _| {
             if let ([db, dg, dr, dx], [sr, sg, sb, _sa]) = (dpix, spix) {
                 *db = *sb;
                 *dg = *sg;
@@ -3624,15 +3731,64 @@ pub fn swizzle_subrect_rgba_to_xrgb8888_transformed(
     );
 }
 
-/// [`swizzle_subrect_rgba_to_xrgb8888_transformed`] for an output driven in HDR: each sRGB
-/// pixel becomes one little-endian `XBGR2101010` word of PQ BT.2020 signal.
-pub fn encode_subrect_rgba_to_xbgr2101010_transformed(
+/// The HDR layers an output composites on the CPU, with the scene position
+/// of the source buffer's origin.
+pub type SubrectComposite<'a> = (crate::shell::hdr_surface::CpuComposite<'a>, (usize, usize));
+
+/// A scene pixel HDR layers can reach, as the CPU composite needs it.
+struct CompositedPixel<'a> {
+    layers: crate::shell::hdr_surface::CpuComposite<'a>,
+    first: [u8; 4],
+    second: [u8; 4],
+    x: u32,
+    y: u32,
+}
+
+impl CompositedPixel<'_> {
+    fn light(&self, target: crate::shell::hdr_surface::CompositeTarget) -> [f32; 3] {
+        crate::shell::hdr_surface::composite_hdr_pixel(
+            self.first,
+            self.second,
+            self.x,
+            self.y,
+            self.layers.layers,
+            target,
+        )
+    }
+}
+
+/// The scene pixel under source pixel `(sx, sy)`, when it is one HDR layers
+/// can reach.
+fn composited_source<'a>(
+    composite: Option<SubrectComposite<'a>>,
+    spix: &[u8],
+    sx: usize,
+    sy: usize,
+) -> Option<CompositedPixel<'a>> {
+    let (layers, (origin_x, origin_y)) = composite?;
+    let x = u32::try_from(sx.saturating_add(origin_x)).ok()?;
+    let y = u32::try_from(sy.saturating_add(origin_y)).ok()?;
+    if !layers.touches(x, y) {
+        return None;
+    }
+    Some(CompositedPixel {
+        layers,
+        first: spix.try_into().ok()?,
+        second: layers.second_at(x, y),
+        x,
+        y,
+    })
+}
+
+/// [`swizzle_subrect_rgba_to_xrgb8888_transformed`] for an SDR output while
+/// HDR layers are composited: pixels they reach get them tone-mapped.
+pub fn swizzle_subrect_rgba_to_xrgb8888_composited(
     source: SubrectSource<'_>,
     dst: &mut [u8],
     dst_pitch: usize,
     physical_size: (usize, usize),
     transform: settings_store::hardware::OutputTransform,
-    encoder: &crate::shell::color_pipeline::SdrToPqEncoder,
+    composite: Option<SubrectComposite<'_>>,
 ) {
     write_subrect_transformed(
         source,
@@ -3640,10 +3796,58 @@ pub fn encode_subrect_rgba_to_xbgr2101010_transformed(
         dst_pitch,
         physical_size,
         transform,
-        |dpix, spix| {
-            if let [r, g, b, _] = *spix {
-                dpix.copy_from_slice(&encoder.encode_xbgr2101010([r, g, b]).to_le_bytes());
+        |dpix, spix, sx, sy| {
+            let [sr, sg, sb] = match composited_source(composite, spix, sx, sy) {
+                Some(pixel) => crate::shell::hdr_surface::encode_srgb8(
+                    pixel.light(crate::shell::hdr_surface::CompositeTarget::Sdr),
+                ),
+                None => match spix {
+                    [r, g, b, _] => [*r, *g, *b],
+                    _ => return,
+                },
+            };
+            if let [db, dg, dr, dx] = dpix {
+                *db = sb;
+                *dg = sg;
+                *dr = sr;
+                *dx = 0xFF;
             }
+        },
+    );
+}
+
+/// [`swizzle_subrect_rgba_to_xrgb8888_transformed`] for an output driven in HDR: each sRGB
+/// pixel becomes one little-endian `XBGR2101010` word of PQ BT.2020 signal, and pixels HDR
+/// layers reach get them composited at full precision.
+pub fn encode_subrect_rgba_to_xbgr2101010_transformed(
+    source: SubrectSource<'_>,
+    dst: &mut [u8],
+    dst_pitch: usize,
+    physical_size: (usize, usize),
+    transform: settings_store::hardware::OutputTransform,
+    encoder: &crate::shell::color_pipeline::SdrToPqEncoder,
+    composite: Option<SubrectComposite<'_>>,
+) {
+    let target = crate::shell::hdr_surface::CompositeTarget::Pq {
+        sdr_white_nits: encoder.sdr_white_nits(),
+    };
+    write_subrect_transformed(
+        source,
+        dst,
+        dst_pitch,
+        physical_size,
+        transform,
+        |dpix, spix, sx, sy| {
+            let word = match composited_source(composite, spix, sx, sy) {
+                Some(pixel) => {
+                    crate::shell::hdr_surface::encode_pq_xbgr2101010(pixel.light(target))
+                }
+                None => match *spix {
+                    [r, g, b, _] => encoder.encode_xbgr2101010([r, g, b]),
+                    _ => return,
+                },
+            };
+            dpix.copy_from_slice(&word.to_le_bytes());
         },
     );
 }
@@ -3656,7 +3860,7 @@ fn write_subrect_transformed(
     dst_pitch: usize,
     (physical_w, physical_h): (usize, usize),
     transform: settings_store::hardware::OutputTransform,
-    write: impl Fn(&mut [u8], &[u8]),
+    write: impl Fn(&mut [u8], &[u8], usize, usize),
 ) {
     let SubrectSource {
         src_rgba,
@@ -3722,7 +3926,7 @@ fn write_subrect_transformed(
             let Some(spix) = src_rgba.get(s..s.saturating_add(4)) else {
                 continue;
             };
-            write(dpix, spix);
+            write(dpix, spix, sx, sy);
         }
     }
 }
