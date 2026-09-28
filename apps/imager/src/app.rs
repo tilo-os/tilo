@@ -5377,73 +5377,27 @@ impl Widget for ImagerApp {
         resources
     }
 
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(false);
-        };
-        let expected_kind = match operation {
-            crate::actions::ImagerOperation::Status
-            | crate::actions::ImagerOperation::ExportConfig => tilo_actions::OperationKind::View,
-            _ => tilo_actions::OperationKind::Effect,
-        };
-        if kind != expected_kind {
-            return Err("Imager operation kind does not match its contract".into());
-        }
-        let mut local_doc = doc.clone();
-        self.perform_operation(&operation, &mut local_doc)?;
-        Ok(true)
-    }
-
-    fn invoke_resource_operation_v2(
-        &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
         path: &ObjId,
-    ) -> Result<Option<tilo_actions::ActionOutput>, String> {
-        match crate::actions::decode_operation(type_id, payload)? {
-            Some(crate::actions::ImagerOperation::Status) => {
-                if kind != tilo_actions::OperationKind::View {
-                    return Err("Imager status is a view operation".into());
-                }
-                return Ok(Some(tilo_actions::ActionOutput {
-                    value: Some(serde_json::json!({
-                        "phase": self.progress.phase.key(),
-                        "progress": self.progress.overall(),
-                        "message": self.status,
-                    })),
-                    resources: Vec::new(),
-                }));
-            }
-            Some(crate::actions::ImagerOperation::ExportConfig) => {
-                if kind != tilo_actions::OperationKind::View {
-                    return Err("Imager config export is a view operation".into());
-                }
-                if self.source.is_none() || self.target().is_none() {
-                    return Err("Select an image source and target drive first".into());
-                }
-                let text = self
-                    .profile
-                    .to_headless_config(self.source.as_ref(), self.target());
-                self.export_dialog.show(text.clone());
-                self.dirty = true;
-                return Ok(Some(tilo_actions::ActionOutput {
-                    value: Some(serde_json::Value::String(text)),
-                    resources: Vec::new(),
-                }));
-            }
-            _ => {}
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        let Some(request) = op.unscoped() else {
+            return ui::widget::start_in_children(self, op, doc, path);
+        };
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
         }
-        self.invoke_resource_operation(kind, type_id, payload, doc, path)
-            .map(|handled| handled.then(tilo_actions::ActionOutput::default))
+        Ok(self
+            .answer_resource_operation_v2(
+                request.kind,
+                request.type_id,
+                request.payload,
+                doc,
+                path,
+            )?
+            .map(ui::widget::ResourceOperationStart::Completed))
     }
 
     /// The framework host drains the undo boundary an on-screen profile control
@@ -5635,6 +5589,77 @@ impl Widget for ImagerApp {
         _permissions: &PermissionContext,
     ) {
         self.draw(scene, transform, text_renderer, theme, presence);
+    }
+}
+
+impl ImagerApp {
+    fn answer_resource_operation(
+        &mut self,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
+        };
+        let expected_kind = match operation {
+            crate::actions::ImagerOperation::Status
+            | crate::actions::ImagerOperation::ExportConfig => tilo_actions::OperationKind::View,
+            _ => tilo_actions::OperationKind::Effect,
+        };
+        if kind != expected_kind {
+            return Err("Imager operation kind does not match its contract".into());
+        }
+        let mut local_doc = doc.clone();
+        self.perform_operation(&operation, &mut local_doc)?;
+        Ok(true)
+    }
+
+    fn answer_resource_operation_v2(
+        &mut self,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<tilo_actions::ActionOutput>, String> {
+        match crate::actions::decode_operation(type_id, payload)? {
+            Some(crate::actions::ImagerOperation::Status) => {
+                if kind != tilo_actions::OperationKind::View {
+                    return Err("Imager status is a view operation".into());
+                }
+                return Ok(Some(tilo_actions::ActionOutput {
+                    value: Some(serde_json::json!({
+                        "phase": self.progress.phase.key(),
+                        "progress": self.progress.overall(),
+                        "message": self.status,
+                    })),
+                    resources: Vec::new(),
+                }));
+            }
+            Some(crate::actions::ImagerOperation::ExportConfig) => {
+                if kind != tilo_actions::OperationKind::View {
+                    return Err("Imager config export is a view operation".into());
+                }
+                if self.source.is_none() || self.target().is_none() {
+                    return Err("Select an image source and target drive first".into());
+                }
+                let text = self
+                    .profile
+                    .to_headless_config(self.source.as_ref(), self.target());
+                self.export_dialog.show(text.clone());
+                self.dirty = true;
+                return Ok(Some(tilo_actions::ActionOutput {
+                    value: Some(serde_json::Value::String(text)),
+                    resources: Vec::new(),
+                }));
+            }
+            _ => {}
+        }
+        self.answer_resource_operation(kind, type_id, payload, doc, path)
+            .map(|handled| handled.then(tilo_actions::ActionOutput::default))
     }
 }
 
