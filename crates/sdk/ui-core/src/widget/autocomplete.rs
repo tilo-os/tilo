@@ -31,6 +31,7 @@ use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::icons::{Icon, LUCIDE_DEFAULT_STROKE_PX, draw_icon};
+use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
 use crate::text_metrics::renderer_type_size;
 use crate::text_render::TextRenderer;
@@ -481,21 +482,15 @@ impl Autocomplete {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "an internal per-row painting step; each argument is independently needed by the row and bundling them would only hide that"
-    )]
-    fn draw_row(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        tokens: &crate::tokens::Tokens,
-        accent: vello::peniko::Color,
-        row: Rect,
-        i: usize,
-        s: &Suggestion,
-    ) {
+    fn draw_row(&self, ctx: &mut PaintCtx<'_>, row: Rect, i: usize, s: &Suggestion) {
+        let PaintCtx {
+            scene,
+            transform,
+            text: text_renderer,
+            theme,
+        } = ctx.reborrow();
+        let tokens = &theme.tokens;
+        let accent = tokens.colors.accent.stops[ACCENT_PRIMARY_IDX];
         let armed = self.highlight == Some(i);
         let hovered = self.hover == Some(i) && !armed;
         Self::draw_row_background(scene, transform, tokens, accent, row, armed, hovered);
@@ -715,7 +710,6 @@ impl Widget for Autocomplete {
             return;
         };
         let tokens = &theme.tokens;
-        let accent = tokens.colors.accent.stops[ACCENT_PRIMARY_IDX];
         let shape = RoundedRect::from_rect(panel, f64::from(tokens.radii.md));
         // The suggestion list is a Panel (HIG §9.1 / §9.5): panel ground and
         // panel edge, like the toolkit's other popovers.
@@ -752,9 +746,10 @@ impl Widget for Autocomplete {
             }
             return;
         }
+        let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
         for (i, s) in self.suggestions.iter().enumerate().take(self.max_visible) {
             let row = self.row_rect(panel, i);
-            self.draw_row(scene, transform, text_renderer, tokens, accent, row, i, s);
+            self.draw_row(&mut ctx, row, i, s);
         }
     }
 

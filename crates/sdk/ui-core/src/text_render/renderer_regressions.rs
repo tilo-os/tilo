@@ -561,13 +561,17 @@ fn clipped_rich_text_preserves_pixels_and_culls_only_invisible_glyphs() {
             assert!(
                 !renderer.glyph_batch_outside(
                     &font,
-                    first.font_id,
-                    run.glyphs,
-                    first.font_size,
-                    run.line_y,
+                    &GlyphBatch {
+                        face_id: first.font_id,
+                        glyphs: run.glyphs,
+                        size: first.font_size,
+                        color: Color::WHITE,
+                        line_y: run.line_y,
+                        variations: &[],
+                    },
                     &[],
                     Affine::translate((10_000.0, 10_000.0)),
-                    Rect::new(0.0, 0.0, 10.0, 10.0)
+                    Rect::new(0.0, 0.0, 10.0, 10.0),
                 ),
                 "uncertain or non-outline ink must keep drawing"
             );
@@ -762,10 +766,14 @@ fn the_clipped_ink_cache_groups_by_font_instance_and_stays_bounded() {
             let size = 10.0 + index as f32 / 128.0;
             let outside = renderer.glyph_batch_outside(
                 &font,
-                glyph.font_id,
-                std::slice::from_ref(&glyph),
-                size,
-                0.0,
+                &GlyphBatch {
+                    face_id: glyph.font_id,
+                    glyphs: std::slice::from_ref(&glyph),
+                    size,
+                    color: Color::WHITE,
+                    line_y: 0.0,
+                    variations: &[],
+                },
                 &[],
                 Affine::IDENTITY,
                 Rect::new(0.0, 1000.0, 400.0, 1100.0),
@@ -777,10 +785,14 @@ fn the_clipped_ink_cache_groups_by_font_instance_and_stays_bounded() {
             assert!(renderer.ink_bounds.len() <= count);
             assert!(renderer.glyph_batch_outside(
                 &font,
-                glyph.font_id,
-                std::slice::from_ref(&glyph),
-                size,
-                0.0,
+                &GlyphBatch {
+                    face_id: glyph.font_id,
+                    glyphs: std::slice::from_ref(&glyph),
+                    size,
+                    color: Color::WHITE,
+                    line_y: 0.0,
+                    variations: &[],
+                },
                 &[],
                 Affine::IDENTITY,
                 Rect::new(0.0, 1000.0, 400.0, 1100.0),

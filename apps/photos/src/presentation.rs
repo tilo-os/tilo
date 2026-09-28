@@ -9,6 +9,7 @@ use ui::history_mode::{
     FrozenPreviewAssets, HistoryPreview, PreviewAccessibility, PreviewNavigation, PreviewView,
 };
 use ui::icons::{Icon, draw_icon};
+use ui::paint::PaintCtx;
 use ui::text_render::TextWeight;
 use ui::widget::image_viewer::ImageViewport;
 use ui::{TextRenderer, Theme};
@@ -48,15 +49,8 @@ pub(crate) fn control_face(ground: Color) -> Color {
     ui::tokens::colors::over(ground, wash, wash.components[3])
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "pure shared library card painter"
-)]
 pub(crate) fn paint_card(
-    scene: &mut Scene,
-    transform: Affine,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
+    ctx: &mut PaintCtx<'_>,
     card: Rect,
     preview: Rect,
     image: Option<&ImageData>,
@@ -64,6 +58,7 @@ pub(crate) fn paint_card(
     metadata: &str,
     hovered: bool,
 ) {
+    let (scene, transform, theme) = (&mut *ctx.scene, ctx.transform, ctx.theme);
     let large_text = theme.text_scale > 1.25;
     let card_w = card.width();
     let x = card.x0;
@@ -147,7 +142,7 @@ pub(crate) fn paint_card(
             .floor()
             .max(8.0) as usize,
     );
-    text_renderer.draw_text_weighted(
+    ctx.text.draw_text_weighted(
         scene,
         &display_name,
         13.0,
@@ -163,7 +158,7 @@ pub(crate) fn paint_card(
                 .floor()
                 .max(12.0) as usize,
         );
-        text_renderer.draw_text_weighted(
+        ctx.text.draw_text_weighted(
             scene,
             &metadata,
             11.0,
@@ -496,7 +491,13 @@ impl HistoryPreview for PhotoPresentation {
                     )
                 };
                 paint_card(
-                    scene, transform, tr, theme, *card, *preview, image, &name, &metadata, false,
+                    &mut PaintCtx::new(scene, transform, tr, theme),
+                    *card,
+                    *preview,
+                    image,
+                    &name,
+                    &metadata,
+                    false,
                 );
             }
             scene.pop_layer();

@@ -270,10 +270,6 @@ impl VideoCompositor {
     /// Never in practice: the pipelines, accumulation and uniform buffer it
     /// reads are all built by the accumulation pass it runs first.
     #[expect(
-        clippy::too_many_arguments,
-        reason = "the GPU handles, the target and the timeline instant are independent inputs"
-    )]
-    #[expect(
         clippy::expect_used,
         reason = "`accumulate` builds every resource read here before returning"
     )]
@@ -368,10 +364,6 @@ impl VideoCompositor {
     ///
     /// When the GPU fails to map the readback buffer — the frame cannot be
     /// read at all then.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the GPU handles, the timeline instant and the output size are independent inputs"
-    )]
     #[expect(
         clippy::expect_used,
         reason = "the accumulation and readback buffer are built just above; a failed map is fatal"

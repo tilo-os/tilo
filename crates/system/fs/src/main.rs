@@ -1395,14 +1395,16 @@ async fn replica_workspace(
     record_services.mutation_sink = Some(materializer.clone());
     record_services.materializer = Some(Arc::clone(&materializer));
     let workspace = Workspace::join_with_records(
-        endpoint.clone(),
-        lookup,
-        store,
-        Arc::clone(&hydrator),
-        Arc::clone(&namespace),
+        sync::SyncNode {
+            endpoint: endpoint.clone(),
+            lookup,
+            store,
+            hydrator: Arc::clone(&hydrator),
+            namespace: Arc::clone(&namespace),
+            identity: transport_identity,
+            policy: Some(acl),
+        },
         ticket,
-        transport_identity,
-        Some(acl),
         record_services,
     )
     .await?;
@@ -1541,10 +1543,6 @@ fn replica_namespace_fingerprint(namespace: &Arc<Mutex<Namespace>>) -> Vec<autom
     clippy::too_many_lines,
     reason = "Serving assembles certified transport, ACLs, durable record services, namespace recovery, and mount task lifetimes in one ordered lifecycle."
 )] // Linear CLI assembly keeps resource lifetimes explicit.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "each argument is one independent command-line option of `fs serve`"
-)]
 async fn serve(
     mount_point: PathBuf,
     cache_dir: Option<PathBuf>,
@@ -1823,14 +1821,16 @@ async fn serve(
     let (workspace, ticket, joined_remote) = match (record_services, remote_ticket) {
         (Some(records), Some(ticket)) => (
             Workspace::join_with_records(
-                endpoint.clone(),
-                lookup,
-                store.clone(),
-                hydrator.clone(),
-                namespace.clone(),
+                sync::SyncNode {
+                    endpoint: endpoint.clone(),
+                    lookup,
+                    store: store.clone(),
+                    hydrator: hydrator.clone(),
+                    namespace: namespace.clone(),
+                    identity: transport_identity,
+                    policy: workspace_args,
+                },
                 ticket.clone(),
-                transport_identity,
-                workspace_args,
                 records,
             )
             .await?,
@@ -1969,27 +1969,32 @@ async fn serve(
         .map(|s| spawn_control(&s, namespace.clone(), workspace.sync.clone(), acl.clone()));
     let persist = np.clone().map(|p| spawn_persist(namespace.clone(), p));
     let mount_outcome = run_mount(
-        workspace_id,
-        mount_point,
-        namespace.clone(),
-        hydrator,
-        cache_dir.clone(),
-        Some(workspace.sync.clone()),
-        acl,
-        thumb_dir,
-        availability,
-        eviction_queue,
-        share_authority,
-        history.map(|history| (history, history_actor)),
-        record_publisher,
-        replacement_transactions,
-        share_socket.clone().filter(|_| share_task.is_some()),
-        allow_legacy_record_migration && !initialized_record_authority,
-        storage_sock,
-        false,
-        false,
-        managed_service.then_some(rebind_rx),
-        Some((data_plane, *history_actor.device.as_bytes())),
+        MountConfig {
+            checked_history_workspace: workspace_id,
+            mount_point,
+            predictive_cache_root: cache_dir.clone(),
+            thumb_dir,
+            share_control_path: share_socket.clone().filter(|_| share_task.is_some()),
+            allow_legacy_record_migration: allow_legacy_record_migration
+                && !initialized_record_authority,
+            storage_sock,
+            read_only: false,
+            signal_recipient_ready: false,
+            data_plane: Some((data_plane, *history_actor.device.as_bytes())),
+        },
+        MountServices {
+            namespace: namespace.clone(),
+            hydrator,
+            sync: Some(workspace.sync.clone()),
+            acl,
+            availability,
+            eviction_queue,
+            share_authority,
+            history: history.map(|history| (history, history_actor)),
+            record_publisher,
+            replacement_transactions,
+            rebind: managed_service.then_some(rebind_rx),
+        },
     )
     .await?;
     if let Some(p) = &np {
@@ -2050,10 +2055,6 @@ fn initialize_owner_record_authority(
     clippy::too_many_lines,
     reason = "Joining a workspace keeps ticket validation, certified transport, record recovery, synchronization, mounting, and final persistence in order."
 )] // Linear CLI assembly keeps resource lifetimes explicit.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "each argument is one independent command-line option of `fs mount`"
-)]
 async fn mount(
     mount_point: PathBuf,
     ticket: String,
@@ -2169,14 +2170,16 @@ async fn mount(
     let workspace = match record_services {
         Some(records) => {
             Workspace::join_with_records(
-                endpoint.clone(),
-                lookup,
-                store.clone(),
-                hydrator.clone(),
-                namespace.clone(),
+                sync::SyncNode {
+                    endpoint: endpoint.clone(),
+                    lookup,
+                    store: store.clone(),
+                    hydrator: hydrator.clone(),
+                    namespace: namespace.clone(),
+                    identity: transport_identity,
+                    policy: workspace_args,
+                },
                 ticket,
-                transport_identity,
-                workspace_args,
                 records,
             )
             .await?
@@ -2217,27 +2220,31 @@ async fn mount(
         .map(|s| spawn_control(&s, namespace.clone(), workspace.sync.clone(), acl.clone()));
     let persist = np.clone().map(|p| spawn_persist(namespace.clone(), p));
     run_mount(
-        workspace_id,
-        mount_point,
-        namespace.clone(),
-        hydrator,
-        cache_dir,
-        Some(workspace.sync.clone()),
-        acl,
-        thumb_dir,
-        availability,
-        eviction_queue,
-        share_authority,
-        history.map(|history| (history, history_actor)),
-        record_publisher,
-        replacement_transactions,
-        None,
-        false,
-        storage_sock,
-        false,
-        false,
-        None,
-        Some((data_plane, *history_actor.device.as_bytes())),
+        MountConfig {
+            checked_history_workspace: workspace_id,
+            mount_point,
+            predictive_cache_root: cache_dir,
+            thumb_dir,
+            share_control_path: None,
+            allow_legacy_record_migration: false,
+            storage_sock,
+            read_only: false,
+            signal_recipient_ready: false,
+            data_plane: Some((data_plane, *history_actor.device.as_bytes())),
+        },
+        MountServices {
+            namespace: namespace.clone(),
+            hydrator,
+            sync: Some(workspace.sync.clone()),
+            acl,
+            availability,
+            eviction_queue,
+            share_authority,
+            history: history.map(|history| (history, history_actor)),
+            record_publisher,
+            replacement_transactions,
+            rebind: None,
+        },
     )
     .await?;
     if let Some(p) = &np {
@@ -2508,27 +2515,31 @@ async fn mount_share(
     let mut recipient_acl = fs::WorkspaceAcl::new();
     recipient_acl.grant_read(recipient_identity, "/");
     run_mount(
-        credential.invite().workspace_id,
-        mount_point,
-        Arc::clone(&namespace),
-        hydrator,
-        Some(cache_dir.clone()),
-        None,
-        Some((AclHandle::new(recipient_acl), recipient_identity)),
-        thumb_dir,
-        availability,
-        eviction_queue,
-        None,
-        Some((history, actor)),
-        None,
-        None,
-        None,
-        false,
-        None,
-        false,
-        true,
-        None,
-        None,
+        MountConfig {
+            checked_history_workspace: credential.invite().workspace_id,
+            mount_point,
+            predictive_cache_root: Some(cache_dir.clone()),
+            thumb_dir,
+            share_control_path: None,
+            allow_legacy_record_migration: false,
+            storage_sock: None,
+            read_only: false,
+            signal_recipient_ready: true,
+            data_plane: None,
+        },
+        MountServices {
+            namespace: Arc::clone(&namespace),
+            hydrator,
+            sync: None,
+            acl: Some((AclHandle::new(recipient_acl), recipient_identity)),
+            availability,
+            eviction_queue,
+            share_authority: None,
+            history: Some((history, actor)),
+            record_publisher: None,
+            replacement_transactions: None,
+            rebind: None,
+        },
     )
     .await?;
     poll_task.abort();
@@ -3274,35 +3285,69 @@ fn fuse_worker_threads() -> usize {
         })
 }
 
-/// Mount the FUSE filesystem and run until interrupted (or the mount exits).
-#[allow(
-    clippy::too_many_arguments,
-    clippy::too_many_lines,
-    reason = "Mount setup wires independent sync, ACL, storage, history, sharing, recovery, and readiness services before supervising FUSE shutdown."
-)] // CLI assembly mirrors independent mount options.
-async fn run_mount(
+/// Where and how [`run_mount`] mounts a workspace: the workspace its history
+/// is checked against, the mount point and cache root, optional thumbnail,
+/// share-control and storage-accounting endpoints, and the data-plane choice.
+struct MountConfig {
     checked_history_workspace: uuid::Uuid,
     mount_point: PathBuf,
+    predictive_cache_root: Option<PathBuf>,
+    thumb_dir: Option<PathBuf>,
+    share_control_path: Option<PathBuf>,
+    allow_legacy_record_migration: bool,
+    storage_sock: Option<PathBuf>,
+    read_only: bool,
+    signal_recipient_ready: bool,
+    data_plane: Option<(DataPlaneArgs, [u8; 32])>,
+}
+
+/// The live services [`run_mount`] attaches to the filesystem before it goes
+/// live, plus the receiver that asks a managed mount to rebind.
+struct MountServices {
     namespace: Arc<Mutex<Namespace>>,
     hydrator: Arc<Hydrator>,
-    predictive_cache_root: Option<PathBuf>,
     sync: Option<Arc<SyncHandle>>,
     acl: Option<(AclHandle, IdentityKey)>,
-    thumb_dir: Option<PathBuf>,
     availability: Option<Arc<Mutex<fs::AvailabilityRegistry>>>,
     eviction_queue: Option<Arc<tokio::sync::Mutex<fs::eviction::EvictionQueue>>>,
     share_authority: Option<Arc<ShareAuthority>>,
     history: Option<(Arc<FileHistoryStore>, collab_types::FileActor)>,
     record_publisher: Option<Arc<RecordPublisher>>,
     replacement_transactions: Option<(Arc<Mutex<fs::RecordTransactionJournal>>, PathBuf)>,
-    share_control_path: Option<PathBuf>,
-    allow_legacy_record_migration: bool,
-    storage_sock: Option<PathBuf>,
-    read_only: bool,
-    signal_recipient_ready: bool,
-    mut rebind: Option<tokio::sync::mpsc::UnboundedReceiver<()>>,
-    data_plane: Option<(DataPlaneArgs, [u8; 32])>,
-) -> Result<MountOutcome> {
+    rebind: Option<tokio::sync::mpsc::UnboundedReceiver<()>>,
+}
+
+/// Mount the FUSE filesystem and run until interrupted (or the mount exits).
+#[allow(
+    clippy::too_many_lines,
+    reason = "Mount setup wires independent sync, ACL, storage, history, sharing, recovery, and readiness services before supervising FUSE shutdown."
+)]
+async fn run_mount(config: MountConfig, services: MountServices) -> Result<MountOutcome> {
+    let MountConfig {
+        checked_history_workspace,
+        mount_point,
+        predictive_cache_root,
+        thumb_dir,
+        share_control_path,
+        allow_legacy_record_migration,
+        storage_sock,
+        read_only,
+        signal_recipient_ready,
+        data_plane,
+    } = config;
+    let MountServices {
+        namespace,
+        hydrator,
+        sync,
+        acl,
+        availability,
+        eviction_queue,
+        share_authority,
+        history,
+        record_publisher,
+        replacement_transactions,
+        mut rebind,
+    } = services;
     if !mount_point.exists() {
         std::fs::create_dir_all(&mount_point)?;
     }

@@ -1,4 +1,5 @@
 use super::*;
+use crate::delivery_http::revalidation::RequestEvidence;
 use crate::delivery_http::{HttpSessions, TestClock, tests::Fixture};
 use crate::https::{
     BufferedRequest, Ingress,
@@ -116,9 +117,11 @@ fn send_state(
         OwnerDataOperation::State {
             input_len: items[0].canonical.len(),
         },
-        &proof,
-        &request,
-        &original,
+        RequestEvidence {
+            proof: &proof,
+            exact: &request,
+            original: &original,
+        },
         &TestClock::new(f.now),
     )?;
     let response = admit_state_core(
@@ -253,9 +256,11 @@ fn callback_ack_uses_real_cursor_and_persists_once_without_relocking_current() {
                 &f.current,
                 &budget,
                 OwnerDataOperation::Ack,
-                &proof,
-                &request,
-                &original,
+                RequestEvidence {
+                    proof: &proof,
+                    exact: &request,
+                    original: &original,
+                },
                 &TestClock::new(f.now),
             )
             .unwrap();
@@ -338,9 +343,11 @@ fn poll(
         &f.current,
         budget,
         OwnerDataOperation::Replay,
-        &proof,
-        &request,
-        &original,
+        RequestEvidence {
+            proof: &proof,
+            exact: &request,
+            original: &original,
+        },
         &TestClock::new(f.now),
     )?;
     replay_core(
@@ -546,9 +553,11 @@ fn every_batch_item_observes_the_current_view_after_earlier_receipt_commit() {
             OwnerDataOperation::State {
                 input_len: first.len(),
             },
-            &proof,
-            &request,
-            &original,
+            RequestEvidence {
+                proof: &proof,
+                exact: &request,
+                original: &original,
+            },
             &TestClock::new(f.now),
         )
         .unwrap();
@@ -839,9 +848,11 @@ fn rotated_store_cursor_ack_is_a_no_op_and_its_poll_answers_store_rotated() {
             &f.current,
             &budget,
             OwnerDataOperation::Ack,
-            &proof,
-            &request,
-            &original,
+            RequestEvidence {
+                proof: &proof,
+                exact: &request,
+                original: &original,
+            },
             &TestClock::new(f.now),
         )
         .unwrap();
@@ -918,9 +929,11 @@ fn stops_between_items(cause: BetweenItems) {
             OwnerDataOperation::State {
                 input_len: first.len(),
             },
-            &proof,
-            &request,
-            &original,
+            RequestEvidence {
+                proof: &proof,
+                exact: &request,
+                original: &original,
+            },
             &clock,
         )
         .unwrap();
@@ -1018,9 +1031,11 @@ fn replay_page_revalidates_expiry_after_original_proof_admission() {
             &f.current,
             &budget,
             OwnerDataOperation::Replay,
-            &proof,
-            &request,
-            &original,
+            RequestEvidence {
+                proof: &proof,
+                exact: &request,
+                original: &original,
+            },
             &clock,
         )
         .unwrap();
@@ -1086,9 +1101,11 @@ fn native_batch_revalidates_real_governed_host_revocation_before_next_item() {
             OwnerDataOperation::State {
                 input_len: governance.len(),
             },
-            &proof,
-            &request,
-            &original,
+            RequestEvidence {
+                proof: &proof,
+                exact: &request,
+                original: &original,
+            },
             &clock,
         )
         .unwrap();
@@ -1203,9 +1220,11 @@ fn held_original_poll_resumes_new_native_group_without_nonce_readmission() {
                 &f.current,
                 &budget,
                 OwnerDataOperation::Replay,
-                &proof,
-                &request,
-                &original,
+                RequestEvidence {
+                    proof: &proof,
+                    exact: &request,
+                    original: &original,
+                },
                 &clock,
             )
             .unwrap();
@@ -1361,9 +1380,11 @@ fn journaled_ack_is_a_durable_side_record_recovered_after_crash() {
                     &f.current,
                     &budget,
                     OwnerDataOperation::Ack,
-                    &proof,
-                    &request,
-                    &original,
+                    RequestEvidence {
+                        proof: &proof,
+                        exact: &request,
+                        original: &original,
+                    },
                     &TestClock::new(f.now),
                 )
                 .unwrap();
@@ -1467,9 +1488,11 @@ fn send_batch(
         &f.current,
         budget,
         OwnerDataOperation::State { input_len: total },
-        &proof,
-        &request,
-        &original,
+        RequestEvidence {
+            proof: &proof,
+            exact: &request,
+            original: &original,
+        },
         &TestClock::new(f.now),
     )?;
     let response = crate::owner::delivery::early_forward::scoped(sink, || {
@@ -1997,9 +2020,11 @@ fn long_session_state_and_replay_turns_stay_within_measured_reservations() {
                 OwnerDataOperation::State {
                     input_len: canonical.len(),
                 },
-                &proof,
-                &request,
-                &original,
+                RequestEvidence {
+                    proof: &proof,
+                    exact: &request,
+                    original: &original,
+                },
                 &TestClock::new(f.now),
             )
             .unwrap_or_else(|e| panic!("write {index} refused: {e:?}"));
@@ -2043,9 +2068,11 @@ fn long_session_state_and_replay_turns_stay_within_measured_reservations() {
                 &f.current,
                 &budget,
                 OwnerDataOperation::Replay,
-                &proof,
-                &request,
-                &original,
+                RequestEvidence {
+                    proof: &proof,
+                    exact: &request,
+                    original: &original,
+                },
                 &TestClock::new(f.now),
             )
             .unwrap_or_else(|e| panic!("poll {index} refused: {e:?}"));
@@ -2166,9 +2193,11 @@ fn chained_poll_floor_serves_after_previous_page_and_never_before_cursor() {
                 &f.current,
                 &budget,
                 OwnerDataOperation::Replay,
-                &proof,
-                &request,
-                &original,
+                RequestEvidence {
+                    proof: &proof,
+                    exact: &request,
+                    original: &original,
+                },
                 &TestClock::new(f.now),
             )
             .unwrap();
@@ -2208,9 +2237,11 @@ fn chained_poll_floor_serves_after_previous_page_and_never_before_cursor() {
                     &f.current,
                     &budget,
                     OwnerDataOperation::Replay,
-                    &proof,
-                    &request,
-                    &original,
+                    RequestEvidence {
+                        proof: &proof,
+                        exact: &request,
+                        original: &original,
+                    },
                     &TestClock::new(f.now),
                 )
                 .unwrap();

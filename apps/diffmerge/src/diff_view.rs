@@ -22,7 +22,7 @@ use ui::widget::{SegmentedFace, ToggleGroup, Widget};
 
 use crate::highlight;
 use crate::model::{DiffModel, RowKind};
-use ui::paint::with_alpha;
+use ui::paint::{PaintCtx, with_alpha};
 use ui::widget::code_editor::Span;
 
 /// Minimum row pitch; the measured line height of `FONT_SIZE` wins when the
@@ -679,12 +679,8 @@ impl DiffView {
             draw_gutter_number(scene, transform, tr, theme, r.x0, y, number, m);
             if let Some(text) = text {
                 highlight::draw_line(
-                    scene,
-                    transform,
-                    tr,
-                    theme,
-                    r.x0 + m.gutter_w + PAD_X,
-                    y + m.text_dy,
+                    &mut PaintCtx::new(scene, transform, tr, theme),
+                    Point::new(r.x0 + m.gutter_w + PAD_X, y + m.text_dy),
                     text,
                     line_spans(spans, number),
                     FONT_SIZE,
@@ -775,12 +771,8 @@ impl DiffView {
             // Line text, syntax-highlighted.
             if let Some(text) = &row.left {
                 highlight::draw_line(
-                    scene,
-                    transform,
-                    tr,
-                    theme,
-                    left_col.x0 + m.gutter_w + PAD_X,
-                    y + m.text_dy,
+                    &mut PaintCtx::new(scene, transform, tr, theme),
+                    Point::new(left_col.x0 + m.gutter_w + PAD_X, y + m.text_dy),
                     text,
                     line_spans(&self.left_spans, row.left_no),
                     FONT_SIZE,
@@ -788,12 +780,8 @@ impl DiffView {
             }
             if let Some(text) = &row.right {
                 highlight::draw_line(
-                    scene,
-                    transform,
-                    tr,
-                    theme,
-                    right_col.x0 + m.gutter_w + PAD_X,
-                    y + m.text_dy,
+                    &mut PaintCtx::new(scene, transform, tr, theme),
+                    Point::new(right_col.x0 + m.gutter_w + PAD_X, y + m.text_dy),
                     text,
                     line_spans(&self.right_spans, row.right_no),
                     FONT_SIZE,
@@ -899,10 +887,6 @@ impl DiffView {
 }
 
 /// Draw a column header bar with its label.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "column headers combine paint context with column bounds, label and measured header height"
-)]
 fn draw_header(
     scene: &mut Scene,
     transform: Affine,
@@ -943,10 +927,6 @@ fn draw_header(
     }
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "gutter rows combine paint context and position with an optional line number and measured row/gutter dimensions"
-)]
 #[expect(
     clippy::many_single_char_names,
     reason = "c/m/y/r/h follow this file's graphics convention (colour tokens, metrics, position, rect, hunk)"

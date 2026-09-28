@@ -2773,10 +2773,6 @@ impl DocMut<'_> {
     }
 
     /// Mark characters `[start, end)` of one reply block.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "a reply block is addressed by comment, reply and block; a mark by range, name and value"
-    )]
     pub fn add_comment_reply_mark(
         &mut self,
         comment_id: &str,

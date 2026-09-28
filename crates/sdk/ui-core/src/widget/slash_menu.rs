@@ -41,9 +41,9 @@ use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::color_compat::ColorCompat;
+use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
-use crate::query_text::{QueryComposition, QueryEventChange};
+use crate::query_text::{QueryComposition, QueryEventChange, QueryInk, QueryView};
 use crate::text_metrics::renderer_type_size;
 use crate::text_render::{TextRenderer, TextStyle};
 use crate::text_selection::Selection;
@@ -568,12 +568,13 @@ impl SlashMenu {
         );
         Self::draw_chrome(scene, transform, theme, rect, filter_rect);
         self.filter_composition.draw(
-            scene,
-            transform,
-            text_renderer,
-            &self.filter,
-            &self.filter_selection,
-            "Filter blocks…",
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
+            QueryView {
+                text: &self.filter,
+                selection: &self.filter_selection,
+                placeholder: "Filter blocks…",
+                show_caret: true,
+            },
             Rect::new(
                 filter_rect.x0 + 6.0,
                 filter_rect.y0,
@@ -581,11 +582,11 @@ impl SlashMenu {
                 filter_rect.y1,
             ),
             &TextStyle::new(tokens.typography.scale.sm),
-            tokens.colors.text_primary,
-            tokens.colors.text_dim,
-            tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX].with_alpha_factor(0.3),
-            tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX],
-            true,
+            QueryInk::accented(
+                tokens.colors.text_primary,
+                tokens.colors.text_dim,
+                tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX],
+            ),
         );
 
         let font_size = renderer_type_size(text_renderer, tokens.typography.scale.sm);

@@ -1598,30 +1598,21 @@ impl FilePicker {
             self.draw_filter_chip(scene, transform, text_renderer, theme, row_size);
         }
 
-        draw_button(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            self.cancel_rect,
-            "Cancel",
-            self.hover_button == Some(0),
-            false,
-            self.has_keyboard_focus && self.focus == Some(PickerFocus::Cancel),
-            false,
-        );
-        draw_button(
-            scene,
-            transform,
+        let cancel = footer_button(text_renderer, theme, self.cancel_rect, "Cancel", false)
+            .hovered(self.hover_button == Some(0))
+            .focused(self.has_keyboard_focus && self.focus == Some(PickerFocus::Cancel));
+        crate::widget::Button::paint(scene, transform, text_renderer, theme, &cancel);
+        let confirm = footer_button(
             text_renderer,
             theme,
             self.open_rect,
             self.confirm_label(),
-            self.hover_button == Some(1),
             true,
-            self.has_keyboard_focus && self.focus == Some(PickerFocus::Confirm),
-            !self.can_commit_open(),
-        );
+        )
+        .hovered(self.hover_button == Some(1))
+        .focused(self.has_keyboard_focus && self.focus == Some(PickerFocus::Confirm))
+        .disabled(!self.can_commit_open());
+        crate::widget::Button::paint(scene, transform, text_renderer, theme, &confirm);
     }
 
     /// Save-mode filename text field. Split out of `draw_footer` to keep
@@ -1967,40 +1958,31 @@ impl FilePicker {
 // (scene + transform + text_renderer + theme, plus this draw's own
 // content); every parameter is independently load-bearing.
 #[allow(
-    clippy::too_many_arguments,
     clippy::fn_params_excessive_bools,
     reason = "immediate-mode paint helper mirrors the canonical ButtonFace state"
 )]
-fn draw_button(
-    scene: &mut Scene,
-    transform: Affine,
-    text_renderer: &mut TextRenderer,
+/// A footer button in the canonical immediate-mode button face, so the
+/// picker footer stays visually locked to the retained widget and every
+/// converted app. Callers add the hover, focus and disabled state.
+fn footer_button<'a>(
+    text_renderer: &TextRenderer,
     theme: &Theme,
     rect: Rect,
-    label: &str,
-    is_hover: bool,
+    label: &'a str,
     is_primary: bool,
-    is_focused: bool,
-    is_disabled: bool,
-) {
-    // Share the canonical immediate-mode button face so the picker footer
-    // stays visually locked to the retained widget and every converted app.
-    let face = crate::widget::ButtonFace::new(rect, label)
+) -> crate::widget::ButtonFace<'a> {
+    crate::widget::ButtonFace::new(rect, label)
         .radius(f64::from(theme.tokens.radii.md))
         .text_size(renderer_type_size(
             text_renderer,
             theme.tokens.typography.scale.sm,
         ))
         .weight(crate::text_render::TextWeight::Regular)
-        .hovered(is_hover)
-        .focused(is_focused)
-        .disabled(is_disabled)
         .style(if is_primary {
             crate::widget::ButtonStyle::Primary
         } else {
             crate::widget::ButtonStyle::Neutral
-        });
-    crate::widget::Button::paint(scene, transform, text_renderer, theme, &face);
+        })
 }
 
 #[cfg(test)]

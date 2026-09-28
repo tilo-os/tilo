@@ -27,6 +27,7 @@ use vello::peniko::Color;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -499,10 +500,6 @@ impl RecoveryVerifyScreen {
 
     /// The grid: every cell numbered, twenty-one words read-only and the
     /// three challenged ones as editable fields in the same cells.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one grid painter receives the shared paint context plus the plan it paints"
-    )]
     fn draw_word_grid(
         &mut self,
         scene: &mut Scene,
@@ -524,10 +521,7 @@ impl RecoveryVerifyScreen {
             let (ordinal, cell) = grid.cell(i, theme);
             let pos1 = i.saturating_add(1);
             paint_text(
-                scene,
-                transform,
-                text_renderer,
-                theme,
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 ordinal,
                 &format!("{pos1}."),
                 Role::Label,
@@ -539,10 +533,7 @@ impl RecoveryVerifyScreen {
                     self.draw_blank_slot(scene, transform, text_renderer, theme, presence, slot);
                 }
                 None => paint_text(
-                    scene,
-                    transform,
-                    text_renderer,
-                    theme,
+                    &mut PaintCtx::new(scene, transform, text_renderer, theme),
                     cell,
                     words.get(i).map_or("", String::as_str),
                     Role::Value,
@@ -732,10 +723,7 @@ impl Widget for RecoveryVerifyScreen {
         sheet.paint_frame(scene, transform, text_renderer, theme, &spec);
         sheet.clip_body(scene, transform);
         paint_text(
-            scene,
-            transform,
-            text_renderer,
-            theme,
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
             plan.explanation,
             EXPLANATION,
             Role::Body,
@@ -753,10 +741,7 @@ impl Widget for RecoveryVerifyScreen {
         );
         if let Some(rect) = plan.error {
             paint_text(
-                scene,
-                transform,
-                text_renderer,
-                theme,
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 rect,
                 MISMATCH,
                 Role::Error,

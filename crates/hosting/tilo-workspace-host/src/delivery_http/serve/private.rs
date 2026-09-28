@@ -3,6 +3,7 @@
 //! asynchronous: each original request is parked on its admission
 //! continuation and answered only after a fresh owner revalidation.
 use super::*;
+use crate::delivery_http::revalidation::RequestEvidence;
 use crate::{
     action_host::ActionHost,
     delivery_http::revalidation::PendingOperation,
@@ -125,9 +126,11 @@ impl Private {
                 OwnerDataOperation::PrivateContext {
                     input_len: request.body().len(),
                 },
-                &proof,
-                &exact,
-                &request,
+                RequestEvidence {
+                    proof: &proof,
+                    exact: &exact,
+                    original: &request,
+                },
             )?;
             let guard = current.read().map_err(anyhow::Error::msg)?;
             checker.check(owner, guard.view(), admitted.session())?;
@@ -180,9 +183,11 @@ impl Private {
                 current,
                 budget,
                 OwnerDataOperation::PrivateContext { input_len: 0 },
-                &proof,
-                &exact,
-                &request,
+                RequestEvidence {
+                    proof: &proof,
+                    exact: &exact,
+                    original: &request,
+                },
             )?;
             let guard = current.read().map_err(anyhow::Error::msg)?;
             checker.check(owner, guard.view(), admitted.session())?;

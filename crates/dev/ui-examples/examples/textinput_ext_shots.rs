@@ -15,21 +15,18 @@ use vello::kurbo::{Affine, Rect, RoundedRect};
 
 use tilo_ui::offscreen::OffscreenRenderer;
 use tilo_ui::presence::PresenceCtx;
-use tilo_ui::text_render::{TextRenderer, TextWeight};
+use tilo_ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use tilo_ui::theme::Theme;
 use tilo_ui::widget::{TextInput, TextInputKind, Widget};
 
 fn label(scene: &mut Scene, tr: &mut TextRenderer, theme: &Theme, s: &str, x: f64, y: f64) {
-    tr.draw_text_styled(
+    tr.draw_style(
         scene,
         s,
-        13.0,
         theme.text_dim,
         Affine::translate((x, y)),
         None,
-        TextWeight::Semibold,
-        false,
-        false,
+        &TextStyle::new(13.0).with_weight(TextWeight::Semibold),
     );
 }
 

@@ -353,13 +353,15 @@ async fn agent_read_attachment_blocked_store_read_keeps_custody_after_waiter_dro
         started.send(()).unwrap();
         runtime.block_on(dispatch(
             command,
-            &root,
-            &owner,
-            Some(&provider),
-            None,
-            true,
-            &mut Default::default(),
-            &mut Default::default(),
+            CommandHost {
+                root: &root,
+                owner: &owner,
+                provider: Some(&provider),
+                offer: None,
+                reads_supported: true,
+                queued: &mut Default::default(),
+                reads: &mut Default::default(),
+            },
             OwnerControls::default(),
         ));
     });
@@ -529,13 +531,15 @@ async fn agent_read_attachment_expired_and_dropped_reads_skip_locked_store() {
         for command in commands {
             runtime.block_on(dispatch(
                 command,
-                &root,
-                &owner,
-                Some(&provider),
-                None,
-                true,
-                &mut Default::default(),
-                &mut Default::default(),
+                CommandHost {
+                    root: &root,
+                    owner: &owner,
+                    provider: Some(&provider),
+                    offer: None,
+                    reads_supported: true,
+                    queued: &mut Default::default(),
+                    reads: &mut Default::default(),
+                },
                 OwnerControls::default(),
             ));
         }
@@ -665,13 +669,15 @@ async fn cloud_policy_clock_real_command_keeps_request_origin_and_denies_retired
     source.invalidate();
     dispatch(
         command,
-        dir.path(),
-        &owner,
-        None,
-        None,
-        true,
-        &mut AgentWorkQueue::default(),
-        &mut ReadCache::default(),
+        CommandHost {
+            root: dir.path(),
+            owner: &owner,
+            provider: None,
+            offer: None,
+            reads_supported: true,
+            queued: &mut AgentWorkQueue::default(),
+            reads: &mut ReadCache::default(),
+        },
         OwnerControls::default(),
     )
     .await;
@@ -904,13 +910,15 @@ async fn agent_read_burst_basis_is_never_an_authorization() {
             .unwrap();
         runtime.block_on(dispatch(
             command,
-            &root,
-            &owner,
-            Some(&provider),
-            None,
-            true,
-            &mut Default::default(),
-            &mut cache,
+            CommandHost {
+                root: &root,
+                owner: &owner,
+                provider: Some(&provider),
+                offer: None,
+                reads_supported: true,
+                queued: &mut Default::default(),
+                reads: &mut cache,
+            },
             OwnerControls::default(),
         ));
         done.send(()).unwrap();

@@ -3,6 +3,7 @@
 //! with FlowCredit only after the original continuation is freshly revalidated.
 //! The final range enters native admission in a genuine staged owner turn.
 use super::*;
+use crate::delivery_http::revalidation::RequestEvidence;
 use crate::{
     delivery_http::{
         revalidation::{PendingOperation, continuation::AdmissionContinuation},
@@ -188,9 +189,11 @@ impl Uploads {
             current,
             budget,
             OwnerDataOperation::ReceiptLookup,
-            &proof,
-            &exact,
-            request,
+            RequestEvidence {
+                proof: &proof,
+                exact: &exact,
+                original: request,
+            },
         )?;
         let guard = current.read().map_err(anyhow::Error::msg)?;
         let now = checker.check(owner, guard.view(), admitted.session())?;

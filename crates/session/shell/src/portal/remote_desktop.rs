@@ -841,10 +841,6 @@ impl RemoteDesktopBackend {
     }
 
     /// `Start` — commit the session. Returns the granted `devices` bitmask.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "argument list mirrors the fixed org.freedesktop.impl.portal.RemoteDesktop.Start D-Bus signature"
-    )]
     async fn start(
         &self,
         #[zbus(signal_emitter)] _ctx: SignalEmitter<'_>,

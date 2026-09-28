@@ -696,21 +696,18 @@ impl SessionOwner {
         }
         result
     }
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "each argument is a distinct piece of custody or context the caller already holds"
-    )]
     pub(crate) fn commit_join_redemption(
         &mut self,
         mut candidate: StatePeer,
-        mut state: crate::collaboration::CollaborationState,
+        redemption: &tilo_peer_state::join::VerifiedRedemption,
         remote_endpoint: [u8; 32],
         request_id: [u8; 32],
         proof_digest: [u8; 32],
-        invite_id: [u8; 32],
-        device_cert: DeviceCert,
-        role: tilo_peer_state::join::MemberRole,
     ) -> Result<tilo_peer_state::join::JoinBootstrap> {
+        let mut state = self.aggregate.collaboration.clone();
+        let invite_id = redemption.join().invite_id();
+        let device_cert = redemption.certificate().clone();
+        let role = redemption.join().grant().role;
         self.require_owner_resource_scope()?;
         if candidate.room() != self.peer.room() || candidate.authority() != self.peer.authority() {
             bail!("collaboration cannot replace native namespace");

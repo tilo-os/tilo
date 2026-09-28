@@ -2828,7 +2828,7 @@ pub use app_widget::{
 pub mod command_palette;
 pub mod input_hint;
 pub mod shortcut_recorder;
-pub use input_hint::{InputDeviceGlyph, InputHint};
+pub use input_hint::{InputDeviceGlyph, InputHint, LegendConventions};
 pub mod canvas_navigation_hint;
 pub use canvas_navigation_hint::{CanvasNavigation, CanvasNavigationHint};
 pub use shortcut_recorder::ShortcutRecorder;
@@ -2910,7 +2910,7 @@ pub use undo_button::UndoButton;
 pub mod breadcrumb;
 pub use breadcrumb::Breadcrumb;
 pub mod avatar;
-pub use avatar::Avatar;
+pub use avatar::{Avatar, AvatarRing};
 pub mod badge;
 pub use badge::{Badge, BadgeTone};
 pub mod icon;
@@ -2967,7 +2967,7 @@ pub use sunburst::{SunburstChart, SunburstNode, SunburstStyle};
 pub mod funnel_chart;
 pub use funnel_chart::{FunnelChart, FunnelDirection, FunnelStage, FunnelStyle};
 pub mod gauge;
-pub use gauge::{BarGauge, GaugeStyle, GaugeThresholds, RingGauge};
+pub use gauge::{BarGauge, GaugeReading, GaugeStyle, GaugeThresholds, RingGauge};
 pub mod function_plane;
 pub use function_plane::FunctionPlane;
 pub mod resizable_split;
@@ -3006,15 +3006,15 @@ pub use toggle_group::{SegmentedFace, SegmentedStyle, ToggleGroup, segment_color
 // entry point for apps that render straight to a `Scene` rather than a
 // widget tree.
 pub mod empty_state;
-pub use empty_state::EmptyState;
+pub use empty_state::{EmptyState, EmptyStateContent};
 pub mod search_field;
 pub use search_field::SearchField;
 pub mod search_results;
 pub use search_results::SearchResultsView;
 pub mod stat_tile;
-pub use stat_tile::{StatTile, Trend};
+pub use stat_tile::{StatTile, StatTileContent, Trend};
 pub mod banner;
-pub use banner::{Banner, BannerKind};
+pub use banner::{Banner, BannerContent, BannerKind};
 pub mod chip;
 pub use chip::{Chip, ChipLead, ChipStyle};
 mod card_composition;
@@ -3027,8 +3027,8 @@ pub use section::{DEFAULT_SECTION_GAP, Section};
 pub mod capture_studio;
 pub use capture_studio::{
     AudioCaptureMode, CaptureDestination, CaptureExtent, CaptureIntent, CaptureMode,
-    CapturePreview, CaptureStudio, CaptureTarget, PipLayout, RecordingCommand, ReplayCommand,
-    ScreenshotCommand, ScreenshotSendDevice, ScreenshotSendTarget, SourceMode,
+    CapturePreview, CaptureStudio, CaptureTarget, LiveCapture, PipLayout, RecordingCommand,
+    ReplayCommand, ScreenshotCommand, ScreenshotSendDevice, ScreenshotSendTarget, SourceMode,
 };
 pub mod screenshot_markup;
 pub use screenshot_markup::{

@@ -424,7 +424,6 @@ fn shortcut_scroll_limit(groups_top: f64, groups_bottom: f64, theme: &Theme, com
 /// `(inner_x0, groups_top)`, row-major: `[0, 1]` in row 0, `[2, 3]` in
 /// row 1.
 #[allow(
-    clippy::too_many_arguments,
     clippy::too_many_lines,
     reason = "one linear renderer keeps the compact and two-column geometry paired with the same canonical shortcut rows"
 )]

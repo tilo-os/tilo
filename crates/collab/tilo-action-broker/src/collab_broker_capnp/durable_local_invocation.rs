@@ -1,12 +1,12 @@
 //! Durable local RPCs use the existing journal and invocation dispatcher.
 use super::{
-    AdmittedJoinIdentity, BrokerActor, CallerInvocation, CapDecision, CapnpBrokerState,
-    CapnpChannelHandle, CrdtRoute, DIRECTORY_MAX_CONFIRMATION_BYTES,
+    AdmissionProvenance, AdmittedJoinIdentity, BrokerActor, CallerInvocation, CapDecision,
+    CapnpBrokerState, CapnpChannelHandle, CrdtRoute, DIRECTORY_MAX_CONFIRMATION_BYTES,
     DIRECTORY_MAX_IDENTIFIER_BYTES, DIRECTORY_MAX_PARAMS_BYTES, DIRECTORY_MAX_QUERY_REVISION_BYTES,
     DirectoryActionConfirmation, DurableInvocation, InvocationCaller, InvocationEnvelope,
-    InvocationKey, InvocationOwner, LocalActionDirectoryRegistry, Promise, PublishedAction,
-    PublishedSurface, Rc, ResourceRef, Verb, VerifiedActionCaller, channel_handle, mpsc,
-    resolved_invocation, validate_directory_identifier, validate_directory_text,
+    InvocationInputs, InvocationKey, InvocationOwner, LocalActionDirectoryRegistry, Promise,
+    PublishedAction, PublishedSurface, Rc, ResourceRef, Verb, VerifiedActionCaller, channel_handle,
+    mpsc, resolved_invocation, validate_directory_identifier, validate_directory_text,
 };
 use resolved_invocation::ResolvedOffer;
 
@@ -612,16 +612,20 @@ pub(super) fn invoke(
             .dispatch_invocation_from_offered_owned(
                 request.binding.peer_id,
                 offered,
-                request.argument.as_deref(),
-                &actor,
-                token.as_deref(),
-                None,
-                Some(context),
-                Some(&request.revision),
-                None,
-                None,
-                None,
-                None,
+                InvocationInputs {
+                    argument: request.argument.as_deref(),
+                    actor: &actor,
+                    confirmation_token: token.as_deref(),
+                    context: None,
+                },
+                AdmissionProvenance {
+                    durable: Some(context),
+                    revision: Some(&request.revision),
+                    private_owner: None,
+                    origin: None,
+                    retained_time: None,
+                    enrolled_durable: None,
+                },
             )
             .map_err(capnp::Error::failed)?;
         drop(job.completion);

@@ -16,7 +16,8 @@ use tilo_desktop_model::{
     WorkspaceId,
 };
 use ui::application::{
-    ApplicationCatalog, ApplicationDefinition, HostContext, LaunchTarget, RestoreInput,
+    ApplicationCatalog, ApplicationDefinition, HostContext, HostContextInputs, LaunchTarget,
+    RestoreInput,
 };
 use ui::application_view::InstanceViewStore;
 use ui::record::{RecordOwners, RecordStore};
@@ -38,18 +39,23 @@ impl ComponentContextSource for Host {
         let records = self.owners.open(definition.app_id, "room").unwrap();
         let context = HostContext::prepare(
             definition,
-            records,
-            self.views.clone(),
-            "device".into(),
-            request.tab.id,
-            Rc::new(RefCell::new(
-                ui::permissions::PermissionContext::from_capabilities(
-                    ui::permissions::Actor::person(Some(ui::permissions::Role::Owner), "author"),
-                    vec![],
-                ),
-            )),
-            ui::permissions::UserId("author".into()),
-            tilo_actions::ActionContext::default(),
+            HostContextInputs {
+                records,
+                views: self.views.clone(),
+                device_id: "device".into(),
+                instance_id: request.tab.id,
+                permissions: Rc::new(RefCell::new(
+                    ui::permissions::PermissionContext::from_capabilities(
+                        ui::permissions::Actor::person(
+                            Some(ui::permissions::Role::Owner),
+                            "author",
+                        ),
+                        vec![],
+                    ),
+                )),
+                author: ui::permissions::UserId("author".into()),
+                action_context: tilo_actions::ActionContext::default(),
+            },
             target,
         )?;
         self.wakes.push(context.wake_handle());

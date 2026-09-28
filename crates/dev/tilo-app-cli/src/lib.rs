@@ -5316,10 +5316,6 @@ pub fn dev_app(start: &Path, request: &DevRequest) -> Result<()> {
 
 /// Rebuild until the candidate matches the newest source, or the user stops.
 /// Returns whether the watcher itself should stop.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the rebuild shares the watch loop's child, events, roots, watcher, revision and source stamps"
-)]
 fn rebuild_running_dev_app(
     plan: &CargoPlan,
     request: &DevRequest,

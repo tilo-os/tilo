@@ -1,6 +1,8 @@
 //! Real SDK construction/lifecycle tests; the marker is resource-only.
 use super::*;
-use crate::application::{AppComponent, HostContext, LaunchTarget, RestoreInput};
+use crate::application::{
+    AppComponent, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
+};
 use crate::application_test_support::{ProbeHost, definition, runner_inputs, runner_permissions};
 use crate::semantic_document_read::retirement::{
     MountRetirement, RetirementDomain, RetirementError, RetirementHandle, retirement_test_probe,
@@ -369,13 +371,15 @@ fn worker_fixture(
     let prepare = |target| {
         HostContext::prepare(
             &definition,
-            records.clone(),
-            views.clone(),
-            DEVICE.into(),
-            18,
-            permissions.clone(),
-            author(),
-            provenance(),
+            HostContextInputs {
+                records: records.clone(),
+                views: views.clone(),
+                device_id: DEVICE.into(),
+                instance_id: 18,
+                permissions: permissions.clone(),
+                author: author(),
+                action_context: provenance(),
+            },
             target,
         )
         .unwrap()

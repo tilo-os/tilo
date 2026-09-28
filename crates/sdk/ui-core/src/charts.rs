@@ -15,7 +15,7 @@ pub use crate::widget::{
     CategoryValue, Chart, ChartLabels, ChartStyle, ChordChart, ChordLink, ChordNode,
     ChordSelection, ChordStyle, DistributionChart, DistributionKind, DistributionSeries,
     DistributionStyle, FunctionPlane, FunnelChart, FunnelDirection, FunnelStage, FunnelStyle,
-    GaugeStyle, GaugeThresholds, Heatmap, HeatmapCell, HeatmapStyle, Histogram,
+    GaugeReading, GaugeStyle, GaugeThresholds, Heatmap, HeatmapCell, HeatmapStyle, Histogram,
     HistogramNormalization, LegendPosition, MarkerShape, PieChart, PieSlice, PieStyle,
     PieTooltipAnchor, PlotAxis, PlotDatum, PlotSeries, PolarAreaChart, PolarAreaDatum,
     PolarAreaStyle, RadarAxis, RadarChart, RadarLegendStyle, RadarSeries, RadarStyle, RangeBar,

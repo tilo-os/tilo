@@ -25,7 +25,9 @@ use serde::{Deserialize, Serialize};
 use tilo_clock::unix_now_ms;
 use tokio::sync::mpsc;
 
-use crate::network::actor::{Actor, HostIdentity, NetCmd, NetEvent, PersonalMediaTransferStatus};
+use crate::network::actor::{
+    Actor, HostIdentity, NearbyTransferCheckpoint, NetCmd, NetEvent, PersonalMediaTransferStatus,
+};
 use crate::network::actor::{
     PERSONAL_MEDIA_CHUNK_BYTES, PersonalFabricPayload, PersonalMediaTransferFrame,
     WorkspaceControlRoute,
@@ -2866,7 +2868,6 @@ impl ShellNetwork {
                 })
                 .unwrap_or_default();
             let device_cert = selected_device_cert(ws.room, &self.keypair)?;
-            let signed_invitee = recipient_user_public_key.and(invitee);
             let token = crate::network::invite::make_invite_token_with_recipient(
                 &self.keypair,
                 &ws,
@@ -2874,10 +2875,16 @@ impl ShellNetwork {
                 &hosts,
                 &pins,
                 Some(device_cert),
-                role,
-                recipient_user_public_key,
-                signed_invitee,
-                expiry_seconds_from_now,
+                crate::network::invite::InviteTerms {
+                    role,
+                    recipient: recipient_user_public_key.map(|user_public_key| {
+                        crate::network::invite::InviteRecipient {
+                            user_public_key,
+                            name: invitee,
+                        }
+                    }),
+                    expiry_seconds_from_now,
+                },
             )
             .map_err(|e| e.to_string())?;
             (token, ws.room)
@@ -3518,19 +3525,10 @@ impl ShellNetwork {
 
     /// Stream an immutable Nearby spool object from a receiver-confirmed
     /// checkpoint to one exact certified transport peer.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the transfer boundary keeps the certified target, request/transfer IDs, size, resume checkpoint, hashes and spool path explicit"
-    )]
     pub(crate) fn start_nearby_transfer(
         &self,
         target: &crate::shell::personal_continuity::DeviceId,
-        transfer_id: [u8; 16],
-        request_id: [u8; 16],
-        total_bytes: u64,
-        resume_offset: u64,
-        prefix_hash: [u8; 32],
-        content_hash: [u8; 32],
+        transfer: NearbyTransferCheckpoint,
         path: &Path,
     ) -> Result<(), String> {
         let user_public_key = self
@@ -3570,12 +3568,7 @@ impl ShellNetwork {
                 ws,
                 user_public_key,
                 target: transport_target,
-                transfer_id,
-                request_id,
-                total_bytes,
-                resume_offset,
-                prefix_hash,
-                content_hash,
+                transfer,
                 file,
             })
             .map_err(|error| error.to_string())
@@ -8892,7 +8885,7 @@ mod tests {
 
         fn accepting_a_pinned_home_host_invite_queues_exact_expectation_once() {
             use crate::network::invite::{
-                HomeHostPin, InviteRole, make_invite_token_with_recipient,
+                HomeHostPin, InviteRole, InviteTerms, make_invite_token_with_recipient,
             };
             use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
@@ -8932,10 +8925,11 @@ mod tests {
                 std::slice::from_ref(&host_addr),
                 std::slice::from_ref(&pin),
                 Some(owner_cert),
-                InviteRole::Editor,
-                None,
-                None,
-                3600,
+                InviteTerms {
+                    role: InviteRole::Editor,
+                    recipient: None,
+                    expiry_seconds_from_now: 3600,
+                },
             )
             .expect("Alice issues Bob a pinned invite");
 

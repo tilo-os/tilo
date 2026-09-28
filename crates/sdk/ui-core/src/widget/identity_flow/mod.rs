@@ -39,6 +39,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
+use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -1448,11 +1449,24 @@ pub struct InviteRedemptionAuthority {
     root: PathBuf,
 }
 
+/// Where an invite is redeemed: the shell broker's TLS endpoint and
+/// certificate, and the private directory of its redemption authority.
 #[derive(Clone)]
-struct InviteBrokerLocator {
-    endpoint: String,
-    certificate: Vec<u8>,
-    authority_root: PathBuf,
+pub struct InviteBrokerLocator {
+    pub endpoint: String,
+    pub certificate: Vec<u8>,
+    pub authority_root: PathBuf,
+}
+
+/// What an invite offers and on whose behalf; all of it is signed into the
+/// envelope by the owner.
+pub struct InviteTerms {
+    pub channel: ChannelId,
+    pub channel_name: String,
+    pub owner_pubkey: Ed25519PublicKey,
+    pub inviter_label: String,
+    pub role: Role,
+    pub expires_at: SystemTime,
 }
 
 static INVITE_BROKER_LOCATOR: std::sync::OnceLock<InviteBrokerLocator> = std::sync::OnceLock::new();
@@ -1822,18 +1836,19 @@ pub fn mint_invite(
     role: Role,
     expires_at: SystemTime,
 ) -> Result<InviteEnvelope, IdentityFlowError> {
-    let channel_name = channel_name.into();
-    let inviter_label = inviter_label.into();
+    let terms = InviteTerms {
+        channel,
+        channel_name: channel_name.into(),
+        owner_pubkey,
+        inviter_label: inviter_label.into(),
+        role,
+        expires_at,
+    };
     if let Some(locator) = INVITE_BROKER_LOCATOR.get() {
         let authority = InviteRedemptionAuthority::at(&locator.authority_root)?;
         return mint_invite_at(
-            channel,
-            channel_name,
-            owner_pubkey,
+            terms,
             owner_signing_key,
-            inviter_label,
-            role,
-            expires_at,
             locator.endpoint.clone(),
             locator.certificate.clone(),
             &authority,
@@ -1843,13 +1858,8 @@ pub fn mint_invite(
     {
         let authority = invite_redemption_authority()?;
         mint_invite_at(
-            channel,
-            channel_name,
-            owner_pubkey,
+            terms,
             owner_signing_key,
-            inviter_label,
-            role,
-            expires_at,
             String::new(),
             Vec::new(),
             &authority,
@@ -1869,23 +1879,16 @@ pub fn mint_invite(
 ///
 /// Returns an error for an invalid endpoint/certificate, unsafe authority
 /// storage, encryption/signing failure, or an exhausted authority quota.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "Broker invites bind channel identity, owner signing identity, inviter label, role and expiry, redemption endpoint/certificate, and authority storage."
-)]
 pub fn mint_invite_for_broker(
-    channel: ChannelId,
-    channel_name: impl Into<String>,
-    owner_pubkey: Ed25519PublicKey,
+    terms: InviteTerms,
     owner_signing_key: &DalekSigningKey,
-    inviter_label: impl Into<String>,
-    role: Role,
-    expires_at: SystemTime,
-    redemption_endpoint: impl Into<String>,
-    redemption_certificate: Vec<u8>,
-    authority_root: impl Into<PathBuf>,
+    broker: InviteBrokerLocator,
 ) -> Result<InviteEnvelope, IdentityFlowError> {
-    let redemption_endpoint = redemption_endpoint.into();
+    let InviteBrokerLocator {
+        endpoint: redemption_endpoint,
+        certificate: redemption_certificate,
+        authority_root,
+    } = broker;
     redemption_endpoint
         .parse::<std::net::SocketAddr>()
         .map_err(|error| {
@@ -1898,35 +1901,29 @@ pub fn mint_invite_for_broker(
     }
     let authority = InviteRedemptionAuthority::at(authority_root)?;
     mint_invite_at(
-        channel,
-        channel_name.into(),
-        owner_pubkey,
+        terms,
         owner_signing_key,
-        inviter_label.into(),
-        role,
-        expires_at,
         redemption_endpoint,
         redemption_certificate,
         &authority,
     )
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "Invite signing binds channel and owner identity, recipient-visible label, role/expiry, redemption endpoint/certificate, and the issuing authority."
-)]
 fn mint_invite_at(
-    channel: ChannelId,
-    channel_name: String,
-    owner_pubkey: Ed25519PublicKey,
+    terms: InviteTerms,
     owner_signing_key: &DalekSigningKey,
-    inviter_label: String,
-    role: Role,
-    expires_at: SystemTime,
     redemption_endpoint: String,
     redemption_certificate: Vec<u8>,
     authority: &InviteRedemptionAuthority,
 ) -> Result<InviteEnvelope, IdentityFlowError> {
+    let InviteTerms {
+        channel,
+        channel_name,
+        owner_pubkey,
+        inviter_label,
+        role,
+        expires_at,
+    } = terms;
     let (delegation_secret_full, delegation_pubkey) = generate_keypair();
     let mut capability = [0u8; 32];
     UnwrapErr(SysRng).fill_bytes(&mut capability);
@@ -2206,10 +2203,7 @@ fn draw_done_card(
         name_row.y1,
     );
     sheet::paint_text_in(
-        scene,
-        transform,
-        text_renderer,
-        theme,
+        &mut PaintCtx::new(scene, transform, text_renderer, theme),
         disc,
         &initial,
         Role::Code,
@@ -2224,10 +2218,7 @@ fn draw_done_card(
         name_row.y1,
     );
     paint_text(
-        scene,
-        transform,
-        text_renderer,
-        theme,
+        &mut PaintCtx::new(scene, transform, text_renderer, theme),
         name_rect,
         &signed_in,
         Role::Value,
@@ -2236,10 +2227,7 @@ fn draw_done_card(
     );
     for (rect, label) in [(saved, SAVED), (next, NEXT)] {
         paint_text(
-            scene,
-            transform,
-            text_renderer,
-            theme,
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
             rect,
             label,
             Role::Caption,

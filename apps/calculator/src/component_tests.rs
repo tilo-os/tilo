@@ -2,7 +2,7 @@ use std::{cell::RefCell, rc::Rc};
 
 use automerge::transaction::Transactable;
 use ui::application::{
-    AppComponent, ComponentRunnerInputs, HostContext, LaunchTarget, RestoreInput,
+    AppComponent, ComponentRunnerInputs, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
 };
 use ui::application_view::InstanceViewStore;
 use ui::headless::FrameHarness;
@@ -50,13 +50,15 @@ impl Fixture {
     ) -> Result<AppComponent, ui::launch::LaunchError> {
         let context = HostContext::prepare(
             crate::definition(),
-            self.records.clone(),
-            self.views.clone(),
-            DEVICE.into(),
-            instance,
-            self.authority.clone(),
-            self.author.clone(),
-            tilo_actions::ActionContext::default(),
+            HostContextInputs {
+                records: self.records.clone(),
+                views: self.views.clone(),
+                device_id: DEVICE.into(),
+                instance_id: instance,
+                permissions: self.authority.clone(),
+                author: self.author.clone(),
+                action_context: tilo_actions::ActionContext::default(),
+            },
             &target,
         )?;
         crate::definition().instantiate(context, target, RestoreInput::None)
@@ -169,13 +171,15 @@ fn checked_admission_refuses_wrong_package_kind_and_device_namespace() {
         .unwrap();
     let Err(package_error) = HostContext::prepare(
         crate::definition(),
-        foreign_records,
-        fixture.views.clone(),
-        DEVICE.into(),
-        10,
-        fixture.authority.clone(),
-        fixture.author.clone(),
-        tilo_actions::ActionContext::default(),
+        HostContextInputs {
+            records: foreign_records,
+            views: fixture.views.clone(),
+            device_id: DEVICE.into(),
+            instance_id: 10,
+            permissions: fixture.authority.clone(),
+            author: fixture.author.clone(),
+            action_context: tilo_actions::ActionContext::default(),
+        },
         &LaunchTarget::New,
     ) else {
         panic!("foreign package namespace must be refused");
@@ -195,13 +199,15 @@ fn checked_admission_refuses_wrong_package_kind_and_device_namespace() {
     assert!(matches!(
         HostContext::prepare(
             crate::definition(),
-            fixture.records.clone(),
-            fixture.views.clone(),
-            DEVICE.into(),
-            11,
-            fixture.authority.clone(),
-            fixture.author.clone(),
-            tilo_actions::ActionContext::default(),
+            HostContextInputs {
+                records: fixture.records.clone(),
+                views: fixture.views.clone(),
+                device_id: DEVICE.into(),
+                instance_id: 11,
+                permissions: fixture.authority.clone(),
+                author: fixture.author.clone(),
+                action_context: tilo_actions::ActionContext::default()
+            },
             &existing(&wrong),
         ),
         Err(ui::launch::LaunchError::BindingMismatch)
@@ -217,13 +223,15 @@ fn checked_admission_refuses_wrong_package_kind_and_device_namespace() {
     assert!(matches!(
         HostContext::prepare(
             crate::definition(),
-            fixture.records.clone(),
-            foreign_views,
-            DEVICE.into(),
-            12,
-            fixture.authority,
-            fixture.author,
-            tilo_actions::ActionContext::default(),
+            HostContextInputs {
+                records: fixture.records.clone(),
+                views: foreign_views,
+                device_id: DEVICE.into(),
+                instance_id: 12,
+                permissions: fixture.authority,
+                author: fixture.author,
+                action_context: tilo_actions::ActionContext::default()
+            },
             &LaunchTarget::New,
         ),
         Err(ui::launch::LaunchError::BindingMismatch)

@@ -395,10 +395,6 @@ impl CollaborationService {
         self.issue_with_digest(owner, administrator, request, request_digest, now_ns)
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "each argument is a distinct piece of custody or context the caller already holds"
-    )]
     pub(crate) fn issue_from_action(
         &self,
         owner: &mut SessionOwner,
@@ -839,13 +835,10 @@ impl CollaborationService {
         let bootstrap = owner
             .commit_join_redemption(
                 candidate,
-                owner.collaboration_state().clone(),
+                &redemption,
                 remote_endpoint,
                 request_id,
                 proof_digest,
-                redemption.join().invite_id(),
-                redemption.certificate().clone(),
-                redemption.join().grant().role,
             )
             .map_err(|error| CollaborationError::new(error.to_string()))?;
         tracing::info!(

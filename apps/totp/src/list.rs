@@ -24,7 +24,7 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 
 use ui::color_compat::ColorCompat;
 use ui::presence::PresenceCtx;
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{Avatar, Widget};
 
@@ -513,16 +513,15 @@ impl AccountList {
         let code_x = l.code_right - f64::from(code_w);
         // The code and the ring share one centre line (`l.ring_c.y`).
         let code_y = l.ring_c.y - f64::from(code_h) / 2.0;
-        text_renderer.draw_text_styled(
+        text_renderer.draw_style(
             scene,
             &grouped,
-            code_size,
             code_color,
             transform * Affine::translate((code_x, code_y)),
             None,
-            TextWeight::Bold,
-            false,
-            true,
+            &TextStyle::new(code_size)
+                .with_weight(TextWeight::Bold)
+                .with_family(FontChoice::Monospace),
         );
         // "Copy" affordance under the code on hover.
         if copy_hot {

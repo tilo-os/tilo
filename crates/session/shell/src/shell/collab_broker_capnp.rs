@@ -240,11 +240,12 @@ pub mod tests {
             let mut confirmation = queue
                 .try_start_resolved(
                     BrokerActor::person(&directory_actor),
-                    &fixture.cluster_id,
-                    fixture.peer_id,
-                    "directory-r1",
-                    "workspace:atlas",
-                    "open",
+                    DirectoryActionTarget {
+                        cluster_id: fixture.cluster_id.clone(),
+                        peer_id: fixture.peer_id,
+                        revision: "directory-r1".into(),
+                        address: tilo_actions::ActionAddress::new("workspace:atlas", "open"),
+                    },
                     None,
                     None,
                 )

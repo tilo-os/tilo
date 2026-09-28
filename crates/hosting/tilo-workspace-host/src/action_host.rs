@@ -20,7 +20,7 @@ use tilo_action_broker::{
 };
 use tilo_peer_state::{NeighbourMsg, StatePeer, owner_commit::OwnerCommitService};
 use ui::{
-    application::{HostContext, LaunchTarget, RestoreInput},
+    application::{HostContext, HostContextInputs, LaunchTarget, RestoreInput},
     collaboration::{CertifiedEndpointIdentity, CollaborationManager, RouteSpec},
     portable_storage::{PortableStorage, StorageKey},
     record::{RecordCheckout, RecordId, RecordOwners},
@@ -560,13 +560,15 @@ impl ActionHost {
             let fixture_records = records.clone();
             let context = HostContext::prepare(
                 definition,
-                records,
-                self.views.clone(),
-                hex::encode(cert.device_public_key),
-                instance,
-                permissions.clone(),
-                ui::permissions::UserId(self.principal.clone()),
-                tilo_actions::ActionContext::default(),
+                HostContextInputs {
+                    records,
+                    views: self.views.clone(),
+                    device_id: hex::encode(cert.device_public_key),
+                    instance_id: instance,
+                    permissions: permissions.clone(),
+                    author: ui::permissions::UserId(self.principal.clone()),
+                    action_context: tilo_actions::ActionContext::default(),
+                },
                 &target,
             )
             .map_err(|e| anyhow::anyhow!(e.to_string()))?;

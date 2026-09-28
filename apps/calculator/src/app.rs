@@ -15,9 +15,10 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key as WKey, NamedKey};
 
 use ui::Widget;
+use ui::paint::PaintCtx;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 
 use crate::actions::{self, CalculatorAction, GraphKind};
@@ -417,10 +418,11 @@ impl CalculatorApp {
     }
 
     fn draw_topbar(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+        let mut ctx = PaintCtx::new(scene, t, tr, theme);
         let c = &theme.tokens.colors;
-        draw::fill_rect(scene, t, self.topbar, c.surfaces.raised);
+        ctx.fill_rect(self.topbar, c.surfaces.raised);
         draw::line(
-            scene,
+            ctx.scene,
             t,
             Point::new(self.topbar.x0, self.topbar.y1),
             Point::new(self.topbar.x1, self.topbar.y1),
@@ -438,12 +440,12 @@ impl CalculatorApp {
             self.seg_rects[2].x1 + 4.0,
             self.seg_rects[2].y1 + 4.0,
         );
-        ui::surface::card(scene, t, outer, 10.0, c.neutral[2]);
+        ui::surface::card(ctx.scene, t, outer, 10.0, c.neutral[2]);
         let sel = self.model.mode.index();
         let on_accent = c.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST);
         for (i, (m, &r)) in Mode::all().iter().zip(self.seg_rects.iter()).enumerate() {
             if i == sel {
-                draw::fill_round(scene, t, r, 8.0, c.accent[5]);
+                ctx.fill_round(r, 8.0, c.accent[5]);
             }
             let col = if i == sel { on_accent } else { c.text_dim };
             let label = if self.seg_short {
@@ -452,15 +454,12 @@ impl CalculatorApp {
                 m.label()
             };
             draw::text_in(
-                scene,
-                tr,
-                t,
+                &mut ctx,
                 r,
                 label,
-                TopbarLabels::SEG_FONT,
+                &TextStyle::new(TopbarLabels::SEG_FONT).with_weight(TextWeight::Semibold),
                 col,
                 Align::Center,
-                TextWeight::Semibold,
             );
         }
 
@@ -471,11 +470,11 @@ impl CalculatorApp {
             self.deg_rect.x1 + 4.0,
             self.deg_rect.y1 + 4.0,
         );
-        ui::surface::card(scene, t, outer2, 10.0, c.neutral[2]);
+        ui::surface::card(ctx.scene, t, outer2, 10.0, c.neutral[2]);
         if self.model.deg {
-            draw::fill_round(scene, t, self.deg_rect, 8.0, c.accent[5]);
+            ctx.fill_round(self.deg_rect, 8.0, c.accent[5]);
         } else {
-            draw::fill_round(scene, t, self.rad_rect, 8.0, c.accent[5]);
+            ctx.fill_round(self.rad_rect, 8.0, c.accent[5]);
         }
         let rad_col = if self.model.deg {
             c.text_dim
@@ -488,26 +487,20 @@ impl CalculatorApp {
             c.text_dim
         };
         draw::text_in(
-            scene,
-            tr,
-            t,
+            &mut ctx,
             self.rad_rect,
             "RAD",
-            TopbarLabels::TOGGLE_FONT,
+            &TextStyle::new(TopbarLabels::TOGGLE_FONT).with_weight(TextWeight::Semibold),
             rad_col,
             Align::Center,
-            TextWeight::Semibold,
         );
         draw::text_in(
-            scene,
-            tr,
-            t,
+            &mut ctx,
             self.deg_rect,
             "DEG",
-            TopbarLabels::TOGGLE_FONT,
+            &TextStyle::new(TopbarLabels::TOGGLE_FONT).with_weight(TextWeight::Semibold),
             deg_col,
             Align::Center,
-            TextWeight::Semibold,
         );
     }
 
