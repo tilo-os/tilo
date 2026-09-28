@@ -1352,6 +1352,7 @@ mod tests {
 
         let mut again = handle.read().desktop.workspaces[0].clone();
         launcher.grant_authorship("owner", app, &mut again);
+        drop(launcher);
         assert_eq!(
             handle.read().desktop.workspaces[0].capabilities.len(),
             stored,
