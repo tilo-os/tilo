@@ -481,7 +481,7 @@ listed in the header of `os/dev/internal-bundle.py`.
 
 ## WPE buildroot snapshot credentials
 
-`snapshot-wpe-buildroot.yml` authenticates, signs and lands its pins exactly
+`build-buildroots.yml` authenticates, signs and lands its pins exactly
 like `snapshot-rpms.yml` and `build-kernel.yml`; it needs no extra secret or
 variable beyond theirs and `TILO_NATIVE_ARM64_RUNNER=true`:
 

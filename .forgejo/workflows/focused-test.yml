@@ -112,8 +112,13 @@ jobs:
           lockfile: source/Cargo.lock
       - name: Prepare native compiler cache and headless runtime
         if: github.event.inputs.operation != 'inspect-native'
+        env:
+          FALLBACK_AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_AWS_ACCESS_KEY_ID }}
+          FALLBACK_AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_AWS_SECRET_ACCESS_KEY }}
         run: |
           ./control/os/dev/assert-native-arch.sh x86_64
+          # shellcheck disable=SC1091
+          source control/tools/ci/compiler_cache_env.sh
           bash control/tools/ci/sccache.sh prepare
           driver=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
           test -r "$driver"

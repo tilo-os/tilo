@@ -58,7 +58,7 @@ class CiGitMaintenanceTests(unittest.TestCase):
                     environment.update(
                         GIT_CONFIG_GLOBAL=str(active),
                         GIT_CONFIG_COUNT="1",
-                        GIT_CONFIG_KEY_0="http.https://code.sandbox.example/.extraheader",
+                        GIT_CONFIG_KEY_0="http.https://code.tilo.so/.extraheader",
                         GIT_CONFIG_VALUE_0="test-only-header",
                     )
                     for key, expected in (

@@ -11,6 +11,8 @@ pub mod accessibility;
 #[cfg(target_os = "linux")]
 pub mod activation;
 #[cfg(target_os = "linux")]
+pub mod agent_seats;
+#[cfg(target_os = "linux")]
 mod audio_capture;
 pub mod backend;
 #[cfg(target_os = "linux")]

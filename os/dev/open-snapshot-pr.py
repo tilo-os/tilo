@@ -59,7 +59,7 @@ def wpe_contents(x86_ref: str, arm_ref: str) -> str:
     """Return the canonical os/wpe-buildroot-snapshot.env for both buildroots."""
     return "\n".join((
         "# Per-architecture WPE buildroots, signed and pinned by digest.",
-        "# Updated atomically by snapshot-wpe-buildroot.yml after both native builds verify.",
+        "# Updated atomically by build-buildroots.yml after both native builds verify.",
         f"WPE_BUILDROOT_X86_64_REF={x86_ref}",
         f"WPE_BUILDROOT_AARCH64_REF={arm_ref}",
         "",
@@ -70,7 +70,7 @@ def kernel_buildroot_contents(x86_ref: str, arm_ref: str) -> str:
     """Return the canonical os/kernel-buildroot-snapshot.env for both buildroots."""
     return "\n".join((
         "# Per-architecture Tilo kernel buildroots, signed and pinned by digest.",
-        "# Updated atomically by snapshot-kernel-buildroot.yml after both native builds verify.",
+        "# Updated atomically by build-buildroots.yml after both native builds verify.",
         f"KERNEL_BUILDROOT_X86_64_REF={x86_ref}",
         f"KERNEL_BUILDROOT_AARCH64_REF={arm_ref}",
         "",
@@ -170,6 +170,28 @@ def find_open(server: str, repository: str, token: str, branch: str):
         page += 1
 
 
+def add_kinds(parser) -> None:
+    kinds = parser.add_subparsers(dest="kind", required=True)
+    for name, snapshot, help in (
+            ("kernel", kernel_snapshot, "both native kernel RPM repositories"),
+            ("wpe", wpe_snapshot, "both native WPE buildroots"),
+            ("kernel-buildroot", kernel_buildroot_snapshot, "both native kernel buildroots")):
+        kind = kinds.add_parser(name, help=help)
+        kind.add_argument("--x86-ref", required=True)
+        kind.add_argument("--arm-ref", required=True)
+        kind.set_defaults(snapshot=snapshot)
+
+
+def pins(argv: list[str]) -> int:
+    """Print the canonical pin file for verified references."""
+    parser = argparse.ArgumentParser(prog="open-snapshot-pr.py pins")
+    add_kinds(parser)
+    args = parser.parse_args(argv)
+    contents, _ = args.snapshot(args, parser)
+    sys.stdout.write(contents)
+    return 0
+
+
 def promote() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--server", required=True)
@@ -178,19 +200,7 @@ def promote() -> int:
     parser.add_argument("--snapshot-digest", required=True)
     parser.add_argument("--supersede", action="append", default=[], metavar="BRANCH",
                         help="close the open pin pull request from this older automation branch")
-    kinds = parser.add_subparsers(dest="kind", required=True)
-    kernel = kinds.add_parser("kernel", help="both native kernel RPM repositories")
-    kernel.add_argument("--x86-ref", required=True)
-    kernel.add_argument("--arm-ref", required=True)
-    kernel.set_defaults(snapshot=kernel_snapshot)
-    wpe = kinds.add_parser("wpe", help="both native WPE buildroots")
-    wpe.add_argument("--x86-ref", required=True)
-    wpe.add_argument("--arm-ref", required=True)
-    wpe.set_defaults(snapshot=wpe_snapshot)
-    buildroot = kinds.add_parser("kernel-buildroot", help="both native kernel buildroots")
-    buildroot.add_argument("--x86-ref", required=True)
-    buildroot.add_argument("--arm-ref", required=True)
-    buildroot.set_defaults(snapshot=kernel_buildroot_snapshot)
+    add_kinds(parser)
     args = parser.parse_args()
 
     token = os.environ.get("FORGEJO_TOKEN", "")
@@ -261,6 +271,8 @@ def close_superseded(server: str, repository: str, token: str, branch: str, keep
 
 
 def main() -> int:
+    if sys.argv[1:2] == ["pins"]:
+        return pins(sys.argv[2:])
     try:
         return promote()
     except PromotionError as error:

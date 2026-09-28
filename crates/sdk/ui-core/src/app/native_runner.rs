@@ -3353,9 +3353,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         }
 
         // `Wait` sleeps until real input, zero CPU; escalate to a bounded
-        // ~60 Hz tick only while something no winit event surfaces on its
-        // own needs draining — a live collab socket, or a root still
-        // wanting another frame.
+        // ~60 Hz tick only while a root still wants another frame. A live
+        // collaboration connection is not such a reason: its transport wakes
+        // this loop for each inbound event, directory request and freed
+        // outbound slot.
         let awaiting_floating_pixels = self.floating_windows.iter().any(|surface| {
             !surface.suspended
                 && !surface.adopted
@@ -3369,7 +3370,6 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // be delayed by at most the 250ms probe cap; independent history, record,
         // autosave and collaboration work above continues on its existing doors.
         let demand = crate::render_thread::retry::WakeDemand {
-            model: app.collaboration.manager.is_connected(),
             typing: typing_active,
             primary_startup: awaiting_primary_first_present,
             tooltip: tooltip_pending,
