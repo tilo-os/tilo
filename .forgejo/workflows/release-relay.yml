@@ -360,6 +360,19 @@ jobs:
             printf 'use_ssl=%s\n' "$SCCACHE_S3_USE_SSL"
           } >> "$GITHUB_OUTPUT"
 
+      # Login is required on every build (build-only or push): the
+      # Containerfile FROMs the private frozen RPM repo, which needs
+      # registry auth to pull.
+      # Anyone may pull the base; only runs that push the image or its layer
+      # cache log in.
+      - name: Log in to registry.tilo.so
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: registry.tilo.so
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       # Same mirrored, digest-pinned base as the OS image — see
       # os/base-snapshot.env for why the base is a mirror and not quay.io.
       - name: Load the pinned BASE_REF
@@ -421,15 +434,6 @@ jobs:
             # produces a discoverable image without polluting the `latest` channel.
             type=raw,value=${{ github.ref_name }}-${{ github.sha }},enable=${{ github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main' }}
 
-      # Every build exports its layer cache and tags and dispatches push the
-      # image. Log in last, so no earlier step holds the credential.
-      - name: Log in to registry.tilo.so
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
-        with:
-          registry: registry.tilo.so
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Build the tilo-relay image (push only on tags/dispatch)
         id: build
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
@@ -466,12 +470,8 @@ jobs:
             aws_access_key_id=AWS_ACCESS_KEY_ID
             aws_secret_access_key=AWS_SECRET_ACCESS_KEY
             aws_session_token=AWS_SESSION_TOKEN
-          # Pull requests read the main cache and write only their own, so an
-          # untrusted head never mutates the `latest` cache that main reads.
-          cache-from: |
-            type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/tilo/tilo-relay-buildcache:latest
-            ${{ github.event_name == 'pull_request' && format('type=registry,ref={0}/tilo/tilo-relay-buildcache:pr-{1}', env.TILO_LAYER_CACHE_REGISTRY, github.event.number) || '' }}
-          cache-to: type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/tilo/tilo-relay-buildcache:${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.number) || 'latest' }},mode=max,ignore-error=true
+          cache-from: type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/tilo/tilo-relay-buildcache:latest
+          cache-to: type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/tilo/tilo-relay-buildcache:latest,mode=max,ignore-error=true
           provenance: false
 
       # Optional signing reuses the same key as the OS image so `bootc
