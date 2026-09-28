@@ -1077,6 +1077,9 @@ launch-error-registry-unreadable = The app list could not be read. Try again.
 launch-error-host-app-refused = This app's desktop entry cannot be started.
 launch-failed-launcher-unavailable = The app launcher is unavailable. Open Applications and try again.
 launch-failed-stopped = The app stopped before opening. Open Applications and try again.
+launch-failed-missing-library = The app needs a library this system doesn't have, so it stopped before opening.
+launch-failed-sandbox = The app's sandbox could not be set up, so it stopped before opening.
+launch-failed-crashed = The app crashed before opening. Open Applications and try again.
 launch-unnamed-app = application
 launch-failure-title = Couldn't open { $app }
 

@@ -1080,6 +1080,9 @@ launch-error-registry-unreadable = Die App-Liste konnte nicht gelesen werden. Ve
 launch-error-host-app-refused = Der Desktop-Eintrag dieser App kann nicht gestartet werden.
 launch-failed-launcher-unavailable = Der App-Starter ist nicht verfügbar. Öffne „Anwendungen“ und versuche es erneut.
 launch-failed-stopped = Die App wurde beendet, bevor sie sich öffnete. Öffne „Anwendungen“ und versuche es erneut.
+launch-failed-missing-library = Der App fehlt eine Bibliothek auf diesem System, daher wurde sie beendet, bevor sie sich öffnete.
+launch-failed-sandbox = Die Sandbox der App konnte nicht eingerichtet werden, daher wurde sie beendet, bevor sie sich öffnete.
+launch-failed-crashed = Die App ist abgestürzt, bevor sie sich öffnete. Öffne „Anwendungen“ und versuche es erneut.
 launch-unnamed-app = Anwendung
 launch-failure-title = { $app } konnte nicht geöffnet werden
 
