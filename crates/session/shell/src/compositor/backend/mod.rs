@@ -667,6 +667,24 @@ pub trait Backend {
         None
     }
 
+    /// Whether [`Self::poll_events`] can have news that neither
+    /// [`Self::event_fd`] nor [`Self::next_service_deadline`] announces, so an
+    /// idle compositor must keep polling it. [`HeadlessBackend`] has no input
+    /// and no display: polling it would only wake an idle desktop 20 times a
+    /// second to run the whole pre-paint pump for nothing.
+    fn needs_idle_poll(&self) -> bool {
+        true
+    }
+
+    /// Tell a display-less backend whether anyone is looking at its pixels.
+    /// Returns `true` when that attaches a viewer to a backend that has
+    /// been skipping frames, so the caller must paint a fresh one.
+    ///
+    /// Default: a backend with a display is always watched.
+    fn set_watched(&mut self, _watched: bool) -> bool {
+        false
+    }
+
     fn outputs(&self) -> &[Output];
 
     /// The presentation interval of the display this backend drives, if

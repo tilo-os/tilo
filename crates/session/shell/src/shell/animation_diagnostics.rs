@@ -23,7 +23,11 @@ pub(crate) const HOST_SOURCE_NAMES: [&str; 15] = [
     reason = "one named flag per independent animation source keeps the bit layout auditable"
 )]
 pub(crate) struct HostDemandInputs {
+    /// First-login setup owns the screen: only it and Capture Studio count.
     pub onboarding: bool,
+    /// Whether that setup view has motion in flight. Its mere presence is
+    /// not demand: a static setup screen must idle like a static desktop.
+    pub onboarding_animating: bool,
     pub capture_studio: bool,
     pub root_transition: bool,
     pub quick_settings: bool,
@@ -43,7 +47,7 @@ pub(crate) struct HostDemandInputs {
 
 pub(crate) fn host_bits(inputs: &HostDemandInputs) -> u32 {
     if inputs.onboarding {
-        return 1 | (u32::from(inputs.capture_studio) << 1);
+        return u32::from(inputs.onboarding_animating) | (u32::from(inputs.capture_studio) << 1);
     }
     u32::from(inputs.root_transition)
         | (u32::from(inputs.quick_settings) << 1)
@@ -80,5 +84,32 @@ mod tests {
             ["quick-settings", "content", "notification"],
         );
         assert!(host_labels(0).next().is_none());
+    }
+
+    #[test]
+    fn a_static_onboarding_screen_demands_no_frames() {
+        let inputs = |onboarding_animating, quick_settings| HostDemandInputs {
+            onboarding: true,
+            onboarding_animating,
+            capture_studio: false,
+            root_transition: false,
+            quick_settings,
+            workspace_settings: false,
+            palette: false,
+            power_menu: false,
+            room_activity: false,
+            follow: false,
+            room_replay: false,
+            projection: false,
+            content: false,
+            sidebar: false,
+            capture_mirror: false,
+            screenshot_markup: false,
+            notification: false,
+        };
+        assert_eq!(host_bits(&inputs(false, false)), 0);
+        assert_eq!(host_bits(&inputs(true, false)), 1);
+        // Setup owns the screen: the desktop's sources beneath it are hidden.
+        assert_eq!(host_bits(&inputs(false, true)), 0);
     }
 }
