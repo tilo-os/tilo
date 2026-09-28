@@ -1439,8 +1439,18 @@ fn clipboard_gestures_route_through_confirmed_actions() {
         ui::clipboard_copy_primary("SUBSTITUTED");
         let encoded = spec.build_json(&intent.arguments).unwrap();
         assert!(
-            w.invoke_resource_operation(spec.kind, &encoded.type_id, &encoded.payload, &doc, &ROOT)
-                .unwrap()
+            w.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    spec.kind,
+                    &encoded.type_id,
+                    &encoded.payload
+                ),
+                &mut doc,
+                &ROOT
+            )
+            .map(|started| started.is_some())
+            .unwrap()
         );
         assert_eq!(
             drain_writes(&write_rx),
@@ -2063,13 +2073,17 @@ fn context_menu_is_keyboard_navigable_and_laid_out_in_view() {
         // tests cover denial, confirmation and live role revocation.
         assert!(
             widget
-                .invoke_resource_operation(
-                    spec.kind,
-                    &encoded.type_id,
-                    &encoded.payload,
-                    &doc,
+                .start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        spec.kind,
+                        &encoded.type_id,
+                        &encoded.payload
+                    ),
+                    &mut doc,
                     &ROOT
                 )
+                .map(|started| started.is_some())
                 .unwrap()
         );
         assert_eq!(
@@ -2548,13 +2562,17 @@ fn menu_and_paste_actions_recheck_live_permissions() {
         let encoded = spec.build_json(&intent.arguments).unwrap();
         assert!(
             widget
-                .invoke_resource_operation(
-                    spec.kind,
-                    &encoded.type_id,
-                    &encoded.payload,
-                    &doc,
-                    &ROOT,
+                .start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        spec.kind,
+                        &encoded.type_id,
+                        &encoded.payload
+                    ),
+                    &mut doc,
+                    &ROOT
                 )
+                .map(|started| started.is_some())
                 .unwrap()
         );
         assert_eq!(
@@ -4943,14 +4961,18 @@ fn windows_native_and_hosted_terminal_paths() {
         let command = r#"powershell.exe -NoProfile -Command "$s=$Host.UI.RawUI.WindowSize; 'NATIVE_SIZE={0}x{1}' -f $s.Width,$s.Height""#;
         let arguments = serde_json::to_vec(command).unwrap();
         assert!(
-            ui::Widget::invoke_resource_operation(
+            ui::Widget::start_operation(
                 &mut widget,
-                ui::tilo_actions::OperationKind::Effect,
-                "terminal.run",
-                &arguments,
-                &document,
-                &ROOT,
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    ui::tilo_actions::OperationKind::Effect,
+                    "terminal.run",
+                    &arguments
+                ),
+                &mut document,
+                &ROOT
             )
+            .map(|started| started.is_some())
             .expect("invoke native command through action API")
         );
         let expected = format!("NATIVE_SIZE={columns}x{rows}");

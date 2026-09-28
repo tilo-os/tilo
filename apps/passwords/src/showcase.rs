@@ -3930,27 +3930,8 @@ impl PasswordsSurface {
     }
 }
 
-impl Widget for PasswordsSurface {
-    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
-        self.transfer_poll_deadline.set(None);
-        self.poll_transfers();
-        if self
-            .revealed
-            .as_ref()
-            .is_some_and(|(_, _, until)| *until <= std::time::Instant::now())
-        {
-            self.revealed = None;
-        }
-    }
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &["tilo.passwords.operation"]
-    }
-    fn resources(&self, _doc: &AutoCommit) -> Vec<ui::tilo_actions::Resource> {
-        let mut out = vec![actions::vault_resource(self.mode == ShowcaseMode::Editor)];
-        out.extend(self.items.iter().map(actions::item_resource));
-        out
-    }
-    fn invoke_resource_operation(
+impl PasswordsSurface {
+    fn answer_resource_operation(
         &mut self,
         _kind: ui::tilo_actions::OperationKind,
         type_id: &str,
@@ -3993,6 +3974,48 @@ impl Widget for PasswordsSurface {
             crate::actions::PasswordOperation::ExportCsv => self.request_export_confirmation(),
         }
         Ok(true)
+    }
+}
+
+impl Widget for PasswordsSurface {
+    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
+        self.transfer_poll_deadline.set(None);
+        self.poll_transfers();
+        if self
+            .revealed
+            .as_ref()
+            .is_some_and(|(_, _, until)| *until <= std::time::Instant::now())
+        {
+            self.revealed = None;
+        }
+    }
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &["tilo.passwords.operation"]
+    }
+    fn resources(&self, _doc: &AutoCommit) -> Vec<ui::tilo_actions::Resource> {
+        let mut out = vec![actions::vault_resource(self.mode == ShowcaseMode::Editor)];
+        out.extend(self.items.iter().map(actions::item_resource));
+        out
+    }
+    fn start_operation(
+        &mut self,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
+        }
+        let Some(request) = op.unscoped() else {
+            return Ok(None);
+        };
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
     }
     #[allow(clippy::expect_used, reason = "a fresh taffy leaf cannot fail")]
     fn build_layout(
@@ -6173,13 +6196,17 @@ mod tests {
                 serde_json::to_vec(&crate::actions::PasswordOperation::RequestDelete { id: id.0 })
                     .unwrap();
             assert!(
-                app.invoke_resource_operation(
-                    ui::tilo_actions::OperationKind::Effect,
-                    "tilo.passwords.operation",
-                    &payload,
-                    &doc,
-                    &automerge::ROOT,
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        ui::tilo_actions::OperationKind::Effect,
+                        "tilo.passwords.operation",
+                        &payload
+                    ),
+                    &mut doc,
+                    &automerge::ROOT
                 )
+                .map(|started| started.is_some())
                 .unwrap()
             );
             assert_eq!(app.model.as_ref().unwrap().items().len(), 1);
