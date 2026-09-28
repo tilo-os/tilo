@@ -225,14 +225,16 @@ impl Harness {
             let mut handled = false;
             self.app.handle_event(
                 ev,
-                1.0,
-                &mods,
-                &mut self.doc,
-                &root(),
-                &mut handled,
-                &mut focus_target,
-                self.app_node,
-                &self.taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &mods,
+                    state: &mut self.doc,
+                    path: &root(),
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: self.app_node,
+                    taffy: &self.taffy,
+                },
             );
             // Match the live host's action-bound control dispatch boundary,
             // also exercised by tests/control_interaction.rs. Back is a View
@@ -275,14 +277,16 @@ impl Harness {
         let mut focus_target = None;
         self.app.handle_event(
             &ev,
-            1.0,
-            &mods,
-            &mut self.doc,
-            &root(),
-            &mut handled,
-            &mut focus_target,
-            self.app_node,
-            &self.taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: &mut self.doc,
+                path: &root(),
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: self.app_node,
+                taffy: &self.taffy,
+            },
         );
         if let Some(id) = focus_target {
             self.set_focused(Some(id));
@@ -397,14 +401,16 @@ fn native_observer_tracks_search_without_committing_pending_changes() {
         let mut handled = false;
         h.app.handle_event(
             &ev,
-            1.0,
-            &Modifiers::default(),
-            &mut h.doc,
-            &root(),
-            &mut handled,
-            &mut None,
-            h.app_node,
-            &h.taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &Modifiers::default(),
+                state: &mut h.doc,
+                path: &root(),
+                handled: &mut handled,
+                focus_target: &mut None,
+                node_id: h.app_node,
+                taffy: &h.taffy,
+            },
         );
         let immediate = h.app.native_input_snapshot(&h.doc, &root()).unwrap();
         assert_eq!(immediate["local_search_text"], "");
@@ -499,14 +505,16 @@ fn narrow_search_retains_focus_through_filter_and_backspace() {
     }
     h.app.handle_event(
         &ev,
-        1.0,
-        &Modifiers::default(),
-        &mut h.doc,
-        &root(),
-        &mut false,
-        &mut None,
-        h.app_node,
-        &h.taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &Modifiers::default(),
+            state: &mut h.doc,
+            path: &root(),
+            handled: &mut false,
+            focus_target: &mut None,
+            node_id: h.app_node,
+            taffy: &h.taffy,
+        },
     );
     h.app.sync(&mut h.doc, &root());
     if h.app.take_structure_dirty() {

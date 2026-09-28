@@ -704,18 +704,9 @@ mod launch_tests {
         fn handle_event(
             &mut self,
             event: &winit::event::WindowEvent,
-            scale: f64,
-            modifiers: &winit::event::Modifiers,
-            doc: &mut automerge::AutoCommit,
-            path: &automerge::ObjId,
-            handled: &mut bool,
-            focused: &mut Option<taffy::NodeId>,
-            node: taffy::NodeId,
-            tree: &taffy::TaffyTree<()>,
+            ctx: &mut ui::widget::EventCtx<'_>,
         ) {
-            self.root.handle_event(
-                event, scale, modifiers, doc, path, handled, focused, node, tree,
-            );
+            self.root.handle_event(event, ctx);
         }
         fn name(&self) -> &str {
             self.root.name()

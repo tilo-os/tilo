@@ -21,7 +21,6 @@
 //! page surface regardless of sibling order — the same overlay contract
 //! the toolkit's `Dropdown` uses. `draw` itself is a no-op.
 
-use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -444,24 +443,14 @@ impl Widget for AddressSuggestions {
         self.render(scene, transform, text_renderer, theme);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if !self.is_visible() {
             return;
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_cursor =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.hovered = self.row_at(self.last_cursor);
             }
             WindowEvent::MouseInput {
@@ -472,26 +461,26 @@ impl Widget for AddressSuggestions {
                 if let Some(idx) = self.row_at(self.last_cursor) {
                     self.selected = idx;
                     self.chosen = self.items.get(idx).cloned();
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::KeyboardInput { event: key, .. } if key.state == ElementState::Pressed => {
                 match &key.logical_key {
                     Key::Named(NamedKey::ArrowDown) => {
                         self.move_selection(1);
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                     Key::Named(NamedKey::ArrowUp) => {
                         self.move_selection(-1);
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                     Key::Named(NamedKey::Enter) => {
                         self.chosen = self.selected().cloned();
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                     Key::Named(NamedKey::Escape) => {
                         self.clear();
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                     _ => {}
                 }
@@ -597,6 +586,7 @@ impl Widget for AddressSuggestions {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::AutoCommit;
 
     fn entry(url: &str, title: &str) -> HistoryEntry {
         HistoryEntry {
@@ -819,14 +809,16 @@ mod tests {
                 let mut focus = None;
                 w.handle_event(
                     &event,
-                    1.0,
-                    &mods,
-                    &mut doc,
-                    &root,
-                    &mut handled,
-                    &mut focus,
-                    node,
-                    &taffy,
+                    &mut ui::widget::EventCtx {
+                        scale_factor: 1.0,
+                        modifiers: &mods,
+                        state: &mut doc,
+                        path: &root,
+                        handled: &mut handled,
+                        focus_target: &mut focus,
+                        node_id: node,
+                        taffy: &taffy,
+                    },
                 );
                 handled
             };
@@ -873,14 +865,16 @@ mod tests {
             let mut focus = None;
             w.handle_event(
                 &event,
-                1.0,
-                &mods,
-                &mut doc,
-                &root,
-                &mut handled,
-                &mut focus,
-                node,
-                &taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &mods,
+                    state: &mut doc,
+                    path: &root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &taffy,
+                },
             );
             assert!(handled);
             assert!(!w.is_visible(), "Escape clears the overlay");
@@ -907,14 +901,16 @@ mod tests {
                 let mut focus = None;
                 w.handle_event(
                     &ev,
-                    1.0,
-                    &mods,
-                    &mut doc,
-                    &root,
-                    &mut handled,
-                    &mut focus,
-                    node,
-                    &taffy,
+                    &mut ui::widget::EventCtx {
+                        scale_factor: 1.0,
+                        modifiers: &mods,
+                        state: &mut doc,
+                        path: &root,
+                        handled: &mut handled,
+                        focus_target: &mut focus,
+                        node_id: node,
+                        taffy: &taffy,
+                    },
                 );
                 handled
             };

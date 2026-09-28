@@ -4869,25 +4869,15 @@ impl Widget for BackupsApp {
         self.render(scene, transform, text_renderer, theme);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_mouse = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_mouse =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 let new_hover = self.hit_at(self.last_mouse);
                 if new_hover != self.hover {
                     self.hover = new_hover;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseInput {
@@ -4896,12 +4886,12 @@ impl Widget for BackupsApp {
                 ..
             } => {
                 if let Some(hit) = self.hit_at(self.last_mouse) {
-                    self.dispatch(hit, state, path);
-                    *handled = true;
+                    self.dispatch(hit, ctx.state, ctx.path);
+                    *ctx.handled = true;
                 } else if self.ui.restore_open {
                     // The sheet's scrim swallows the press; nothing behind a
                     // modal may activate.
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseWheel { delta, .. } if self.ui.view == View::Timeline => {
@@ -4918,11 +4908,11 @@ impl Widget for BackupsApp {
                     && rail.contains(self.last_mouse)
                 {
                     self.rail_scroll = (self.rail_scroll + dy).clamp(0.0, self.rail_scroll_max);
-                    *handled = true;
+                    *ctx.handled = true;
                 } else if self.timeline_view.contains(self.last_mouse) {
                     let max = (self.timeline_content_h - self.timeline_view.height()).max(0.0);
                     self.timeline_scroll = (self.timeline_scroll + dy).clamp(0.0, max);
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::KeyboardInput {
@@ -4931,7 +4921,7 @@ impl Widget for BackupsApp {
                 if key_event.state != ElementState::Pressed {
                     return;
                 }
-                self.handle_key(&key_event.logical_key, state, path, handled);
+                self.handle_key(&key_event.logical_key, ctx.state, ctx.path, ctx.handled);
             }
             _ => {}
         }
@@ -5622,14 +5612,16 @@ mod tests {
                     device_id: DeviceId::dummy(),
                     position: PhysicalPosition::new(p.x, p.y),
                 },
-                1.0,
-                &m,
-                &mut self.state.doc,
-                &self.state.root,
-                &mut handled,
-                &mut focus,
-                self.node,
-                &self.taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &m,
+                    state: &mut self.state.doc,
+                    path: &self.state.root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: self.node,
+                    taffy: &self.taffy,
+                },
             );
             self.app.handle_event(
                 &WindowEvent::MouseInput {
@@ -5637,14 +5629,16 @@ mod tests {
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                 },
-                1.0,
-                &m,
-                &mut self.state.doc,
-                &self.state.root,
-                &mut handled,
-                &mut focus,
-                self.node,
-                &self.taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &m,
+                    state: &mut self.state.doc,
+                    path: &self.state.root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: self.node,
+                    taffy: &self.taffy,
+                },
             );
             self.draw();
         }
@@ -5676,14 +5670,16 @@ mod tests {
             ] {
                 self.app.handle_event(
                     &ev,
-                    1.0,
-                    &m,
-                    &mut self.state.doc,
-                    &self.state.root,
-                    &mut handled,
-                    &mut focus,
-                    self.node,
-                    &self.taffy,
+                    &mut ui::widget::EventCtx {
+                        scale_factor: 1.0,
+                        modifiers: &m,
+                        state: &mut self.state.doc,
+                        path: &self.state.root,
+                        handled: &mut handled,
+                        focus_target: &mut focus,
+                        node_id: self.node,
+                        taffy: &self.taffy,
+                    },
                 );
             }
             self.draw();

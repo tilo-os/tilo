@@ -184,19 +184,6 @@ impl tilo_ui::widget::Widget for NoOpWidget {
         _presence: &tilo_ui::presence::PresenceCtx,
     ) {
     }
-    fn handle_event(
-        &mut self,
-        _e: &winit::event::WindowEvent,
-        _sf: f64,
-        _mods: &winit::event::Modifiers,
-        _s: &mut automerge::AutoCommit,
-        _p: &automerge::ObjId,
-        _h: &mut bool,
-        _ft: &mut Option<taffy::NodeId>,
-        _nid: taffy::NodeId,
-        _t: &taffy::TaffyTree<()>,
-    ) {
-    }
     fn name(&self) -> &'static str {
         "noop"
     }
@@ -275,14 +262,7 @@ impl tilo_ui::widget::Widget for GatedButton {
     fn handle_event(
         &mut self,
         _e: &winit::event::WindowEvent,
-        _sf: f64,
-        _mods: &winit::event::Modifiers,
-        _s: &mut automerge::AutoCommit,
-        _p: &automerge::ObjId,
-        _h: &mut bool,
-        _ft: &mut Option<taffy::NodeId>,
-        _nid: taffy::NodeId,
-        _t: &taffy::TaffyTree<()>,
+        _ctx: &mut tilo_ui::widget::EventCtx<'_>,
     ) {
         self.clicked = true;
     }

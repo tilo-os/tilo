@@ -21,7 +21,7 @@ use ui::theme::Theme;
 use ui::widget::{Button, Column, Row, Spacer, Text, TextInput, Toggle, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use winit::event::{Modifiers, WindowEvent};
+use winit::event::WindowEvent;
 
 pub const BT_ENABLED_KEY: &str = "bluetooth.enabled";
 pub const SCAN_KEY: &str = "bluetooth.scan";
@@ -877,33 +877,12 @@ impl Widget for BluetoothPane {
             c.draw(scene, transform, text_renderer, theme, presence);
         }
     }
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let Some(c) = &mut self.composed
-            && let Ok(ch) = taffy.children(node_id)
+            && let Ok(ch) = ctx.taffy.children(ctx.node_id)
             && let Some(&cn) = ch.first()
         {
-            c.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                cn,
-                taffy,
-            );
+            c.handle_event(event, &mut ctx.reborrow(ctx.path, cn));
         }
     }
     fn children(&self) -> Vec<&dyn Widget> {

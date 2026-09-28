@@ -162,19 +162,6 @@ impl Widget for SemanticCountingPublisher {
         _p: &PresenceCtx,
     ) {
     }
-    fn handle_event(
-        &mut self,
-        _e: &WindowEvent,
-        _sf: f64,
-        _m: &winit::event::Modifiers,
-        _s: &mut AutoCommit,
-        _p: &ObjId,
-        _h: &mut bool,
-        _ft: &mut Option<NodeId>,
-        _ni: NodeId,
-        _t: &TaffyTree<()>,
-    ) {
-    }
     fn name(&self) -> &'static str {
         "counting-publisher"
     }
@@ -354,19 +341,6 @@ impl Widget for InventoryOnlyPublisher {
         _p: &PresenceCtx,
     ) {
     }
-    fn handle_event(
-        &mut self,
-        _e: &WindowEvent,
-        _sf: f64,
-        _m: &winit::event::Modifiers,
-        _s: &mut AutoCommit,
-        _p: &ObjId,
-        _h: &mut bool,
-        _ft: &mut Option<NodeId>,
-        _ni: NodeId,
-        _t: &TaffyTree<()>,
-    ) {
-    }
     fn name(&self) -> &'static str {
         "counting-publisher"
     }
@@ -433,19 +407,6 @@ impl Widget for FastInventoryPublisher {
         _tr: &mut TextRenderer,
         _th: &Theme,
         _p: &PresenceCtx,
-    ) {
-    }
-    fn handle_event(
-        &mut self,
-        _e: &WindowEvent,
-        _sf: f64,
-        _m: &winit::event::Modifiers,
-        _s: &mut AutoCommit,
-        _p: &ObjId,
-        _h: &mut bool,
-        _ft: &mut Option<NodeId>,
-        _ni: NodeId,
-        _t: &TaffyTree<()>,
     ) {
     }
     fn name(&self) -> &'static str {

@@ -1238,18 +1238,9 @@ mod admission_tests {
                 fn handle_event(
                     &mut self,
                     event: &winit::event::WindowEvent,
-                    scale: f64,
-                    modifiers: &winit::event::Modifiers,
-                    doc: &mut automerge::AutoCommit,
-                    path: &automerge::ObjId,
-                    handled: &mut bool,
-                    focus: &mut Option<taffy::NodeId>,
-                    node: taffy::NodeId,
-                    tree: &taffy::TaffyTree<()>,
+                    ctx: &mut crate::widget::EventCtx<'_>,
                 ) {
-                    self.text.handle_event(
-                        event, scale, modifiers, doc, path, handled, focus, node, tree,
-                    );
+                    self.text.handle_event(event, ctx);
                 }
                 fn get_rect(&self) -> Rect {
                     self.text.get_rect()

@@ -591,29 +591,18 @@ impl Widget for CollaborationLaunchpad {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
-        if *handled {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        if *ctx.handled {
             return;
         }
         let before = (self.hover_target(), self.selected);
         self.handle_launchpad_event(
             event,
-            scale_factor,
-            modifiers.state().shift_key(),
-            state,
-            path,
-            handled,
+            ctx.scale_factor,
+            ctx.modifiers.state().shift_key(),
+            ctx.state,
+            ctx.path,
+            ctx.handled,
         );
         self.dirty |= (self.hover_target(), self.selected) != before;
     }

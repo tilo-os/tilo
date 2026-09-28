@@ -15,7 +15,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -579,18 +578,7 @@ impl Widget for PeerView {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        _scale_factor: f64,
-        modifiers: &Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let point = Point::new(position.x, position.y);
@@ -607,7 +595,7 @@ impl Widget for PeerView {
                     let y = ((point.y - content.y0) / content.height() * height)
                         .clamp(0.0, height.max(1.0) - 1.0);
                     self.record_pointer_motion(x, y);
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::CursorLeft { .. } => self.set_pointer_inside(false),
@@ -620,9 +608,9 @@ impl Widget for PeerView {
                     && let Some(button) = crate::shell::input_policy::evdev_button(*button)
                 {
                     self.record_pointer_button(button, pressed);
-                    *handled = true;
+                    *ctx.handled = true;
                     if pressed {
-                        *focus_target = Some(node_id);
+                        *ctx.focus_target = Some(ctx.node_id);
                     }
                 }
             }
@@ -631,9 +619,9 @@ impl Widget for PeerView {
                     self.record_key(
                         keycode,
                         matches!(event.state, winit::event::ElementState::Pressed),
-                        Self::modifier_bits(*modifiers),
+                        Self::modifier_bits(*ctx.modifiers),
                     );
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::Focused(false) => self.set_keyboard_focused(false),

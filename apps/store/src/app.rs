@@ -4746,34 +4746,18 @@ impl Widget for StoreApp {
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) {
         // Track the pointer so the bubble can reveal on hover of its
         // bottom-right zone (coords are window-space, unscaled).
         if let winit::event::WindowEvent::CursorMoved { position, .. } = event {
-            self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+            self.last_cursor =
+                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
         }
-        if let (Some(root), Ok(children)) = (self.root.as_mut(), taffy.children(node_id))
+        if let (Some(root), Ok(children)) = (self.root.as_mut(), ctx.taffy.children(ctx.node_id))
             && let Some(&child_node) = children.first()
         {
-            root.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                child_node,
-                taffy,
-            );
+            root.handle_event(event, &mut ctx.reborrow(ctx.path, child_node));
         }
     }
 
@@ -5483,14 +5467,16 @@ mod tests {
                     for event in events {
                         grid.handle_event(
                             &event,
-                            1.0,
-                            &winit::event::Modifiers::default(),
-                            &mut doc,
-                            &automerge::ROOT,
-                            &mut false,
-                            &mut focus,
-                            node,
-                            &tree,
+                            &mut ui::widget::EventCtx {
+                                scale_factor: 1.0,
+                                modifiers: &winit::event::Modifiers::default(),
+                                state: &mut doc,
+                                path: &automerge::ROOT,
+                                handled: &mut false,
+                                focus_target: &mut focus,
+                                node_id: node,
+                                taffy: &tree,
+                            },
                         );
                     }
                     let details = grid.take_control_invocation().expect("pointer Details");

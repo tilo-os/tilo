@@ -1145,33 +1145,22 @@ impl Widget for SidebarWheelDisc {
         self.cached_fp = fp;
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         match event {
             WindowEvent::MouseInput {
                 state: winit::event::ElementState::Pressed,
                 button: winit::event::MouseButton::Left,
                 ..
-            } => self.handle_left_press(handled),
+            } => self.handle_left_press(ctx.handled),
             WindowEvent::CursorMoved { position, .. } => {
-                self.handle_cursor_moved(position, scale_factor, handled);
+                self.handle_cursor_moved(position, ctx.scale_factor, ctx.handled);
             }
             WindowEvent::MouseInput {
                 state: winit::event::ElementState::Released,
                 button: winit::event::MouseButton::Left,
                 ..
-            } => self.handle_left_release(handled),
-            WindowEvent::MouseWheel { delta, .. } => self.handle_mouse_wheel(delta, handled),
+            } => self.handle_left_release(ctx.handled),
+            WindowEvent::MouseWheel { delta, .. } => self.handle_mouse_wheel(delta, ctx.handled),
             _ => {}
         }
     }
@@ -2435,14 +2424,16 @@ mod tests {
         let dummy_node = unsafe { std::mem::transmute::<u64, NodeId>(0) };
         d.handle_event(
             ev,
-            1.0,
-            &mods,
-            &mut doc,
-            &path,
-            &mut handled,
-            &mut focus,
-            dummy_node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: &mut doc,
+                path: &path,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: dummy_node,
+                taffy: &taffy,
+            },
         );
         handled
     }

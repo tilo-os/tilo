@@ -659,20 +659,9 @@ impl Widget for SpeedTestApp {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &ui::winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.pointer = Point::new(position.x / scale_factor, position.y / scale_factor);
+            self.pointer = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
         }
         if matches!(
             event,
@@ -684,10 +673,10 @@ impl Widget for SpeedTestApp {
         ) {
             if self.primary_rect().contains(self.pointer) {
                 self.toggle_test();
-                *handled = true;
+                *ctx.handled = true;
             } else if self.region_rect().contains(self.pointer) {
                 self.cycle_region();
-                *handled = true;
+                *ctx.handled = true;
             }
         }
     }

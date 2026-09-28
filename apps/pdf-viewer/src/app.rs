@@ -5266,18 +5266,7 @@ impl Widget for PdfApp {
         self.draw_all(scene, transform, text_renderer, theme);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if self.awaiting_markup_record {
             return;
         }
@@ -5285,17 +5274,7 @@ impl Widget for PdfApp {
             let (selected_target, still_open) = {
                 match self.context_menu.as_mut() {
                     Some(menu) => {
-                        menu.widget.handle_event(
-                            event,
-                            scale_factor,
-                            modifiers,
-                            state,
-                            path,
-                            handled,
-                            focus_target,
-                            node_id,
-                            taffy,
-                        );
+                        menu.widget.handle_event(event, ctx);
                         let selected = menu.widget.take_selection().map(|_| menu.target.clone());
                         (selected, menu.widget.is_open())
                     }
@@ -5303,9 +5282,9 @@ impl Widget for PdfApp {
                 }
             };
             if let Some(target) = selected_target {
-                self.delete_target(&target, state);
+                self.delete_target(&target, ctx.state);
                 self.context_menu = None;
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
             if !still_open {
@@ -5321,12 +5300,18 @@ impl Widget for PdfApp {
                         ..
                     }
             );
-            if *handled || modal_event {
-                *handled = true;
+            if *ctx.handled || modal_event {
+                *ctx.handled = true;
                 return;
             }
         }
-        self.on_event(event, scale_factor, *modifiers, state, handled);
+        self.on_event(
+            event,
+            ctx.scale_factor,
+            *ctx.modifiers,
+            ctx.state,
+            ctx.handled,
+        );
     }
 
     fn name(&self) -> &'static str {

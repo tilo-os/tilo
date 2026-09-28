@@ -37,7 +37,7 @@ use ui::widget::{
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect};
 use vello::peniko::{BlendMode, Fill};
-use winit::event::{ElementState, Modifiers, WindowEvent};
+use winit::event::{ElementState, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 use zeroize::{Zeroize, Zeroizing};
 
@@ -3402,39 +3402,20 @@ impl Widget for OnboardingView {
         self.draw_picker(scene, transform, text_renderer, theme, presence);
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "onboarding forwards the Widget event, CRDT, focus and layout context to its picker and composed child controls"
-    )]
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let Some((_, picker)) = self.picker.as_mut() {
             picker.set_rect(onboarding_picker_rect(self.rect));
             let mut picker_taffy = TaffyTree::<()>::new();
             if let Ok(picker_node) = picker_taffy.new_leaf(taffy::Style::default()) {
                 picker.handle_event(
                     event,
-                    scale_factor,
-                    modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    picker_node,
-                    &picker_taffy,
+                    &mut ui::widget::EventCtx {
+                        taffy: &picker_taffy,
+                        ..ctx.reborrow(ctx.path, picker_node)
+                    },
                 );
             }
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
         if self.tour_page.is_some()
@@ -3445,8 +3426,10 @@ impl Widget for OnboardingView {
                         && matches!(event.logical_key, Key::Named(NamedKey::Escape))
             )
         {
-            let _ = state.put(path, KEY_TOUR_SKIP, ScalarValue::Boolean(true));
-            *handled = true;
+            let _ = ctx
+                .state
+                .put(ctx.path, KEY_TOUR_SKIP, ScalarValue::Boolean(true));
+            *ctx.handled = true;
             return;
         }
         // Escape follows the visible Back action while the identity ceremony
@@ -3465,25 +3448,17 @@ impl Widget for OnboardingView {
                         && matches!(event.logical_key, Key::Named(NamedKey::Escape))
             )
         {
-            let _ = state.put(path, KEY_BACK, ScalarValue::Boolean(true));
-            *handled = true;
+            let _ = ctx
+                .state
+                .put(ctx.path, KEY_BACK, ScalarValue::Boolean(true));
+            *ctx.handled = true;
             return;
         }
         if let Some(c) = &mut self.composed
-            && let Ok(children) = taffy.children(node_id)
+            && let Ok(children) = ctx.taffy.children(ctx.node_id)
             && let Some(&cn) = children.first()
         {
-            c.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                cn,
-                taffy,
-            );
+            c.handle_event(event, &mut ctx.reborrow(ctx.path, cn));
         }
     }
 
@@ -3636,6 +3611,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::TempDir;
     use ui::widget::identity_flow::{IdentityRecord, SerializableIdentity};
+    use winit::event::Modifiers;
 
     fn view() -> (OnboardingView, Arc<AtomicUsize>) {
         let calls = Arc::new(AtomicUsize::new(0));
@@ -3740,14 +3716,16 @@ mod tests {
         let mut focus_target = None;
         view.handle_event(
             &escape_event(),
-            1.0,
-            &Modifiers::default(),
-            document,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &Modifiers::default(),
+                state: document,
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         handled
     }
@@ -5628,14 +5606,16 @@ mod tests {
                 let mut handled = false;
                 view.handle_event(
                     &event,
-                    1.0,
-                    &Modifiers::default(),
-                    &mut document,
-                    &automerge::ROOT,
-                    &mut handled,
-                    &mut focus,
-                    node,
-                    &taffy,
+                    &mut ui::widget::EventCtx {
+                        scale_factor: 1.0,
+                        modifiers: &Modifiers::default(),
+                        state: &mut document,
+                        path: &automerge::ROOT,
+                        handled: &mut handled,
+                        focus_target: &mut focus,
+                        node_id: node,
+                        taffy: &taffy,
+                    },
                 );
                 assert!(handled, "the labelled checkbox row must handle {event:?}");
             }
@@ -5702,14 +5682,16 @@ mod tests {
                 let mut handled = false;
                 view.handle_event(
                     &event,
-                    1.0,
-                    &Modifiers::default(),
-                    &mut document,
-                    &automerge::ROOT,
-                    &mut handled,
-                    &mut focus,
-                    node,
-                    &taffy,
+                    &mut ui::widget::EventCtx {
+                        scale_factor: 1.0,
+                        modifiers: &Modifiers::default(),
+                        state: &mut document,
+                        path: &automerge::ROOT,
+                        handled: &mut handled,
+                        focus_target: &mut focus,
+                        node_id: node,
+                        taffy: &taffy,
+                    },
                 );
                 if !matches!(event, WindowEvent::CursorMoved { .. }) {
                     assert!(

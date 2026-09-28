@@ -422,20 +422,10 @@ impl Widget for SearchField {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+            self.last_cursor =
+                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
         }
         // A left press anywhere latches a palette-open request and never
         // reaches the inner input.
@@ -448,7 +438,7 @@ impl Widget for SearchField {
                 && self.rect.contains(self.last_cursor)
             {
                 self.request_palette();
-                *handled = true;
+                *ctx.handled = true;
             }
             return;
         }
@@ -463,28 +453,20 @@ impl Widget for SearchField {
         {
             self.input.set_text("");
             self.cleared = true;
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
         // A field placed by `apply_layout_external` has no child node; the
         // input only uses the node to report a focus target.
-        let child_node = taffy
-            .children(node_id)
+        let child_node = ctx
+            .taffy
+            .children(ctx.node_id)
             .unwrap_or_default()
             .first()
             .copied()
-            .unwrap_or(node_id);
-        self.input.handle_event(
-            event,
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            child_node,
-            taffy,
-        );
+            .unwrap_or(ctx.node_id);
+        self.input
+            .handle_event(event, &mut ctx.reborrow(ctx.path, child_node));
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
@@ -686,14 +668,16 @@ immaterial"
                     device_id: unsafe { std::mem::zeroed() },
                     position: winit::dpi::PhysicalPosition::new(target.x, target.y),
                 },
-                1.0,
-                &mods,
-                &mut doc,
-                &rootid,
-                &mut handled,
-                &mut ft,
-                node,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &mods,
+                    state: &mut doc,
+                    path: &rootid,
+                    handled: &mut handled,
+                    focus_target: &mut ft,
+                    node_id: node,
+                    taffy: &taffy,
+                },
             );
             sf.handle_event(
                 &WindowEvent::MouseInput {
@@ -701,14 +685,16 @@ immaterial"
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                 },
-                1.0,
-                &mods,
-                &mut doc,
-                &rootid,
-                &mut handled,
-                &mut ft,
-                node,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &mods,
+                    state: &mut doc,
+                    path: &rootid,
+                    handled: &mut handled,
+                    focus_target: &mut ft,
+                    node_id: node,
+                    taffy: &taffy,
+                },
             );
             assert!(handled, "clear click consumed");
             assert!(sf.is_empty(), "clear empties the query");
@@ -831,14 +817,16 @@ immaterial"
                     device_id: unsafe { std::mem::zeroed() },
                     position: winit::dpi::PhysicalPosition::new(center.x, center.y),
                 },
-                1.0,
-                &mods,
-                &mut doc,
-                &rootid,
-                &mut handled,
-                &mut ft,
-                node,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &mods,
+                    state: &mut doc,
+                    path: &rootid,
+                    handled: &mut handled,
+                    focus_target: &mut ft,
+                    node_id: node,
+                    taffy: &taffy,
+                },
             );
             sf.handle_event(
                 &WindowEvent::MouseInput {
@@ -846,14 +834,16 @@ immaterial"
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                 },
-                1.0,
-                &mods,
-                &mut doc,
-                &rootid,
-                &mut handled,
-                &mut ft,
-                node,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &mods,
+                    state: &mut doc,
+                    path: &rootid,
+                    handled: &mut handled,
+                    focus_target: &mut ft,
+                    node_id: node,
+                    taffy: &taffy,
+                },
             );
             assert!(handled, "the launcher consumes the click");
             assert!(!sf.input.is_focused(), "launcher pill stays non-editable");

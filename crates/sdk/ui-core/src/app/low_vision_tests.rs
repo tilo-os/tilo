@@ -175,7 +175,6 @@ impl Widget for AppearanceRoot {
         _p: &crate::presence::PresenceCtx,
     ) {
     }
-    fn handle_event_ctx(&mut self, _event: &WindowEvent, _ctx: &mut crate::widget::EventCtx<'_>) {}
     fn appearance_intent(&self) -> Option<crate::theme::AppearanceIntent> {
         Some(self.intent.clone())
     }

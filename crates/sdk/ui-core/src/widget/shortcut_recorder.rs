@@ -250,21 +250,13 @@ impl Widget for ShortcutRecorder {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        handled: &mut bool,
-        focus: &mut Option<NodeId>,
-        node: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.pointer = Some(Point::new(position.x / scale, position.y / scale));
+                self.pointer = Some(Point::new(
+                    position.x / ctx.scale_factor,
+                    position.y / ctx.scale_factor,
+                ));
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -274,13 +266,13 @@ impl Widget for ShortcutRecorder {
                 let Some(point) = self.pointer else { return };
                 if let Some(reset) = self.reset_rect().filter(|r| r.contains(point)) {
                     let _ = reset;
-                    self.write(state, root, self.default.clone());
-                    *focus = Some(node);
-                    *handled = true;
+                    self.write(ctx.state, ctx.path, self.default.clone());
+                    *ctx.focus_target = Some(ctx.node_id);
+                    *ctx.handled = true;
                 } else if self.chord_rect().contains(point) {
                     self.capturing = true;
-                    *focus = Some(node);
-                    *handled = true;
+                    *ctx.focus_target = Some(ctx.node_id);
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::KeyboardInput { event, .. }
@@ -289,16 +281,17 @@ impl Widget for ShortcutRecorder {
                 if self.capturing {
                     if matches!(event.logical_key, Key::Named(NamedKey::Escape)) {
                         self.capturing = false;
-                    } else if let Some(value) = chord_from_event(&event.logical_key, *modifiers) {
-                        self.write(state, root, value);
+                    } else if let Some(value) = chord_from_event(&event.logical_key, *ctx.modifiers)
+                    {
+                        self.write(ctx.state, ctx.path, value);
                     }
-                    *handled = true;
+                    *ctx.handled = true;
                 } else if matches!(
                     event.logical_key,
                     Key::Named(NamedKey::Enter | NamedKey::Space)
                 ) {
                     self.capturing = true;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             _ => {}

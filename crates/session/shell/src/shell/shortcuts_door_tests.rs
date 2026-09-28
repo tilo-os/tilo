@@ -924,14 +924,16 @@ fn press(
     let mut focus = None;
     host.handle_event(
         &event,
-        1.0,
-        &winit::event::Modifiers::from(modifiers),
-        &mut doc,
-        &automerge::ROOT,
-        &mut handled,
-        &mut focus,
-        child,
-        &taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &winit::event::Modifiers::from(modifiers),
+            state: &mut doc,
+            path: &automerge::ROOT,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: child,
+            taffy: &taffy,
+        },
     );
     assert!(handled, "the shell took the chord");
 }

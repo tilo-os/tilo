@@ -466,39 +466,19 @@ impl Widget for NativeView {
         );
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if !self.enabled {
             return;
         }
         if !self.mounted {
             if let (Some(fallback), Some(child)) = (&mut self.fallback, self.fallback_node) {
-                fallback.handle_event(
-                    event,
-                    scale_factor,
-                    modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    child,
-                    taffy,
-                );
+                fallback.handle_event(event, &mut ctx.reborrow(ctx.path, child));
             }
             return;
         }
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+            self.last_cursor =
+                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
         }
         let pointer_event = matches!(
             event,
@@ -525,8 +505,8 @@ impl Widget for NativeView {
             event,
             NativeViewInput {
                 local_position,
-                scale_factor,
-                modifiers: modifiers.state(),
+                scale_factor: ctx.scale_factor,
+                modifiers: ctx.modifiers.state(),
             },
         ) {
             if matches!(
@@ -537,9 +517,9 @@ impl Widget for NativeView {
                     ..
                 }
             ) {
-                *focus_target = Some(node_id);
+                *ctx.focus_target = Some(ctx.node_id);
             }
-            *handled = true;
+            *ctx.handled = true;
         }
     }
 
@@ -811,14 +791,16 @@ mod tests {
             };
             view.handle_event(
                 &cursor,
-                1.0,
-                &modifiers,
-                &mut state,
-                &automerge::ROOT,
-                &mut handled,
-                &mut focus,
-                node,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state: &mut state,
+                    path: &automerge::ROOT,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &taffy,
+                },
             );
             let press = WindowEvent::MouseInput {
                 device_id: unsafe { std::mem::zeroed() },
@@ -827,14 +809,16 @@ mod tests {
             };
             view.handle_event(
                 &press,
-                1.0,
-                &modifiers,
-                &mut state,
-                &automerge::ROOT,
-                &mut handled,
-                &mut focus,
-                node,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state: &mut state,
+                    path: &automerge::ROOT,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &taffy,
+                },
             );
             assert!(handled);
             assert_eq!(focus, Some(node));

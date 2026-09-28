@@ -224,14 +224,16 @@ fn click_at(
     };
     host.handle_event(
         &moved,
-        1.0,
-        &winit::event::Modifiers::default(),
-        &mut state,
-        &root_id,
-        &mut handled,
-        &mut focus_target,
-        host_node,
-        taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &winit::event::Modifiers::default(),
+            state: &mut state,
+            path: &root_id,
+            handled: &mut handled,
+            focus_target: &mut focus_target,
+            node_id: host_node,
+            taffy,
+        },
     );
 
     for button_state in [ElementState::Pressed, ElementState::Released] {
@@ -244,14 +246,16 @@ fn click_at(
         };
         host.handle_event(
             &ev,
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut state,
-            &root_id,
-            &mut handled,
-            &mut focus_target,
-            host_node,
-            taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &winit::event::Modifiers::default(),
+                state: &mut state,
+                path: &root_id,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: host_node,
+                taffy,
+            },
         );
     }
 }
@@ -286,14 +290,16 @@ fn press_key(
     let mut focus_target = None;
     host.handle_event(
         &event,
-        1.0,
-        &Modifiers::from(modifiers),
-        &mut state,
-        &root_id,
-        &mut handled,
-        &mut focus_target,
-        host_node,
-        taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &Modifiers::from(modifiers),
+            state: &mut state,
+            path: &root_id,
+            handled: &mut handled,
+            focus_target: &mut focus_target,
+            node_id: host_node,
+            taffy,
+        },
     );
     handled
 }

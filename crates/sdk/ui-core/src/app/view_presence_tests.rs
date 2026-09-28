@@ -11,7 +11,6 @@ use std::sync::{Arc, Mutex};
 use taffy::TaffyTree;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect as KurboRect};
-use winit::event::WindowEvent;
 
 /// No focus field — [`ViewSubset`] excludes the caret.
 struct ViewRoot {
@@ -53,7 +52,6 @@ impl Widget for ViewRoot {
         _p: &PresenceCtx,
     ) {
     }
-    fn handle_event_ctx(&mut self, _event: &WindowEvent, _ctx: &mut crate::widget::EventCtx<'_>) {}
     fn name(&self) -> &'static str {
         "view-root"
     }

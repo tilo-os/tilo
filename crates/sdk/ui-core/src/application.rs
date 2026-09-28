@@ -1389,18 +1389,9 @@ mod bound_lifetime_tests {
         fn handle_event(
             &mut self,
             event: &winit::event::WindowEvent,
-            scale: f64,
-            modifiers: &winit::event::Modifiers,
-            doc: &mut AutoCommit,
-            path: &ObjId,
-            handled: &mut bool,
-            focus: &mut Option<NodeId>,
-            node: NodeId,
-            tree: &TaffyTree<()>,
+            ctx: &mut crate::widget::EventCtx<'_>,
         ) {
-            self.0.handle_event(
-                event, scale, modifiers, doc, path, handled, focus, node, tree,
-            );
+            self.0.handle_event(event, ctx);
         }
         fn name(&self) -> &'static str {
             "MountProbe"

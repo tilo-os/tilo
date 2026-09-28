@@ -353,52 +353,21 @@ impl Widget for VStack {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        let Ok(child_nodes) = taffy.children(node_id) else {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        let Ok(child_nodes) = ctx.taffy.children(ctx.node_id) else {
             return;
         };
         if let Some(idx) = self.children.iter().position(|c| c.wants_pointer_capture()) {
             if let Some(&cnode) = child_nodes.get(idx)
                 && let Some(child) = self.children.get_mut(idx)
             {
-                child.handle_event(
-                    event,
-                    scale_factor,
-                    modifiers,
-                    state,
-                    root,
-                    handled,
-                    focus_target,
-                    cnode,
-                    taffy,
-                );
+                child.handle_event(event, &mut ctx.reborrow(ctx.path, cnode));
             }
             return;
         }
         for (child, &child_node) in self.children.iter_mut().zip(child_nodes.iter()) {
-            child.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                root,
-                handled,
-                focus_target,
-                child_node,
-                taffy,
-            );
-            if *handled {
+            child.handle_event(event, &mut ctx.reborrow(ctx.path, child_node));
+            if *ctx.handled {
                 break;
             }
         }
@@ -1789,18 +1758,7 @@ impl Widget for GreeterApp {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         // Track Caps Lock from typed letters (winit's Modifiers can't report
         // the lock directly — see `ui::caps_lock`). A flip in the estimate
         // triggers a rebuild so the warning under the password field
@@ -1818,7 +1776,7 @@ impl Widget for GreeterApp {
         {
             let before = self.caps_lock.on();
             self.caps_lock
-                .observe_text(t.as_str(), modifiers.state().shift_key());
+                .observe_text(t.as_str(), ctx.modifiers.state().shift_key());
             if self.caps_lock.on() != before {
                 self.dirty_structure = true;
             }
@@ -1838,29 +1796,19 @@ impl Widget for GreeterApp {
 
         // Delegate to the composed card.
         if let Some(c) = &mut self.composed
-            && let Ok(children) = taffy.children(node_id)
+            && let Ok(children) = ctx.taffy.children(ctx.node_id)
             && let Some(&card_node) = children.first()
         {
-            c.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                root,
-                handled,
-                focus_target,
-                card_node,
-                taffy,
-            );
+            c.handle_event(event, &mut ctx.reborrow(ctx.path, card_node));
         }
 
         // A focused control owns Enter. Dropdown consumes it above; buttons
         // deliberately leave it for App's standard focused-control activation.
         // Only an otherwise-unhandled Enter (normally from either text field)
         // acts as the form's default Log-in action.
-        if enter_pressed && !*handled && !self.focused_button_present() {
-            let _ = state.put(root, SUBMIT_PATH, true);
-            *handled = true;
+        if enter_pressed && !*ctx.handled && !self.focused_button_present() {
+            let _ = ctx.state.put(ctx.path, SUBMIT_PATH, true);
+            *ctx.handled = true;
         }
     }
 
@@ -2045,14 +1993,16 @@ mod tests {
         let mut focus_target = None;
         app.handle_event(
             &enter_event(),
-            1.0,
-            &winit::event::Modifiers::default(),
-            state,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &winit::event::Modifiers::default(),
+                state,
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         handled
     }

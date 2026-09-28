@@ -840,32 +840,11 @@ impl Widget for WeatherApp {
             .draw_overlay(scene, transform, text_renderer, theme, presence);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        self.adopt_document_changes(state);
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        self.adopt_document_changes(ctx.state);
         self.ensure_service();
-        self.nav.handle_event(
-            event,
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
-        );
-        self.flush_durable_actions(state);
+        self.nav.handle_event(event, ctx);
+        self.flush_durable_actions(ctx.state);
 
         // The overview raises a push intent when a city is selected.
         if let Some(NavIntent::ShowDetail) = self.core.borrow_mut().take_nav_request() {

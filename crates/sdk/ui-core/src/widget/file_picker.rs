@@ -1127,35 +1127,24 @@ impl Widget for FilePicker {
         self.draw_footer(scene, transform, text_renderer, theme);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / scale_factor, position.y / scale_factor);
-                self.on_cursor_moved(p, handled);
+                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.on_cursor_moved(p, ctx.handled);
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                self.on_mouse_wheel(delta, handled);
+                self.on_mouse_wheel(delta, ctx.handled);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
             } => {
-                self.on_left_click(*modifiers, handled);
+                self.on_left_click(*ctx.modifiers, ctx.handled);
             }
             WindowEvent::KeyboardInput { event: ke, .. } if ke.state == ElementState::Pressed => {
-                self.on_key_pressed(ke, *modifiers, handled);
+                self.on_key_pressed(ke, *ctx.modifiers, ctx.handled);
             }
             _ => {}
         }
@@ -2049,14 +2038,16 @@ mod tests {
         let root = automerge::ROOT;
         picker.handle_event(
             event,
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &tree,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &winit::event::Modifiers::default(),
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &tree,
+            },
         );
     }
 
@@ -2720,14 +2711,16 @@ mod tests {
         let root = automerge::ROOT;
         picker.handle_event(
             event,
-            1.0,
-            &mods,
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &tree,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &tree,
+            },
         );
     }
 

@@ -1435,24 +1435,13 @@ impl Widget for Scrollable {
         clippy::too_many_lines,
         reason = "ordered pointer capture, child-first wheel dispatch, and clip routing share one event boundary"
     )]
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        mods: &winit::event::Modifiers,
-        doc: &mut AutoCommit,
-        obj: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                match self.on_cursor_moved(*position, scale_factor) {
+                match self.on_cursor_moved(*position, ctx.scale_factor) {
                     CursorMoveOutcome::Forward => {}
                     CursorMoveOutcome::DragConsumed => {
-                        *handled = true;
+                        *ctx.handled = true;
                         return;
                     }
                     CursorMoveOutcome::Coalesced => return,
@@ -1466,8 +1455,8 @@ impl Widget for Scrollable {
                 let cur = self.last_cursor;
                 // Thumb press → drag; track press → page + hold.
                 if self.on_track_or_thumb_press(cur) {
-                    *focus_target = Some(node_id);
-                    *handled = true;
+                    *ctx.focus_target = Some(ctx.node_id);
+                    *ctx.handled = true;
                     return;
                 }
             }
@@ -1479,7 +1468,7 @@ impl Widget for Scrollable {
                 let had_hold = self.hold.take().is_some();
                 if self.vbar.release() || self.hbar.release() || had_hold {
                     self.scroll_dirty = true;
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
             }
@@ -1490,13 +1479,13 @@ impl Widget for Scrollable {
                     && ke.state == ElementState::Pressed
                     && self.on_navigation_key(&ke.logical_key) =>
             {
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
             _ => {}
         }
         if let WindowEvent::MouseWheel { delta, phase, .. } = event {
-            if *handled || !self.content_viewport_rect().contains(self.last_cursor) {
+            if *ctx.handled || !self.content_viewport_rect().contains(self.last_cursor) {
                 return;
             }
             // The deepest region under the pointer gets first refusal. At its
@@ -1504,24 +1493,19 @@ impl Widget for Scrollable {
             if let Some(child) = &mut self.child
                 && let Some(child_node) = self.child_node
             {
-                child.handle_event(
-                    event,
-                    scale_factor,
-                    mods,
-                    doc,
-                    obj,
-                    handled,
-                    focus_target,
-                    child_node,
-                    taffy,
-                );
-                if *handled {
+                child.handle_event(event, &mut ctx.reborrow(ctx.path, child_node));
+                if *ctx.handled {
                     return;
                 }
             }
             // Only consume when it moved the view, so an at-the-edge wheel
             // bubbles to an outer/sibling scroll region.
-            *handled = self.on_wheel(delta, *phase, mods.state().shift_key(), scale_factor);
+            *ctx.handled = self.on_wheel(
+                delta,
+                *phase,
+                ctx.modifiers.state().shift_key(),
+                ctx.scale_factor,
+            );
             return;
         }
 
@@ -1537,7 +1521,7 @@ impl Widget for Scrollable {
             .is_some_and(|child| child.wants_pointer_capture());
         let pointer_in_content = match event {
             WindowEvent::CursorMoved { position, .. } => self.content_viewport_rect().contains(
-                Point::new(position.x / scale_factor, position.y / scale_factor),
+                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor),
             ),
             WindowEvent::MouseInput { .. } => {
                 self.content_viewport_rect().contains(self.last_cursor)
@@ -1560,23 +1544,13 @@ impl Widget for Scrollable {
         if let Some(child) = &mut self.child
             && let Some(child_node) = self.child_node
         {
-            child.handle_event(
-                event,
-                scale_factor,
-                mods,
-                doc,
-                obj,
-                handled,
-                focus_target,
-                child_node,
-                taffy,
-            );
+            child.handle_event(event, &mut ctx.reborrow(ctx.path, child_node));
         }
         // An already-focused editor can consume a press without requesting
         // focus again. Only use the pane as a fallback for an unhandled
         // background press; never displace the child's existing focus.
-        if !*handled
-            && focus_target.is_none()
+        if !*ctx.handled
+            && ctx.focus_target.is_none()
             && pointer_in_content
             && matches!(
                 event,
@@ -1587,7 +1561,7 @@ impl Widget for Scrollable {
                 }
             )
         {
-            *focus_target = Some(node_id);
+            *ctx.focus_target = Some(ctx.node_id);
         }
     }
 
@@ -1804,14 +1778,16 @@ mod tests {
         let root = automerge::ROOT;
         s.handle_event(
             event,
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &tree,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &winit::event::Modifiers::default(),
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &tree,
+            },
         );
         handled
     }
@@ -1862,18 +1838,7 @@ mod tests {
             self.draw_viewport.set(presence.viewport.get());
         }
 
-        fn handle_event(
-            &mut self,
-            event: &WindowEvent,
-            _scale_factor: f64,
-            _modifiers: &winit::event::Modifiers,
-            _state: &mut AutoCommit,
-            _path: &ObjId,
-            _handled: &mut bool,
-            focus_target: &mut Option<NodeId>,
-            node_id: NodeId,
-            _taffy: &TaffyTree<()>,
-        ) {
+        fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
             if matches!(
                 event,
                 WindowEvent::CursorMoved { .. } | WindowEvent::MouseInput { .. }
@@ -1891,7 +1856,7 @@ mod tests {
             ) {
                 self.activations
                     .set(self.activations.get().saturating_add(1));
-                *focus_target = Some(node_id);
+                *ctx.focus_target = Some(ctx.node_id);
             }
         }
 
@@ -2112,14 +2077,16 @@ mod tests {
                 let mut handled = false;
                 scroll.handle_event(
                     &event,
-                    1.0,
-                    &winit::event::Modifiers::default(),
-                    &mut doc,
-                    &root,
-                    &mut handled,
-                    &mut focus_target,
-                    node,
-                    &taffy,
+                    &mut crate::widget::EventCtx {
+                        scale_factor: 1.0,
+                        modifiers: &winit::event::Modifiers::default(),
+                        state: &mut doc,
+                        path: &root,
+                        handled: &mut handled,
+                        focus_target: &mut focus_target,
+                        node_id: node,
+                        taffy: &taffy,
+                    },
                 );
             }
             assert_eq!(
@@ -2141,14 +2108,16 @@ mod tests {
                 let mut handled = false;
                 scroll.handle_event(
                     &event,
-                    1.0,
-                    &winit::event::Modifiers::default(),
-                    &mut doc,
-                    &root,
-                    &mut handled,
-                    &mut focus_target,
-                    node,
-                    &taffy,
+                    &mut crate::widget::EventCtx {
+                        scale_factor: 1.0,
+                        modifiers: &winit::event::Modifiers::default(),
+                        state: &mut doc,
+                        path: &root,
+                        handled: &mut handled,
+                        focus_target: &mut focus_target,
+                        node_id: node,
+                        taffy: &taffy,
+                    },
                 );
             }
             assert_eq!(
@@ -2879,14 +2848,16 @@ mod tests {
         let root = automerge::ROOT;
         s.handle_event(
             event,
-            1.0,
-            &mods,
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &tree,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &tree,
+            },
         );
         handled
     }

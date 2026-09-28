@@ -1060,25 +1060,11 @@ impl<T: Widget> Widget for TileEditor<T> {
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        scale: f64,
-        mods: &winit::event::Modifiers,
-        doc: &mut automerge::AutoCommit,
-        path: &automerge::ObjId,
-        handled: &mut bool,
-        focus: &mut Option<taffy::NodeId>,
-        node: taffy::NodeId,
-        tree: &taffy::TaffyTree<()>,
+        ctx: &mut crate::widget::EventCtx<'_>,
     ) {
         self.0.handle_event(
             event,
-            scale,
-            mods,
-            doc,
-            path,
-            handled,
-            focus,
-            tree.children(node).unwrap()[0],
-            tree,
+            &mut ctx.reborrow(ctx.path, ctx.taffy.children(ctx.node_id).unwrap()[0]),
         );
     }
 }
@@ -2159,18 +2145,11 @@ impl Widget for RetainedLifecycleProbe {
     fn handle_event(
         &mut self,
         _: &winit::event::WindowEvent,
-        _: f64,
-        _: &winit::event::Modifiers,
-        doc: &mut automerge::AutoCommit,
-        path: &automerge::ObjId,
-        _: &mut bool,
-        _: &mut Option<taffy::NodeId>,
-        _: taffy::NodeId,
-        _: &taffy::TaffyTree<()>,
+        ctx: &mut crate::widget::EventCtx<'_>,
     ) {
         increment(&self.handles.events);
         if let Some(value) = self.handles.event_value.borrow().as_deref() {
-            doc.put(path, "body", value).unwrap();
+            ctx.state.put(ctx.path, "body", value).unwrap();
         }
     }
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {

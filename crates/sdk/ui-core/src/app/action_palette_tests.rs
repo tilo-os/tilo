@@ -78,24 +78,13 @@ impl Widget for ConsumingKeyboardRoot {
     fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: Point) {}
     fn draw(&mut self, _: &mut Scene, _: Affine, _: &mut TextRenderer, _: &Theme, _: &PresenceCtx) {
     }
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        _: f64,
-        _: &winit::event::Modifiers,
-        doc: &mut AutoCommit,
-        _: &ObjId,
-        handled: &mut bool,
-        _: &mut Option<NodeId>,
-        _: NodeId,
-        _: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if matches!(
             event,
             WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_)
         ) {
-            doc.put(&ROOT, "escaped_keyboard", true).unwrap();
-            *handled = true;
+            ctx.state.put(&ROOT, "escaped_keyboard", true).unwrap();
+            *ctx.handled = true;
         }
     }
     fn get_rect(&self) -> KurboRect {
@@ -124,19 +113,6 @@ impl Widget for Publisher {
         _tr: &mut TextRenderer,
         _th: &Theme,
         _p: &PresenceCtx,
-    ) {
-    }
-    fn handle_event(
-        &mut self,
-        _e: &WindowEvent,
-        _sf: f64,
-        _m: &winit::event::Modifiers,
-        _s: &mut AutoCommit,
-        _p: &ObjId,
-        _h: &mut bool,
-        _ft: &mut Option<NodeId>,
-        _ni: NodeId,
-        _t: &TaffyTree<()>,
     ) {
     }
     fn name(&self) -> &'static str {
@@ -206,19 +182,6 @@ impl Widget for CountingPublisher {
         _tr: &mut TextRenderer,
         _th: &Theme,
         _p: &PresenceCtx,
-    ) {
-    }
-    fn handle_event(
-        &mut self,
-        _e: &WindowEvent,
-        _sf: f64,
-        _m: &winit::event::Modifiers,
-        _s: &mut AutoCommit,
-        _p: &ObjId,
-        _h: &mut bool,
-        _ft: &mut Option<NodeId>,
-        _ni: NodeId,
-        _t: &TaffyTree<()>,
     ) {
     }
     fn name(&self) -> &'static str {

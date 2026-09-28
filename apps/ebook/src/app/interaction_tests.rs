@@ -506,14 +506,16 @@ fn click(app: &mut BooksApp, doc: &mut AutoCommit, p: Point) -> bool {
     };
     app.handle_event(
         &mv,
-        1.0,
-        &mods,
-        doc,
-        &root,
-        &mut handled,
-        &mut focus,
-        node,
-        &taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &mods,
+            state: doc,
+            path: &root,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: node,
+            taffy: &taffy,
+        },
     );
     let press = WindowEvent::MouseInput {
         device_id: DeviceId::dummy(),
@@ -523,14 +525,16 @@ fn click(app: &mut BooksApp, doc: &mut AutoCommit, p: Point) -> bool {
     handled = false;
     app.handle_event(
         &press,
-        1.0,
-        &mods,
-        doc,
-        &root,
-        &mut handled,
-        &mut focus,
-        node,
-        &taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &mods,
+            state: doc,
+            path: &root,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: node,
+            taffy: &taffy,
+        },
     );
     handled
 }
@@ -550,14 +554,16 @@ fn wheel(app: &mut BooksApp, doc: &mut AutoCommit, lines: f32) -> bool {
     };
     app.handle_event(
         &ev,
-        1.0,
-        &mods,
-        doc,
-        &root,
-        &mut handled,
-        &mut focus,
-        node,
-        &taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &mods,
+            state: doc,
+            path: &root,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: node,
+            taffy: &taffy,
+        },
     );
     handled
 }
@@ -578,14 +584,16 @@ fn hwheel(app: &mut BooksApp, doc: &mut AutoCommit, lines: f32) -> bool {
     };
     app.handle_event(
         &ev,
-        1.0,
-        &mods,
-        doc,
-        &root,
-        &mut handled,
-        &mut focus,
-        node,
-        &taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &mods,
+            state: doc,
+            path: &root,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: node,
+            taffy: &taffy,
+        },
     );
     handled
 }
@@ -600,14 +608,16 @@ fn send(app: &mut BooksApp, doc: &mut AutoCommit, ev: &WindowEvent) {
     let mut focus = None;
     app.handle_event(
         ev,
-        1.0,
-        &mods,
-        doc,
-        &root,
-        &mut handled,
-        &mut focus,
-        node,
-        &taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &mods,
+            state: doc,
+            path: &root,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: node,
+            taffy: &taffy,
+        },
     );
 }
 fn ptr_move(app: &mut BooksApp, doc: &mut AutoCommit, p: Point) {
@@ -705,14 +715,16 @@ fn feed(app: &mut BooksApp, doc: &mut AutoCommit, ev: &WindowEvent) -> bool {
     let mut focus = None;
     app.handle_event(
         ev,
-        1.0,
-        &mods,
-        doc,
-        &root,
-        &mut handled,
-        &mut focus,
-        node,
-        &taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &mods,
+            state: doc,
+            path: &root,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: node,
+            taffy: &taffy,
+        },
     );
     handled
 }
@@ -737,14 +749,16 @@ fn key_named_mods(
     let mut focus = None;
     app.handle_event(
         &named_press(named),
-        1.0,
-        &mods,
-        doc,
-        &root,
-        &mut handled,
-        &mut focus,
-        node,
-        &taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &mods,
+            state: doc,
+            path: &root,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: node,
+            taffy: &taffy,
+        },
     );
     handled
 }
@@ -763,14 +777,16 @@ fn key_char_mods(
     let mut focus = None;
     app.handle_event(
         &char_press(ch),
-        1.0,
-        &mods,
-        doc,
-        &root,
-        &mut handled,
-        &mut focus,
-        node,
-        &taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &mods,
+            state: doc,
+            path: &root,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: node,
+            taffy: &taffy,
+        },
     );
     handled
 }

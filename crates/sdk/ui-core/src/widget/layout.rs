@@ -770,19 +770,6 @@ impl Widget for AnonymousFocusProbe {
     fn get_rect(&self) -> vello::kurbo::Rect {
         vello::kurbo::Rect::ZERO
     }
-    fn handle_event(
-        &mut self,
-        _: &winit::event::WindowEvent,
-        _: f64,
-        _: &winit::event::Modifiers,
-        _: &mut automerge::AutoCommit,
-        _: &automerge::ObjId,
-        _: &mut bool,
-        _: &mut Option<NodeId>,
-        _: NodeId,
-        _: &TaffyTree<()>,
-    ) {
-    }
     fn is_focusable(&self) -> bool {
         true
     }
@@ -865,19 +852,6 @@ mod tests {
         }
         fn get_rect(&self) -> Rect {
             Rect::ZERO
-        }
-        fn handle_event(
-            &mut self,
-            _: &winit::event::WindowEvent,
-            _: f64,
-            _: &winit::event::Modifiers,
-            _: &mut automerge::AutoCommit,
-            _: &automerge::ObjId,
-            _: &mut bool,
-            _: &mut Option<NodeId>,
-            _: NodeId,
-            _: &TaffyTree<()>,
-        ) {
         }
     }
 

@@ -2437,28 +2437,17 @@ impl Widget for TabBar {
         self.draw_drag_ghost(scene, transform, tr, theme, presence);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _m: &winit::event::Modifiers,
-        _s: &mut AutoCommit,
-        _p: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if let WindowEvent::KeyboardInput { event, .. } = event
             && event.state == ElementState::Pressed
             && self.handle_keyboard_navigation(&event.logical_key)
         {
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.on_cursor_moved(*position, scale_factor, handled);
+                self.on_cursor_moved(*position, ctx.scale_factor, ctx.handled);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -2475,7 +2464,7 @@ impl Widget for TabBar {
                     && let Some(t) = self.tabs.get(idx)
                 {
                     self.pending_context_menu = Some((t.id, p));
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseInput {
@@ -2483,9 +2472,9 @@ impl Widget for TabBar {
                 button: MouseButton::Left,
                 ..
             } => {
-                self.on_left_press(handled);
-                if *handled {
-                    *focus_target = Some(node_id);
+                self.on_left_press(ctx.handled);
+                if *ctx.handled {
+                    *ctx.focus_target = Some(ctx.node_id);
                 }
             }
             WindowEvent::MouseInput {
@@ -2493,7 +2482,7 @@ impl Widget for TabBar {
                 button: MouseButton::Left,
                 ..
             } => {
-                self.finish_drag_release(handled);
+                self.finish_drag_release(ctx.handled);
             }
             _ => {}
         }
@@ -4099,14 +4088,16 @@ mod tests {
             let root_id = automerge::ROOT;
             b.handle_event(
                 &press,
-                1.0,
-                &winit::event::Modifiers::default(),
-                &mut state,
-                &root_id,
-                &mut handled,
-                &mut focus_target,
-                node,
-                &tree,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &winit::event::Modifiers::default(),
+                    state: &mut state,
+                    path: &root_id,
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: node,
+                    taffy: &tree,
+                },
             );
 
             assert_eq!(
@@ -4169,14 +4160,16 @@ mod tests {
             let root_id = automerge::ROOT;
             b.handle_event(
                 &press,
-                1.0,
-                &winit::event::Modifiers::default(),
-                &mut state,
-                &root_id,
-                &mut handled,
-                &mut focus_target,
-                node,
-                &tree,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &winit::event::Modifiers::default(),
+                    state: &mut state,
+                    path: &root_id,
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: node,
+                    taffy: &tree,
+                },
             );
 
             assert_eq!(
@@ -4381,14 +4374,16 @@ mod tests {
             let root_id = automerge::ROOT;
             b.handle_event(
                 &press,
-                1.0,
-                &winit::event::Modifiers::default(),
-                &mut state,
-                &root_id,
-                &mut handled,
-                &mut focus_target,
-                node,
-                &tree,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &winit::event::Modifiers::default(),
+                    state: &mut state,
+                    path: &root_id,
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: node,
+                    taffy: &tree,
+                },
             );
 
             assert!(
@@ -4792,14 +4787,16 @@ mod tests {
             let root_id = automerge::ROOT;
             b.handle_event(
                 &event,
-                1.0,
-                &winit::event::Modifiers::default(),
-                &mut state,
-                &root_id,
-                &mut handled,
-                &mut focus_target,
-                node,
-                &tree,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &winit::event::Modifiers::default(),
+                    state: &mut state,
+                    path: &root_id,
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: node,
+                    taffy: &tree,
+                },
             );
             assert_eq!(
                 b.drop_zone_target(),
@@ -4819,14 +4816,16 @@ mod tests {
             };
             b.handle_event(
                 &event,
-                1.0,
-                &winit::event::Modifiers::default(),
-                &mut state,
-                &root_id,
-                &mut handled,
-                &mut focus_target,
-                node,
-                &tree,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &winit::event::Modifiers::default(),
+                    state: &mut state,
+                    path: &root_id,
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: node,
+                    taffy: &tree,
+                },
             );
             assert_eq!(b.drop_zone_target(), Some(3), "past C's mid → gap 3");
 
@@ -4837,14 +4836,16 @@ mod tests {
             };
             b.handle_event(
                 &release,
-                1.0,
-                &winit::event::Modifiers::default(),
-                &mut state,
-                &root_id,
-                &mut handled,
-                &mut focus_target,
-                node,
-                &tree,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &winit::event::Modifiers::default(),
+                    state: &mut state,
+                    path: &root_id,
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: node,
+                    taffy: &tree,
+                },
             );
             assert_eq!(b.drop_zone_target(), None, "release clears target");
             assert!(
@@ -4884,14 +4885,16 @@ mod tests {
             let root_id = automerge::ROOT;
             b.handle_event(
                 &event,
-                1.0,
-                &winit::event::Modifiers::default(),
-                &mut state,
-                &root_id,
-                &mut handled,
-                &mut focus_target,
-                node,
-                &tree,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &winit::event::Modifiers::default(),
+                    state: &mut state,
+                    path: &root_id,
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: node,
+                    taffy: &tree,
+                },
             );
             assert_eq!(
                 b.hover_drop_idx(),
@@ -4910,14 +4913,16 @@ mod tests {
             };
             b.handle_event(
                 &release,
-                1.0,
-                &winit::event::Modifiers::default(),
-                &mut state,
-                &root_id,
-                &mut handled,
-                &mut focus_target,
-                node,
-                &tree,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &winit::event::Modifiers::default(),
+                    state: &mut state,
+                    path: &root_id,
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: node,
+                    taffy: &tree,
+                },
             );
             assert_eq!(
                 b.hover_drop_idx(),
@@ -5522,14 +5527,16 @@ mod tests {
             };
             b.handle_event(
                 &moved,
-                1.0,
-                &winit::event::Modifiers::default(),
-                &mut state,
-                &root_id,
-                &mut handled,
-                &mut focus_target,
-                node,
-                &tree,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &winit::event::Modifiers::default(),
+                    state: &mut state,
+                    path: &root_id,
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: node,
+                    taffy: &tree,
+                },
             );
             // Pressing the closing pill's old close chip must NOT re-enter start_closing(2).
             let before_count = b.closing_tab_ids().len();
@@ -5541,14 +5548,16 @@ mod tests {
             };
             b.handle_event(
                 &press,
-                1.0,
-                &winit::event::Modifiers::default(),
-                &mut state,
-                &root_id,
-                &mut handled,
-                &mut focus_target,
-                node,
-                &tree,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &winit::event::Modifiers::default(),
+                    state: &mut state,
+                    path: &root_id,
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: node,
+                    taffy: &tree,
+                },
             );
             // The closing set may stay the same or *add* tab 3 (its close chip
             // overlaps tab 2's old one here) — the invariant is that tab 2 isn't
@@ -6014,14 +6023,16 @@ mod tests {
             let root_id = automerge::ROOT;
             b.handle_event(
                 &press,
-                1.0,
-                &winit::event::Modifiers::default(),
-                &mut state,
-                &root_id,
-                &mut handled,
-                &mut focus_target,
-                node,
-                &tree,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &winit::event::Modifiers::default(),
+                    state: &mut state,
+                    path: &root_id,
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: node,
+                    taffy: &tree,
+                },
             );
             assert_eq!(
                 b.hover_idx, None,
@@ -6443,14 +6454,16 @@ mod tests {
                 device_id: unsafe { std::mem::zeroed() },
                 position: winit::dpi::PhysicalPosition::new(p.x, p.y),
             },
-            1.0,
-            &mods,
-            &mut doc,
-            &obj,
-            handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: &mut doc,
+                path: &obj,
+                handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
     }
 
@@ -6475,14 +6488,16 @@ mod tests {
                 state,
                 button: MouseButton::Left,
             },
-            1.0,
-            &mods,
-            &mut doc,
-            &obj,
-            handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: &mut doc,
+                path: &obj,
+                handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
     }
 

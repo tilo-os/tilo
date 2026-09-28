@@ -1050,14 +1050,16 @@ fn user_edits_and_source_identity_persist_across_restart() {
             let mut focus = None;
             app.handle_event(
                 &ev,
-                1.0,
-                &winit::event::Modifiers::default(),
-                &mut doc,
-                &root,
-                &mut handled,
-                &mut focus,
-                node,
-                &taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &winit::event::Modifiers::default(),
+                    state: &mut doc,
+                    path: &root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &taffy,
+                },
             );
         }
 
@@ -3645,14 +3647,16 @@ impl Harness {
         let mut focus = None;
         self.app.handle_event(
             event,
-            1.0,
-            &mods,
-            &mut self.doc,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus,
-            self.node,
-            &self.taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: &mut self.doc,
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: self.node,
+                taffy: &self.taffy,
+            },
         );
         handled
     }

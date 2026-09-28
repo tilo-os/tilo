@@ -754,14 +754,16 @@ fn apply_post_layout_scenario(
             let mods = winit::event::Modifiers::default();
             widget.handle_event(
                 &ev,
-                1.0,
-                &mods,
-                &mut state.doc,
-                &state.root,
-                &mut handled,
-                &mut focus,
-                child,
-                taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &mods,
+                    state: &mut state.doc,
+                    path: &state.root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: child,
+                    taffy,
+                },
             );
         }
         Some("reorder") => {
@@ -804,14 +806,16 @@ fn apply_post_layout_scenario(
             let mods = winit::event::Modifiers::default();
             widget.handle_event(
                 &ev,
-                1.0,
-                &mods,
-                &mut state.doc,
-                &state.root,
-                &mut handled,
-                &mut focus,
-                child,
-                taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &mods,
+                    state: &mut state.doc,
+                    path: &state.root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: child,
+                    taffy,
+                },
             );
         }
         Some("history") => {

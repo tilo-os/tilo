@@ -1,5 +1,4 @@
 use super::*;
-use automerge::{AutoCommit, ObjId};
 use vello::kurbo::Rect;
 
 use std::cell::RefCell;
@@ -63,19 +62,6 @@ impl Widget for FsRoot {
         _tr: &mut TextRenderer,
         _theme: &Theme,
         _p: &PresenceCtx,
-    ) {
-    }
-    fn handle_event(
-        &mut self,
-        _e: &WindowEvent,
-        _sf: f64,
-        _m: &winit::event::Modifiers,
-        _s: &mut AutoCommit,
-        _r: &ObjId,
-        _h: &mut bool,
-        _ft: &mut Option<NodeId>,
-        _n: NodeId,
-        _t: &TaffyTree<()>,
     ) {
     }
     fn name(&self) -> &'static str {

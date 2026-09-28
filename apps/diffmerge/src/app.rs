@@ -1267,31 +1267,20 @@ impl Widget for DiffMergeApp {
         self.dirty = false;
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        self.merge.reconcile_content(state);
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        self.merge.reconcile_content(ctx.state);
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+            self.cursor = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
         }
 
         let merge_editor_focused = self.mode == Mode::Merge && self.merge.merged_editor_focused();
-        if !merge_editor_focused && self.handle_keyboard_shortcut(event, *modifiers) {
-            *handled = true;
+        if !merge_editor_focused && self.handle_keyboard_shortcut(event, *ctx.modifiers) {
+            *ctx.handled = true;
             return;
         }
 
         if self.handle_toolbar_click(event) {
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
 
@@ -1299,39 +1288,21 @@ impl Widget for DiffMergeApp {
         match self.mode {
             Mode::Diff => {
                 if let Some(n) = self.diff_node {
-                    self.diff.handle_event(
-                        event,
-                        scale_factor,
-                        modifiers,
-                        state,
-                        path,
-                        handled,
-                        focus_target,
-                        n,
-                        taffy,
-                    );
+                    self.diff
+                        .handle_event(event, &mut ctx.reborrow(ctx.path, n));
                 }
             }
             Mode::Merge => {
                 if let Some(n) = self.merge_node {
-                    self.merge.handle_event(
-                        event,
-                        scale_factor,
-                        modifiers,
-                        state,
-                        path,
-                        handled,
-                        focus_target,
-                        n,
-                        taffy,
-                    );
+                    self.merge
+                        .handle_event(event, &mut ctx.reborrow(ctx.path, n));
                 }
                 // A chip click on the merge panel queues its resolution; dispatch
                 // it through the shared action path so the chip and Ctrl+K produce
                 // the same replayable action under one undo boundary.
                 if let Some(action) = self.merge.take_pending_action() {
-                    self.perform_action(state, &action);
-                    *handled = true;
+                    self.perform_action(ctx.state, &action);
+                    *ctx.handled = true;
                 }
             }
         }
@@ -2296,14 +2267,16 @@ mod tests {
                 device_id: DeviceId::dummy(),
                 position: PhysicalPosition::new(theirs.x, theirs.y),
             },
-            1.0,
-            &mods,
-            &mut state.doc,
-            &state.root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: &mut state.doc,
+                path: &state.root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         app.handle_event(
             &WindowEvent::MouseInput {
@@ -2311,14 +2284,16 @@ mod tests {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
             },
-            1.0,
-            &mods,
-            &mut state.doc,
-            &state.root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: &mut state.doc,
+                path: &state.root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         assert!(handled);
         assert_eq!(selected_compact_source(&app), "Show Theirs source");
@@ -2326,14 +2301,16 @@ mod tests {
         handled = false;
         app.handle_event(
             &keyboard_event(Key::Named(NamedKey::ArrowLeft)),
-            1.0,
-            &mods,
-            &mut state.doc,
-            &state.root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: &mut state.doc,
+                path: &state.root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         assert!(handled);
         assert_eq!(selected_compact_source(&app), "Show Ours source");
@@ -2393,40 +2370,46 @@ mod tests {
         let modifiers = Modifiers::default();
         app.handle_event(
             &keyboard_event(Key::Named(NamedKey::Tab)),
-            1.0,
-            &modifiers,
-            &mut state.doc,
-            &state.root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &modifiers,
+                state: &mut state.doc,
+                path: &state.root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         assert!(handled);
         assert_eq!(app.toolbar_focus, Some(Action::ModeDiff));
         handled = false;
         app.handle_event(
             &keyboard_event(Key::Named(NamedKey::Tab)),
-            1.0,
-            &modifiers,
-            &mut state.doc,
-            &state.root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &modifiers,
+                state: &mut state.doc,
+                path: &state.root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         assert_eq!(app.toolbar_focus, Some(Action::ModeMerge));
         app.handle_event(
             &keyboard_event(Key::Named(NamedKey::Enter)),
-            1.0,
-            &modifiers,
-            &mut state.doc,
-            &state.root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &modifiers,
+                state: &mut state.doc,
+                path: &state.root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         assert_eq!(app.mode, Mode::Merge);
     }
@@ -2610,14 +2593,16 @@ mod tests {
                 device_id: DeviceId::dummy(),
                 position: PhysicalPosition::new(center.x, center.y),
             },
-            1.0,
-            &m,
-            &mut state.doc,
-            &state.root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &m,
+                state: &mut state.doc,
+                path: &state.root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         app.handle_event(
             &WindowEvent::MouseInput {
@@ -2625,14 +2610,16 @@ mod tests {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
             },
-            1.0,
-            &m,
-            &mut state.doc,
-            &state.root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &m,
+                state: &mut state.doc,
+                path: &state.root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
 
         assert!(handled, "the chip click was consumed");

@@ -65,12 +65,10 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{AppKind, AppWidget, IconDescriptor, Widget};
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::{Blob, Extend, Fill, ImageAlphaType, ImageBrush, ImageData, ImageFormat};
-use winit::event::{Modifiers, WindowEvent};
 
 #[cfg(target_os = "linux")]
 use crate::compositor::surface_readback::{
@@ -2801,21 +2799,6 @@ impl Widget for ForeignSurfaceWidget {
             None,
         );
         self.draw_collaboration_overlay(scene, transform, text_renderer, theme, presence);
-    }
-
-    fn handle_event(
-        &mut self,
-        _event: &WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
-        // Input routing to client surfaces goes through the seat, not the widget tree.
     }
 
     fn name(&self) -> &'static str {

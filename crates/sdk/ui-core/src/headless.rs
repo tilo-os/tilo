@@ -47,7 +47,7 @@ use crate::state::State;
 use crate::synthetic_input::key_event;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::widget::{TaffyTreeExt, Widget};
+use crate::widget::{EventCtx, TaffyTreeExt, Widget};
 
 /// Viewport the driver lays out at unless a spec overrides it. Matches the
 /// default `--shots` viewport so a driven frame and a screenshot agree.
@@ -1496,14 +1496,16 @@ impl FrameHarness {
         let mut focus_target = None;
         self.root.handle_event(
             event,
-            self.input_scale,
-            modifiers,
-            &mut self.state.doc,
-            &self.state.root,
-            &mut handled,
-            &mut focus_target,
-            self.child_node,
-            &self.taffy,
+            &mut EventCtx {
+                scale_factor: self.input_scale,
+                modifiers,
+                state: &mut self.state.doc,
+                path: &self.state.root,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: self.child_node,
+                taffy: &self.taffy,
+            },
         );
         RootDispatch {
             handled,
@@ -3148,14 +3150,16 @@ impl FrameHarness {
                 |widget, doc, path| {
                     widget.handle_event(
                         event,
-                        self.input_scale,
-                        &self.modifiers,
-                        doc,
-                        path,
-                        &mut handled,
-                        &mut focus,
-                        target,
-                        &self.taffy,
+                        &mut EventCtx {
+                            scale_factor: self.input_scale,
+                            modifiers: &self.modifiers,
+                            state: doc,
+                            path,
+                            handled: &mut handled,
+                            focus_target: &mut focus,
+                            node_id: target,
+                            taffy: &self.taffy,
+                        },
                     )
                 },
             )
@@ -4494,14 +4498,16 @@ impl FrameHarness {
             if let Some(palette) = self.action_palette.as_deref_mut() {
                 palette.handle_event(
                     event,
-                    self.input_scale,
-                    &self.modifiers,
-                    &mut self.state.doc,
-                    &self.state.root,
-                    &mut false,
-                    &mut None,
-                    NodeId::from(0usize),
-                    &self.taffy,
+                    &mut EventCtx {
+                        scale_factor: self.input_scale,
+                        modifiers: &self.modifiers,
+                        state: &mut self.state.doc,
+                        path: &self.state.root,
+                        handled: &mut false,
+                        focus_target: &mut None,
+                        node_id: NodeId::from(0usize),
+                        taffy: &self.taffy,
+                    },
                 );
             }
             self.finish_action_palette_input();
@@ -4602,14 +4608,16 @@ impl FrameHarness {
         } else if !history_handled && self.history_layout.is_none_or(|layout| layout.app_visible) {
             self.root.handle_event(
                 event,
-                self.input_scale,
-                &self.modifiers,
-                &mut self.state.doc,
-                &self.state.root,
-                &mut handled,
-                &mut focus_target,
-                self.child_node,
-                &self.taffy,
+                &mut EventCtx {
+                    scale_factor: self.input_scale,
+                    modifiers: &self.modifiers,
+                    state: &mut self.state.doc,
+                    path: &self.state.root,
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: self.child_node,
+                    taffy: &self.taffy,
+                },
             );
         }
         if let Some(p) = self.profiler.as_mut() {
@@ -8283,18 +8291,7 @@ mod tests {
             self.current.sync(state, path);
         }
 
-        fn handle_event(
-            &mut self,
-            event: &WindowEvent,
-            scale: f64,
-            modifiers: &winit::event::Modifiers,
-            state: &mut automerge::AutoCommit,
-            path: &automerge::ObjId,
-            handled: &mut bool,
-            focus: &mut Option<NodeId>,
-            node: NodeId,
-            tree: &TaffyTree<()>,
-        ) {
+        fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
             let replace = matches!(
                 event,
                 WindowEvent::KeyboardInput {
@@ -8306,12 +8303,10 @@ mod tests {
                     ..
                 }
             );
-            self.current.handle_event(
-                event, scale, modifiers, state, path, handled, focus, node, tree,
-            );
+            self.current.handle_event(event, ctx);
             if replace {
                 self.replace_before_relayout();
-                *handled = true;
+                *ctx.handled = true;
             }
         }
 
@@ -8432,18 +8427,7 @@ mod tests {
         ) {
         }
 
-        fn handle_event(
-            &mut self,
-            event: &WindowEvent,
-            _scale_factor: f64,
-            _modifiers: &winit::event::Modifiers,
-            _state: &mut automerge::AutoCommit,
-            _path: &automerge::ObjId,
-            handled: &mut bool,
-            _focus_target: &mut Option<NodeId>,
-            _node_id: NodeId,
-            _taffy: &TaffyTree<()>,
-        ) {
+        fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
             if self.focused
                 && matches!(
                     event,
@@ -8459,7 +8443,7 @@ mod tests {
             {
                 self.activations
                     .set(self.activations.get().saturating_add(1));
-                *handled = true;
+                *ctx.handled = true;
             }
         }
 
@@ -9589,23 +9573,6 @@ mod tests {
             _: &PresenceCtx,
         ) {
         }
-        #[allow(
-            clippy::too_many_arguments,
-            reason = "the probe implements the fixed Widget event signature"
-        )]
-        fn handle_event(
-            &mut self,
-            _: &WindowEvent,
-            _: f64,
-            _: &winit::event::Modifiers,
-            _: &mut automerge::AutoCommit,
-            _: &automerge::ObjId,
-            _: &mut bool,
-            _: &mut Option<NodeId>,
-            _: NodeId,
-            _: &TaffyTree<()>,
-        ) {
-        }
         fn name(&self) -> &'static str {
             "LateRecordProbe"
         }
@@ -10339,12 +10306,6 @@ mod a11y_driver_tests {
             _pr: &PresenceCtx,
         ) {
         }
-        fn handle_event_ctx(
-            &mut self,
-            _event: &WindowEvent,
-            _ctx: &mut crate::widget::EventCtx<'_>,
-        ) {
-        }
         fn name(&self) -> &'static str {
             "Strip"
         }
@@ -10657,11 +10618,10 @@ mod undo_driver_tests {
         ) {
         }
 
-        fn handle_event_ctx(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
             use automerge::{ReadDoc, transaction::Transactable};
 
             let doc = &mut *ctx.state;
-            let handled = &mut *ctx.handled;
             let WindowEvent::KeyboardInput { event: ke, .. } = event else {
                 return;
             };
@@ -10680,7 +10640,7 @@ mod undo_driver_tests {
             let len = doc.length(&obj);
             doc.splice_text(&obj, len, 0, c.as_str()).unwrap();
             self.pending = true;
-            *handled = true;
+            *ctx.handled = true;
         }
 
         fn name(&self) -> &'static str {
@@ -10939,7 +10899,7 @@ mod dispatched_action_driver_tests {
         ) {
         }
 
-        fn handle_event_ctx(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
             let doc = &mut *ctx.state;
             let handled = &mut *ctx.handled;
             let text = match event {
@@ -11381,24 +11341,14 @@ mod prepared_driver_tests {
             _: &PresenceCtx,
         ) {
         }
-        fn handle_event(
-            &mut self,
-            event: &WindowEvent,
-            _: f64,
-            _: &winit::event::Modifiers,
-            doc: &mut automerge::AutoCommit,
-            _: &automerge::ObjId,
-            handled: &mut bool,
-            _: &mut Option<NodeId>,
-            _: NodeId,
-            _: &TaffyTree<()>,
-        ) {
+        fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
             if let WindowEvent::KeyboardInput { event, .. } = event
                 && self.focused
                 && event.state == ElementState::Pressed
                 && let Some(text) = event.text.as_deref()
             {
-                let before = doc
+                let before = ctx
+                    .state
                     .get(ROOT, "body")
                     .unwrap()
                     .unwrap()
@@ -11406,8 +11356,10 @@ mod prepared_driver_tests {
                     .as_str()
                     .unwrap()
                     .to_owned();
-                doc.put(ROOT, "body", format!("{before}{text}")).unwrap();
-                *handled = true;
+                ctx.state
+                    .put(ROOT, "body", format!("{before}{text}"))
+                    .unwrap();
+                *ctx.handled = true;
             }
         }
         fn set_undo_status(&mut self, status: &mut dyn FnMut() -> crate::undo::UndoStatus) {
@@ -12042,18 +11994,7 @@ mod framed_tests {
         ) {
         }
 
-        fn handle_event(
-            &mut self,
-            event: &WindowEvent,
-            _scale_factor: f64,
-            _modifiers: &winit::event::Modifiers,
-            _state: &mut automerge::AutoCommit,
-            _path: &automerge::ObjId,
-            handled: &mut bool,
-            _focus_target: &mut Option<NodeId>,
-            _node_id: NodeId,
-            _taffy: &TaffyTree<()>,
-        ) {
+        fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
             if matches!(
                 event,
                 WindowEvent::MouseInput {
@@ -12062,7 +12003,7 @@ mod framed_tests {
                 }
             ) {
                 self.presses = self.presses.saturating_add(1);
-                *handled = true;
+                *ctx.handled = true;
             }
         }
 

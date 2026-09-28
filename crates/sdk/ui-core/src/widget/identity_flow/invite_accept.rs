@@ -218,34 +218,26 @@ impl InviteAcceptScreen {
     // this is invoked from the trait impl, forwarding the same event,
     // scale, modifiers, CRDT handle, and out-params the screen host
     // received; bundling it would mean bundling the trait method too.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "The invite screen forwards the Widget event, scale, modifiers, CRDT path, handled/focus outputs, node, and layout to its URL input."
-    )]
     pub fn handle_event_screen(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
+        ctx: &mut crate::widget::EventCtx<'_>,
     ) -> ScreenOutcome {
-        let field_node = self.url_node.unwrap_or(node_id);
+        let handled = &mut *ctx.handled;
+        let field_node = self.url_node.unwrap_or(ctx.node_id);
         let mut forward = |url: &mut TextInput, handled: &mut bool| {
             url.handle_event(
                 event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                field_node,
-                taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: ctx.scale_factor,
+                    modifiers: ctx.modifiers,
+                    state: ctx.state,
+                    path: ctx.path,
+                    handled,
+                    focus_target: ctx.focus_target,
+                    node_id: field_node,
+                    taffy: ctx.taffy,
+                },
             );
         };
         // Set after the match, once `forward` has released `focus_target`:
@@ -254,7 +246,7 @@ impl InviteAcceptScreen {
         let mut claim_focus = false;
         let outcome = match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.last_cursor = p;
                 let a = self.accept_rect.contains(p) && self.parsed.is_some();
                 let d = self.decline_rect.contains(p);
@@ -324,7 +316,7 @@ impl InviteAcceptScreen {
             }
         };
         if claim_focus {
-            *focus_target = Some(field_node);
+            *ctx.focus_target = Some(field_node);
         }
         self.reparse_if_edited();
         outcome
@@ -598,20 +590,6 @@ impl Widget for InviteAcceptScreen {
         }
         scene.pop_layer();
         sheet.paint_actions(scene, transform, text_renderer, theme, &spec);
-    }
-
-    fn handle_event(
-        &mut self,
-        _event: &WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
     }
 
     fn name(&self) -> &'static str {

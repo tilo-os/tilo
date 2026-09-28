@@ -225,19 +225,6 @@ impl ui::widget::Widget for OverlayApp {
     ) {
         self.draws.set(self.draws.get() + 1);
     }
-    fn handle_event(
-        &mut self,
-        _: &winit::event::WindowEvent,
-        _: f64,
-        _: &winit::event::Modifiers,
-        _: &mut automerge::AutoCommit,
-        _: &automerge::ObjId,
-        _: &mut bool,
-        _: &mut Option<taffy::NodeId>,
-        _: taffy::NodeId,
-        _: &taffy::TaffyTree<()>,
-    ) {
-    }
 }
 impl ui::widget::AppWidget for OverlayApp {
     fn app_kind(&self) -> ui::widget::AppKind {

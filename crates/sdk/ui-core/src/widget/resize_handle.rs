@@ -14,7 +14,6 @@
 //! neighbours' just-refreshed rects, keeping it in lockstep with the row's
 //! horizontal scroll without needing to know about scroll state.
 
-use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -274,21 +273,10 @@ impl Widget for ResizeHandle {
         );
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let pt = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let pt = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.hover = self.rect.contains(pt) && self.drag.is_none();
                 if let Some(origin) = self.drag {
                     let dx = pt.x - origin.cursor_x;
@@ -305,7 +293,7 @@ impl Widget for ResizeHandle {
                         )
                     };
                     self.pending = Some((new_left, new_right));
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseInput {
@@ -327,10 +315,10 @@ impl Widget for ResizeHandle {
                     cursor_x,
                     left_w,
                     right_w,
-                    redistribute: modifiers.state().shift_key(),
+                    redistribute: ctx.modifiers.state().shift_key(),
                 });
                 self.hover = false;
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
@@ -339,7 +327,7 @@ impl Widget for ResizeHandle {
             } if self.drag.is_some() => {
                 self.drag = None;
                 self.pending_commit = true;
-                *handled = true;
+                *ctx.handled = true;
             }
             _ => {}
         }
@@ -379,6 +367,7 @@ impl Widget for ResizeHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::AutoCommit;
 
     /// `min_group_px(2000)` is exactly 300, so the clamp cases below
     /// still read against a familiar bound.
@@ -543,14 +532,16 @@ mod tests {
                     device_id: dev,
                     position: winit::dpi::PhysicalPosition::new(cx_hover, 200.0),
                 },
-                1.0,
-                &modifiers,
-                &mut state,
-                &path,
-                &mut handled,
-                &mut focus,
-                node,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state: &mut state,
+                    path: &path,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &taffy,
+                },
             );
             assert!(h.is_hovered(), "cursor in hit area → hover");
 
@@ -560,14 +551,16 @@ mod tests {
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                 },
-                1.0,
-                &modifiers,
-                &mut state,
-                &path,
-                &mut handled,
-                &mut focus,
-                node,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state: &mut state,
+                    path: &path,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &taffy,
+                },
             );
             assert!(h.is_dragging(), "press inside hit area → drag started");
             assert!(!h.is_hovered(), "hover clears once drag begins");
@@ -577,14 +570,16 @@ mod tests {
                     device_id: dev,
                     position: winit::dpi::PhysicalPosition::new(cx_hover + 50.0, 200.0),
                 },
-                1.0,
-                &modifiers,
-                &mut state,
-                &path,
-                &mut handled,
-                &mut focus,
-                node,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state: &mut state,
+                    path: &path,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &taffy,
+                },
             );
             let pulse = h
                 .take_pending()
@@ -605,14 +600,16 @@ mod tests {
                     state: ElementState::Released,
                     button: MouseButton::Left,
                 },
-                1.0,
-                &modifiers,
-                &mut state,
-                &path,
-                &mut handled,
-                &mut focus,
-                node,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state: &mut state,
+                    path: &path,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &taffy,
+                },
             );
             assert!(!h.is_dragging(), "release ends drag");
             assert!(h.take_pending_commit(), "release publishes a commit pulse");
@@ -640,14 +637,16 @@ mod tests {
                     device_id: dev,
                     position: winit::dpi::PhysicalPosition::new(100.0, 200.0),
                 },
-                1.0,
-                &modifiers,
-                &mut state,
-                &path,
-                &mut handled,
-                &mut focus,
-                node,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state: &mut state,
+                    path: &path,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &taffy,
+                },
             );
             assert!(!h.is_hovered(), "cursor outside hit area → no hover");
             h.handle_event(
@@ -656,14 +655,16 @@ mod tests {
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                 },
-                1.0,
-                &modifiers,
-                &mut state,
-                &path,
-                &mut handled,
-                &mut focus,
-                node,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state: &mut state,
+                    path: &path,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &taffy,
+                },
             );
             assert!(
                 !h.is_dragging(),

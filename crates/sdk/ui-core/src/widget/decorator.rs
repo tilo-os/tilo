@@ -55,10 +55,8 @@
 //!   widget's own method, so an override of the derived-from method alone is
 //!   not what the host calls: override the entry point the host uses
 //!   (`draw_with_presence` for painting in a live frame, and `draw` for
-//!   callers that paint directly). Input is the exception: overriding either
-//!   [`handle_event`](Widget::handle_event) or
-//!   [`handle_event_ctx`](Widget::handle_event_ctx) works, because the
-//!   default `handle_event` goes through the decorator's `handle_event_ctx`.
+//!   callers that paint directly). Input has a single entry point,
+//!   [`handle_event`](Widget::handle_event).
 //! * **The inner widget owns its layout node.** The inner widget registers
 //!   itself in the node map during `build_layout`, so hooks the host reaches
 //!   by sweeping or hit-testing that map (`cursor_shape`, `tooltip`,
@@ -374,50 +372,8 @@ pub trait Decorator {
             .draw(scene, transform, text_renderer, theme, presence);
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "temporary compatibility adapter; implementations use EventCtx"
-    )]
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        Decorator::handle_event_ctx(
-            self,
-            event,
-            &mut EventCtx {
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
-            },
-        );
-    }
-
-    fn handle_event_ctx(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
-        self.inner_mut().handle_event(
-            event,
-            ctx.scale_factor,
-            ctx.modifiers,
-            ctx.state,
-            ctx.path,
-            ctx.handled,
-            ctx.focus_target,
-            ctx.node_id,
-            ctx.taffy,
-        );
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
+        self.inner_mut().handle_event(event, ctx);
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -1329,38 +1285,8 @@ impl<T: Decorator> Widget for T {
         Decorator::draw(self, scene, transform, text_renderer, theme, presence);
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "temporary compatibility adapter; implementations use EventCtx"
-    )]
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        Decorator::handle_event(
-            self,
-            event,
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
-        );
-    }
-
-    fn handle_event_ctx(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
-        Decorator::handle_event_ctx(self, event, ctx);
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
+        Decorator::handle_event(self, event, ctx);
     }
 
     fn children(&self) -> Vec<&dyn Widget> {

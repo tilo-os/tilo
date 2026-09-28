@@ -158,7 +158,19 @@ impl HistoryHost {
             self.cursor = Point::new(position.x / scale, position.y / scale);
         }
         if let Some(root) = self.chrome_node {
-            self.handle_event(event, scale, mods, doc, path, handled, focus, root, tree);
+            self.handle_event(
+                event,
+                &mut crate::widget::EventCtx {
+                    scale_factor: scale,
+                    modifiers: mods,
+                    state: doc,
+                    path,
+                    handled,
+                    focus_target: focus,
+                    node_id: root,
+                    taffy: tree,
+                },
+            );
         }
         if chrome_event && !matches!(event, WindowEvent::KeyboardInput { .. }) {
             *handled = true;
@@ -167,7 +179,19 @@ impl HistoryHost {
             && !*handled
             && let Some(child) = self.live_node
         {
-            live.handle_event(event, scale, mods, doc, path, handled, focus, child, tree);
+            live.handle_event(
+                event,
+                &mut crate::widget::EventCtx {
+                    scale_factor: scale,
+                    modifiers: mods,
+                    state: doc,
+                    path,
+                    handled,
+                    focus_target: focus,
+                    node_id: child,
+                    taffy: tree,
+                },
+            );
         }
     }
 }
@@ -237,28 +261,17 @@ impl Widget for HistoryHost {
             panel.dialog.draw(scene, transform, text, theme, presence);
         }
     }
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale: f64,
-        mods: &winit::event::Modifiers,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus: &mut Option<NodeId>,
-        _: NodeId,
-        tree: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if let (Some(panel), Some(node)) = (&mut self.review, self.review_node) {
             panel
                 .dialog
-                .handle_event(event, scale, mods, doc, path, handled, focus, node, tree);
-            *handled = true;
+                .handle_event(event, &mut ctx.reborrow(ctx.path, node));
+            *ctx.handled = true;
             return;
         }
         if let Some(toolbar) = self.toolbar_node {
             self.toolbar
-                .handle_event(event, scale, mods, doc, path, handled, focus, toolbar, tree);
+                .handle_event(event, &mut ctx.reborrow(ctx.path, toolbar));
         }
         if let Some(timeline) = self.timeline_node
             && (!matches!(
@@ -266,13 +279,12 @@ impl Widget for HistoryHost {
                 WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_)
             ) || self.timeline.is_focused())
         {
-            self.timeline.handle_event(
-                event, scale, mods, doc, path, handled, focus, timeline, tree,
-            );
+            self.timeline
+                .handle_event(event, &mut ctx.reborrow(ctx.path, timeline));
         }
         if let Some(canvas) = self.canvas_node {
             self.canvas_mut()
-                .handle_event(event, scale, mods, doc, path, handled, focus, canvas, tree);
+                .handle_event(event, &mut ctx.reborrow(ctx.path, canvas));
         }
     }
     fn children(&self) -> Vec<&dyn Widget> {

@@ -174,19 +174,6 @@ impl Widget for Probe {
         _: &ui::PresenceCtx,
     ) {
     }
-    fn handle_event(
-        &mut self,
-        _: &ui::winit::event::WindowEvent,
-        _: f64,
-        _: &ui::winit::event::Modifiers,
-        _: &mut AutoCommit,
-        _: &ObjId,
-        _: &mut bool,
-        _: &mut Option<ui::taffy::NodeId>,
-        _: ui::taffy::NodeId,
-        _: &ui::taffy::TaffyTree<()>,
-    ) {
-    }
     fn name(&self) -> &'static str {
         "DispatchSpecProbe"
     }

@@ -128,19 +128,8 @@ impl Widget for OverviewPane {
             .draw_overview(self.rect, scene, transform, text_renderer, theme);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        if *handled {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        if *ctx.handled {
             return;
         }
         if self
@@ -148,16 +137,16 @@ impl Widget for OverviewPane {
             .borrow_mut()
             .handle_overview_event(OverviewEventCtx {
                 event,
-                scale_factor,
-                modifiers: *modifiers,
-                state,
-                path,
-                focus_target,
-                node_id,
-                taffy,
+                scale_factor: ctx.scale_factor,
+                modifiers: *ctx.modifiers,
+                state: ctx.state,
+                path: ctx.path,
+                focus_target: ctx.focus_target,
+                node_id: ctx.node_id,
+                taffy: ctx.taffy,
             })
         {
-            *handled = true;
+            *ctx.handled = true;
         }
     }
 
@@ -241,27 +230,16 @@ impl Widget for DetailPane {
             .draw_detail(self.rect, scene, transform, text_renderer, theme);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
-        if *handled {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        if *ctx.handled {
             return;
         }
         if self
             .core
             .borrow_mut()
-            .handle_detail_event(event, scale_factor)
+            .handle_detail_event(event, ctx.scale_factor)
         {
-            *handled = true;
+            *ctx.handled = true;
         }
     }
 

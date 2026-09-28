@@ -460,21 +460,8 @@ impl Widget for GrowingBody {
     ) {
         self.column.draw(scene, transform, text, theme, presence);
     }
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut automerge::AutoCommit,
-        path: &automerge::ObjId,
-        handled: &mut bool,
-        focus: &mut Option<NodeId>,
-        node: NodeId,
-        tree: &TaffyTree<()>,
-    ) {
-        self.column.handle_event(
-            event, scale, modifiers, state, path, handled, focus, node, tree,
-        );
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        self.column.handle_event(event, ctx);
     }
     fn children(&self) -> Vec<&dyn Widget> {
         self.column.children()

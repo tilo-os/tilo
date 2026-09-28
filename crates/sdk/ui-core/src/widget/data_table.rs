@@ -1729,20 +1729,10 @@ impl<Row> DataTable<Row> {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "forwards the Widget event contract plus handled/focus outputs"
-    )]
     fn route_to_cell_widgets(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        taffy: &TaffyTree<()>,
+        ctx: &mut crate::widget::EventCtx<'_>,
     ) {
         if let Some(cell) = self
             .mounted_cells
@@ -1750,33 +1740,15 @@ impl<Row> DataTable<Row> {
             .find(|cell| cell.widget.wants_pointer_capture())
             && let Some(node) = cell.node
         {
-            cell.widget.handle_event(
-                event,
-                scale_factor,
-                &modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node,
-                taffy,
-            );
+            cell.widget
+                .handle_event(event, &mut ctx.reborrow(ctx.path, node));
             return;
         }
         for cell in self.mounted_cells.iter_mut().rev() {
             let Some(node) = cell.node else { continue };
-            cell.widget.handle_event(
-                event,
-                scale_factor,
-                &modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node,
-                taffy,
-            );
-            if *handled {
+            cell.widget
+                .handle_event(event, &mut ctx.reborrow(ctx.path, node));
+            if *ctx.handled {
                 break;
             }
         }
@@ -2066,61 +2038,41 @@ impl<Row: 'static> Widget for DataTable<Row> {
         self.refresh_view_anchor();
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if self.resize.is_none() && !self.vbar.is_dragging() && !self.drag_scroll.is_tracking() {
-            self.route_to_cell_widgets(
-                event,
-                scale_factor,
-                *modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                taffy,
-            );
+            self.route_to_cell_widgets(event, ctx);
         }
-        if *handled {
+        if *ctx.handled {
             return;
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let pt = Point::new(position.x / scale_factor, position.y / scale_factor);
-                self.on_cursor_moved(pt, handled);
+                let pt = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.on_cursor_moved(pt, ctx.handled);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
             } => {
-                self.on_left_press(*modifiers, handled, focus_target, node_id);
+                self.on_left_press(*ctx.modifiers, ctx.handled, ctx.focus_target, ctx.node_id);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
                 button: MouseButton::Left,
                 ..
             } => {
-                self.on_left_release(*modifiers, handled, focus_target, node_id);
+                self.on_left_release(*ctx.modifiers, ctx.handled, ctx.focus_target, ctx.node_id);
             }
             WindowEvent::MouseWheel { delta, phase, .. } => {
-                self.on_wheel(delta, *phase, handled);
+                self.on_wheel(delta, *phase, ctx.handled);
             }
             WindowEvent::KeyboardInput { event: ke, .. }
                 if self.selectable && self.is_focused && ke.state == ElementState::Pressed =>
             {
                 self.drag_scroll.cancel();
                 self.momentum.stop();
-                self.on_key(ke, *modifiers, handled);
+                self.on_key(ke, *ctx.modifiers, ctx.handled);
             }
             _ => {}
         }
@@ -3901,14 +3853,16 @@ mod tests {
         let root = automerge::ROOT;
         t.handle_event(
             ev,
-            1.0,
-            &mods,
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus,
-            node,
-            tree,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: tree,
+            },
         );
     }
 
