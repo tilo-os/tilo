@@ -8235,38 +8235,6 @@ dependencies = [
 ]
 
 [[package]]
-<<<<<<< HEAD
-name = "media"
-version = "0.1.0"
-dependencies = [
- "advisory-lock",
- "atomic-file",
- "automerge",
- "blake3",
- "bounded-command",
- "gstreamer",
- "gstreamer-app",
- "gstreamer-video",
- "hex",
- "libc",
- "pipewire",
- "rustfft",
- "serde",
- "serde_json",
- "tempfile",
- "tilo-automerge",
- "tilo-test-env",
- "tracing",
- "tracing-subscriber",
- "url",
- "web-time",
- "workspace-hack",
- "xdg-paths",
-]
-
-[[package]]
-=======
->>>>>>> d8a663b448 (platform: tilo-rt, tilo-clock and tilo-paths as the portable base)
 name = "mediatype"
 version = "0.21.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
