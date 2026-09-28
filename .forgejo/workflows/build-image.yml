@@ -925,6 +925,13 @@ jobs:
           echo "publish=$publish" >> "$GITHUB_OUTPUT"
           echo "validate=$validate" >> "$GITHUB_OUTPUT"
           echo "dev-fast=$fast" >> "$GITHUB_OUTPUT"
+          # A release and its reproduction clamp every mtime and compress
+          # alike. A Build / OS dev image needs neither: fast zstd, no rewrite.
+          if [[ $fast == true ]]; then
+            echo 'TILO_OCI_EXPORT=compression=zstd,compression-level=1,force-compression=true' >> "$GITHUB_ENV"
+          else
+            echo 'TILO_OCI_EXPORT=rewrite-timestamp=true' >> "$GITHUB_ENV"
+          fi
           # A branch build that validates without publishing installs and
           # boots the dev image built FROM this image instead, and publishes
           # both as dev-trust artifacts: tilo-ci:<series>-<arch> and
@@ -1205,6 +1212,16 @@ jobs:
       # step needs that layer's content. Their failures are therefore handled
       # below: that one error rebuilds without imported cache, and every other
       # error still fails the job.
+      # The engine's layer cache is addressed by everything that goes into
+      # it, so a build of any other commit with the same engine inputs finds
+      # it: in effect a prebuilt artifact, rebuilt only when an input changes.
+      - name: Address the browser engine cache by its inputs
+        run: |
+          set -euo pipefail
+          key="$({ printf '%s\n' "$WPE_BUILDROOT_REF"; cat os/Containerfile.wpe os/dev/build-wpe.sh os/external-assets/github-assets.tsv; } | sha256sum | cut -c1-16)"
+          echo "TILO_WPE_CACHE_KEY=$key" >> "$GITHUB_ENV"
+          echo "::notice::browser engine cache key $key"
+
       - name: Build and cache the browser engine stage
         id: wpe-stage
         if: env.TILO_WITH_BROWSER == '1'
@@ -1222,8 +1239,8 @@ jobs:
             WPE_BUILDROOT_REF=${{ env.WPE_BUILDROOT_REF }}
           provenance: false
           no-cache: ${{ matrix.role == 'reproduce' }}
-          cache-from: ${{ matrix.role != 'reproduce' && format('type=registry,ref={0}/tilo/tilo-buildcache:{1}-wpe', env.TILO_LAYER_CACHE_REGISTRY, matrix.arch) || '' }}
-          cache-to: ${{ matrix.role != 'reproduce' && format('type=registry,ref={0}/tilo/tilo-buildcache:{1}-wpe,mode=max,ignore-error=true', env.TILO_LAYER_CACHE_REGISTRY, matrix.arch) || '' }}
+          cache-from: ${{ matrix.role != 'reproduce' && format('type=registry,ref={0}/tilo/tilo-buildcache:{1}-wpe-{2}', env.TILO_LAYER_CACHE_REGISTRY, matrix.arch, env.TILO_WPE_CACHE_KEY) || '' }}
+          cache-to: ${{ matrix.role != 'reproduce' && format('type=registry,ref={0}/tilo/tilo-buildcache:{1}-wpe-{2},mode=max,ignore-error=true', env.TILO_LAYER_CACHE_REGISTRY, matrix.arch, env.TILO_WPE_CACHE_KEY) || '' }}
 
       # Build and export the compile stages (the Rust builder and its inputs)
       # before anything else. A registry cache is only written when its build
@@ -1286,7 +1303,6 @@ jobs:
             ${{ steps.compiler-cache.outputs.secret-envs }}
           provenance: false
           cache-from: |
-            type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/tilo/tilo-buildcache:${{ matrix.arch }}-wpe
             type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/tilo/tilo-buildcache:${{ matrix.arch }}-compile
             type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/tilo/tilo-buildcache:${{ matrix.arch }}
           cache-to: type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/tilo/tilo-buildcache:${{ matrix.arch }}-compile,mode=max,ignore-error=true
@@ -1311,7 +1327,7 @@ jobs:
             ${{ steps.wpe-stage.outputs.digest && format('wpe-builder=oci-layout:///var/tmp/tilo-wpe@{0}', steps.wpe-stage.outputs.digest) || '' }}
           file: os/Containerfile
           push: false
-          outputs: ${{ steps.release-mode.outputs.validate == 'true' && 'type=oci,dest=/var/tmp/tilo-image.tar,rewrite-timestamp=true' || '' }}
+          outputs: ${{ steps.release-mode.outputs.validate == 'true' && format('type=oci,dest=/var/tmp/tilo-image.tar,{0}', env.TILO_OCI_EXPORT) || '' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           # TILO_WITH_BROWSER: a manual run can omit the browser + its WPE WebKit
@@ -1367,7 +1383,6 @@ jobs:
           # The compile stages were already built and exported above, so this
           # reuses them locally and exports the remaining stages.
           cache-from: |
-            type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/tilo/tilo-buildcache:${{ matrix.arch }}-wpe
             type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/tilo/tilo-buildcache:${{ matrix.arch }}-compile
             type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/tilo/tilo-buildcache:${{ matrix.arch }}
           cache-to: type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/tilo/tilo-buildcache:${{ matrix.arch }},mode=max,ignore-error=true
@@ -1395,7 +1410,7 @@ jobs:
           build-args: |
             WPE_BUILDROOT_REF=${{ env.WPE_BUILDROOT_REF }}
           provenance: false
-          cache-to: type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/tilo/tilo-buildcache:${{ matrix.arch }}-wpe,mode=max,ignore-error=true
+          cache-to: type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/tilo/tilo-buildcache:${{ matrix.arch }}-wpe-${{ env.TILO_WPE_CACHE_KEY }},mode=max,ignore-error=true
 
       # The same image build without cache-from. Layers this builder already
       # holds are reused; the lazily imported ones are rebuilt. It writes every
@@ -1415,7 +1430,7 @@ jobs:
             ${{ steps.wpe-uncached.outputs.digest && format('wpe-builder=oci-layout:///var/tmp/tilo-wpe-uncached@{0}', steps.wpe-uncached.outputs.digest) || (steps.wpe-stage.outputs.digest && format('wpe-builder=oci-layout:///var/tmp/tilo-wpe@{0}', steps.wpe-stage.outputs.digest)) || '' }}
           file: os/Containerfile
           push: false
-          outputs: ${{ steps.release-mode.outputs.validate == 'true' && 'type=oci,dest=/var/tmp/tilo-image.tar,rewrite-timestamp=true' || '' }}
+          outputs: ${{ steps.release-mode.outputs.validate == 'true' && format('type=oci,dest=/var/tmp/tilo-image.tar,{0}', env.TILO_OCI_EXPORT) || '' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
